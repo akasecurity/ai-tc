@@ -189,21 +189,69 @@ describe('mergeOverlappingSameRule', () => {
     expect(merged[0]?.confidence).toBe(0.99);
   });
 
-  it('does not blow up quadratically on a large same-rule group with no overlaps', () => {
-    // A pairwise "check the candidate against every finding merged so far"
-    // merge costs O(n²): with n findings from a single (say, one-BOM) run,
-    // scan() on a large ruleset/text combination went from milliseconds to
-    // seconds. This asserts the SHAPE (a generous, not tight, wall-clock
-    // bound — the kind CONTRIBUTING.md calls for, not a benchmark) rather
-    // than the bug's exact original repro, which lives in scan.bench.ts.
-    const many: MatchResult[] = [];
-    for (let i = 0; i < 20000; i++) {
-      many.push(finding(`rule/${String(i % 50)}`, i * 30, i * 30 + 5));
+  it('scales close to n log n, not n², on a single rule with many overlapping pairs', () => {
+    // A pairwise "check the candidate against every finding kept so far"
+    // merge costs O(n²) in the FINDING COUNT, not in how many of them
+    // overlap: the inner loop scans from index 0 every time regardless of
+    // where (or whether) a match turns up, so its cost is driven by how
+    // long the kept list has grown, which for one rule grows close to n
+    // even when most pairs merge down to one entry. Spreading findings
+    // across many DIFFERENT rules (as an earlier version of this test did)
+    // keeps each rule's kept list short and so stays close to the old
+    // algorithm's CHEAPEST case — 20,000 findings over 50 rules merged in
+    // 598.5ms against a 2000ms ceiling with the old algorithm restored, more
+    // than 3x of headroom that never actually exercises the bug. One rule,
+    // with findings that overlap in ADJACENT PAIRS (not one giant run, and
+    // not the artificial best case of no overlaps at all — the shape a
+    // cross-pass duplicate from scan() actually produces), does.
+    //
+    // A RATIO, not a fixed ceiling, for the same reason as the scan()-level
+    // sibling check in unicode.test.ts: this must hold on a runner tens of
+    // times slower than a dev machine. O(n log n) costs a 10x-larger input
+    // roughly 10x-15x as long (the log factor); O(n²) costs it roughly
+    // 100x. 30x sits with real margin on both sides.
+    function buildOverlappingPairs(n: number, text: string): MatchResult[] {
+      const findings: MatchResult[] = [];
+      for (let i = 0; i < n; i += 2) {
+        // Pair i occupies [3i, 3i+6); the next pair starts exactly where
+        // this one ends, so pairs merge internally but never into each
+        // other — n/2 disjoint two-member groups, not one giant region.
+        const base = i * 3;
+        findings.push({
+          ruleId: 'r',
+          category: 'secret',
+          severity: 'high',
+          span: { start: base, end: base + 4 },
+          rawMatch: text.slice(base, base + 4),
+          confidence: 1,
+        });
+        findings.push({
+          ruleId: 'r',
+          category: 'secret',
+          severity: 'high',
+          span: { start: base + 2, end: base + 6 },
+          rawMatch: text.slice(base + 2, base + 6),
+          confidence: 1,
+        });
+      }
+      return findings;
     }
-    const start = performance.now();
-    const merged = mergeOverlappingSameRule(many, text);
-    const ms = performance.now() - start;
-    expect(merged).toHaveLength(many.length);
-    expect(ms).toBeLessThan(2000);
+
+    function timeMerge(n: number): number {
+      const bigText = 'x'.repeat(n * 3 + 10);
+      const findings = buildOverlappingPairs(n, bigText);
+      const start = performance.now();
+      const merged = mergeOverlappingSameRule(findings, bigText);
+      const ms = performance.now() - start;
+      expect(merged).toHaveLength(n / 2);
+      return ms;
+    }
+
+    const small = timeMerge(2_000);
+    const large = timeMerge(20_000); // 10x the input
+    expect(
+      large,
+      `2,000 findings: ${small.toFixed(1)}ms; 20,000 findings: ${large.toFixed(1)}ms`,
+    ).toBeLessThan(Math.max(small, 1) * 30);
   });
 });

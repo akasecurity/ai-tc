@@ -4,7 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
-import { FORMAT_CHARS, ZWSP } from '../helpers/format-chars.ts';
+import { BOM, FORMAT_CHARS, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // Parsed through the real schema — these assert the shipped path end to end
@@ -409,13 +409,24 @@ describe('a same-rule overlap that only appears once matching runs against both 
 });
 
 describe('the slow path does not blow up on a large text with one format character', () => {
-  // The reproduction from the review this test is pinned against: a scan
-  // that used to take single-digit milliseconds took multiple SECONDS with
-  // one leading BOM, because the (now fixed) merge step was quadratic in the
-  // number of findings. A generous wall-clock bound, not a benchmark — see
-  // CONTRIBUTING.md on the difference — catches a return of that shape
-  // without being a timing gate on ordinary noise.
-  it('scans a large multi-rule text with one leading BOM in well under a second', () => {
+  // The regression this test is pinned against: a scan that used to take
+  // single-digit milliseconds took multiple SECONDS with one leading BOM,
+  // because the (now fixed) merge step was quadratic in the number of
+  // findings. A fixed wall-clock ceiling is the wrong instrument for that —
+  // CLAUDE.md/CONTRIBUTING.md's own reasoning against fixed millisecond
+  // limits applies here: a shared or Windows CI runner can run this same
+  // 60,000-finding scan tens of times slower than a dev machine, which would
+  // cross any fixed ceiling generous enough to hold locally. A RATIO does
+  // not have that problem — a slower runner slows both sides together — so
+  // this times the identical text with and without the BOM, interleaved and
+  // taking the fastest of several runs each (the standard way to cut noise
+  // from a wall-clock measurement without needing a controlled benchmark
+  // harness), and bounds the QUOTIENT. The bug this guards measured a ~330x
+  // ratio (5972ms vs 18ms); 10x leaves that a wide margin on one side while
+  // still comfortably above the ~2x this file's own dual-pass matching
+  // costs on the other (see bench/benign-format-chars.bench.ts for the
+  // measured, non-pathological cost of the slow path).
+  it('scans a large multi-rule text with one leading BOM in roughly the same time as without one', () => {
     const mk = (id: string, pattern: string) =>
       Rule.parse({
         specVersion: 1,
@@ -430,14 +441,103 @@ describe('the slow path does not blow up on a large text with one format charact
     );
     let body = '';
     for (let i = 0; i < 10000; i++) body += 'w0 w1 w2 w3 w4 w5\n';
-    const bom = FORMAT_CHARS.find(([label]) => label.includes('byte order mark'))?.[1] ?? '';
-    const text = bom + body;
+    const withoutBom = body;
+    const withBom = BOM + body;
 
-    const start = performance.now();
-    const findings = scan(text, rules);
-    const ms = performance.now() - start;
+    function timeOnce(text: string): number {
+      const start = performance.now();
+      const findings = scan(text, rules);
+      const ms = performance.now() - start;
+      expect(findings).toHaveLength(60000);
+      return ms;
+    }
 
-    expect(findings).toHaveLength(60000);
-    expect(ms).toBeLessThan(1000);
+    const REPEATS = 5;
+    let withoutBomBest = Infinity;
+    let withBomBest = Infinity;
+    for (let i = 0; i < REPEATS; i++) {
+      withoutBomBest = Math.min(withoutBomBest, timeOnce(withoutBom));
+      withBomBest = Math.min(withBomBest, timeOnce(withBom));
+    }
+
+    const ratio = withBomBest / Math.max(withoutBomBest, 0.001);
+    expect(
+      ratio,
+      `with-BOM best of ${String(REPEATS)}: ${withBomBest.toFixed(1)}ms, without: ${withoutBomBest.toFixed(1)}ms`,
+    ).toBeLessThan(10);
+  });
+});
+
+describe('invisible padding cannot push a label outside the requiresNearby window', () => {
+  // rules/code-flaws/dev-placeholder-secret.json's window is measured in
+  // NORMALIZED characters for a normalized-pass candidate (see
+  // `Candidate.labelWindow` in engine.ts), not always in original ones —
+  // otherwise a run of invisible characters between a label and its value
+  // counts against the window budget even though it disappears entirely
+  // once normalized, letting an attacker push a genuinely nearby label
+  // arbitrarily far outside the window just by padding with something no
+  // one can see.
+  it('still corroborates through 100 invisible characters of padding between the label and the value', () => {
+    const text = `key = ${ZWSP.repeat(100)}'changeme'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+  });
+
+  it('still corroborates through 1000 invisible characters of padding', () => {
+    const text = `key = ${ZWSP.repeat(1000)}'changeme'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+    expect(findings).toHaveLength(1);
+  });
+
+  it('leaves VISIBLE padding subject to the window as before (not a regression to relax)', () => {
+    // Padding an attacker cannot hide is not the threat this fix closes —
+    // a real reader (and a real reviewer of the flagged content) sees a
+    // label 100 characters away and can judge it a stretch; a real 100-char
+    // window budget still applies to visible content.
+    const text = `key = ${'x'.repeat(100)} 'changeme'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+    expect(findings).toHaveLength(0);
+  });
+});
+
+describe('a rule cannot corroborate itself through its own pooled cross-pass duplicate', () => {
+  // A rule whose `requiresNearby.ruleIds` names its OWN id means "two
+  // nearby occurrences of this rule corroborate each other" — a legitimate
+  // config. On the slow path, the original-text and normalized-text passes
+  // can each independently produce a candidate for the SAME occurrence, with
+  // an identical or overlapping span once pooled in original coordinates.
+  // Without excluding that pooled duplicate, a single, lone occurrence gets
+  // corroborated by its own cross-pass copy the moment the text contains
+  // ANY format character anywhere — not because a second occurrence exists,
+  // but purely because normalizing happened to run at all.
+  const selfCorroboratingRule = Rule.parse({
+    specVersion: 1,
+    id: 'test-pack/self-corroborating',
+    name: 'self-corroborating',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: '[A-Z]{5}', flags: 'g' },
+    requiresNearby: { ruleIds: ['test-pack/self-corroborating'], windowChars: 50 },
+  });
+
+  it('does not corroborate a lone occurrence via its own cross-pass duplicate', () => {
+    const lone = 'one lone match HELLO here, nothing else nearby';
+    // A stray format character elsewhere in the text (nowhere near the
+    // match) is enough to put scan() on the slow path and so pool a
+    // cross-pass duplicate of HELLO, without adding any second, real
+    // occurrence of the rule.
+    const withStrayFormatChar = `${lone}${ZWSP}`;
+
+    expect(scan(lone, [selfCorroboratingRule])).toHaveLength(0);
+    expect(scan(withStrayFormatChar, [selfCorroboratingRule])).toHaveLength(0);
+  });
+
+  it('still corroborates two GENUINELY separate nearby occurrences of the same rule', () => {
+    // The self-reference config must keep working for what it is for: two
+    // real, non-overlapping occurrences close enough to corroborate.
+    const text = 'HELLO near WORLD';
+    const findings = scan(text, [selfCorroboratingRule]);
+    expect(findings).toHaveLength(2);
   });
 });

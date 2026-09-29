@@ -84,9 +84,28 @@ export function getLoadedRules(): Rule[] {
 
 // A candidate match plus the rule that produced it, retained between the two
 // passes of scan() so the proximity gate can inspect each candidate's rule.
+//
+// `match.span` is always in ORIGINAL-text coordinates (mapped back for a
+// normalized-pass candidate — see mapCandidateToOriginal) so the pooled list
+// can compare (a)/(b) proximity across passes directly. `labelWindow` is
+// kept SEPARATE and is NEVER mapped: it is the text and span the candidate's
+// own primitive match was actually found in — `text`/original-coordinates
+// for an original-pass candidate, the normalized text/coordinates for a
+// normalized-pass one. `requiresNearby.windowChars` is a character count,
+// and a normalized-pass candidate's label has to be searched for within
+// THAT MANY NORMALIZED characters, not that many original ones — otherwise
+// invisible padding between a label and its value, stripped away in the
+// normalized text but still counted in the original text, pushes the label
+// outside a window that would otherwise easily contain it. See
+// isCorroborated's (c) section.
 interface Candidate {
   rule: Rule;
   match: MatchResult;
+  labelWindow: { text: string; span: Span };
+}
+
+function spansOverlap(a: Span, b: Span): boolean {
+  return a.start < b.end && a.end > b.start;
 }
 
 // Escape regex metacharacters so a label is matched literally.
@@ -100,28 +119,57 @@ interface Candidate {
 //
 // `candidates` is the POOLED list scan() gates in one pass — see scan() — so
 // on the slow path it holds candidates from BOTH the original-text and the
-// normalized-text matcher runs, every span already expressed in ORIGINAL-text
-// coordinates. (a)/(b) need no special handling for that: they only compare
-// spans and rule identity, which already means the same thing regardless of
-// which pass produced a candidate.
-function isCorroborated(candidate: Candidate, candidates: Candidate[], text: string): boolean {
+// normalized-text matcher runs, every `match.span` already expressed in
+// ORIGINAL-text coordinates. (a)/(b) need no further handling for that: they
+// only compare spans and rule identity, which already means the same thing
+// regardless of which pass produced a candidate.
+//
+// `hasFormatChars` says whether `scan()` is on the slow path at all — the
+// fast path never needs the extra normalized-window search in (c), because
+// it has already established the WHOLE text carries no format character, so
+// no window taken from it could carry one either.
+function isCorroborated(
+  candidate: Candidate,
+  candidates: Candidate[],
+  text: string,
+  hasFormatChars: boolean,
+): boolean {
   const req = candidate.rule.requiresNearby;
   if (!req) return true;
 
   // windowChars has a schema default (160), so it is always present post-parse.
   // It is a radius applied on both sides of the span, hence "half window".
   const halfWindow = req.windowChars;
+
+  // (a)/(b): another candidate match whose span falls inside the window and
+  // whose category/ruleId matches.
   const { start, end } = candidate.match.span;
   const winStart = start - halfWindow;
   const winEnd = end + halfWindow;
-
-  // (a)/(b): another candidate match whose span falls inside the window and
-  // whose category/ruleId matches. A candidate never corroborates itself.
   const categories = req.categories;
   const ruleIds = req.ruleIds;
   if (categories?.length || ruleIds?.length) {
     for (const other of candidates) {
       if (other === candidate) continue;
+      // A candidate never corroborates itself — and neither does its OWN
+      // pooled cross-pass duplicate. The original-text and normalized-text
+      // passes can each independently produce a candidate for the SAME
+      // occurrence, with an identical or overlapping span once both are
+      // expressed in original coordinates; that pair is one occurrence, not
+      // two. Category corroboration is already restricted to a DIFFERENT
+      // rule below, so this only changes anything for `ruleIds`, whose
+      // whole point is letting a rule reference its own id ("two nearby
+      // occurrences of this rule corroborate each other") — without this
+      // check, a rule written that way corroborates a single, lone
+      // occurrence through its own duplicate the moment the text contains
+      // ANY format character anywhere, whether or not a second real
+      // occurrence exists.
+      if (
+        other.match.ruleId === candidate.match.ruleId &&
+        spansOverlap(other.match.span, candidate.match.span)
+      ) {
+        continue;
+      }
       const os = other.match.span;
       // Overlap of [os.start, os.end] with [winStart, winEnd].
       if (os.end < winStart || os.start > winEnd) continue;
@@ -142,24 +190,63 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
   // (c): a label keyword present in the surrounding text window. Matched on word
   // boundaries (not a raw substring) so e.g. the label "state" does not
   // corroborate inside "estate" — labels behave like standalone keywords/phrases.
+  //
+  // Measured over `candidate.labelWindow`, NOT always `candidate.match.span`
+  // / the original text: for a normalized-pass candidate, that is the
+  // normalized text and the span its primitive match was actually found at
+  // there, so `windowChars` counts normalized characters. Measuring it in
+  // original characters instead (i.e. reusing `winStart`/`winEnd` above)
+  // would let invisible padding between a label and its value — stripped
+  // away in the normalized text, but still counted in the original one —
+  // push the label outside a window it would otherwise sit well inside.
   const labels = req.labels;
   if (labels && labels.length > 0) {
-    const haystack = text.slice(Math.max(0, winStart), winEnd);
-    // A label's own boundary can be satisfied by a format character that
-    // survives in only ONE of the two texts scan() matches against — the same
-    // shape of regression the primitive-match fix (see scan()) exists for,
-    // just for this lookaround instead of `\b`. Searching only `haystack`
-    // (original text) misses a label that was split apart and only reads as
-    // one word once normalized (e.g. a label inside a secret whose OWN
-    // characters carry the format character); searching only a normalized
-    // form misses a label whose boundary depends on a format character still
-    // present in the original text. Re-normalizing this window on demand
-    // — bounded by `windowChars`, so cheap — rather than threading a second
-    // haystack through every caller covers both without scan() needing to
-    // know which shape it is looking at. It is a no-op whenever the window
-    // itself has no format character, which is the common case even on the
-    // slow path: most of a scanned text is not the one stripped region.
-    const haystackNormalized = normalizeFormatChars(haystack)?.normalized;
+    // Two DIFFERENT reasons a single haystack is not enough, both real and
+    // both covered by tests:
+    //
+    // 1. The window RADIUS must be counted in the candidate's own native
+    //    characters. For a normalized-pass candidate, invisible padding
+    //    between a label and its value is gone in the normalized text, so
+    //    measuring `windowChars` there (via `labelWindow`) finds a label
+    //    invisible padding would otherwise push outside a window measured
+    //    in original characters.
+    // 2. A label's own boundary can depend on a format character present in
+    //    only ONE of the two texts — the same shape of regression the
+    //    primitive-match fix (see scan()) exists for, just for this
+    //    lookaround instead of `\b`. That can cut either way: a format
+    //    character between two words is a real separator in the ORIGINAL
+    //    text but vanishes (merging the words) in the normalized one, while
+    //    a format character INSIDE a label's own characters splits it apart
+    //    in the original text but reads as one word once normalized. So the
+    //    native window alone is not enough either: a normalized-native
+    //    candidate whose corroborating boundary exists only in the original
+    //    text (padding stripped away, taking the separator with it) needs
+    //    the ORIGINAL text's own window around this candidate's MAPPED
+    //    span, searched too.
+    //
+    // `mappedHaystack` is identical to `haystack` (skipped) for an
+    // original-pass candidate, whose native window already IS this one.
+    const { text: windowText, span: windowSpan } = candidate.labelWindow;
+    const labelWinStart = windowSpan.start - halfWindow;
+    const labelWinEnd = windowSpan.end + halfWindow;
+    const haystack = windowText.slice(Math.max(0, labelWinStart), labelWinEnd);
+    const mappedWinStart = start - halfWindow;
+    const mappedWinEnd = end + halfWindow;
+    const mappedHaystack = text.slice(Math.max(0, mappedWinStart), mappedWinEnd);
+    // Re-normalizing a window on demand — bounded by `windowChars`, so cheap
+    // — rather than threading extra haystacks through every caller covers
+    // reason 2's "label split apart, reads as one word only once
+    // normalized" half. Skipped entirely off the slow path (`hasFormatChars`
+    // false): the fast path has already established the WHOLE text carries
+    // no format character, so no window taken from it could carry one
+    // either, and the regex test would always return the no-op result.
+    const haystackNormalized = hasFormatChars
+      ? normalizeFormatChars(haystack)?.normalized
+      : undefined;
+    const mappedHaystackNormalized =
+      hasFormatChars && mappedHaystack !== haystack
+        ? normalizeFormatChars(mappedHaystack)?.normalized
+        : undefined;
     // Boundaries = non-alphanumeric neighbours; robust for labels containing
     // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
     //
@@ -180,6 +267,8 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
       if (!re) continue;
       if (re.test(haystack)) return true;
       if (haystackNormalized !== undefined && re.test(haystackNormalized)) return true;
+      if (mappedHaystack !== haystack && re.test(mappedHaystack)) return true;
+      if (mappedHaystackNormalized !== undefined && re.test(mappedHaystackNormalized)) return true;
     }
   }
 
@@ -223,6 +312,10 @@ function buildCandidates(
           rawMatch,
           confidence: 0.9,
         },
+        // Not yet mapped anywhere — this IS the text/span the candidate's
+        // primitive match was found in, which is exactly what the label
+        // window in isCorroborated needs. See the `Candidate` comment.
+        labelWindow: { text: matchText, span },
       });
     }
   }
@@ -242,13 +335,16 @@ function buildCandidates(
 // directly (`packages/plugin-sdk/src/runtime.ts`'s exception matching,
 // `packages/local-ops/src/fs-scan.ts`'s vault fingerprint) will not treat
 // them as the same secret. A consumer that wants that identity-invariant
-// reading instead should fingerprint the format-character-stripped value —
-// `normalizeFormatChars(finding.rawMatch)?.normalized ?? finding.rawMatch`,
-// exported from this package for exactly that — rather than `rawMatch`
-// itself; this package does not make that substitution unasked, because
-// doing so at the finding-production boundary would be the wrong tradeoff
-// for the consumer that DOES need the exact text (redaction/vault-restore),
-// and there is no single `rawMatch` that is correct for both uses at once.
+// reading instead should fingerprint a format-character-stripped value
+// rather than `rawMatch` itself; this package does not make that
+// substitution unasked, because doing so at the finding-production boundary
+// would be the wrong tradeoff for the consumer that DOES need the exact text
+// (redaction/vault-restore), and there is no single `rawMatch` that is
+// correct for both uses at once. `normalizeFormatChars` (this file) is not
+// exported for that today — no consumer needs it yet — so a future change
+// that wires up format-character-invariant fingerprinting exports it (and
+// its `Segment` element type, currently module-private) alongside actually
+// using it, rather than the API existing ahead of a caller.
 function mapCandidateToOriginal(
   candidate: Candidate,
   normalization: FormatCharNormalization,
@@ -258,14 +354,20 @@ function mapCandidateToOriginal(
   return {
     rule: candidate.rule,
     match: { ...candidate.match, span, rawMatch: text.slice(span.start, span.end) },
+    // Deliberately NOT remapped: `labelWindow` stays pointed at the
+    // normalized text and the (pre-mapping) span the primitive match was
+    // actually found at there. See the `Candidate` comment and
+    // isCorroborated's (c) section.
+    labelWindow: candidate.labelWindow,
   };
 }
 
-// Pass 2: proximity gating over a candidate list whose spans are ALL already
-// expressed in the same coordinate space (`text`'s). Candidates whose rule
-// has no `requiresNearby` are kept verbatim (identical to the pre-gate
-// behavior).
-function gate(candidates: Candidate[], text: string): MatchResult[] {
+// Pass 2: proximity gating over a candidate list whose `match.span`s are ALL
+// already expressed in the same (`text`'s) coordinate space. Candidates
+// whose rule has no `requiresNearby` are kept verbatim (identical to the
+// pre-gate behavior). `text` and `hasFormatChars` are threaded through to
+// isCorroborated — see there.
+function gate(candidates: Candidate[], text: string, hasFormatChars: boolean): MatchResult[] {
   const findings: MatchResult[] = [];
   for (const candidate of candidates) {
     const req = candidate.rule.requiresNearby;
@@ -273,7 +375,7 @@ function gate(candidates: Candidate[], text: string): MatchResult[] {
       findings.push(candidate.match);
       continue;
     }
-    if (!isCorroborated(candidate, candidates, text)) continue;
+    if (!isCorroborated(candidate, candidates, text, hasFormatChars)) continue;
     const boost = req.confidenceBoost;
     // Cap below 1.0 — a heuristic, corroboration-based match should never read as
     // mathematically "certain".
@@ -460,12 +562,12 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
   const originalCandidates = buildCandidates(text, ruleset, extension);
-  if (!normalization) return gate(originalCandidates, text);
+  if (!normalization) return gate(originalCandidates, text, false);
 
   const normalizedCandidates = buildCandidates(normalization.normalized, ruleset, extension).map(
     (candidate) => mapCandidateToOriginal(candidate, normalization, text),
   );
-  const findings = gate([...originalCandidates, ...normalizedCandidates], text);
+  const findings = gate([...originalCandidates, ...normalizedCandidates], text, true);
   // The two passes can each independently find the same secret occurrence —
   // sometimes at a slightly different span, since a pattern with no upper
   // bound can match further in one text than the other — so the pooled,

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { compareBinaryVersions, isParseableBinaryVersion } from '@akasecurity/persistence';
@@ -6,7 +6,9 @@ import { StorePosturePlugin } from '@akasecurity/schema';
 
 /**
  * The newest version the host's install record holds for the plugin installed
- * at `installRoot`, or null when there is no record to read.
+ * at `installRoot` whose install directory is still on disk, or null when no
+ * usable version can be read: no record (a plugin run from a checkout), no
+ * entry with a valid version, or no entry whose `installPath` exists.
  *
  * `installRoot` is the directory the running plugin was loaded from. The host
  * installs a marketplace plugin into
@@ -23,12 +25,16 @@ import { StorePosturePlugin } from '@akasecurity/schema';
  * exactly what this reports. The record holds one entry per install scope; the
  * newest parseable version across them is returned, and a version past the wire
  * bound is skipped rather than sent, since the receiver would refuse the whole
- * snapshot over it.
+ * snapshot over it. An entry whose `installPath` is a string naming a directory
+ * that no longer exists is skipped too: the record then names a version that is
+ * not on disk, and a caller would otherwise report it as installed. The path is
+ * only checked for existence, never read or followed.
  *
- * Best-effort and synchronous — one small local file, read once per report.
- * Every failure reads null; nothing here throws.
+ * Best-effort — one small local file read once per report, plus one stat per
+ * entry. Asynchronous, so a caller that bounds it with a timer keeps the read
+ * inside that bound. Every failure reads null; nothing here throws.
  */
-export function readInstalledVersion(installRoot: string): string | null {
+export async function readInstalledVersion(installRoot: string): Promise<string | null> {
   try {
     const versionDir = resolve(installRoot);
     const pluginDir = dirname(versionDir);
@@ -37,7 +43,7 @@ export function readInstalledVersion(installRoot: string): string | null {
     if (basename(cacheDir) !== 'cache') return null;
     const key = `${basename(pluginDir)}@${basename(marketplaceDir)}`;
     const record = JSON.parse(
-      readFileSync(join(dirname(cacheDir), 'installed_plugins.json'), 'utf8'),
+      await readFile(join(dirname(cacheDir), 'installed_plugins.json'), 'utf8'),
     ) as { plugins?: unknown } | null;
     const plugins = record?.plugins;
     if (typeof plugins !== 'object' || plugins === null || !Object.hasOwn(plugins, key)) {
@@ -47,13 +53,29 @@ export function readInstalledVersion(installRoot: string): string | null {
     if (!Array.isArray(entries)) return null;
     let newest: string | null = null;
     for (const entry of entries as unknown[]) {
-      const version = (entry as { version?: unknown } | null)?.version;
+      const { version, installPath } = (entry ?? {}) as {
+        version?: unknown;
+        installPath?: unknown;
+      };
       if (typeof version !== 'string' || !isParseableBinaryVersion(version)) continue;
       if (!StorePosturePlugin.shape.installedVersion.safeParse(version).success) continue;
-      if (newest === null || compareBinaryVersions(version, newest) > 0) newest = version;
+      // Cheapest checks first: only an entry that could beat the current
+      // newest costs a stat.
+      if (newest !== null && compareBinaryVersions(version, newest) <= 0) continue;
+      if (typeof installPath === 'string' && !(await exists(installPath))) continue;
+      newest = version;
     }
     return newest;
   } catch {
     return null;
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }

@@ -116,6 +116,33 @@ describe('PreToolUse — a secret placed as an MCP tool_input object KEY', () =>
     });
   });
 
+  it('is caught even after 200 distinct benign single-key objects', () => {
+    // The dedicated per-object chunk cap (MCP_MAX_KEY_GROUPS) used to make
+    // this exact shape a blind spot: past 200 groups, every later group's
+    // keys were silently dropped rather than scanned. 200 tiny padding
+    // objects cost only ~1.4 KB, far cheaper than the padding the value-leaf
+    // count bound requires.
+    withTempHome((home) => {
+      seedBlockPolicy(home);
+      const pad = Array.from({ length: 200 }, (_, i) => ({ [`a${String(i)}`]: 1 }));
+      const run = preToolUse(home, { items: [...pad, { [SECRET]: 'x' }] });
+      expect(run.status).toBe(0);
+      expect(isDenied(run.stdout)).toBe(true);
+      expectNoEchoOf(run.stdout, SECRET);
+    });
+  });
+
+  it('is caught at the top level even when 200 padding objects follow it', () => {
+    withTempHome((home) => {
+      seedBlockPolicy(home);
+      const pad = Array.from({ length: 200 }, (_, i) => ({ [`a${String(i)}`]: 1 }));
+      const run = preToolUse(home, { [SECRET]: 'harmless placeholder', items: pad });
+      expect(run.status).toBe(0);
+      expect(isDenied(run.stdout)).toBe(true);
+      expectNoEchoOf(run.stdout, SECRET);
+    });
+  });
+
   it('is caught when a key and an unrelated value sit side by side', () => {
     withTempHome((home) => {
       seedBlockPolicy(home);

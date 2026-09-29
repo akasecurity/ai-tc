@@ -107,6 +107,11 @@ describe('scannableInputFields — NotebookEdit and Task', () => {
   });
 });
 
+// A neutral, distinctive marker rather than a credential-shaped literal: most
+// of these tests exercise field COLLECTION, not detection, so nothing here
+// needs to match a rule. See CLAUDE.md's Testing section.
+const MARKER = 'key_marker_7f3a';
+
 // A field synthetic per isSyntheticField (see pre-tool-use-fields.ts) is one
 // of the joined-keys chunks mcpKeyChunks builds: its text was computed during
 // the walk rather than addressable at `path` in the tool input. Every other
@@ -200,6 +205,17 @@ describe('scannableInputFields — MCP tools', () => {
     expectKeyChunkTexts(shallowFields, ['a', 'b', 'c']);
   });
 
+  it('records a shallower object’s keys BEFORE a deeper one’s, in walk order', () => {
+    // Group push order is what mcpKeyChunks spends its per-object dedicated
+    // chunks on FIRST — see MCP_MAX_KEY_GROUPS. Recording deepest-first would
+    // make the outermost, most likely to matter keys the first casualty of
+    // any limit further down; walk order (parent before its children) keeps
+    // them first instead.
+    const shallow = { a: { b: { c: 'reachable' } } };
+    const chunks = keyChunks(scannableInputFields('mcp__x__y', shallow));
+    expect(chunks.map((c) => c.text)).toEqual(['a', 'b', 'c']);
+  });
+
   it('skips a leaf past the per-leaf size cap but keeps scanning its siblings', () => {
     const fields = scannableInputFields('mcp__x__y', {
       huge: 'x'.repeat(1_000_001),
@@ -251,18 +267,45 @@ describe('scannableInputFields — MCP tools', () => {
     expect(fields.every((f) => f.executable)).toBe(true);
   });
 
-  it('bounds the number of key-chunk GROUPS, not just their combined size', () => {
+  it('bounds the number of DEDICATED key-chunk groups, packing the rest into overflow', () => {
     // MCP_MAX_KEY_GROUPS protects against the shape a shared char/leaf budget
     // does not: many DISTINCT small sibling objects (an array of 1,000
     // two-key records with a unique id each), where grouping by parent —
     // needed to stop cross-branch proximity corroboration, see mcpFields'
     // own comment — would otherwise cost close to one capture per record.
+    // Past the cap, a group no longer gets its own chunk, but its keys are
+    // still scanned — packed into a shared overflow chunk instead of being
+    // silently dropped (see MCP_MAX_KEY_GROUPS's own comment).
     const items = Array.from({ length: 1_000 }, (_, i) => ({ [`id${String(i)}`]: i }));
     const fields = scannableInputFields('mcp__x__y', { items });
-    // Each record's key is unique, so none of the 1,000 candidate chunks
-    // dedupe away — without MCP_MAX_KEY_GROUPS this would be ~1,000 chunks
-    // (plus the root's own 'items' chunk); with it, exactly the cap.
-    expect(keyChunks(fields)).toHaveLength(200);
+    const chunks = keyChunks(fields);
+    // The root's own 'items' key plus 199 record chunks fill the dedicated
+    // cap (200); the remaining 800 records' keys are small enough to all
+    // fit in ONE overflow chunk, well under the char budget.
+    expect(chunks).toHaveLength(201);
+    const total = chunks.reduce((n, c) => n + (c.text?.length ?? 0), 0);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  it('never drops a key past the dedicated-chunk cap — it lands in an overflow chunk', () => {
+    // Reproduces the exact shape a hard drop missed: 200 distinct benign
+    // single-key objects, THEN one more object whose key is the marker.
+    // Before packing overflow, the marker's group was simply discarded once
+    // MCP_MAX_KEY_GROUPS dedicated chunks already existed.
+    const pad = Array.from({ length: 200 }, (_, i) => ({ [`a${String(i)}`]: 1 }));
+    const fields = scannableInputFields('mcp__x__y', {
+      items: [...pad, { [MARKER]: 1 }],
+    });
+    expect(keyChunks(fields).some((c) => c.text?.includes(MARKER))).toBe(true);
+  });
+
+  it('scans a top-level secret placed BEFORE 200 padding objects', () => {
+    // With keys recorded in walk order (parent before children — see the
+    // depth-bound test above), the root's own key sits in the first
+    // dedicated chunk regardless of how much padding follows it.
+    const pad = Array.from({ length: 200 }, (_, i) => ({ [`a${String(i)}`]: 1 }));
+    const fields = scannableInputFields('mcp__x__y', { [MARKER]: 1, items: pad });
+    expect(keyChunks(fields).some((c) => c.text?.includes(MARKER))).toBe(true);
   });
 
   it('dedupes identically-shaped sibling groups into one chunk', () => {
@@ -280,11 +323,6 @@ describe('scannableInputFields — MCP tools', () => {
 });
 
 describe('scannableInputFields — MCP object keys', () => {
-  // A neutral, distinctive marker rather than a credential-shaped literal:
-  // these tests exercise field COLLECTION, not detection, so nothing here
-  // needs to match a rule. See CLAUDE.md's Testing section.
-  const MARKER = 'key_marker_7f3a';
-
   it('scans a secret placed as a top-level object key', () => {
     const fields = scannableInputFields('mcp__x__y', { [MARKER]: 'x' });
     const [chunk] = keyChunks(fields);

@@ -26,9 +26,10 @@ import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
-import type { PointerField } from './pointer-substitution.ts';
+import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
 import {
   decideInputPointers,
+  decidePointerDeny,
   denyPointerMessage,
   denyUnresolvedPointerMessage,
 } from './pointer-substitution.ts';
@@ -118,38 +119,34 @@ async function main(): Promise<void> {
   // unresolved, which is exactly the deny/keep posture we need.
   //
   // A joined-keys chunk (isSyntheticField — see pre-tool-use-fields.ts) is
-  // still probed for the deny decision below: every MCP field is executable,
-  // and a literal, ungranted pointer used AS a key must deny outright exactly
-  // like one in a value would. What it never does is enter SUBSTITUTION
+  // still probed for the deny decision below, and denies on ANY pointer it
+  // carries, granted or not — see decidePointerDeny's own comment on why a
+  // GRANTED one is no safer there. What it never does is enter SUBSTITUTION
   // (decideInputPointers, further down) — a resolved deref would try to write
   // the revealed text back through the chunk's synthetic path, which has no
   // real position in the payload to write to.
-  const pointerFields: PointerField[] = [];
+  const pointerFields: PointerDenyField[] = [];
   const substitutionFields: PointerField[] = [];
   for (const spec of fields) {
     const text = fieldText(spec, toolInput);
     if (text === undefined || text === '') continue;
-    const field: PointerField = { path: spec.path, text, executable: spec.executable };
-    pointerFields.push(field);
-    if (!isSyntheticField(spec)) substitutionFields.push(field);
+    const synthetic = isSyntheticField(spec);
+    pointerFields.push({ text, executable: spec.executable, synthetic });
+    if (!synthetic) substitutionFields.push({ path: spec.path, text, executable: spec.executable });
   }
   // Executable fields are probed FIRST — grant resolution only, no
   // de-reference. One ungranted pointer denies the whole call, and a call that
   // is denied must never have audited a reveal for the pointers that WERE
   // granted: the owner's crossing trail would then report values as sent to
-  // the model on a call that never ran.
+  // the model on a call that never ran. With no glue, every pointer found is
+  // definitionally unresolved (there is no vault to check a grant against),
+  // so the fake probe reports it straight back as ungranted.
   const spentGrantIds: string[] = [];
-  let denyForPointer = false;
-  if (vaultGlue) {
-    for (const field of pointerFields.filter((f) => f.executable)) {
-      const probe = await vaultGlue.probeModelPointers(field.text, {
-        resolveGrant: vaultGlue.revealGrantResolver,
-      });
-      if (probe.ungranted.length > 0) denyForPointer = true;
-    }
-  } else {
-    denyForPointer = pointerFields.some((f) => f.executable && pointerTokenScanner().test(f.text));
-  }
+  const denyForPointer = await decidePointerDeny(pointerFields, (text) =>
+    vaultGlue
+      ? vaultGlue.probeModelPointers(text, { resolveGrant: vaultGlue.revealGrantResolver })
+      : Promise.resolve({ ungranted: [...text.matchAll(pointerTokenScanner())].map((m) => m[0]) }),
+  );
 
   const pointerOutcomes = denyForPointer
     ? []

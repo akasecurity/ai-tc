@@ -107,18 +107,31 @@ const MCP_MAX_LEAF_CHARS = 1_000_000;
 const MCP_MAX_TOTAL_CHARS = 5_000_000;
 const MCP_MAX_LEAF_COUNT = 2_000;
 
-// The most joined-keys scan units one MCP call ever produces. Unlike
-// MCP_MAX_LEAF_COUNT this bounds a COUNT of chunks, not of captures avoided:
-// each chunk is one capture(), and each is scoped to a single object's own
-// keys (see MCP_KEY_JOIN's comment on why), so a payload shaped as many small
-// sibling objects — an array of 1,000 two-key records — would otherwise cost
-// close to one capture per object. 200 keeps that worst case at a few tens of
-// milliseconds (measured ~0.19ms per capture, so 200 * 0.19ms ≈ 38ms), far
-// under the leaf budget's own ~0.4s headroom, while realistic payloads (a
-// handful of nested objects) never come close to it. mcpKeyChunks also dedupes
-// identical chunk TEXT before counting against this, so the common shape of
-// that array — every record sharing the same key names — collapses to one
-// chunk rather than 1,000.
+// The most DEDICATED (one-object-per-chunk) joined-keys scan units one MCP
+// call ever produces. Unlike MCP_MAX_LEAF_COUNT this bounds a COUNT of
+// chunks, not of captures avoided: each dedicated chunk is one capture(), and
+// each is scoped to a single object's own keys (see MCP_KEY_JOIN's comment on
+// why), so a payload shaped as many small sibling objects — an array of 1,000
+// two-key records — would otherwise cost close to one capture per object. 200
+// keeps that worst case at a few tens of milliseconds (measured ~0.19ms per
+// capture, so 200 * 0.19ms ≈ 38ms), far under the leaf budget's own ~0.4s
+// headroom, while realistic payloads (a handful of nested objects) never come
+// close to it. mcpKeyChunks also dedupes identical chunk TEXT before counting
+// against this, so the common shape of that array — every record sharing the
+// same key names — collapses to one chunk rather than 1,000.
+//
+// Past this cap, mcpKeyChunks does NOT drop the remaining groups' keys — an
+// earlier version did, and 200 single-key objects (about 1.4 KB) was cheap
+// enough to bury a secret key placed after them, far cheaper than the
+// 2,000-leaf padding the value walk itself requires. Instead their keys are
+// packed together into shared OVERFLOW chunks, still bounded (by the shared
+// char budget, not by count — see mcpKeyChunks), so coverage is kept and the
+// capture count stays predictable. The cost is the one-object-per-chunk
+// separation MCP_MAX_KEY_GROUPS exists to preserve (see mcpFields' own
+// comment on cross-object corroboration): two unrelated objects' keys CAN
+// share an overflow chunk, so a `requiresNearby` rule could corroborate
+// across them for the overflow tail specifically. Real payloads this wide
+// are already rare enough that reaching overflow at all is uncommon.
 const MCP_MAX_KEY_GROUPS = 200;
 
 // Separates keys inside a joined-keys chunk. Two requirements, not one:
@@ -215,12 +228,17 @@ function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
       // one's value is what the top-of-walk guard then skips), and a key of
       // an object reached at MCP_MAX_DEPTH is collected while that same
       // object's own values (one level deeper) are not.
-      const keys: string[] = [];
-      for (const [key, value] of Object.entries(node)) {
-        if (key.length > 0) keys.push(key);
-        walk(value, [...path, key], depth + 1);
-      }
+      //
+      // Pushed in WALK order — this object's own group, THEN its children's,
+      // never the reverse. mcpKeyChunks spends its dedicated per-object
+      // chunks (MCP_MAX_KEY_GROUPS) on `groups` in array order, so pushing a
+      // parent's group only after recursing into every child would make the
+      // outermost, most likely to matter keys the LAST group recorded — and
+      // therefore the first one a limit further down drops or shares a chunk.
+      const entries = Object.entries(node);
+      const keys = entries.filter(([key]) => key.length > 0).map(([key]) => key);
       if (keys.length > 0) groups.push(keys);
+      for (const [key, value] of entries) walk(value, [...path, key], depth + 1);
     }
   };
 
@@ -232,20 +250,26 @@ function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
 /**
  * Bin-packs each object's own collected keys into as few combined scan units
  * as fit under the per-unit size cap, each addressed by a synthetic path
- * (never dereferenced — see ScannableField.text). A chunk never mixes keys
- * from two different objects — see mcpFields' own comment on why — so a
- * large object's keys may still span more than one chunk, but never two
- * objects' keys share one.
+ * (never dereferenced — see ScannableField.text). WHILE UNDER THE
+ * MCP_MAX_KEY_GROUPS CAP, a chunk never mixes keys from two different
+ * objects — see mcpFields' own comment on why — so a large object's keys may
+ * still span more than one chunk, but never two objects' keys share one. Past
+ * the cap, that separation is what gives way (see MCP_MAX_KEY_GROUPS's own
+ * comment): a group's keys are appended to whatever chunk is already open
+ * instead of starting a fresh one, so they are still scanned and still
+ * charged, just no longer isolated from a different object's.
  *
  * NOT one unit per key: that would roughly double the unit count for a
  * typical payload and can trip MCP_MAX_LEAF_COUNT on its own, a bound whose
  * whole point is capping the number of capture() calls a call this hook sees
  * pays for. A few chunks cost only a few more — bounded overall by
- * MCP_MAX_KEY_GROUPS (see its own comment).
+ * MCP_MAX_KEY_GROUPS for the dedicated ones, and by the shared char budget
+ * alone for whatever overflow follows.
  *
- * Two DIFFERENT objects that happen to carry the exact same set of keys (a
- * paginated array of identically-shaped records) produce byte-identical
- * chunk text and therefore an identical verdict every time — the repeat is
+ * Two chunks that end up with the exact same text (two different objects
+ * carrying the same set of keys — a paginated array of identically-shaped
+ * records; or, past the cap, two overflow chunks that happened to fill
+ * identically) produce an identical verdict every time — the repeat is
  * deduped rather than captured again, which is what keeps a long array of
  * uniformly-shaped objects from costing one chunk per record.
  *
@@ -261,6 +285,10 @@ function mcpKeyChunks(groups: readonly string[][], budget: number): ScannableFie
   let remaining = budget;
   let current: string[] = [];
   let currentLen = 0;
+  // How many DEDICATED (one-object-per-chunk) chunks exist so far. Once this
+  // reaches MCP_MAX_KEY_GROUPS, a later group no longer opens its own fresh
+  // chunk — see the per-group boundary below.
+  let dedicatedChunks = 0;
 
   // The joined length `current` would have with `key` appended — the one
   // formula both the size-cap check and the budget charge read, so the two
@@ -273,15 +301,22 @@ function mcpKeyChunks(groups: readonly string[][], budget: number): ScannableFie
     const text = current.join(MCP_KEY_JOIN);
     current = [];
     currentLen = 0;
-    if (seenChunkText.has(text) || chunks.length >= MCP_MAX_KEY_GROUPS) return;
+    if (seenChunkText.has(text)) return;
     seenChunkText.add(text);
     chunks.push({ path: [MCP_KEYS_PATH_SEGMENT, chunks.length], executable: true, text });
   };
 
   outer: for (const group of groups) {
-    // A fresh chunk boundary per object: see mcpFields' own comment on why
-    // two objects' keys must never share one scan unit.
-    flush();
+    // A fresh chunk boundary per object, while under the dedicated-chunk
+    // cap — see mcpFields' own comment on why two objects' keys must never
+    // share one scan unit there. Past the cap, this group's keys fall
+    // through into whatever chunk `current` already holds instead: still
+    // scanned, still charged, just no longer isolated from another
+    // object's — see MCP_MAX_KEY_GROUPS's own comment.
+    if (dedicatedChunks < MCP_MAX_KEY_GROUPS) {
+      flush();
+      dedicatedChunks = chunks.length;
+    }
     for (const key of group) {
       // Over-long key: dropped uncharged, like an over-long value leaf.
       if (key.length > MCP_MAX_LEAF_CHARS) continue;

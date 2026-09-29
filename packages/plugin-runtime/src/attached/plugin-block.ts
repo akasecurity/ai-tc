@@ -68,14 +68,14 @@ export function readManifestBuild(
  * `read()` fail-opens to null on a missing or corrupt cache, so those nulls are
  * "no bundle cached", never an error surfaced.
  *
- * Two more members describe the running build, and are read here rather than
- * supplied by the adapter so every caller gets them with no plumbing:
- * `buildSchemaVersion`, the number of local-store migrations this build
- * carries, which is the version it migrates a store to. A snapshot whose store
- * count is above it usually describes a store a newer build migrated; that is
- * a hint, not a verdict. And `installedVersion`, what the host's install record
- * says is on disk, which leads `version` by one launch after an update; it is
- * read only for an adapter that names its `installRoot`.
+ * `buildSchemaVersion` describes the running build and is computed here for
+ * every caller; `installedVersion` describes the host's install record and is
+ * read only for an adapter that names its `installRoot`. `buildSchemaVersion`
+ * is the number of local-store migrations this build carries, which is the
+ * version it migrates a store to. A snapshot whose store count is above it
+ * usually describes a store a newer build migrated; that is a hint, not a
+ * verdict. `installedVersion` is what the host's install record says is on
+ * disk, which leads `version` by one launch after an update.
  *
  * The two cache-derived fields are guarded against the wire shape's OWN bounds
  * (`StorePosturePlugin.shape.*`), not a re-spelled copy of them: the cache is
@@ -114,7 +114,7 @@ export function createPluginBlock(
           : null,
       ...(build.installRoot === undefined
         ? {}
-        : { installedVersion: readInstalledVersion(build.installRoot) }),
+        : { installedVersion: await readInstalledVersion(build.installRoot) }),
       buildSchemaVersion: SQLITE_MIGRATIONS.length,
     };
     return StorePosturePlugin.safeParse(block).success ? block : undefined;

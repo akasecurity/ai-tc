@@ -156,6 +156,7 @@ describe('createPluginBlock — the install record and the build schema version'
     )();
     expect(block?.installedVersion).toBe('0.9.15');
     expect(() => StorePosturePlugin.parse(block)).not.toThrow();
+    expect(block).not.toHaveProperty('installRoot');
   });
 
   it('reports null, not a missing key, when the named root has no install record', async () => {

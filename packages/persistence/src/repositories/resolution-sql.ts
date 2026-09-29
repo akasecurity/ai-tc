@@ -13,7 +13,9 @@
 //   - SqliteSecurityRepository.recommendationInputs (latest status)
 //   - SqliteSecurityRepository.openFindingKeysForRule (latest status; shares
 //     one predicate with recommendationInputs so the set a dismissal writes
-//     against is the set that read counted)
+//     against is the set that read counted), via selectOpenFindingKeysForRule,
+//     which LocalDatabase.dismissOpenFindingsForRule also runs inside its write
+//     transaction
 //   - SqliteFindingsRepository.listFindingTypes (grouped per-rule status, via
 //     groupAggregates)
 //   - SqliteFindingsRepository.listFindingInstances (per-finding status column,

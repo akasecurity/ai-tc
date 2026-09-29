@@ -76,23 +76,13 @@ export async function dismissRecommendation(input: unknown): Promise<DismissResu
   try {
     const store = db();
     // The keys come from the same predicate that counted them for the card, so
-    // what is written is what was shown.
-    //
-    // The read is an AUTOCOMMIT read and the write opens its own transaction
-    // after it, so there is a window, and it is not harmless in both
-    // directions. A key another surface DISMISSES in between is fine: the
-    // append-only table takes a superseding row and the latest still reads
-    // `dismissed`. A key a scan RESOLVES in between is not: the dismissal
-    // carries the later `created_at`, so a finding the scanner had just
-    // recorded as fixed-at-source reads `dismissed` again — and
-    // `severitySummary` then counts it as dismissed rather than resolved, so it
-    // leaves the caught bucket until that path is scanned afresh.
-    //
-    // Selecting the keys inside the same IMMEDIATE transaction would close it,
-    // which needs one repository call that reads and writes; tracked separately.
-    // The window is narrow and the failure is a false alarm rather than a
-    // missed detection, so it is stated here rather than plumbed now.
-    const keys = await store.security.openFindingKeysForRule(ruleId);
+    // what is written is what was shown. They are selected inside the write's
+    // own IMMEDIATE transaction, so no scan can resolve one of them in between.
+    dismissed = store.dismissOpenFindingsForRule(ruleId, {
+      method: method.data,
+      resolvedAt: Date.now(),
+      evidence: JSON.stringify({ source: 'dashboard', surface: 'recommended-actions', ruleId }),
+    });
 
     // Nothing to write is TWO different situations, and reporting success for
     // both is what made this control dishonest.
@@ -110,7 +100,7 @@ export async function dismissRecommendation(input: unknown): Promise<DismissResu
     // the reader is told so. Otherwise there was genuinely nothing to do —
     // another surface got there first — and closing the dialog is right. The
     // extra read costs a grouped scan and runs only on this path.
-    if (keys.length === 0) {
+    if (dismissed === 0) {
       const stillCounted = (await store.security.recommendationInputs()).some(
         (row) => row.ruleId === ruleId,
       );
@@ -123,18 +113,6 @@ export async function dismissRecommendation(input: unknown): Promise<DismissResu
       }
       return { ok: true, dismissed: 0 };
     }
-
-    const at = Date.now();
-    store.resolutions.insertResolutions(
-      keys.map((findingKey) => ({
-        findingKey,
-        status: 'dismissed' as const,
-        method: method.data,
-        resolvedAt: at,
-        evidence: JSON.stringify({ source: 'dashboard', surface: 'recommended-actions', ruleId }),
-      })),
-    );
-    dismissed = keys.length;
   } catch {
     // The error is swallowed rather than reported: a store error's message can
     // quote the statement that failed, and this store holds scanned content.

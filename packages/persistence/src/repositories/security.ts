@@ -34,8 +34,9 @@ const DAY_MS = 86_400_000;
  * The FROM + WHERE of "an open at-rest finding", shared by the two reads that
  * must agree about that set: {@link SqliteSecurityRepository.recommendationInputs},
  * which counts them for the Recommended Actions card, and
- * {@link SqliteSecurityRepository.openFindingKeysForRule}, which enumerates one
- * rule's for a dismissal to write against. A caller appends its own further
+ * {@link selectOpenFindingKeysForRule}, which enumerates one rule's for a
+ * dismissal to write against (and backs
+ * {@link SqliteSecurityRepository.openFindingKeysForRule}). A caller appends its own further
  * `AND` clauses and its own GROUP BY.
  *
  * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed.
@@ -62,6 +63,26 @@ const OPEN_AT_REST_FINDINGS_SQL = `FROM inspection_findings f
              OR latest.status IS NULL
              OR latest.status NOT IN ('resolved', 'dismissed')
            )`;
+
+/**
+ * {@link SqliteSecurityRepository.openFindingKeysForRule}'s read, synchronous so
+ * a caller can run it inside a transaction it already holds. A dismissal does:
+ * `LocalDatabase.dismissOpenFindingsForRule` selects these keys and writes their
+ * dispositions under one `BEGIN IMMEDIATE`, so no other writer can resolve a
+ * key between the read and the write.
+ */
+export function selectOpenFindingKeysForRule(db: DatabaseSync, ruleId: string): string[] {
+  const rows = allRows<{ finding_key: string }>(
+    db.prepare(
+      `SELECT DISTINCT f.finding_key AS finding_key
+       ${OPEN_AT_REST_FINDINGS_SQL}
+         AND d.rule_id = :ruleId
+         AND f.finding_key IS NOT NULL`,
+    ),
+    { ruleId },
+  );
+  return rows.map((r) => r.finding_key);
+}
 
 // All severities, highest-first — the contract requires every level present
 // (count may be 0), so we project onto this fixed list, not just what GROUP BY found.
@@ -730,6 +751,8 @@ export class SqliteSecurityRepository implements SecurityViews {
   /**
    * The distinct `finding_key`s behind ONE rule's {@link recommendationInputs}
    * tally — what a dashboard dismissal of that row writes a disposition for.
+   * The dismissal itself does not call this: it reads the same set through
+   * {@link selectOpenFindingKeysForRule}, inside its own write transaction.
    *
    * It shares {@link OPEN_AT_REST_FINDINGS_SQL} with the count rather than
    * restating the predicate, because a dismissal has to act on exactly the set
@@ -746,16 +769,7 @@ export class SqliteSecurityRepository implements SecurityViews {
    * this set SMALLER than the tally, never larger.
    */
   openFindingKeysForRule(ruleId: string): Promise<string[]> {
-    const rows = allRows<{ finding_key: string }>(
-      this.db.prepare(
-        `SELECT DISTINCT f.finding_key AS finding_key
-         ${OPEN_AT_REST_FINDINGS_SQL}
-           AND d.rule_id = :ruleId
-           AND f.finding_key IS NOT NULL`,
-      ),
-      { ruleId },
-    );
-    return Promise.resolve(rows.map((r) => r.finding_key));
+    return Promise.resolve(selectOpenFindingKeysForRule(this.db, ruleId));
   }
 
   // Findings whose parent event occurred in [fromMs, toMs), with the parent's

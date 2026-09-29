@@ -207,7 +207,13 @@ export interface SecurityViews {
 
   /**
    * The distinct `finding_key`s behind one rule's {@link recommendationInputs}
-   * tally — the set a dashboard dismissal of that row writes against.
+   * tally — the same set a dashboard dismissal of that row writes against.
+   *
+   * The dismissal does not read it through this method. It selects the set
+   * with the same predicate inside its own write transaction
+   * (`LocalDatabase.dismissOpenFindingsForRule`), so no other writer can resolve
+   * a key between the read and the write. This method is the plain read of that
+   * set, and the one the query-plan guard pins.
    *
    * Derived from the same "open at-rest" predicate as the tally, so the write
    * cannot act on a different set than the count the user was shown. Its length

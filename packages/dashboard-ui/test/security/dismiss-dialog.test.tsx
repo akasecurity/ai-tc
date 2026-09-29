@@ -57,7 +57,9 @@ afterEach(() => {
   unmountMountedRoot(mounted);
 });
 
-function render(props: { isMutating?: boolean; mutationError?: string | null } = {}): void {
+function render(
+  props: { isMutating?: boolean; mutationError?: string | null; actionRefusal?: string } = {},
+): void {
   renderRoot(
     mounted.root,
     <RecommendedActionsCardView
@@ -71,6 +73,7 @@ function render(props: { isMutating?: boolean; mutationError?: string | null } =
       }}
       isMutating={props.isMutating ?? false}
       mutationError={props.mutationError ?? null}
+      actionRefusal={props.actionRefusal}
     />,
   );
 }
@@ -382,5 +385,51 @@ describe('cancelling', () => {
     expect(confirmationInput().value).toBe('');
     expect(all('input[type="radio"]').every((r) => !(r as HTMLInputElement).checked)).toBe(true);
     expect(confirmButton().disabled).toBe(true);
+  });
+});
+
+describe('a refusal arriving while the dialog is open', () => {
+  const REASON = 'This control is not available here.';
+
+  it('withholds the write, and shows the reason inside the dialog', () => {
+    // Opened and armed BEFORE the refusal lands: the dialog and what was typed
+    // survive the re-render, which is exactly the path that used to reach the host.
+    openDialog();
+    click(all('input[type="radio"]')[0]);
+    type(DISMISS_CONFIRMATION);
+    expect(confirmButton().getAttribute('aria-disabled')).toBeNull();
+
+    render({ actionRefusal: REASON });
+
+    const confirm = confirmButton();
+    expect(confirm.disabled).toBe(false);
+    expect(confirm.getAttribute('aria-disabled')).toBe('true');
+    expect(confirm.getAttribute('title')).toBe(REASON);
+    // The hover utility that cancels this danger button's own hover
+    // (solid/danger hovers via hover:bg-sev-critical-hover).
+    expect(confirm.className).toContain('hover:bg-sev-critical-ink');
+
+    const id = confirm.getAttribute('aria-describedby');
+    if (id === null) throw new Error('the refused confirm names no reason');
+    const line = document.getElementById(id);
+    expect(line?.textContent).toBe(REASON);
+    expect(
+      line?.closest('[role="dialog"]'),
+      'the reason must sit inside the dialog',
+    ).not.toBeNull();
+
+    click(confirm);
+    expect(requests).toEqual([]);
+  });
+
+  it('leaves the confirm live, with no reason line, when nothing is refused', () => {
+    openDialog();
+    click(all('input[type="radio"]')[0]);
+    type(DISMISS_CONFIRMATION);
+    const confirm = confirmButton();
+    expect(confirm.getAttribute('aria-describedby')).toBeNull();
+    expect(document.querySelector('[data-slot="dismiss-refusal-reason"]')).toBeNull();
+    click(confirm);
+    expect(requests).toHaveLength(1);
   });
 });

@@ -32,7 +32,7 @@ import {
   type Tone,
   TONE_SOFT,
 } from '@akasecurity/ui-kit';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
@@ -84,8 +84,10 @@ export interface RecommendedActionsView {
    * has a rule subject to dismiss — a row without one renders no Dismiss
    * control either way) render offered-and-disabled via
    * `refusedControlProps`, with this text as the reason, and neither
-   * `applyAction` nor `dismissAction` is ever called. Absent ⇒ identical to
-   * today.
+   * `applyAction` nor `dismissAction` is ever called. That includes a
+   * refusal arriving while the dismiss dialog is already open: its confirm
+   * control then renders refused too, with the reason shown inside the dialog.
+   * Absent ⇒ identical to today.
    */
   actionRefusal?: string | undefined;
   applyAction: (id: string) => void;
@@ -136,6 +138,9 @@ export function RecommendedActionsCardView({
   const [pending, setPending] = useState<{ action: RecommendedAction; ruleId: string } | null>(
     null,
   );
+  // Names the reason line inside the dialog, so the confirm control can point
+  // at it; per-instance so two cards on one page cannot share a target.
+  const dialogRefusalId = useId();
   const [method, setMethod] = useState<DismissMethod | null>(null);
   const [confirmation, setConfirmation] = useState('');
   // Whether THIS dialog session has submitted anything yet.
@@ -157,6 +162,9 @@ export function RecommendedActionsCardView({
   };
 
   const confirmDismiss = () => {
+    // A refusal can land while the dialog is open — `pending` survives the
+    // re-render — so the handler refuses too, not only the button.
+    if (actionRefusal !== undefined) return;
     if (pending === null || method === null) return;
     setSubmitted(true);
     // Guarded on both paths a host can fail on, and neither is expressible in
@@ -426,6 +434,11 @@ export function RecommendedActionsCardView({
                   session has submitted, because the host's error outlives the
                   dialog it came from. */}
               {submitted && mutationError !== null && <WidgetError message={mutationError} />}
+              {actionRefusal !== undefined && (
+                <RefusalReason id={dialogRefusalId} dataSlot="dismiss-refusal-reason">
+                  {actionRefusal}
+                </RefusalReason>
+              )}
             </DialogBody>
             <DialogFooter>
               <Button
@@ -442,8 +455,20 @@ export function RecommendedActionsCardView({
                 variant="solid"
                 tone="danger"
                 size="sm"
-                disabled={!canConfirmDismiss({ confirmation, method, isMutating })}
-                onClick={confirmDismiss}
+                disabled={
+                  actionRefusal === undefined
+                    ? !canConfirmDismiss({ confirmation, method, isMutating })
+                    : undefined
+                }
+                onClick={actionRefusal === undefined ? confirmDismiss : undefined}
+                {...(actionRefusal === undefined
+                  ? {}
+                  : // solid/danger hovers via hover:bg-sev-critical-hover.
+                    refusedControlProps(
+                      dialogRefusalId,
+                      actionRefusal,
+                      'hover:bg-sev-critical-ink',
+                    ))}
               >
                 {isMutating ? 'Dismissing…' : 'Dismiss findings'}
               </Button>

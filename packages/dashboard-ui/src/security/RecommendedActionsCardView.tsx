@@ -162,9 +162,6 @@ export function RecommendedActionsCardView({
   };
 
   const confirmDismiss = () => {
-    // A refusal can land while the dialog is open — `pending` survives the
-    // re-render — so the handler refuses too, not only the button.
-    if (actionRefusal !== undefined) return;
     if (pending === null || method === null) return;
     setSubmitted(true);
     // Guarded on both paths a host can fail on, and neither is expressible in
@@ -460,6 +457,9 @@ export function RecommendedActionsCardView({
                     ? !canConfirmDismiss({ confirmation, method, isMutating })
                     : undefined
                 }
+                // The one place a refusal stops the dismiss: a refusal can land
+                // while the dialog is open (`pending` survives the re-render), and
+                // the confirm then has no handler to reach.
                 onClick={actionRefusal === undefined ? confirmDismiss : undefined}
                 {...(actionRefusal === undefined
                   ? {}

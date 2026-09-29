@@ -21,6 +21,32 @@ import { stringAtPath } from './paths.ts';
 export interface ScannableField {
   path: PathSegment[];
   executable: boolean;
+  /**
+   * Present only for a synthetic scan unit whose text was computed during
+   * the MCP walk rather than addressable at `path` in the tool input — the
+   * joined-keys chunks `mcpFields` appends (see below). Never resolve or
+   * write one of these back through `path`: there is no such position in the
+   * real payload. Use `fieldText`/`isSyntheticField` below rather than
+   * checking `.text` directly, so every call site agrees on what "synthetic"
+   * means. `decidePreToolUse` also refuses to rewrite one of these itself
+   * (belt-and-braces beside `executable: true` below — see its own comment).
+   */
+  text?: string;
+}
+
+/** Whether `field` is a synthetic scan unit — see ScannableField.text. */
+export function isSyntheticField(field: ScannableField): boolean {
+  return field.text !== undefined;
+}
+
+/**
+ * The text `field` addresses: its precomputed text for a synthetic unit, or
+ * whatever string sits at `field.path` in `toolInput`. The one place this
+ * resolution happens, so a future synthetic unit can't be handled at one
+ * call site and missed at another.
+ */
+export function fieldText(field: ScannableField, toolInput: unknown): string | undefined {
+  return field.text ?? stringAtPath(toolInput, field.path);
 }
 
 // Tools whose scannable text is durable content they author, recorded as
@@ -81,8 +107,66 @@ const MCP_MAX_LEAF_CHARS = 1_000_000;
 const MCP_MAX_TOTAL_CHARS = 5_000_000;
 const MCP_MAX_LEAF_COUNT = 2_000;
 
+// The most DEDICATED (one-object-per-chunk) joined-keys scan units one MCP
+// call ever produces. Unlike MCP_MAX_LEAF_COUNT this bounds a COUNT of
+// chunks, not of captures avoided: each dedicated chunk is one capture(), and
+// each is scoped to a single object's own keys (see MCP_KEY_JOIN's comment on
+// why), so a payload shaped as many small sibling objects — an array of 1,000
+// two-key records — would otherwise cost close to one capture per object. 200
+// keeps that worst case at a few tens of milliseconds (measured ~0.19ms per
+// capture, so 200 * 0.19ms ≈ 38ms), far under the leaf budget's own ~0.4s
+// headroom, while realistic payloads (a handful of nested objects) never come
+// close to it. mcpKeyChunks also dedupes identical chunk TEXT before counting
+// against this, so the common shape of that array — every record sharing the
+// same key names — collapses to one chunk rather than 1,000.
+//
+// Past this cap, mcpKeyChunks does NOT drop the remaining groups' keys — an
+// earlier version did, and 200 single-key objects (about 1.4 KB) was cheap
+// enough to bury a secret key placed after them, far cheaper than the
+// 2,000-leaf padding the value walk itself requires. Instead their keys are
+// packed together into shared OVERFLOW chunks, still bounded (by the shared
+// char budget, not by count — see mcpKeyChunks), so coverage is kept and the
+// capture count stays predictable. The cost is the one-object-per-chunk
+// separation MCP_MAX_KEY_GROUPS exists to preserve (see mcpFields' own
+// comment on cross-object corroboration): two unrelated objects' keys CAN
+// share an overflow chunk, so a `requiresNearby` rule could corroborate
+// across them for the overflow tail specifically. Real payloads this wide
+// are already rare enough that reaching overflow at all is uncommon.
+const MCP_MAX_KEY_GROUPS = 200;
+
+// Separates keys inside a joined-keys chunk. Two requirements, not one:
+//
+// 1. Not `\s`-matched. A key requires no separator wider than one non-`\s`
+//    character to defeat, but several bundled rules match keyword+value with
+//    `\s*`/`[:\s]*` in the pattern itself — `\s` matches `\n` — so 'member' +
+//    'id' + 'status', joined by '\n' alone, reads as "member\nid\nstatus" to
+//    such a pattern and core-phi/member-id fires on three ordinary sibling
+//    keys that individually match nothing.
+// 2. A `\n`. `.` (without the `s`/dotall flag) and `[^\n]` both stop at a
+//    line terminator, so a lone non-`\s` character would still let a
+//    `.`-spanning or `[^\n]`-spanning pattern read across it.
+//
+// '\n' alone satisfies (2) but not (1); a lone control character satisfies
+// (1) but not (2). Together, '\n\u0000' (a U+0000 NUL immediately after the
+// newline) satisfies both — verified against every bundled rule's `examples`
+// plus the three fusions above (see pre-tool-use-fields.test.ts).
+//
+// Exported so a test builds its expected joined text from this constant
+// rather than a duplicated literal that can drift from it unnoticed; a test
+// asserting the separator's SECURITY property (which characters it must
+// defeat) still spells the raw bytes, since that property has to hold
+// against the actual bytes rather than against whatever this constant says.
+export const MCP_KEY_JOIN = '\n\u0000';
+
+// The path segment every joined-keys chunk is addressed under. Never
+// dereferenced — see ScannableField.text — so it only has to be stable and
+// legible in a debugger, never resolvable against the real tool input.
+const MCP_KEYS_PATH_SEGMENT = '<mcp-object-keys>';
+
 /**
- * Every string leaf of an MCP tool's arguments, bounded by depth and size.
+ * Every string leaf of an MCP tool's arguments, bounded by depth and size —
+ * PLUS every string object key encountered along the way, packed into a few
+ * combined scan units per originating object (see mcpKeyChunks below).
  *
  * All of them are marked executable, i.e. a redact decision denies instead of
  * rewriting. An MCP tool's schema is defined by whatever server is on the other
@@ -91,10 +175,34 @@ const MCP_MAX_LEAF_COUNT = 2_000;
  * wrong silently changes semantics — the exact failure the executable rule
  * exists to prevent. Deny is visible and at least as strong as the policy's
  * redact, and the runtime has already ledgered the values, so the
- * `aka exception approve` escape hatch stays available.
+ * `aka exception approve` escape hatch stays available. A key is no
+ * different: there is no schema telling us a key can never itself be the
+ * secret (a bearer token used as a map key, a credential as an idempotency
+ * key), and unlike a value there is no way to rewrite a key in place at all —
+ * so a resolved redact on a joined-keys chunk degrades to the workspace's
+ * `redactFallback` exactly like any other unrewritable field, rather than
+ * silently allowing the call through.
+ *
+ * Keys are grouped by their OWN parent object, never pooled across the whole
+ * payload: a `requiresNearby` rule corroborates any match within a fixed
+ * character window of another, and pooling every key into one string put an
+ * unrelated part of the payload's key (`billing`) inside a completely
+ * different part's proximity window (an `orders` id keyed `12345`, which
+ * alone matches nothing), flagging it as a ZIP code. Two sibling keys of the
+ * SAME object are still joined into one unit — see mcpKeyChunks — since they
+ * already describe one coherent piece of the payload the way a value never
+ * spans two unrelated fields either.
+ *
+ * Keys are charged against the shared MCP_MAX_TOTAL_CHARS budget only AFTER
+ * the whole value walk finishes (see the call to mcpKeyChunks below), from
+ * whatever the values left: a key can add coverage past what values already
+ * claimed, but can never evict a value the walk would otherwise have scanned.
  */
 function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
   const fields: ScannableField[] = [];
+  // One entry per object visited, each holding that object's own string
+  // keys in encounter order — never merged with another object's.
+  const groups: string[][] = [];
   let remaining = MCP_MAX_TOTAL_CHARS;
 
   const walk = (node: unknown, path: PathSegment[], depth: number): void => {
@@ -111,12 +219,123 @@ function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
       return;
     }
     if (typeof node === 'object' && node !== null) {
-      for (const [key, value] of Object.entries(node)) walk(value, [...path, key], depth + 1);
+      // Symbols and array indices never reach here — only a real object's
+      // own string keys do, at every depth the walk still visits an object
+      // AT ALL. That is not exactly the set of positions whose values are
+      // visited: once a sibling entry's own recursion exhausts
+      // MCP_MAX_LEAF_COUNT, this for-loop still finishes collecting every
+      // REMAINING sibling key at THIS level (only descending into each
+      // one's value is what the top-of-walk guard then skips), and a key of
+      // an object reached at MCP_MAX_DEPTH is collected while that same
+      // object's own values (one level deeper) are not.
+      //
+      // Pushed in WALK order — this object's own group, THEN its children's,
+      // never the reverse. mcpKeyChunks spends its dedicated per-object
+      // chunks (MCP_MAX_KEY_GROUPS) on `groups` in array order, so pushing a
+      // parent's group only after recursing into every child would make the
+      // outermost, most likely to matter keys the LAST group recorded — and
+      // therefore the first one a limit further down drops or shares a chunk.
+      const entries = Object.entries(node);
+      const keys = entries.filter(([key]) => key.length > 0).map(([key]) => key);
+      if (keys.length > 0) groups.push(keys);
+      for (const [key, value] of entries) walk(value, [...path, key], depth + 1);
     }
   };
 
   walk(toolInput, [], 0);
+  fields.push(...mcpKeyChunks(groups, Math.max(remaining, 0)));
   return fields;
+}
+
+/**
+ * Bin-packs each object's own collected keys into as few combined scan units
+ * as fit under the per-unit size cap, each addressed by a synthetic path
+ * (never dereferenced — see ScannableField.text). WHILE UNDER THE
+ * MCP_MAX_KEY_GROUPS CAP, a chunk never mixes keys from two different
+ * objects — see mcpFields' own comment on why — so a large object's keys may
+ * still span more than one chunk, but never two objects' keys share one. Past
+ * the cap, that separation is what gives way (see MCP_MAX_KEY_GROUPS's own
+ * comment): a group's keys are appended to whatever chunk is already open
+ * instead of starting a fresh one, so they are still scanned and still
+ * charged, just no longer isolated from a different object's.
+ *
+ * NOT one unit per key: that would roughly double the unit count for a
+ * typical payload and can trip MCP_MAX_LEAF_COUNT on its own, a bound whose
+ * whole point is capping the number of capture() calls a call this hook sees
+ * pays for. A few chunks cost only a few more — bounded overall by
+ * MCP_MAX_KEY_GROUPS for the dedicated ones, and by the shared char budget
+ * alone for whatever overflow follows.
+ *
+ * Two chunks that end up with the exact same text (two different objects
+ * carrying the same set of keys — a paginated array of identically-shaped
+ * records; or, past the cap, two overflow chunks that happened to fill
+ * identically) produce an identical verdict every time — the repeat is
+ * deduped rather than captured again, which is what keeps a long array of
+ * uniformly-shaped objects from costing one chunk per record.
+ *
+ * Each key is packed WHOLE into its chunk — never split at a fixed offset —
+ * because a fixed cut lets an attacker pad a key so the split falls in the
+ * middle of the next one, letting a secret key straddle a chunk boundary
+ * unscanned on either side. Bin-packing instead starts a fresh chunk the
+ * moment a key would no longer fit.
+ */
+function mcpKeyChunks(groups: readonly string[][], budget: number): ScannableField[] {
+  const chunks: ScannableField[] = [];
+  const seenChunkText = new Set<string>();
+  let remaining = budget;
+  let current: string[] = [];
+  let currentLen = 0;
+  // How many DEDICATED (one-object-per-chunk) chunks exist so far. Once this
+  // reaches MCP_MAX_KEY_GROUPS, a later group no longer opens its own fresh
+  // chunk — see the per-group boundary below.
+  let dedicatedChunks = 0;
+
+  // The joined length `current` would have with `key` appended — the one
+  // formula both the size-cap check and the budget charge read, so the two
+  // can never drift apart the way recomputing each separately once did.
+  const lengthWith = (key: string): number =>
+    current.length === 0 ? key.length : currentLen + MCP_KEY_JOIN.length + key.length;
+
+  const flush = (): void => {
+    if (current.length === 0) return;
+    const text = current.join(MCP_KEY_JOIN);
+    current = [];
+    currentLen = 0;
+    if (seenChunkText.has(text)) return;
+    seenChunkText.add(text);
+    chunks.push({ path: [MCP_KEYS_PATH_SEGMENT, chunks.length], executable: true, text });
+  };
+
+  outer: for (const group of groups) {
+    // A fresh chunk boundary per object, while under the dedicated-chunk
+    // cap — see mcpFields' own comment on why two objects' keys must never
+    // share one scan unit there. Past the cap, this group's keys fall
+    // through into whatever chunk `current` already holds instead: still
+    // scanned, still charged, just no longer isolated from another
+    // object's — see MCP_MAX_KEY_GROUPS's own comment.
+    if (dedicatedChunks < MCP_MAX_KEY_GROUPS) {
+      flush();
+      dedicatedChunks = chunks.length;
+    }
+    for (const key of group) {
+      // Over-long key: dropped uncharged, like an over-long value leaf.
+      if (key.length > MCP_MAX_LEAF_CHARS) continue;
+      if (current.length > 0 && lengthWith(key) > MCP_MAX_LEAF_CHARS) flush();
+      const grown = lengthWith(key);
+      const cost = grown - currentLen;
+      // Budget exhausted: halt entirely, like the value walk does at
+      // `remaining <= 0` — a later, smaller key fitting what's left would
+      // scan out of the encounter order every other bound in this file
+      // respects.
+      if (remaining <= 0 || cost > remaining) break outer;
+      remaining -= cost;
+      current.push(key);
+      currentLen = grown;
+    }
+  }
+  flush();
+
+  return chunks;
 }
 
 /** One field per edit's replacement text. `old_string` is deliberately absent:
@@ -151,7 +370,18 @@ export const SCANNED_TOOL_NAMES: readonly string[] = Object.keys(STATIC_FIELDS);
 /**
  * The scannable fields of a tool's input, each addressing a non-empty string.
  * Empty for a tool this hook has no coverage for, which the caller treats as
- * "no opinion" before opening the store.
+ * "no opinion" before opening the store — a cost pre-tool-use.ts's own
+ * comment used to describe as free for every MCP call whose values were all
+ * non-string. That is no longer most MCP calls: an object key is scannable
+ * content too now, so `{ limit: 10 }` or `{ page: 2, archived: false }` — no
+ * scannable VALUE, but real keys — yields a joined-keys chunk and pays the
+ * full store-open cost the empty-fields path used to skip. The alternative
+ * (only emit a key chunk when the payload also has a scannable value) would
+ * silently reopen the exact gap this hook exists to close for a payload
+ * shaped `{ "<secret>": 123 }` or `{ "<secret>": true }` — a non-string
+ * value beside the secret key, with nothing else in the call to save it —
+ * so full coverage was kept and the free path narrows to a tool_input with
+ * no string keys at all (`{}`, or every key empty).
  */
 export function scannableInputFields(
   toolName: string,
@@ -166,9 +396,9 @@ export function scannableInputFields(
         ((Object.hasOwn(STATIC_FIELDS, toolName) ? STATIC_FIELDS[toolName] : undefined) ?? []);
 
   // Empty and absent leaves are dropped here rather than at each call site, so
-  // every returned path is known to resolve to text worth scanning.
+  // every returned field is known to resolve to text worth scanning.
   return candidates.filter((field) => {
-    const text = stringAtPath(toolInput, field.path);
+    const text = fieldText(field, toolInput);
     return text !== undefined && text !== '';
   });
 }

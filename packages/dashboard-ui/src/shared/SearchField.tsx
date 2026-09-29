@@ -1,7 +1,7 @@
 'use client';
-// The one search box both products render. Every search surface in the OSS
-// dashboard and the enterprise dashboard goes through this, so the things a
-// search box owes its user are decided once rather than once per call site:
+// The one search box every host app renders. Every search surface goes through
+// this, so the things a search box owes its user are decided once rather than
+// once per call site:
 //
 //  - a CLEAR affordance, shown only while there is something to clear, on a
 //    target big enough to hit;

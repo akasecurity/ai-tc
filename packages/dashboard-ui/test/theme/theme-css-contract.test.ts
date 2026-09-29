@@ -12,17 +12,18 @@ import { DARK_CLASS } from '../../src/theme/theme.ts';
 // @akasecurity/ui-kit's theme.css declares a `@custom-variant` for it AND an
 // unlayered rule block that overrides every color token under it. Rename the
 // class on one side and the app renders permanently light — no error, no failing
-// assertion anywhere, because both halves are internally consistent. That is the
-// exact failure the enterprise dashboard has today for a different reason, and it
-// is not a hypothetical: a reviewer renamed the constant CONSISTENTLY (constant
-// plus the init-script literal, so the literal↔constant pin still passed) and
-// every suite in the repo stayed green.
+// assertion anywhere, because both halves are internally consistent. (A host
+// that neither injects THEME_INIT_SCRIPT nor renders ThemeToggle — the only two
+// writers of the class — lands in the same state by a different route.) The
+// rename is not a hypothetical: a reviewer renamed the constant CONSISTENTLY
+// (constant plus the init-script literal, so the literal↔constant pin still
+// passed) and every suite in the repo stayed green.
 //
 // The split predates the theme module moving here. What moving it changed is the
 // COST: the constant used to sit in web-ui beside its only consumer, and it is now
-// a published export of a shared package whose next consumer is a different
-// product in a different repository — so a theme.css edit can silently break a
-// dashboard nobody working in ui-kit can see.
+// a published export of a shared package whose consumers need not live in this
+// repository — so a theme.css edit can silently break a dashboard nobody working
+// in ui-kit can see.
 //
 // Resolved through the package's own `./theme.css` export rather than by walking
 // `../../ui-kit/src/styles/`, so this also proves the export path consumers
@@ -40,7 +41,7 @@ describe('DARK_CLASS ↔ ui-kit theme.css', () => {
     expect(
       THEME_CSS,
       `@akasecurity/ui-kit's theme.css declares no @custom-variant for "${DARK_CLASS}". ` +
-        `applyTheme would write a class nothing styles, and both dashboards would ` +
+        `applyTheme would write a class nothing styles, and every host app would ` +
         `render permanently light with every suite still green.`,
     ).toMatch(new RegExp(`@custom-variant\\s+${CLASS}\\s*\\(`));
   });

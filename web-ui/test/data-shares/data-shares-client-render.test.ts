@@ -248,11 +248,10 @@ describe('DataSharesClient', () => {
     ).not.toThrow();
   });
 
-  // The search box. This page's copy of it had drifted from the one the
-  // enterprise dashboard renders on all three of the decisions a field makes,
-  // and the drift was invisible: the package that pins every other field in the
-  // product (@akasecurity/dashboard-ui's theme/field-boundary.test.ts) reads its
-  // own src/ and cannot see this file.
+  // The search box. This page's copy of it had drifted from every other field in
+  // the product on all three of the decisions a field makes, and the drift was
+  // invisible: the package that pins those fields (@akasecurity/dashboard-ui's
+  // theme/field-boundary.test.ts) reads its own src/ and cannot see this file.
   //
   // Asserted on the RENDERED class string rather than on the source, because the
   // three decisions have two owners now — the edge and the fill are this page's

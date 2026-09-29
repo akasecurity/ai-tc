@@ -322,7 +322,7 @@ describe('RuleInspectorBody', () => {
 
     // Fixtures are the strings a rule exists to catch, authored by whoever
     // published the pack — so they are attacker-influenced text rendered into a
-    // tenant's dashboard. React escapes children; this pins that nothing here
+    // user's dashboard. React escapes children; this pins that nothing here
     // reaches for an escape hatch.
     it('escapes fixture text rather than emitting it as markup', () => {
       const html = render({
@@ -373,7 +373,7 @@ function findBody(node: ReactNode): ReactElement<BodyProps> | null {
 
 describe('MatcherModal', () => {
   // Without this, deleting `fixtures={fixtures}` from the modal keeps every
-  // assertion above green while the feature disappears from both dashboards: the
+  // assertion above green while the feature disappears from every host app: the
   // suite renders the body directly, so the seam between the two is the one thing
   // it never exercises.
   it('hands its rule and fixtures to the body it renders', () => {

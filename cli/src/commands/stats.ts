@@ -78,18 +78,22 @@ export async function runStats(argv: string[]): Promise<void> {
 // Findings block: the severity breakdown plus the two-track "caught vs needs
 // remediation" framing — Caught (sum of bySeverity[].caught: findings handled
 // in-flight by enforcement, or resolved at rest) vs Needs remediation (the
-// top-level needsRemediation: still open at rest). Both fields are optional on
+// top-level needsRemediation: still open at rest) vs Dismissed (top-level
+// dismissed: closed by a user's judgement, so not counted as needing
+// remediation but kept visible). All three fields are optional on
 // SeveritySummaryResponse (absent on the pre-resolution-feature response), so
 // missing values default to 0 rather than recomputing from raw findings.
 // Exported for the unit test (same pattern as renderDetectionsTable).
 export function renderFindingsSummary(severity: SeveritySummaryResponse): string {
   const caught = severity.bySeverity.reduce((sum, s) => sum + (s.caught ?? 0), 0);
   const needsRemediation = severity.needsRemediation ?? 0;
+  const dismissed = severity.dismissed ?? 0;
 
   const labelWidth = Math.max(
     9,
     ...severity.bySeverity.map((s) => s.severity.length),
     'Needs remediation'.length,
+    'Dismissed'.length,
   );
 
   const lines = [`Findings: ${String(severity.total)} total`];
@@ -98,6 +102,7 @@ export function renderFindingsSummary(severity: SeveritySummaryResponse): string
   }
   lines.push(`  ${'Caught'.padEnd(labelWidth)} ${String(caught)}`);
   lines.push(`  ${'Needs remediation'.padEnd(labelWidth)} ${String(needsRemediation)}`);
+  lines.push(`  ${'Dismissed'.padEnd(labelWidth)} ${String(dismissed)}`);
   return lines.join('\n');
 }
 

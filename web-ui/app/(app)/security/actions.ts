@@ -85,8 +85,8 @@ export async function dismissRecommendation(input: unknown): Promise<DismissResu
     // `dismissed`. A key a scan RESOLVES in between is not: the dismissal
     // carries the later `created_at`, so a finding the scanner had just
     // recorded as fixed-at-source reads `dismissed` again — and
-    // `severitySummary`'s open-at-rest bucket excludes only `resolved`, so it
-    // re-enters "needs remediation" until that path is scanned afresh.
+    // `severitySummary` then counts it as dismissed rather than resolved, so it
+    // leaves the caught bucket until that path is scanned afresh.
     //
     // Selecting the keys inside the same IMMEDIATE transaction would close it,
     // which needs one repository call that reads and writes; tracked separately.

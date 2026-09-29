@@ -121,12 +121,11 @@ export const LATEST_RESOLUTION_BY_KEY_SQL = `(
  * `CASE ... IN (...)` filter over it null-safe.
  *
  * NOT the same CASE as SqliteSecurityRepository.severitySummary's, on
- * purpose: that one buckets a dismissed finding as still needing remediation
- * (dismissing is a judgment, not a fix, and the severity card must never
- * understate exposure) and drops key-less rows from both of its buckets
- * entirely (they count only in its total). Copying severitySummary's CASE
- * here would misclassify both cases — this fragment answers "what status does
- * this finding show", not "does this finding still need attention".
+ * purpose: that one is three disjoint counting buckets (caught, openAtRest,
+ * dismissed) and drops key-less rows from all three (they count only in its
+ * total). Copying its CASE here would misclassify the key-less case — this
+ * fragment answers "what status does this finding show", so a key-less row
+ * reads 'open'.
  */
 export function derivedFindingStatusSql(
   eventsAlias: string,

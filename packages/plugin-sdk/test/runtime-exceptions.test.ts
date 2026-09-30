@@ -676,3 +676,34 @@ describe('exception evaluation under settings.policy warn', () => {
     expect(result.action).toBe('log');
   });
 });
+
+describe('exception evaluation — invisible format characters', () => {
+  it('an exception approved for the clean value covers the same value padded with a zero width space', async () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+
+    const padded = 'EX_SECRET\u200B_MARKER';
+    const result = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: `deploy with ${padded} now`,
+    });
+    await rt.close();
+
+    expect(result.action).toBe('log');
+    expect(gw.consumed).toEqual([ex.id]);
+    expect(gw.records[0]?.findings[0]?.actionTaken).toBe('allow');
+  });
+});

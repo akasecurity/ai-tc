@@ -631,6 +631,28 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     }
   });
 
+  it('keys a secret padded with an invisible format character exactly like the clean one', async () => {
+    const padded = `${SECRET.slice(0, 6)}\u200B${SECRET.slice(6)}`;
+    writeFileSync(join(root, 'app.ts'), `const key = '${padded}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      await scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+
+      const fpKey = loadOrCreateFingerprintKey(store);
+      expect(rows[0]?.finding_key).toBe(
+        computeFindingKey({
+          ruleId: 'test/aws-key',
+          filePath: join(root, 'app.ts'),
+          valueFingerprint: fingerprintValue(fpKey, SECRET),
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const absFile = join(root, 'app.ts');

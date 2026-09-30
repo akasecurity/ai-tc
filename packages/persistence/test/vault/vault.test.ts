@@ -117,6 +117,17 @@ describe('SecretVault', () => {
       expect(must(repo.listAll()[0], 'a vault row').occurrenceCount).toBe(2);
     });
 
+    it('vaults a value padded with an invisible format character under the clean value identity, and restores the exact padded text', async () => {
+      const padded = `${SECRET.slice(0, 4)}\u200B${SECRET.slice(4)}`;
+      const token = await tokenize(padded);
+      expect(repo.byValueFingerprint(fingerprintValue(fingerprintKey, SECRET))).not.toBeNull();
+      expect(await tokenize(SECRET)).toBe(token);
+      expect(repo.countEntries()).toBe(1);
+      await expect(
+        vault.detokenize(token, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(padded);
+    });
+
     it('returns distinct pointers for distinct values', async () => {
       const a = await tokenize(SECRET);
       const b = await tokenize(OTHER);

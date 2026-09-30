@@ -310,9 +310,29 @@ export function rotateFingerprintKey(dataDir: string): FingerprintKey {
   });
 }
 
-/** The keyed fingerprint of one detected value: HMAC-SHA256 hex under the key. */
+// Invisible Unicode format characters (General_Category=Cf): zero-width
+// spaces and joiners, the byte-order mark, the soft hyphen, bidi controls, tag
+// characters. This is the same class the detector strips in
+// packages/detections/src/format-chars.ts (read its header for the inventory
+// and for what is deliberately left alone: variation selectors, ordinary
+// whitespace). It is repeated here rather than imported because this package
+// must not depend on @akasecurity/detections.
+const FORMAT_CHARS = /\p{Cf}/gu;
+
+/**
+ * The keyed fingerprint of one detected value: HMAC-SHA256 hex under the key.
+ *
+ * Format characters are removed before hashing. Detection matches against text
+ * with them stripped, but a finding's `rawMatch` is byte-exact (redaction and
+ * vault restore need the real text), so one secret seen clean and seen padded
+ * with a zero-width space would otherwise get two identities — and an
+ * exception, grant or vault entry recorded for one would not cover the other.
+ * `rawMatch` itself is never altered; only the hash input is.
+ */
 export function fingerprintValue(key: FingerprintKey, raw: string): string {
-  return createHmac('sha256', key.material).update(raw, 'utf8').digest('hex');
+  return createHmac('sha256', key.material)
+    .update(raw.replace(FORMAT_CHARS, ''), 'utf8')
+    .digest('hex');
 }
 
 /**

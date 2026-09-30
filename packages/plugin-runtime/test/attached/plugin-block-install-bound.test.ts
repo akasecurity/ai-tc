@@ -36,6 +36,19 @@ const cache: Pick<PolicyStore, 'read'> = {
   read: () => Promise.resolve({ bundle: bundle('sha256:abc123'), fetchedAtMs: 1_779_500_000_000 }),
 };
 
+// A cache read that works but is slow: it lands between the install read's bound
+// and the reporter's, on the faked clock. The premise is asserted where it is
+// used, so a change to either bound cannot quietly leave this case testing nothing.
+const SLOW_CACHE_READ_MS = 1500;
+const slowCache: Pick<PolicyStore, 'read'> = {
+  read: () =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({ bundle: bundle('sha256:abc123'), fetchedAtMs: 1_779_500_000_000 });
+      }, SLOW_CACHE_READ_MS);
+    }),
+};
+
 const build = {
   package: '@akasecurity/ai-tc-claude-code',
   version: '0.9.8',
@@ -100,6 +113,31 @@ describe('createPluginBlock — the install record read is bounded on its own', 
     await vi.advanceTimersByTimeAsync(INSTALL_RECORD_READ_TIMEOUT_MS - 1);
     expect(outcome).toBe('pending');
     await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toEqual({ ...everythingElse, installedVersion: null });
+  });
+
+  it('starts the read alongside a slow cache read, so the two waits overlap', async () => {
+    // The cache read is only bounded by the reporter's REQUEST_TIMEOUT_MS. Were the
+    // install read started after it, its own bound would be added on top: the block
+    // would land at SLOW_CACHE_READ_MS + INSTALL_RECORD_READ_TIMEOUT_MS, past the
+    // reporter's bound, and be dropped whole. Started alongside it, the block lands
+    // when the cache read does, the install read having timed out on the way.
+    expect(SLOW_CACHE_READ_MS).toBeGreaterThan(INSTALL_RECORD_READ_TIMEOUT_MS);
+    expect(SLOW_CACHE_READ_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    expect(SLOW_CACHE_READ_MS + INSTALL_RECORD_READ_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS);
+
+    installRead.read.mockImplementation(neverSettles);
+    let outcome: unknown = 'pending';
+    void createPluginBlock(build, slowCache)().then((block) => {
+      outcome = block;
+    });
+
+    // The block waits for the cache read: nothing is reported before it lands.
+    await vi.advanceTimersByTimeAsync(SLOW_CACHE_READ_MS - 1);
+    expect(outcome).toBe('pending');
+
+    // A millisecond short of the reporter's bound the block has arrived.
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1 - (SLOW_CACHE_READ_MS - 1));
     expect(outcome).toEqual({ ...everythingElse, installedVersion: null });
   });
 

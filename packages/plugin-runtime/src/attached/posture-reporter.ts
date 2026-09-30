@@ -45,9 +45,14 @@ export interface PostureReporterDeps {
    * `createPluginBlock` here whenever the resolving caller passed its build
    * identity — see plugin-block.ts.
    *
-   * Async because two of the five members come from the policy CACHE, which is
-   * read from disk. Optional because the block itself is `.optional()` on the
-   * wire, so a caller with no identity to report still posts a valid snapshot.
+   * Async because the block reads two things from disk: the policy CACHE, which
+   * supplies two of its seven members, and the host's install record, which
+   * supplies a third (`installedVersion`, only for a build that names its
+   * install root). `createPluginBlock` bounds the install record read on its
+   * own, shorter than this reporter's timeout; the cache read is bounded only
+   * by that timeout, which covers the whole block. Optional because the block
+   * itself is `.optional()` on the wire, so a caller with no identity to report
+   * still posts a valid snapshot.
    *
    * Fail-open like everything else here: a producer that throws costs the block,
    * never the snapshot. The rest of the posture — `storePresent` above all, the

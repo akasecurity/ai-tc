@@ -330,9 +330,23 @@ const FORMAT_CHARS = /\p{Cf}/gu;
  * `rawMatch` itself is never altered; only the hash input is.
  */
 export function fingerprintValue(key: FingerprintKey, raw: string): string {
-  return createHmac('sha256', key.material)
-    .update(raw.replace(FORMAT_CHARS, ''), 'utf8')
-    .digest('hex');
+  return exactFingerprintValue(key, raw.replace(FORMAT_CHARS, ''));
+}
+
+/**
+ * The keyed fingerprint of one value's EXACT bytes: HMAC-SHA256 hex under the
+ * key, with nothing removed.
+ *
+ * For a store that dedupes by value and must give the same text back — the
+ * secret vault. There, two values that differ only by an invisible format
+ * character are two different credentials: sharing one row would hand back
+ * whichever was stored first, with or without the character. Identity across
+ * detections (exceptions, grants, finding keys) uses `fingerprintValue`
+ * instead. For a value with no format character the two are identical, so rows
+ * written before the normalization keep matching.
+ */
+export function exactFingerprintValue(key: FingerprintKey, raw: string): string {
+  return createHmac('sha256', key.material).update(raw, 'utf8').digest('hex');
 }
 
 /**

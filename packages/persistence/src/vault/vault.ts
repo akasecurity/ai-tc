@@ -26,7 +26,7 @@ import {
   POINTER_TOKEN_ANCHORED,
 } from '@akasecurity/schema';
 
-import { type FingerprintKey, fingerprintValue } from '../fingerprint.ts';
+import { exactFingerprintValue, type FingerprintKey } from '../fingerprint.ts';
 import type { SqliteSecretVaultRepository, VaultRow } from '../repositories/secret-vault.ts';
 import {
   base32Decode,
@@ -181,7 +181,9 @@ export class SecretVault {
     if (!this.#isConsented()) return CONSENT_ABSENT;
 
     const fpKey = fingerprintKey();
-    const valueFingerprint = fingerprintValue(fpKey, raw);
+    // Exact bytes, not the format-character-normalized detection identity: the
+    // vault must hand back precisely what it was given.
+    const valueFingerprint = exactFingerprintValue(fpKey, raw);
     const existing = this.#repo.byValueFingerprint(valueFingerprint);
     const now = this.#now();
 
@@ -494,7 +496,7 @@ export class SecretVault {
         const raw = await this.#openRow(row);
         if (raw === null) continue;
         this.#repo.refreshFingerprint(row.pointerId, {
-          valueFingerprint: fingerprintValue(next, raw),
+          valueFingerprint: exactFingerprintValue(next, raw),
           fingerprintKeyVersion: next.version,
         });
         refreshed += 1;

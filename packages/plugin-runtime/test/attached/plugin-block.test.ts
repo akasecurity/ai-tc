@@ -1,10 +1,10 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { PolicyBundle } from '@akasecurity/schema';
-import { StorePosturePlugin } from '@akasecurity/schema';
+import { SQLITE_MIGRATIONS, StorePosturePlugin } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createPluginBlock, readManifestBuild } from '../../src/attached/plugin-block.ts';
@@ -124,6 +124,47 @@ describe('createPluginBlock', () => {
       createPolicyStore(d),
     )();
     expect(block?.ossVersion).toBe('0.9.8');
+  });
+});
+
+describe('createPluginBlock — the install record and the build schema version', () => {
+  it('reports the store schema version this build migrates to, for every adapter', async () => {
+    const block = await createPluginBlock(BUILD, createPolicyStore(await dir()))();
+    expect(block?.buildSchemaVersion).toBe(SQLITE_MIGRATIONS.length);
+  });
+
+  it('leaves installedVersion out when the adapter names no install root', async () => {
+    const block = await createPluginBlock(BUILD, createPolicyStore(await dir()))();
+    expect(block).not.toHaveProperty('installedVersion');
+  });
+
+  it('reads the install record under the root the adapter names', async () => {
+    const pluginsDir = join(await dir(), 'plugins');
+    const root = join(pluginsDir, 'cache', 'akasecurity', 'ai-tc', '0.9.14');
+    await mkdir(root, { recursive: true });
+    await writeFile(
+      join(pluginsDir, 'installed_plugins.json'),
+      JSON.stringify({
+        version: 2,
+        plugins: { 'ai-tc@akasecurity': [{ scope: 'managed', version: '0.9.15' }] },
+      }),
+      'utf8',
+    );
+    const block = await createPluginBlock(
+      { ...BUILD, installRoot: root },
+      createPolicyStore(await dir()),
+    )();
+    expect(block?.installedVersion).toBe('0.9.15');
+    expect(() => StorePosturePlugin.parse(block)).not.toThrow();
+    expect(block).not.toHaveProperty('installRoot');
+  });
+
+  it('reports null, not a missing key, when the named root has no install record', async () => {
+    const block = await createPluginBlock(
+      { ...BUILD, installRoot: join(await dir(), 'checkout') },
+      createPolicyStore(await dir()),
+    )();
+    expect(block).toHaveProperty('installedVersion', null);
   });
 });
 

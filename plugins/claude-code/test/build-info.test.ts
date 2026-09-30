@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { PLUGIN_PACKAGE, pluginBuild } from '../src/build-info.ts';
+import { INSTALL_ROOT, PLUGIN_PACKAGE, pluginBuild } from '../src/build-info.ts';
 
 // The identity every attached posture report from this plugin carries. Both
 // halves are pinned against the files that actually define them, so a rename
@@ -16,11 +17,20 @@ describe('pluginBuild', () => {
     expect(PLUGIN_PACKAGE).toBe(pkg.name);
   });
 
-  it('reads the version from the manifest beside the running code', () => {
+  it('reads the version from the manifest beside the running code, and names its install root', () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'),
     ) as { version: string };
     expect(manifest.version).toBeTypeOf('string');
-    expect(pluginBuild()).toEqual({ package: PLUGIN_PACKAGE, version: manifest.version });
+    // Strict: an absent `installRoot` must not pass as an undefined one.
+    expect(pluginBuild()).toStrictEqual({
+      package: PLUGIN_PACKAGE,
+      version: manifest.version,
+      installRoot: INSTALL_ROOT,
+    });
+  });
+
+  it('takes the directory holding .claude-plugin/ as the install root', () => {
+    expect(INSTALL_ROOT).toBe(fileURLToPath(new URL('../', import.meta.url)));
   });
 });

@@ -62,6 +62,7 @@ export {
   HISTORY_SYNC_THROTTLE_MS,
   triggerHistorySync,
 } from './history-sync-trigger.ts';
+export { readInstalledVersion } from './install-record.ts';
 export type { PluginBuildInfo } from './plugin-block.ts';
 export { createPluginBlock, readManifestBuild } from './plugin-block.ts';
 export type { PolicyStore, StoredPolicyBundle } from './policy-store.ts';

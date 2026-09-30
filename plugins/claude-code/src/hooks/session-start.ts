@@ -20,7 +20,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
+import { INSTALL_ROOT, PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -88,7 +88,13 @@ async function main(): Promise<void> {
     cwd,
     tool: SOURCE_TOOL.ClaudeCode,
     harnessVersion: version,
-    pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
+    // The install root rides with the identity on this path exactly as on the
+    // reconciler's (pluginBuild()), so the installed version the posture block
+    // reads never depends on which path won the hourly throttle.
+    pluginBuild:
+      version === undefined
+        ? undefined
+        : { package: PLUGIN_PACKAGE, version, installRoot: INSTALL_ROOT },
     // The surface this session is running on, when the host says. Folded into
     // the harness bag by the resolver and snapshotted as `harness_interface`;
     // absent when the host stamps nothing, which reads as unknown rather than

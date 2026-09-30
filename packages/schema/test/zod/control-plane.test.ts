@@ -226,6 +226,65 @@ describe('StorePostureSnapshot', () => {
     expect(StorePostureSnapshot.parse({ ...snapshot, plugin }).plugin).toEqual(plugin);
   });
 
+  it('parses a plugin block that carries neither the installed version nor the build schema version', () => {
+    // A build that predates both members omits them, and keeps getting its 200.
+    const plugin = {
+      package: '@akasecurity/ai-tc-claude-code',
+      version: '0.9.14',
+      ossVersion: null,
+      policyBundleVersion: null,
+      policyFetchedAt: null,
+    };
+    const parsed = StorePostureSnapshot.parse({ ...snapshot, plugin }).plugin;
+    expect(parsed).toEqual(plugin);
+    expect(parsed).not.toHaveProperty('installedVersion');
+    expect(parsed).not.toHaveProperty('buildSchemaVersion');
+  });
+
+  it('carries the installed version and the build schema version when a build reports them', () => {
+    const plugin = {
+      package: '@akasecurity/ai-tc-claude-code',
+      version: '0.9.14',
+      ossVersion: null,
+      policyBundleVersion: null,
+      policyFetchedAt: null,
+      installedVersion: '0.9.15',
+      buildSchemaVersion: 36,
+    };
+    expect(StorePostureSnapshot.parse({ ...snapshot, plugin }).plugin).toEqual(plugin);
+    // Null is "no install record to read", distinct from an omitted key.
+    expect(
+      StorePostureSnapshot.parse({ ...snapshot, plugin: { ...plugin, installedVersion: null } })
+        .plugin?.installedVersion,
+    ).toBeNull();
+  });
+
+  it('bounds the installed version like the running one, and the build schema version like the store count', () => {
+    const plugin = {
+      package: '@akasecurity/ai-tc-claude-code',
+      version: '0.9.14',
+      ossVersion: null,
+      policyBundleVersion: null,
+      policyFetchedAt: null,
+    };
+    expect(
+      StorePosturePlugin.safeParse({ ...plugin, installedVersion: 'v'.repeat(64) }).success,
+    ).toBe(true);
+    expect(
+      StorePosturePlugin.safeParse({ ...plugin, installedVersion: 'v'.repeat(65) }).success,
+    ).toBe(false);
+    expect(StorePosturePlugin.safeParse({ ...plugin, buildSchemaVersion: MAX_INT4 }).success).toBe(
+      true,
+    );
+    expect(
+      StorePosturePlugin.safeParse({ ...plugin, buildSchemaVersion: MAX_INT4 + 1 }).success,
+    ).toBe(false);
+    expect(StorePosturePlugin.safeParse({ ...plugin, buildSchemaVersion: -1 }).success).toBe(false);
+    expect(StorePosturePlugin.safeParse({ ...plugin, buildSchemaVersion: 1.5 }).success).toBe(
+      false,
+    );
+  });
+
   it('bounds capturedAt at the largest round-trippable timestamp', () => {
     expect(StorePostureSnapshot.safeParse({ ...snapshot, capturedAt: MAX_DATE_MS }).success).toBe(
       true,

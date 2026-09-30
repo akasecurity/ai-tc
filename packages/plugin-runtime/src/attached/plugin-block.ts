@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 
-import { StorePosturePlugin } from '@akasecurity/schema';
+import { SQLITE_MIGRATIONS, StorePosturePlugin } from '@akasecurity/schema';
 
+import { readInstalledVersion } from './install-record.ts';
 import type { PolicyStore } from './policy-store.ts';
+import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
 /**
  * The reporting artifact's own identity, supplied by the adapter that resolved
@@ -11,9 +13,17 @@ import type { PolicyStore } from './policy-store.ts';
  * name and version arrive from the adapter's side of the seam. `ossVersion` is
  * optional because no build records a separate core version today; absent, the
  * block reports it null.
+ *
+ * `installRoot` is the directory the host installed this plugin into, given
+ * only by an adapter whose host keeps an install record for it
+ * (readInstalledVersion). Given, the block reports that record's newest
+ * version as `installedVersion`; omitted, the block leaves that key out.
  */
 export type PluginBuildInfo = Pick<StorePosturePlugin, 'package' | 'version'> &
-  Partial<Pick<StorePosturePlugin, 'ossVersion'>>;
+  Partial<Pick<StorePosturePlugin, 'ossVersion'>> & { installRoot?: string };
+
+// Shorter than the reporter's REQUEST_TIMEOUT_MS on the whole block, so a stall costs only this.
+export const INSTALL_RECORD_READ_TIMEOUT_MS = REQUEST_TIMEOUT_MS / 2;
 
 // One reader, one read: the manifest cannot change under a running process, so
 // the first answer per manifest URL is cached — including a miss, which will
@@ -62,6 +72,23 @@ export function readManifestBuild(
  * `read()` fail-opens to null on a missing or corrupt cache, so those nulls are
  * "no bundle cached", never an error surfaced.
  *
+ * `buildSchemaVersion` describes the running build and is computed here for
+ * every caller; `installedVersion` describes the host's install record and is
+ * read only for an adapter that names its `installRoot`. `buildSchemaVersion`
+ * is the number of local-store migrations this build carries, which is the
+ * version it migrates a store to. A snapshot whose store count is above it
+ * usually describes a store a newer build migrated; that is a hint, not a
+ * verdict. `installedVersion` is what the host's install record says is on
+ * disk, which leads `version` by one launch after an update.
+ *
+ * `installedVersion` is read on its own bound, INSTALL_RECORD_READ_TIMEOUT_MS,
+ * which is shorter than the REQUEST_TIMEOUT_MS the posture reporter gives the
+ * whole producer. A read that stalls past it, or rejects, reports null and
+ * every other member still travels. The read starts before the policy cache
+ * read and overlaps it, so its wait is never added to the cache read's. The
+ * policy cache read has no bound of its own here: only the reporter's bounds
+ * it, and a cache read that outlasts that drops the whole block.
+ *
  * The two cache-derived fields are guarded against the wire shape's OWN bounds
  * (`StorePosturePlugin.shape.*`), not a re-spelled copy of them: the cache is
  * read tolerantly (`fetchedAtMs` accepts any number and an absent field reads
@@ -80,6 +107,10 @@ export function createPluginBlock(
   policyStore: Pick<PolicyStore, 'read'>,
 ): () => Promise<StorePosturePlugin | undefined> {
   return async () => {
+    // Started first so the install read and the cache read overlap. It never
+    // rejects, so a cache read that throws leaves nothing unhandled behind.
+    const installed =
+      build.installRoot === undefined ? undefined : readInstalledVersionBounded(build.installRoot);
     const cached = await policyStore.read();
     const fetchedAtMs = cached?.fetchedAtMs;
     const block: StorePosturePlugin = {
@@ -97,7 +128,18 @@ export function createPluginBlock(
         StorePosturePlugin.shape.policyFetchedAt.safeParse(fetchedAtMs).success
           ? fetchedAtMs
           : null,
+      ...(installed === undefined ? {} : { installedVersion: await installed }),
+      buildSchemaVersion: SQLITE_MIGRATIONS.length,
     };
     return StorePosturePlugin.safeParse(block).success ? block : undefined;
   };
+}
+
+async function readInstalledVersionBounded(installRoot: string): Promise<string | null> {
+  try {
+    return await withTimeout(readInstalledVersion(installRoot), INSTALL_RECORD_READ_TIMEOUT_MS);
+  } catch {
+    // Timed out, or a reader that rejected: installedVersion alone reads null.
+    return null;
+  }
 }

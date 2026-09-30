@@ -134,4 +134,20 @@ describe('posture build identity reaches every inventory-pass caller', () => {
     },
     TREE_WALK_TIMEOUT_MS,
   );
+
+  // The Claude Code plugin reports its installed version from the host's
+  // install record, found from the root it names. The receiver replaces the
+  // plugin columns on every report, so a path that dropped the root would make
+  // the installed version flicker to null whenever that path won the hourly
+  // throttle. Both of its paths thread the one constant.
+  it(
+    'the Claude Code plugin names its install root on both of its posture paths',
+    () => {
+      expect(read('plugins/claude-code/src/build-info.ts')).toContain('installRoot: INSTALL_ROOT');
+      expect(read('plugins/claude-code/src/hooks/session-start.ts')).toContain(
+        'installRoot: INSTALL_ROOT',
+      );
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 });

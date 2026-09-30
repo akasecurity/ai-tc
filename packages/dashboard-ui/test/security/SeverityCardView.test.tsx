@@ -3,23 +3,31 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import { SeverityCardView } from '../../src/security/SeverityCardView.tsx';
+import { statusHrefKey } from '../../src/security/status-href-key.ts';
 
-// The card reports ONE measure: findings by severity. The ring, the centre figure
-// and the legend are three renderings of the same numbers.
-//
-// It used to carry a lifecycle cut too — a `caught` ring under a `caught` centre,
-// above a "Needs remediation" row and a legend of TOTALS. Three populations in one
-// card, and the row sat above the legend with a rule under it, so it read as a
-// heading for rows that did not add up to it. These cases pin the collapse.
-
-// Deliberately resolution-AWARE rows: `caught`/`openAtRest` are populated and must
-// change nothing the card renders. With count-only fixtures every assertion below
-// would hold whether or not the lifecycle branch came back.
+// The card is a severity x status matrix. The status buckets are disjoint, so each
+// row sums to its `count` and the grand total is the sum of the rows.
 const bySeverity: SeveritySummaryItem[] = [
-  { severity: 'critical', count: 10, caught: 7, openAtRest: 3 },
-  { severity: 'high', count: 20, caught: 20, openAtRest: 0 },
-  { severity: 'medium', count: 0, caught: 0, openAtRest: 0 },
-  { severity: 'low', count: 5, caught: 1, openAtRest: 4 },
+  {
+    severity: 'critical',
+    count: 10,
+    openAtRest: 3,
+    caught: 6,
+    handled: 4,
+    resolved: 2,
+    dismissed: 1,
+  },
+  {
+    severity: 'high',
+    count: 20,
+    openAtRest: 0,
+    caught: 18,
+    handled: 11,
+    resolved: 7,
+    dismissed: 2,
+  },
+  { severity: 'medium', count: 0, openAtRest: 0, caught: 0, handled: 0, resolved: 0, dismissed: 0 },
+  { severity: 'low', count: 5, openAtRest: 4, caught: 1, handled: 0, resolved: 1, dismissed: 0 },
 ];
 
 function render(props: Partial<Parameters<typeof SeverityCardView>[0]> = {}) {
@@ -34,93 +42,142 @@ function render(props: Partial<Parameters<typeof SeverityCardView>[0]> = {}) {
   );
 }
 
+function cell(html: string, id: string): string {
+  const m = new RegExp(`data-cell="${id}"[^>]*>(.*?)</td>`).exec(html);
+  expect(m, `cell ${id} not found`).not.toBeNull();
+  return (m?.[1] ?? '').replace(/<[^>]*>/g, '');
+}
+
+function cellHtml(html: string, id: string): string {
+  return new RegExp(`data-cell="${id}"[^>]*>(.*?)</td>`).exec(html)?.[1] ?? '';
+}
+
 describe('SeverityCardView', () => {
-  it('titles itself by severity, whatever lifecycle data the rows carry', () => {
-    expect(render()).toContain('By severity');
+  it('titles itself by both axes and states the exact total', () => {
+    const html = render();
+    expect(html).toContain('Findings by severity and status');
+    expect(html).toContain('35 findings');
   });
 
-  it('shows no lifecycle framing at all', () => {
+  it('renders a status column per bucket, with an All column and row', () => {
     const html = render();
-    expect(html).not.toContain('Needs remediation');
-    expect(html).not.toContain('caught');
-    expect(html).not.toContain('Open by severity');
+    for (const label of ['Open', 'Handled', 'Resolved', 'Dismissed', 'All']) {
+      expect(html).toContain(`>${label}<`);
+    }
   });
 
-  it('legends the per-severity totals, not the caught counts', () => {
+  it('places each bucket under its own column and severity', () => {
     const html = render();
-    // 7 / 20 / 1 are the `caught` values; 10 / 20 / 5 the totals. `high` is 20 in
-    // BOTH, which is why the other two rows carry this assertion.
+    expect(cell(html, 'critical-open')).toBe('3');
+    expect(cell(html, 'critical-handled')).toBe('4');
+    expect(cell(html, 'critical-resolved')).toBe('2');
+    expect(cell(html, 'critical-dismissed')).toBe('1');
+    expect(cell(html, 'high-handled')).toBe('11');
+    expect(cell(html, 'high-resolved')).toBe('7');
+    expect(cell(html, 'low-open')).toBe('4');
+  });
+
+  it('sums the column totals from the rows', () => {
+    // open 3+0+0+4=7, handled 4+11=15, resolved 2+7+1=10, dismissed 1+2=3
+    const html = render();
+    expect(html).toContain('>7<');
+    expect(html).toContain('>15<');
     expect(html).toContain('>10<');
-    expect(html).toContain('>5<');
-    expect(html).not.toContain('>7<');
+    expect(html).toContain('>3<');
   });
 
-  it('centres the total, so the ring and the legend sum to the figure inside it', () => {
-    // Deliberately past 999. The centre is COMPACT, and compactCount leaves anything
-    // under 1,000 byte-identical to numberFormat — so against the shared 35-row
-    // fixture this case reads the same whether the centre rounds or not, and a revert
-    // to the unrounded figure passed the whole package suite. The legend moves in
-    // step with the total, or the property this case is named for — ring, legend and
-    // centre being one number — stops holding in its own fixture.
-    const large: SeveritySummaryItem[] = [
-      { severity: 'critical', count: 400, caught: 7, openAtRest: 393 },
-      { severity: 'high', count: 600, caught: 600, openAtRest: 0 },
-      { severity: 'medium', count: 0, caught: 0, openAtRest: 0 },
-      { severity: 'low', count: 234, caught: 1, openAtRest: 233 },
-    ];
-    const html = render({ bySeverity: large, total: 1234 });
-    expect(html).toContain('>1.2k<');
-    // Both halves, because compactCount is LOSSY: asserting the ring alone lets the
-    // exact figure go, and asserting the title alone lets the ring stop rounding.
-    expect(html).toContain('title="1,234"');
+  it('shades a non-zero cell and leaves a zero cell unshaded', () => {
+    const html = render();
+    expect(html).toMatch(/data-cell="high-handled"[^>]*color-mix/);
+    expect(html).not.toMatch(/data-cell="medium-open"[^>]*color-mix/);
   });
 
-  it('centres a bare number, with no sub-label under the figure', () => {
-    // Asserted STRUCTURALLY. Counting the word "findings" only catches a label that
-    // happens to say "findings"; the label this replaced said "open" or "caught",
-    // so that count stays at 1 and the regression it names sails through.
-    //
-    // The centre is the Donut's only child, so the figure element having no sibling
-    // is the property — whatever a re-added label would say.
-    const centre =
-      /<div class="absolute inset-0 grid place-items-center text-center">(.*?)<\/div><\/div>/s.exec(
-        render(),
-      );
-    expect(centre, 'the donut centre was not found — the markup shape changed').not.toBeNull();
-    const inner = centre?.[1] ?? '';
-    expect(inner).toContain('35');
-    // One element in the centre, not two stacked.
-    expect(inner.split('<div').length - 1).toBe(1);
-  });
-
-  it('sizes the ring by the totals, so changing only `caught` redraws nothing', () => {
-    // The ring cannot be read by label: Donut emits `<path d= fill=>` inside an
-    // aria-hidden wrapper and uses `label` solely as a React key, which is never
-    // serialised. Asserting the four names would only re-read the LEGEND, and stays
-    // green even against `segments={[]}`.
-    //
-    // So the property is asserted as invariance: hold `count` and move `caught`, and
-    // every byte of the card must be identical. A ring fed from `caught` redraws its
-    // arcs and fails here.
-    const totals = render();
-    const movedCaught = render({
-      bySeverity: bySeverity.map((s) => ({ ...s, caught: 0, openAtRest: s.count })),
-    });
-    expect(movedCaught).toBe(totals);
-    // The control: the ring IS sensitive to the numbers it is supposed to encode.
-    const movedCounts = render({
-      bySeverity: bySeverity.map((s) => ({ ...s, count: s.count + 1 })),
-      total: 39,
-    });
-    expect(movedCounts).not.toBe(totals);
-  });
-
-  it('reports an empty store without a lifecycle qualifier', () => {
+  it('omits the status columns on a count-only response', () => {
     const html = render({
-      bySeverity: bySeverity.map((s) => ({ ...s, count: 0 })),
-      total: 0,
+      bySeverity: bySeverity.map(({ severity, count }) => ({ severity, count })),
     });
+    expect(html).not.toContain('>Open<');
+    expect(html).not.toContain('data-cell=');
+    expect(html).toContain('>20<');
+  });
+
+  it('falls back to one Caught column when the response has no handled/resolved split', () => {
+    const html = render({
+      bySeverity: bySeverity.map(({ severity, count, caught, openAtRest, dismissed }) => ({
+        severity,
+        count,
+        caught,
+        openAtRest,
+        dismissed,
+      })),
+    });
+    expect(html).toContain('>Caught<');
+    expect(html).not.toContain('>Handled<');
+    expect(html).not.toContain('>Resolved<');
+    expect(cell(html, 'critical-caught')).toBe('6');
+  });
+
+  it('has no count / percent toggle', () => {
+    expect(render()).not.toContain('aria-pressed');
+  });
+
+  it('reports an empty store', () => {
+    const html = render({ bySeverity: bySeverity.map((s) => ({ ...s, count: 0 })), total: 0 });
     expect(html).toContain('No findings.');
-    expect(html).not.toContain('No open findings.');
+    expect(html).not.toContain('<table');
+  });
+
+  it('links a non-zero status cell to its href and leaves a zero cell as text', () => {
+    const html = render({
+      statusHrefs: {
+        [statusHrefKey('critical', 'open')]: '/findings?status=open',
+        [statusHrefKey('medium', 'open')]: '/findings?status=medium-open',
+      },
+    });
+    expect(cellHtml(html, 'critical-open')).toContain('href="/findings?status=open"');
+    // The host supplied a link for medium/open, but its count is 0.
+    expect(cellHtml(html, 'medium-open')).not.toContain('<a ');
+    expect(html).not.toContain('status=medium-open');
+  });
+
+  it('links nothing when the host supplies no status hrefs', () => {
+    expect(cellHtml(render(), 'critical-open')).not.toContain('<a ');
+  });
+
+  it('links the footer and grand total from the same map, and the row total from severityHrefs', () => {
+    const html = render({
+      severityHrefs: { critical: '/findings?severity=critical' },
+      statusHrefs: {
+        [statusHrefKey('all', 'open')]: '/findings?status=open',
+        [statusHrefKey('all', 'all')]: '/findings',
+      },
+    });
+    expect(html).toContain('href="/findings?severity=critical"');
+    expect(html).toContain('href="/findings?status=open"');
+    expect(html).toContain('href="/findings"');
+  });
+
+  it('shows a five-digit count short with the exact figure on its title', () => {
+    const big: SeveritySummaryItem[] = [
+      {
+        severity: 'critical',
+        count: 12345,
+        openAtRest: 12345,
+        handled: 0,
+        resolved: 0,
+        dismissed: 0,
+      },
+      { severity: 'high', count: 9999, openAtRest: 9999, handled: 0, resolved: 0, dismissed: 0 },
+      { severity: 'medium', count: 0, openAtRest: 0, handled: 0, resolved: 0, dismissed: 0 },
+      { severity: 'low', count: 0, openAtRest: 0, handled: 0, resolved: 0, dismissed: 0 },
+    ];
+    const html = render({ bySeverity: big, total: 22344 });
+    expect(cell(html, 'critical-open')).toBe('12k');
+    expect(cellHtml(html, 'critical-open')).toContain('title="12,345"');
+    // Under the threshold stays exact, with no title.
+    expect(cell(html, 'high-open')).toBe('9,999');
+    expect(cellHtml(html, 'high-open')).not.toContain('title=');
+    // The subtitle keeps the exact total.
+    expect(html).toContain('22,344 findings');
   });
 });

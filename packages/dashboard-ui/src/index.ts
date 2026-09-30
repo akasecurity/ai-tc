@@ -251,6 +251,7 @@ export {
 } from './security/RecommendedActionsCardView.tsx';
 export { ScanCoverageCardView, type ScanCoverageView } from './security/ScanCoverageCardView.tsx';
 export { SeverityCardView, type SeveritySummaryView } from './security/SeverityCardView.tsx';
+export { statusHrefKey } from './security/status-href-key.ts';
 export { TopSourcesCardView, type TopSourcesView } from './security/TopSourcesCardView.tsx';
 export {
   WebCaptureCardView,

@@ -7,6 +7,7 @@ import type {
   DetectionCategory,
   IngestEvent,
   Severity,
+  SeveritySummaryItem,
 } from '@akasecurity/schema';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -240,6 +241,33 @@ describe('the security route carries each widget its own window', () => {
     for (const href of Object.values(hrefs)) expect(href).not.toContain('range=');
   });
 
+  it('gives the severity card status-cell links, with no range and none for a zero count', async () => {
+    seedStraddlingFixture();
+    const props = await propsOf('SeverityCardView');
+    const hrefs = props.statusHrefs as Record<string, string>;
+    const rows = (props.bySeverity as SeveritySummaryItem[]).flatMap((s) => [
+      ['open', s.severity, s.openAtRest ?? 0],
+      ['handled', s.severity, s.handled ?? 0],
+      ['resolved', s.severity, s.resolved ?? 0],
+      ['dismissed', s.severity, s.dismissed ?? 0],
+    ]);
+    // Positive control: the fixture has at least one non-zero status cell, so the
+    // loop below is asserting on something.
+    expect(rows.some(([, , n]) => Number(n) > 0)).toBe(true);
+    for (const [column, sev, n] of rows) {
+      const key = `${String(sev)}:${String(column)}`;
+      if (Number(n) > 0) {
+        expect(hrefs[key], key).toBe(
+          `/findings?severity=${String(sev)}&status=${String(column)}&view=flat`,
+        );
+      } else {
+        expect(hrefs, key).not.toHaveProperty(key);
+      }
+    }
+    expect(hrefs['all:all']).toBe('/findings?view=flat');
+    for (const href of Object.values(hrefs)) expect(href).not.toContain('range=');
+  });
+
   it('gives the enforcement card links that carry the selected range', async () => {
     seedStraddlingFixture();
     const hrefs = (await propsOf('EnforcementCardView')).actionHrefs as Record<string, string>;
@@ -296,6 +324,7 @@ describe('the security route carries each widget its own window', () => {
     // that really appears on this page.
     expect(Object.keys(await propsOf('SeverityCardView')).filter((k) => /href/i.test(k))).toEqual([
       'severityHrefs',
+      'statusHrefs',
     ]);
   });
 

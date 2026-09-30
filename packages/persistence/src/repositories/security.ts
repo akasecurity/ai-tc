@@ -277,6 +277,8 @@ export class SqliteSecurityRepository implements SecurityViews {
       severity: string;
       count: number;
       caught: number;
+      handled: number;
+      resolved: number;
       open_at_rest: number;
       dismissed: number;
     }>(
@@ -289,6 +291,13 @@ export class SqliteSecurityRepository implements SecurityViews {
                       WHEN latest.status = 'resolved' THEN 1
                       ELSE 0
                     END) AS caught,
+                SUM(CASE WHEN e.event_type != 'code_change' THEN 1 ELSE 0 END) AS handled,
+                SUM(CASE
+                      WHEN e.event_type = 'code_change'
+                       AND f.finding_key IS NOT NULL
+                       AND latest.status = 'resolved' THEN 1
+                      ELSE 0
+                    END) AS resolved,
                 SUM(CASE
                       WHEN e.event_type = 'code_change'
                        AND f.finding_key IS NOT NULL
@@ -321,6 +330,8 @@ export class SqliteSecurityRepository implements SecurityViews {
       severity,
       count: byRow.get(severity)?.count ?? 0,
       caught: byRow.get(severity)?.caught ?? 0,
+      handled: byRow.get(severity)?.handled ?? 0,
+      resolved: byRow.get(severity)?.resolved ?? 0,
       openAtRest: byRow.get(severity)?.open_at_rest ?? 0,
       dismissed: byRow.get(severity)?.dismissed ?? 0,
     }));

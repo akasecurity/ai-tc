@@ -11,13 +11,19 @@ import {
   RecentlyResolvedCardView,
   ScanCoverageCardView,
   SeverityCardView,
+  statusHrefKey,
   TopSourcesCardView,
   WebCaptureCardView,
   type WebCaptureSiteRow,
 } from '@akasecurity/dashboard-ui';
 import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
 import { readEffectiveSettings } from '@akasecurity/persistence';
-import type { EnforcementActionKind, Severity } from '@akasecurity/schema';
+import type {
+  EnforcementActionKind,
+  FindingStatus,
+  Severity,
+  SeveritySummaryItem,
+} from '@akasecurity/schema';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
@@ -29,6 +35,7 @@ import {
   recommendationHref,
   resolvedFindingHref,
   severityHref,
+  severityStatusHref,
   topSourceHref,
 } from './links';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
@@ -179,6 +186,34 @@ export default async function SecurityPage({
   for (const s of severity.bySeverity) {
     if (s.count > 0) severityHrefs[s.severity] = severityHref(s.severity);
   }
+  // Status cells of the same card, gated on a non-zero count for the same reason.
+  // Keyed by the view's own `statusHrefKey`, so host and view cannot disagree on the
+  // spelling. `caught` is deliberately absent: it has no single status to filter by,
+  // and the view only shows it for a producer that predates the handled/resolved split.
+  const statusHrefs: Record<string, string> = {};
+  const statusBuckets = [
+    { key: 'open', status: 'open', pick: (s: SeveritySummaryItem) => s.openAtRest ?? 0 },
+    { key: 'handled', status: 'handled', pick: (s: SeveritySummaryItem) => s.handled ?? 0 },
+    { key: 'resolved', status: 'resolved', pick: (s: SeveritySummaryItem) => s.resolved ?? 0 },
+    { key: 'dismissed', status: 'dismissed', pick: (s: SeveritySummaryItem) => s.dismissed ?? 0 },
+  ] as const satisfies readonly {
+    key: string;
+    status: FindingStatus;
+    pick: (s: SeveritySummaryItem) => number;
+  }[];
+  for (const b of statusBuckets) {
+    let column = 0;
+    for (const s of severity.bySeverity) {
+      const n = b.pick(s);
+      column += n;
+      if (n > 0)
+        statusHrefs[statusHrefKey(s.severity, b.key)] = severityStatusHref(s.severity, b.status);
+    }
+    if (column > 0)
+      statusHrefs[statusHrefKey('all', b.key)] = severityStatusHref(undefined, b.status);
+  }
+  if (severity.total > 0)
+    statusHrefs[statusHrefKey('all', 'all')] = severityStatusHref(undefined, undefined);
   // Repos only: the findings page has no author dimension, so a `user` source has
   // no destination that could match its count. The local store derives no user
   // sources today, which is why the unlinked case is covered in the view's own suite.
@@ -215,6 +250,7 @@ export default async function SecurityPage({
             isLoading={false}
             error={null}
             severityHrefs={severityHrefs}
+            statusHrefs={statusHrefs}
           />
           {/* Scan coverage is deliberately unlinked: its number is a curated
               capability constant, not a measurement of anything in the store, so no

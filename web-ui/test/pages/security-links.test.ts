@@ -1,5 +1,5 @@
 import { EMPTY_FILTERS } from '@akasecurity/dashboard-ui';
-import { EnforcementActionKind, Severity } from '@akasecurity/schema';
+import { EnforcementActionKind, FindingStatus, Severity } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -15,6 +15,7 @@ import {
   recommendationHref,
   resolvedFindingHref,
   severityHref,
+  severityStatusHref,
   topSourceHref,
 } from '../../app/(app)/security/links';
 
@@ -79,6 +80,36 @@ describe('severityHref', () => {
   it('covers every severity', () => {
     for (const severity of Severity.options) {
       expect(parseFindingsFilters(paramsOf(severityHref(severity))).severity).toEqual([severity]);
+    }
+  });
+});
+
+describe('severityStatusHref', () => {
+  it('filters by severity and status under the flat view, with NO range', () => {
+    const sp = paramsOf(severityStatusHref('critical', 'handled'));
+    expect(parseFindingsFilters(sp)).toEqual({
+      ...EMPTY_FILTERS,
+      severity: ['critical'],
+      status: ['handled'],
+    });
+    expect(parseView(sp)).toBe('flat');
+    expect(parseRange(sp)).toBeNull();
+  });
+
+  it('drops the severity for a column total and both for the grand total', () => {
+    expect(parseFindingsFilters(paramsOf(severityStatusHref(undefined, 'open')))).toEqual({
+      ...EMPTY_FILTERS,
+      status: ['open'],
+    });
+    expect(severityStatusHref(undefined, undefined)).toBe('/findings?view=flat');
+  });
+
+  it('round-trips every severity against every status', () => {
+    for (const severity of Severity.options) {
+      for (const status of FindingStatus.options) {
+        const f = parseFindingsFilters(paramsOf(severityStatusHref(severity, status)));
+        expect([f.severity, f.status]).toEqual([[severity], [status]]);
+      }
     }
   });
 });

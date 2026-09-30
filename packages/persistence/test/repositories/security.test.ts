@@ -94,10 +94,42 @@ describe('severitySummary', () => {
     // All three are in-flight (default kind 'prompt') — born handled, so every
     // row is fully caught and nothing is open-at-rest.
     expect(res.bySeverity).toEqual([
-      { severity: 'critical', count: 2, caught: 2, openAtRest: 0, dismissed: 0 },
-      { severity: 'high', count: 1, caught: 1, openAtRest: 0, dismissed: 0 },
-      { severity: 'medium', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
-      { severity: 'low', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
+      {
+        severity: 'critical',
+        count: 2,
+        caught: 2,
+        handled: 2,
+        resolved: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      },
+      {
+        severity: 'high',
+        count: 1,
+        caught: 1,
+        handled: 1,
+        resolved: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      },
+      {
+        severity: 'medium',
+        count: 0,
+        caught: 0,
+        handled: 0,
+        resolved: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      },
+      {
+        severity: 'low',
+        count: 0,
+        caught: 0,
+        handled: 0,
+        resolved: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      },
     ]);
     expect(res.total).toBe(3);
     expect(res.needsRemediation).toBe(0);
@@ -136,10 +168,42 @@ describe('severitySummary', () => {
 
     const res = await security().severitySummary();
     expect(res.bySeverity).toEqual([
-      { severity: 'critical', count: 2, caught: 1, openAtRest: 1, dismissed: 0 },
-      { severity: 'high', count: 1, caught: 1, openAtRest: 0, dismissed: 0 },
-      { severity: 'medium', count: 1, caught: 0, openAtRest: 1, dismissed: 0 },
-      { severity: 'low', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
+      {
+        severity: 'critical',
+        count: 2,
+        caught: 1,
+        handled: 1,
+        resolved: 0,
+        openAtRest: 1,
+        dismissed: 0,
+      },
+      {
+        severity: 'high',
+        count: 1,
+        caught: 1,
+        handled: 0,
+        resolved: 1,
+        openAtRest: 0,
+        dismissed: 0,
+      },
+      {
+        severity: 'medium',
+        count: 1,
+        caught: 0,
+        handled: 0,
+        resolved: 0,
+        openAtRest: 1,
+        dismissed: 0,
+      },
+      {
+        severity: 'low',
+        count: 0,
+        caught: 0,
+        handled: 0,
+        resolved: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      },
     ]);
     // count/total stay exactly as before — backward compatible.
     expect(res.total).toBe(4);
@@ -185,6 +249,8 @@ describe('severitySummary', () => {
       severity: 'critical',
       count: 2,
       caught: 0,
+      handled: 0,
+      resolved: 0,
       openAtRest: 1,
       dismissed: 0,
     });
@@ -215,6 +281,8 @@ describe('severitySummary', () => {
       severity: 'critical',
       count: 2,
       caught: 0,
+      handled: 0,
+      resolved: 0,
       openAtRest: 1,
       dismissed: 1,
     });

@@ -210,6 +210,25 @@ describe('mergeOverlappingSameRule', () => {
     // times slower than a dev machine. O(n log n) costs a 10x-larger input
     // roughly 10x-15x as long (the log factor); O(n²) costs it roughly
     // 100x. 30x sits with real margin on both sides.
+    //
+    // The ratio is only as good as the two readings behind it, so each one is
+    // taken the way the unicode.test.ts sibling takes its own:
+    // - Both sizes are merged once, untimed, before any sample: a cold first
+    //   call runs the merge unoptimized and costs several times a warm one,
+    //   which would put the JIT in the denominator instead of the merge.
+    // - A small-size sample times SMALL_CALLS back-to-back merges and divides
+    //   by SMALL_CALLS, so both timed windows cover LARGE findings and last
+    //   about as long under O(n log n). A lone warm 2,000-finding merge is a
+    //   fraction of a millisecond, too short a window to read reliably.
+    // - The two sizes alternate, and each keeps the fastest of SAMPLES. A GC
+    //   pause or a descheduled thread only ever adds time, so the fastest
+    //   sample is the one with the least of it, and alternating exposes both
+    //   sizes to the same machine state rather than timing one after the
+    //   other.
+    // - Sampling stops early once it has run for SAMPLING_BUDGET_MS. A
+    //   healthy merge takes every sample in a few milliseconds and never
+    //   reaches it; a quadratic one takes seconds per sample, and its first
+    //   sample is already far past the bound.
     function buildOverlappingPairs(n: number, text: string): MatchResult[] {
       const findings: MatchResult[] = [];
       for (let i = 0; i < n; i += 2) {
@@ -237,21 +256,45 @@ describe('mergeOverlappingSameRule', () => {
       return findings;
     }
 
-    function timeMerge(n: number): number {
+    const SMALL = 2_000;
+    const LARGE = 20_000; // 10x the input
+    const SMALL_CALLS = LARGE / SMALL;
+    const SAMPLES = 7;
+    const SAMPLING_BUDGET_MS = 2_000;
+
+    // Builds one input of n findings and returns a timer over it: the mean
+    // milliseconds per merge across `calls` back-to-back merges. The input is
+    // built once and reused, since the merge sorts a copy and never mutates it.
+    function mergeTimer(n: number): (calls: number) => number {
       const bigText = 'x'.repeat(n * 3 + 10);
       const findings = buildOverlappingPairs(n, bigText);
-      const start = performance.now();
-      const merged = mergeOverlappingSameRule(findings, bigText);
-      const ms = performance.now() - start;
-      expect(merged).toHaveLength(n / 2);
-      return ms;
+      return (calls) => {
+        let merged: MatchResult[] = [];
+        const start = performance.now();
+        for (let i = 0; i < calls; i++) merged = mergeOverlappingSameRule(findings, bigText);
+        const ms = (performance.now() - start) / calls;
+        expect(merged).toHaveLength(n / 2);
+        return ms;
+      };
     }
 
-    const small = timeMerge(2_000);
-    const large = timeMerge(20_000); // 10x the input
+    const timeSmall = mergeTimer(SMALL);
+    const timeLarge = mergeTimer(LARGE);
+    timeSmall(SMALL_CALLS); // warm-up; readings discarded
+    timeLarge(1);
+    let small = Infinity;
+    let large = Infinity;
+    let samples = 0;
+    const sampling = performance.now();
+    while (samples < SAMPLES) {
+      small = Math.min(small, timeSmall(SMALL_CALLS));
+      large = Math.min(large, timeLarge(1));
+      samples++;
+      if (performance.now() - sampling > SAMPLING_BUDGET_MS) break;
+    }
     expect(
       large,
-      `2,000 findings: ${small.toFixed(1)}ms; 20,000 findings: ${large.toFixed(1)}ms`,
-    ).toBeLessThan(Math.max(small, 1) * 30);
+      `fastest of ${String(samples)} samples, per merge: ${String(SMALL)} findings ${small.toFixed(3)}ms; ${String(LARGE)} findings ${large.toFixed(3)}ms`,
+    ).toBeLessThan(small * 30);
   });
 });

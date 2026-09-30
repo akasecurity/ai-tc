@@ -209,35 +209,37 @@ describe('mergeOverlappingSameRule', () => {
     // sibling check in unicode.test.ts: this must hold on a runner tens of
     // times slower than a dev machine. O(n log n) costs a 10x-larger input
     // roughly 10x-15x as long (the log factor); O(n²) costs it roughly
-    // 100x. 30x sits with real margin on both sides.
+    // 100x. 30x sits with real margin on both sides. That makes this a check
+    // on growth only: a merge that got equally slower at both sizes passes.
     //
     // The ratio is only as good as the two readings behind it, so each one is
     // taken the way the unicode.test.ts sibling takes its own:
-    // - Both sizes are merged once, untimed, before any sample: a cold first
-    //   call runs the merge unoptimized and costs several times a warm one,
-    //   which would put the JIT in the denominator instead of the merge.
+    // - One full window at each size runs before any sample and its reading
+    //   is discarded, so no timed sample includes the merge's first,
+    //   unoptimized calls.
     // - Each sample merges WINDOW findings in total at either size, as
     //   back-to-back merges of one input, and divides by the number of
     //   merges. Both timed windows then last about as long under O(n log n);
     //   a lone warm small merge is a fraction of a millisecond, too short a
     //   window to read reliably.
-    // - LARGE stays well under ~15,000 findings. Past that, the merge's
-    //   per-rule arrays are too big for V8's regular heap objects and go to
-    //   its large-object space, which maps fresh pages on every call: at
-    //   20,000 each merge takes about 33 page faults and a small merge none.
-    //   A page fault is cheap on a physical machine but costly on a
-    //   virtualized CI runner, enough on its own to push a healthy merge past
-    //   30x there.
+    // - LARGE stays well under 15,000 findings. Past about that size the
+    //   merge's per-rule arrays are too big for V8's regular heap objects and
+    //   go to its large-object space, which can fault in fresh pages on every
+    //   call. On macOS arm64 (Node 24, warm merges in a plain process) that
+    //   was about 33 page faults per 20,000-finding merge and none per small
+    //   one, and on the virtualized macOS CI runner, where a fault is costly,
+    //   it put a healthy merge at 34x. How many faults a large-object
+    //   allocation takes depends on the platform and the state of the heap.
     // - The two sizes alternate, and each keeps the fastest of SAMPLES. A GC
     //   pause or a descheduled thread only ever adds time, so the fastest
     //   sample is the one with the least of it, and alternating exposes both
     //   sizes to the same machine state rather than timing one after the
     //   other.
-    // - Sampling stops early once it has taken MIN_SAMPLES and run for
-    //   SAMPLING_BUDGET_MS. A healthy merge takes every sample in a few
-    //   milliseconds and never reaches the budget; a quadratic one takes
-    //   seconds per sample, and the fastest of its first few is already far
-    //   past the bound.
+    // - After each sample, sampling stops if it has taken MIN_SAMPLES and run
+    //   past SAMPLING_BUDGET_MS, so it can overrun the budget by one sample.
+    //   A healthy merge finishes every sample well inside the budget; a
+    //   quadratic one takes hundreds of times longer per sample, and the
+    //   fastest of its first few is already far past the bound.
     function buildOverlappingPairs(n: number, text: string): MatchResult[] {
       const findings: MatchResult[] = [];
       for (let i = 0; i < n; i += 2) {
@@ -279,6 +281,7 @@ describe('mergeOverlappingSameRule', () => {
     function mergeTimer(n: number): () => number {
       const bigText = 'x'.repeat(n * 3 + 10);
       const findings = buildOverlappingPairs(n, bigText);
+      expect(WINDOW % n, 'WINDOW must be a whole multiple of each size').toBe(0);
       const calls = WINDOW / n;
       return () => {
         let merged: MatchResult[] = [];

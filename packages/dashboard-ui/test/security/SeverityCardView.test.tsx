@@ -45,7 +45,7 @@ function render(props: Partial<Parameters<typeof SeverityCardView>[0]> = {}) {
 function cell(html: string, id: string): string {
   const m = new RegExp(`data-cell="${id}"[^>]*>(.*?)</td>`).exec(html);
   expect(m, `cell ${id} not found`).not.toBeNull();
-  return (m?.[1] ?? '').replace(/<[^>]*>/g, '');
+  return [...(m?.[1] ?? '').matchAll(/>([^<]+)</g)].map((t) => t[1]).join('');
 }
 
 function cellHtml(html: string, id: string): string {

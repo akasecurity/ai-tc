@@ -38,8 +38,8 @@ export interface SeveritySummaryView {
   /**
    * Deep links for the status cells, keyed by `statusHrefKey`: a severity (or
    * `all` for the footer row) against a status column (or `all` for the row total,
-   * which with `all` too is the grand total). Plain strings rather than a function
-   * because the host is a server component and this one is a client component.
+   * which with `all` too is the grand total). Plain strings rather than a function,
+   * so the whole prop is serializable and the host can build it wherever it renders.
    * A cell with no entry, or a count of 0, renders as plain text.
    */
   statusHrefs?: Record<string, string> | undefined;

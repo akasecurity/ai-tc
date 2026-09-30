@@ -42,8 +42,12 @@ type FlatColumnId =
   | 'action'
   | 'status'
   | 'deployment'
-  | 'latest';
+  | 'latest'
+  | 'value';
 
+// The type and value columns' `min-w` and `max-w-0` are a pair. `min-w` is the floor; `max-w-0`
+// stops a nowrap masked value from claiming the column's width in auto table
+// layout, so the ellipsis engages while the column still takes any spare width.
 const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
   sources: 'min-w-[140px] whitespace-nowrap',
@@ -53,7 +57,10 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   deployment: 'min-w-[130px] whitespace-nowrap',
   latest: 'min-w-[100px] whitespace-nowrap',
   location: 'min-w-[200px]',
-  type: 'min-w-[200px]',
+  type: 'min-w-[300px] max-w-0',
+  // The pinned table's Type column, which holds only the masked value. It keeps
+  // the narrower floor so pinning does not widen a table that already scrolls.
+  value: 'min-w-[200px] max-w-0',
 };
 
 /**
@@ -165,7 +172,7 @@ export function FindingsFlatTableView({
                 {!pinnedType && (
                   <TableHead className={FINDING_COLUMN_CLASS.severity}>Severity</TableHead>
                 )}
-                <TableHead className={FINDING_COLUMN_CLASS.type}>
+                <TableHead className={FINDING_COLUMN_CLASS[pinnedType ? 'value' : 'type']}>
                   {pinnedType ? 'Value' : 'Type'}
                 </TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.sources}>Source</TableHead>
@@ -200,9 +207,12 @@ export function FindingsFlatTableView({
                         <SeverityBadge severity={instance.severity} />
                       </TableCell>
                     )}
-                    <TableCell className={FINDING_COLUMN_CLASS.type}>
+                    <TableCell className={FINDING_COLUMN_CLASS[pinnedType ? 'value' : 'type']}>
                       {pinnedType ? (
-                        <span className="font-mono text-ui text-text wrap-anywhere">
+                        <span
+                          className="block truncate font-mono text-ui text-text"
+                          title={instance.match.maskedValue}
+                        >
                           {instance.match.maskedValue}
                         </span>
                       ) : (
@@ -219,7 +229,10 @@ export function FindingsFlatTableView({
                             <div className="text-ui font-semibold text-text wrap-anywhere">
                               {instance.subtype}
                             </div>
-                            <div className="font-mono text-xs text-text-3 wrap-anywhere">
+                            <div
+                              className="truncate font-mono text-xs text-text-3"
+                              title={instance.match.maskedValue}
+                            >
                               {instance.match.maskedValue}
                             </div>
                           </div>

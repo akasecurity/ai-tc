@@ -18,7 +18,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
-import { cachePath, writeCache } from '@akasecurity/local-ops';
+import {
+  cachePath,
+  installedPluginVersions,
+  managedPluginInstall,
+  writeCache,
+} from '@akasecurity/local-ops';
 import { keysDir, openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import type { DetectionDetail } from '@akasecurity/schema';
@@ -32,9 +37,15 @@ import { cliStderr } from '../helpers/cli-stderr.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
+// Both ledger readers are stubbed, because the offer asks both: a machine whose
+// organization installed the plugin would otherwise skip every offer below.
 vi.mock('@akasecurity/local-ops', async (importActual) => {
   const actual = await importActual<typeof LocalOps>();
-  return { ...actual, installedPluginVersions: vi.fn(() => new Map<string, string>()) };
+  return {
+    ...actual,
+    installedPluginVersions: vi.fn(() => new Map<string, string>()),
+    managedPluginInstall: vi.fn((): LocalOps.ManagedInstallLookup | null => null),
+  };
 });
 
 // The install is stubbed for the whole file, not just the cases that reach it.
@@ -634,6 +645,86 @@ describe('the plugin-install offer', () => {
       // The plugin is optional here: declining the floor prompt must not make
       // `aka init` exit 1 after the store was already created.
       declineIsFailure: false,
+    });
+  });
+
+  // Where an organization's managed settings installed the plugin, there is
+  // nothing to offer: the plugin is on the machine, and the install path would
+  // be refused. Silent, like the offer for a plugin the user installed, since
+  // init itself succeeded. Driven with the comparison reader still reporting
+  // nothing installed, so the skip comes from the managed check alone rather
+  // than from that reader happening to fall back to the managed record.
+  describe('where an organization manages the plugin', () => {
+    beforeEach(() => {
+      vi.mocked(managedPluginInstall).mockReturnValue({ version: '0.9.14' });
+    });
+
+    afterEach(() => {
+      vi.mocked(managedPluginInstall).mockReturnValue(null);
+      vi.mocked(installedPluginVersions).mockImplementation(() => new Map<string, string>());
+    });
+
+    it.each([['--yes'], ['-y']])('%s installs nothing and asks nothing', async (flag) => {
+      // --yes on a TTY is the branch that reaches the installer, so it is the
+      // one that has to be seen skipping.
+      const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      asTTY(true);
+      const previousExitCode = process.exitCode;
+      process.exitCode = undefined;
+
+      try {
+        await runInit(['--home', dir, flag]);
+
+        expect(runPlugins).not.toHaveBeenCalled();
+        expect(prompt.asked).toEqual([]);
+        const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+        // The positive control that init ran at all.
+        expect(out).toContain('Initialized AKA at');
+        expect(process.exitCode).toBeUndefined();
+      } finally {
+        process.exitCode = previousExitCode;
+      }
+    });
+
+    it('skips a managed record that names no version, which the comparison reader drops', async () => {
+      // Both readers answer from one real ledger here instead of from stubs, so
+      // the case shows the shape the managed check exists for: the comparison
+      // reader finds nothing installed, and the offer is skipped anyway.
+      const actual = await vi.importActual<typeof LocalOps>('@akasecurity/local-ops');
+      const claudeHome = join(dir, 'claude-home');
+      mkdirSync(join(claudeHome, 'plugins'), { recursive: true });
+      writeFileSync(
+        join(claudeHome, 'plugins', 'installed_plugins.json'),
+        JSON.stringify({ version: 2, plugins: { 'ai-tc@akasecurity': [{ scope: 'managed' }] } }),
+      );
+      vi.mocked(installedPluginVersions).mockImplementation(() =>
+        actual.installedPluginVersions(claudeHome),
+      );
+      vi.mocked(managedPluginInstall).mockImplementation((agent) =>
+        actual.managedPluginInstall(agent, claudeHome),
+      );
+      // The control: on its own, the comparison reader would have offered.
+      expect(installedPluginVersions().has('ai-tc@akasecurity')).toBe(false);
+      vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      asTTY(true);
+
+      await runInit(['--home', dir, '--yes']);
+
+      expect(runPlugins).not.toHaveBeenCalled();
+    });
+
+    it('prints no marketplace commands when stdin is not a TTY', async () => {
+      // Those commands are the unpinned `marketplace add` a user would paste.
+      const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      asTTY(false);
+
+      await runInit(['--home', dir]);
+
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain('Initialized AKA at');
+      expect(out).not.toContain('No Claude Code plugin detected');
+      expect(out).not.toContain('/plugin marketplace add');
+      expect(runPlugins).not.toHaveBeenCalled();
     });
   });
 

@@ -7,6 +7,7 @@ import {
   cliRecordedBy,
   findAgent,
   installedPluginVersions,
+  managedPluginInstall,
   pluginRef,
 } from '@akasecurity/local-ops';
 import type { SymlinkedStorePath } from '@akasecurity/persistence';
@@ -337,6 +338,11 @@ async function offerPluginInstall(autoYes: boolean): Promise<void> {
   const ref = agent ? pluginRef(agent) : undefined;
   if (!agent || !ref) return;
   if (installedPluginVersions().has(ref)) return;
+  // An organization's managed settings installed it: there is nothing to offer,
+  // and the install would be refused. Asked of the managed reader rather than
+  // left to the line above, which reaches a managed record only as the
+  // comparison reader's fallback and drops one that names no version.
+  if (managedPluginInstall(agent) !== null) return;
 
   const out = process.stdout;
   if (!autoYes) {

@@ -13,6 +13,7 @@ import type {
 import { Badge, cn, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { ACCESS, ACCESS_ORDER, FLAG, originMeta, TRUST } from './data.ts';
 import { Ico } from './Ico.tsx';
 import { type IconName } from './icons.ts';
@@ -134,13 +135,26 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
   value,
   onChange,
   accentOf,
+  refusal,
 }: {
   order: T[];
   meta: Record<T, M>;
   value: T;
   onChange: (v: T) => void;
   accentOf: (m: M) => string;
+  /**
+   * Set when this whole list cannot be operated by the host: every option
+   * renders offered-and-disabled via `refusedControlProps` (focusable,
+   * `aria-disabled`, described by the one visible reason below), and
+   * `onChange` is never called. Absent ⇒ identical to today. Shared by
+   * FileDetailDrawer's access picker and AssetDetail's trust picker — both
+   * lists carry exactly one value and one reason, never a per-option one
+   * (contrast PolicyPicker.tsx's per-option `unavailable`, which this is
+   * not).
+   */
+  refusal?: { id: string; reason: string } | undefined;
 }) {
+  const refused = refusal ? refusedControlProps(refusal.id, refusal.reason, '') : null;
   return (
     <div className="flex flex-col gap-2">
       {order.map((k) => {
@@ -150,12 +164,18 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
           <button
             key={k}
             type="button"
-            onClick={() => {
-              onChange(k);
-            }}
+            onClick={
+              refused
+                ? undefined
+                : () => {
+                    onChange(k);
+                  }
+            }
+            {...refused}
             className={cn(
               'flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left cursor-pointer',
               on ? cn(m.bg, 'border-current', m.fg) : 'border-border bg-surface',
+              refused?.className,
             )}
           >
             <span
@@ -182,6 +202,11 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
           </button>
         );
       })}
+      {refusal && (
+        <RefusalReason id={refusal.id} dataSlot="radio-card-list-refusal-reason">
+          {refusal.reason}
+        </RefusalReason>
+      )}
     </div>
   );
 }
@@ -189,10 +214,54 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
 export function AccessControl({
   value,
   onChange,
+  refusal,
 }: {
   value: AccessLevel;
   onChange: (v: AccessLevel) => void;
+  /**
+   * Set when this file's access control cannot be operated by the host:
+   * renders as a single inert control at the current level via
+   * `refusedControlProps`, in place of the live segmented toggle, and
+   * `onChange` is never referenced. Absent ⇒ identical to today.
+   *
+   * Not passed down INTO the toggle: `SegmentedControl`'s own `disabled`
+   * prop forwards to Radix `ToggleGroupPrimitive.Root`, which renders each
+   * item with the native HTML `disabled` attribute — out of the tab order,
+   * which is exactly what an offered-and-disabled control must not be (see
+   * shared/Refusal.tsx). So a refused control is a different, single
+   * element, not the same toggle with a prop flipped.
+   */
+  refusal?: { id: string; reason: string } | undefined;
 }) {
+  if (refusal) {
+    const m = ACCESS[value];
+    const refused = refusedControlProps(refusal.id, refusal.reason, '');
+    return (
+      // Matches IconToggle's own wrapper: stops a toggle click from also
+      // selecting the row this control sits in.
+      <span
+        className="inline-flex"
+        onClick={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <button
+          type="button"
+          data-slot="access-control"
+          aria-label={`LLM access: ${m.label}`}
+          {...refused}
+          className={cn(
+            'inline-flex size-7 items-center justify-center rounded-lg',
+            m.fg,
+            m.bg,
+            refused.className,
+          )}
+        >
+          <Ico name={m.icon} />
+        </button>
+      </span>
+    );
+  }
   return <IconToggle order={ACCESS_ORDER} meta={ACCESS} value={value} onChange={onChange} />;
 }
 

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 
+import type { AgentPlugin } from '@akasecurity/local-ops';
 import {
   AGENT_PLUGINS,
   createCliPluginManager,
@@ -8,10 +9,13 @@ import {
   hostCliVersion,
   installAgentPlugin,
   installedAgentPluginVersions,
+  managedInstallRefusal,
+  managedPluginInstall,
   pluginRef,
 } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, dbPath, hostFloorGaps, requiredHostVersion } from '@akasecurity/plugin-sdk';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
@@ -34,15 +38,17 @@ export interface InstallDeps {
    */
   assumeYes?: boolean;
   /**
-   * Whether declining the floor prompt is a FAILURE of the command.
+   * Whether NOT installing is a FAILURE of the command, on the two paths where
+   * nothing went wrong: the floor prompt was declined, or an organization's
+   * managed settings already installed the plugin.
    *
-   * True for `aka plugins install`, where the decline is the whole operation:
+   * True for `aka plugins install`, where the install is the whole operation:
    * `aka plugins install … && aka init` must not read it as a success. False for
    * `aka init`, where the plugin is an optional extra offered after the store is
-   * already created — init succeeded, and the user simply passed on the offer,
-   * exactly like `offerPluginInstall`'s own decline path. Scoped to the DECLINE
-   * rather than cleared by the caller, so a genuine install failure below still
-   * reports non-zero to init.
+   * already created — init succeeded, and either the user passed on the offer,
+   * exactly like `offerPluginInstall`'s own decline path, or the plugin was
+   * already there. Scoped to those two rather than cleared by the caller, so a
+   * genuine install failure below still reports non-zero to init.
    */
   declineIsFailure?: boolean;
 }
@@ -84,19 +90,37 @@ async function listPlugins(argv: string[]): Promise<void> {
 
   const out = process.stdout;
   out.write('Agent plugins (the CLI is an optional hub — plugins also self-install):\n\n');
+  let anyManaged = false;
   for (const a of AGENT_PLUGINS) {
     const ref = pluginRef(a);
+    // Asked before the installed map, which drops a managed record that names
+    // no version and would list the organization's install as `available`.
+    const managed = managedPluginInstall(a);
+    if (managed !== null) anyManaged = true;
     const version = ref ? installed.get(ref) : undefined;
-    const state = version
-      ? `installed v${version}`
-      : active.has(a.sourceTool)
-        ? 'active'
-        : 'available';
+    const state =
+      managed !== null
+        ? managedState(managed.version)
+        : version
+          ? `installed v${version}`
+          : active.has(a.sourceTool)
+            ? 'active'
+            : 'available';
     out.write(`  ${a.id.padEnd(16)} ${state.padEnd(16)} ${a.name}\n`);
     out.write(`  ${' '.padEnd(16)} ${' '.padEnd(16)} ${a.description}\n`);
   }
   out.write('\nInstall:  aka plugins install <agent>\n');
   out.write('Update:   aka update            (or: aka check-updates)\n');
+  // Beside the two lines above because neither applies to a managed row.
+  if (anyManaged) {
+    out.write(
+      `Managed:  \`aka plugins install\` and \`aka update\` leave a managed plugin alone. ${MANAGED_PLUGIN_ADVICE}\n`,
+    );
+  }
+}
+
+function managedState(version: string | null): string {
+  return version !== null ? `managed v${version}` : 'managed';
 }
 
 async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
@@ -113,6 +137,12 @@ async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // Checked here, before anything is printed or asked, rather than left to the
+  // refusal `installAgentPlugin` returns: by then the plan below would have
+  // announced three commands that never run. It also has to come before the
+  // not-on-PATH hint, whose recipe opens with the unpinned `marketplace add`
+  // the refusal exists to keep off a managed machine.
+  if (refuseManaged(agent, deps)) return;
   const ref = pluginRef(agent);
   const cliBin = agent.cliBin;
   if (!ref || !cliBin) {
@@ -181,6 +211,10 @@ async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
     }
   }
 
+  // Checked again: the floor question above can wait on a human, and a managed
+  // record can land in the ledger meanwhile.
+  if (refuseManaged(agent, deps)) return;
+
   // Announce every command that is about to run, not just the host binary's
   // name. The install path spawns marketplace prep before the op exactly as the
   // update path does, and "via claude" named none of the three.
@@ -189,18 +223,46 @@ async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
     `Installing ${agent.name} via ${cliBin}, running:\n` +
       plan.map((command) => `  ${command}\n`).join(''),
   );
-  const { ok } = installAgentPlugin(agent.id, 'inherit');
+  const { ok, output } = installAgentPlugin(agent.id, 'inherit');
   if (ok) {
     process.stdout.write(
       `\n✓ Installed ${agent.name}.\n` +
         `  ↻ Restart ${agent.name} to load it.\n` +
         `  Run \`aka init\` to scaffold your local store (if you haven't already).\n`,
     );
-  } else {
-    process.stderr.write(
-      `\n✗ Install failed — see the output above, or add it in ${agent.name} with ` +
-        `\`${recipe.join(' && ')}\`.\n`,
-    );
-    process.exitCode = 1;
+    return;
   }
+  // Asked once more after a failure, so the fallback recipe below, which opens
+  // with the unpinned `marketplace add`, is never handed out on a machine whose
+  // ledger now names a managed install. That also covers the shared apply
+  // refusing on its own, which says the same thing.
+  if (refuseManaged(agent, deps)) return;
+  // Inherit mode streams what the host printed, so `output` is non-empty only
+  // when the shared apply refused before spawning, and then it is the one
+  // explanation there is. "See the output above" would point at nothing.
+  if (output !== '') {
+    process.stderr.write(`\n✗ ${output}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stderr.write(
+    `\n✗ Install failed — see the output above, or add it in ${agent.name} with ` +
+      `\`${recipe.join(' && ')}\`.\n`,
+  );
+  process.exitCode = 1;
+}
+
+/**
+ * Refuse, and say why, when an organization's managed settings installed the
+ * plugin. Read from the ledger each time it is asked, because the command asks
+ * at three moments and the answer can change between them.
+ *
+ * Not installing is then a failure only where the caller says so: see
+ * `declineIsFailure`.
+ */
+function refuseManaged(agent: AgentPlugin, deps: InstallDeps): boolean {
+  if (managedPluginInstall(agent) === null) return false;
+  process.stderr.write(`aka plugins install: ${managedInstallRefusal(agent.name)}\n`);
+  if (deps.declineIsFailure !== false) process.exitCode = 1;
+  return true;
 }

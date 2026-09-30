@@ -246,6 +246,41 @@ describe('decidePreToolUse — a redact with no redacted text denies', () => {
   });
 });
 
+describe('decidePreToolUse — a synthetic field (an MCP joined-keys chunk) never rewrites', () => {
+  // In real operation a synthetic field's `executable: true` keeps the
+  // RUNTIME from ever resolving its redact into an 'action: redact' capture
+  // (see pre-tool-use-fields.ts's ScannableField.text) — this module's own
+  // 'redact' branch is unreachable for one THROUGH that chain. This test
+  // breaks the chain on purpose (hands the module a synthetic spec with an
+  // 'action: redact' result directly, the shape only a runtime bug could
+  // produce) to pin the field's OWN belt-and-braces check: even then, the
+  // decision must deny rather than call replaceAtPath against the chunk's
+  // synthetic path and emit a bogus `"<mcp-object-keys>"` property under an
+  // "AKA redacted" message, with the secret-bearing key still in the payload.
+  const MCP_KEY_CHUNK: ScannableField = {
+    path: ['<mcp-object-keys>', 0],
+    executable: true,
+    text: 'placeholder',
+  };
+
+  it('denies rather than writing back through the synthetic path', async () => {
+    const keyText = `ghp_${EMAIL}`;
+    const result = redactResult(keyText, 'core-pii/email', EMAIL, '9c04d7');
+    const output = await decide('mcp__x__y', { [keyText]: 'x' }, [
+      { spec: MCP_KEY_CHUNK, result, text: keyText },
+    ]);
+
+    const reason = denyReason(output);
+    expect(reason).toContain(UNREDACTABLE_NOTE);
+
+    const emitted = JSON.stringify(output);
+    expect(emitted).not.toContain('updatedInput');
+    expect(emitted).not.toContain('<mcp-object-keys>');
+    expect(emitted).not.toContain('AKA redacted');
+    expect(emitted).not.toContain(EMAIL);
+  });
+});
+
 describe('decidePreToolUse — stored text keeps true redaction', () => {
   it('Write content: allow with the redacted field in updatedInput', async () => {
     const content = `support = ${EMAIL}`;

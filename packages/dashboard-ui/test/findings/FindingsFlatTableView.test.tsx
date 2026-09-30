@@ -82,6 +82,35 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(6);
   });
 
+  // Only an email mask can be long: it keeps the first local character, one
+  // asterisk per remaining local character, and the whole domain. Every other
+  // value is `***` (a raw match of five characters or fewer) or a fixed eight
+  // characters. Such a value must not grow the row, so it is cut to one line
+  // with an ellipsis and stays whole on the title.
+  //
+  // Static markup has no layout, so this pins the utility classes and the title,
+  // not the clipping itself; the clipping depends on the column's `max-w-0`
+  // (see FINDING_COLUMN_CLASS) and was measured in a browser.
+  it('cuts a long masked email to one line and keeps it whole on the title', () => {
+    const long = `f${'*'.repeat(30)}@eng.internal.corporate.example.com`;
+    const items = [instance({ match: { maskedValue: long, contextPrefix: '' } })];
+    for (const pinnedType of [false, true]) {
+      const html = render({ items, pinnedType });
+      expect(html).toContain(`title="${long}"`);
+      expect(html).toContain('truncate');
+      expect(html).not.toContain('wrap-anywhere">' + long);
+    }
+  });
+
+  // The pinned table has one column fewer, so its Value column keeps the older,
+  // narrower floor instead of taking the unpinned Type column's.
+  it('gives the pinned Value column a narrower floor than the unpinned Type column', () => {
+    expect(render()).toContain('min-w-[300px]');
+    const pinned = render({ pinnedType: true });
+    expect(pinned).toContain('min-w-[200px]');
+    expect(pinned).not.toContain('min-w-[300px]');
+  });
+
   it('renders the same number of header and body cells with the User column on', () => {
     const alice = { id: 'u-alice', name: 'alice@example.com' };
     const html = render({ showUserColumn: true, items: [instance({ user: alice })] });

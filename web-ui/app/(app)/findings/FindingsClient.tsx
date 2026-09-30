@@ -35,6 +35,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
+  SeverityBadge,
   Sheet,
   SheetContent,
 } from '@akasecurity/ui-kit';
@@ -581,12 +582,15 @@ function TypesMasterDetail({
           key={selectedRule}
           data={instances}
           pinnedType
-          // The type name only. How many findings it has is already on its row
-          // in the list and in this panel's own paginator — a third copy would
-          // just be a number to keep in step with two others.
+          // The type name and its severity. How many findings it has is already
+          // on its row in the list and in this panel's own paginator — a third
+          // copy would just be a number to keep in step with two others.
           header={
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-              <h2 className="truncate text-sm font-semibold text-text">{selectedType.subtype}</h2>
+              <div className="flex min-w-0 items-center gap-2">
+                <h2 className="truncate text-sm font-semibold text-text">{selectedType.subtype}</h2>
+                <SeverityBadge severity={selectedType.severity} />
+              </div>
               {/* Inside the panel they act on, which says what no caption
                   could: these narrow THESE findings. Their counts come from
                   this panel's own read, so each answers "what happens if I

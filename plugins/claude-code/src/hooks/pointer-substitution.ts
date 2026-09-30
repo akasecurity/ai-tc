@@ -33,6 +33,46 @@ export interface PointerFieldOutcome {
   text?: string | undefined;
 }
 
+// One field probed for the deny decision: its text, whether it's executable,
+// and whether it's a SYNTHETIC scan unit (a joined-keys chunk — see
+// pre-tool-use-fields.ts) that has no real position in the payload for a
+// resolved de-reference to be written back to.
+export interface PointerDenyField {
+  text: string;
+  executable: boolean;
+  synthetic: boolean;
+}
+
+/**
+ * Whether any pointer-bearing field denies the call outright, ahead of (and
+ * without) resolving a single de-reference. `probe` only resolves grants —
+ * it never opens a row's ciphertext — so this never touches the vault's
+ * stored values.
+ *
+ * An executable field with an UNGRANTED pointer always denies (the literal
+ * pointer cannot execute as text — see decideInputPointers' own comment). A
+ * SYNTHETIC field denies on ANY pointer at all, granted or not: substitution
+ * has no write-back target for it (decideInputPointers is never even asked
+ * to resolve one — see pre-tool-use.ts), so a GRANTED pointer used as an
+ * object key would otherwise run with the literal `[[aka:...]]` token left
+ * in place — neither denied nor dereferenced, just a key the MCP server
+ * can't make sense of. A non-synthetic, non-executable (data) field is never
+ * checked here at all: a literal pointer traveling inertly through a
+ * redacted-in-place field is exactly what decideInputPointers' 'keep'
+ * disposition already handles correctly.
+ */
+export async function decidePointerDeny(
+  fields: readonly PointerDenyField[],
+  probe: (text: string) => Promise<{ ungranted: string[] }>,
+): Promise<boolean> {
+  for (const field of fields) {
+    if (!field.executable || !hasPointer(field.text)) continue;
+    const result = await probe(field.text);
+    if (result.ungranted.length > 0 || field.synthetic) return true;
+  }
+  return false;
+}
+
 /**
  * Decide each pointer-bearing field of a tool input. Fields without a pointer
  * yield no outcome (and `substitute` is never called for them). Never throws:

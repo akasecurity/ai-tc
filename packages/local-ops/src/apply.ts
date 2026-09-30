@@ -6,7 +6,7 @@ import { binExists, runCapture, runInherit } from './exec.ts';
 import type { InstallChannel } from './install-channel.ts';
 import { planCliUpdate } from './install-channel.ts';
 import { findAgent, pluginRef } from './registry.ts';
-import { managedUpdateRefusal } from './update-render.ts';
+import { managedInstallRefusal, managedUpdateRefusal } from './update-render.ts';
 import { installedPluginScope, managedPluginInstall } from './updates.ts';
 
 // Apply-side of the update surface, shared by `aka update` / `aka plugins
@@ -243,8 +243,19 @@ export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'):
   return runSteps(resolved.cliBin, manager.updateSteps(resolved.ref), mode);
 }
 
-/** Install an agent plugin through its host CLI (marketplace ensured first). */
+/**
+ * Install an agent plugin through its host CLI (marketplace ensured first).
+ *
+ * Refused, before anything runs, where an organization's managed settings
+ * already installed it: the prep below is the same unpinned marketplace add
+ * `applyPluginUpdate` refuses to run, and a user copy beside the managed one
+ * is not the copy the host loads.
+ */
 export function installAgentPlugin(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
+  const agent = findAgent(agentId);
+  if (agent !== undefined && managedPluginInstall(agent) !== null) {
+    return { ok: false, output: managedInstallRefusal(agent.name) };
+  }
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
   prepare(resolved, mode);

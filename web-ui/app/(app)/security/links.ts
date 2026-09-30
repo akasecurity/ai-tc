@@ -1,5 +1,10 @@
 import { EMPTY_FILTERS } from '@akasecurity/dashboard-ui';
-import type { EnforcementActionKind, Severity, TimeRange } from '@akasecurity/schema';
+import type {
+  EnforcementActionKind,
+  FindingStatus,
+  Severity,
+  TimeRange,
+} from '@akasecurity/schema';
 
 import { buildFindingsParams } from '../findings/filters';
 
@@ -53,6 +58,33 @@ export function enforcementHref(kind: EnforcementActionKind, range: TimeRange): 
 export function severityHref(severity: Severity): string {
   return findingsHref(
     buildFindingsParams({ ...EMPTY_FILTERS, severity: [severity] }, '', '', { view: 'flat' }),
+  );
+}
+
+/**
+ * Findings of one status, optionally within one severity — a cell of the severity
+ * x status matrix (omit `severity` for a column total, or both for the grand total).
+ *
+ * Whole-store like {@link severityHref}, so it carries no range. The findings list
+ * classifies status with the same `deriveFindingStatus` the card's buckets mirror,
+ * so the list is the cell's set; the one asymmetry is a legacy at-rest finding with
+ * no key, which the list calls open and the card counts in no column.
+ */
+export function severityStatusHref(
+  severity: Severity | undefined,
+  status: FindingStatus | undefined,
+): string {
+  return findingsHref(
+    buildFindingsParams(
+      {
+        ...EMPTY_FILTERS,
+        ...(severity ? { severity: [severity] } : {}),
+        ...(status ? { status: [status] } : {}),
+      },
+      '',
+      '',
+      { view: 'flat' },
+    ),
   );
 }
 

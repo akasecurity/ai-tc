@@ -7,30 +7,24 @@ import {
   CardHeading,
   CardIcon,
   CardTitle,
-  cn,
   Skeleton,
 } from '@akasecurity/ui-kit';
 
-import { Donut } from '../shared/charts.tsx';
 import { AlertOctagonIcon } from '../shared/icons.tsx';
+import { tint } from './heat-tint.ts';
 import { SEVERITY_META } from './meta.ts';
+import { COMBINED_STATUS_COLUMNS, SPLIT_STATUS_COLUMNS, statusHrefKey } from './status-columns.ts';
 import { compactCount, numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // Props = the data the connected wrapper's hook (or a server fetch) produces.
 // `bySeverity` is expected pre-normalized to display order (zero-filled).
 //
-// The card reports ONE measure: how many findings there are, by severity. The
-// ring, the centre figure and the legend are three renderings of that same
-// number, so any two of them can be read against each other — with one caveat:
-// the centre is ROUNDED (compactCount), so at a boundary it reads `10k` over a
-// legend summing to 9,999. The unrounded total is the CardDescription's text.
-//
-// It carried a lifecycle cut as well — a `caught` ring under a `caught` centre,
-// above a `needs remediation` row and a legend of totals — which put three different
-// populations in one card: a reader who took the legend as the breakdown of
-// "needs remediation" was out by every finding the plugin caught in flight.
-// The lifecycle split still exists where it can be read on its own terms
-// (`aka stats` renders caught vs needs-remediation from the same store fields).
+// The card is a severity x status matrix. Rows are severities, columns are the
+// disjoint lifecycle buckets (`openAtRest`, `handled`, `resolved`, `dismissed`) and
+// the grand total is the sum of the rows. A row's cells can sum to less than its
+// `count`: untracked legacy at-rest findings are counted in `count` only. A
+// count-only response carries no buckets: the status columns are then omitted and
+// only the severity totals render.
 export interface SeveritySummaryView {
   bySeverity: SeveritySummaryItem[];
   total: number;
@@ -42,12 +36,241 @@ export interface SeveritySummaryView {
    * renders as plain text.
    */
   severityHrefs?: Partial<Record<Severity, string>> | undefined;
+  /**
+   * Deep links for the status cells, keyed by `statusHrefKey`: a severity (or
+   * `all` for the footer row) against a status column (or `all` for the row total,
+   * which with `all` too is the grand total). Plain strings rather than a function,
+   * so the whole prop is serializable and the host can build it wherever it renders.
+   * A cell with no entry, or a count of 0, renders as plain text.
+   */
+  statusHrefs?: Record<string, string> | undefined;
+}
+
+// From this size up a count is shown short (`12k`) so a five-digit cell cannot
+// widen its column; the exact figure stays on `title`.
+const COMPACT_FROM = 10_000;
+
+function Count({
+  value,
+  href,
+  label,
+}: {
+  value: number;
+  href?: string | undefined;
+  label: string;
+}) {
+  const exact = numberFormat.format(value);
+  const compact = value >= COMPACT_FROM;
+  // The short form is for the eye; the exact figure is what assistive tech reads and
+  // what a pointer sees on hover.
+  const text = compact ? (
+    <>
+      <span aria-hidden>{compactCount(value)}</span>
+      <span className="sr-only">{exact}</span>
+    </>
+  ) : (
+    exact
+  );
+  const title = compact ? exact : undefined;
+  if (href && value > 0) {
+    return (
+      <a
+        href={href}
+        title={title ? `${title} · View ${label} findings` : `View ${label} findings`}
+        className="block rounded-sm px-2 py-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+      >
+        {text}
+      </a>
+    );
+  }
+  return (
+    <span title={title} className="block px-2 py-2">
+      {text}
+    </span>
+  );
+}
+
+// The loading state is laid out with the same table classes as the loaded matrix
+// (four severity rows, the status columns plus All, and the footer row), so the card
+// keeps its size and columns when the data arrives. The status columns are assumed to
+// be the split set, which is what a current producer sends.
+function MatrixSkeleton() {
+  const statusCells = SPLIT_STATUS_COLUMNS.length;
+  return (
+    <table aria-hidden className="w-full border-separate border-spacing-1 text-ui">
+      <thead>
+        <tr>
+          <th />
+          {Array.from({ length: statusCells + 1 }, (_, i) => (
+            <th key={i} className="px-1 pb-2">
+              <Skeleton className="ml-auto h-3 w-12" />
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {[0, 1, 2, 3].map((row) => (
+          <tr key={row}>
+            <th className="pr-2 text-left">
+              <Skeleton className="h-4 w-16" />
+            </th>
+            {Array.from({ length: statusCells }, (_, i) => (
+              <td key={i} className="p-0">
+                <Skeleton className="h-9 w-full" />
+              </td>
+            ))}
+            <td className="p-0">
+              <Skeleton className="ml-auto h-4 w-8" />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th className="pr-2 text-left">
+            <Skeleton className="h-4 w-6" />
+          </th>
+          {Array.from({ length: statusCells }, (_, i) => (
+            <td key={i} className="p-0">
+              <Skeleton className="ml-auto h-4 w-8" />
+            </td>
+          ))}
+          <td className="p-0">
+            <Skeleton className="ml-auto h-4 w-10" />
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+function Matrix({
+  bySeverity,
+  total,
+  severityHrefs,
+  statusHrefs,
+}: {
+  bySeverity: SeveritySummaryItem[];
+  total: number;
+  severityHrefs: SeveritySummaryView['severityHrefs'];
+  statusHrefs: SeveritySummaryView['statusHrefs'];
+}) {
+  const hasStatus = bySeverity.some(
+    (s) =>
+      s.handled !== undefined ||
+      s.resolved !== undefined ||
+      s.caught !== undefined ||
+      s.openAtRest !== undefined ||
+      s.dismissed !== undefined,
+  );
+  // Both halves on every row, or the split columns would show an absent half as a real 0.
+  const hasSplit = bySeverity.every((s) => s.handled !== undefined && s.resolved !== undefined);
+  const columns = !hasStatus ? [] : hasSplit ? SPLIT_STATUS_COLUMNS : COMBINED_STATUS_COLUMNS;
+  const max = Math.max(0, ...bySeverity.flatMap((s) => columns.map((c) => c.pick(s))));
+  const columnTotals = columns.map((c) => ({
+    column: c,
+    n: bySeverity.reduce((sum, s) => sum + c.pick(s), 0),
+  }));
+  const head = 'px-1 pb-2 text-right text-label font-semibold uppercase tracking-wide text-text-3';
+
+  return (
+    <table className="w-full border-separate border-spacing-1 text-ui">
+      <thead>
+        <tr>
+          <th scope="col" className="sr-only">
+            Severity
+          </th>
+          {columns.map((c) => (
+            <th key={c.key} scope="col" className={head}>
+              {c.label}
+            </th>
+          ))}
+          <th scope="col" className={head}>
+            All
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {bySeverity.map((s) => {
+          const meta = SEVERITY_META[s.severity];
+          const href = severityHrefs?.[s.severity];
+          const label = (
+            <>
+              <span className="size-2 shrink-0 rounded-xs" style={{ background: meta.color }} />
+              {meta.label}
+            </>
+          );
+          return (
+            <tr key={s.severity}>
+              <th scope="row" className="pr-2 text-left font-semibold text-text">
+                {href ? (
+                  <a
+                    href={href}
+                    title={`View ${meta.label.toLowerCase()} findings`}
+                    className="flex items-center gap-2 rounded-sm hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                  >
+                    {label}
+                  </a>
+                ) : (
+                  <span className="flex items-center gap-2">{label}</span>
+                )}
+              </th>
+              {columns.map((c) => {
+                const n = c.pick(s);
+                return (
+                  <td
+                    key={c.key}
+                    data-cell={`${s.severity}-${c.key}`}
+                    className="rounded-sm bg-surface-2 p-0 text-right font-bold text-text"
+                    style={{ backgroundColor: tint(meta.color, n, max) }}
+                  >
+                    <Count
+                      value={n}
+                      href={statusHrefs?.[statusHrefKey(s.severity, c.key)]}
+                      label={`${meta.label.toLowerCase()} ${c.label.toLowerCase()}`}
+                    />
+                  </td>
+                );
+              })}
+              <td data-cell={`${s.severity}-all`} className="p-0 text-right text-text-2">
+                <Count value={s.count} href={href} label={meta.label.toLowerCase()} />
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th scope="row" className="pr-2 text-left font-normal text-text-2">
+            All
+          </th>
+          {columnTotals.map(({ column, n }) => (
+            <td
+              key={column.key}
+              data-cell={`all-${column.key}`}
+              className="p-0 text-right text-text-2"
+            >
+              <Count
+                value={n}
+                href={statusHrefs?.[statusHrefKey('all', column.key)]}
+                label={column.label.toLowerCase()}
+              />
+            </td>
+          ))}
+          <td data-cell="all-all" className="p-0 text-right font-bold text-text">
+            <Count value={total} href={statusHrefs?.[statusHrefKey('all', 'all')]} label="all" />
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  );
 }
 
 export function SeverityCardView({
   bySeverity,
   total,
   severityHrefs,
+  statusHrefs,
   isLoading,
   error,
 }: SeveritySummaryView) {
@@ -58,88 +281,26 @@ export function SeverityCardView({
           <AlertOctagonIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>
-          <CardTitle>By severity</CardTitle>
+          <CardTitle>Findings by severity and status</CardTitle>
           <CardDescription>
             {isLoading ? 'Loading…' : error ? '—' : `${numberFormat.format(total)} findings`}
           </CardDescription>
         </CardHeading>
       </CardHeader>
-      <CardContent aria-busy={isLoading} className="flex items-center gap-4">
+      <CardContent aria-busy={isLoading}>
         {error ? (
           <WidgetError message={error} />
         ) : isLoading ? (
-          <>
-            <Skeleton className="size-30 shrink-0 rounded-full" />
-            <div className="flex flex-1 flex-col gap-2">
-              {[0, 1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-4 w-full" />
-              ))}
-            </div>
-          </>
+          <MatrixSkeleton />
         ) : total === 0 ? (
           <WidgetEmpty message="No findings." />
         ) : (
-          <>
-            <Donut
-              // The same per-severity counts the legend lists, so the ring is a
-              // picture of the rows beside it and the centre is their sum.
-              segments={bySeverity.map((s) => ({
-                label: SEVERITY_META[s.severity].label,
-                value: s.count,
-                color: SEVERITY_META[s.severity].color,
-              }))}
-              size={120}
-              thickness={15}
-            >
-              {/* Compact in the ring: the centre is a 90px hole and a six-figure
-                  total would wrap or overflow it. compactCount rounds across its
-                  own boundary (9,999 reads `10k`), so the exact number has to stay
-                  reachable — that is the CardDescription above, which renders it as
-                  TEXT for every reader. The title here is a pointer-only
-                  convenience and can never be the only copy: a `title` on a
-                  non-focusable div is unreachable by keyboard and absent on touch.
-                  Both formatters pin en-US, so neither is a hydration mismatch. */}
-              <div
-                className="font-display text-2xl font-semibold leading-none text-text"
-                title={numberFormat.format(total)}
-              >
-                {compactCount(total)}
-              </div>
-            </Donut>
-            <div className="flex flex-1 flex-col gap-2">
-              {bySeverity.map((s) => {
-                const href = severityHrefs?.[s.severity];
-                const Row = href ? 'a' : 'div';
-                return (
-                  <Row
-                    key={s.severity}
-                    {...(href
-                      ? {
-                          href,
-                          title: `View ${SEVERITY_META[s.severity].label.toLowerCase()} findings`,
-                        }
-                      : {})}
-                    className={cn(
-                      'flex items-center gap-2',
-                      href &&
-                        '-mx-1 rounded-sm px-1 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
-                    )}
-                  >
-                    <span
-                      className="size-2 rounded-xs"
-                      style={{ background: SEVERITY_META[s.severity].color }}
-                    />
-                    <span className="flex-1 text-ui text-text-2">
-                      {SEVERITY_META[s.severity].label}
-                    </span>
-                    <span className="text-ui font-bold text-text">
-                      {numberFormat.format(s.count)}
-                    </span>
-                  </Row>
-                );
-              })}
-            </div>
-          </>
+          <Matrix
+            bySeverity={bySeverity}
+            total={total}
+            severityHrefs={severityHrefs}
+            statusHrefs={statusHrefs}
+          />
         )}
       </CardContent>
     </Card>

@@ -132,6 +132,8 @@ describe('list status ↔ severity-card bucket consistency', () => {
       severity: 'critical',
       count: 6,
       caught: 2,
+      handled: 1,
+      resolved: 1,
       openAtRest: 2,
       dismissed: 1,
     });
@@ -146,6 +148,10 @@ describe('list status ↔ severity-card bucket consistency', () => {
     const countOf = (statuses: string[]) =>
       [...statusByRule.entries()].filter(([, s]) => s !== undefined && statuses.includes(s)).length;
     expect(critical?.caught).toBe(countOf(['handled', 'resolved']));
+    // The split is a partition of `caught`, not an independent count.
+    expect((critical?.handled ?? 0) + (critical?.resolved ?? 0)).toBe(critical?.caught);
+    expect(critical?.handled).toBe(countOf(['handled']));
+    expect(critical?.resolved).toBe(countOf(['resolved']));
     expect(critical?.dismissed).toBe(countOf(['dismissed']));
   });
 });

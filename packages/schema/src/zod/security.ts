@@ -26,6 +26,11 @@ export const SeveritySummaryItem = z
     caught: z.number().int().nonnegative().optional(),
     openAtRest: z.number().int().nonnegative().optional(),
     dismissed: z.number().int().nonnegative().optional(),
+    // The two halves of `caught`, for a reader that wants them apart: `handled` =
+    // in-flight findings an enforcement action already contained; `resolved` =
+    // at-rest findings closed out by fixing them. `handled + resolved === caught`.
+    handled: z.number().int().nonnegative().optional(),
+    resolved: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'SeveritySummaryItem' });
 export type SeveritySummaryItem = z.infer<typeof SeveritySummaryItem>;

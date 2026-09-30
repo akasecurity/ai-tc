@@ -90,7 +90,8 @@ describe('SeverityCardView', () => {
   it('links a legend row when the host supplies an href', () => {
     const html = render({ severityHrefs: { critical: '/findings?severity=critical' } });
     expect(html).toContain('href="/findings?severity=critical"');
-    expect(anchors(html)).toBe(1);
+    // The row's name and its All cell both go to the severity.
+    expect(anchors(html)).toBe(2);
   });
 
   it('renders no anchor at all when the prop is omitted', () => {

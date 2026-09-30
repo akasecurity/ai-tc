@@ -252,6 +252,7 @@ export {
 } from './security/RecommendedActionsCardView.tsx';
 export { ScanCoverageCardView, type ScanCoverageView } from './security/ScanCoverageCardView.tsx';
 export { SeverityCardView, type SeveritySummaryView } from './security/SeverityCardView.tsx';
+export { SPLIT_STATUS_COLUMNS, statusHrefKey } from './security/status-columns.ts';
 export { TopSourcesCardView, type TopSourcesView } from './security/TopSourcesCardView.tsx';
 export {
   WebCaptureCardView,

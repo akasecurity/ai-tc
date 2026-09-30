@@ -11,6 +11,8 @@ import {
   RecentlyResolvedCardView,
   ScanCoverageCardView,
   SeverityCardView,
+  SPLIT_STATUS_COLUMNS,
+  statusHrefKey,
   TopSourcesCardView,
   WebCaptureCardView,
   type WebCaptureSiteRow,
@@ -29,6 +31,7 @@ import {
   recommendationHref,
   resolvedFindingHref,
   severityHref,
+  severityStatusHref,
   topSourceHref,
 } from './links';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
@@ -123,7 +126,7 @@ export default async function SecurityPage({
   // server-side. Scoped by STATUS, not by the range selector: this card is a to-do
   // list, so a window would hide a secret committed weeks ago and never fixed,
   // reporting "no recommendations" over live exposure. It is deliberately one of
-  // the two cards on this page that ignore the range, alongside By severity.
+  // the two cards on this page that ignore the range, alongside Findings by severity and status.
   //
   // The destination is built INSIDE the builder rather than patched over it
   // afterwards: the card ranks by category but counts by the rule it names, so the
@@ -179,6 +182,23 @@ export default async function SecurityPage({
   for (const s of severity.bySeverity) {
     if (s.count > 0) severityHrefs[s.severity] = severityHref(s.severity);
   }
+  // Status cells of the same card, gated on a non-zero count for the same reason.
+  const statusHrefs: Record<string, string> = {};
+  for (const c of SPLIT_STATUS_COLUMNS) {
+    const { status } = c;
+    if (!status) continue;
+    let column = 0;
+    for (const s of severity.bySeverity) {
+      const n = c.pick(s);
+      column += n;
+      if (n > 0)
+        statusHrefs[statusHrefKey(s.severity, c.key)] = severityStatusHref(s.severity, status);
+    }
+    if (column > 0)
+      statusHrefs[statusHrefKey('all', c.key)] = severityStatusHref(undefined, status);
+  }
+  if (severity.total > 0)
+    statusHrefs[statusHrefKey('all', 'all')] = severityStatusHref(undefined, undefined);
   // Repos only: the findings page has no author dimension, so a `user` source has
   // no destination that could match its count. The local store derives no user
   // sources today, which is why the unlinked case is covered in the view's own suite.
@@ -215,6 +235,7 @@ export default async function SecurityPage({
             isLoading={false}
             error={null}
             severityHrefs={severityHrefs}
+            statusHrefs={statusHrefs}
           />
           {/* Scan coverage is deliberately unlinked: its number is a curated
               capability constant, not a measurement of anything in the store, so no

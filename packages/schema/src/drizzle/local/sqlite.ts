@@ -986,10 +986,23 @@ export const secretVault = sqliteTable(
     // putting keyed-HMAC material on the wire would leak correlation material
     // into model context and into committed files.
     pointerId: text(COL.pointerId).primaryKey(),
-    // HMAC of the raw under `exception.key`, and the epoch it was derived under.
-    // This is what a reveal grant matches on; it rotates independently of
+    // HMAC of the EXACT raw bytes under `exception.key`, and the epoch it was
+    // derived under. The vault's own dedupe key (unique below): two values that
+    // differ only by an invisible character are two credentials and keep two
+    // rows, each restoring its own text. Never joined against an exception or a
+    // grant — that is value_identity_fingerprint. Rotates independently of
     // key_version below (different key, different rotation semantics).
     valueFingerprint: text(COL.valueFingerprint).notNull(),
+    // HMAC under the same key of the raw with invisible padding characters
+    // removed: the identity every exception and grant matches on, so a reveal
+    // grant covers a padded and a clean occurrence of one secret alike. NOT
+    // unique — a value and its padded twin share it while keeping separate
+    // rows. Equal to value_fingerprint for every value without such a
+    // character. The migration that added it copied value_fingerprint into it;
+    // a row for a padded value is corrected the next time the value is
+    // detected or the fingerprint key rotates. Default '' exists only to let
+    // the column be added to a populated table; every writer sets it.
+    valueIdentityFingerprint: text(COL.valueIdentityFingerprint).notNull().default(''),
     fingerprintKeyVersion: integer(COL.fingerprintKeyVersion).notNull(),
     // The vault-key epoch this row's ciphertext is sealed under.
     keyVersion: integer(COL.keyVersion).notNull(),

@@ -920,6 +920,72 @@ describe('migration 0023 (secret vault user-authorized provenance)', () => {
   });
 });
 
+const VAULT_IDENTITY_TAG = '0036_secret_vault_identity_fingerprint';
+
+// A store as the binary before the identity column left it.
+function preVaultIdentityStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('CREATE TABLE migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== VAULT_IDENTITY_TAG);
+  for (const migration of earlier) {
+    for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+      migration.tag,
+      1,
+    );
+  }
+  db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
+  return db;
+}
+
+describe('migration 0036 (secret vault identity fingerprint)', () => {
+  it('backfills the identity column from the exact fingerprint of every existing row', () => {
+    const db = preVaultIdentityStore();
+    try {
+      const insert = db.prepare(
+        `INSERT INTO secret_vault (
+           pointer_id, value_fingerprint, fingerprint_key_version, key_version,
+           category, rule_id, masked_match, ciphertext, nonce, auth_tag,
+           occurrence_count, first_seen, last_seen
+         ) VALUES (?, ?, 1, 1, 'secret', 'aka.secret.aws-key', 'AKIA…XYZQ',
+                   'Y2lwaGVy', 'bm9uY2U=', 'dGFn', 1, 100, 200)`,
+      );
+      insert.run('pointer-a', 'a'.repeat(64));
+      insert.run('pointer-b', 'b'.repeat(64));
+
+      applyMigrations(db);
+
+      expect(columnNames(db, 'secret_vault', { includeGenerated: true })).toContain(
+        'value_identity_fingerprint',
+      );
+      expect(
+        db
+          .prepare(
+            'SELECT pointer_id, value_fingerprint, value_identity_fingerprint FROM secret_vault ORDER BY pointer_id',
+          )
+          .all(),
+      ).toEqual([
+        {
+          pointer_id: 'pointer-a',
+          value_fingerprint: 'a'.repeat(64),
+          value_identity_fingerprint: 'a'.repeat(64),
+        },
+        {
+          pointer_id: 'pointer-b',
+          value_fingerprint: 'b'.repeat(64),
+          value_identity_fingerprint: 'b'.repeat(64),
+        },
+      ]);
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('migration 0011 (egress writer schema)', () => {
   it('a fresh store carries project_key, host, and the re-keyed call-site index', () => {
     const db = new DatabaseSync(':memory:');

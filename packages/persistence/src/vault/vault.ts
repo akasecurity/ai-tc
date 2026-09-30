@@ -26,7 +26,7 @@ import {
   POINTER_TOKEN_ANCHORED,
 } from '@akasecurity/schema';
 
-import { exactFingerprintValue, type FingerprintKey } from '../fingerprint.ts';
+import { exactFingerprintValue, type FingerprintKey, fingerprintValue } from '../fingerprint.ts';
 import type { SqliteSecretVaultRepository, VaultRow } from '../repositories/secret-vault.ts';
 import {
   base32Decode,
@@ -181,9 +181,13 @@ export class SecretVault {
     if (!this.#isConsented()) return CONSENT_ABSENT;
 
     const fpKey = fingerprintKey();
-    // Exact bytes, not the format-character-normalized detection identity: the
-    // vault must hand back precisely what it was given.
+    // Two fingerprints, for two jobs. The EXACT one dedupes rows, so a value and
+    // its invisibly-padded twin stay two entries, each restoring its own text.
+    // The IDENTITY one is what exceptions and reveal grants match on, so a grant
+    // covers both twins; it is stored beside the exact one and handed out by
+    // `resolvePointerIdentity`.
     const valueFingerprint = exactFingerprintValue(fpKey, raw);
+    const valueIdentityFingerprint = fingerprintValue(fpKey, raw);
     const existing = this.#repo.byValueFingerprint(valueFingerprint);
     const now = this.#now();
 
@@ -200,6 +204,12 @@ export class SecretVault {
       // silently drop what they just asked for. The reverse never happens: the
       // store merges this field upward only, so an automatic re-detection
       // passing `false` leaves a marked row marked.
+      // A row from before the identity column existed holds the exact value there.
+      // For a padded value that is not its identity, so correct it now that the
+      // value is seen again (rotation corrects the rest).
+      if (existing.valueIdentityFingerprint !== valueIdentityFingerprint) {
+        this.#repo.setIdentityFingerprint(existing.pointerId, valueIdentityFingerprint);
+      }
       this.#repo.upsert(
         {
           ...existing,
@@ -221,6 +231,7 @@ export class SecretVault {
       {
         pointerId: base32Encode(pointerId),
         valueFingerprint,
+        valueIdentityFingerprint,
         fingerprintKeyVersion: fpKey.version,
         keyVersion: version,
         // Recorded so the row stays OPENABLE if the wire-format constant ever
@@ -308,7 +319,7 @@ export class SecretVault {
       try {
         covered = await verify(grantId, {
           ruleId: row.ruleId,
-          valueFingerprint: row.valueFingerprint,
+          valueFingerprint: row.valueIdentityFingerprint,
           fingerprintKeyVersion: row.fingerprintKeyVersion,
         });
       } catch {
@@ -395,15 +406,36 @@ export class SecretVault {
    * The raw-free row identity a reveal grant matches on. Deliberately not fed to
    * view surfaces: the keyed fingerprint is a correlation key and must not reach
    * a presentation layer.
+   *
+   * Its `valueFingerprint` is the row's IDENTITY fingerprint (invisible padding
+   * removed) — the space every exception, grant and ledger entry lives in — not
+   * the exact-bytes key the vault dedupes on. A padded value and its clean twin
+   * are two rows with one identity, so one grant covers both.
+   *
+   * Residual: a row written before the identity column existed holds its exact
+   * fingerprint there until the value is next detected or the fingerprint key
+   * rotates. That is the same value for every secret without an invisible
+   * padding character; for a padded one a grant minted from that stale identity
+   * does not match until the row is corrected.
    */
   async resolvePointerIdentity(token: string): Promise<PointerIdentity | null> {
     const row = await this.#rowFor(token);
     if (!row) return null;
     return {
       ruleId: row.ruleId,
-      valueFingerprint: row.valueFingerprint,
+      valueFingerprint: row.valueIdentityFingerprint,
       fingerprintKeyVersion: row.fingerprintKeyVersion,
     };
+  }
+
+  /**
+   * The id of the vault row a pointer verifies against, or null when the vault
+   * cannot identify it. Audit-free like `resolvePointerIdentity`. For callers
+   * that must tell two rows apart even when they share an identity fingerprint.
+   */
+  async resolvePointerRowId(token: string): Promise<string | null> {
+    const row = await this.#rowFor(token);
+    return row ? row.pointerId : null;
   }
 
   /**
@@ -479,6 +511,9 @@ export class SecretVault {
    * because the raw values are gone — the vault still holds the values, so
    * determinism, dedup, and every outstanding pointer survive the rotation.
    *
+   * Re-derives BOTH fingerprints (the exact dedupe key and the identity), which
+   * also corrects an identity column still holding a pre-migration exact value.
+   *
    * Every fingerprint-key rotation must run this: a row left at the old epoch
    * still resolves, but the same value detected again fingerprints under the
    * NEW key, misses the dedup lookup, and mints a second row and a second
@@ -497,6 +532,7 @@ export class SecretVault {
         if (raw === null) continue;
         this.#repo.refreshFingerprint(row.pointerId, {
           valueFingerprint: exactFingerprintValue(next, raw),
+          valueIdentityFingerprint: fingerprintValue(next, raw),
           fingerprintKeyVersion: next.version,
         });
         refreshed += 1;

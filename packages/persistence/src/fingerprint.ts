@@ -1,7 +1,7 @@
 // The exception fingerprint key: 32 random bytes stored at <dataDir>/exception.key.
 //
 // Security intent: detection-exception grants are matched by a fingerprint of the
-// exact detected value, and much of what the engine flags is low-entropy (emails,
+// detected value (invisible padding characters removed), and much of what the engine flags is low-entropy (emails,
 // card numbers) — a plain hash would be dictionary-attackable offline. So the
 // fingerprint is an HMAC under this machine-local key: DETERMINISTIC, so the
 // point lookup works, and KEYED, so a copy of the store (a backup, a drained
@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { FingerprintKeyState } from '@akasecurity/schema';
-import { isMatchableUnder } from '@akasecurity/schema';
+import { isMatchableUnder, stripInvisiblePadding } from '@akasecurity/schema';
 
 import { getRow } from './internal/rows.ts';
 import {
@@ -310,28 +310,30 @@ export function rotateFingerprintKey(dataDir: string): FingerprintKey {
   });
 }
 
-// Invisible Unicode format characters (General_Category=Cf): zero-width
-// spaces and joiners, the byte-order mark, the soft hyphen, bidi controls, tag
-// characters. This is the same class the detector strips in
-// packages/detections/src/format-chars.ts (read its header for the inventory
-// and for what is deliberately left alone: variation selectors, ordinary
-// whitespace). It is repeated here rather than imported because this package
-// must not depend on @akasecurity/detections.
-const FORMAT_CHARS = /\p{Cf}/gu;
-
 /**
- * The keyed fingerprint of one detected value: HMAC-SHA256 hex under the key.
+ * The keyed IDENTITY fingerprint of one detected value: HMAC-SHA256 hex under
+ * the key, over the value with invisible padding characters removed.
  *
- * Format characters are removed before hashing. Detection matches against text
- * with them stripped, but a finding's `rawMatch` is byte-exact (redaction and
+ * This is the one identity every join uses — exceptions, grants (including
+ * reveal grants minted from a vault pointer), the blocked-detections ledger,
+ * finding keys and backfills. Detection matches against text with format
+ * characters stripped, but a finding's `rawMatch` is byte-exact (redaction and
  * vault restore need the real text), so one secret seen clean and seen padded
- * with a zero-width space would otherwise get two identities — and an
- * exception or grant recorded for one would not cover the other. The vault is
- * the exception: it keys on `exactFingerprintValue` (below).
- * `rawMatch` itself is never altered; only the hash input is.
+ * with a zero-width space would otherwise get two identities, and an exception
+ * recorded for one would not cover the other.
+ *
+ * Only the characters in `stripInvisiblePadding` (@akasecurity/schema) are
+ * removed. That set is narrower than the \p{Cf} class matching ignores: a value
+ * containing a ZWJ/ZWNJ or a visible Arabic mark keeps it in its identity, because
+ * those are real characters. `rawMatch` itself is never altered; only the hash
+ * input is.
+ *
+ * Not to be compared with the vault's dedupe fingerprint
+ * (`exactFingerprintValue`): that one is over the exact bytes and lives in a
+ * different column. The vault also stores THIS value, per row, for joins.
  */
 export function fingerprintValue(key: FingerprintKey, raw: string): string {
-  return exactFingerprintValue(key, raw.replace(FORMAT_CHARS, ''));
+  return exactFingerprintValue(key, stripInvisiblePadding(raw));
 }
 
 /**
@@ -339,12 +341,11 @@ export function fingerprintValue(key: FingerprintKey, raw: string): string {
  * key, with nothing removed.
  *
  * For a store that dedupes by value and must give the same text back — the
- * secret vault. There, two values that differ only by an invisible format
- * character are two different credentials: sharing one row would hand back
- * whichever was stored first, with or without the character. Identity across
- * detections (exceptions, grants, finding keys) uses `fingerprintValue`
- * instead. For a value with no format character the two are identical, so rows
- * written before the normalization keep matching.
+ * secret vault's `value_fingerprint`. There, two values that differ only by an
+ * invisible character are two different credentials: sharing a row would hand
+ * back whichever was stored first, with or without the character. Never join
+ * this against an exception or a grant; use `fingerprintValue`. For a value
+ * with no invisible padding the two are equal.
  */
 export function exactFingerprintValue(key: FingerprintKey, raw: string): string {
   return createHmac('sha256', key.material).update(raw, 'utf8').digest('hex');

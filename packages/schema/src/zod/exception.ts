@@ -1,7 +1,8 @@
 // Detection exceptions: user-approved grants that let one specific detected
 // value pass an enforcing (block/redact) policy. The match key is
 // (ruleId, valueFingerprint) — the rule is the stable detection identity, and
-// the fingerprint pins the grant to the exact value the user approved. A
+// the fingerprint pins the grant to the value the user approved, ignoring only
+// invisible padding characters (see stripInvisiblePadding). A
 // value-free, rule-wide suppression is a policy change, not an exception.
 import { z } from 'zod';
 

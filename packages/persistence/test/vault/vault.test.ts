@@ -264,6 +264,7 @@ describe('SecretVault', () => {
         {
           pointerId: base32Encode(pointerId),
           valueFingerprint: fingerprintValue(fingerprintKey, raw),
+          valueIdentityFingerprint: fingerprintValue(fingerprintKey, raw),
           fingerprintKeyVersion: fingerprintKey.version,
           keyVersion: version,
           formatVersion: OLD_GENERATION,

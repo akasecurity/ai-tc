@@ -1,4 +1,3 @@
-'use client';
 import type { Severity, SeveritySummaryItem } from '@akasecurity/schema';
 import {
   Card,
@@ -13,15 +12,16 @@ import {
 
 import { AlertOctagonIcon } from '../shared/icons.tsx';
 import { SEVERITY_META } from './meta.ts';
-import { statusHrefKey } from './status-href-key.ts';
+import { COMBINED_STATUS_COLUMNS, SPLIT_STATUS_COLUMNS, statusHrefKey } from './status-columns.ts';
 import { compactCount, numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // Props = the data the connected wrapper's hook (or a server fetch) produces.
 // `bySeverity` is expected pre-normalized to display order (zero-filled).
 //
 // The card is a severity x status matrix. Rows are severities, columns are the
-// lifecycle buckets (`openAtRest`, `handled`, `resolved`, `dismissed`), which are disjoint, so
-// every row sums to its `count` and the grand total is the sum of the rows. A
+// disjoint lifecycle buckets (`openAtRest`, `handled`, `resolved`, `dismissed`) and
+// the grand total is the sum of the rows. A row's cells can sum to less than its
+// `count`: untracked legacy at-rest findings are counted in `count` only. A
 // count-only response carries no buckets: the status columns are then omitted and
 // only the severity totals render.
 export interface SeveritySummaryView {
@@ -58,9 +58,19 @@ function Count({
   href?: string | undefined;
   label: string;
 }) {
+  const exact = numberFormat.format(value);
   const compact = value >= COMPACT_FROM;
-  const text = compact ? compactCount(value) : numberFormat.format(value);
-  const title = compact ? numberFormat.format(value) : undefined;
+  // The short form is for the eye; the exact figure is what assistive tech reads and
+  // what a pointer sees on hover.
+  const text = compact ? (
+    <>
+      <span aria-hidden>{compactCount(value)}</span>
+      <span className="sr-only">{exact}</span>
+    </>
+  ) : (
+    exact
+  );
+  const title = compact ? exact : undefined;
   if (href && value > 0) {
     return (
       <a
@@ -79,42 +89,72 @@ function Count({
   );
 }
 
-interface StatusColumn {
-  key: string;
-  label: string;
-  pick: (s: SeveritySummaryItem) => number;
-}
-
-const OPEN: StatusColumn = { key: 'open', label: 'Open', pick: (s) => s.openAtRest ?? 0 };
-const DISMISSED: StatusColumn = {
-  key: 'dismissed',
-  label: 'Dismissed',
-  pick: (s) => s.dismissed ?? 0,
-};
-
-// A response that carries `caught` but not its two halves (an older producer) gets
-// one combined column rather than a `Handled`/`Resolved` pair of zeros.
-const SPLIT_COLUMNS: StatusColumn[] = [
-  OPEN,
-  { key: 'handled', label: 'Handled', pick: (s) => s.handled ?? 0 },
-  { key: 'resolved', label: 'Resolved', pick: (s) => s.resolved ?? 0 },
-  DISMISSED,
-];
-const COMBINED_COLUMNS: StatusColumn[] = [
-  OPEN,
-  { key: 'caught', label: 'Caught', pick: (s) => s.caught ?? 0 },
-  DISMISSED,
-];
-
 const MAX_TINT_PERCENT = 55;
+// A non-zero cell never rounds down to an invisible tint, or it would read as emptier
+// than a zero cell (which keeps the neutral background).
+const MIN_TINT_PERCENT = 6;
 
 // Cell shading scales with the cell's share of the largest cell, tinted with the
 // row's own severity hue. Text stays `text-text` on top: the tint is capped so it
 // never becomes a fill the text cannot be read against.
 function tint(color: string, count: number, max: number): string | undefined {
   if (count <= 0 || max <= 0) return undefined;
-  const pct = String(Math.round((count / max) * MAX_TINT_PERCENT));
+  const pct = String(Math.max(MIN_TINT_PERCENT, Math.round((count / max) * MAX_TINT_PERCENT)));
   return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+}
+
+// The loading state is laid out with the same table classes as the loaded matrix
+// (four severity rows, the status columns plus All, and the footer row), so the card
+// keeps its size and columns when the data arrives. The status columns are assumed to
+// be the split set, which is what a current producer sends.
+function MatrixSkeleton() {
+  const statusCells = SPLIT_STATUS_COLUMNS.length;
+  return (
+    <table aria-hidden className="w-full border-separate border-spacing-1 text-ui">
+      <thead>
+        <tr>
+          <th />
+          {Array.from({ length: statusCells + 1 }, (_, i) => (
+            <th key={i} className="px-1 pb-2">
+              <Skeleton className="ml-auto h-3 w-12" />
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {[0, 1, 2, 3].map((row) => (
+          <tr key={row}>
+            <th className="pr-2 text-left">
+              <Skeleton className="h-4 w-16" />
+            </th>
+            {Array.from({ length: statusCells }, (_, i) => (
+              <td key={i} className="p-0">
+                <Skeleton className="h-9 w-full" />
+              </td>
+            ))}
+            <td className="p-0">
+              <Skeleton className="ml-auto h-4 w-8" />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th className="pr-2 text-left">
+            <Skeleton className="h-4 w-6" />
+          </th>
+          {Array.from({ length: statusCells }, (_, i) => (
+            <td key={i} className="p-0">
+              <Skeleton className="ml-auto h-4 w-8" />
+            </td>
+          ))}
+          <td className="p-0">
+            <Skeleton className="ml-auto h-4 w-10" />
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  );
 }
 
 function Matrix({
@@ -137,9 +177,12 @@ function Matrix({
       s.dismissed !== undefined,
   );
   const hasSplit = bySeverity.some((s) => s.handled !== undefined || s.resolved !== undefined);
-  const columns = !hasStatus ? [] : hasSplit ? SPLIT_COLUMNS : COMBINED_COLUMNS;
+  const columns = !hasStatus ? [] : hasSplit ? SPLIT_STATUS_COLUMNS : COMBINED_STATUS_COLUMNS;
   const max = Math.max(0, ...bySeverity.flatMap((s) => columns.map((c) => c.pick(s))));
-  const columnTotals = columns.map((c) => bySeverity.reduce((n, s) => n + c.pick(s), 0));
+  const columnTotals = columns.map((c) => ({
+    column: c,
+    n: bySeverity.reduce((sum, s) => sum + c.pick(s), 0),
+  }));
   const head = 'px-1 pb-2 text-right text-label font-semibold uppercase tracking-wide text-text-3';
 
   return (
@@ -213,12 +256,12 @@ function Matrix({
           <th scope="row" className="pr-2 text-left font-normal text-text-2">
             All
           </th>
-          {columnTotals.map((n, i) => (
-            <td key={columns[i]?.key} className="p-0 text-right text-text-2">
+          {columnTotals.map(({ column, n }) => (
+            <td key={column.key} className="p-0 text-right text-text-2">
               <Count
                 value={n}
-                href={statusHrefs?.[statusHrefKey('all', columns[i]?.key ?? '')]}
-                label={(columns[i]?.label ?? '').toLowerCase()}
+                href={statusHrefs?.[statusHrefKey('all', column.key)]}
+                label={column.label.toLowerCase()}
               />
             </td>
           ))}
@@ -256,11 +299,7 @@ export function SeverityCardView({
         {error ? (
           <WidgetError message={error} />
         ) : isLoading ? (
-          <div className="flex flex-col gap-2">
-            {[0, 1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
-          </div>
+          <MatrixSkeleton />
         ) : total === 0 ? (
           <WidgetEmpty message="No findings." />
         ) : (

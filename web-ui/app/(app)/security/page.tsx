@@ -11,6 +11,7 @@ import {
   RecentlyResolvedCardView,
   ScanCoverageCardView,
   SeverityCardView,
+  SPLIT_STATUS_COLUMNS,
   statusHrefKey,
   TopSourcesCardView,
   WebCaptureCardView,
@@ -18,12 +19,7 @@ import {
 } from '@akasecurity/dashboard-ui';
 import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
 import { readEffectiveSettings } from '@akasecurity/persistence';
-import type {
-  EnforcementActionKind,
-  FindingStatus,
-  Severity,
-  SeveritySummaryItem,
-} from '@akasecurity/schema';
+import type { EnforcementActionKind, Severity } from '@akasecurity/schema';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
@@ -187,30 +183,19 @@ export default async function SecurityPage({
     if (s.count > 0) severityHrefs[s.severity] = severityHref(s.severity);
   }
   // Status cells of the same card, gated on a non-zero count for the same reason.
-  // Keyed by the view's own `statusHrefKey`, so host and view cannot disagree on the
-  // spelling. `caught` is deliberately absent: it has no single status to filter by,
-  // and the view only shows it for a producer that predates the handled/resolved split.
   const statusHrefs: Record<string, string> = {};
-  const statusBuckets = [
-    { key: 'open', status: 'open', pick: (s: SeveritySummaryItem) => s.openAtRest ?? 0 },
-    { key: 'handled', status: 'handled', pick: (s: SeveritySummaryItem) => s.handled ?? 0 },
-    { key: 'resolved', status: 'resolved', pick: (s: SeveritySummaryItem) => s.resolved ?? 0 },
-    { key: 'dismissed', status: 'dismissed', pick: (s: SeveritySummaryItem) => s.dismissed ?? 0 },
-  ] as const satisfies readonly {
-    key: string;
-    status: FindingStatus;
-    pick: (s: SeveritySummaryItem) => number;
-  }[];
-  for (const b of statusBuckets) {
+  for (const c of SPLIT_STATUS_COLUMNS) {
+    const { status } = c;
+    if (!status) continue;
     let column = 0;
     for (const s of severity.bySeverity) {
-      const n = b.pick(s);
+      const n = c.pick(s);
       column += n;
       if (n > 0)
-        statusHrefs[statusHrefKey(s.severity, b.key)] = severityStatusHref(s.severity, b.status);
+        statusHrefs[statusHrefKey(s.severity, c.key)] = severityStatusHref(s.severity, status);
     }
     if (column > 0)
-      statusHrefs[statusHrefKey('all', b.key)] = severityStatusHref(undefined, b.status);
+      statusHrefs[statusHrefKey('all', c.key)] = severityStatusHref(undefined, status);
   }
   if (severity.total > 0)
     statusHrefs[statusHrefKey('all', 'all')] = severityStatusHref(undefined, undefined);

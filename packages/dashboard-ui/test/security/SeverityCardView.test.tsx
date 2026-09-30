@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import { SeverityCardView } from '../../src/security/SeverityCardView.tsx';
-import { statusHrefKey } from '../../src/security/status-href-key.ts';
+import { statusHrefKey } from '../../src/security/status-columns.ts';
 
 // The card is a severity x status matrix. The status buckets are disjoint, so each
 // row sums to its `count` and the grand total is the sum of the rows.
@@ -172,12 +172,42 @@ describe('SeverityCardView', () => {
       { severity: 'low', count: 0, openAtRest: 0, handled: 0, resolved: 0, dismissed: 0 },
     ];
     const html = render({ bySeverity: big, total: 22344 });
-    expect(cell(html, 'critical-open')).toBe('12k');
+    // Short for the eye, exact for assistive tech and on hover.
+    expect(cellHtml(html, 'critical-open')).toContain('<span aria-hidden="true">12k</span>');
+    expect(cellHtml(html, 'critical-open')).toContain('<span class="sr-only">12,345</span>');
     expect(cellHtml(html, 'critical-open')).toContain('title="12,345"');
     // Under the threshold stays exact, with no title.
     expect(cell(html, 'high-open')).toBe('9,999');
     expect(cellHtml(html, 'high-open')).not.toContain('title=');
     // The subtitle keeps the exact total.
     expect(html).toContain('22,344 findings');
+  });
+
+  it('never rounds a non-zero cell down to an invisible tint', () => {
+    const skewed: SeveritySummaryItem[] = [
+      { severity: 'critical', count: 1, openAtRest: 1, handled: 0, resolved: 0, dismissed: 0 },
+      { severity: 'high', count: 5000, openAtRest: 0, handled: 5000, resolved: 0, dismissed: 0 },
+      { severity: 'medium', count: 0, openAtRest: 0, handled: 0, resolved: 0, dismissed: 0 },
+      { severity: 'low', count: 0, openAtRest: 0, handled: 0, resolved: 0, dismissed: 0 },
+    ];
+    const html = render({ bySeverity: skewed, total: 5001 });
+    // 1 of 5000 is 0.01% of the maximum: it must still carry a tint above 0%.
+    const m = /data-cell="critical-open"[^>]*color-mix\(in srgb, [^%]*? (\d+)%/.exec(html);
+    expect(m, 'the tiny cell carries no tint').not.toBeNull();
+    expect(Number(m?.[1])).toBeGreaterThan(0);
+    // The control: a zero cell in the same table carries none.
+    expect(html).not.toMatch(/data-cell="critical-handled"[^>]*color-mix/);
+  });
+
+  it('loads as a table-shaped skeleton: four severity rows, the status columns and a footer', () => {
+    const html = render({ isLoading: true, bySeverity: [], total: 0 });
+    expect(html).toContain('Loading…');
+    expect(html).toContain('aria-busy="true"');
+    // 5 header + (4 rows x (label + 4 cells + total)) + footer (label + 4 + total)
+    expect(html.split('data-slot="skeleton"').length - 1).toBe(5 + 4 * 6 + 6);
+    expect((html.match(/<tr/g) ?? []).length).toBe(1 + 4 + 1);
+    // Nothing that looks like data.
+    expect(html).not.toContain('data-cell=');
+    expect(html).not.toContain('No findings.');
   });
 });

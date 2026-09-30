@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +13,7 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey } from '../src/fingerprint.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
@@ -177,7 +178,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 describe('exception evaluation — downgrade to allow', () => {

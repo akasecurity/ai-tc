@@ -1,11 +1,44 @@
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/session-start.js\" sessionStart \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/user-prompt-submit.js\" userPromptSubmitted \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
     "preToolUse": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/scripts/pre-tool-use.js\" preToolUse \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/post-tool-use.js\" postToolUse \"${PLUGIN_ROOT}/plugin.json\"",
             "timeoutSec": 30
           }
         ]

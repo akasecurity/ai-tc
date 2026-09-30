@@ -82,6 +82,7 @@ const EXPECTED_SESSION_PASS_FILES = [
   'plugins/browser-extension/src/native-host/host.ts',
   'plugins/claude-code/src/hooks/session-start.ts',
   'plugins/codex/src/hooks/session-start.ts',
+  'plugins/copilot/src/hooks/session-start.ts',
 ];
 
 const EXPECTED_INVENTORY_RESOLVER_FILES = [

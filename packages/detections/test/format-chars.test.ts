@@ -216,19 +216,28 @@ describe('mergeOverlappingSameRule', () => {
     // - Both sizes are merged once, untimed, before any sample: a cold first
     //   call runs the merge unoptimized and costs several times a warm one,
     //   which would put the JIT in the denominator instead of the merge.
-    // - A small-size sample times SMALL_CALLS back-to-back merges and divides
-    //   by SMALL_CALLS, so both timed windows cover LARGE findings and last
-    //   about as long under O(n log n). A lone warm 2,000-finding merge is a
-    //   fraction of a millisecond, too short a window to read reliably.
+    // - Each sample merges WINDOW findings in total at either size, as
+    //   back-to-back merges of one input, and divides by the number of
+    //   merges. Both timed windows then last about as long under O(n log n);
+    //   a lone warm small merge is a fraction of a millisecond, too short a
+    //   window to read reliably.
+    // - LARGE stays well under ~15,000 findings. Past that, the merge's
+    //   per-rule arrays are too big for V8's regular heap objects and go to
+    //   its large-object space, which maps fresh pages on every call: at
+    //   20,000 each merge takes about 33 page faults and a small merge none.
+    //   A page fault is cheap on a physical machine but costly on a
+    //   virtualized CI runner, enough on its own to push a healthy merge past
+    //   30x there.
     // - The two sizes alternate, and each keeps the fastest of SAMPLES. A GC
     //   pause or a descheduled thread only ever adds time, so the fastest
     //   sample is the one with the least of it, and alternating exposes both
     //   sizes to the same machine state rather than timing one after the
     //   other.
-    // - Sampling stops early once it has run for SAMPLING_BUDGET_MS. A
-    //   healthy merge takes every sample in a few milliseconds and never
-    //   reaches it; a quadratic one takes seconds per sample, and its first
-    //   sample is already far past the bound.
+    // - Sampling stops early once it has taken MIN_SAMPLES and run for
+    //   SAMPLING_BUDGET_MS. A healthy merge takes every sample in a few
+    //   milliseconds and never reaches the budget; a quadratic one takes
+    //   seconds per sample, and the fastest of its first few is already far
+    //   past the bound.
     function buildOverlappingPairs(n: number, text: string): MatchResult[] {
       const findings: MatchResult[] = [];
       for (let i = 0; i < n; i += 2) {
@@ -256,19 +265,22 @@ describe('mergeOverlappingSameRule', () => {
       return findings;
     }
 
-    const SMALL = 2_000;
-    const LARGE = 20_000; // 10x the input
-    const SMALL_CALLS = LARGE / SMALL;
+    const SMALL = 1_000;
+    const LARGE = 10_000; // 10x the input
+    const WINDOW = 20_000; // findings merged per timed sample, at either size
     const SAMPLES = 7;
+    const MIN_SAMPLES = 3;
     const SAMPLING_BUDGET_MS = 2_000;
 
     // Builds one input of n findings and returns a timer over it: the mean
-    // milliseconds per merge across `calls` back-to-back merges. The input is
-    // built once and reused, since the merge sorts a copy and never mutates it.
-    function mergeTimer(n: number): (calls: number) => number {
+    // milliseconds per merge across WINDOW / n back-to-back merges. The input
+    // is built once and reused, since the merge sorts a copy and never
+    // mutates it.
+    function mergeTimer(n: number): () => number {
       const bigText = 'x'.repeat(n * 3 + 10);
       const findings = buildOverlappingPairs(n, bigText);
-      return (calls) => {
+      const calls = WINDOW / n;
+      return () => {
         let merged: MatchResult[] = [];
         const start = performance.now();
         for (let i = 0; i < calls; i++) merged = mergeOverlappingSameRule(findings, bigText);
@@ -280,17 +292,17 @@ describe('mergeOverlappingSameRule', () => {
 
     const timeSmall = mergeTimer(SMALL);
     const timeLarge = mergeTimer(LARGE);
-    timeSmall(SMALL_CALLS); // warm-up; readings discarded
-    timeLarge(1);
+    timeSmall(); // warm-up; readings discarded
+    timeLarge();
     let small = Infinity;
     let large = Infinity;
     let samples = 0;
     const sampling = performance.now();
     while (samples < SAMPLES) {
-      small = Math.min(small, timeSmall(SMALL_CALLS));
-      large = Math.min(large, timeLarge(1));
+      small = Math.min(small, timeSmall());
+      large = Math.min(large, timeLarge());
       samples++;
-      if (performance.now() - sampling > SAMPLING_BUDGET_MS) break;
+      if (samples >= MIN_SAMPLES && performance.now() - sampling > SAMPLING_BUDGET_MS) break;
     }
     expect(
       large,

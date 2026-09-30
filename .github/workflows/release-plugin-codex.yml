@@ -82,16 +82,6 @@ jobs:
     name: Build · Verify · Publish
     needs: verify
     runs-on: ubuntu-latest
-    # What was published. Nothing in THIS file consumes these yet: the
-    # marketplace doorbell (notify-marketplace.yml) is not wired here, because
-    # the receiving marketplace pins no entry for this package, so there is no
-    # pin for a dispatch to advance. They are declared now because they are what
-    # that call takes, so wiring it is the job block alone — and because passing
-    # them on is what keeps the doorbell from checking out the repo to re-derive
-    # what this job already knows.
-    outputs:
-      pkg: ${{ steps.manifest.outputs.pkg }}
-      version: ${{ steps.manifest.outputs.version }}
     permissions:
       contents: write # create the GitHub Release
       id-token: write # OIDC trusted publishing to npm (provenance attestation)
@@ -108,9 +98,8 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      # Read once, here. Every consumer below — the tag check, the dist-tag
-      # choice, and the doorbell's payload — takes these outputs, so the name and
-      # the version this run publishes have exactly one source.
+      # Read once, here. The tag check and the dist-tag choice below both take
+      # this output, so the version this run publishes has exactly one source.
       - name: Read the plugin manifest
         id: manifest
         run: |
@@ -118,10 +107,7 @@ jobs:
           pkg=$(node -p "require('./${PLUGIN_MANIFEST}').name")
           version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
           echo "publishing ${pkg}@${version}"
-          {
-            echo "pkg=${pkg}"
-            echo "version=${version}"
-          } >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

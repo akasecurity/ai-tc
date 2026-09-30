@@ -8,19 +8,21 @@ name: Release plugin (Claude Code)
 # whose source resolves this package from public npm (GitHub Packages requires auth
 # even for public reads, so it is a secondary artifact, not the marketplace source).
 #
-# Release flow: bump version in package.json + .claude-plugin/plugin.json, then
-# push a tag `plugin-claude-v<version>` (e.g. plugin-claude-v0.1.0).
+# Release flow: bump version in package.json + .claude-plugin/plugin.json in the
+# release pull request. After it merges, push a tag `plugin-claude-v<version>`
+# (e.g. plugin-claude-v0.1.0) on the commit that merge put on `main`. A
+# pre-release is the one exception: it is tagged on its release branch.
 
 on:
   push:
     tags:
       - 'plugin-claude-v*'
+  # A manual run is a dry run and nothing else: it builds, smoke-tests and packs.
+  # There is deliberately no input that turns a dispatch into a publish. A
+  # dispatch can start from any branch, and it skips the tag-matches-manifest
+  # check, which only a tag push has a tag for, so every publish below is gated
+  # on the tag push alone.
   workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publish to npm (otherwise build + pack only — a dry run)'
-        type: boolean
-        default: false
 
 # One release per tag at a time. A single tag push can start more than one run.
 # A duplicate is already self-limiting here: npm and GitHub Packages both reject a
@@ -82,18 +84,15 @@ jobs:
     name: Build · Verify · Publish
     needs: verify
     runs-on: ubuntu-latest
-    # What was published, for the marketplace doorbell below. Passing these on
-    # rather than having that job check out the repo and re-derive them is what
-    # makes the two structurally incapable of disagreeing about the version — and
-    # it is why the doorbell needs no checkout at all.
-    outputs:
-      pkg: ${{ steps.manifest.outputs.pkg }}
-      version: ${{ steps.manifest.outputs.version }}
     permissions:
       contents: write # create the GitHub Release
       id-token: write # OIDC trusted publishing to npm (provenance attestation)
     steps:
+      # Full history and every branch, so the on-main check below can ask
+      # whether `main` holds the tagged commit.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -105,9 +104,8 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      # Read once, here. Every consumer below — the tag check, the dist-tag
-      # choice, and the doorbell's payload — takes these outputs, so the name and
-      # the version this run publishes have exactly one source.
+      # Read once, here. The tag check and the dist-tag choice below both take
+      # this output, so the version this run publishes has exactly one source.
       - name: Read the plugin manifest
         id: manifest
         run: |
@@ -115,10 +113,7 @@ jobs:
           pkg=$(node -p "require('./${PLUGIN_MANIFEST}').name")
           version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
           echo "publishing ${pkg}@${version}"
-          {
-            echo "pkg=${pkg}"
-            echo "version=${version}"
-          } >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -136,6 +131,37 @@ jobs:
           echo "tag=$tag  package.json=$PKG_VERSION  plugin.json=$manifest"
           if [ "$tag" != "$PKG_VERSION" ] || [ "$tag" != "$manifest" ]; then
             echo "::error::Version mismatch — tag plugin-claude-v$tag must equal package.json ($PKG_VERSION) and plugin.json ($manifest)"
+            exit 1
+          fi
+
+      # A stable version is published only from a commit `main` already holds:
+      # the one the release pull request's merge put there, tagged after it
+      # merged. That keeps the commit a stable version's npm provenance names a
+      # reviewed, merged one, which is what anyone verifying a release against
+      # `main` checks. A pre-release is tagged on its release branch before that
+      # branch merges, so a suffixed version skips the check. This refuses an
+      # honest mistake before anything publishes; it is not a control, since
+      # whoever pushes a tag also chooses what this file says at the commit
+      # they tag.
+      - name: Verify a stable tag is on main
+        if: github.event_name == 'push'
+        env:
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          case "$PKG_VERSION" in
+            *-*)
+              echo "pre-release ${PKG_VERSION}: tagged on its release branch, not required to be on main"
+              exit 0
+              ;;
+          esac
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::origin/main is not fetched; the release job's checkout needs fetch-depth: 0"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "${GITHUB_SHA} is on main"
+          else
+            echo "::error::plugin-claude-v${PKG_VERSION} tags ${GITHUB_SHA}, which main does not contain. Do not move or delete the tag. If the release pull request merges with a merge commit, re-run this run's failed jobs after it merges; otherwise release the next patch version, tagged on the commit that merge puts on main."
             exit 1
           fi
 
@@ -161,7 +187,7 @@ jobs:
       # version under `nightly`, any other pre-release under `rc`, and a bare
       # X.Y.Z under `latest`.
       - name: Publish to npm
-        if: github.event_name == 'push' || inputs.publish
+        if: github.event_name == 'push'
         run: |
           case "$PKG_VERSION" in
             *-beta.*)    dist_tag="beta" ;;
@@ -186,10 +212,14 @@ jobs:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub
   # Packages .npmrc/auth never collides with the public-npm publish above. The
   # @akasecurity scope must match the akasecurity org that owns this repo.
+  #
+  # It waits for `release`, so it runs only after that job's tag-matches-manifest
+  # check and its npm publish have passed: GitHub Packages never receives a
+  # version the tag does not name, or one npm does not also hold.
   github-packages:
     name: Publish to GitHub Packages
-    needs: verify
-    if: github.event_name == 'push' || inputs.publish
+    needs: [verify, release]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -229,20 +259,3 @@ jobs:
           pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Ring the marketplace's doorbell. The mechanism lives in a reusable workflow
-  # because it is not specific to this plugin — see notify-marketplace.yml, which
-  # every plugin the marketplace pins calls the same way. `needs: release` both
-  # supplies the published package/version and means a failed publish skips this
-  # without an `always()`.
-  notify-marketplace:
-    needs: release
-    if: github.event_name == 'push' || inputs.publish
-    uses: ./.github/workflows/notify-marketplace.yml
-    permissions:
-      contents: read
-    with:
-      package: ${{ needs.release.outputs.pkg }}
-      version: ${{ needs.release.outputs.version }}
-    secrets:
-      dispatch-token: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}

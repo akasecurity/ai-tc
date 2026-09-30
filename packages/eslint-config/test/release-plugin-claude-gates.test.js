@@ -419,6 +419,38 @@ describe(
       expect(result.output).toContain('pre-release 0.10.0-beta.1');
     });
 
+    // The beta case above cannot tell "any suffix skips the check" from "a beta
+    // suffix skips it": narrowing the skip arm to `*-beta.*` keeps it green while
+    // a nightly or a release candidate, which the contributing guide tags on the
+    // release branch just the same, would be refused as an unmerged stable. One
+    // row per suffix beyond beta: nightly, rc, and an arbitrary other suffix,
+    // which the dist-tag block's catch-all arm publishes under `rc` like the
+    // second row. A skip arm that named the suffixes one by one would still
+    // refuse that last row. `it.for`, not `it.each`: only `for` hands the
+    // callback the TestContext the skip needs.
+    it.for([
+      ['nightly', '0.10.0-nightly.1'],
+      ['rc', '0.10.0-rc.1'],
+      ['any other suffix', '0.10.0-alpha.1'],
+    ])('passes a pre-release tag on its release branch (%s)', ([, version], ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      // The premise, read back from the repository: the tagged commit is off
+      // main, so a stable version there is refused. Without it the pass below
+      // would prove only that the check let a commit through.
+      expect(() =>
+        fixture.git(
+          'merge-base',
+          '--is-ancestor',
+          fixture.releaseCommit,
+          'refs/remotes/origin/main',
+        ),
+      ).toThrow();
+      const result = runOnMainCheck(fixture, { version, sha: fixture.releaseCommit });
+      expect(result.passed, result.output).toBe(true);
+      expect(result.output).toContain(`pre-release ${version}`);
+    });
+
     it('passes both the merge commit and the release commit once a merge commit lands', (ctx) => {
       requireGitAndBash(ctx);
       const fixture = releaseRepo();

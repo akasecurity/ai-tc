@@ -268,6 +268,73 @@ describe('the security route carries each widget its own window', () => {
     for (const href of Object.values(hrefs)) expect(href).not.toContain('range=');
   });
 
+  it('sends each status column to its own findings list', async () => {
+    // One at-rest finding per lifecycle state, in a different severity each, so a
+    // column wired to the wrong status opens the wrong list while every count is right:
+    // the straddling fixture is all in-flight, which leaves Open, Resolved and Dismissed
+    // at zero and their links unbuilt.
+    seed([
+      {
+        ruleId: 'r-open',
+        severity: 'low',
+        daysAgo: 1,
+        repo: 'acme/api',
+        category: 'secret',
+        kind: 'code_change',
+        findingKey: 'k-open',
+      },
+      {
+        ruleId: 'r-res',
+        severity: 'high',
+        daysAgo: 1,
+        repo: 'acme/api',
+        category: 'secret',
+        kind: 'code_change',
+        findingKey: 'k-res',
+      },
+      {
+        ruleId: 'r-dis',
+        severity: 'critical',
+        daysAgo: 1,
+        repo: 'acme/api',
+        category: 'secret',
+        kind: 'code_change',
+        findingKey: 'k-dis',
+      },
+      { ruleId: 'r-flight', severity: 'medium', daysAgo: 1, repo: 'acme/api', category: 'secret' },
+    ]);
+    const db = openLocalDatabase(dir);
+    for (const [findingKey, status, method] of [
+      ['k-res', 'resolved', 'fixed-at-source'],
+      ['k-dis', 'dismissed', 'false-positive'],
+    ] as const) {
+      db.resolutions.insertResolution({
+        findingKey,
+        status,
+        method,
+        resolvedAt: Date.now(),
+        evidence: '',
+      });
+    }
+    db.close();
+    dropMemoisedDb();
+
+    const hrefs = (await propsOf('SeverityCardView')).statusHrefs as Record<string, string>;
+    expect(hrefs['low:open']).toBe('/findings?severity=low&status=open&view=flat');
+    expect(hrefs['high:resolved']).toBe('/findings?severity=high&status=resolved&view=flat');
+    expect(hrefs['critical:dismissed']).toBe(
+      '/findings?severity=critical&status=dismissed&view=flat',
+    );
+    expect(hrefs['medium:handled']).toBe('/findings?severity=medium&status=handled&view=flat');
+    // The footer row files each column under its own status too.
+    expect(hrefs['all:open']).toBe('/findings?status=open&view=flat');
+    expect(hrefs['all:handled']).toBe('/findings?status=handled&view=flat');
+    expect(hrefs['all:resolved']).toBe('/findings?status=resolved&view=flat');
+    expect(hrefs['all:dismissed']).toBe('/findings?status=dismissed&view=flat');
+    // And a cell that counts nothing has no link: nothing is resolved at low severity.
+    expect(hrefs).not.toHaveProperty('low:resolved');
+  });
+
   it('gives the enforcement card links that carry the selected range', async () => {
     seedStraddlingFixture();
     const hrefs = (await propsOf('EnforcementCardView')).actionHrefs as Record<string, string>;

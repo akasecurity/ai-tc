@@ -11,6 +11,7 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { AlertOctagonIcon } from '../shared/icons.tsx';
+import { tint } from './heat-tint.ts';
 import { SEVERITY_META } from './meta.ts';
 import { COMBINED_STATUS_COLUMNS, SPLIT_STATUS_COLUMNS, statusHrefKey } from './status-columns.ts';
 import { compactCount, numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
@@ -89,20 +90,6 @@ function Count({
   );
 }
 
-const MAX_TINT_PERCENT = 55;
-// A non-zero cell never rounds down to an invisible tint, or it would read as emptier
-// than a zero cell (which keeps the neutral background).
-const MIN_TINT_PERCENT = 6;
-
-// Cell shading scales with the cell's share of the largest cell, tinted with the
-// row's own severity hue. Text stays `text-text` on top: the tint is capped so it
-// never becomes a fill the text cannot be read against.
-function tint(color: string, count: number, max: number): string | undefined {
-  if (count <= 0 || max <= 0) return undefined;
-  const pct = String(Math.max(MIN_TINT_PERCENT, Math.round((count / max) * MAX_TINT_PERCENT)));
-  return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
-}
-
 // The loading state is laid out with the same table classes as the loaded matrix
 // (four severity rows, the status columns plus All, and the footer row), so the card
 // keeps its size and columns when the data arrives. The status columns are assumed to
@@ -176,7 +163,8 @@ function Matrix({
       s.openAtRest !== undefined ||
       s.dismissed !== undefined,
   );
-  const hasSplit = bySeverity.some((s) => s.handled !== undefined || s.resolved !== undefined);
+  // Both halves on every row, or the split columns would show an absent half as a real 0.
+  const hasSplit = bySeverity.every((s) => s.handled !== undefined && s.resolved !== undefined);
   const columns = !hasStatus ? [] : hasSplit ? SPLIT_STATUS_COLUMNS : COMBINED_STATUS_COLUMNS;
   const max = Math.max(0, ...bySeverity.flatMap((s) => columns.map((c) => c.pick(s))));
   const columnTotals = columns.map((c) => ({
@@ -244,7 +232,7 @@ function Matrix({
                   </td>
                 );
               })}
-              <td className="p-0 text-right text-text-2">
+              <td data-cell={`${s.severity}-all`} className="p-0 text-right text-text-2">
                 <Count value={s.count} href={href} label={meta.label.toLowerCase()} />
               </td>
             </tr>
@@ -257,7 +245,11 @@ function Matrix({
             All
           </th>
           {columnTotals.map(({ column, n }) => (
-            <td key={column.key} className="p-0 text-right text-text-2">
+            <td
+              key={column.key}
+              data-cell={`all-${column.key}`}
+              className="p-0 text-right text-text-2"
+            >
               <Count
                 value={n}
                 href={statusHrefs?.[statusHrefKey('all', column.key)]}
@@ -265,7 +257,7 @@ function Matrix({
               />
             </td>
           ))}
-          <td className="p-0 text-right font-bold text-text">
+          <td data-cell="all-all" className="p-0 text-right font-bold text-text">
             <Count value={total} href={statusHrefs?.[statusHrefKey('all', 'all')]} label="all" />
           </td>
         </tr>

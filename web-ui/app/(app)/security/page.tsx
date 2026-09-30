@@ -126,7 +126,7 @@ export default async function SecurityPage({
   // server-side. Scoped by STATUS, not by the range selector: this card is a to-do
   // list, so a window would hide a secret committed weeks ago and never fixed,
   // reporting "no recommendations" over live exposure. It is deliberately one of
-  // the two cards on this page that ignore the range, alongside By severity.
+  // the two cards on this page that ignore the range, alongside Findings by severity and status.
   //
   // The destination is built INSIDE the builder rather than patched over it
   // afterwards: the card ranks by category but counts by the rule it names, so the

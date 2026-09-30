@@ -77,13 +77,21 @@ describe('SeverityCardView', () => {
     expect(cell(html, 'low-open')).toBe('4');
   });
 
-  it('sums the column totals from the rows', () => {
-    // open 3+0+0+4=7, handled 4+11=15, resolved 2+7+1=10, dismissed 1+2=3
+  it('sums each column into its own footer cell, and each row into its own All cell', () => {
+    // open 3+0+0+4=7, handled 4+11=15, resolved 2+7+1=10, dismissed 1+2=3. Read by
+    // POSITION: a bare substring also matches an unrelated body cell (7 is High's
+    // Resolved, 10 is Critical's All, 3 is Critical's Open), so it could not tell the
+    // footer from the body or one column from another.
     const html = render();
-    expect(html).toContain('>7<');
-    expect(html).toContain('>15<');
-    expect(html).toContain('>10<');
-    expect(html).toContain('>3<');
+    expect(cell(html, 'all-open')).toBe('7');
+    expect(cell(html, 'all-handled')).toBe('15');
+    expect(cell(html, 'all-resolved')).toBe('10');
+    expect(cell(html, 'all-dismissed')).toBe('3');
+    expect(cell(html, 'all-all')).toBe('35');
+    expect(cell(html, 'critical-all')).toBe('10');
+    expect(cell(html, 'high-all')).toBe('20');
+    expect(cell(html, 'medium-all')).toBe('0');
+    expect(cell(html, 'low-all')).toBe('5');
   });
 
   it('shades a non-zero cell and leaves a zero cell unshaded', () => {
@@ -97,8 +105,8 @@ describe('SeverityCardView', () => {
       bySeverity: bySeverity.map(({ severity, count }) => ({ severity, count })),
     });
     expect(html).not.toContain('>Open<');
-    expect(html).not.toContain('data-cell=');
-    expect(html).toContain('>20<');
+    expect(html).not.toMatch(/data-cell="[a-z]+-(open|handled|resolved|dismissed|caught)"/);
+    expect(cell(html, 'high-all')).toBe('20');
   });
 
   it('falls back to one Caught column when the response has no handled/resolved split', () => {
@@ -209,5 +217,23 @@ describe('SeverityCardView', () => {
     // Nothing that looks like data.
     expect(html).not.toContain('data-cell=');
     expect(html).not.toContain('No findings.');
+  });
+
+  it('does not show one half of the split as a real zero when the other half is absent', () => {
+    // `handled` only: the payload cannot say what `resolved` is, so the split columns
+    // must not render it as 0. It falls back to the combined column.
+    const html = render({
+      bySeverity: bySeverity.map(({ severity, count, caught, openAtRest, dismissed, handled }) => ({
+        severity,
+        count,
+        caught,
+        openAtRest,
+        dismissed,
+        handled,
+      })),
+    });
+    expect(html).not.toContain('>Resolved<');
+    expect(html).toContain('>Caught<');
+    expect(cell(html, 'critical-caught')).toBe('6');
   });
 });

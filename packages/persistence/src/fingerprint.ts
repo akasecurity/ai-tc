@@ -326,7 +326,8 @@ const FORMAT_CHARS = /\p{Cf}/gu;
  * with them stripped, but a finding's `rawMatch` is byte-exact (redaction and
  * vault restore need the real text), so one secret seen clean and seen padded
  * with a zero-width space would otherwise get two identities — and an
- * exception, grant or vault entry recorded for one would not cover the other.
+ * exception or grant recorded for one would not cover the other. The vault is
+ * the exception: it keys on `exactFingerprintValue` (below).
  * `rawMatch` itself is never altered; only the hash input is.
  */
 export function fingerprintValue(key: FingerprintKey, raw: string): string {

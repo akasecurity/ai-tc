@@ -298,10 +298,16 @@ const publishMain = (fixture) =>
 /**
  * Run the step's own `run:` script, as the workflow spells it, for one version
  * and one tagged commit.
+ *
+ * `detached` first checks the tagged commit out with a detached HEAD, which is
+ * where a tag push's checkout leaves the job. Without it HEAD stays on `main`,
+ * where it is always an ancestor of `origin/main` or equal to it, so a check
+ * that compared against HEAD instead of `origin/main` could not be told apart.
  * @param {ReturnType<typeof releaseRepo>} fixture
- * @param {{ version: string, sha: string }} tag
+ * @param {{ version: string, sha: string, detached?: boolean }} tag
  */
-function runOnMainCheck(fixture, { version, sha }) {
+function runOnMainCheck(fixture, { version, sha, detached = false }) {
+  if (detached) fixture.git('checkout', '-q', '--detach', sha);
   const script = blockScalarText(rawStepNamed(readWorkflow(), ON_MAIN_CHECK), 'run');
   try {
     const output = execFileSync(BASH, ['-c', script], {
@@ -359,6 +365,26 @@ describe(
       expect(result.passed, result.output).toBe(false);
       expect(result.output).toContain(
         `::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}`,
+      );
+    });
+
+    it('compares against main, not the tagged commit the job has checked out', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      const result = runOnMainCheck(fixture, {
+        version: '0.9.15',
+        sha: fixture.releaseCommit,
+        detached: true,
+      });
+      // The premise, read back from the repository: HEAD is the tagged
+      // release-branch commit, detached, with `origin/main` somewhere else. If
+      // the checkout did nothing, the refusal below would prove nothing.
+      expect(fixture.git('rev-parse', 'HEAD')).toBe(fixture.releaseCommit);
+      expect(fixture.git('rev-parse', 'refs/remotes/origin/main')).toBe(fixture.base);
+      expect(() => fixture.git('symbolic-ref', '--quiet', 'HEAD')).toThrow();
+      expect(result.passed, result.output).toBe(false);
+      expect(result.output).toContain(
+        `::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}, which main does not contain`,
       );
     });
 

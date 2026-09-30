@@ -34,8 +34,10 @@ import { StorePosturePlugin } from '@akasecurity/schema';
  * (missing, or not reachable) is treated as gone.
  *
  * Best-effort — one small local file read once per report, plus one stat per
- * entry. Asynchronous, so a caller that bounds it with a timer keeps the read
- * inside that bound. Every failure reads null; nothing here throws.
+ * entry. Asynchronous, so a caller's timer can give up on it (a synchronous
+ * read could not be preempted). Every failure it observes reads null and
+ * nothing here throws; a read that never settles is the caller's to bound, and
+ * the plugin block does, with INSTALL_RECORD_READ_TIMEOUT_MS.
  */
 export async function readInstalledVersion(installRoot: string): Promise<string | null> {
   try {

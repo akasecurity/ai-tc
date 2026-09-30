@@ -301,8 +301,9 @@ const publishMain = (fixture) =>
  *
  * `detached` first checks the tagged commit out with a detached HEAD, which is
  * where a tag push's checkout leaves the job. Without it HEAD stays on `main`,
- * where it is always an ancestor of `origin/main` or equal to it, so a check
- * that compared against HEAD instead of `origin/main` could not be told apart.
+ * and in every case that leaves it there `origin/main` points at that same
+ * commit whenever the check reaches its comparison, so a check that compared
+ * against HEAD instead of `origin/main` could not be told apart.
  * @param {ReturnType<typeof releaseRepo>} fixture
  * @param {{ version: string, sha: string, detached?: boolean }} tag
  */
@@ -386,6 +387,25 @@ describe(
       expect(result.output).toContain(
         `::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}, which main does not contain`,
       );
+    });
+
+    it('reads main from origin, since a tag checkout creates no local main branch', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      // A tag checkout is detached and has no local `main`. In every other case
+      // the local `main` equals `origin/main`, so a check that read the local
+      // branch would pass them all and refuse every stable tag here.
+      fixture.git('checkout', '-q', '--detach', fixture.base);
+      fixture.git('update-ref', '-d', 'refs/heads/main');
+      const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
+      // The premise, read back from the repository: HEAD is detached at a commit
+      // `origin/main` holds, and no local `main` exists.
+      expect(fixture.git('rev-parse', 'HEAD')).toBe(fixture.base);
+      expect(fixture.git('rev-parse', 'refs/remotes/origin/main')).toBe(fixture.base);
+      expect(() => fixture.git('symbolic-ref', '--quiet', 'HEAD')).toThrow();
+      expect(() => fixture.git('rev-parse', '--verify', '--quiet', 'refs/heads/main')).toThrow();
+      expect(result.passed, result.output).toBe(true);
+      expect(result.output).toContain(`${fixture.base} is on main`);
     });
 
     it('passes a pre-release tag on its release branch', (ctx) => {

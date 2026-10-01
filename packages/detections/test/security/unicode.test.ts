@@ -4,7 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
-import { BOM, FORMAT_CHARS, ZWSP } from '../helpers/format-chars.ts';
+import { BOM, FORMAT_CHARS, SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // Parsed through the real schema — these assert the shipped path end to end
@@ -777,5 +777,67 @@ describe('an original-pass-only CORROBORATOR measures its distance in visible ch
   it('corroborates by category through 200 invisible characters of padding', () => {
     const gated = gatedBy('t/gated', { categories: ['secret'], windowChars: 50 });
     expect(ids([anchor, gated])).toEqual(['t/anchor', 't/gated']);
+  });
+});
+
+describe('a label split by a format character is measured in visible characters at the window edge', () => {
+  // The raw window counts ORIGINAL characters and the normalized window counts
+  // visible ones, so the two are cut differently around the same span. A label
+  // that carries a format character inside it is one word only in the
+  // normalized window, and it occupies one more original character than it
+  // does visible ones. Right at the edge that difference decides the verdict:
+  // the label is inside the visible window but not inside a raw window of the
+  // same radius. Every position below is derived from the rule's own
+  // `windowChars`, so retuning the window moves the cases with it.
+  const LABEL = 'passport';
+  const rule = Rule.parse({
+    specVersion: 1,
+    id: 't/gated-label',
+    name: 'gated label',
+    category: 'pii',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'VALUE[0-9]{3}', flags: 'g' },
+    requiresNearby: { labels: [LABEL], windowChars: 24 },
+  });
+  const windowChars = rule.requiresNearby?.windowChars ?? 0;
+  const split = (fmt: string): string => `${LABEL.slice(0, 4)}${fmt}${LABEL.slice(4)}`;
+  // Visible gap between the label and the value that puts the label exactly
+  // on the edge of the window: the whole label must fit inside `windowChars`.
+  const edgeGap = windowChars - LABEL.length;
+  const gap = (visible: number): string => '.'.repeat(visible);
+  const ids = (text: string): string[] => scan(text, [rule]).map((f) => f.ruleId);
+
+  describe.each([
+    ['ZWSP', ZWSP],
+    ['soft hyphen', SOFT_HYPHEN],
+  ])('with %s inside the label', (_name, fmt) => {
+    it('corroborates a label BEFORE the value just inside the window', () => {
+      expect(ids(`${split(fmt)}${gap(edgeGap)}VALUE456`)).toEqual(['t/gated-label']);
+    });
+
+    it('does not corroborate a label BEFORE the value just outside the window', () => {
+      expect(ids(`${split(fmt)}${gap(edgeGap + 1)}VALUE456`)).toEqual([]);
+    });
+
+    it('corroborates a label AFTER the value just inside the window', () => {
+      expect(ids(`VALUE456${gap(edgeGap)}${split(fmt)}`)).toEqual(['t/gated-label']);
+    });
+
+    it('does not corroborate a label AFTER the value just outside the window', () => {
+      expect(ids(`VALUE456${gap(edgeGap + 1)}${split(fmt)}`)).toEqual([]);
+    });
+
+    it('corroborates when padding pushes the raw distance past the window but the visible distance is inside', () => {
+      // Raw distance between label and value is windowChars + 10; visible
+      // distance is exactly the edge.
+      const padded = `${gap(Math.ceil(edgeGap / 2))}${fmt.repeat(10)}${gap(Math.floor(edgeGap / 2))}`;
+      const before = `${split(fmt)}${padded}VALUE456`;
+      const after = `VALUE456${padded}${split(fmt)}`;
+      expect(before.indexOf('VALUE') - before.indexOf(LABEL.slice(0, 4))).toBeGreaterThan(
+        windowChars,
+      );
+      expect(ids(before)).toEqual(['t/gated-label']);
+      expect(ids(after)).toEqual(['t/gated-label']);
+    });
   });
 });

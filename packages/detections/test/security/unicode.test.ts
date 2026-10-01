@@ -541,3 +541,92 @@ describe('a rule cannot corroborate itself through its own pooled cross-pass dup
     expect(findings).toHaveLength(2);
   });
 });
+
+describe('invisible padding cannot push a category or rule-id corroborator outside the requiresNearby window', () => {
+  // `requiresNearby.windowChars` counts characters a reader can see. Format
+  // characters are stripped for the normalized pass, so a run of them between
+  // a value and its corroborating match must not count toward the window for
+  // `categories` or `ruleIds` any more than it does for `labels`.
+  const dob = loadRule(resolve(RULES_DIR, 'core-pii'), 'dob');
+  const email = loadRule(resolve(RULES_DIR, 'core-pii'), 'email');
+  const ids = (text: string, rules: Rule[]): string[] =>
+    scan(text, rules)
+      .map((f) => f.ruleId)
+      .sort();
+
+  const EMAIL = 'jane.doe@example.com';
+  const DATE = '1984-03-12';
+
+  it('corroborates by category with no padding (control)', () => {
+    expect(ids(`${EMAIL} ${DATE}`, [dob, email])).toEqual(['core-pii/dob', 'core-pii/email']);
+  });
+
+  it('corroborates by category through 200 invisible characters of padding', () => {
+    expect(ids(`${EMAIL} ${ZWSP.repeat(200)}${DATE}`, [dob, email])).toEqual([
+      'core-pii/dob',
+      'core-pii/email',
+    ]);
+  });
+
+  it('corroborates by category through padding when the corroborator comes AFTER the value', () => {
+    expect(ids(`${DATE} ${ZWSP.repeat(200)}${EMAIL}`, [dob, email])).toEqual([
+      'core-pii/dob',
+      'core-pii/email',
+    ]);
+  });
+
+  it('does not corroborate a category match beyond the window of VISIBLE text', () => {
+    expect(ids(`${EMAIL} ${'x'.repeat(200)} ${DATE}`, [dob, email])).toEqual(['core-pii/email']);
+  });
+
+  it('does not corroborate when padding sits inside the window but visible text lies beyond it', () => {
+    // 100 visible + 200 invisible + 100 visible: 200 counted characters is
+    // more than the 160 window, and the padding must not mask that either way.
+    const text = `${EMAIL} ${'x'.repeat(100)}${ZWSP.repeat(200)}${'x'.repeat(100)} ${DATE}`;
+    expect(ids(text, [dob, email])).toEqual(['core-pii/email']);
+  });
+
+  // A minimal pair: `gated` needs a `anchor` match by rule id within 50 chars.
+  const anchor = Rule.parse({
+    specVersion: 1,
+    id: 'test-pack/anchor',
+    name: 'anchor',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'ANCHOR[0-9]{3}', flags: 'g' },
+  });
+  const gated = Rule.parse({
+    specVersion: 1,
+    id: 'test-pack/gated',
+    name: 'gated',
+    category: 'pii',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'VALUE[0-9]{3}', flags: 'g' },
+    requiresNearby: { ruleIds: ['test-pack/anchor'], windowChars: 50 },
+  });
+
+  it('corroborates by rule id with no padding (control)', () => {
+    expect(ids('ANCHOR123 VALUE456', [anchor, gated])).toEqual([
+      'test-pack/anchor',
+      'test-pack/gated',
+    ]);
+  });
+
+  it('corroborates by rule id through 200 invisible characters of padding', () => {
+    expect(ids(`ANCHOR123 ${ZWSP.repeat(200)}VALUE456`, [anchor, gated])).toEqual([
+      'test-pack/anchor',
+      'test-pack/gated',
+    ]);
+  });
+
+  it('does not corroborate by rule id beyond the window of VISIBLE text', () => {
+    expect(ids(`ANCHOR123 ${'x'.repeat(60)} VALUE456`, [anchor, gated])).toEqual([
+      'test-pack/anchor',
+    ]);
+  });
+
+  it('does not corroborate by rule id when padding sits inside the window but visible text lies beyond it', () => {
+    const text = `ANCHOR123 ${'x'.repeat(30)}${ZWSP.repeat(200)}${'x'.repeat(30)} VALUE456`;
+    expect(ids(text, [anchor, gated])).toEqual(['test-pack/anchor']);
+  });
+});

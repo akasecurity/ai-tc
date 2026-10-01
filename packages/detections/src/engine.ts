@@ -2,7 +2,7 @@ import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
-import { mapSpanToOriginal, normalizeFormatChars } from './format-chars.ts';
+import { mapSpanToOriginal, normalizedGap, normalizeFormatChars } from './format-chars.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
 import { memoizedRegExpList } from './regex-cache.ts';
@@ -120,20 +120,22 @@ function spansOverlap(a: Span, b: Span): boolean {
 // `candidates` is the POOLED list scan() gates in one pass — see scan() — so
 // on the slow path it holds candidates from BOTH the original-text and the
 // normalized-text matcher runs, every `match.span` already expressed in
-// ORIGINAL-text coordinates. (a)/(b) need no further handling for that: they
-// only compare spans and rule identity, which already means the same thing
-// regardless of which pass produced a candidate.
+// ORIGINAL-text coordinates, so (a)/(b) compare spans and rule identity the
+// same way whichever pass produced a candidate. Only the DISTANCE needs care:
+// see the (a)/(b) section.
 //
-// `hasFormatChars` says whether `scan()` is on the slow path at all — the
-// fast path never needs the extra normalized-window search in (c), because
-// it has already established the WHOLE text carries no format character, so
-// no window taken from it could carry one either.
+// `normalization` is defined only when `scan()` is on the slow path — the
+// fast path never needs the extra normalized-window search in (c) or the
+// normalized gap in (a)/(b), because it has already established the WHOLE
+// text carries no format character, so no window taken from it could carry
+// one either.
 function isCorroborated(
   candidate: Candidate,
   candidates: Candidate[],
   text: string,
-  hasFormatChars: boolean,
+  normalization: FormatCharNormalization | undefined,
 ): boolean {
+  const hasFormatChars = normalization !== undefined;
   const req = candidate.rule.requiresNearby;
   if (!req) return true;
 
@@ -142,7 +144,12 @@ function isCorroborated(
   const halfWindow = req.windowChars;
 
   // (a)/(b): another candidate match whose span falls inside the window and
-  // whose category/ruleId matches.
+  // whose category/ruleId matches. `windowChars` counts normalized characters
+  // here, as it does for (c): stripped format characters between the two
+  // spans take up no room. The spans are in original coordinates, so the
+  // cheap raw test runs first (format characters only ever shrink a gap, so
+  // inside the raw window is inside the normalized one) and only a pair that
+  // fails it pays for the normalized gap, an O(log k) lookup.
   const { start, end } = candidate.match.span;
   const winStart = start - halfWindow;
   const winEnd = end + halfWindow;
@@ -172,7 +179,13 @@ function isCorroborated(
       }
       const os = other.match.span;
       // Overlap of [os.start, os.end] with [winStart, winEnd].
-      if (os.end < winStart || os.start > winEnd) continue;
+      if (
+        (os.end < winStart || os.start > winEnd) &&
+        (normalization === undefined ||
+          normalizedGap(candidate.match.span, os, normalization) > halfWindow)
+      ) {
+        continue;
+      }
       // Category corroboration must come from a DIFFERENT rule — otherwise two
       // matches of the same rule (e.g. two nearby dates) would corroborate each
       // other, defeating independent corroboration. `ruleIds` is an explicit
@@ -365,9 +378,13 @@ function mapCandidateToOriginal(
 // Pass 2: proximity gating over a candidate list whose `match.span`s are ALL
 // already expressed in the same (`text`'s) coordinate space. Candidates
 // whose rule has no `requiresNearby` are kept verbatim (identical to the
-// pre-gate behavior). `text` and `hasFormatChars` are threaded through to
+// pre-gate behavior). `text` and `normalization` are threaded through to
 // isCorroborated — see there.
-function gate(candidates: Candidate[], text: string, hasFormatChars: boolean): MatchResult[] {
+function gate(
+  candidates: Candidate[],
+  text: string,
+  normalization: FormatCharNormalization | undefined,
+): MatchResult[] {
   const findings: MatchResult[] = [];
   for (const candidate of candidates) {
     const req = candidate.rule.requiresNearby;
@@ -375,7 +392,7 @@ function gate(candidates: Candidate[], text: string, hasFormatChars: boolean): M
       findings.push(candidate.match);
       continue;
     }
-    if (!isCorroborated(candidate, candidates, text, hasFormatChars)) continue;
+    if (!isCorroborated(candidate, candidates, text, normalization)) continue;
     const boost = req.confidenceBoost;
     // Cap below 1.0 — a heuristic, corroboration-based match should never read as
     // mathematically "certain".
@@ -562,12 +579,12 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
   const originalCandidates = buildCandidates(text, ruleset, extension);
-  if (!normalization) return gate(originalCandidates, text, false);
+  if (!normalization) return gate(originalCandidates, text, undefined);
 
   const normalizedCandidates = buildCandidates(normalization.normalized, ruleset, extension).map(
     (candidate) => mapCandidateToOriginal(candidate, normalization, text),
   );
-  const findings = gate([...originalCandidates, ...normalizedCandidates], text, true);
+  const findings = gate([...originalCandidates, ...normalizedCandidates], text, normalization);
   // The two passes can each independently find the same secret occurrence —
   // sometimes at a slightly different span, since a pattern with no upper
   // bound can match further in one text than the other — so the pooled,

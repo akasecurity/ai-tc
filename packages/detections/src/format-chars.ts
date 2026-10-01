@@ -162,3 +162,43 @@ export function mapSpanToOriginal(span: Span, normalization: FormatCharNormaliza
   const end = endSegment.origStart + (span.end - 1 - endSegment.normStart) + 1;
   return { start, end };
 }
+
+// How many KEPT (non-stripped) characters lie before original position
+// `origPos` — that position's index in the normalized text, with a position
+// inside or at the start of a stripped run resolving to the next kept
+// character. Binary search over `segments` (ascending by `origStart` as well
+// as `normStart`), O(log k).
+function normalizedOffset(origPos: number, segments: readonly Segment[]): number {
+  let lo = 0;
+  let hi = segments.length;
+  // First segment whose kept run ends after `origPos`.
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const segment = segments[mid];
+    if (segment !== undefined && segment.origStart + segment.length <= origPos) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  // `lo` can only reach `segments.length` for a position past the last kept
+  // run (inside a trailing stripped run); clamping onto the last segment gives
+  // the total normalized length there.
+  const found = segments[Math.min(lo, segments.length - 1)];
+  if (found === undefined) return 0; // unreachable: a normalization always has a segment
+  return found.normStart + Math.min(Math.max(0, origPos - found.origStart), found.length);
+}
+
+/**
+ * The distance between two spans given in ORIGINAL-text coordinates, counting
+ * only characters that survive normalization: stripped format characters
+ * between the spans take up no room. `0` when the spans touch or overlap.
+ * This is the same unit `windowChars` is measured in for a `labels` window.
+ */
+export function normalizedGap(a: Span, b: Span, normalization: FormatCharNormalization): number {
+  const [first, second] = a.start <= b.start ? [a, b] : [b, a];
+  const rawGap = second.start - first.end;
+  if (rawGap <= 0) return 0;
+  const { segments } = normalization;
+  return normalizedOffset(second.start, segments) - normalizedOffset(first.end, segments);
+}

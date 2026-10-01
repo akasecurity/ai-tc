@@ -44,6 +44,7 @@ export const COL = {
   expiresAt: 'expires_at',
   // Detection exceptions columns
   valueFingerprint: 'value_fingerprint',
+  valueIdentityFingerprint: 'value_identity_fingerprint',
   keyVersion: 'key_version',
   maskedValue: 'masked_value',
   capability: 'capability',

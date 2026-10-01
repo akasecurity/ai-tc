@@ -77,13 +77,13 @@ describe('reveal decision seam', () => {
   it('the default provider reveals once the user grants', async () => {
     const db = openLocalDatabase(dataDir(base));
     const glue = openGlue({ base });
-    // Mint the grant against the exact identity the provider matches on.
+    // Mint the grant against the identity fingerprint the provider matches on.
     const row = db.secretVault.listAll()[0];
     if (row === undefined) throw new Error('expected the vault row');
     await db.exceptions.create({
       ruleId: row.ruleId,
       category: 'secret',
-      valueFingerprint: row.valueFingerprint,
+      valueFingerprint: row.valueIdentityFingerprint,
       keyVersion: row.fingerprintKeyVersion,
       maskedValue: 'A******E',
       capability: 'reveal_to_model',

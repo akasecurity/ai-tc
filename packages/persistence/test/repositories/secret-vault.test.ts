@@ -32,6 +32,7 @@ function entry(overrides: Partial<VaultRowInsert> = {}): VaultRowInsert {
   return {
     pointerId: 'pointer-a',
     valueFingerprint: FINGERPRINT_A,
+    valueIdentityFingerprint: FINGERPRINT_A,
     fingerprintKeyVersion: 1,
     keyVersion: 1,
     category: 'secret',
@@ -216,12 +217,14 @@ describe('SqliteSecretVaultRepository re-key writes', () => {
     const { row } = vault.upsert(entry(), NOW);
     vault.refreshFingerprint('pointer-a', {
       valueFingerprint: FINGERPRINT_B,
+      valueIdentityFingerprint: FINGERPRINT_B,
       fingerprintKeyVersion: 3,
     });
 
     expect(vault.byPointerId('pointer-a')).toEqual({
       ...row,
       valueFingerprint: FINGERPRINT_B,
+      valueIdentityFingerprint: FINGERPRINT_B,
       fingerprintKeyVersion: 3,
     });
   });

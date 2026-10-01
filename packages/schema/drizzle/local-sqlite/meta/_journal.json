@@ -253,6 +253,13 @@
       "when": 1789512126428,
       "tag": "0035_share_destination_provider_id",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1790804298614,
+      "tag": "0036_secret_vault_identity_fingerprint",
+      "breakpoints": true
     }
   ]
 }

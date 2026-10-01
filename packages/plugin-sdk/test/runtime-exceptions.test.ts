@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BlockedDetectionInput } from '@akasecurity/persistence';
+import { createKeyProvider, openLocalDatabase, SecretVault } from '@akasecurity/persistence';
 import type {
   EventMetadata,
   ExceptionBundleEntry,
@@ -12,6 +13,7 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey } from '../src/fingerprint.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
@@ -176,7 +178,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 describe('exception evaluation — downgrade to allow', () => {
@@ -674,5 +676,91 @@ describe('exception evaluation under settings.policy warn', () => {
 
     expect(gw.consumed).toEqual([ex.id]);
     expect(result.action).toBe('log');
+  });
+});
+
+describe('exception evaluation — invisible format characters', () => {
+  it('an exception approved for the clean value covers the same value padded with a zero width space', async () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+
+    const padded = 'EX_SECRET\u200B_MARKER';
+    const result = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: `deploy with ${padded} now`,
+    });
+    await rt.close();
+
+    expect(result.action).toBe('log');
+    expect(gw.consumed).toEqual([ex.id]);
+    expect(gw.records[0]?.findings[0]?.actionTaken).toBe('allow');
+  });
+});
+
+describe('reveal grant minted from a padded vault pointer', () => {
+  it('suppresses the same padded text at capture, because the vault hands out the identity fingerprint', async () => {
+    const padded = 'EX_SECRET\u200B_MARKER';
+    const key = loadOrCreateFingerprintKey(dir);
+    const db = openLocalDatabase(dir);
+    let identityFingerprint: string;
+    try {
+      const vault = new SecretVault({
+        repo: db.secretVault,
+        keys: createKeyProvider('file', join(dir, 'keys')),
+        isConsented: () => true,
+      });
+      const pointer = await vault.tokenize(
+        padded,
+        { ruleId: 'ex/secret-marker', category: 'secret', maskedMatch: 'EX…ER' },
+        () => key,
+      );
+      if (typeof pointer !== 'string') throw new Error('expected a pointer');
+      const identity = await vault.resolvePointerIdentity(pointer);
+      if (identity === null) throw new Error('expected an identity');
+      identityFingerprint = identity.valueFingerprint;
+    } finally {
+      db.close();
+    }
+
+    // The fingerprint a CLI or dashboard grant copies from the pointer is the
+    // one capture looks up for the padded text (and for the clean one).
+    expect(identityFingerprint).toBe(fingerprintValue(key, padded));
+    expect(identityFingerprint).toBe(fingerprintValue(key, 'EX_SECRET_MARKER'));
+
+    const ex = entry({ valueFingerprint: identityFingerprint, capability: 'reveal_to_model' });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+    const result = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: `deploy with ${padded} now`,
+    });
+    await rt.close();
+
+    expect(result.action).toBe('log');
+    expect(gw.consumed).toEqual([ex.id]);
   });
 });

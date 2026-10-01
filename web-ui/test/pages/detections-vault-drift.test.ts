@@ -69,6 +69,7 @@ function seedVaultEntry(): void {
       {
         pointerId: 'p1',
         valueFingerprint: 'fp1',
+        valueIdentityFingerprint: 'fp1',
         fingerprintKeyVersion: 1,
         keyVersion: 1,
         category: 'secret',

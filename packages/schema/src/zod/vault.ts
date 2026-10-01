@@ -85,14 +85,19 @@ export type ParsedPointer = z.infer<typeof ParsedPointer>;
 
 // ─── The vault entry ─────────────────────────────────────────────────────────
 
-// One row per detected VALUE, unique on `valueFingerprint`, so the same secret
-// seen twice yields one row and one pointer.
+// One row per detected VALUE (by its exact bytes), unique on `valueFingerprint`,
+// so the same secret seen twice yields one row and one pointer.
 export const VaultEntry = z.object({
   pointerId: z.string(),
-  // The keyed HMAC of the raw value under `exception.key`, and the epoch it was
-  // derived under. This is what a reveal-to-model grant matches on, and it rotates
-  // independently of the vault encryption key below.
+  // The keyed HMAC of the EXACT raw bytes under `exception.key`, and the epoch it
+  // was derived under. The vault's own dedupe key: a value and its invisibly
+  // padded twin are two rows. It rotates independently of the vault encryption
+  // key below. Never matched against an exception or grant.
   valueFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  // The same HMAC over the raw with invisible padding removed: the identity a
+  // reveal-to-model grant and every exception match on. Shared by a value and
+  // its padded twin.
+  valueIdentityFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   fingerprintKeyVersion: z.number().int().positive(),
   // The vault-key epoch this row's ciphertext was sealed under.
   keyVersion: z.number().int().positive(),
@@ -137,7 +142,9 @@ export const PointerDescriptor = z.object({
 export type PointerDescriptor = z.infer<typeof PointerDescriptor>;
 
 // The raw-free vault-row identity a reveal grant matches on. Deliberately NOT
-// exported to view surfaces — see PointerDescriptor.
+// exported to view surfaces — see PointerDescriptor. `valueFingerprint` here is
+// the row's IDENTITY fingerprint (invisible padding removed), the space
+// exceptions live in, not the vault's exact-bytes dedupe key.
 export const PointerIdentity = z.object({
   ruleId: z.string(),
   valueFingerprint: z.string().regex(/^[0-9a-f]{64}$/),

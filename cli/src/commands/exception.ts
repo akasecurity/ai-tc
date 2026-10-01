@@ -349,8 +349,9 @@ function readKeyForApprove(dir: string): FingerprintKey | null {
 // created this one.
 //
 // A reveal grant from a vault pointer deliberately does NOT come through here.
-// Its identity — rule, fingerprint, key version — is read off one vault row and
-// matched on that same triple at every crossing, so a row a fingerprint re-key
+// Its identity — rule, fingerprint, key version — is read off one vault row (the
+// row's IDENTITY fingerprint, the same space the ledger and runtime use, so the
+// grant covers a padded and a clean occurrence alike) and matched on that same triple at every crossing, so a row a fingerprint re-key
 // skipped keeps its old fingerprint and old version together and its grant still
 // resolves. Refusing it on the current version would refuse a grant that does
 // enforce. Only the ledger path is scoped to the current version.
@@ -646,7 +647,9 @@ async function fingerprintForRule(
     );
   }
   if (first !== raw) {
-    io.out('Note: the grant binds to the exact detected span, not the whole input.\n');
+    io.out(
+      'Note: the grant binds to the detected span (invisible padding ignored), not the whole input.\n',
+    );
   }
 
   const key = loadOrCreateFingerprintKey(dir);

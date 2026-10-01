@@ -14,6 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  exactFingerprintValue,
   fingerprintValue,
   loadOrCreateFingerprintKey,
   readFingerprintKey,
@@ -121,6 +122,51 @@ describe('fingerprintValue', () => {
   });
 });
 
+describe('fingerprintValue — invisible format characters', () => {
+  const SECRET = 'AKIAABCDEFGHIJKLMNOP';
+  // One representative of each family of \p{Cf} code point.
+  const PADDINGS: Record<string, string> = {
+    'zero width space': '\u200B',
+    'byte-order mark': '\uFEFF',
+    'soft hyphen': '\u00AD',
+    'bidi override': '\u202E',
+    'tag character': '\u{E0041}',
+  };
+
+  it.each(Object.entries(PADDINGS))('ignores a %s inside the value', (_name, pad) => {
+    const key = loadOrCreateFingerprintKey(dir);
+    const padded = `${SECRET.slice(0, 2)}${pad}${SECRET.slice(2)}${pad}`;
+    expect(padded).not.toBe(SECRET);
+    expect(fingerprintValue(key, padded)).toBe(fingerprintValue(key, SECRET));
+  });
+
+  it('still tells values apart by their visible characters', () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    expect(fingerprintValue(key, `AK\u200BIAX`)).not.toBe(fingerprintValue(key, 'AKIAY'));
+  });
+
+  it.each([
+    ['zero width joiner', '\u200D'],
+    ['zero width non-joiner', '\u200C'],
+    ['Arabic number sign (a visible Cf character)', '\u0600'],
+  ])('keeps a %s, which is a real character rather than padding', (_name, char) => {
+    const key = loadOrCreateFingerprintKey(dir);
+    expect(fingerprintValue(key, `pa${char}ss`)).not.toBe(fingerprintValue(key, 'pass'));
+  });
+
+  it('exactFingerprintValue hashes the exact bytes, so padding changes it', () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    expect(exactFingerprintValue(key, 'AK\u200BIA')).not.toBe(exactFingerprintValue(key, 'AKIA'));
+    expect(exactFingerprintValue(key, 'AKIA')).toBe(fingerprintValue(key, 'AKIA'));
+  });
+
+  it('does not strip ordinary whitespace or variation selectors', () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    expect(fingerprintValue(key, 'AK IA')).not.toBe(fingerprintValue(key, 'AKIA'));
+    expect(fingerprintValue(key, 'AK\uFE0FIA')).not.toBe(fingerprintValue(key, 'AKIA'));
+  });
+});
+
 describe('rotateFingerprintKey', () => {
   it('bumps the version, replaces the material, and changes fingerprints', () => {
     const v1 = loadOrCreateFingerprintKey(dir);
@@ -199,6 +245,7 @@ describe('a minted version never reuses one the store already references', () =>
       {
         pointerId: `p${fingerprintKeyVersion.toString(16).padStart(31, '0')}`,
         valueFingerprint: (fingerprintKeyVersion + 0xbee).toString(16).padStart(64, '0'),
+        valueIdentityFingerprint: (fingerprintKeyVersion + 0xbee).toString(16).padStart(64, '0'),
         fingerprintKeyVersion,
         keyVersion: vaultKeyVersion,
         category: 'secret',

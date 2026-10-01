@@ -89,7 +89,7 @@ afterEach(() => {
 
 // Seed one vaulted value through the real persistence SecretVault — the same
 // construction the command performs — and return its pointer.
-async function seedPointer(): Promise<string> {
+async function seedPointer(raw: string = RAW): Promise<string> {
   const dir = dataDir(home);
   const db = openLocalDatabase(dir);
   try {
@@ -99,7 +99,7 @@ async function seedPointer(): Promise<string> {
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(home).vaultConsent),
     });
     const pointer = await vault.tokenize(
-      RAW,
+      raw,
       {
         ruleId: RULE_ID,
         category: 'secret',
@@ -165,6 +165,25 @@ describe('aka exception approve <pointer> --reveal', () => {
     // The four assertions above are its positive control: the capture is live
     // and full, so an absence within it means something.
     expectNoEchoOf(out, RAW);
+  });
+
+  // A value planted with an invisible character is one secret to every
+  // exception surface. The grant minted from its pointer must therefore carry
+  // the identity fingerprint the runtime computes for the padded AND the clean
+  // text, or the grant the user just approved would never be found at capture.
+  it('mints the grant on the identity fingerprint when the vaulted value carries invisible padding', async () => {
+    const padded = `${RAW.slice(0, 9)}\u200B${RAW.slice(9)}`;
+    const pointer = await seedPointer(padded);
+    await runException(
+      approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'padded value'),
+      scriptedIo(),
+    );
+
+    const rows = await openAndList();
+    expect(rows).toHaveLength(1);
+    const key = loadOrCreateFingerprintKey(dataDir(home));
+    expect(rows[0]?.valueFingerprint).toBe(fingerprintValue(key, padded));
+    expect(rows[0]?.valueFingerprint).toBe(fingerprintValue(key, RAW));
   });
 
   it('rejects a pointer without --reveal and creates nothing', async () => {

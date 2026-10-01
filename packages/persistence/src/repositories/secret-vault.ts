@@ -4,8 +4,8 @@
 //
 // Two invariants this module owns:
 //
-//  1. One value, one row, one pointer. `value_fingerprint` carries a unique
-//     index, and a repeat detection bumps the counters on the EXISTING row
+//  1. One value, one row, one pointer. `value_fingerprint` (the HMAC of the
+//     EXACT bytes) carries a unique index, and a repeat detection bumps the counters on the EXISTING row
 //     instead of minting a second one. The caller's category and freshly sealed
 //     ciphertext on that repeat call are discarded — re-minting would put a
 //     second wire token in circulation for the same secret.
@@ -69,7 +69,12 @@ function pageLimit(requested: number | undefined, fallback: number): number {
 /** What a caller supplies when it asks for a value to be vaulted. */
 export interface VaultRowInsert {
   pointerId: string;
+  // HMAC of the EXACT bytes: the vault's own dedupe key (unique). Never joined
+  // against an exception or a grant.
   valueFingerprint: string;
+  // HMAC of the value with invisible padding removed: the identity exceptions
+  // and grants match on. Not unique — a value and its padded twin share it.
+  valueIdentityFingerprint: string;
   fingerprintKeyVersion: number;
   keyVersion: number;
   // The pointer-format generation the row's AAD is bound under — the AAD only,
@@ -204,6 +209,7 @@ function toSighting(row: RawSightingRow): VaultSighting {
 const SELECT_COLUMNS = `
   pointer_id AS pointerId,
   value_fingerprint AS valueFingerprint,
+  value_identity_fingerprint AS valueIdentityFingerprint,
   fingerprint_key_version AS fingerprintKeyVersion,
   key_version AS keyVersion,
   format_version AS formatVersion,
@@ -237,19 +243,20 @@ export class SqliteSecretVaultRepository {
   private readonly listStmt: StatementSync;
   private readonly replaceCiphertextStmt: StatementSync;
   private readonly refreshFingerprintStmt: StatementSync;
+  private readonly setIdentityStmt: StatementSync;
   private readonly deleteByPointerStmt: StatementSync;
   private readonly derefStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(
       `INSERT INTO secret_vault (
-         pointer_id, value_fingerprint, fingerprint_key_version, key_version,
-         format_version, category, rule_id, masked_match, provider,
+         pointer_id, value_fingerprint, value_identity_fingerprint,
+         fingerprint_key_version, key_version, format_version, category, rule_id, masked_match, provider,
          ciphertext, nonce, auth_tag,
          user_authorized, occurrence_count, first_seen, last_seen
        ) VALUES (
-         :pointerId, :valueFingerprint, :fingerprintKeyVersion, :keyVersion,
-         :formatVersion, :category, :ruleId, :maskedMatch, :provider,
+         :pointerId, :valueFingerprint, :valueIdentityFingerprint,
+         :fingerprintKeyVersion, :keyVersion, :formatVersion, :category, :ruleId, :maskedMatch, :provider,
          :ciphertext, :nonce, :authTag,
          :userAuthorized, 1, :now, :now
        )`,
@@ -284,7 +291,13 @@ export class SqliteSecretVaultRepository {
     );
     this.refreshFingerprintStmt = db.prepare(
       `UPDATE secret_vault
-       SET value_fingerprint = :valueFingerprint, fingerprint_key_version = :fingerprintKeyVersion
+       SET value_fingerprint = :valueFingerprint,
+           value_identity_fingerprint = :valueIdentityFingerprint,
+           fingerprint_key_version = :fingerprintKeyVersion
+       WHERE pointer_id = :pointerId`,
+    );
+    this.setIdentityStmt = db.prepare(
+      `UPDATE secret_vault SET value_identity_fingerprint = :valueIdentityFingerprint
        WHERE pointer_id = :pointerId`,
     );
     this.deleteByPointerStmt = db.prepare(`DELETE FROM secret_vault WHERE pointer_id = :pointerId`);
@@ -322,6 +335,7 @@ export class SqliteSecretVaultRepository {
             bindParams({
               pointerId: input.pointerId,
               valueFingerprint: input.valueFingerprint,
+              valueIdentityFingerprint: input.valueIdentityFingerprint,
               fingerprintKeyVersion: input.fingerprintKeyVersion,
               keyVersion: input.keyVersion,
               formatVersion: input.formatVersion ?? POINTER_FORMAT_VERSION,
@@ -395,10 +409,23 @@ export class SqliteSecretVaultRepository {
     this.replaceCiphertextStmt.run({ pointerId, ...next });
   }
 
-  /** Re-derive an entry's fingerprint under a new fingerprint-key epoch. */
+  /**
+   * Correct an entry's identity fingerprint in place, leaving its exact
+   * fingerprint and key epoch alone. For a row whose identity column still holds
+   * the exact value copied in by the migration that added it.
+   */
+  setIdentityFingerprint(pointerId: string, valueIdentityFingerprint: string): void {
+    this.setIdentityStmt.run({ pointerId, valueIdentityFingerprint });
+  }
+
+  /** Re-derive an entry's fingerprints under a new fingerprint-key epoch. */
   refreshFingerprint(
     pointerId: string,
-    next: { valueFingerprint: string; fingerprintKeyVersion: number },
+    next: {
+      valueFingerprint: string;
+      valueIdentityFingerprint: string;
+      fingerprintKeyVersion: number;
+    },
   ): void {
     this.refreshFingerprintStmt.run({ pointerId, ...next });
   }
@@ -568,7 +595,7 @@ export class SqliteSecretVaultRepository {
         `SELECT ${INVENTORY_COLUMNS},
                 (SELECT e.id FROM exceptions e
                   WHERE e.rule_id = v.rule_id
-                    AND e.value_fingerprint = v.value_fingerprint
+                    AND e.value_fingerprint = v.value_identity_fingerprint
                     AND e.key_version = v.fingerprint_key_version
                     AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
                   LIMIT 1) AS grant_id
@@ -632,7 +659,7 @@ export class SqliteSecretVaultRepository {
         `SELECT ${INVENTORY_COLUMNS},
                 (SELECT e.id FROM exceptions e
                   WHERE e.rule_id = v.rule_id
-                    AND e.value_fingerprint = v.value_fingerprint
+                    AND e.value_fingerprint = v.value_identity_fingerprint
                     AND e.key_version = v.fingerprint_key_version
                     AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
                   LIMIT 1) AS grant_id

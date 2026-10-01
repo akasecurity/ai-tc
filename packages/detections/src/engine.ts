@@ -206,35 +206,28 @@ function isCorroborated(
   // otherwise sit well inside, whichever pass produced the candidate.
   const labels = req.labels;
   if (labels && labels.length > 0) {
-    // Two DIFFERENT reasons the normalized window alone is not enough, both
-    // real and both covered by tests: a label's own boundary can depend on a
-    // format character present in only ONE of the two texts — the same shape
-    // of regression the primitive-match fix (see scan()) exists for, just for
-    // this lookaround instead of `\b`. That can cut either way: a format
-    // character between two words is a real separator in the ORIGINAL text but
-    // vanishes (merging the words) in the normalized one, while a format
-    // character INSIDE a label's own characters splits it apart in the original
-    // text but reads as one word once normalized. So the original text's own
-    // window around this candidate's span is searched too, as is that window
-    // re-normalized (the "label split apart, reads as one word only once
-    // normalized" half). These two windows are cut with a radius of
-    // `windowChars` ORIGINAL characters, so each holds at most as many visible
-    // characters as the normalized window does: they exist for the boundary
-    // cases above and never reach a label the visible window would not.
+    // The normalized window already reads a label split by an invisible
+    // character as one word. The original text's own window around this
+    // candidate's span is searched too for one reason: a label's boundary can
+    // exist only in the ORIGINAL text. A format character between two words
+    // is a real separator there but vanishes (merging the words) in the
+    // normalized text, so a label that is bounded in the original would not
+    // be in the normalized one — the same shape of regression the
+    // primitive-match fix (see scan()) exists for, just for this lookaround
+    // instead of `\b`. The raw window is cut with a radius of `windowChars`
+    // ORIGINAL characters, so it holds at most as many visible characters as
+    // the normalized window does: it exists for that boundary case and never
+    // reaches a label the visible window would not.
     //
-    // Re-normalizing a window on demand is bounded by `windowChars`, so cheap,
-    // and skipped entirely off the slow path (`normalization` undefined): the
-    // fast path has already established the WHOLE text carries no format
-    // character, so no window taken from it could carry one either, and
-    // `normSpan` is `match.span` there.
+    // The normalized window is skipped off the slow path (`normalization`
+    // undefined): the fast path has already established the WHOLE text carries
+    // no format character, so the raw window is already the visible one.
     const { start, end } = candidate.match.span;
     const haystack = text.slice(Math.max(0, start - halfWindow), end + halfWindow);
     const normalizedHaystack =
       normalization === undefined
         ? undefined
         : normalization.normalized.slice(Math.max(0, winStart), winEnd);
-    const haystackNormalized =
-      normalization === undefined ? undefined : normalizeFormatChars(haystack)?.normalized;
     // Boundaries = non-alphanumeric neighbours; robust for labels containing
     // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
     //
@@ -255,7 +248,6 @@ function isCorroborated(
       if (!re) continue;
       if (re.test(haystack)) return true;
       if (normalizedHaystack !== undefined && re.test(normalizedHaystack)) return true;
-      if (haystackNormalized !== undefined && re.test(haystackNormalized)) return true;
     }
   }
 

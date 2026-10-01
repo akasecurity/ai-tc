@@ -799,7 +799,10 @@ describe('a label split by a format character is measured in visible characters 
     matcher: { type: 'regex', pattern: 'VALUE[0-9]{3}', flags: 'g' },
     requiresNearby: { labels: [LABEL], windowChars: 24 },
   });
-  const windowChars = rule.requiresNearby?.windowChars ?? 0;
+  const windowChars = rule.requiresNearby?.windowChars;
+  if (windowChars === undefined || windowChars <= 0) {
+    throw new Error('the gated label rule must carry a positive requiresNearby.windowChars');
+  }
   const split = (fmt: string): string => `${LABEL.slice(0, 4)}${fmt}${LABEL.slice(4)}`;
   // Visible gap between the label and the value that puts the label exactly
   // on the edge of the window: the whole label must fit inside `windowChars`.
@@ -828,14 +831,18 @@ describe('a label split by a format character is measured in visible characters 
     });
 
     it('corroborates when padding pushes the raw distance past the window but the visible distance is inside', () => {
-      // Raw distance between label and value is windowChars + 10; visible
-      // distance is exactly the edge.
+      // From the label's far edge to the value, the RAW span is the split label
+      // (LABEL.length + 1), the visible gap (edgeGap) and ten format characters:
+      // windowChars + 11, past the window. The VISIBLE span is LABEL.length +
+      // edgeGap, exactly windowChars, so the label sits on the edge.
       const padded = `${gap(Math.ceil(edgeGap / 2))}${fmt.repeat(10)}${gap(Math.floor(edgeGap / 2))}`;
-      const before = `${split(fmt)}${padded}VALUE456`;
-      const after = `VALUE456${padded}${split(fmt)}`;
-      expect(before.indexOf('VALUE') - before.indexOf(LABEL.slice(0, 4))).toBeGreaterThan(
-        windowChars,
-      );
+      const value = 'VALUE456';
+      const before = `${split(fmt)}${padded}${value}`;
+      const after = `${value}${padded}${split(fmt)}`;
+      // Both directions: the raw span past the window, so only the visible
+      // count can corroborate.
+      expect(before.indexOf(value)).toBeGreaterThan(windowChars);
+      expect(after.length - value.length).toBeGreaterThan(windowChars);
       expect(ids(before)).toEqual(['t/gated-label']);
       expect(ids(after)).toEqual(['t/gated-label']);
     });

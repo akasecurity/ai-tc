@@ -470,13 +470,12 @@ describe('the slow path does not blow up on a large text with one format charact
 
 describe('invisible padding cannot push a label outside the requiresNearby window', () => {
   // rules/code-flaws/dev-placeholder-secret.json's window is measured in
-  // NORMALIZED characters for a normalized-pass candidate (see
-  // `Candidate.labelWindow` in engine.ts), not always in original ones —
-  // otherwise a run of invisible characters between a label and its value
-  // counts against the window budget even though it disappears entirely
-  // once normalized, letting an attacker push a genuinely nearby label
-  // arbitrarily far outside the window just by padding with something no
-  // one can see.
+  // NORMALIZED characters for every candidate (see `Candidate.normSpan` in
+  // engine.ts) — otherwise a run of invisible characters between a label and
+  // its value counts against the window budget even though it disappears
+  // entirely once normalized, letting an attacker push a genuinely nearby
+  // label arbitrarily far outside the window just by padding with something
+  // no one can see.
   it('still corroborates through 100 invisible characters of padding between the label and the value', () => {
     const text = `key = ${ZWSP.repeat(100)}'changeme'`;
     const findings = scan(text, [devPlaceholderSecret]);

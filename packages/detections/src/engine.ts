@@ -308,22 +308,16 @@ function buildCandidates(
 // original-text slice, format characters included when the match genuinely
 // has one inside it. That is what redaction and vault-restore need — the
 // same secret has to come back byte-for-byte — so it is the PRIMARY reading
-// of a finding's value. It also means two occurrences of the same secret,
-// one clean and one with a format character planted inside it, produce
-// `rawMatch` values that differ, and a consumer that fingerprints `rawMatch`
-// directly (`packages/plugin-sdk/src/runtime.ts`'s exception matching,
-// `packages/local-ops/src/fs-scan.ts`'s vault fingerprint) will not treat
-// them as the same secret. A consumer that wants that identity-invariant
-// reading instead should fingerprint a format-character-stripped value
-// rather than `rawMatch` itself; this package does not make that
-// substitution unasked, because doing so at the finding-production boundary
-// would be the wrong tradeoff for the consumer that DOES need the exact text
-// (redaction/vault-restore), and there is no single `rawMatch` that is
-// correct for both uses at once. `normalizeFormatChars` (this file) is not
-// exported for that today — no consumer needs it yet — so a future change
-// that wires up format-character-invariant fingerprinting exports it (and
-// its `Segment` element type, currently module-private) alongside actually
-// using it, rather than the API existing ahead of a caller.
+// of a finding's value. Identity is derived from it, not stored in it: a
+// consumer that needs one identity for a clean and a padded copy of the same
+// secret (exception matching, finding keys) fingerprints through
+// `fingerprintValue` in `@akasecurity/persistence`, which strips invisible
+// padding (`stripInvisiblePadding` in `@akasecurity/schema`) before hashing.
+// The vault's `value_fingerprint` deliberately hashes the exact bytes
+// (`exactFingerprintValue`) so a padded and a clean credential stay two rows.
+// This package does not make either substitution at the finding-production
+// boundary, because there is no single `rawMatch` that is correct for
+// both uses at once.
 function mapCandidateToOriginal(
   candidate: Candidate,
   normalization: FormatCharNormalization,

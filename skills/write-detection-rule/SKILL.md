@@ -121,7 +121,10 @@ runs when there is no file context at all (live prompt/response hooks).
 
 **requiresNearby** — co-occurrence gate: a match is kept only if corroborated by another
 match (by `categories` or `ruleIds`) or by one of `labels` appearing within `windowChars`
-of its span. Use it to suppress context-free false positives.
+of its span. Use it to suppress context-free false positives. `windowChars` counts
+visible characters, for all three kinds: invisible format characters (zero-width spaces,
+BOMs, soft hyphens, ZWNJ and the rest of Unicode `Cf`) between the two take up no room, so
+size the window against the text a reader sees.
 
 ### Post-validators
 

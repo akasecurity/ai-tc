@@ -232,7 +232,10 @@ export type PostValidatorRef = z.infer<typeof PostValidatorRef>;
 // kept only if corroborated by another signal within `windowChars` of its span:
 // another match whose category is in `categories`, another match whose ruleId is
 // in `ruleIds`, or one of `labels` appearing (case-insensitively) in the
-// surrounding text window. Optional, so a rule authored before this field
+// surrounding text window. `windowChars` counts visible characters for all three
+// kinds: invisible format characters (Unicode `Cf`: zero-width spaces, BOMs, soft
+// hyphens…) between the value and its corroborator take up no room. Optional, so
+// a rule authored before this field
 // existed still parses — see `Rule.specVersion` for why an optional field here
 // is the only way the shape grows.
 export const RequiresNearby = z

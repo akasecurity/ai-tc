@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { mergeOverlappingSameRule } from '../src/engine.ts';
-import { mapSpanToOriginal, normalizeFormatChars } from '../src/format-chars.ts';
+import { mapSpanToOriginal, normalizedGap, normalizeFormatChars } from '../src/format-chars.ts';
 import type { MatchResult } from '../src/types.ts';
 import { FORMAT_CHARS, ZWJ, ZWNJ, ZWSP } from './helpers/format-chars.ts';
 
@@ -108,6 +108,47 @@ describe('mapSpanToOriginal', () => {
     const mapped = mapSpanToOriginal({ start: 0, end: 3 }, normalization);
     expect(mapped).toEqual({ start: 1, end: 4 });
     expect(text.slice(mapped.start, mapped.end)).toBe('ABC');
+  });
+});
+
+describe('normalizedGap', () => {
+  // indices:  A0 B1 Z2 Z3 C4 D5 E6 Z7 Z8 F9 G10 Z11 Z12   (Z = stripped)
+  // normalized = "ABCDEFG": kept runs [0,2) [4,7) [9,11), trailing strip [11,13)
+  const text = `AB${ZWSP}${ZWSP}CDE${ZWSP}${ZWSP}FG${ZWSP}${ZWSP}`;
+  const normalization = normalizeFormatChars(text);
+  if (!normalization) throw new Error('expected normalization');
+
+  it('is 0 for spans that touch or overlap', () => {
+    expect(normalizedGap({ start: 0, end: 2 }, { start: 2, end: 5 }, normalization)).toBe(0);
+    expect(normalizedGap({ start: 0, end: 5 }, { start: 3, end: 7 }, normalization)).toBe(0);
+  });
+
+  it('counts only kept characters across an interior stripped run', () => {
+    // Raw gap from 2 to 4 is 2, all stripped; the next kept char is C.
+    expect(normalizedGap({ start: 0, end: 2 }, { start: 4, end: 6 }, normalization)).toBe(0);
+    // Raw gap from 2 to 9 is 7: C D E kept, four stripped.
+    expect(normalizedGap({ start: 0, end: 2 }, { start: 9, end: 11 }, normalization)).toBe(3);
+  });
+
+  it('is symmetric in its arguments', () => {
+    const a = { start: 0, end: 2 };
+    const b = { start: 9, end: 11 };
+    expect(normalizedGap(b, a, normalization)).toBe(normalizedGap(a, b, normalization));
+  });
+
+  it('resolves a position inside or at the start of a stripped run to the next kept char', () => {
+    // End at 2 is the start of a stripped run, end at 3 is inside it; both
+    // resolve to C, so each gap to the span starting at E (6) is C, D = 2.
+    expect(normalizedGap({ start: 0, end: 2 }, { start: 6, end: 7 }, normalization)).toBe(2);
+    expect(normalizedGap({ start: 0, end: 3 }, { start: 6, end: 7 }, normalization)).toBe(2);
+  });
+
+  it('clamps a position past the last kept run to the total normalized length', () => {
+    // 13 is past the trailing stripped run: offset is 7, the normalized
+    // length. From a span ending at 9 (offset 5, F) the gap is 2.
+    expect(normalizedGap({ start: 0, end: 9 }, { start: 13, end: 14 }, normalization)).toBe(2);
+    // Start inside the trailing run (12) clamps to the same total.
+    expect(normalizedGap({ start: 0, end: 9 }, { start: 12, end: 14 }, normalization)).toBe(2);
   });
 });
 

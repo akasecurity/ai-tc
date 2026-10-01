@@ -575,15 +575,54 @@ describe('invisible padding cannot push a category or rule-id corroborator outsi
     ]);
   });
 
+  // The window is read from the loaded rule rather than restated here, so a
+  // change to the rule's `windowChars` moves every size below with it.
+  const WINDOW = dob.requiresNearby?.windowChars ?? 0;
+
+  it('has a positive window to size the padding from', () => {
+    expect(WINDOW).toBeGreaterThan(0);
+  });
+
   it('does not corroborate a category match beyond the window of VISIBLE text', () => {
-    expect(ids(`${EMAIL} ${'x'.repeat(200)} ${DATE}`, [dob, email])).toEqual(['core-pii/email']);
+    expect(ids(`${EMAIL} ${'x'.repeat(WINDOW + 40)} ${DATE}`, [dob, email])).toEqual([
+      'core-pii/email',
+    ]);
   });
 
   it('does not corroborate when padding sits inside the window but visible text lies beyond it', () => {
-    // 100 visible + 200 invisible + 100 visible: 200 counted characters is
-    // more than the 160 window, and the padding must not mask that either way.
-    const text = `${EMAIL} ${'x'.repeat(100)}${ZWSP.repeat(200)}${'x'.repeat(100)} ${DATE}`;
+    // Visible text split around the padding adds up past the window, and the
+    // padding must not mask that either way.
+    const half = Math.ceil(WINDOW / 2) + 10;
+    const text = `${EMAIL} ${'x'.repeat(half)}${ZWSP.repeat(WINDOW + 40)}${'x'.repeat(half)} ${DATE}`;
     expect(ids(text, [dob, email])).toEqual(['core-pii/email']);
+  });
+
+  describe('at the edge of the window, counted in normalized characters', () => {
+    // `gap` visible spaces separate the two spans. `pad` invisible characters
+    // sit inside that gap; they are chosen to push the RAW distance past the
+    // window so the normalized-gap path, not the cheap raw test, decides.
+    const PAD = 10;
+    const between = (gap: number, pad: number): string =>
+      ' '.repeat(Math.floor(gap / 2)) + ZWSP.repeat(pad) + ' '.repeat(Math.ceil(gap / 2));
+    const after = (gap: number, pad: number): string => `${EMAIL}${between(gap, pad)}${DATE}`;
+    const before = (gap: number, pad: number): string => `${DATE}${between(gap, pad)}${EMAIL}`;
+    const both = ['core-pii/dob', 'core-pii/email'];
+
+    it.each([
+      ['corroborator before the value', after],
+      ['corroborator after the value', before],
+    ])('%s: a gap of exactly windowChars corroborates, padded or not', (_label, build) => {
+      expect(ids(build(WINDOW, 0), [dob, email])).toEqual(both);
+      expect(ids(build(WINDOW, PAD), [dob, email])).toEqual(both);
+    });
+
+    it.each([
+      ['corroborator before the value', after],
+      ['corroborator after the value', before],
+    ])('%s: a gap of windowChars + 1 does not corroborate, padded or not', (_label, build) => {
+      expect(ids(build(WINDOW + 1, 0), [dob, email])).toEqual(['core-pii/email']);
+      expect(ids(build(WINDOW + 1, PAD), [dob, email])).toEqual(['core-pii/email']);
+    });
   });
 
   // A minimal pair: `gated` needs a `anchor` match by rule id within 50 chars.

@@ -135,7 +135,6 @@ function isCorroborated(
   text: string,
   normalization: FormatCharNormalization | undefined,
 ): boolean {
-  const hasFormatChars = normalization !== undefined;
   const req = candidate.rule.requiresNearby;
   if (!req) return true;
 
@@ -249,15 +248,14 @@ function isCorroborated(
     // Re-normalizing a window on demand — bounded by `windowChars`, so cheap
     // — rather than threading extra haystacks through every caller covers
     // reason 2's "label split apart, reads as one word only once
-    // normalized" half. Skipped entirely off the slow path (`hasFormatChars`
-    // false): the fast path has already established the WHOLE text carries
+    // normalized" half. Skipped entirely off the slow path (`normalization`
+    // undefined): the fast path has already established the WHOLE text carries
     // no format character, so no window taken from it could carry one
     // either, and the regex test would always return the no-op result.
-    const haystackNormalized = hasFormatChars
-      ? normalizeFormatChars(haystack)?.normalized
-      : undefined;
+    const haystackNormalized =
+      normalization !== undefined ? normalizeFormatChars(haystack)?.normalized : undefined;
     const mappedHaystackNormalized =
-      hasFormatChars && mappedHaystack !== haystack
+      normalization !== undefined && mappedHaystack !== haystack
         ? normalizeFormatChars(mappedHaystack)?.normalized
         : undefined;
     // Boundaries = non-alphanumeric neighbours; robust for labels containing

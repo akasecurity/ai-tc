@@ -157,14 +157,16 @@ function isCorroborated(
   if (categories?.length || ruleIds?.length) {
     for (const other of candidates) {
       if (other === candidate) continue;
-      // Relevance first: it is a couple of array lookups, and most pairs fail
-      // it (a ZIP candidate is irrelevant to every other ZIP candidate), so
-      // the distance below is only looked at for a pair that could actually
-      // corroborate. Category corroboration must come from a DIFFERENT rule —
-      // otherwise two matches of the same rule (e.g. two nearby dates) would
-      // corroborate each other, defeating independent corroboration. `ruleIds`
-      // is an explicit opt-in, so it is intentionally not subject to this
-      // restriction.
+      // Distance first: with both spans already in normalized coordinates it is
+      // two comparisons, and most pairs fail it (in a long text almost every
+      // other candidate is outside the window), so the relevance and duplicate
+      // tests below only run for a pair that is close enough to corroborate.
+      // Inclusive on both edges: a gap of exactly `windowChars` corroborates.
+      if (other.normSpan.end < winStart || other.normSpan.start > winEnd) continue;
+      // Category corroboration must come from a DIFFERENT rule — otherwise two
+      // matches of the same rule (e.g. two nearby dates) would corroborate each
+      // other, defeating independent corroboration. `ruleIds` is an explicit
+      // opt-in, so it is intentionally not subject to this restriction.
       const relevant =
         (other.match.ruleId !== candidate.match.ruleId &&
           categories?.includes(other.match.category) === true) ||
@@ -189,8 +191,6 @@ function isCorroborated(
       ) {
         continue;
       }
-      // Inclusive on both edges: a gap of exactly `windowChars` corroborates.
-      if (other.normSpan.end < winStart || other.normSpan.start > winEnd) continue;
       return true;
     }
   }

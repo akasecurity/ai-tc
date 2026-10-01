@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type * as FormatChars from '../../src/format-chars.ts';
 import { scan } from '../../src/index.ts';
-import { ZWSP } from '../helpers/format-chars.ts';
+import { SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // COUNTED, not timed (see the CLAUDE.md note on fixed wall-clock ceilings): the
@@ -36,7 +36,9 @@ describe('the proximity gate maps each candidate into normalized coordinates onc
     // HTML export leaves behind). Every value is a gated ZIP candidate, and none
     // has a home-address or an address label near it, so every pair is irrelevant.
     const N = 300;
-    const text = Array.from({ length: N }, (_, i) => `${String(10000 + i)}­, `).join('');
+    const text = Array.from({ length: N }, (_, i) => `${String(10000 + i)}${SOFT_HYPHEN}, `).join(
+      '',
+    );
 
     calls.mapToNormalized = 0;
     expect(scan(text, [zip])).toEqual([]);
@@ -61,7 +63,7 @@ describe('the proximity gate maps each candidate into normalized coordinates onc
     const findings = scan(text, [dob, email]);
 
     expect(findings.filter((f) => f.ruleId === 'core-pii/dob')).toHaveLength(N);
-    // At most one mapping per candidate: two rules, N occurrences each.
-    expect(calls.mapToNormalized).toBeLessThanOrEqual(2 * N);
+    // Exactly one mapping per candidate: two rules, N occurrences each.
+    expect(calls.mapToNormalized).toBe(2 * N);
   });
 });

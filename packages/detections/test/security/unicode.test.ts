@@ -734,3 +734,49 @@ describe('an original-pass-only candidate measures every requiresNearby window i
     expect(ids(`ssn ${'x'.repeat(60)} ${ZWSP.repeat(200)}${candidate}`, [byLabel])).toEqual([]);
   });
 });
+
+describe('an original-pass-only CORROBORATOR measures its distance in visible characters', () => {
+  // The mirror of the suite above: here the gated value is found by both
+  // passes, and the corroborating match is the one only the original-text pass
+  // finds (`\bANCHOR` matches `x<ZWSP>ANCHOR123` only before the format
+  // character is stripped). It has no normalized-pass twin, so it needs its
+  // own normalized span just as a gated candidate does.
+  const anchor = Rule.parse({
+    specVersion: 1,
+    id: 't/anchor',
+    name: 'anchor',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: '\\bANCHOR[0-9]{3}', flags: 'g' },
+  });
+  const gatedBy = (id: string, requiresNearby: object): Rule =>
+    Rule.parse({
+      specVersion: 1,
+      id,
+      name: id,
+      category: 'pii',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'VALUE[0-9]{3}', flags: 'g' },
+      requiresNearby,
+    });
+  const text = `VALUE456 ${ZWSP.repeat(200)}x${ZWSP}ANCHOR123`;
+  const ids = (rules: Rule[]): string[] =>
+    scan(text, rules)
+      .map((f) => f.ruleId)
+      .sort();
+
+  it('finds the anchor only through the original-text pass (control)', () => {
+    expect(scan('xANCHOR123', [anchor])).toEqual([]);
+    expect(ids([anchor])).toEqual(['t/anchor']);
+  });
+
+  it('corroborates by rule id through 200 invisible characters of padding', () => {
+    const gated = gatedBy('t/gated', { ruleIds: ['t/anchor'], windowChars: 50 });
+    expect(ids([anchor, gated])).toEqual(['t/anchor', 't/gated']);
+  });
+
+  it('corroborates by category through 200 invisible characters of padding', () => {
+    const gated = gatedBy('t/gated', { categories: ['secret'], windowChars: 50 });
+    expect(ids([anchor, gated])).toEqual(['t/anchor', 't/gated']);
+  });
+});

@@ -671,3 +671,66 @@ describe('invisible padding cannot push a category or rule-id corroborator outsi
     expect(ids(text, [anchor, gated])).toEqual(['test-pack/anchor']);
   });
 });
+
+describe('an original-pass-only candidate measures every requiresNearby window in visible characters', () => {
+  // `\bVALUE[0-9]{3}` matches `x<ZWSP>VALUE456` only in the ORIGINAL text: once
+  // the format character is stripped the text reads `xVALUE456`, which has no
+  // word boundary before `V`. Such a candidate has no normalized-pass twin, so
+  // its window must be re-measured in normalized coordinates, for labels as
+  // much as for category and rule-id corroborators.
+  const anchor = Rule.parse({
+    specVersion: 1,
+    id: 't/anchor',
+    name: 'anchor',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'ANCHOR[0-9]{3}', flags: 'g' },
+  });
+  const gatedBy = (id: string, requiresNearby: object): Rule =>
+    Rule.parse({
+      specVersion: 1,
+      id,
+      name: id,
+      category: 'pii',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: '\\bVALUE[0-9]{3}', flags: 'g' },
+      requiresNearby,
+    });
+  const byRuleId = gatedBy('t/gated-id', { ruleIds: ['t/anchor'], windowChars: 50 });
+  const byCategory = gatedBy('t/gated-cat', { categories: ['secret'], windowChars: 50 });
+  const byLabel = gatedBy('t/gated-label', { labels: ['ssn'], windowChars: 50 });
+  const ids = (text: string, rules: Rule[]): string[] =>
+    scan(text, rules)
+      .map((f) => f.ruleId)
+      .sort();
+  const candidate = `x${ZWSP}VALUE456`;
+
+  it('finds the value only through the original-text pass (control)', () => {
+    expect(scan('xVALUE456', [byLabel])).toEqual([]);
+    expect(scan(`ssn ${candidate}`, [byLabel]).map((f) => f.ruleId)).toEqual(['t/gated-label']);
+  });
+
+  it.each([
+    ['rule id', byRuleId, `ANCHOR123 ${ZWSP.repeat(200)}${candidate}`, ['t/anchor', 't/gated-id']],
+    [
+      'category',
+      byCategory,
+      `ANCHOR123 ${ZWSP.repeat(200)}${candidate}`,
+      ['t/anchor', 't/gated-cat'],
+    ],
+  ])('corroborates by %s through 200 invisible characters of padding', (_k, rule, text, want) => {
+    expect(ids(text, [anchor, rule])).toEqual(want);
+  });
+
+  it('corroborates by label through 200 invisible characters of padding', () => {
+    expect(ids(`ssn ${ZWSP.repeat(200)}${candidate}`, [byLabel])).toEqual(['t/gated-label']);
+  });
+
+  it('corroborates by label with the label AFTER the value, through padding', () => {
+    expect(ids(`${candidate}${ZWSP.repeat(200)} ssn`, [byLabel])).toEqual(['t/gated-label']);
+  });
+
+  it('does not corroborate by label beyond the window of VISIBLE text', () => {
+    expect(ids(`ssn ${'x'.repeat(60)} ${ZWSP.repeat(200)}${candidate}`, [byLabel])).toEqual([]);
+  });
+});

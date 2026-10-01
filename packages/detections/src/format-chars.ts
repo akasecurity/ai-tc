@@ -62,9 +62,15 @@ export interface FormatCharNormalization {
   /** `text` with every \p{Cf} character removed. */
   readonly normalized: string;
   /**
-   * Kept-character runs, ascending by `normStart` and gapless in normalized
-   * space (segment i+1's `normStart` is exactly segment i's `normStart +
-   * length`) — see `mapSpanToOriginal`, the only other reader of this.
+   * Kept-character runs. Two orderings hold, and each reader relies on one:
+   * ascending by `normStart` and gapless in normalized space (segment i+1's
+   * `normStart` is exactly segment i's `normStart + length`), which
+   * `segmentAt` (so `mapSpanToOriginal`) binary-searches; and ascending by
+   * `origStart`, non-overlapping in original space, which `normalizedOffset`
+   * (so `mapSpanToNormalized`) binary-searches. Both follow from
+   * `normalizeFormatChars` walking the text left to right and emitting one
+   * segment per kept run; anything that builds segments another way must keep
+   * both. Empty when the text is made only of format characters.
    */
   readonly segments: readonly Segment[];
 }
@@ -166,8 +172,8 @@ export function mapSpanToOriginal(span: Span, normalization: FormatCharNormaliza
 // How many KEPT (non-stripped) characters lie before original position
 // `origPos` — that position's index in the normalized text, with a position
 // inside or at the start of a stripped run resolving to the next kept
-// character. Binary search over `segments` (ascending by `origStart` as well
-// as `normStart`), O(log k).
+// character. Binary search over `segments` (ascending by `origStart`, see
+// `FormatCharNormalization.segments`), O(log k).
 function normalizedOffset(origPos: number, segments: readonly Segment[]): number {
   let lo = 0;
   let hi = segments.length;
@@ -185,20 +191,29 @@ function normalizedOffset(origPos: number, segments: readonly Segment[]): number
   // run (inside a trailing stripped run); clamping onto the last segment gives
   // the total normalized length there.
   const found = segments[Math.min(lo, segments.length - 1)];
-  if (found === undefined) return 0; // unreachable: a normalization always has a segment
+  // No segments means the text is made only of format characters, so nothing
+  // is kept and every position has zero kept characters before it. That is a
+  // correct answer, not an invariant violation, so it is returned rather than
+  // thrown (contrast `segmentAt`, whose caller holds a span a matcher found in
+  // the normalized text, which cannot exist when that text is empty).
+  if (found === undefined) return 0;
   return found.normStart + Math.min(Math.max(0, origPos - found.origStart), found.length);
 }
 
 /**
- * The distance between two spans given in ORIGINAL-text coordinates, counting
- * only characters that survive normalization: stripped format characters
- * between the spans take up no room. `0` when the spans touch or overlap.
- * This is the same unit `windowChars` is measured in for a `labels` window.
+ * Maps a `Span` given in ORIGINAL-text coordinates onto the normalized text:
+ * the inverse direction of `mapSpanToOriginal`. Each end becomes the count of
+ * kept characters before it, so the result's length is the number of visible
+ * characters the span covers, and the distance between two mapped spans is the
+ * number of visible characters between them — the unit `windowChars` is
+ * measured in. A span end sitting inside or at the start of a stripped run
+ * resolves to the next kept character. O(log k); the engine calls it once per
+ * candidate, never per pair.
  */
-export function normalizedGap(a: Span, b: Span, normalization: FormatCharNormalization): number {
-  const [first, second] = a.start <= b.start ? [a, b] : [b, a];
-  const rawGap = second.start - first.end;
-  if (rawGap <= 0) return 0;
+export function mapSpanToNormalized(span: Span, normalization: FormatCharNormalization): Span {
   const { segments } = normalization;
-  return normalizedOffset(second.start, segments) - normalizedOffset(first.end, segments);
+  return {
+    start: normalizedOffset(span.start, segments),
+    end: normalizedOffset(span.end, segments),
+  };
 }

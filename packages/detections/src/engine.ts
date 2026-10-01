@@ -2,7 +2,7 @@ import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
-import { mapSpanToOriginal, normalizedGap, normalizeFormatChars } from './format-chars.ts';
+import { mapSpanToNormalized, mapSpanToOriginal, normalizeFormatChars } from './format-chars.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
 import { memoizedRegExpList } from './regex-cache.ts';
@@ -87,21 +87,23 @@ export function getLoadedRules(): Rule[] {
 //
 // `match.span` is always in ORIGINAL-text coordinates (mapped back for a
 // normalized-pass candidate — see mapCandidateToOriginal) so the pooled list
-// can compare (a)/(b) proximity across passes directly. `labelWindow` is
-// kept SEPARATE and is NEVER mapped: it is the text and span the candidate's
-// own primitive match was actually found in — `text`/original-coordinates
-// for an original-pass candidate, the normalized text/coordinates for a
-// normalized-pass one. `requiresNearby.windowChars` is a character count,
-// and a normalized-pass candidate's label has to be searched for within
-// THAT MANY NORMALIZED characters, not that many original ones — otherwise
-// invisible padding between a label and its value, stripped away in the
-// normalized text but still counted in the original text, pushes the label
-// outside a window that would otherwise easily contain it. See
-// isCorroborated's (c) section.
+// can compare rule identity and overlap across passes directly.
+//
+// `normSpan` is the same occurrence in NORMALIZED-text coordinates (the text
+// with every format character stripped), and is what every
+// `requiresNearby.windowChars` distance is measured in: the window counts the
+// characters a reader can see, so invisible padding between a value and its
+// corroborator takes up no room for `categories`, `ruleIds` or `labels` alike.
+// It is settled ONCE per candidate while the pooled list is built — free for a
+// normalized-pass candidate (it is the span its matcher produced), one
+// O(log k) lookup for an original-pass candidate (see withNormalizedSpan) — so
+// the per-pair work in isCorroborated is a constant-time comparison rather
+// than a per-pair coordinate mapping. Off the slow path nothing is stripped,
+// so `normSpan` is simply `match.span`.
 interface Candidate {
   rule: Rule;
   match: MatchResult;
-  labelWindow: { text: string; span: Span };
+  normSpan: Span;
 }
 
 function spansOverlap(a: Span, b: Span): boolean {
@@ -125,10 +127,10 @@ function spansOverlap(a: Span, b: Span): boolean {
 // see the (a)/(b) section.
 //
 // `normalization` is defined only when `scan()` is on the slow path — the
-// fast path never needs the extra normalized-window search in (c) or the
-// normalized gap in (a)/(b), because it has already established the WHOLE
-// text carries no format character, so no window taken from it could carry
-// one either.
+// fast path never needs the extra normalized-window search in (c), because it
+// has already established the WHOLE text carries no format character, so no
+// window taken from it could carry one either. Distances need no such
+// parameter: every candidate carries its `normSpan`.
 function isCorroborated(
   candidate: Candidate,
   candidates: Candidate[],
@@ -145,25 +147,36 @@ function isCorroborated(
   // (a)/(b): another candidate match whose span falls inside the window and
   // whose category/ruleId matches. `windowChars` counts normalized characters
   // here, as it does for (c): stripped format characters between the two
-  // spans take up no room. The spans are in original coordinates, so the
-  // cheap raw test runs first (format characters only ever shrink a gap, so
-  // inside the raw window is inside the normalized one) and only a pair that
-  // fails it pays for the normalized gap, an O(log k) lookup.
-  const { start, end } = candidate.match.span;
-  const winStart = start - halfWindow;
-  const winEnd = end + halfWindow;
+  // spans take up no room. Both spans are compared in normalized coordinates
+  // (`normSpan`, settled once per candidate), so each pair costs O(1).
+  const ns = candidate.normSpan;
+  const winStart = ns.start - halfWindow;
+  const winEnd = ns.end + halfWindow;
   const categories = req.categories;
   const ruleIds = req.ruleIds;
   if (categories?.length || ruleIds?.length) {
     for (const other of candidates) {
       if (other === candidate) continue;
+      // Relevance first: it is a couple of array lookups, and most pairs fail
+      // it (a ZIP candidate is irrelevant to every other ZIP candidate), so
+      // the distance below is only looked at for a pair that could actually
+      // corroborate. Category corroboration must come from a DIFFERENT rule —
+      // otherwise two matches of the same rule (e.g. two nearby dates) would
+      // corroborate each other, defeating independent corroboration. `ruleIds`
+      // is an explicit opt-in, so it is intentionally not subject to this
+      // restriction.
+      const relevant =
+        (other.match.ruleId !== candidate.match.ruleId &&
+          categories?.includes(other.match.category) === true) ||
+        ruleIds?.includes(other.match.ruleId) === true;
+      if (!relevant) continue;
       // A candidate never corroborates itself — and neither does its OWN
       // pooled cross-pass duplicate. The original-text and normalized-text
       // passes can each independently produce a candidate for the SAME
       // occurrence, with an identical or overlapping span once both are
       // expressed in original coordinates; that pair is one occurrence, not
       // two. Category corroboration is already restricted to a DIFFERENT
-      // rule below, so this only changes anything for `ruleIds`, whose
+      // rule above, so this only changes anything for `ruleIds`, whose
       // whole point is letting a rule reference its own id ("two nearby
       // occurrences of this rule corroborate each other") — without this
       // check, a rule written that way corroborates a single, lone
@@ -176,26 +189,9 @@ function isCorroborated(
       ) {
         continue;
       }
-      const os = other.match.span;
-      // Overlap of [os.start, os.end] with [winStart, winEnd].
-      if (
-        (os.end < winStart || os.start > winEnd) &&
-        (normalization === undefined ||
-          normalizedGap(candidate.match.span, os, normalization) > halfWindow)
-      ) {
-        continue;
-      }
-      // Category corroboration must come from a DIFFERENT rule — otherwise two
-      // matches of the same rule (e.g. two nearby dates) would corroborate each
-      // other, defeating independent corroboration. `ruleIds` is an explicit
-      // opt-in, so it is intentionally not subject to this restriction.
-      if (
-        other.match.ruleId !== candidate.match.ruleId &&
-        categories?.includes(other.match.category)
-      ) {
-        return true;
-      }
-      if (ruleIds?.includes(other.match.ruleId)) return true;
+      // Inclusive on both edges: a gap of exactly `windowChars` corroborates.
+      if (other.normSpan.end < winStart || other.normSpan.start > winEnd) continue;
+      return true;
     }
   }
 
@@ -203,61 +199,42 @@ function isCorroborated(
   // boundaries (not a raw substring) so e.g. the label "state" does not
   // corroborate inside "estate" — labels behave like standalone keywords/phrases.
   //
-  // Measured over `candidate.labelWindow`, NOT always `candidate.match.span`
-  // / the original text: for a normalized-pass candidate, that is the
-  // normalized text and the span its primitive match was actually found at
-  // there, so `windowChars` counts normalized characters. Measuring it in
-  // original characters instead (i.e. reusing `winStart`/`winEnd` above)
-  // would let invisible padding between a label and its value — stripped
-  // away in the normalized text, but still counted in the original one —
-  // push the label outside a window it would otherwise sit well inside.
+  // `windowChars` counts normalized characters here too, for EVERY candidate:
+  // the window is cut from the normalized text around `candidate.normSpan`, so
+  // invisible padding between a label and its value — stripped away in the
+  // normalized text — cannot push the label outside a window it would
+  // otherwise sit well inside, whichever pass produced the candidate.
   const labels = req.labels;
   if (labels && labels.length > 0) {
-    // Two DIFFERENT reasons a single haystack is not enough, both real and
-    // both covered by tests:
+    // Two DIFFERENT reasons the normalized window alone is not enough, both
+    // real and both covered by tests: a label's own boundary can depend on a
+    // format character present in only ONE of the two texts — the same shape
+    // of regression the primitive-match fix (see scan()) exists for, just for
+    // this lookaround instead of `\b`. That can cut either way: a format
+    // character between two words is a real separator in the ORIGINAL text but
+    // vanishes (merging the words) in the normalized one, while a format
+    // character INSIDE a label's own characters splits it apart in the original
+    // text but reads as one word once normalized. So the original text's own
+    // window around this candidate's span is searched too, as is that window
+    // re-normalized (the "label split apart, reads as one word only once
+    // normalized" half). These two windows are cut with a radius of
+    // `windowChars` ORIGINAL characters, so each holds at most as many visible
+    // characters as the normalized window does: they exist for the boundary
+    // cases above and never reach a label the visible window would not.
     //
-    // 1. The window RADIUS must be counted in the candidate's own native
-    //    characters. For a normalized-pass candidate, invisible padding
-    //    between a label and its value is gone in the normalized text, so
-    //    measuring `windowChars` there (via `labelWindow`) finds a label
-    //    invisible padding would otherwise push outside a window measured
-    //    in original characters.
-    // 2. A label's own boundary can depend on a format character present in
-    //    only ONE of the two texts — the same shape of regression the
-    //    primitive-match fix (see scan()) exists for, just for this
-    //    lookaround instead of `\b`. That can cut either way: a format
-    //    character between two words is a real separator in the ORIGINAL
-    //    text but vanishes (merging the words) in the normalized one, while
-    //    a format character INSIDE a label's own characters splits it apart
-    //    in the original text but reads as one word once normalized. So the
-    //    native window alone is not enough either: a normalized-native
-    //    candidate whose corroborating boundary exists only in the original
-    //    text (padding stripped away, taking the separator with it) needs
-    //    the ORIGINAL text's own window around this candidate's MAPPED
-    //    span, searched too.
-    //
-    // `mappedHaystack` is identical to `haystack` (skipped) for an
-    // original-pass candidate, whose native window already IS this one.
-    const { text: windowText, span: windowSpan } = candidate.labelWindow;
-    const labelWinStart = windowSpan.start - halfWindow;
-    const labelWinEnd = windowSpan.end + halfWindow;
-    const haystack = windowText.slice(Math.max(0, labelWinStart), labelWinEnd);
-    const mappedWinStart = start - halfWindow;
-    const mappedWinEnd = end + halfWindow;
-    const mappedHaystack = text.slice(Math.max(0, mappedWinStart), mappedWinEnd);
-    // Re-normalizing a window on demand — bounded by `windowChars`, so cheap
-    // — rather than threading extra haystacks through every caller covers
-    // reason 2's "label split apart, reads as one word only once
-    // normalized" half. Skipped entirely off the slow path (`normalization`
-    // undefined): the fast path has already established the WHOLE text carries
-    // no format character, so no window taken from it could carry one
-    // either, and the regex test would always return the no-op result.
+    // Re-normalizing a window on demand is bounded by `windowChars`, so cheap,
+    // and skipped entirely off the slow path (`normalization` undefined): the
+    // fast path has already established the WHOLE text carries no format
+    // character, so no window taken from it could carry one either, and
+    // `normSpan` is `match.span` there.
+    const { start, end } = candidate.match.span;
+    const haystack = text.slice(Math.max(0, start - halfWindow), end + halfWindow);
+    const normalizedHaystack =
+      normalization === undefined
+        ? undefined
+        : normalization.normalized.slice(Math.max(0, winStart), winEnd);
     const haystackNormalized =
-      normalization !== undefined ? normalizeFormatChars(haystack)?.normalized : undefined;
-    const mappedHaystackNormalized =
-      normalization !== undefined && mappedHaystack !== haystack
-        ? normalizeFormatChars(mappedHaystack)?.normalized
-        : undefined;
+      normalization === undefined ? undefined : normalizeFormatChars(haystack)?.normalized;
     // Boundaries = non-alphanumeric neighbours; robust for labels containing
     // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
     //
@@ -277,9 +254,8 @@ function isCorroborated(
     )) {
       if (!re) continue;
       if (re.test(haystack)) return true;
+      if (normalizedHaystack !== undefined && re.test(normalizedHaystack)) return true;
       if (haystackNormalized !== undefined && re.test(haystackNormalized)) return true;
-      if (mappedHaystack !== haystack && re.test(mappedHaystack)) return true;
-      if (mappedHaystackNormalized !== undefined && re.test(mappedHaystackNormalized)) return true;
     }
   }
 
@@ -323,10 +299,10 @@ function buildCandidates(
           rawMatch,
           confidence: 0.9,
         },
-        // Not yet mapped anywhere — this IS the text/span the candidate's
-        // primitive match was found in, which is exactly what the label
-        // window in isCorroborated needs. See the `Candidate` comment.
-        labelWindow: { text: matchText, span },
+        // In `matchText`'s own coordinates, which is the normalized text for
+        // a normalized-pass candidate and so already right; an original-pass
+        // candidate on the slow path is re-derived by withNormalizedSpan.
+        normSpan: span,
       });
     }
   }
@@ -365,12 +341,21 @@ function mapCandidateToOriginal(
   return {
     rule: candidate.rule,
     match: { ...candidate.match, span, rawMatch: text.slice(span.start, span.end) },
-    // Deliberately NOT remapped: `labelWindow` stays pointed at the
-    // normalized text and the (pre-mapping) span the primitive match was
-    // actually found at there. See the `Candidate` comment and
-    // isCorroborated's (c) section.
-    labelWindow: candidate.labelWindow,
+    // Deliberately NOT remapped: `normSpan` is the span the primitive match
+    // was found at in the normalized text, which is exactly the coordinate
+    // space windows are measured in. See the `Candidate` comment.
+    normSpan: candidate.normSpan,
   };
+}
+
+// Settles an ORIGINAL-pass candidate's `normSpan` on the slow path: its span
+// is in original coordinates, so it is mapped into the normalized text once
+// here (O(log k)) instead of once per pair in isCorroborated.
+function withNormalizedSpan(
+  candidate: Candidate,
+  normalization: FormatCharNormalization,
+): Candidate {
+  return { ...candidate, normSpan: mapSpanToNormalized(candidate.match.span, normalization) };
 }
 
 // Pass 2: proximity gating over a candidate list whose `match.span`s are ALL
@@ -578,11 +563,14 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   const normalization = normalizeFormatChars(text);
   const originalCandidates = buildCandidates(text, ruleset, extension);
   if (!normalization) return gate(originalCandidates, text, undefined);
+  const pooledOriginal = originalCandidates.map((candidate) =>
+    withNormalizedSpan(candidate, normalization),
+  );
 
   const normalizedCandidates = buildCandidates(normalization.normalized, ruleset, extension).map(
     (candidate) => mapCandidateToOriginal(candidate, normalization, text),
   );
-  const findings = gate([...originalCandidates, ...normalizedCandidates], text, normalization);
+  const findings = gate([...pooledOriginal, ...normalizedCandidates], text, normalization);
   // The two passes can each independently find the same secret occurrence —
   // sometimes at a slightly different span, since a pattern with no upper
   // bound can match further in one text than the other — so the pooled,

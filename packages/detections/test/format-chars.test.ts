@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { mergeOverlappingSameRule } from '../src/engine.ts';
-import { mapSpanToOriginal, normalizedGap, normalizeFormatChars } from '../src/format-chars.ts';
+import {
+  mapSpanToNormalized,
+  mapSpanToOriginal,
+  normalizeFormatChars,
+} from '../src/format-chars.ts';
 import type { MatchResult } from '../src/types.ts';
 import { FORMAT_CHARS, ZWJ, ZWNJ, ZWSP } from './helpers/format-chars.ts';
 
@@ -111,46 +115,61 @@ describe('mapSpanToOriginal', () => {
   });
 });
 
-describe('normalizedGap', () => {
+describe('mapSpanToNormalized', () => {
   // indices:  A0 B1 Z2 Z3 C4 D5 E6 Z7 Z8 F9 G10 Z11 Z12   (Z = stripped)
   // normalized = "ABCDEFG": kept runs [0,2) [4,7) [9,11), trailing strip [11,13)
   const text = `AB${ZWSP}${ZWSP}CDE${ZWSP}${ZWSP}FG${ZWSP}${ZWSP}`;
   const normalization = normalizeFormatChars(text);
   if (!normalization) throw new Error('expected normalization');
 
-  it('is 0 for spans that touch or overlap', () => {
-    expect(normalizedGap({ start: 0, end: 2 }, { start: 2, end: 5 }, normalization)).toBe(0);
-    expect(normalizedGap({ start: 0, end: 5 }, { start: 3, end: 7 }, normalization)).toBe(0);
+  it('maps a span over kept text onto the same characters of the normalized text', () => {
+    expect(mapSpanToNormalized({ start: 0, end: 2 }, normalization)).toEqual({ start: 0, end: 2 });
+    expect(mapSpanToNormalized({ start: 4, end: 7 }, normalization)).toEqual({ start: 2, end: 5 });
+    expect(mapSpanToNormalized({ start: 9, end: 11 }, normalization)).toEqual({
+      start: 5,
+      end: 7,
+    });
   });
 
-  it('counts only kept characters across an interior stripped run', () => {
-    // Raw gap from 2 to 4 is 2, all stripped; the next kept char is C.
-    expect(normalizedGap({ start: 0, end: 2 }, { start: 4, end: 6 }, normalization)).toBe(0);
-    // Raw gap from 2 to 9 is 7: C D E kept, four stripped.
-    expect(normalizedGap({ start: 0, end: 2 }, { start: 9, end: 11 }, normalization)).toBe(3);
-  });
-
-  it('is symmetric in its arguments', () => {
-    const a = { start: 0, end: 2 };
-    const b = { start: 9, end: 11 };
-    expect(normalizedGap(b, a, normalization)).toBe(normalizedGap(a, b, normalization));
+  it('counts only visible characters across an interior stripped run', () => {
+    // [0,9) holds A B C D E: the four stripped characters take no room.
+    expect(mapSpanToNormalized({ start: 0, end: 9 }, normalization)).toEqual({ start: 0, end: 5 });
   });
 
   it('resolves a position inside or at the start of a stripped run to the next kept char', () => {
-    // End at 2 is the start of a stripped run, end at 3 is inside it; both
-    // resolve to C, so each gap to the span starting at E (6) is C, D = 2.
-    expect(normalizedGap({ start: 0, end: 2 }, { start: 6, end: 7 }, normalization)).toBe(2);
-    expect(normalizedGap({ start: 0, end: 3 }, { start: 6, end: 7 }, normalization)).toBe(2);
+    // 2 starts a stripped run and 3 sits inside it; both resolve to C (offset 2).
+    expect(mapSpanToNormalized({ start: 2, end: 3 }, normalization)).toEqual({ start: 2, end: 2 });
+    expect(mapSpanToNormalized({ start: 3, end: 4 }, normalization)).toEqual({ start: 2, end: 2 });
   });
 
   it('clamps a position past the last kept run to the total normalized length', () => {
-    // 11 starts the trailing stripped run, past the last kept run (G at 10):
-    // offset is 7, the normalized length. From a span ending at 9 (offset 5,
-    // F) the gap is 2. Spans stay inside the 13-character text, as the
-    // engine's own spans do.
-    expect(normalizedGap({ start: 0, end: 9 }, { start: 11, end: 13 }, normalization)).toBe(2);
-    // Start inside the trailing run (12) clamps to the same total.
-    expect(normalizedGap({ start: 0, end: 9 }, { start: 12, end: 13 }, normalization)).toBe(2);
+    // 11 starts the trailing stripped run and 12 sits inside it; the normalized
+    // text is 7 characters long.
+    expect(mapSpanToNormalized({ start: 11, end: 13 }, normalization)).toEqual({
+      start: 7,
+      end: 7,
+    });
+    expect(mapSpanToNormalized({ start: 12, end: 13 }, normalization)).toEqual({
+      start: 7,
+      end: 7,
+    });
+  });
+
+  it('gives the distance between two spans as the visible characters between them', () => {
+    const a = mapSpanToNormalized({ start: 0, end: 2 }, normalization);
+    const b = mapSpanToNormalized({ start: 9, end: 11 }, normalization);
+    // Raw gap 7, of which four are stripped: C D E are the three visible ones.
+    expect(b.start - a.end).toBe(3);
+  });
+
+  it('maps every position to zero in a text made only of format characters', () => {
+    // No kept run exists, so `segments` is empty: nothing is visible anywhere
+    // and the right answer is 0, not an error.
+    const onlyFormat = normalizeFormatChars(ZWSP.repeat(10));
+    if (!onlyFormat) throw new Error('expected normalization');
+    expect(onlyFormat.segments).toEqual([]);
+    expect(mapSpanToNormalized({ start: 0, end: 2 }, onlyFormat)).toEqual({ start: 0, end: 0 });
+    expect(mapSpanToNormalized({ start: 8, end: 10 }, onlyFormat)).toEqual({ start: 0, end: 0 });
   });
 });
 

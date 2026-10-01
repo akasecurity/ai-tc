@@ -144,11 +144,13 @@ describe('normalizedGap', () => {
   });
 
   it('clamps a position past the last kept run to the total normalized length', () => {
-    // 13 is past the trailing stripped run: offset is 7, the normalized
-    // length. From a span ending at 9 (offset 5, F) the gap is 2.
-    expect(normalizedGap({ start: 0, end: 9 }, { start: 13, end: 14 }, normalization)).toBe(2);
+    // 11 starts the trailing stripped run, past the last kept run (G at 10):
+    // offset is 7, the normalized length. From a span ending at 9 (offset 5,
+    // F) the gap is 2. Spans stay inside the 13-character text, as the
+    // engine's own spans do.
+    expect(normalizedGap({ start: 0, end: 9 }, { start: 11, end: 13 }, normalization)).toBe(2);
     // Start inside the trailing run (12) clamps to the same total.
-    expect(normalizedGap({ start: 0, end: 9 }, { start: 12, end: 14 }, normalization)).toBe(2);
+    expect(normalizedGap({ start: 0, end: 9 }, { start: 12, end: 13 }, normalization)).toBe(2);
   });
 });
 

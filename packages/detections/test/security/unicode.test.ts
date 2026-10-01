@@ -604,21 +604,23 @@ describe('invisible padding cannot push a category or rule-id corroborator outsi
     const PAD = 10;
     const between = (gap: number, pad: number): string =>
       ' '.repeat(Math.floor(gap / 2)) + ZWSP.repeat(pad) + ' '.repeat(Math.ceil(gap / 2));
-    const after = (gap: number, pad: number): string => `${EMAIL}${between(gap, pad)}${DATE}`;
-    const before = (gap: number, pad: number): string => `${DATE}${between(gap, pad)}${EMAIL}`;
+    // Named for which span comes first: the email corroborator or the date value.
+    const corroboratorFirst = (gap: number, pad: number): string =>
+      `${EMAIL}${between(gap, pad)}${DATE}`;
+    const valueFirst = (gap: number, pad: number): string => `${DATE}${between(gap, pad)}${EMAIL}`;
     const both = ['core-pii/dob', 'core-pii/email'];
 
     it.each([
-      ['corroborator before the value', after],
-      ['corroborator after the value', before],
+      ['corroborator before the value', corroboratorFirst],
+      ['corroborator after the value', valueFirst],
     ])('%s: a gap of exactly windowChars corroborates, padded or not', (_label, build) => {
       expect(ids(build(WINDOW, 0), [dob, email])).toEqual(both);
       expect(ids(build(WINDOW, PAD), [dob, email])).toEqual(both);
     });
 
     it.each([
-      ['corroborator before the value', after],
-      ['corroborator after the value', before],
+      ['corroborator before the value', corroboratorFirst],
+      ['corroborator after the value', valueFirst],
     ])('%s: a gap of windowChars + 1 does not corroborate, padded or not', (_label, build) => {
       expect(ids(build(WINDOW + 1, 0), [dob, email])).toEqual(['core-pii/email']);
       expect(ids(build(WINDOW + 1, PAD), [dob, email])).toEqual(['core-pii/email']);

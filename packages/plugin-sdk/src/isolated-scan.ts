@@ -233,11 +233,28 @@ let resolvedWorkerUrl: URL | null | undefined;
  * source file. `undefined` — neither present, or a location that is not a file
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
+ *
+ * Each URL is spelled as a literal `new URL('./…', import.meta.url)` written
+ * directly in this function: that is the only form static file tracers
+ * (Vercel's `@vercel/nft`, say) follow. A URL built from a variable is not
+ * followed, and neither is one inside an arrow function, so a deployment
+ * traced from either ships without the worker and drops every rule that needs
+ * isolation. test/worker-url-literal.test.ts pins the form.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  for (const name of ['scan-worker.js', 'scan-worker.ts']) {
-    const candidate = new URL(name, import.meta.url);
+  let candidates: readonly URL[];
+  try {
+    candidates = [
+      new URL('./scan-worker.js', import.meta.url),
+      new URL('./scan-worker.ts', import.meta.url),
+    ];
+  } catch {
+    // A base a relative URL cannot resolve against. Nothing to probe.
+    resolvedWorkerUrl = null;
+    return undefined;
+  }
+  for (const candidate of candidates) {
     try {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;

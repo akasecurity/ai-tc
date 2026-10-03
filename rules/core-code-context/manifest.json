@@ -11,6 +11,7 @@
     "stack-trace",
     "internal-url",
     "feature-flag",
-    "db-table-name"
+    "db-table-name",
+    "gcp-service-account-email"
   ]
 }

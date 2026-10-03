@@ -18,5 +18,37 @@
     "label": "wrong format",
     "text": "-----BEGIN CERTIFICATE-----",
     "shouldMatch": false
+  },
+  {
+    "label": "encrypted PKCS#8 block",
+    "text": "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQIEXAMPLEEXAMPLE\n-----END ENCRYPTED PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 136
+      }
+    ]
+  },
+  {
+    "label": "JSON-escaped PKCS#8 block: the span covers the body, not just the header",
+    "text": "const pem = \"-----BEGIN PRIVATE KEY-----\\nMIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQIEXAMPLEEXAMPLE\\n-----END PRIVATE KEY-----\\n\";",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 13,
+        "end": 131
+      }
+    ]
+  },
+  {
+    "label": "header alone (truncated paste) still matches",
+    "text": "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+    "shouldMatch": true
+  },
+  {
+    "label": "public key block",
+    "text": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----",
+    "shouldMatch": false
   }
 ]

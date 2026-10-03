@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 7 packs / 101 rules.
+// 8 packs / 109 rules.
 /* eslint-disable simple-import-sort/imports */
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
@@ -41,9 +41,16 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
+import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
+import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
+import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
+import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
+import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
+import coreCodeContextGcpServiceAccountEmail from '../../../rules/core-code-context/gcp-service-account-email.json';
 import coreCodeContextInternalDomain from '../../../rules/core-code-context/internal-domain.json';
 import coreCodeContextInternalIp from '../../../rules/core-code-context/internal-ip.json';
 import coreCodeContextInternalUrl from '../../../rules/core-code-context/internal-url.json';
@@ -100,7 +107,7 @@ import secretsCloudflareApiKey from '../../../rules/secrets/cloudflare-api-key.j
 import secretsDatadogKey from '../../../rules/secrets/datadog-key.json';
 import secretsDigitaloceanToken from '../../../rules/secrets/digitalocean-token.json';
 import secretsDiscordToken from '../../../rules/secrets/discord-token.json';
-import secretsGcpServiceAccount from '../../../rules/secrets/gcp-service-account.json';
+import secretsGcpServiceAccountKey from '../../../rules/secrets/gcp-service-account-key.json';
 import secretsGithubPat from '../../../rules/secrets/github-pat.json';
 import secretsGitlabToken from '../../../rules/secrets/gitlab-token.json';
 import secretsHerokuApiKey from '../../../rules/secrets/heroku-api-key.json';
@@ -110,6 +117,7 @@ import secretsPulumiAccessToken from '../../../rules/secrets/pulumi-access-token
 import secretsSendgridKey from '../../../rules/secrets/sendgrid-key.json';
 import secretsSlackToken from '../../../rules/secrets/slack-token.json';
 import secretsStripeLiveKey from '../../../rules/secrets/stripe-live-key.json';
+import secretsTailscaleKey from '../../../rules/secrets/tailscale-key.json';
 import secretsTerraformCloudToken from '../../../rules/secrets/terraform-cloud-token.json';
 import secretsTwilioKey from '../../../rules/secrets/twilio-key.json';
 import secretsVaultToken from '../../../rules/secrets/vault-token.json';
@@ -159,6 +167,19 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     ],
   },
   {
+    packId: 'command-risk',
+    name: 'Risky agent commands',
+    version: '0.1.0',
+    rawRules: [
+      commandRiskPkillBroad,
+      commandRiskRmRfHomeOrShared,
+      commandRiskGitForcePush,
+      commandRiskGitResetHard,
+      commandRiskCurlPipeShell,
+      commandRiskCredentialFileRead,
+    ],
+  },
+  {
     packId: 'core-code-context',
     name: 'Code Context',
     version: '0.1.0',
@@ -171,6 +192,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       coreCodeContextInternalUrl,
       coreCodeContextFeatureFlag,
       coreCodeContextDbTableName,
+      coreCodeContextGcpServiceAccountEmail,
     ],
   },
   {
@@ -231,7 +253,6 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     rawRules: [
       secretsAwsAccessKey,
       secretsAwsSecretKey,
-      secretsGcpServiceAccount,
       secretsAzureConnectionString,
       secretsOpenaiApiKey,
       secretsAnthropicApiKey,
@@ -250,6 +271,8 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       secretsTerraformCloudToken,
       secretsVaultToken,
       secretsGithubPat,
+      secretsGcpServiceAccountKey,
+      secretsTailscaleKey,
     ],
   },
   {

@@ -853,8 +853,10 @@ cosmetic.** Each plugin's `skills/setup/SKILL.md` carries a "Known limitations" 
 is the authority on what its host can actually enforce; keep it accurate when the adapter
 changes. The gaps that exist today:
 
-- **Codex** does not yet fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls,
-  only `Bash`.
+- **Codex** fires PreToolUse/PostToolUse per tool call, including each call a code-mode
+  `exec` script makes (`exec_command` arrives as `Bash`, the web tool as `webrun`, MCP
+  tools as `mcp__<server>__<tool>`); the script itself fires no hook. PostToolUse cannot
+  rewrite output, so a redact there withholds the whole result.
 - **Antigravity** is the most constrained and the most different. It has only five events —
   no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
   off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be

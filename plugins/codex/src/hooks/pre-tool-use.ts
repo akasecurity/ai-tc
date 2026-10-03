@@ -5,10 +5,8 @@
  * arguments for redact-in-place fields; an executable field escalates a
  * redact to a deny instead (see pre-tool-use-decision.ts).
  *
- * CAVEAT (see pre-tool-use-decision.ts's SCANNABLE_FIELDS comment): today
- * Codex only reliably fires this hook for `Bash` calls, not `apply_patch` —
- * the `apply_patch` matcher/field entry here is forward-compatible but
- * currently inert.
+ * Fires for `Bash` and `apply_patch`, also when nested inside a code-mode
+ * `exec` (see pre-tool-use-decision.ts's SCANNABLE_FIELDS comment).
  *
  * stdin:  { tool_name, tool_input, session_id, ... }
  * stdout (exit 0):

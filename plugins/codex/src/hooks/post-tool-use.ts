@@ -7,8 +7,8 @@
  * scan-response.ts's module comment for why a `redact` outcome escalates to
  * this same whole-result withhold rather than attempting a partial splice.
  *
- * Only `Bash` is scanned today — PostToolUse does not fire for `apply_patch`
- * yet (see pre-tool-use-decision.ts).
+ * Scans `Bash` output, the built-in web tool's results (`webrun`) and MCP
+ * tool results (`mcp__*`) — see tool-response.ts for each shape.
  *
  * stdin:  { tool_name, tool_input, tool_response, ... }
  * stdout (exit 0):

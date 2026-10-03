@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 7 packs / 103 rules.
+// 8 packs / 109 rules.
 /* eslint-disable simple-import-sort/imports */
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
@@ -41,6 +41,12 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
+import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
+import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
+import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
+import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
+import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
@@ -158,6 +164,19 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       codeFlawsEvalDynamicExec,
       codeFlawsSsrfUserUrl,
       codeFlawsRegexRedosBacktrack,
+    ],
+  },
+  {
+    packId: 'command-risk',
+    name: 'Risky agent commands',
+    version: '0.1.0',
+    rawRules: [
+      commandRiskPkillBroad,
+      commandRiskRmRfHomeOrShared,
+      commandRiskGitForcePush,
+      commandRiskGitResetHard,
+      commandRiskCurlPipeShell,
+      commandRiskCredentialFileRead,
     ],
   },
   {

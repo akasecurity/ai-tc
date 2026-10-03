@@ -1,0 +1,55 @@
+[
+  {
+    "label": "browser by full name",
+    "text": "pkill -f \"Brave Browser\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "signal plus -f",
+    "text": "pkill -TERM -f \"bun src/main.ts\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "after &&",
+    "text": "cd app && pkill -9 -f node-server; echo done",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "pgrep only lists",
+    "text": "pgrep -f foo",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "exact process name",
+    "text": "pkill -x exactname",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "plain name no -f",
+    "text": "pkill Safari",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "markdown table prose",
+    "text": "| tool | purpose |\n| --- | --- |\n| pkill | kills processes by name |\n| pgrep | lists them |",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command quoted in a tool response is out of scope",
+    "text": "pkill -f \"Brave Browser\"",
+    "eventKind": "response",
+    "shouldMatch": false
+  },
+  {
+    "label": "same command with no capture kind (folder scan) is out of scope",
+    "text": "pkill -f \"Brave Browser\"",
+    "shouldMatch": false
+  }
+]

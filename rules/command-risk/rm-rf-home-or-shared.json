@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/rm-rf-home-or-shared",
+  "name": "Recursive rm under home or /Users",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\brm[ \\t]+(?:-[A-Za-z]+[ \\t]+)*?-(?=[A-Za-z]*[rR])[A-Za-z]+[ \\t]+(?:[^\\s;|&]{1,200}[ \\t]+){0,8}?[\"']?(?:~|\\$HOME|\\$\\{HOME\\}|/Users/|/home/)",
+    "flags": "g"
+  },
+  "examples": [
+    "rm -rf ~/projects/demo-app/$WORKDIR",
+    "rm -rf ~/worktrees/x ~/.claude-demo/projects/-Users-x"
+  ],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

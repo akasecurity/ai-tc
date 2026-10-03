@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/git-reset-hard",
+  "name": "git reset --hard at command position",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<=(?:^|[;&|(])[ \\t]*)git[ \\t]+reset[ \\t]+(?:[^\\s;|&]{1,200}[ \\t]+){0,8}?--hard\\b",
+    "flags": "gm"
+  },
+  "examples": ["git reset --hard HEAD~1", "cd /tmp/demo-repo && git reset --hard origin/main"],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

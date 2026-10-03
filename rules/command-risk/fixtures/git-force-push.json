@@ -1,0 +1,55 @@
+[
+  {
+    "label": "quiet short flag",
+    "text": "git push -q -f origin feature-x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "long flag",
+    "text": "git push --force origin main",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "flag after refspec",
+    "text": "git push origin main --force",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "force-with-lease",
+    "text": "git push --force-with-lease origin feature-x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "plain push",
+    "text": "git push origin main",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "follow-tags",
+    "text": "git push --follow-tags origin main",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "set upstream",
+    "text": "git push -u origin feature-x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command quoted in a tool response is out of scope",
+    "text": "git push -q -f origin feature-x",
+    "eventKind": "response",
+    "shouldMatch": false
+  },
+  {
+    "label": "same command with no capture kind (folder scan) is out of scope",
+    "text": "git push -q -f origin feature-x",
+    "shouldMatch": false
+  }
+]

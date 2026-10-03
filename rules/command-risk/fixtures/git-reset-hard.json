@@ -1,0 +1,55 @@
+[
+  {
+    "label": "rewind one commit",
+    "text": "git reset --hard HEAD~1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "chained after cd",
+    "text": "cd /tmp/demo-repo && git reset --hard origin/main",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "on its own line of a script",
+    "text": "set -e\ngit fetch -q\ngit reset --hard FETCH_HEAD",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "soft reset",
+    "text": "git reset --soft HEAD~1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "markdown doc string",
+    "text": "Never run git reset --hard in a shared worktree; use git switch instead.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "json doc string",
+    "text": "{\"note\": \"do not use git reset --hard here\"}",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed text",
+    "text": "echo \"git reset --hard is blocked by policy\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command quoted in a tool response is out of scope",
+    "text": "git reset --hard HEAD~1",
+    "eventKind": "response",
+    "shouldMatch": false
+  },
+  {
+    "label": "same command with no capture kind (folder scan) is out of scope",
+    "text": "git reset --hard HEAD~1",
+    "shouldMatch": false
+  }
+]

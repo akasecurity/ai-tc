@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/pkill-broad",
+  "name": "pkill -f (command-line pattern kill)",
+  "category": "custom",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bpkill[ \\t]+(?:-[A-Za-z0-9]+[ \\t]+)*?-[A-Za-z]*f[A-Za-z]*[ \\t]+[\"'\\w]",
+    "flags": "g"
+  },
+  "examples": ["pkill -f \"Brave Browser\"", "pkill -TERM -f \"bun src/main.ts\""],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

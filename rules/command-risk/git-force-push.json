@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/git-force-push",
+  "name": "git push --force / -f",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bgit[ \\t]+push[ \\t]+(?:[^\\s;|&]{1,200}[ \\t]+){0,8}?(?:-[A-Za-z]*f[A-Za-z]*|--force(?![\\w-]))(?=[ \\t]|$)",
+    "flags": "gm"
+  },
+  "examples": ["git push -q -f origin feature-x", "git push --force origin main"],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

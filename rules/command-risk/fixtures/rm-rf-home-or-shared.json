@@ -1,0 +1,73 @@
+[
+  {
+    "label": "home subdir with var",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "second arg is under home",
+    "text": "rm -rf ~/worktrees/x ~/.claude-demo/projects/-Users-x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "absolute user dir",
+    "text": "rm -rf /Users/someone/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "HOME var after cd",
+    "text": "cd /tmp && rm -rf \"$HOME/cache-old\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "split flags",
+    "text": "rm -f -r ~/scratch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "relative dist",
+    "text": "rm -rf ./dist",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tmp dir",
+    "text": "rm -rf /tmp/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "node_modules",
+    "text": "rm -rf node_modules",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "single file under home, not recursive",
+    "text": "rm -f ~/.cache/demo.lock",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose",
+    "text": "Cleanup removes the build output; it never touches your home directory.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command quoted in a tool response is out of scope",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "eventKind": "response",
+    "shouldMatch": false
+  },
+  {
+    "label": "same command with no capture kind (folder scan) is out of scope",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "shouldMatch": false
+  }
+]

@@ -547,7 +547,7 @@ describe('history-sync disclosure states what payload v3 sends', () => {
     // the product no longer gives. So pin the condition and the default with it.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('masked only where that policy is redact');
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('under monitor or warn');
-    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Every detection ships on monitor');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('No detection ships on redact or block');
     // Declining must not be sold as "this stops sending"; live sending remains.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Live sending is part of being attached');
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('dropped rather than kept');
@@ -1303,7 +1303,7 @@ describe('WorkspaceSettingsFormView web-chat capture control', () => {
 
   // A stored reply is masked only where the detection that flagged the value
   // resolves to redact or stronger — the shared capture path filters on exactly
-  // that — and every detection ships on monitor, so on a default install the
+  // that — and no detection ships on redact or block, so on a default install the
   // reply text is stored as it was seen. Copy promising a span-by-span mask
   // offers a protection this build does not perform, on the one surface where
   // that claim is what a person weighs. Pinned on BOTH strings, because the

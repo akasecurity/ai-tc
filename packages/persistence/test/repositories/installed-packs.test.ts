@@ -344,6 +344,37 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  it('reports which rules come from an assigned pack', () => {
+    const db = store.open();
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    db.installedPacks.setPolicy('aka', 'core-pii', 'warn');
+
+    const snapshot = db.installedPacks.installedRuleset();
+    expect([...snapshot.assignedRules]).toEqual(['core-pii/email']);
+    db.close();
+  });
+
+  it('a first install takes the pack defaultPolicyId; an existing row keeps its own', () => {
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('core-pii', '2.0.0', ['core-pii/email'])]);
+    db.installedPacks.recordInventory([
+      { ...pack('core-pii', '2.0.0', ['core-pii/email']), defaultPolicyId: 'block' },
+      { ...pack('secrets', '2.0.0', ['secrets/aws']), defaultPolicyId: 'warn' },
+    ]);
+
+    const snapshot = db.installedPacks.installedRuleset();
+    // Already installed before the default existed: still unassigned.
+    expect(snapshot.assignedRules.has('core-pii/email')).toBe(false);
+    expect(snapshot.ruleActions.get('core-pii/email')).toBe('log');
+    // Installed by this record: assigned to the pack's default.
+    expect(snapshot.assignedRules.has('secrets/aws')).toBe(true);
+    expect(snapshot.ruleActions.get('secrets/aws')).toBe('warn');
+    db.close();
+  });
+
   it('maps each rule to its installed pack version', () => {
     const db = store.open();
     db.installedPacks.recordInventory([

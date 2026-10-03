@@ -46,24 +46,62 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
     return Promise.resolve(policies);
   }
 
-  // Seed one policy per bundled category from DEFAULT_ACTIONS so the
-  // detection-type config exists from first run. Only when the table is empty,
-  // so a user's edits are never clobbered.
+  // Seed one policy per bundled category at Monitor so the detection-type config
+  // exists from first run. An unassigned pack's rules follow these rows, so
+  // Monitor here is the posture of every pack that ships no defaultPolicy; a pack
+  // that ships one carries its own assignment instead. Only when the
+  // table is empty, so a user's edits are never clobbered.
   seedDefaults(): void {
     const count = countScalar(this.db, 'SELECT count(*) AS n FROM policies');
-    if (count > 0) return;
+    if (count > 0) {
+      this.monitorUntouchedSeeds();
+      return;
+    }
     const stmt = this.db.prepare(
       `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
        VALUES (:id, 'global', :target, :action, 1, :now, :now)`,
     );
     failOpenTransaction(this.db, () => {
-      for (const [category, action] of Object.entries(DEFAULT_ACTIONS)) {
+      for (const category of Object.keys(DEFAULT_ACTIONS)) {
         stmt.run({
           id: randomUUID(),
           target: JSON.stringify({ category }),
-          action,
+          action: 'log',
           now: Date.now(),
         });
+      }
+    });
+  }
+
+  // Stores seeded by an earlier build hold DEFAULT_ACTIONS in their category
+  // rows. Those rows used to be shadowed by the Monitor every unassigned pack
+  // emitted; now that unassigned packs defer to them, an untouched one would
+  // turn Monitor into Warn on upgrade with nobody having asked. So a row still
+  // exactly as seeded — the seeded action, never updated since it was created —
+  // is moved to Monitor. A row the user, the setup wizard or the warn-era cap
+  // ever wrote has a later updated_at and is left alone. Idempotent: a moved
+  // row's updated_at advances, so it never matches again.
+  private monitorUntouchedSeeds(): void {
+    // A read first, so the steady state (nothing left to move) takes no write
+    // lock on a path every hook opens.
+    const untouched = allRows<{ category: string; action: string }>(
+      this.db.prepare(
+        `SELECT json_extract(target, '$.category') AS category, action FROM policies
+          WHERE scope = 'global' AND json_extract(target, '$.category') IS NOT NULL
+            AND action <> 'log' AND updated_at = created_at`,
+      ),
+    ).filter(
+      (row) => (DEFAULT_ACTIONS as Partial<Record<string, string>>)[row.category] === row.action,
+    );
+    if (untouched.length === 0) return;
+    const stmt = this.db.prepare(
+      `UPDATE policies SET action = 'log', updated_at = :now
+        WHERE scope = 'global' AND json_extract(target, '$.category') = :category
+          AND action = :seeded AND action <> 'log' AND updated_at = created_at`,
+    );
+    failOpenTransaction(this.db, () => {
+      for (const row of untouched) {
+        stmt.run({ category: row.category, seeded: row.action, now: Date.now() + 1 });
       }
     });
   }

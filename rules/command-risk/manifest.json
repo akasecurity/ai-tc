@@ -3,6 +3,7 @@
   "id": "command-risk",
   "name": "Risky agent commands",
   "version": "0.1.0",
+  "defaultPolicy": "warn",
   "rules": [
     "pkill-broad",
     "rm-rf-home-or-shared",

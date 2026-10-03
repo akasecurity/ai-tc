@@ -101,7 +101,7 @@ describe('aka sync-history', () => {
     expect(shown).toContain('masked only where the policy');
     expect(shown).toContain('is redact or block');
     expect(shown).toContain('under monitor or warn');
-    expect(shown).toContain('ships on monitor');
+    expect(shown).toContain('ships on redact or block');
     // The unconditional promise this replaced. Pinned absent so a reword cannot
     // reinstate it beside the new sentence and still read green.
     expect(shown).not.toContain('detected secrets masked');
@@ -248,7 +248,7 @@ describe('aka sync-history', () => {
     // re-asked rather than reported as never given.
     expect(shown).toContain('predates a change');
     expect(shown).toContain('is set to redact or block');
-    expect(shown).toContain('ships on monitor');
+    expect(shown).toContain('ships on redact or block');
     // The unconditional promise this replaced. Without this the case passes on
     // any wording that happens to mention a policy.
     expect(shown).not.toContain('with detected secrets masked');

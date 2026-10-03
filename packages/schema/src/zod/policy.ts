@@ -558,17 +558,17 @@ export function policyIdIsReversible(policyId: string | null | undefined): boole
 }
 
 // The per-CATEGORY enforcement FALLBACK (axis 1). Used when no more-specific
-// policy applies to a finding's rule. It is NOT the per-pack default — an
-// unassigned PACK resolves to DEFAULT_PACK_POLICY_ID ('monitor'), not to its
-// category's action here. Precedence at enforcement (both surfaces): a per-rule
-// policy (synthesized from the pack's policy_id, or an explicit ruleId policy)
-// wins over a per-category policy, which wins over this fallback. So a category
-// floored to `warn` here still only logs if its pack is set to Monitor.
+// policy applies to a finding's rule. Precedence at enforcement: a per-rule
+// policy (synthesized from an ASSIGNED pack's policy_id, or an explicit ruleId
+// policy) wins over a per-category policy, which wins over this fallback. An
+// unassigned pack synthesizes no per-rule policy on the live path, so its rules
+// follow the category row — seeded at Monitor — and this fallback applies only
+// where a category has no row at all.
 //
-// Cold-start seed = the severity floor (observe-first), routed through the
-// single catalog mapper so the monitor->log translation lives in exactly one
-// place (builtinPolicyToAction). severityFloorPolicy returns 'warn'|'monitor',
-// both valid BuiltinPolicyId, so this is total over every DetectionCategory.
+// The severity floor (observe-first), routed through the single catalog mapper
+// so the monitor->log translation lives in exactly one place
+// (builtinPolicyToAction). severityFloorPolicy returns 'warn'|'monitor', both
+// valid BuiltinPolicyId, so this is total over every DetectionCategory.
 export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fromEntries(
   DetectionCategorySchema.options.map((c) => [c, builtinPolicyToAction(severityFloorPolicy(c))]),
 ) as Record<DetectionCategory, ActionTaken>;

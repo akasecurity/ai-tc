@@ -12,6 +12,7 @@
 //
 // 8 packs / 109 rules.
 /* eslint-disable simple-import-sort/imports */
+import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
 import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
@@ -126,6 +127,8 @@ export interface BundledPack {
   packId: string;
   name: string;
   version: string;
+  // The built-in policy a first install assigns; absent leaves the pack unassigned.
+  defaultPolicy?: BuiltinPolicyId;
   rawRules: unknown[];
 }
 
@@ -170,6 +173,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     packId: 'command-risk',
     name: 'Risky agent commands',
     version: '0.1.0',
+    defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
       commandRiskRmRfHomeOrShared,
@@ -250,6 +254,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     packId: 'secrets',
     name: 'Secrets & Credentials',
     version: '0.2.0',
+    defaultPolicy: 'warn',
     rawRules: [
       secretsAwsAccessKey,
       secretsAwsSecretKey,

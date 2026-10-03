@@ -748,6 +748,26 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     await seed('warn');
     expect(await decide()).toEqual({ action: 'warn', text: 'deploy with ZZTOP now' });
   });
+
+  // The setup wizard's standing posture writes per-CATEGORY rows. An unassigned
+  // detection must follow them rather than a Monitor nobody chose.
+  function setCategory(action: 'block' | 'warn'): void {
+    const db = openLocalDatabase(dir);
+    db.policies.upsertCategoryAction('secret', action);
+    db.close();
+  }
+
+  it('an unassigned detection follows a category posture of Block', async () => {
+    await seed(null);
+    setCategory('block');
+    expect(await decide()).toEqual({ action: 'block', text: null });
+  });
+
+  it('an assigned detection keeps its own policy over the category posture', async () => {
+    await seed('warn');
+    setCategory('block');
+    expect(await decide()).toEqual({ action: 'warn', text: 'deploy with ZZTOP now' });
+  });
 });
 
 /**

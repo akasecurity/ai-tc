@@ -43,8 +43,8 @@ responses, and tool calls. What is masked in it follows the policy assigned to t
 detection that flagged the span: a flagged span is masked at rest only where that
 policy is redact or block. Under monitor or warn the value is stored as it was
 seen, and **everything outside a flagged span is stored verbatim and unencrypted**
-either way, so `aka.db` accumulates a full local prompt corpus. Every detection
-ships on monitor, so **on a default install nothing in the store is masked at
+either way, so `aka.db` accumulates a full local prompt corpus. No detection ships
+on redact or block, so **on a default install nothing in the store is masked at
 all** — raw secrets included — until you promote a detection to redact or block,
 which changes what is stored from then on and not what is already there. Files
 read by `aka scan` are stored under the same rule. The store is protected by
@@ -145,8 +145,8 @@ That is the same content [Data at rest](#data-at-rest) describes, so the masking
 rule is the same one: a flagged span is masked before the event is sent only
 where the detection's policy is redact or block. **Under monitor or warn the
 matched value — the secret itself — reaches that deployment exactly as it was
-seen**, and everything outside a flagged span crosses either way. Every detection
-ships on monitor, so on an attached machine carrying default policy nothing is
+seen**, and everything outside a flagged span crosses either way. No detection ships
+on redact or block, so on an attached machine carrying default policy nothing is
 masked before it is sent; that is the default posture, not an edge case.
 Promoting a detection to redact or block masks its matches at rest and in transit
 together, from then on — it does not reach what has already been sent, and what
@@ -160,7 +160,7 @@ record that the activity happened. The other is the drain of anything a live
 send could not deliver, which sends the capture as the store holds it. Both
 send the same content a live forward would have, so the rule applies exactly
 as it does there: **under monitor or warn the matched value is drained as it
-was seen**, and every detection ships on monitor, so on a default install that
+was seen**, and no detection ships on redact or block, so on a default install that
 is what a backfill or a drain sends.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on

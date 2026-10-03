@@ -1152,12 +1152,12 @@ describe('existing-history consent', () => {
     expect(shown).toContain('INCLUDES ITS TEXT');
     // The masking is conditional, and the prompt has to say so: a span is
     // masked only where the policy assigned its detection is redact or block,
-    // and every detection ships on monitor. A bare match on `masked` passed
+    // and no detection ships on redact or block. A bare match on `masked` passed
     // just as well over the earlier copy, which promised a guarantee this
     // traffic does not carry — so pin the condition and the default too.
     expect(shown).toContain('only where that policy');
     expect(shown).toContain('is redact or block');
-    expect(shown).toContain('every detection ships on monitor');
+    expect(shown).toContain('no detection ships on redact or block');
     expect(shown).not.toContain('Every secret AKA');
     // Declining must not read as "this turns off sending" — it does not.
     expect(shown).toContain('Saying no does not stop live sending');

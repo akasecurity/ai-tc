@@ -292,6 +292,7 @@ export class StandaloneDataGateway
         ruleActions: Map<string, ActionTaken>;
         ruleVersions: Map<string, string>;
         reversibleRules: Set<string>;
+        assignedRules: Set<string>;
         complete: true;
       }
     | undefined {
@@ -304,6 +305,7 @@ export class StandaloneDataGateway
           ruleActions: new Map(),
           ruleVersions: new Map(),
           reversibleRules: new Set(),
+          assignedRules: new Set(),
           complete: true,
         };
       }
@@ -317,6 +319,7 @@ export class StandaloneDataGateway
         ruleActions: snapshot.ruleActions,
         ruleVersions: snapshot.ruleVersions,
         reversibleRules: snapshot.reversibleRules,
+        assignedRules: snapshot.assignedRules,
         complete: true,
       };
     } catch {
@@ -337,18 +340,23 @@ export class StandaloneDataGateway
     // the action for every rule it contributes, emitted as ruleId-targeted
     // policies the runtime's resolveAction prefers over the seeded per-category
     // defaults. This is what makes a detection's Monitor/Warn/Redact/Block choice
-    // in the dashboard actually gate enforcement (an unassigned pack ⇒ Monitor,
-    // i.e. log-only). Only meaningful when the installed snapshot is
-    // authoritative (rulesComplete) — the bundled-packs fallback keeps the
-    // category defaults, since those bundled rule ids have no policy assignment.
+    // in the dashboard actually gate enforcement. An UNASSIGNED pack emits
+    // nothing: its rules fall through to the per-category policies, which are
+    // seeded at Monitor and are what the setup wizard's posture writes — so that
+    // posture applies instead of being shadowed by a Monitor nobody chose. Only
+    // meaningful when the installed snapshot is authoritative (rulesComplete) —
+    // the bundled-packs fallback keeps the category defaults, since those bundled
+    // rule ids have no policy assignment.
     const rulePolicies: Policy[] = installed
-      ? [...installed.ruleActions].map(([ruleId, action]) => ({
-          id: randomUUID(),
-          scope: 'global',
-          target: { ruleId },
-          action,
-          enabled: true,
-        }))
+      ? [...installed.ruleActions]
+          .filter(([ruleId]) => installed.assignedRules.has(ruleId))
+          .map(([ruleId, action]) => ({
+            id: randomUUID(),
+            scope: 'global',
+            target: { ruleId },
+            action,
+            enabled: true,
+          }))
       : [];
     // Active exception grants under the CURRENT fingerprint key version —
     // grants written under a rotated-away key are excluded at read. Fail

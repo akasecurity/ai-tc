@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SUBAGENT_TOOLS } from '../../src/hooks/model-guard.ts';
 import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
+import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
 interface HooksManifest {
   hooks: Record<string, { matcher?: string }[]>;
@@ -77,6 +78,34 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     const matcher = matcherFor('PreToolUse');
     expect(matcher.test('Read')).toBe(false);
     expect(matcher.test('Glob')).toBe(false);
+  });
+});
+
+describe('the PostToolUse matcher selects every tool whose output the hook scans', () => {
+  it('matches each tool in the static response table', () => {
+    // Derived from the response table, so a tool added there and forgotten in
+    // the manifest fails here.
+    const matcher = matcherFor('PostToolUse');
+    const missed = SCANNED_RESPONSE_TOOL_NAMES.filter((tool) => !matcher.test(tool));
+    expect(missed, 'tools whose output is never scanned').toEqual([]);
+    expect(SCANNED_RESPONSE_TOOL_NAMES).toEqual(
+      expect.arrayContaining(['Bash', 'Read', 'WebFetch', 'Grep']),
+    );
+  });
+
+  it('matches the mcp__* family, which the static table cannot speak for', () => {
+    const matcher = matcherFor('PostToolUse');
+    expect(matcher.test('mcp__server__tool')).toBe(true);
+    expect(matcher.test('mcp__plugin_reader_web__read_url')).toBe(true);
+  });
+
+  it('does not match a tool the hook has no response shape for', () => {
+    // The control: a matcher widened to `.*` would pass both assertions above
+    // while spawning the hook on every tool call.
+    const matcher = matcherFor('PostToolUse');
+    expect(matcher.test('Glob')).toBe(false);
+    expect(matcher.test('Edit')).toBe(false);
+    expect(matcher.test('mcp_server_tool')).toBe(false);
   });
 });
 

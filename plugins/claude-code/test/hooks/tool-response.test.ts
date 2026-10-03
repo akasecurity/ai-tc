@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { replaceResponseField, scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import {
+  MCP_RESPONSE_MAX_BLOCK_CHARS,
+  MCP_RESPONSE_MAX_BLOCKS,
+  MCP_RESPONSE_MAX_TOTAL_CHARS,
+  replaceResponseField,
+  scannableResponseFields,
+} from '../../src/hooks/tool-response.ts';
 
 describe('scannableResponseFields', () => {
   it('treats a plain-string response as one scannable field at the root', () => {
@@ -77,7 +83,155 @@ describe('scannableResponseFields', () => {
   });
 });
 
+describe('scannableResponseFields — Grep', () => {
+  it('extracts content from a content-mode Grep response', () => {
+    const response = {
+      mode: 'content',
+      numFiles: 0,
+      filenames: [],
+      content: 'src/a.ts:3:const value = 1;',
+      numLines: 1,
+      totalLines: 1,
+    };
+    expect(scannableResponseFields('Grep', response)).toEqual([
+      { path: ['content'], text: 'src/a.ts:3:const value = 1;' },
+    ]);
+  });
+
+  it('returns nothing for a files_with_matches response, which carries no content', () => {
+    const response = { mode: 'files_with_matches', numFiles: 1, filenames: ['src/a.ts'] };
+    expect(scannableResponseFields('Grep', response)).toEqual([]);
+  });
+
+  it('treats a plain-string Grep response as one root field', () => {
+    expect(scannableResponseFields('Grep', 'No files found')).toEqual([
+      { path: [], text: 'No files found' },
+    ]);
+  });
+});
+
+describe('scannableResponseFields — mcp__* tools', () => {
+  const tool = 'mcp__reader__read_url';
+
+  it('extracts every text block of a bare content-block array', () => {
+    const response = [
+      { type: 'text', text: 'first page section' },
+      { type: 'text', text: 'second page section' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([
+      { path: [0, 'text'], text: 'first page section' },
+      { path: [1, 'text'], text: 'second page section' },
+    ]);
+  });
+
+  it('extracts text blocks wrapped under content', () => {
+    const response = {
+      content: [{ type: 'text', text: 'wrapped text' }],
+      isError: false,
+    };
+    expect(scannableResponseFields(tool, response)).toEqual([
+      { path: ['content', 0, 'text'], text: 'wrapped text' },
+    ]);
+  });
+
+  it('treats a plain-string MCP response as one root field', () => {
+    expect(scannableResponseFields(tool, 'plain result')).toEqual([
+      { path: [], text: 'plain result' },
+    ]);
+  });
+
+  it('ignores non-text blocks, empty text, and malformed entries while keeping indices', () => {
+    const response = [
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      { type: 'resource', resource: { uri: 'file:///x', text: 'resource body' } },
+      { type: 'text', text: '' },
+      { type: 'text', text: 42 },
+      null,
+      'stray string',
+      ['nested'],
+      { text: 'no type field' },
+      { type: 'text', text: 'kept' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([{ path: [8, 'text'], text: 'kept' }]);
+  });
+
+  it('returns nothing for an object that does not wrap a content array', () => {
+    expect(scannableResponseFields(tool, { result: 'x' })).toEqual([]);
+    expect(scannableResponseFields(tool, { content: 'not an array' })).toEqual([]);
+    expect(scannableResponseFields(tool, null)).toEqual([]);
+    expect(scannableResponseFields(tool, 7)).toEqual([]);
+  });
+
+  it('does not read an inherited content property', () => {
+    const response = Object.create({ content: [{ type: 'text', text: 'inherited' }] }) as object;
+    expect(scannableResponseFields(tool, response)).toEqual([]);
+  });
+
+  it('caps the number of scanned blocks', () => {
+    const response = Array.from({ length: MCP_RESPONSE_MAX_BLOCKS + 50 }, (_, i) => ({
+      type: 'text',
+      text: `block ${String(i)}`,
+    }));
+    const fields = scannableResponseFields(tool, response);
+    expect(fields).toHaveLength(MCP_RESPONSE_MAX_BLOCKS);
+    expect(fields.at(-1)?.path).toEqual([MCP_RESPONSE_MAX_BLOCKS - 1, 'text']);
+  });
+
+  it('skips a block longer than the per-block cap but scans its siblings', () => {
+    const response = [
+      { type: 'text', text: 'x'.repeat(MCP_RESPONSE_MAX_BLOCK_CHARS + 1) },
+      { type: 'text', text: 'after the oversized block' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([
+      { path: [1, 'text'], text: 'after the oversized block' },
+    ]);
+  });
+
+  it('stops once the total character budget is spent', () => {
+    const perBlock = MCP_RESPONSE_MAX_BLOCK_CHARS;
+    const fitting = Math.floor(MCP_RESPONSE_MAX_TOTAL_CHARS / perBlock);
+    const response = Array.from({ length: fitting + 2 }, () => ({
+      type: 'text',
+      text: 'y'.repeat(perBlock),
+    }));
+    const fields = scannableResponseFields(tool, response);
+    expect(fields).toHaveLength(fitting);
+    const total = fields.reduce((sum, field) => sum + field.text.length, 0);
+    expect(total).toBeLessThanOrEqual(MCP_RESPONSE_MAX_TOTAL_CHARS);
+  });
+
+  it('applies the block walk only to the mcp__ prefix', () => {
+    const response = [{ type: 'text', text: 'not an mcp tool' }];
+    expect(scannableResponseFields('mcp_reader', response)).toEqual([]);
+    expect(scannableResponseFields('Glob', response)).toEqual([]);
+  });
+});
+
 describe('replaceResponseField', () => {
+  it('rewrites one MCP text block in place, keeping the array and sibling blocks', () => {
+    const response = [
+      { type: 'text', text: 'clean' },
+      { type: 'text', text: 'to rewrite' },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ];
+    const updated = replaceResponseField(response, [1, 'text'], '[redacted]');
+    expect(Array.isArray(updated)).toBe(true);
+    expect(updated).toEqual([
+      { type: 'text', text: 'clean' },
+      { type: 'text', text: '[redacted]' },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ]);
+    expect(response[1]?.text).toBe('to rewrite');
+  });
+
+  it('rewrites a wrapped MCP text block in place', () => {
+    const response = { content: [{ type: 'text', text: 'to rewrite' }], isError: false };
+    expect(replaceResponseField(response, ['content', 0, 'text'], '[redacted]')).toEqual({
+      content: [{ type: 'text', text: '[redacted]' }],
+      isError: false,
+    });
+  });
+
   it('replaces the whole response when the path is the root', () => {
     expect(replaceResponseField('original text', [], '[replaced]')).toBe('[replaced]');
   });

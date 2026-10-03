@@ -517,6 +517,8 @@ function seedPolicy(home: string, policy: BuiltinPolicyId): void {
 
 interface EnforcingHook {
   readonly name: string;
+  /** Distinguishes two rows driving the same hook; defaults to `name`. */
+  readonly label?: string;
   /** A payload whose scanned field carries the secret. */
   readonly payload: (home: string) => string;
   /**
@@ -615,13 +617,44 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
       monitor: null,
     },
   },
+  {
+    // An MCP tool's result is an array of content blocks; the secret sits in
+    // the second text block and is rewritten there.
+    name: 'post-tool-use',
+    label: 'post-tool-use (mcp content blocks)',
+    payload: (home) => mcpPostToolUsePayload(home),
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
 ];
+
+const MCP_TOOL = 'mcp__reader__read_url';
+
+function mcpPostToolUsePayload(home: string): string {
+  return JSON.stringify({
+    tool_name: MCP_TOOL,
+    tool_input: { url: 'https://example.invalid/page' },
+    tool_response: [
+      { type: 'text', text: 'page heading' },
+      { type: 'text', text: `config line: TWILIO_KEY=${SECRET}` },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ],
+    session_id: SESSION_ID,
+    cwd: projectDir(home),
+    hook_event_name: 'PostToolUse',
+  });
+}
 
 const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
 describe('the wire protocol never carries an action key, at any action level', () => {
   for (const hook of ENFORCING_HOOKS) {
-    describe(hook.name, () => {
+    describe(hook.label ?? hook.name, () => {
       for (const policy of POLICIES) {
         const expected = hook.emits[policy];
         it(`${policy} policy → ${expected === null ? 'emits nothing' : 'emits ' + expected}`, () => {
@@ -651,4 +684,66 @@ describe('the wire protocol never carries an action key, at any action level', (
       }
     });
   }
+});
+
+describe('post-tool-use rewrites newly covered tool output in its native shape', () => {
+  it('redacts a secret inside an MCP text block without disturbing the other blocks', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = runHook('post-tool-use', mcpPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { hookEventName: string; updatedToolOutput: unknown };
+        systemMessage: string;
+      };
+      expect(payload.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+      const blocks = payload.hookSpecificOutput.updatedToolOutput as {
+        type: string;
+        text?: string;
+      }[];
+      expect(Array.isArray(blocks)).toBe(true);
+      expect(blocks).toHaveLength(3);
+      expect(blocks[0]).toEqual({ type: 'text', text: 'page heading' });
+      expect(blocks[1]?.type).toBe('text');
+      expect(blocks[1]?.text).toContain('config line: TWILIO_KEY=');
+      expect(blocks[2]).toEqual({ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' });
+      expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('redacts a secret in Grep content-mode output', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = runHook(
+        'post-tool-use',
+        JSON.stringify({
+          tool_name: 'Grep',
+          tool_input: { pattern: 'TWILIO', output_mode: 'content' },
+          tool_response: {
+            mode: 'content',
+            numFiles: 0,
+            filenames: [],
+            content: `.env:1:TWILIO_KEY=${SECRET}`,
+            numLines: 1,
+            totalLines: 1,
+          },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PostToolUse',
+        }),
+        { env: tempHomeEnv(home) },
+      );
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: Record<string, unknown> };
+      };
+      const updated = payload.hookSpecificOutput.updatedToolOutput;
+      expect(updated).toMatchObject({ mode: 'content', numFiles: 0, filenames: [], numLines: 1 });
+      expect(updated.content).toEqual(expect.stringContaining('.env:1:TWILIO_KEY='));
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
 });

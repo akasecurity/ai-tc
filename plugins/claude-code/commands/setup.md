@@ -920,3 +920,12 @@ prompt — and keep true redaction, including the reversible vault rewrite where
 vault consent is on file. Whichever path applies, the
 recorded finding carries the action that actually happened, never a "redact"
 that did not.
+
+**Tool OUTPUT is scanned for `Bash`, `Read`, `WebFetch`, `Grep` and every
+`mcp__*` tool, and for no other tool.** `Glob`'s file list, for example, reaches
+the model unscanned. On `Grep` the matching lines are scanned; the bare file
+list of its `files_with_matches` mode is not. On an MCP tool only the result's
+text blocks are scanned — images and embedded resources are not — and a very
+large result is scanned up to a bound (2,000 text blocks, 5 million characters,
+and no single block over 1 million), past which the rest reaches the model
+unscanned rather than letting the hook time out.

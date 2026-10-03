@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 109 rules.
+// 7 packs / 103 rules.
 /* eslint-disable simple-import-sort/imports */
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
@@ -41,12 +41,6 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
-import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
-import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
-import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
-import commandRiskGitResetHard from '../../../rules/command-risk/git-reset-hard.json';
-import commandRiskPkillBroad from '../../../rules/command-risk/pkill-broad.json';
-import commandRiskRmRfHomeOrShared from '../../../rules/command-risk/rm-rf-home-or-shared.json';
 import coreCodeContextDbTableName from '../../../rules/core-code-context/db-table-name.json';
 import coreCodeContextFeatureFlag from '../../../rules/core-code-context/feature-flag.json';
 import coreCodeContextFilePath from '../../../rules/core-code-context/file-path.json';
@@ -167,22 +161,9 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
     ],
   },
   {
-    packId: 'command-risk',
-    name: 'Risky agent commands',
-    version: '0.1.0',
-    rawRules: [
-      commandRiskPkillBroad,
-      commandRiskRmRfHomeOrShared,
-      commandRiskGitForcePush,
-      commandRiskGitResetHard,
-      commandRiskCurlPipeShell,
-      commandRiskCredentialFileRead,
-    ],
-  },
-  {
     packId: 'core-code-context',
     name: 'Code Context',
-    version: '0.1.0',
+    version: '0.2.0',
     rawRules: [
       coreCodeContextInternalIp,
       coreCodeContextLocalhostRef,
@@ -198,7 +179,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-financial',
     name: 'Financial Information',
-    version: '0.1.0',
+    version: '0.1.1',
     rawRules: [
       coreFinancialCreditCard,
       coreFinancialIban,
@@ -228,7 +209,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-pii',
     name: 'Core PII',
-    version: '0.2.0',
+    version: '0.2.1',
     rawRules: [
       corePiiEmail,
       corePiiSsn,
@@ -249,7 +230,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets',
     name: 'Secrets & Credentials',
-    version: '0.1.0',
+    version: '0.2.0',
     rawRules: [
       secretsAwsAccessKey,
       secretsAwsSecretKey,
@@ -278,7 +259,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.1.0',
+    version: '0.1.1',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,

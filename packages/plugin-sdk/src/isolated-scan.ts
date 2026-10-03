@@ -234,26 +234,23 @@ let resolvedWorkerUrl: URL | null | undefined;
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
  *
- * Each URL is spelled as a literal `new URL('./…', import.meta.url)` written
- * directly in this function: that is the only form static file tracers
- * (Vercel's `@vercel/nft`, say) follow. A URL built from a variable is not
- * followed, and neither is one inside an arrow function, so a deployment
- * traced from either ships without the worker and drops every rule that needs
- * isolation. test/worker-url-literal.test.ts pins the form.
+ * Each URL is spelled as a literal `new URL('./…', import.meta.url)`: that is
+ * the only form static file tracers (Vercel's `@vercel/nft`, say) follow. A URL
+ * built from a variable or a template string is not followed, and neither is
+ * one written as an arrow function's expression body, so a bundle traced from
+ * any of those ships without the worker and drops every rule that needs
+ * isolation. Webpack (`next build`, `next dev`) follows the same literal and
+ * FAILS the build when the file is not beside the source — in the repo the
+ * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
+ * comment is not part of the syntax tree nft reads, so nft still traces it.
+ * Do not drop the comment. test/worker-url-literal.test.ts pins both.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  let candidates: readonly URL[];
-  try {
-    candidates = [
-      new URL('./scan-worker.js', import.meta.url),
-      new URL('./scan-worker.ts', import.meta.url),
-    ];
-  } catch {
-    // A base a relative URL cannot resolve against. Nothing to probe.
-    resolvedWorkerUrl = null;
-    return undefined;
-  }
+  const candidates = [
+    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
+    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
+  ];
   for (const candidate of candidates) {
     try {
       if (existsSync(fileURLToPath(candidate))) {

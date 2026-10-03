@@ -233,11 +233,26 @@ let resolvedWorkerUrl: URL | null | undefined;
  * source file. `undefined` — neither present, or a location that is not a file
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
+ *
+ * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
+ * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
+ * from a variable is not followed, and neither is one written as an arrow
+ * function's expression body, so a bundle traced from either ships without the
+ * worker and drops every rule that needs isolation. A template string is
+ * followed, but as a file pattern that can pull in whatever else matches it,
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
+ * FAILS the build when the file is not beside the source — in the repo the
+ * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
+ * comment is not part of the syntax tree nft reads, so nft still traces it.
+ * Do not drop the comment. test/worker-url-literal.test.ts pins both.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  for (const name of ['scan-worker.js', 'scan-worker.ts']) {
-    const candidate = new URL(name, import.meta.url);
+  const candidates = [
+    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
+    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
+  ];
+  for (const candidate of candidates) {
     try {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;

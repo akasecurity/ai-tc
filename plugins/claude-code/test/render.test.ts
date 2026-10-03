@@ -1350,9 +1350,9 @@ describe('runQuery — against a seeded standalone gateway', () => {
       expect(findings).not.toContain(SECRET);
 
       expect(strip(await runQuery('health', gateway))).toContain('Setup health');
-      // The bundled secrets pack is unassigned → Monitor by default, so the
-      // decision renders as 'monitored' (the finding is still recorded and masked).
-      expect(strip(await runQuery('audit', gateway))).toContain('monitored');
+      // The bundled secrets pack ships on Warn, so the decision renders as
+      // 'warned' (the finding is still recorded and masked).
+      expect(strip(await runQuery('audit', gateway))).toContain('warned');
       expect(strip(await runQuery('recommend', gateway))).toContain(
         'Rotate the exposed credentials',
       );

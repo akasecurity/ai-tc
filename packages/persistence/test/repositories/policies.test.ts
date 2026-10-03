@@ -94,6 +94,22 @@ describe('seedDefaults', () => {
   });
 });
 
+describe('isCategoryChosen', () => {
+  it('is false for a row still as seeded and true once anything writes it', () => {
+    repo.seedDefaults();
+    expect(repo.isCategoryChosen('secret')).toBe(false);
+    repo.upsertCategoryAction('secret', 'log');
+    // Same action, but somebody chose it.
+    expect(repo.isCategoryChosen('secret')).toBe(true);
+  });
+
+  it('is true for a row a posture inserts where none was seeded, and false for no row', () => {
+    expect(repo.isCategoryChosen('pii')).toBe(false);
+    repo.upsertCategoryAction('pii', 'warn');
+    expect(repo.isCategoryChosen('pii')).toBe(true);
+  });
+});
+
 describe('capCategoryActions', () => {
   it('caps block/redact rows to warn, leaves warn/log rows untouched, returns the changed count', () => {
     repo.upsertCategoryAction('secret', 'block');

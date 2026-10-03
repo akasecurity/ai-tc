@@ -79,8 +79,9 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   // turn Monitor into Warn on upgrade with nobody having asked. So a row still
   // exactly as seeded — the seeded action, never updated since it was created —
   // is moved to Monitor. A row the user, the setup wizard or the warn-era cap
-  // ever wrote has a later updated_at and is left alone. Idempotent: a moved
-  // row's updated_at advances, so it never matches again.
+  // ever wrote has a later updated_at and is left alone. updated_at is NOT
+  // advanced, so a moved row still reads as an untouched seed (see
+  // isCategoryChosen); it never matches again because it is no longer off 'log'.
   private monitorUntouchedSeeds(): void {
     // A read first, so the steady state (nothing left to move) takes no write
     // lock on a path every hook opens.
@@ -95,13 +96,13 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
     );
     if (untouched.length === 0) return;
     const stmt = this.db.prepare(
-      `UPDATE policies SET action = 'log', updated_at = :now
+      `UPDATE policies SET action = 'log'
         WHERE scope = 'global' AND json_extract(target, '$.category') = :category
           AND action = :seeded AND action <> 'log' AND updated_at = created_at`,
     );
     failOpenTransaction(this.db, () => {
       for (const row of untouched) {
-        stmt.run({ category: row.category, seeded: row.action, now: Date.now() + 1 });
+        stmt.run({ category: row.category, seeded: row.action });
       }
     });
   }
@@ -111,14 +112,16 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   // uses the SAME vocabulary seedDefaults writes (DEFAULT_ACTIONS' ActionTaken
   // values), so the runtime's resolveAction reads rows written by either path
   // identically. On conflict, `action`, `enabled`, and `updated_at` are updated;
-  // `id` and `created_at` are left exactly as they were.
+  // `id` and `created_at` are left exactly as they were. Either way updated_at
+  // ends up later than created_at, which is what marks the row as chosen.
   upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void {
     const now = Date.now();
     this.db
       .prepare(
         `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
-         VALUES (:id, 'global', :target, :action, 1, :now, :now)
-         ON CONFLICT(scope, target) DO UPDATE SET action = excluded.action, enabled = 1, updated_at = excluded.updated_at`,
+         VALUES (:id, 'global', :target, :action, 1, :now, :now + 1)
+         ON CONFLICT(scope, target) DO UPDATE SET action = excluded.action, enabled = 1,
+           updated_at = MAX(excluded.updated_at, policies.created_at + 1)`,
       )
       .run({ id: randomUUID(), target: JSON.stringify({ category }), action, now });
   }
@@ -135,6 +138,19 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
       )
       .run({ now: Date.now() });
     return Number(info.changes);
+  }
+
+  // Whether the category's row was ever written after it was created — by the
+  // user, the setup wizard or a cap. A row still as seeded (updated_at equal to
+  // created_at) is not a choice, so a posture filling gaps may replace it.
+  isCategoryChosen(category: DetectionCategory): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT created_at AS c, updated_at AS u FROM policies
+          WHERE scope='global' AND json_extract(target,'$.category') = :category`,
+      )
+      .get({ category }) as { c: number; u: number } | undefined;
+    return row !== undefined && row.u !== row.c;
   }
 
   // Read the current action for a single global per-category policy row, mirroring

@@ -6,6 +6,10 @@ export { severityFloorPosture };
 interface PolicyWriter {
   getCategoryAction(category: DetectionCategory): ActionTaken | undefined;
   upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void;
+  // Whether somebody has chosen this category's action. A row still exactly as
+  // the store seeded it is a gap `fill-gaps` may fill; a writer without the
+  // notion treats any row as chosen.
+  isCategoryChosen?(category: DetectionCategory): boolean;
 }
 
 // Persists a per-category posture into the policies table, mapping the
@@ -20,7 +24,12 @@ export function applyCategoryPosture(
   for (const category of Object.keys(posture) as DetectionCategory[]) {
     const policyId = posture[category];
     if (!policyId) continue;
-    if (mode === 'fill-gaps' && repo.getCategoryAction(category) !== undefined) continue;
+    if (mode === 'fill-gaps') {
+      const chosen = repo.isCategoryChosen
+        ? repo.isCategoryChosen(category)
+        : repo.getCategoryAction(category) !== undefined;
+      if (chosen) continue;
+    }
     repo.upsertCategoryAction(category, builtinPolicyToAction(policyId));
   }
 }

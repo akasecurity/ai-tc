@@ -198,9 +198,9 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   });
 
   it('step 3: the built remediate.js persists secret→Redact to the policies store', () => {
-    // The store's seeded default is 'warn', so the standing Redact choice is an
-    // observable change — not a coincidental match with the baseline.
-    expect(postureBaseline).toBe('warn');
+    // The store's seeded default is Monitor ('log'), so the standing Redact
+    // choice is an observable change — not a coincidental match with the baseline.
+    expect(postureBaseline).toBe('log');
     expect(routeResult.stdout).toContain("✓ From now on, I'll treat secrets like these as redact.");
     // The 'secret' posture is durable in the policies store — read back on a fresh
     // connection, so future secret detections are governed by it.

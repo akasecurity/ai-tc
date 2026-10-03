@@ -24,6 +24,16 @@ describe('applyCategoryPosture', () => {
     expect(writer.store.get('pii')).toBe('warn');
   });
 
+  it('fill-gaps: fills a row the writer reports as an untouched seed, keeps a chosen one', () => {
+    const writer = {
+      ...fakeWriter({ secret: 'log', pii: 'log' }),
+      isCategoryChosen: (category: DetectionCategory) => category === 'pii',
+    };
+    applyCategoryPosture({ secret: 'warn', pii: 'warn' }, writer);
+    expect(writer.store.get('secret')).toBe('warn');
+    expect(writer.store.get('pii')).toBe('log');
+  });
+
   it('overwrite: replaces an existing category row', () => {
     const writer = fakeWriter({ secret: 'block' });
     applyCategoryPosture({ secret: 'warn' }, writer, 'overwrite');

@@ -237,11 +237,11 @@ describe('handleRequest (native-messaging host)', () => {
     );
     expect(response.type).toBe('capture');
     if (response.type !== 'capture') throw new Error('unreachable');
-    // The bundled secrets pack is unassigned by default, so it monitors (log),
-    // and at-rest masking follows that decision — same as handleCapture's own test.
-    expect(response.action).toBe('log');
+    // The bundled secrets pack ships on Warn, and at-rest masking follows that
+    // decision (warn masks nothing) — same as handleCapture's own test.
+    expect(response.action).toBe('warn');
     expect(response.ruleIds).toContain('secrets/aws-access-key');
-    // No composer rewrite needed for a log outcome, so the (possibly large)
+    // No composer rewrite needed for a warn outcome, so the (possibly large)
     // prompt text is NOT echoed back over the 1 MB-capped host→Chrome pipe.
     expect(response.text).toBeUndefined();
 

@@ -18,5 +18,15 @@
     "label": "too short",
     "text": "+12",
     "shouldMatch": false
+  },
+  {
+    "label": "signed percentage in benchmark prose",
+    "text": "throughput went from 53.86 to 84.08 tok/s (+56.1%)",
+    "shouldMatch": false
+  },
+  {
+    "label": "signed delta with too few digits",
+    "text": "Qwen3.8-Flash-Next gained +12.4 at concurrency 2",
+    "shouldMatch": false
   }
 ]

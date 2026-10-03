@@ -18,5 +18,15 @@
     "label": "too short with context",
     "text": "SWIFT: ABCD",
     "shouldMatch": false
+  },
+  {
+    "label": "lowercase word after Swift",
+    "text": "The MLX-Swift speculative-decoding repo reports a speedup",
+    "shouldMatch": false
+  },
+  {
+    "label": "lowercase word after bic",
+    "text": "bic: fiveword is not a code",
+    "shouldMatch": false
   }
 ]

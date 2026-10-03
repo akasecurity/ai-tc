@@ -18,5 +18,15 @@
     "label": "too short",
     "text": "VIN: 1HGCM8263",
     "shouldMatch": false
+  },
+  {
+    "label": "fraction digits in JSON number",
+    "text": "{\"predictedShare\":0.17521367521367521}",
+    "shouldMatch": false
+  },
+  {
+    "label": "all-digit identifier",
+    "text": "job id 12345678901234567 finished",
+    "shouldMatch": false
   }
 ]

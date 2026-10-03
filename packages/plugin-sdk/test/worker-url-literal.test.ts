@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // Static file tracers (@vercel/nft, and bundlers that copy asset URLs) follow
-// `new URL('<literal>', import.meta.url)` and nothing computed. A worker URL
-// built from a variable or a template string, or written as an arrow
-// function's expression body (which nft does not walk for this pattern), ships
-// a bundle without its worker, and every rule that needs isolation is then
-// dropped. Webpack follows the same literal and fails the build when the file
+// `new URL('<literal>', import.meta.url)` exactly. A worker URL built from a
+// variable, or written as an arrow function's expression body (which nft does
+// not walk for this pattern), ships a bundle without its worker, and every rule
+// that needs isolation is then dropped. A template string is traced as a file
+// pattern, which can pull in unrelated files, so it is rejected too. Webpack follows the same literal and fails the build when the file
 // is not beside the source, so each call also carries `webpackIgnore`.
 // This pins the form, not just the result: the runtime tests below the
 // resolver cannot see what a tracer sees.
@@ -27,8 +27,11 @@ describe('scan worker URL is statically traceable', () => {
     expect(firstArguments).toEqual([`'./scan-worker.js'`, `'./scan-worker.ts'`]);
   });
 
-  it('builds every import.meta.url-relative URL from a quoted string literal', () => {
-    // Also catches a template string, `names[i]`, `opts.name`, `String(name)`.
+  it('gives every direct new URL(<argument>, import.meta.url) call a quoted string literal', () => {
+    // Catches a template string, `names[i]`, `opts.name`, `String(name)`. Not a
+    // full parser: a first argument containing a comma, or a base aliased away
+    // from `import.meta.url`, is not seen here. The first test still pins the
+    // two worker literals exactly, which is the property that ships.
     expect(firstArguments.length).toBeGreaterThan(0);
     for (const argument of firstArguments) expect(argument).toMatch(/^'[^'`$]*'$/);
   });

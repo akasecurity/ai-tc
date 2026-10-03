@@ -234,12 +234,13 @@ let resolvedWorkerUrl: URL | null | undefined;
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
  *
- * Each URL is spelled as a literal `new URL('./…', import.meta.url)`: that is
- * the only form static file tracers (Vercel's `@vercel/nft`, say) follow. A URL
- * built from a variable or a template string is not followed, and neither is
- * one written as an arrow function's expression body, so a bundle traced from
- * any of those ships without the worker and drops every rule that needs
- * isolation. Webpack (`next build`, `next dev`) follows the same literal and
+ * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
+ * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
+ * from a variable is not followed, and neither is one written as an arrow
+ * function's expression body, so a bundle traced from either ships without the
+ * worker and drops every rule that needs isolation. A template string is
+ * followed, but as a file pattern that can pull in whatever else matches it,
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
  * FAILS the build when the file is not beside the source — in the repo the
  * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
  * comment is not part of the syntax tree nft reads, so nft still traces it.

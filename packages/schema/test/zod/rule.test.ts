@@ -151,6 +151,21 @@ describe('Rule rejects unrecognized keys at every level', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects an empty appliesTo', () => {
+    const parsed = Rule.safeParse(validRule({ appliesTo: {} }));
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts appliesTo with eventKinds alone', () => {
+    expect(Rule.safeParse(validRule({ appliesTo: { eventKinds: ['tool_use'] } })).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects an unknown capture kind in appliesTo.eventKinds', () => {
+    expect(Rule.safeParse(validRule({ appliesTo: { eventKinds: ['bash'] } })).success).toBe(false);
+  });
+
   it('rejects an unknown key inside appliesTo', () => {
     const parsed = Rule.safeParse(
       validRule({ appliesTo: { extensions: ['.py'], extension: ['.ts'] } }),

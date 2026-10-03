@@ -77,7 +77,9 @@ port.on('message', (job: ScanWorkerJob) => {
       return;
     }
     const context: ScanContext | undefined =
-      job.filePath === undefined ? undefined : { filePath: job.filePath };
+      job.filePath === undefined && job.eventKind === undefined
+        ? undefined
+        : { filePath: job.filePath, eventKind: job.eventKind };
     if (job.attribute) {
       for (const [index, rule] of unverified.entries()) {
         post({ kind: 'progress', index });

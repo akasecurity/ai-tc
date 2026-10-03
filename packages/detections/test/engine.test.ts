@@ -35,10 +35,11 @@ function loadFixtures(packDirAbs: string, ruleFile: string): Fixture[] {
 }
 
 // What makes one fixture a distinct case: the text actually scanned, plus the
-// file context that gates `appliesTo`. Two fixtures may share a `text` and
-// still be separate cases when only one carries a `filePath`.
+// file and capture context that gate `appliesTo`. Two fixtures may share a
+// `text` and still be separate cases when only one carries a `filePath` or an
+// `eventKind`.
 function fixtureIdentity(fixture: Fixture): string {
-  return JSON.stringify([fixture.text, fixture.filePath ?? null]);
+  return JSON.stringify([fixture.text, fixture.filePath ?? null, fixture.eventKind ?? null]);
 }
 
 const packDirs = bundledPackDirs();
@@ -78,7 +79,10 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
 
     for (const fixture of fixtures) {
       it(fixture.label, () => {
-        const context = fixture.filePath ? { filePath: fixture.filePath } : undefined;
+        const context =
+          fixture.filePath || fixture.eventKind
+            ? { filePath: fixture.filePath, eventKind: fixture.eventKind }
+            : undefined;
         const findings = scan(fixture.text, ruleset, context);
         // For gated rules other rules in the set may also match the fixture
         // text, so assert specifically on THIS rule's findings.
@@ -566,6 +570,49 @@ describe('appliesTo extension gating', () => {
       matcher: { type: 'regex', pattern: 'pickle\\.loads', flags: 'g' },
     });
     expect(scan('pickle.loads(x)', [unscoped], { filePath: 'src/main.ts' })).toHaveLength(1);
+  });
+});
+
+describe('appliesTo eventKinds gating', () => {
+  const commandOnly = RuleSchema.parse({
+    specVersion: 1,
+    id: 'test/command-only',
+    name: 'tool-use-only test rule',
+    category: 'custom',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'git push --force', flags: 'g' },
+    appliesTo: { eventKinds: ['tool_use'] },
+  });
+
+  it('runs the rule on a listed capture kind', () => {
+    expect(scan('git push --force', [commandOnly], { eventKind: 'tool_use' })).toHaveLength(1);
+  });
+
+  it('skips the rule on an unlisted capture kind', () => {
+    expect(scan('git push --force', [commandOnly], { eventKind: 'response' })).toHaveLength(0);
+    expect(scan('git push --force', [commandOnly], { eventKind: 'prompt' })).toHaveLength(0);
+  });
+
+  it('skips the rule when the capture kind is unknown', () => {
+    expect(scan('git push --force', [commandOnly])).toHaveLength(0);
+    expect(scan('git push --force', [commandOnly], { filePath: 'deploy.sh' })).toHaveLength(0);
+  });
+
+  it('applies both scopes when a rule carries both', () => {
+    const both = RuleSchema.parse({
+      ...commandOnly,
+      id: 'test/both',
+      appliesTo: { eventKinds: ['code_change'], extensions: ['.sh'] },
+    });
+    expect(
+      scan('git push --force', [both], { eventKind: 'code_change', filePath: 'a.sh' }),
+    ).toHaveLength(1);
+    expect(
+      scan('git push --force', [both], { eventKind: 'code_change', filePath: 'a.ts' }),
+    ).toHaveLength(0);
+    expect(
+      scan('git push --force', [both], { eventKind: 'tool_use', filePath: 'a.sh' }),
+    ).toHaveLength(0);
   });
 });
 

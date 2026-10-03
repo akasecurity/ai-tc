@@ -181,7 +181,7 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
   // empty spaced div.
   return (
     <div className="mt-4 flex flex-col gap-3">
-      {rule.appliesTo && (
+      {rule.appliesTo?.extensions && (
         <Field label="Only in files">
           <div className="flex flex-wrap gap-1.5">
             {rule.appliesTo.extensions.map((ext, i) => (
@@ -189,6 +189,16 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
               // [".py", ".py"] is valid input and a content-derived key collides
               // on it. Index-suffixed, like the examples and fixtures lists.
               <Chip key={`${ext}-${String(i)}`}>{ext}</Chip>
+            ))}
+          </div>
+        </Field>
+      )}
+
+      {rule.appliesTo?.eventKinds && (
+        <Field label="Only on">
+          <div className="flex flex-wrap gap-1.5">
+            {rule.appliesTo.eventKinds.map((kind, i) => (
+              <Chip key={`${kind}-${String(i)}`}>{kind}</Chip>
             ))}
           </div>
         </Field>

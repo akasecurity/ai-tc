@@ -33,6 +33,7 @@ export interface ScanJob {
   id: number;
   text: string;
   filePath?: string | undefined;
+  eventKind?: string | undefined;
   // Scan each unverified rule ALONE first, announcing its index before it
   // starts, so a hang can be pinned on one rule. OFF on the happy path: it
   // costs a whole extra pass over the unverified rules on every scanned field,

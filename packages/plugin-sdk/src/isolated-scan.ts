@@ -565,6 +565,7 @@ export function createIsolatedScanner(
               id,
               text,
               filePath: context?.filePath,
+              eventKind: context?.eventKind,
               attribute: scanOpts?.attribute === true,
             }),
             reply: (message) => {

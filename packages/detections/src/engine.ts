@@ -1,4 +1,4 @@
-import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
+import type { EventKind, PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
@@ -257,10 +257,12 @@ function isCorroborated(
 // Where the scanned text came from, when known. The worktree scanner supplies
 // the file path; live prompt/response hooks have none. `eventKind` is the
 // capture kind the runtime is evaluating (prompt, response, code_change,
-// tool_use); a scan outside the capture path carries none.
+// tool_use); a scan outside the capture path carries none. It is the schema's
+// EventKind rather than a string so a typo cannot silently switch off every rule
+// scoped by `appliesTo.eventKinds`.
 export interface ScanContext {
   filePath?: string | undefined;
-  eventKind?: string | undefined;
+  eventKind?: EventKind | undefined;
 }
 
 // Pass 1: runs the primitive matchers for every applicable rule against
@@ -272,7 +274,7 @@ function buildCandidates(
   matchText: string,
   ruleset: Rule[],
   extension: string | undefined,
-  eventKind: string | undefined,
+  eventKind: EventKind | undefined,
 ): Candidate[] {
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
@@ -493,7 +495,7 @@ function extensionOf(filePath: string): string | undefined {
 function ruleApplies(
   rule: Rule,
   extension: string | undefined,
-  eventKind: string | undefined,
+  eventKind: EventKind | undefined,
 ): boolean {
   const scope = rule.appliesTo;
   if (!scope) return true;

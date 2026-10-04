@@ -598,6 +598,24 @@ describe('appliesTo eventKinds gating', () => {
     expect(scan('git push --force', [commandOnly], { filePath: 'deploy.sh' })).toHaveLength(0);
   });
 
+  it('still runs unscoped and extensions-only rules when the context names a kind', () => {
+    const unscoped = RuleSchema.parse({
+      ...commandOnly,
+      id: 'test/unscoped',
+      appliesTo: undefined,
+    });
+    const shOnly = RuleSchema.parse({
+      ...commandOnly,
+      id: 'test/sh-only',
+      appliesTo: { extensions: ['.sh'] },
+    });
+    for (const eventKind of ['prompt', 'response', 'code_change', 'tool_use'] as const) {
+      expect(scan('git push --force', [unscoped], { eventKind })).toHaveLength(1);
+      expect(scan('git push --force', [shOnly], { eventKind, filePath: 'a.sh' })).toHaveLength(1);
+      expect(scan('git push --force', [shOnly], { eventKind, filePath: 'a.ts' })).toHaveLength(0);
+    }
+  });
+
   it('applies both scopes when a rule carries both', () => {
     const both = RuleSchema.parse({
       ...commandOnly,

@@ -227,32 +227,35 @@ let resolvedWorkerUrl: URL | null | undefined;
  * on a machine with no `node_modules`, and the worker is one more script beside
  * them — so `./scan-worker.js` resolves against the emitting hook. In the repo
  * (and under vitest) this module is still `src/isolated-scan.ts` and its
- * neighbour is `scan-worker.ts`, which Node loads by stripping the types.
+ * neighbour is the worker's TypeScript source, which Node loads by stripping
+ * the types.
  *
  * `.js` is tried first so a published bundle can never be shadowed by a stray
  * source file. `undefined` — neither present, or a location that is not a file
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
  *
- * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
- * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
- * from a variable is not followed, and neither is one written as an arrow
+ * The built worker is spelled as a literal `new URL('./…', import.meta.url)`,
+ * which static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL
+ * built from a variable is not followed, and neither is one written as an arrow
  * function's expression body, so a bundle traced from either ships without the
  * worker and drops every rule that needs isolation. A template string is
  * followed, but as a file pattern that can pull in whatever else matches it,
- * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
- * FAILS the build when the file is not beside the source — in the repo the
- * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
- * comment is not part of the syntax tree nft reads, so nft still traces it.
- * Do not drop the comment. test/worker-url-literal.test.ts pins both.
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same
+ * literal and FAILS the build when the file is not beside the source, so the
+ * call carries `webpackIgnore`. A comment is not part of the syntax tree nft
+ * reads, so nft still traces it. Do not drop the comment.
+ *
+ * The source fallback is derived from that URL rather than spelled. A tracer
+ * only needs the file that ships, and a spelled source path would ride along
+ * into every bundle that inlines this module, naming a file no published
+ * artifact contains. test/worker-url-literal.test.ts pins the one literal, its
+ * comment, and the absence of a second.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  const candidates = [
-    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
-    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
-  ];
-  for (const candidate of candidates) {
+  const built = new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url);
+  for (const candidate of [built, sourceTwin(built)]) {
     try {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;
@@ -264,6 +267,11 @@ function resolveWorkerUrl(): URL | undefined {
   }
   resolvedWorkerUrl = null;
   return undefined;
+}
+
+/** `url` with its trailing `.js` swapped for `.ts`: a built script's unbuilt source. */
+export function sourceTwin(url: URL): URL {
+  return new URL(url.href.replace(/\.js$/, '.ts'));
 }
 
 function messageOf(error: unknown): string {

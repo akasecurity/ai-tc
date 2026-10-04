@@ -32,7 +32,7 @@ import {
 } from './scan-response.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
-import { scannableResponseFields } from './tool-response.ts';
+import { collectResponseFields } from './tool-response.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
@@ -45,10 +45,10 @@ async function main(): Promise<void> {
   // matcher doesn't know), fall back to the other, which the old string-only
   // code scanned whenever tool_response wasn't a usable string.
   let response = input.tool_response ?? input.tool_output;
-  let fields = scannableResponseFields(toolName, response);
+  let { fields, truncated } = collectResponseFields(toolName, response);
   if (fields.length === 0 && input.tool_output !== undefined && response !== input.tool_output) {
     response = input.tool_output;
-    fields = scannableResponseFields(toolName, response);
+    ({ fields, truncated } = collectResponseFields(toolName, response));
   }
   if (fields.length === 0) return;
 
@@ -113,9 +113,10 @@ async function main(): Promise<void> {
   } finally {
     await runtime.close();
   }
-  // Out of time before every field was scanned: what was found is still
-  // acted on, and the rest passed through, so count it like any fail-open.
-  if (outcome.unscannedFields > 0) countFailOpen();
+  // Out of time before every field was scanned, or the response bounds cut
+  // text out of the fields: what was found is still acted on, and the rest
+  // passed through, so count it like any fail-open.
+  if (outcome.unscannedFields > 0 || truncated) countFailOpen();
 
   // The model note + user disclosure ride only on a tokenized outcome; a
   // narration fault drops the notes, never the rewrite.

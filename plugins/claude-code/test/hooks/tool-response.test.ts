@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   chunkRanges,
+  collectResponseFields,
   replaceResponseField,
   RESPONSE_CHUNK_CHARS,
   RESPONSE_MAX_CAPTURES,
@@ -390,5 +391,45 @@ describe('replaceResponseField', () => {
       stderr: 'keep',
       interrupted: false,
     });
+  });
+});
+
+describe('collectResponseFields — truncation', () => {
+  it('is not truncated when every field fits, including a string of exactly the budget', () => {
+    expect(collectResponseFields('Bash', { stdout: 'a', stderr: 'b' }).truncated).toBe(false);
+    const exact = collectResponseFields('Bash', 'line\n'.repeat(RESPONSE_MAX_TOTAL_CHARS / 5));
+    expect(exact.truncated).toBe(false);
+    expect(exact.fields.at(-1)?.range?.end).toBe(RESPONSE_MAX_TOTAL_CHARS);
+  });
+
+  it('is truncated when the character budget cuts a string short', () => {
+    const over = collectResponseFields('Bash', 'x'.repeat(RESPONSE_MAX_TOTAL_CHARS + 1));
+    expect(over.truncated).toBe(true);
+    expect(over.fields.reduce((sum, f) => sum + f.text.length, 0)).toBe(RESPONSE_MAX_TOTAL_CHARS);
+  });
+
+  it('is truncated when the budget is spent before a later field', () => {
+    const stdout = 'line\n'.repeat(RESPONSE_MAX_TOTAL_CHARS / 5);
+    const { fields, truncated } = collectResponseFields('Bash', { stdout, stderr: 'after' });
+    expect(truncated).toBe(true);
+    expect(fields.every((f) => f.path[0] === 'stdout')).toBe(true);
+  });
+
+  it('is truncated past the capture cap and not at it', () => {
+    const blocks = (n: number) => Array.from({ length: n }, () => ({ type: 'text', text: 'x' }));
+    expect(collectResponseFields('mcp__s__t', blocks(RESPONSE_MAX_CAPTURES)).truncated).toBe(false);
+    const over = collectResponseFields('mcp__s__t', blocks(RESPONSE_MAX_CAPTURES + 1));
+    expect(over.truncated).toBe(true);
+    expect(over.fields).toHaveLength(RESPONSE_MAX_CAPTURES);
+  });
+
+  it('is truncated when the capture cap stops a chunked block partway', () => {
+    const blocks = [
+      ...Array.from({ length: RESPONSE_MAX_CAPTURES - 1 }, () => ({ type: 'text', text: 'x' })),
+      { type: 'text', text: 'y'.repeat(RESPONSE_CHUNK_CHARS * 2) },
+    ];
+    const { fields, truncated } = collectResponseFields('mcp__s__t', blocks);
+    expect(truncated).toBe(true);
+    expect(fields).toHaveLength(RESPONSE_MAX_CAPTURES);
   });
 });

@@ -929,5 +929,5 @@ not. On an MCP tool only the result's text blocks are scanned — images and
 embedded resources are not. Long output is scanned in pieces of up to 200,000
 characters, and one tool result is scanned up to a bound (5 million characters
 or 2,000 pieces, and about 7 seconds), past which the rest reaches the model
-unscanned rather than letting the hook time out. A scan cut short by the time
-limit counts as a fail-open in `aka status`.
+unscanned rather than letting the hook time out. A scan cut short by any of
+these bounds counts as a fail-open in `aka status`.

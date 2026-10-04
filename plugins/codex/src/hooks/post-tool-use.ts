@@ -30,7 +30,7 @@ import {
 } from './scan-response.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
-import { scannableResponseFields } from './tool-response.ts';
+import { collectResponseFields } from './tool-response.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   const rawToolName = getString(input, 'tool_name');
   const toolName = rawToolName ?? 'tool';
   const response = input.tool_response ?? input.tool_output;
-  const fields = scannableResponseFields(toolName, response);
+  const { fields, truncated } = collectResponseFields(toolName, response);
   if (fields.length === 0) return;
 
   const metadata = baseMetadata(input) ?? {};
@@ -75,9 +75,10 @@ async function main(): Promise<void> {
   } finally {
     await runtime.close();
   }
-  // Out of time before every field was scanned: what was found is still
-  // acted on, and the rest passed through, so count it like any fail-open.
-  if (outcome.unscannedFields > 0) countFailOpen();
+  // Out of time before every field was scanned, or the response bounds cut
+  // text out of the fields: what was found is still acted on, and the rest
+  // passed through, so count it like any fail-open.
+  if (outcome.unscannedFields > 0 || truncated) countFailOpen();
 
   const payload = responseEmitPayload(outcome);
   if (payload !== undefined) await emit(payload);

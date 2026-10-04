@@ -21,7 +21,7 @@
   },
   {
     "label": "lowercase word after Swift",
-    "text": "The MLX-Swift speculative-decoding repo reports a speedup",
+    "text": "The Acme-Swift speculative-parsing repo reports a speedup",
     "shouldMatch": false
   },
   {

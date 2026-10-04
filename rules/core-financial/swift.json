@@ -10,8 +10,5 @@
     "flags": "g",
     "captureGroup": 1
   },
-  "examples": [
-    "SWIFT: BOFAUS3N",
-    "BIC: CHASGB2LXXX"
-  ]
+  "examples": ["SWIFT: BOFAUS3N", "BIC: CHASGB2LXXX"]
 }

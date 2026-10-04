@@ -10,9 +10,7 @@
     "flags": "g"
   },
   "requiresNearby": {
-    "categories": [
-      "pii"
-    ],
+    "categories": ["pii"],
     "labels": [
       "dob",
       "date of birth",
@@ -26,8 +24,5 @@
     ],
     "windowChars": 160
   },
-  "examples": [
-    "DOB: 1985-03-22",
-    "Date of birth: 03/22/1985"
-  ]
+  "examples": ["DOB: 1985-03-22", "Date of birth: 03/22/1985"]
 }

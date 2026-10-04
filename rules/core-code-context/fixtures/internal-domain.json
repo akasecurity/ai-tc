@@ -36,7 +36,7 @@
   },
   {
     "label": "public .dev domain",
-    "text": "docs live at web.dev and ollama.dev",
+    "text": "docs live at web.dev and go.dev",
     "shouldMatch": false
   },
   {

@@ -21,7 +21,7 @@
   },
   {
     "label": "fraction digits in JSON number",
-    "text": "{\"predictedShare\":0.17521367521367521}",
+    "text": "{\"ratio\":0.17521367521367521}",
     "shouldMatch": false
   },
   {

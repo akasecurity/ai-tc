@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\bgit(?<=(?:^|[;&|({\\x60]|\\$\\(|-[A-Za-z]*c[ \\t]+[\"'])[ \\t]*(?:(?:then|do|else|!)[ \\t]+)?(?:(?:sudo|doas|env|command|exec|nohup|nice|time|xargs)(?:[ \\t]+[^\\s;|&\"'\\x60]{1,100}){0,4}?[ \\t]+)?(?:[\\w.~-]*/){0,8}git)(?:[ \\t]+(?:-[Cc][ \\t]+[^\\s;|&]{1,200}|--[a-z][a-z-]{0,40}(?:=[^\\s;|&]{1,200})?)){0,4}[ \\t]+reset(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+--hard\\b",
+    "pattern": "\\bgit(?<=(?:^|[;&|({\\x60]|\\$\\(|(?<![\\w.-])(?:(?:ba|z|da|k)?sh(?:[ \\t]+-[A-Za-z]+){0,2}?[ \\t]+-[A-Za-z]*c|eval|ssh(?:[ \\t]+[^\\s;|&\"'\\x60]{1,200}){1,6}?)[ \\t]+[\"'])[ \\t]*(?:(?:then|do|else|!)[ \\t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s;|&]{0,200}[ \\t]+){0,4}(?:(?:sudo|doas|env|command|exec|nohup|nice|time|xargs)(?:[ \\t]+[^\\s;|&\"'\\x60]{1,100}){0,4}?[ \\t]+)?(?:[\\w.~-]*/){0,8}git)(?:[ \\t]+(?:-[Cc][ \\t]+[^\\s;|&]{1,200}|--[a-z][a-z-]{0,40}(?:=[^\\s;|&]{1,200})?)){0,4}[ \\t]+reset(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+--hard\\b",
     "flags": "gm"
   },
   "examples": ["git reset --hard HEAD~1", "cd /tmp/demo-repo && git reset --hard origin/main"],

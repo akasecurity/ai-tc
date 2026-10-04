@@ -81,5 +81,29 @@
     "label": "same command with no capture kind (folder scan) is out of scope",
     "text": "pkill -f \"Brave Browser\"",
     "shouldMatch": false
+  },
+  {
+    "label": "env assignment prefix",
+    "text": "X=1 pkill -f \"bun src/main.ts\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "remote command over ssh",
+    "text": "ssh host \"pkill -f node\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "eval of a quoted command",
+    "text": "eval \"pkill -f node\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "grep -c counting the text is not a shell -c",
+    "text": "grep -c \"pkill -f node\" runbook.md",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

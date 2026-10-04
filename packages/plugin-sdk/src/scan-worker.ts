@@ -32,7 +32,7 @@
  *   - Plain type annotations only. No enums, no parameter properties, nothing
  *     that needs a real compile rather than an erase.
  *   - Nothing from this package that reaches the generated packs.
- *     `rule-packs.ts` pulls in `bundled-packs.generated.ts`, whose 101 JSON
+ *     `rule-packs.ts` pulls in `bundled-packs.generated.ts`, whose per-rule JSON
  *     imports carry no import attributes and so fail outright under raw Node.
  *     The ruleset arrives over `workerData`, so there is nothing here to want
  *     from it. A leaf module is fine and there is one: `work-clock.ts`, whose
@@ -47,6 +47,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import type { ScanContext } from '@akasecurity/detections';
 import { checkRuleTiming, scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
+import { EventKind } from '@akasecurity/schema';
 
 import type { ScanWorkerData, ScanWorkerJob, ScanWorkerMessage } from './isolated-scan-protocol.ts';
 import { workClockMs } from './work-clock.ts';
@@ -74,6 +75,18 @@ port.on('message', (job: ScanWorkerJob) => {
       // thread's too — see `work-clock.ts`.
       const { verdict, worstMs, corroboratedMs } = checkRuleTiming(job.rule, workClockMs);
       post({ kind: 'probed', id: job.id, verdict, worstMs, corroboratedMs });
+      return;
+    }
+    // The wire is plain data, so the type on `ScanJob.eventKind` holds only for
+    // a caller that went through the compiler. An unknown kind would quietly
+    // skip every rule scoped by `appliesTo.eventKinds`; refuse the job instead,
+    // which the parent reports and answers with an in-process scan.
+    if (job.eventKind !== undefined && !EventKind.safeParse(job.eventKind).success) {
+      post({
+        kind: 'failed',
+        id: job.id,
+        message: `unknown event kind ${JSON.stringify(job.eventKind)}`,
+      });
       return;
     }
     const context: ScanContext | undefined =

@@ -258,6 +258,11 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
  */
 function FixtureList({ fixtures }: { fixtures: readonly RuleFixture[] }) {
   const shown = fixtures.slice(0, MAX_SAMPLES);
+  // A rule scoped by `appliesTo.eventKinds` ships the same text more than once,
+  // matching on one capture kind and not on another (or on none). Without the
+  // kind beside each case those rows read as contradictory, so once any
+  // fixture names a kind, every row says which kind it was scanned as.
+  const showsKind = fixtures.some((f) => f.eventKind !== undefined);
   return (
     <div className="flex flex-col gap-2">
       {shown.map((f, i) => (
@@ -280,6 +285,11 @@ function FixtureList({ fixtures }: { fixtures: readonly RuleFixture[] }) {
               {f.shouldMatch ? 'matches' : 'does not match'}
             </span>
             <span className="text-xs text-text-2">{clamp(f.label, MAX_LABEL_CHARS)}</span>
+            {showsKind && (
+              <span className="font-mono text-label text-text-3">
+                {f.eventKind !== undefined ? `on ${f.eventKind}` : 'no capture kind'}
+              </span>
+            )}
             {f.filePath !== undefined && (
               <span className="font-mono text-label text-text-3">
                 {clamp(f.filePath, MAX_LABEL_CHARS)}

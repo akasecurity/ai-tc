@@ -60,6 +60,102 @@
     "eventKind": "tool_use"
   },
   {
+    "label": "GNU long flags",
+    "text": "rm --recursive --force /home/alice/build",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare /home",
+    "text": "rm -rf /home",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare /Users",
+    "text": "rm -rf /Users",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "filesystem root",
+    "text": "rm -rf /",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "filesystem root glob",
+    "text": "rm -rf /*",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "system dir behind sudo",
+    "text": "sudo rm -rf /etc",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "system dir with slash",
+    "text": "rm -rf /var/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "usr",
+    "text": "rm -rf /usr",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "parent directory",
+    "text": "rm -rf ..",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "end of options marker",
+    "text": "rm -rf -- ~/scratch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed text",
+    "text": "echo \"rm -rf ~/projects\" > /tmp/note.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose naming the command",
+    "text": "Never run rm -rf ~ on a shared box.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "temp dir under /var",
+    "text": "rm -rf /var/folders/ab/T/tmp.1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "one app dir under /usr",
+    "text": "rm -rf /usr/local/lib/demo-cache",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sibling build dir",
+    "text": "rm -rf ../build",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "variable that only starts with HOME",
+    "text": "rm -rf $HOMEBREW_PREFIX/var/demo",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
     "label": "same command quoted in a tool response is out of scope",
     "text": "rm -rf ~/projects/demo-app/$WORKDIR",
     "eventKind": "response",

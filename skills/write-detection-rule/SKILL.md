@@ -115,9 +115,19 @@ straight back in quarantine — clearing costs one re-measurement, not safety.
 
 ### Optional gating fields
 
-**appliesTo** — language/file scoping: `{ "appliesTo": { "extensions": [".py", ".ts"] } }`.
-When present, the rule only runs against text whose file extension is listed — and still
-runs when there is no file context at all (live prompt/response hooks).
+**appliesTo** — scoping by file type, capture kind, or both. Give at least one of the two
+lists; neither may be empty.
+
+- `extensions` — `{ "appliesTo": { "extensions": [".py", ".ts"] } }`. The rule only runs
+  against text whose file extension is listed, and still runs when there is no file
+  context at all (live prompt/response hooks).
+- `eventKinds` — `{ "appliesTo": { "eventKinds": ["tool_use"] } }`. The rule only runs on
+  captures of a listed kind (`prompt`, `response`, `code_change`, `tool_use`), and does
+  NOT run when the scan has no capture kind (a folder scan). Use it for rules about
+  commands an agent runs, so the same text quoted in a tool response or a file is not
+  reported as if it had run.
+
+With both lists, both must match.
 
 **requiresNearby** — co-occurrence gate: a match is kept only if corroborated by another
 match (by `categories` or `ruleIds`) or by one of `labels` appearing within `windowChars`
@@ -156,7 +166,7 @@ rules/<pack-id>/
 
 ## Fixture requirements
 
-Every rule must have labeled **positive** fixtures (where `shouldMatch: true`) and **negative** fixtures (where `shouldMatch: false`). **At least 2 distinct cases of each — CI enforces this**, and a rule below the bar fails the build. Distinct means a different scanned `text`/`filePath`, so a repeated fixture does not count twice. Negatives are as important as positives — they prove your pattern doesn't over-match.
+Every rule must have labeled **positive** fixtures (where `shouldMatch: true`) and **negative** fixtures (where `shouldMatch: false`). **At least 2 distinct cases of each — CI enforces this**, and a rule below the bar fails the build. Distinct means a different scanned `text`/`filePath`/`eventKind`, so a repeated fixture does not count twice. Negatives are as important as positives — they prove your pattern doesn't over-match.
 
 ```json
 [
@@ -166,10 +176,13 @@ Every rule must have labeled **positive** fixtures (where `shouldMatch: true`) a
 ]
 ```
 
-Two optional fixture fields (schema: `RuleFixture` in `packages/schema/src/zod/rule.ts`):
+Three optional fixture fields (schema: `RuleFixture` in `packages/schema/src/zod/rule.ts`):
 
 - `filePath` — simulated file context for the scan, so fixtures can assert `appliesTo`
   gating (e.g. prove a Python-only pattern does NOT fire when `filePath` ends in `.ts`).
+- `eventKind` — simulated capture kind for the scan, so fixtures can assert
+  `appliesTo.eventKinds` (e.g. a `tool_use` positive plus the same text as a `response`
+  negative, and once more with no `eventKind` to cover a folder scan).
 - `expectedSpans` — array of `{ start, end }` pinning exactly which characters the
   finding must cover. Add these whenever the rule redacts a value (via `captureGroup`),
   so the span provably covers the value itself, not just a label next to it.

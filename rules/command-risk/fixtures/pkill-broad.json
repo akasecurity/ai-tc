@@ -42,6 +42,36 @@
     "eventKind": "tool_use"
   },
   {
+    "label": "long signal option",
+    "text": "pkill --signal=TERM -f node-server",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "long full option",
+    "text": "pkill --full node-server",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "behind sudo",
+    "text": "sudo pkill -f node-server",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose naming the command",
+    "text": "Docs: pkill -f is dangerous on a shared box",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "long signal option without -f",
+    "text": "pkill --signal=TERM node-server",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
     "label": "same command quoted in a tool response is out of scope",
     "text": "pkill -f \"Brave Browser\"",
     "eventKind": "response",

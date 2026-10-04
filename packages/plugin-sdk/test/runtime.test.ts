@@ -860,6 +860,67 @@ describe('capture — appliesTo file-context threading', () => {
   });
 });
 
+describe('capture — appliesTo eventKind threading', () => {
+  // Two rules scoped to tool_use: a keyword rule, which the runtime scans
+  // in-process, and a pulled regex rule, which it scans on the isolated
+  // worker. Between them they pin capture's `input.kind` reaching the engine
+  // on both paths, plus an unscoped rule that must keep firing on every kind.
+  const toolUseKeyword: Rule = {
+    specVersion: 1,
+    id: 'pulled/tool-use-keyword',
+    name: 'tool_use keyword marker',
+    category: 'custom',
+    severity: 'medium',
+    matcher: { type: 'keyword', keywords: ['TOOL_USE_MARKER'], caseSensitive: false },
+    appliesTo: { eventKinds: ['tool_use'] },
+    examples: ['TOOL_USE_MARKER'],
+  };
+  const toolUseRegex: Rule = {
+    specVersion: 1,
+    id: 'pulled/tool-use-regex',
+    name: 'tool_use regex marker',
+    category: 'custom',
+    severity: 'medium',
+    matcher: { type: 'regex', pattern: 'TOOL_RX_[0-9]{4}', flags: 'g' },
+    appliesTo: { eventKinds: ['tool_use'] },
+    examples: ['TOOL_RX_1234'],
+  };
+  const unscoped: Rule = {
+    specVersion: 1,
+    id: 'pulled/unscoped-marker',
+    name: 'Unscoped marker',
+    category: 'custom',
+    severity: 'medium',
+    matcher: { type: 'keyword', keywords: ['ANY_KIND_MARKER'], caseSensitive: false },
+    examples: ['ANY_KIND_MARKER'],
+  };
+  const text = 'TOOL_USE_MARKER TOOL_RX_1234 ANY_KIND_MARKER';
+
+  it('fires kind-scoped rules only on the kind they name', async () => {
+    const rt = createPluginRuntime(
+      fakeGateway(bundle([toolUseKeyword, toolUseRegex, unscoped])),
+      settings(),
+    );
+    try {
+      const toolUse = await rt.capture({ kind: 'tool_use', sourceTool: 'claude-code', text });
+      expect(toolUse.findings.map((f) => f.ruleId).sort()).toEqual([
+        'pulled/tool-use-keyword',
+        'pulled/tool-use-regex',
+        'pulled/unscoped-marker',
+      ]);
+
+      const response = await rt.capture({ kind: 'response', sourceTool: 'claude-code', text });
+      expect(response.findings.map((f) => f.ruleId)).toEqual(['pulled/unscoped-marker']);
+
+      // processText with no context is a scan outside the capture path.
+      const bare = await rt.processText(text);
+      expect(bare.findings.map((f) => f.ruleId)).toEqual(['pulled/unscoped-marker']);
+    } finally {
+      await rt.close();
+    }
+  });
+});
+
 describe('capture — at-rest finding_key', () => {
   it('is stable across two captures of the same rule/path/value (re-scan reconciliation)', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'aka-runtime-fk-'));

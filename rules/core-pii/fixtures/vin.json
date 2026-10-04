@@ -28,5 +28,10 @@
     "label": "all-digit identifier",
     "text": "job id 12345678901234567 finished",
     "shouldMatch": false
+  },
+  {
+    "label": "VIN after a dot",
+    "text": "serial.1HGCM82633A004352",
+    "shouldMatch": true
   }
 ]

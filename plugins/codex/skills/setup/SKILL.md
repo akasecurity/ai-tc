@@ -812,8 +812,17 @@ Live scanning covers `Bash` shell calls and `apply_patch` file writes before
 they run, and the output of shell calls, Codex's web tool and MCP tools after
 they return. That includes the calls a code-mode `exec` makes: Codex fires the
 hooks for each tool the script calls (confirmed on codex-cli 0.160.0). The
-script itself fires no hook, so it is seen only through those calls, and MCP
-tool **inputs** are not scanned on the way in.
+script itself fires no hook, so it is seen only through those calls, and web
+and MCP tool **inputs** are not scanned on the way in.
+
+The full text of every `apply_patch` call is **recorded in the local store**,
+with the values AKA detects masked, whether or not anything was found, the
+same as file writes on the other assistants AKA covers. That record is what a
+later re-scan checks against. Shell commands and tool output are recorded only
+when something is detected. Old bodies are cleared only if local body expiry is
+turned on in the workspace settings. A very large tool result is scanned up to
+a bound (5 million characters or 2,000 pieces, and about 7 seconds), past which
+the rest reaches the model unscanned.
 
 On a Codex release that fires these hooks for `Bash` alone, file-write
 **content is not scanned at all** — not live, and not after the fact either.

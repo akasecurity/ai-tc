@@ -6,7 +6,10 @@
  * redact to a deny instead (see pre-tool-use-decision.ts).
  *
  * Fires for `Bash` and `apply_patch`, also when nested inside a code-mode
- * `exec` (see pre-tool-use-decision.ts's SCANNABLE_FIELDS comment).
+ * `exec` (see pre-tool-use-decision.ts's SCANNABLE_FIELDS comment). Each
+ * apply_patch call is recorded in the local store whole, masked, at the
+ * default persist ('always'), like file writes on the other hosts; see the
+ * `kind` comment below and the setup skill's "Known limitations".
  *
  * stdin:  { tool_name, tool_input, session_id, ... }
  * stdout (exit 0):

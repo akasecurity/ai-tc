@@ -86,6 +86,11 @@ export function SearchField({
    * The longest term the host will send, when its server refuses a longer one.
    * Omitted leaves the box uncapped, which is right wherever the query never
    * leaves the machine.
+   *
+   * Counted in UTF-16 code units, as the native attribute counts them, which is
+   * also what a string's `length` and a Zod `.max()` count. It bounds what the
+   * user types or pastes, NOT `value`: a host that sets a longer value itself
+   * (from a URL, say) still renders it whole, so the host keeps its own cut.
    */
   maxLength?: number;
 }) {

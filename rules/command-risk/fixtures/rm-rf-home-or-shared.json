@@ -183,5 +183,17 @@
     "text": "eval \"rm -rf /home/x\"",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "subdirectory of a system dir is routine: only the system directory itself is covered",
+    "text": "rm -rf /usr/local",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "service state under /var is routine: only the system directory itself is covered",
+    "text": "rm -rf /var/lib/docker",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

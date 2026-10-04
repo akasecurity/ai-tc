@@ -1,7 +1,7 @@
 {
   "specVersion": 1,
   "id": "command-risk/rm-rf-home-or-shared",
-  "name": "Recursive rm of home, /Users or a system directory",
+  "name": "Recursive rm of home, /Users or a system directory itself",
   "category": "custom",
   "severity": "high",
   "matcher": {

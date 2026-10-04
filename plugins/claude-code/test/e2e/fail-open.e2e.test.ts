@@ -746,4 +746,35 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
       expectNoEchoOf(result.stdout, SECRET);
     });
   });
+
+  it('redacts a secret past the first chunk of a large Grep result and keeps the rest', () => {
+    // The detector reads at most the first 200,000 characters of one text, so
+    // a value this deep in a single field was never seen before the chunking.
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const filler = `src/gen.ts:1:${'q'.repeat(87)}\n`.repeat(3_000);
+      const content = `${filler}.env:1:TWILIO_KEY=${SECRET}\n${filler}`;
+      const result = runHook(
+        'post-tool-use',
+        JSON.stringify({
+          tool_name: 'Grep',
+          tool_input: { pattern: '.', output_mode: 'content' },
+          tool_response: { mode: 'content', numFiles: 2, filenames: [], content, numLines: 6001 },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PostToolUse',
+        }),
+        { env: tempHomeEnv(home) },
+      );
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: { content: string } };
+      };
+      const updated = payload.hookSpecificOutput.updatedToolOutput.content;
+      expect(updated.startsWith(filler)).toBe(true);
+      expect(updated.endsWith(filler)).toBe(true);
+      expect(updated).toContain('.env:1:TWILIO_KEY=');
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
 });

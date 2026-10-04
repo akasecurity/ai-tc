@@ -25,7 +25,11 @@ import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
-import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
+import {
+  RESPONSE_SCAN_DEADLINE_MS,
+  responseEmitPayload,
+  scanResponseFields,
+} from './scan-response.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
@@ -104,10 +108,14 @@ async function main(): Promise<void> {
                 : { location: `${toolName} output`, kind: 'tool-output' },
             })
         : undefined,
+      { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();
   }
+  // Out of time before every field was scanned: what was found is still
+  // acted on, and the rest passed through, so count it like any fail-open.
+  if (outcome.unscannedFields > 0) countFailOpen();
 
   // The model note + user disclosure ride only on a tokenized outcome; a
   // narration fault drops the notes, never the rewrite.

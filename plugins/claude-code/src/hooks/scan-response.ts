@@ -10,10 +10,26 @@ import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
 import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { RealizedRewrite } from '../protocol/notes.ts';
+import type { PathSegment } from './paths.ts';
 import type { FieldTokenizer } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
 import type { ScannableResponseField } from './tool-response.ts';
-import { replaceResponseField } from './tool-response.ts';
+import { replaceResponseField, spliceResponseField } from './tool-response.ts';
+
+// The wall-time budget for the field loop, in milliseconds since the hook
+// process started (performance.now()'s origin). The hook's own timeout is
+// 10 s, and a timed-out hook passes the whole output through unscanned, so
+// the loop starts no capture past this point and leaves the remaining fields
+// unscanned instead. The margin covers closing the store and writing the
+// reply. A capture that has already started is not interrupted.
+export const RESPONSE_SCAN_DEADLINE_MS = 7_000;
+
+/** When the field loop must stop starting new captures. */
+export interface ScanDeadline {
+  /** Absolute time, on the same clock as `now`. */
+  at: number;
+  now: () => number;
+}
 
 export interface ResponseScanOutcome {
   /** The response with every flagged field rewritten (=== input when clean). */
@@ -30,6 +46,9 @@ export interface ResponseScanOutcome {
   // nothing was tokenized, so a caller never narrates a rewrite that did not
   // happen.
   realized: RealizedRewrite | null;
+  // Fields left unscanned because the deadline passed. The caller counts a
+  // non-zero value as a fail-open exit.
+  unscannedFields: number;
 }
 
 export async function scanResponseFields(
@@ -38,6 +57,7 @@ export async function scanResponseFields(
   fields: ScannableResponseField[],
   capture: (text: string) => Promise<CaptureResult>,
   tokenizeField?: FieldTokenizer,
+  deadline?: ScanDeadline,
 ): Promise<ResponseScanOutcome> {
   const outcome: ResponseScanOutcome = {
     updated: response,
@@ -47,18 +67,40 @@ export async function scanResponseFields(
     blockedReferences: [],
     redactedReferences: [],
     realized: null,
+    unscannedFields: 0,
   };
   const realized: RealizedRewrite = { pointers: [], degraded: [] };
 
-  for (const field of fields) {
+  // Chunk rewrites are collected per path and spliced in once at the end:
+  // each chunk's range is an offset into the string as it was scanned, which
+  // an earlier chunk's rewrite (a different length) would shift.
+  const chunkRewrites = new Map<
+    string,
+    { path: PathSegment[]; parts: { start: number; end: number; text: string }[] }
+  >();
+  const rewrite = (field: ScannableResponseField, text: string): void => {
+    if (field.range === undefined) {
+      outcome.updated = replaceResponseField(outcome.updated, field.path, text);
+      return;
+    }
+    const key = JSON.stringify(field.path);
+    const entry = chunkRewrites.get(key) ?? { path: field.path, parts: [] };
+    entry.parts.push({ ...field.range, text });
+    chunkRewrites.set(key, entry);
+  };
+
+  for (const [index, field] of fields.entries()) {
+    if (deadline !== undefined && deadline.now() >= deadline.at) {
+      outcome.unscannedFields = fields.length - index;
+      break;
+    }
     const result = await capture(field.text);
     if (result.findings.length === 0) continue;
 
     if (result.action === 'block') {
       // Can't un-run the tool; withhold the flagged field from the model instead
-      outcome.updated = replaceResponseField(
-        outcome.updated,
-        field.path,
+      rewrite(
+        field,
         withheldToolText(toolName, uniqueRuleIds(result.findings), field.path.join('.')),
       );
       outcome.withheldFindings.push(...result.findings);
@@ -87,12 +129,19 @@ export async function scanResponseFields(
           // Tokenizer fault: the one-way text already in hand stands.
         }
       }
-      outcome.updated = replaceResponseField(outcome.updated, field.path, rewritten);
+      rewrite(field, rewritten);
       outcome.redactedFindings.push(...result.findings);
       if (result.blockedReferences) outcome.redactedReferences.push(...result.blockedReferences);
     } else if (result.action === 'warn') {
       outcome.warnedFindings.push(...result.findings);
     }
+  }
+
+  // Chunks were cut from the original string, which every other rewrite
+  // leaves alone (a path is either chunked or not), so splicing into
+  // `outcome.updated` reads the same text the ranges were taken from.
+  for (const { path, parts } of chunkRewrites.values()) {
+    outcome.updated = spliceResponseField(outcome.updated, path, parts);
   }
 
   if (realized.pointers.length > 0 || realized.degraded.length > 0) outcome.realized = realized;

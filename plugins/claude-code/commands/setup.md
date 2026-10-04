@@ -923,9 +923,11 @@ that did not.
 
 **Tool OUTPUT is scanned for `Bash`, `Read`, `WebFetch`, `Grep` and every
 `mcp__*` tool, and for no other tool.** `Glob`'s file list, for example, reaches
-the model unscanned. On `Grep` the matching lines are scanned; the bare file
-list of its `files_with_matches` mode is not. On an MCP tool only the result's
-text blocks are scanned — images and embedded resources are not — and a very
-large result is scanned up to a bound (2,000 text blocks, 5 million characters,
-and no single block over 1 million), past which the rest reaches the model
-unscanned rather than letting the hook time out.
+the model unscanned. On `Grep` the matching lines (and the per-file counts of
+its `count` mode) are scanned; the file list of its `files_with_matches` mode is
+not. On an MCP tool only the result's text blocks are scanned — images and
+embedded resources are not. Long output is scanned in pieces of up to 200,000
+characters, and one tool result is scanned up to a bound (5 million characters
+or 2,000 pieces, and about 7 seconds), past which the rest reaches the model
+unscanned rather than letting the hook time out. A scan cut short by the time
+limit counts as a fail-open in `aka status`.

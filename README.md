@@ -31,13 +31,15 @@ A finding resolves to one of five outcomes:
 
 | Outcome       | What happens                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Monitor**   | Logged only. Most rules ship here; the vendor-key secrets and risky-command packs ship on warn.                    |
+| **Monitor**   | Logged only. Most rules ship here; on a new install the vendor-key secrets and risky-command packs start on warn.  |
 | **Warn**      | Surfaces a warning in the session; the content still goes through unchanged.                                       |
 | **Redact**    | The matched value is replaced in place before it reaches the model. Tool inputs and outputs only, not prompt text. |
 | **Block**     | The prompt or tool call is stopped, with a message explaining what fired.                                          |
 | **Exception** | A manually granted, exact-value override that lets one specific match through despite its rule's policy.           |
 
 Promote any detection from monitor to warn, redact, or block from the dashboard, per rule or per category.
+
+Those two warn defaults apply only when a pack is first installed. Upgrading an existing install does not assign them: the packs stay unassigned and follow your category settings, which are on monitor unless you changed them.
 
 ## Key concepts
 

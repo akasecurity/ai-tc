@@ -94,6 +94,52 @@ describe('seedDefaults', () => {
   });
 });
 
+describe('seedDefaults on a store an earlier build wrote', () => {
+  // Before this build an INSERT through upsertCategoryAction left updated_at
+  // equal to created_at, so these rows look like seeds by timestamp alone.
+  const insert = (id: string, category: string, action: string, at: number) =>
+    db
+      .prepare(
+        `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
+         VALUES (:id, 'global', :target, :action, 1, :at, :at)`,
+      )
+      .run({ id, target: JSON.stringify({ category }), action, at });
+
+  it('keeps a choice whose action no seed ever wrote, so fill-gaps reads it as chosen', () => {
+    insert('s', 'secret', 'warn', 1_000);
+    insert('c', 'custom', 'block', 1_000);
+    repo.seedDefaults();
+    expect(repo.getCategoryAction('custom')).toBe('block');
+    expect(repo.isCategoryChosen('custom')).toBe(true);
+    // The untouched seed is still a seed.
+    expect(repo.isCategoryChosen('secret')).toBe(false);
+  });
+
+  it('keeps a row created after the seed batch, even at the seed value or Monitor', () => {
+    insert('s', 'secret', 'warn', 1_000);
+    // A category a later release added, chosen long after the store was seeded.
+    insert('p', 'pii', 'warn', 1_000 + 86_400_000);
+    insert('f', 'financial', 'log', 1_000 + 86_400_000);
+    repo.seedDefaults();
+    expect(repo.getCategoryAction('pii')).toBe('warn');
+    expect(repo.isCategoryChosen('pii')).toBe(true);
+    expect(repo.isCategoryChosen('financial')).toBe(true);
+    // The seed batch itself is still moved to Monitor.
+    expect(repo.getCategoryAction('secret')).toBe('log');
+    expect(repo.isCategoryChosen('secret')).toBe(false);
+  });
+
+  it('is a no-op on a second open', () => {
+    insert('s', 'secret', 'warn', 1_000);
+    insert('c', 'custom', 'block', 1_000);
+    repo.seedDefaults();
+    const read = () => JSON.stringify(db.prepare('SELECT * FROM policies ORDER BY id').all());
+    const before = read();
+    repo.seedDefaults();
+    expect(read()).toBe(before);
+  });
+});
+
 describe('isCategoryChosen', () => {
   it('is false for a row still as seeded and true once anything writes it', () => {
     repo.seedDefaults();

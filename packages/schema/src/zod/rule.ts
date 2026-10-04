@@ -1,6 +1,7 @@
 // Rule file format specVersion 1 — versioned so the format can evolve without breaking community packs
 import { z } from 'zod';
 
+import { BuiltinPolicyId } from './builtin-policy-id.ts';
 import { EventKind } from './event.ts';
 import { DetectionCategory, Severity } from './finding.ts';
 
@@ -338,6 +339,10 @@ export const PackManifest = z
     author: Author.optional(),
     license: z.string().optional(),
     sourceUrl: z.url().optional(),
+    // The built-in policy a FIRST install of this pack assigns
+    // (installed_packs.policy_id). Absent leaves the pack unassigned, so its
+    // rules follow the category policies. An existing install never takes it.
+    defaultPolicy: BuiltinPolicyId.optional(),
   })
   .meta({ id: 'PackManifest' });
 export type PackManifest = z.infer<typeof PackManifest>;

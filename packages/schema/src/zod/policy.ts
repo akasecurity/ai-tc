@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { BuiltinPolicyId, KNOWN_BUILTIN_IDS } from './builtin-policy-id.ts';
 import { ExceptionBundleEntry } from './exception.ts';
 import type { ActionTaken, DetectionCategory, Severity } from './finding.ts';
 import {
@@ -88,15 +89,9 @@ export type Policy = z.infer<typeof Policy>;
 // schema references `RedactFallback` and a `const` is not hoisted — the order
 // is load-bearing, not tidiness. The catalog built ON these ids stays below,
 // with the rest of M1.
-// Single source of truth for the built-in policy ids, declared in display order
-// (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
-// array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
-// catalog display order (BUILTIN_ORDER), and the catalog keys (BUILTIN_POLICIES) —
-// so the literal set is declared exactly once here.
-export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block'] as const;
-
-export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
-export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
+// The ids themselves (KNOWN_BUILTIN_IDS / BuiltinPolicyId) live in
+// builtin-policy-id.ts so rule.ts can use them without an import cycle.
+export { BuiltinPolicyId, KNOWN_BUILTIN_IDS };
 
 // What a `redact` decision degrades to on a field the host cannot rewrite in
 // place (WorkspaceSettings.redactFallback).

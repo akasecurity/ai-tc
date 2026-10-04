@@ -32,7 +32,7 @@
  *   - Plain type annotations only. No enums, no parameter properties, nothing
  *     that needs a real compile rather than an erase.
  *   - Nothing from this package that reaches the generated packs.
- *     `rule-packs.ts` pulls in `bundled-packs.generated.ts`, whose 101 JSON
+ *     `rule-packs.ts` pulls in `bundled-packs.generated.ts`, whose per-rule JSON
  *     imports carry no import attributes and so fail outright under raw Node.
  *     The ruleset arrives over `workerData`, so there is nothing here to want
  *     from it. A leaf module is fine and there is one: `work-clock.ts`, whose

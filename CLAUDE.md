@@ -825,7 +825,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      `./scan-worker` subpath and reachable only from `@akasecurity/detections`
                      + `./isolated-scan-protocol.ts`. It must stay that narrow: Node loads it
                      directly (bundled `.js` when installed, type-stripped `.ts` in the repo),
-                     so `src/bundled-packs.generated.ts` — 101 JSON imports without import
+                     so `src/bundled-packs.generated.ts` — a JSON import per rule, without import
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
                      `src/bare-command.ts` is the shared bare-name spawn planner

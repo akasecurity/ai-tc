@@ -38,7 +38,7 @@ import type {
  * queued behind a loop that is not running — and would report the crash as a
  * timeout after waiting out the entire budget.
  *
- * What it costs, measured on an arm64 Mac against the 101 bundled rules plus a
+ * What it costs, measured on an arm64 Mac against the bundled rules (101 then) plus a
  * pulled pack, and paid ONLY on a machine that has a pulled/custom regex rule at
  * all (see `guarded-scan.ts` — otherwise no worker is started):
  *
@@ -64,7 +64,7 @@ import type {
  *     understatement. `checkRuleTiming` reads a second clock either side of
  *     every probe, which is what lets a wall breach be told apart from a stall
  *     before anything is written to the verdict cache. Measured apples to apples
- *     over the 101 bundled rules, the battery walk goes from 0.1055 ms/rule to
+ *     over the bundled rules (101 then), the battery walk goes from 0.1055 ms/rule to
  *     0.1773 ms/rule — about 68% — so read the number above as the floor rather
  *     than the cost. It is still paid once per rule ever and still bounded by
  *     the pre-flight's own pass budget, which is what makes it affordable.

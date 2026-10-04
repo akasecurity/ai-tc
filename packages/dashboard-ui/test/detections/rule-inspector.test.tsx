@@ -179,7 +179,7 @@ describe('RuleInspectorBody', () => {
     expect(html).toContain('0.2');
   });
 
-  // Every one of the 101 bundled rules ships examples, and they were projected
+  // Every bundled rule ships examples, and they were projected
   // away by the API until DetectionRule was widened. This is the cheapest honest
   // answer to "what does this rule catch".
   it('shows the examples the rule author shipped', () => {

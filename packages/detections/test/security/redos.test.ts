@@ -235,7 +235,7 @@ describe('the schema rejects catastrophic patterns that can match empty', () => 
 describe('the probe battery itself', () => {
   // Without this, the suite above passes trivially if the probes stop being
   // adversarial (a refactor drops the terminator, shrinks the lengths, …) —
-  // 101 green tests that check nothing.
+  // one green test per bundled rule, none of which checks anything.
   //
   // Each case proves the battery drives a catastrophic pattern to backtrack far
   // past ordinary input by asserting a RATIO — worst probe time over a
@@ -294,7 +294,7 @@ describe('the probe battery itself', () => {
   });
 
   // The per-rule gate reads CPU time, and a clock that reads zero would report
-  // 0ms for all 101 rules and pass forever — the same "green tests that check
+  // 0ms for every bundled rule and pass forever — the same "green tests that check
   // nothing" this whole block exists to prevent, one instrument lower down.
   // These two cases pin the clock from both sides: it must still condemn a
   // pattern that really backtracks, and it must not be fooled by elapsed time
@@ -307,7 +307,7 @@ describe('the probe battery itself', () => {
     const { ms, probe } = worstProbeMs(parsed.data, cpuMs);
 
     // Liveness, asserted on its own and first, because this is the half that
-    // decides whether the 101 assertions above mean anything — and it is the
+    // decides whether the per-rule assertions above mean anything — and it is the
     // only half machine speed cannot flip. `worstProbeMs` records a probe when
     // its window beats the running maximum, so a clock stuck at ANY constant
     // leaves this empty: `elapsed > ms` is `0 > 0`. No threshold, no budget, no
@@ -320,7 +320,7 @@ describe('the probe battery itself', () => {
     // that a dead clock cannot satisfy. That is this line.
     //
     // It also has a kill nothing else here has. Drop the `probe = text` line in
-    // `worstProbeMs` and the 101 assertions above stay green while every
+    // `worstProbeMs` and the per-rule assertions above stay green while every
     // failure message they can emit reports a 0-char probe: the verdict still
     // crosses the budget, so only an assertion that reads the ATTRIBUTION
     // notices. Hence both causes in the message — a stuck clock and a lost

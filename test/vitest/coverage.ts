@@ -175,7 +175,7 @@ const SHARED_EXCLUDES = Object.freeze([
   '**/*.test.*',
   '**/*.bench.*',
   '**/*.d.ts',
-  // Generated: 101 JSON rule packs inlined into one module by a build step. It
+  // Generated: the JSON rule packs inlined into one module by a build step. It
   // is data with a `.ts` extension, and counting it would let a package buy
   // several points of coverage by importing a constant.
   '**/*.generated.*',

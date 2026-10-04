@@ -7,7 +7,9 @@
 // reach it, so every other consumer of pack policy had to re-derive it or skip
 // it; two readings of one bundle are two answers nobody compares, and the one
 // that skips is the one that vaults a value the user only asked to monitor.
-import type { ActionTaken, PolicyBundle } from '@akasecurity/schema';
+import { randomUUID } from 'node:crypto';
+
+import type { ActionTaken, Policy, PolicyBundle } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 
 export interface PolicyResolver {
@@ -85,4 +87,27 @@ export function createPolicyResolver(bundle: PolicyBundle): PolicyResolver {
       return reversible.has(ruleId);
     },
   };
+}
+
+/**
+ * The ruleId-targeted policies an installed-pack snapshot contributes to a
+ * bundle: one per rule of an ASSIGNED pack, carrying that pack's action. An
+ * unassigned pack contributes nothing, so its rules fall through to the
+ * category policies and then DEFAULT_ACTIONS, exactly as `actionFor` reads them.
+ *
+ * Shared by every reader of the snapshot (the standalone gateway on the live
+ * path, the file scan at rest) so they cannot come to disagree about which
+ * rules a category posture governs. `assignedRules` absent means the caller
+ * vouches for every entry of `ruleActions` as a real assignment.
+ */
+export function assignedRulePolicies(installed: {
+  ruleActions: ReadonlyMap<string, ActionTaken>;
+  assignedRules?: ReadonlySet<string> | undefined;
+}): Policy[] {
+  const out: Policy[] = [];
+  for (const [ruleId, action] of installed.ruleActions) {
+    if (installed.assignedRules && !installed.assignedRules.has(ruleId)) continue;
+    out.push({ id: randomUUID(), scope: 'global', target: { ruleId }, action, enabled: true });
+  }
+  return out;
 }

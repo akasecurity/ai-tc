@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/pkill-broad",
+  "name": "pkill -f (command-line pattern kill)",
+  "category": "custom",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bpkill(?<=(?:^|[;&|({\\x60]|\\$\\(|-[A-Za-z]*c[ \\t]+[\"'])[ \\t]*(?:(?:then|do|else|!)[ \\t]+)?(?:(?:sudo|doas|env|command|exec|nohup|nice|time|xargs)(?:[ \\t]+[^\\s;|&\"'\\x60]{1,100}){0,4}?[ \\t]+)?(?:[\\w.~-]*/){0,8}pkill)(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+(?:-[A-Za-z0-9]*f[A-Za-z0-9]*|--full)[ \\t]+[\"'\\w]",
+    "flags": "gm"
+  },
+  "examples": ["pkill -f \"Brave Browser\"", "pkill -TERM -f \"bun src/main.ts\""],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

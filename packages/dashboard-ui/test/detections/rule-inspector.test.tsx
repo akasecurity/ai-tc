@@ -70,6 +70,14 @@ describe('RuleInspectorBody', () => {
     expect(html).toContain('.rb');
   });
 
+  it('shows the capture kinds a rule is scoped to', () => {
+    const html = render({ rule: rule({ appliesTo: { eventKinds: ['tool_use', 'code_change'] } }) });
+
+    expect(html).toContain('Only on');
+    expect(html).toContain('tool_use');
+    expect(html).toContain('code_change');
+  });
+
   it('shows the false-positive guards a match still has to clear', () => {
     const html = render({ rule: rule({ postValidators: ['entropy'] }) });
 
@@ -179,7 +187,7 @@ describe('RuleInspectorBody', () => {
     expect(html).toContain('0.2');
   });
 
-  // Every one of the 101 bundled rules ships examples, and they were projected
+  // Every bundled rule ships examples, and they were projected
   // away by the API until DetectionRule was widened. This is the cheapest honest
   // answer to "what does this rule catch".
   it('shows the examples the rule author shipped', () => {
@@ -299,6 +307,32 @@ describe('RuleInspectorBody', () => {
       });
 
       expect(html).toContain('a.ts');
+    });
+
+    // The same text ships as a positive and as negatives that differ only in
+    // capture kind, so each row has to say which kind it was scanned as.
+    it('shows each fixture eventKind, which is what makes eventKinds assertable', () => {
+      const html = render({
+        rule: rule({ appliesTo: { eventKinds: ['tool_use'] } }),
+        fixtures: forRule([
+          { label: 'run', text: 'cat ~/.zshenv', shouldMatch: true, eventKind: 'tool_use' },
+          { label: 'quoted', text: 'cat ~/.zshenv', shouldMatch: false, eventKind: 'response' },
+          { label: 'folder scan', text: 'cat ~/.zshenv', shouldMatch: false },
+        ]),
+      });
+
+      expect(html).toContain('on tool_use');
+      expect(html).toContain('on response');
+      expect(html).toContain('no capture kind');
+    });
+
+    it('says nothing about capture kind when no fixture names one', () => {
+      const html = render({
+        rule: rule(),
+        fixtures: forRule([{ label: 'plain', text: 'sk-proj-A', shouldMatch: true }]),
+      });
+
+      expect(html).not.toContain('capture kind');
     });
 
     // A fixture is an assertion about ONE rule, so a set rendered under a

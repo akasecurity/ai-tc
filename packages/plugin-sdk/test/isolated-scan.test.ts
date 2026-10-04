@@ -292,6 +292,45 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('carries the capture kind across the worker boundary', async () => {
+    // A rule scoped to tool_use only fires when the job's eventKind reaches
+    // the worker's scan() call. Dropping it on either side of the wire would
+    // skip the rule on every kind, so both directions are pinned.
+    const toolUseOnly: Rule = {
+      ...regexRule('pulled/tool-use-only', 'AKIA[A-Z0-9]{16}'),
+      appliesTo: { eventKinds: ['tool_use'] },
+    };
+    const scanner = isolated({ verified: [], unverified: [toolUseOnly] });
+    try {
+      const text = 'key AKIA0123456789ABCDEF here';
+      const asToolUse = await scanner.scan(text, { eventKind: 'tool_use' });
+      expect(asToolUse.status).toBe('ok');
+      if (asToolUse.status !== 'ok') return;
+      expect(asToolUse.findings.map((f) => f.ruleId)).toEqual(['pulled/tool-use-only']);
+
+      const asResponse = await scanner.scan(text, { eventKind: 'response' });
+      expect(asResponse.status).toBe('ok');
+      if (asResponse.status !== 'ok') return;
+      expect(asResponse.findings).toEqual([]);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('refuses a job whose eventKind is not an EventKind', async () => {
+    const scanner = isolated({ verified: [BENIGN], unverified: [] });
+    try {
+      const outcome = await scanner.scan('key AKIA0123456789ABCDEF here', {
+        eventKind: 'tool-use' as unknown as 'tool_use',
+      });
+      expect(outcome.status).toBe('unavailable');
+      if (outcome.status !== 'unavailable') return;
+      expect(outcome.reason).toContain('unknown event kind "tool-use"');
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('blames nobody when it was not asked to attribute', async () => {
     // The cost of naming a rule is a whole extra pass over the unverified
     // rules, so an ordinary scan does not pay it: one scan() call, no progress

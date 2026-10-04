@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { BuiltinPolicyId, KNOWN_BUILTIN_IDS } from './builtin-policy-id.ts';
 import { ExceptionBundleEntry } from './exception.ts';
 import type { ActionTaken, DetectionCategory, Severity } from './finding.ts';
 import {
@@ -88,15 +89,9 @@ export type Policy = z.infer<typeof Policy>;
 // schema references `RedactFallback` and a `const` is not hoisted — the order
 // is load-bearing, not tidiness. The catalog built ON these ids stays below,
 // with the rest of M1.
-// Single source of truth for the built-in policy ids, declared in display order
-// (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
-// array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
-// catalog display order (BUILTIN_ORDER), and the catalog keys (BUILTIN_POLICIES) —
-// so the literal set is declared exactly once here.
-export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block'] as const;
-
-export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
-export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
+// The ids themselves (KNOWN_BUILTIN_IDS / BuiltinPolicyId) live in
+// builtin-policy-id.ts so rule.ts can use them without an import cycle.
+export { BuiltinPolicyId, KNOWN_BUILTIN_IDS };
 
 // What a `redact` decision degrades to on a field the host cannot rewrite in
 // place (WorkspaceSettings.redactFallback).
@@ -558,17 +553,17 @@ export function policyIdIsReversible(policyId: string | null | undefined): boole
 }
 
 // The per-CATEGORY enforcement FALLBACK (axis 1). Used when no more-specific
-// policy applies to a finding's rule. It is NOT the per-pack default — an
-// unassigned PACK resolves to DEFAULT_PACK_POLICY_ID ('monitor'), not to its
-// category's action here. Precedence at enforcement (both surfaces): a per-rule
-// policy (synthesized from the pack's policy_id, or an explicit ruleId policy)
-// wins over a per-category policy, which wins over this fallback. So a category
-// floored to `warn` here still only logs if its pack is set to Monitor.
+// policy applies to a finding's rule. Precedence at enforcement: a per-rule
+// policy (synthesized from an ASSIGNED pack's policy_id, or an explicit ruleId
+// policy) wins over a per-category policy, which wins over this fallback. An
+// unassigned pack synthesizes no per-rule policy on the live path, so its rules
+// follow the category row — seeded at Monitor — and this fallback applies only
+// where a category has no row at all.
 //
-// Cold-start seed = the severity floor (observe-first), routed through the
-// single catalog mapper so the monitor->log translation lives in exactly one
-// place (builtinPolicyToAction). severityFloorPolicy returns 'warn'|'monitor',
-// both valid BuiltinPolicyId, so this is total over every DetectionCategory.
+// The severity floor (observe-first), routed through the single catalog mapper
+// so the monitor->log translation lives in exactly one place
+// (builtinPolicyToAction). severityFloorPolicy returns 'warn'|'monitor', both
+// valid BuiltinPolicyId, so this is total over every DetectionCategory.
 export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fromEntries(
   DetectionCategorySchema.options.map((c) => [c, builtinPolicyToAction(severityFloorPolicy(c))]),
 ) as Record<DetectionCategory, ActionTaken>;

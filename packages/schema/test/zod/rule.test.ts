@@ -11,6 +11,15 @@ function reasons(result: { success: boolean; error?: { issues: { message: string
   return (result.error?.issues ?? []).map((i) => i.message).join(' | ');
 }
 
+// The key each issue points at, for the cases whose message names only the
+// constraint ("Too small", "Invalid option") and not the field.
+function issuePaths(result: {
+  success: boolean;
+  error?: { issues: { path: PropertyKey[] }[] };
+}): string {
+  return (result.error?.issues ?? []).map((i) => i.path.map(String).join('.')).join(' | ');
+}
+
 function keywordRule(matcher: Record<string, unknown>) {
   return {
     specVersion: 1,
@@ -151,6 +160,45 @@ describe('Rule rejects unrecognized keys at every level', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects an empty appliesTo', () => {
+    const parsed = Rule.safeParse(validRule({ appliesTo: {} }));
+    expect(parsed.success).toBe(false);
+  });
+
+  // Both lists are `.min(1)`: an empty list would scope the rule to nothing
+  // and switch it off without saying so.
+  it('rejects an empty appliesTo.eventKinds', () => {
+    const parsed = Rule.safeParse(validRule({ appliesTo: { eventKinds: [] } }));
+    expect(issuePaths(parsed)).toContain('appliesTo.eventKinds');
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects an empty appliesTo.extensions', () => {
+    const parsed = Rule.safeParse(validRule({ appliesTo: { extensions: [] } }));
+    expect(issuePaths(parsed)).toContain('appliesTo.extensions');
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects an empty list even beside a valid one', () => {
+    expect(
+      Rule.safeParse(validRule({ appliesTo: { eventKinds: ['tool_use'], extensions: [] } }))
+        .success,
+    ).toBe(false);
+    expect(
+      Rule.safeParse(validRule({ appliesTo: { eventKinds: [], extensions: ['.sh'] } })).success,
+    ).toBe(false);
+  });
+
+  it('accepts appliesTo with eventKinds alone', () => {
+    expect(Rule.safeParse(validRule({ appliesTo: { eventKinds: ['tool_use'] } })).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects an unknown capture kind in appliesTo.eventKinds', () => {
+    expect(Rule.safeParse(validRule({ appliesTo: { eventKinds: ['bash'] } })).success).toBe(false);
+  });
+
   it('rejects an unknown key inside appliesTo', () => {
     const parsed = Rule.safeParse(
       validRule({ appliesTo: { extensions: ['.py'], extension: ['.ts'] } }),
@@ -196,6 +244,21 @@ describe('Rule rejects unrecognized keys at every level', () => {
     });
     expect(reasons(inSpan)).toContain('ends');
     expect(inSpan.success).toBe(false);
+  });
+
+  it('accepts a fixture eventKind only when it is an EventKind', () => {
+    const base = { label: 'l', text: 't', shouldMatch: true };
+    for (const eventKind of ['prompt', 'response', 'code_change', 'tool_use']) {
+      expect(RuleFixture.safeParse({ ...base, eventKind }).success).toBe(true);
+    }
+
+    // A typo here would scan the fixture under no kind, so a scoped rule's
+    // positive would fail for a reason the author never sees.
+    for (const eventKind of ['tool-use', 'bash', 'TOOL_USE', '']) {
+      const parsed = RuleFixture.safeParse({ ...base, eventKind });
+      expect(issuePaths(parsed)).toBe('eventKind');
+      expect(parsed.success).toBe(false);
+    }
   });
 });
 

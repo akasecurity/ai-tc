@@ -1,6 +1,8 @@
 // Rule file format specVersion 1 — versioned so the format can evolve without breaking community packs
 import { z } from 'zod';
 
+import { BuiltinPolicyId } from './builtin-policy-id.ts';
+import { EventKind } from './event.ts';
 import { DetectionCategory, Severity } from './finding.ts';
 
 // The discriminants of `Matcher` below, as a standalone enum for callers that
@@ -170,16 +172,27 @@ export const MATCHER_TYPES: readonly (Matcher['type'] extends MatcherType
     : never
   : never)[] = MatcherType.options;
 
-// Optional language/file scoping. When present, the engine runs the rule only
-// against text whose file extension is in `extensions` — and still runs it when
-// no file context exists at all (live prompt/response hooks), since pasted code
-// in a prompt has no knowable language. Optional, so a rule authored before this
-// field existed still parses — see `Rule.specVersion` for why an optional field
-// here is the only way the shape grows.
+// Optional scoping, by file and by capture kind. With `extensions`, the engine
+// runs the rule only against text whose file extension is listed — and still runs
+// it when no file context exists at all (live prompt/response hooks), since pasted
+// code in a prompt has no knowable language. With `eventKinds`, the rule runs
+// only on captures of a listed kind and NEVER on text whose kind is unknown (a
+// folder scan, a fixture without one): a rule about what an agent is about to
+// execute has nothing to say about a document that merely quotes the command.
+// Optional, so a rule authored before these fields existed still parses — see
+// `Rule.specVersion` for why an optional field here is the only way the shape
+// grows.
 export const AppliesTo = z
   .strictObject({
     // Dot-prefixed, e.g. ".py" — matches the scanner's SOURCE_EXTENSIONS shape.
-    extensions: z.array(z.string().regex(/^\.[A-Za-z0-9]+$/)).min(1),
+    extensions: z
+      .array(z.string().regex(/^\.[A-Za-z0-9]+$/))
+      .min(1)
+      .optional(),
+    eventKinds: z.array(EventKind).min(1).optional(),
+  })
+  .refine((v) => v.extensions !== undefined || v.eventKinds !== undefined, {
+    message: 'appliesTo needs extensions, eventKinds, or both',
   })
   .meta({ id: 'AppliesTo' });
 export type AppliesTo = z.infer<typeof AppliesTo>;
@@ -267,6 +280,8 @@ export const RuleFixture = z
     // Simulated file context for the scan, so fixtures can assert `appliesTo`
     // gating (e.g. a Python-only pattern must NOT fire in a .ts file).
     filePath: z.string().optional(),
+    // Simulated capture kind, so fixtures can assert `appliesTo.eventKinds`.
+    eventKind: EventKind.optional(),
     expectedSpans: z.array(z.strictObject({ start: z.number(), end: z.number() })).optional(),
   })
   .meta({ id: 'RuleFixture' });
@@ -324,6 +339,10 @@ export const PackManifest = z
     author: Author.optional(),
     license: z.string().optional(),
     sourceUrl: z.url().optional(),
+    // The built-in policy a FIRST install of this pack assigns
+    // (installed_packs.policy_id). Absent leaves the pack unassigned, so its
+    // rules follow the category policies. An existing install never takes it.
+    defaultPolicy: BuiltinPolicyId.optional(),
   })
   .meta({ id: 'PackManifest' });
 export type PackManifest = z.infer<typeof PackManifest>;

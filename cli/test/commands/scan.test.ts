@@ -25,7 +25,6 @@ import {
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
 import type { EgressIngestRequest, Severity } from '@akasecurity/schema';
 import {
-  DEFAULT_ACTIONS,
   EgressIngestRequest as EgressIngestRequestSchema,
   RemoteFailureKind,
   Severity as SeverityEnum,
@@ -404,14 +403,16 @@ describe('runScan', () => {
       expect(payload.scanned).toBe(1);
     });
 
-    it('carries the per-category default action when the store has no installed snapshot', async () => {
+    it('carries the store category policy when the store has no installed snapshot', async () => {
       writeSecretFile();
 
       const payload = await scanJson(root);
       const finding = payload.findings.find((f) => f.ruleId === 'secrets/aws-access-key');
 
+      // The live path's bundled fallback reads the category rows too, and a
+      // fresh store seeds them at Monitor.
       expect(finding).toBeDefined();
-      expect(finding?.actionTaken).toBe(DEFAULT_ACTIONS.secret);
+      expect(finding?.actionTaken).toBe('log');
     });
 
     it('addresses the match with a span into the file as written', async () => {

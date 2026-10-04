@@ -1,6 +1,13 @@
-import type { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
+import type { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
+import { builtinPolicyToAction, severityFloorPosture } from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { applyCategoryPosture, detectPostureChanges } from '../src/posture.ts';
 
 function fakeWriter(initial: Partial<Record<DetectionCategory, ActionTaken>> = {}) {
@@ -24,6 +31,16 @@ describe('applyCategoryPosture', () => {
     expect(writer.store.get('pii')).toBe('warn');
   });
 
+  it('fill-gaps: fills a row the writer reports as an untouched seed, keeps a chosen one', () => {
+    const writer = {
+      ...fakeWriter({ secret: 'log', pii: 'log' }),
+      isCategoryChosen: (category: DetectionCategory) => category === 'pii',
+    };
+    applyCategoryPosture({ secret: 'warn', pii: 'warn' }, writer);
+    expect(writer.store.get('secret')).toBe('warn');
+    expect(writer.store.get('pii')).toBe('log');
+  });
+
   it('overwrite: replaces an existing category row', () => {
     const writer = fakeWriter({ secret: 'block' });
     applyCategoryPosture({ secret: 'warn' }, writer, 'overwrite');
@@ -38,6 +55,52 @@ describe('applyCategoryPosture', () => {
     >;
     applyCategoryPosture(posture, writer, 'overwrite');
     expect(writer.upsertCategoryAction).not.toHaveBeenCalled();
+  });
+});
+
+// The same calls against a real store, so the seed-versus-choice reading the
+// repository gives is what is under test, not a fake's. The floor is chosen to
+// differ from the Monitor seed for at least one category; otherwise writing it
+// and skipping it would end on the same rows and the test could not tell.
+describe('applyCategoryPosture against the real policies repository', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-posture-'));
+  });
+  afterEach(() => {
+    removeTree(dir);
+  });
+
+  const floor = severityFloorPosture();
+  const raised = (Object.keys(floor) as DetectionCategory[]).filter(
+    (c) => builtinPolicyToAction(floor[c]) !== 'log',
+  );
+
+  it('a fresh install ends on the floor, not on the Monitor seed', () => {
+    expect(raised.length).toBeGreaterThan(0);
+    const db = openLocalDatabase(dir);
+    try {
+      for (const c of raised) expect(db.policies.getCategoryAction(c)).toBe('log');
+      applyCategoryPosture(floor, db.policies);
+      for (const c of raised) {
+        expect(db.policies.getCategoryAction(c)).toBe(builtinPolicyToAction(floor[c]));
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fill-gaps leaves a category somebody chose, even when it chose Monitor', () => {
+    const [category] = raised;
+    if (category === undefined) throw new Error('no category above Monitor in the floor');
+    const db = openLocalDatabase(dir);
+    try {
+      db.policies.upsertCategoryAction(category, 'log');
+      applyCategoryPosture(floor, db.policies);
+      expect(db.policies.getCategoryAction(category)).toBe('log');
+    } finally {
+      db.close();
+    }
   });
 });
 

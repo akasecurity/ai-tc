@@ -536,15 +536,73 @@ describe('scanPathIntoStore', () => {
     }
   });
 
-  it('falls back to the category default when the rule is absent from ruleActions', async () => {
+  it('falls back to the store category policy when the rule is absent from ruleActions', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);
     try {
+      db.policies.upsertCategoryAction('secret', 'block');
       await scanPathIntoStore(db, root, { rules: RULES, ruleActions: new Map() });
       const findings = await db.findings.recentFindings({ limit: 10 });
       const recorded = findings.find((f) => f.ruleId === 'test/aws-key');
-      // DEFAULT_ACTIONS.secret = 'warn'
-      expect(recorded?.actionTaken).toBe('warn');
+      expect(recorded?.actionTaken).toBe('block');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('falls back to DEFAULT_ACTIONS only where the category has no policy row', async () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      const raw = new DatabaseSync(join(store, DB_FILENAME));
+      raw.prepare(`DELETE FROM policies WHERE json_extract(target, '$.category') = 'secret'`).run();
+      raw.close();
+      await scanPathIntoStore(db, root, { rules: RULES, ruleActions: new Map() });
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      const recorded = findings.find((f) => f.ruleId === 'test/aws-key');
+      expect(recorded?.actionTaken).toBe(DEFAULT_ACTIONS.secret);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The live path emits a per-rule policy only for an ASSIGNED pack, so an
+  // unassigned pack's rules follow the category row there. The scan has to read
+  // the same answer: installedRuleset() still lists an unassigned rule as 'log'
+  // in ruleActions, and taking that at face value would store the raw secret
+  // here while a session masks it.
+  it('resolves an unassigned pack through its category row, as the live path does', async () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      db.policies.upsertCategoryAction('secret', 'redact');
+      await scanPathIntoStore(db, root, {
+        rules: RULES,
+        ruleActions: new Map([['test/aws-key', 'log']]),
+        assignedRules: new Set(),
+      });
+      const [event] = storedEvents(store);
+      expect(event?.content).toContain('[REDACTED:SECRET]');
+      expect(event?.content).not.toContain(SECRET);
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe('redact');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('an assigned pack still wins over its category row', async () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      db.policies.upsertCategoryAction('secret', 'redact');
+      await scanPathIntoStore(db, root, {
+        rules: RULES,
+        ruleActions: new Map([['test/aws-key', 'log']]),
+        assignedRules: new Set(['test/aws-key']),
+      });
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe('log');
     } finally {
       db.close();
     }
@@ -962,16 +1020,17 @@ describe('scanPathIntoStore — at-rest masking follows the resolved action', ()
     writeFileSync(join(root, 'app.ts'), SOURCE);
     const db = openLocalDatabase(store);
     try {
-      // No ruleActions at all — the fallback path. `secret` floors to warn,
-      // which is below redact, so an unassigned pack observes and rewrites
-      // nothing. Asserted here rather than assumed: if the fallback ever moves
-      // to redact-or-stronger this case says so instead of silently flipping.
-      expect(DEFAULT_ACTIONS.secret).toBe('warn');
+      // No ruleActions at all — the fallback path, which reads the store's
+      // category row. A fresh store seeds `secret` at Monitor, below redact, so
+      // the scan observes and rewrites nothing. Asserted here rather than
+      // assumed: if the seed ever moves to redact-or-stronger this case says so
+      // instead of silently flipping.
+      expect(db.policies.getCategoryAction('secret')).toBe('log');
       await scanPathIntoStore(db, root, { rules: RULES });
       const [event] = storedEvents(store);
       expect(event?.content).toBe(SOURCE);
       const findings = await db.findings.recentFindings({ limit: 10 });
-      expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe('warn');
+      expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe('log');
     } finally {
       db.close();
     }

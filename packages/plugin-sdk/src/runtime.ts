@@ -716,7 +716,7 @@ export function createPluginRuntime(
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
-      filePath ? { filePath } : undefined,
+      { filePath, eventKind: input.kind },
       {
         sourceTool: input.sourceTool,
         metadata: input.metadata,

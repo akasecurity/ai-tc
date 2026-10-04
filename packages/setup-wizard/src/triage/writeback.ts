@@ -285,6 +285,10 @@ export function recommendedPosture(
 export interface CategoryPolicyWriter {
   getCategoryAction(category: DetectionCategory): ActionTaken | undefined;
   upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void;
+  // Declared so the port carries it: without it a store-seeded row reads as a
+  // choice and the floor's fill-gaps step skips it (see applyCategoryPosture).
+  // db.policies provides it; a wrapper around that repo must pass it through.
+  isCategoryChosen?(category: DetectionCategory): boolean;
 }
 
 export interface TriageWritebackWriters {

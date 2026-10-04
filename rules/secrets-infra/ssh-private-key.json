@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "-----BEGIN (?:RSA |DSA |EC |OPENSSH |SSH2 )?PRIVATE KEY-----",
+    "pattern": "-----BEGIN ((?:RSA |DSA |EC |OPENSSH |SSH2 |ENCRYPTED )?)PRIVATE KEY-----(?:(?:[A-Za-z0-9+/=\\s\\\\:,]|-(?!-)){0,8000}?-----END \\1PRIVATE KEY-----)?",
     "flags": "g"
   },
   "examples": [

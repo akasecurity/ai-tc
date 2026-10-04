@@ -118,6 +118,13 @@ export interface InstalledRuleset {
   // actually drives enforcement instead of being overridden by the seeded
   // per-category defaults. Only ids present in `rules` appear here.
   ruleActions: Map<string, ActionTaken>;
+  // The rule ids whose pack carries an explicit policy (installed_packs.policy_id
+  // set). An unassigned pack's rules resolve to Monitor in `ruleActions`, but the
+  // live path lets the category policies govern them instead, so a category
+  // posture (the setup wizard's, or a deployment's) is not shadowed by a choice
+  // nobody made. Last-write-wins across packs, like `ruleActions`. Only ids
+  // present in `rules` appear here.
+  assignedRules: Set<string>;
   // The rule ids whose pack is assigned a REVERSIBLE archetype (Redact & Vault)
   // — see policyIdIsReversible. A second axis over the same action rather than a
   // second action: every id in here also carries `redact` in ruleActions, and
@@ -140,6 +147,16 @@ export interface InstalledRuleset {
 // hash of the pack's serialized rules is folded in (not just the version) so a
 // rules-only change with no version bump still flips the signature — a
 // version-only signature would silently keep a stale snapshot on disk.
+//
+// A pack's defaultPolicyId is deliberately NOT in it. The stored side is read
+// back from available_packs, which has no column for it, so folding it in would
+// make the two sides differ forever and put a write transaction on every hook
+// open. Nor can leaving it out skip a write that matters: the default is read
+// only by insertMissingStmt, for a pack with no installed row, and a pack the
+// mirror has never seen always flips the signature. A default changed for a
+// pack already installed is ignored by design (first install only), so a
+// re-record would change nothing either. If the default ever starts to apply
+// to existing installs, it has to be mirrored and signed here first.
 function inventorySignature(
   packs: { namespace: string; packId: string; version: string; rulesJson: string }[],
 ): string {
@@ -265,8 +282,8 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     // NEVER touched here — not its version, rules, enabled state, or policy.
     // Updates to existing packs are manual (applyUpdate).
     this.insertMissingStmt = db.prepare(
-      `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
-       VALUES (:id, :namespace, :packId, :version, :name, :rulesJson, 1, :now, :now)
+      `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+       VALUES (:id, :namespace, :packId, :version, :name, :rulesJson, 1, :policyId, :now, :now)
        ON CONFLICT (namespace, pack_id) DO NOTHING`,
     );
     // The available mirror always reflects the running binary; the WHERE keeps
@@ -341,6 +358,9 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
         name: pack.name,
         rulesJson: JSON.stringify(pack.rules),
         ruleIds: new Set(pack.rules.map((r) => r.id)),
+        // Only a first install takes it: an existing row is never modified here,
+        // so a policy the user chose (or cleared) is never overwritten.
+        defaultPolicyId: pack.defaultPolicyId ?? null,
       }));
       if (this.storedSignature() === inventorySignature(rows)) return;
 
@@ -378,7 +398,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
             } else {
               behind = true;
             }
-            this.insertMissingStmt.run(params);
+            this.insertMissingStmt.run({ ...params, policyId: row.defaultPolicyId });
           }
           // Prune available rows for packs this binary no longer ships — a stale
           // mirror row would otherwise keep offering a bogus "update". Skipped
@@ -523,6 +543,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       ruleActions: new Map(),
       ruleVersions: new Map(),
       reversibleRules: new Set(),
+      assignedRules: new Set(),
     };
     // Records a rejection without ever copying the entry's own bytes. Callers
     // still bump `invalidRules` themselves — that count is exact, this list is
@@ -568,6 +589,8 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
           // vaults a value the winning policy said to destroy.
           if (reversible) out.reversibleRules.add(parsed.data.id);
           else out.reversibleRules.delete(parsed.data.id);
+          if (row.policyId !== null) out.assignedRules.add(parsed.data.id);
+          else out.assignedRules.delete(parsed.data.id);
         } else {
           out.invalidRules += 1;
           reject(pack, printableRuleId(entry), firstIssueReason(parsed.error));

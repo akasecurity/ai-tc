@@ -259,10 +259,10 @@ describe('batched four-option remediation decision (app-level: no case, secret-o
 
   it('step 3 — a fresh run choosing "Set \'secret\' to redact" persists secret→Redact with no artifact redacted and no deliverable', () => {
     // A separate fresh run: this test opens its own store (db, per beforeEach) with
-    // no redaction having occurred. The store seeds the recommended default ('warn')
+    // no redaction having occurred. The store seeds Monitor ('log')
     // for 'secret' on open, so the standing Redact choice below is an observable
     // change from that baseline, not a coincidental match.
-    expect(db.policies.getCategoryAction('secret')).toBe('warn');
+    expect(db.policies.getCategoryAction('secret')).toBe('log');
 
     // At the remediation decision the user chooses the shortcut. The redaction mechanism is bound but must
     // never fire, and the posture writer targets the real policies store.

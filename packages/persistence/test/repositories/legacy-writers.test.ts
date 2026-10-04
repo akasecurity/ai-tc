@@ -41,6 +41,11 @@
 //      and unlike the assignment above the raise-only merge cannot clamp it
 //      back — the merge re-supplies an ACTION for a rule, not the rule, and a
 //      disabled pack contributes no rules at all.
+//   6. A pack's defaultPolicy is written only by the current install-if-absent
+//      INSERT, and only into a row it creates. The legacy upsert never names
+//      policy_id, so it neither clears a default the current binary assigned
+//      nor gives one to a pack it inserted first; that pack stays unassigned,
+//      as every pack of an existing install does (first install only).
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -433,5 +438,41 @@ describe('legacy enabled writer vs installed_packs (governed-pack boundary)', ()
     expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
     db.close();
     expect(enabledRow('secrets')).toBe(false);
+  });
+});
+
+// ─── Invariant 6: a pack's defaultPolicy lands on a first install only ───────
+
+describe('legacy alpha.5 upsert vs a pack defaultPolicy', () => {
+  it('leaves the policy a current first install assigned in place', () => {
+    const db = store.open();
+    db.installedPacks.recordInventory([
+      { ...pack('secrets', '2.0.0', ['secrets/aws']), defaultPolicyId: 'warn' },
+    ]);
+    db.close();
+    expect(policyIdRow('secrets')).toBe('warn');
+
+    replayRaw(LEGACY_ALPHA5_UPSERT, {
+      packId: 'secrets',
+      version: '2.5.0',
+      ruleIds: ['secrets/aws', 'secrets/gh'],
+    });
+    expect(policyIdRow('secrets')).toBe('warn');
+  });
+
+  it('a pack a stale session inserted first stays unassigned', () => {
+    store.open().close();
+    replayRaw(LEGACY_ALPHA5_UPSERT, {
+      packId: 'secrets',
+      version: '2.0.0',
+      ruleIds: ['secrets/aws'],
+    });
+    const db = store.open();
+    db.installedPacks.recordInventory([
+      { ...pack('secrets', '2.0.0', ['secrets/aws']), defaultPolicyId: 'warn' },
+    ]);
+    db.close();
+    expect(installedRow('secrets')).toEqual({ version: '2.0.0', rules: 1 });
+    expect(policyIdRow('secrets')).toBeNull();
   });
 });

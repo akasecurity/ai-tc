@@ -228,7 +228,11 @@ describe('the store-open branch, driven through the hook entries', () => {
       expect(await storedFindings(home)).toBeGreaterThan(0);
       // Nothing to warn about, so nothing was said: the message is raised by the
       // CAUSE, and the case above is the positive control for this absence.
-      expect(stdoutWrites).toEqual([]);
+      // The planted key's secrets pack ships on Warn, so the one payload is that
+      // warning and nothing about the store.
+      expect(payloads(stdoutWrites).map((payload) => payload.systemMessage)).toEqual([
+        expect.stringMatching(/^AKA flagged sensitive content/),
+      ]);
       expect(exit).toHaveBeenCalledWith(0);
     });
 

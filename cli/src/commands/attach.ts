@@ -588,7 +588,7 @@ async function askAboutHistory(
       'masked in that text follows the policy assigned to the detection that',
       'flagged the value: it is masked before it is stored or sent',
       'only where that policy is redact or block. Under monitor or warn the',
-      'value goes as it was seen, and every detection ships on monitor, so on',
+      'value goes as it was seen, and no detection ships on redact or block, so on',
       'a default install nothing in that text is masked. Everything outside a',
       'flagged span goes as written either way.',
       '',

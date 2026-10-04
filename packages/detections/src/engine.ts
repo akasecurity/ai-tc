@@ -1,4 +1,4 @@
-import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
+import type { EventKind, PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
@@ -255,9 +255,14 @@ function isCorroborated(
 }
 
 // Where the scanned text came from, when known. The worktree scanner supplies
-// the file path; live prompt/response hooks have none.
+// the file path; live prompt/response hooks have none. `eventKind` is the
+// capture kind the runtime is evaluating (prompt, response, code_change,
+// tool_use); a scan outside the capture path carries none. It is the schema's
+// EventKind rather than a string so a typo cannot silently switch off every rule
+// scoped by `appliesTo.eventKinds`.
 export interface ScanContext {
   filePath?: string | undefined;
+  eventKind?: EventKind | undefined;
 }
 
 // Pass 1: runs the primitive matchers for every applicable rule against
@@ -269,10 +274,11 @@ function buildCandidates(
   matchText: string,
   ruleset: Rule[],
   extension: string | undefined,
+  eventKind: EventKind | undefined,
 ): Candidate[] {
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
-    if (!ruleApplies(rule, extension)) continue;
+    if (!ruleApplies(rule, extension, eventKind)) continue;
     const spans = MATCHERS[rule.matcher.type](matchText, rule);
 
     for (const span of spans) {
@@ -479,14 +485,28 @@ function extensionOf(filePath: string): string | undefined {
   return dot > 0 ? base.slice(dot).toLowerCase() : undefined;
 }
 
-// Should this rule run against text from this context? An `appliesTo`-scoped
+// Should this rule run against text from this context? An extension-scoped
 // rule is skipped only when the context provides a NON-matching extension.
-// With no file context (or no recognizable extension) the rule still runs:
-// pasted code in a prompt has no knowable language, and missing a real leak
-// costs more than a cross-language false positive there.
-function ruleApplies(rule: Rule, extension: string | undefined): boolean {
-  if (!rule.appliesTo || extension === undefined) return true;
-  return rule.appliesTo.extensions.some((e) => e.toLowerCase() === extension);
+// With no file context (or no recognizable extension) it still runs: pasted
+// code in a prompt has no knowable language, and missing a real leak costs more
+// than a cross-language false positive there. A kind-scoped rule is the
+// opposite: it runs only when the context names one of its kinds, because its
+// subject is the capture itself (a command about to execute), not the text.
+function ruleApplies(
+  rule: Rule,
+  extension: string | undefined,
+  eventKind: EventKind | undefined,
+): boolean {
+  const scope = rule.appliesTo;
+  if (!scope) return true;
+  if (
+    scope.eventKinds &&
+    (eventKind === undefined || !scope.eventKinds.some((k) => k === eventKind))
+  ) {
+    return false;
+  }
+  if (!scope.extensions || extension === undefined) return true;
+  return scope.extensions.some((e) => e.toLowerCase() === extension);
 }
 
 export function scan(text: string, rules?: Rule[], context?: ScanContext): MatchResult[] {
@@ -547,15 +567,18 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   // still finds a match whose boundary is a format character" suite in
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
-  const originalCandidates = buildCandidates(text, ruleset, extension);
+  const originalCandidates = buildCandidates(text, ruleset, extension, context?.eventKind);
   if (!normalization) return gate(originalCandidates, text, undefined);
   const pooledOriginal = originalCandidates.map((candidate) =>
     withNormalizedSpan(candidate, normalization),
   );
 
-  const normalizedCandidates = buildCandidates(normalization.normalized, ruleset, extension).map(
-    (candidate) => mapCandidateToOriginal(candidate, normalization, text),
-  );
+  const normalizedCandidates = buildCandidates(
+    normalization.normalized,
+    ruleset,
+    extension,
+    context?.eventKind,
+  ).map((candidate) => mapCandidateToOriginal(candidate, normalization, text));
   const findings = gate([...pooledOriginal, ...normalizedCandidates], text, normalization);
   // The two passes can each independently find the same secret occurrence —
   // sometimes at a slightly different span, since a pattern with no upper

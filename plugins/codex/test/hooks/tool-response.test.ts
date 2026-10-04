@@ -1,9 +1,11 @@
 // Adapted from plugins/claude-code/src/hooks/tool-response.test.ts. Codex maps
 // Bash, its built-in web tool (`webrun`) and MCP tools (`mcp__*`); the webrun
 // and MCP shapes below are the ones recorded from a live codex-cli 0.160.0.
+import { scanText } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
 import {
+  chunkRanges,
   collectResponseFields,
   replaceResponseField,
   RESPONSE_CHUNK_CHARS,
@@ -210,5 +212,30 @@ describe('collectResponseFields — truncation', () => {
     const { fields, truncated } = collectResponseFields('mcp__s__t', blocks);
     expect(truncated).toBe(true);
     expect(fields).toHaveLength(RESPONSE_MAX_CAPTURES);
+  });
+});
+
+describe('a requiresNearby label on the far side of a chunk cut', () => {
+  // A documented limit (see the chunking comment in tool-response.ts): a label
+  // is looked for only inside the chunk its value sits in. core-pii/dob needs
+  // a nearby label such as "dob" within 160 characters of the date.
+  const line = `${'q'.repeat(99)}\n`;
+  const pad = `${'q'.repeat(94)}\n`;
+  const dobFindings = (stdout: string): number =>
+    scannableResponseFields('Bash', { stdout })
+      .flatMap((field) => scanText(field.text).findings)
+      .filter((finding) => finding.ruleId === 'core-pii/dob').length;
+
+  it('does not corroborate a value whose label ends the previous chunk', () => {
+    const head = line.repeat(1_999) + pad + 'dob:\n';
+    expect(head).toHaveLength(RESPONSE_CHUNK_CHARS);
+    const text = `${head}1990-05-04\n${line.repeat(1_999)}`;
+    expect(chunkRanges(text, RESPONSE_CHUNK_CHARS)[0]?.end).toBe(RESPONSE_CHUNK_CHARS);
+    expect(dobFindings(text)).toBe(0);
+  });
+
+  it('corroborates the same pair one line earlier, inside one chunk', () => {
+    const text = `${line.repeat(1_998)}${pad}dob:\n1990-05-04\n${line.repeat(2_000)}`;
+    expect(dobFindings(text)).toBe(1);
   });
 });

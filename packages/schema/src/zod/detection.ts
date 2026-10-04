@@ -138,9 +138,9 @@ export { Matcher, RegexMatcher };
 // rule fires. They are already stored — `rules_json` holds parsed `Rule` objects
 // in both the local SQLite store and the tenant Postgres one — and were simply
 // projected away here, which made this shape a description of a rule the engine
-// does not run. Half the bundled catalog is affected: of 103 rules, 21 carry
-// `postValidators`, 19 `appliesTo`, 18 `requiresNearby` (51 distinct rules), and
-// all 103 carry `examples`.
+// does not run. Half the bundled catalog is affected: of 109 rules, 21 carry
+// `postValidators`, 25 `appliesTo`, 18 `requiresNearby` (57 distinct rules), and
+// all 109 carry `examples`.
 //
 // That gap is not cosmetic for anything that re-runs a rule from this shape. A
 // rule whose `postValidators` are dropped loses its false-positive guard and

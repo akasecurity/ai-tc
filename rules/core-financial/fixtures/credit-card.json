@@ -26,12 +26,12 @@
   },
   {
     "label": "fraction digits that pass luhn",
-    "text": "{\"rss_gb\":3.4111111111111111,\"swap_mb\":948}",
+    "text": "{\"size_gb\":3.4111111111111111,\"count\":512}",
     "shouldMatch": false
   },
   {
     "label": "cost float that passes luhn",
-    "text": "total usd 0.5500000000000004 for the run",
+    "text": "subtotal 0.5500000000000004 after rounding",
     "shouldMatch": false
   }
 ]

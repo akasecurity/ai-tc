@@ -4,9 +4,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  BLOCK_RESPONSE_MAX_BLOCK_CHARS,
-  BLOCK_RESPONSE_MAX_BLOCKS,
   replaceResponseField,
+  RESPONSE_CHUNK_CHARS,
+  RESPONSE_MAX_CAPTURES,
+  RESPONSE_MAX_TOTAL_CHARS,
   scannableResponseFields,
 } from '../../src/hooks/tool-response.ts';
 
@@ -112,16 +113,44 @@ describe('scannableResponseFields — webrun and MCP content blocks', () => {
     expect(scannableResponseFields('mcp__s__t', [{ type: 'input_text', text: 'x' }])).toEqual([]);
   });
 
-  it('skips an oversized block and caps the block count', () => {
-    const big = 'a'.repeat(BLOCK_RESPONSE_MAX_BLOCK_CHARS + 1);
-    expect(scannableResponseFields('webrun', [{ type: 'input_text', text: big }])).toEqual([]);
-    const many = Array.from({ length: BLOCK_RESPONSE_MAX_BLOCKS + 5 }, () => ({
+  it('chunks a long block and caps the capture count and total size', () => {
+    const big = 'a'.repeat(RESPONSE_CHUNK_CHARS + 1);
+    expect(scannableResponseFields('webrun', [{ type: 'input_text', text: big }])).toEqual([
+      {
+        path: [0, 'text'],
+        text: 'a'.repeat(RESPONSE_CHUNK_CHARS),
+        range: { start: 0, end: RESPONSE_CHUNK_CHARS },
+      },
+      { path: [0, 'text'], text: 'a', range: { start: RESPONSE_CHUNK_CHARS, end: big.length } },
+    ]);
+    const many = Array.from({ length: RESPONSE_MAX_CAPTURES + 5 }, () => ({
       type: 'text',
       text: 'x',
     }));
     expect(scannableResponseFields('mcp__s__t', { content: many })).toHaveLength(
-      BLOCK_RESPONSE_MAX_BLOCKS,
+      RESPONSE_MAX_CAPTURES,
     );
+    const huge = 'line\n'.repeat(Math.ceil((RESPONSE_MAX_TOTAL_CHARS + 10) / 5));
+    const fields = scannableResponseFields('Bash', { stdout: huge, stderr: 'after' });
+    expect(fields.reduce((sum, f) => sum + f.text.length, 0)).toBe(RESPONSE_MAX_TOTAL_CHARS);
+    expect(fields.every((f) => f.path[0] === 'stdout')).toBe(true);
+  });
+});
+
+describe('replaceResponseField — paths that do not resolve', () => {
+  it('returns the response unchanged instead of grafting a key or slot on', () => {
+    const response = { stdout: 'x' };
+    expect(replaceResponseField(response, ['missing'], 'y')).toBe(response);
+    expect(replaceResponseField(response, ['missing', 'deeper'], 'y')).toBe(response);
+    const blocks = [{ type: 'text', text: 'x' }];
+    expect(replaceResponseField(blocks, [3, 'text'], 'y')).toBe(blocks);
+    expect(replaceResponseField(blocks, [-1, 'text'], 'y')).toBe(blocks);
+  });
+
+  it('does not follow an inherited key', () => {
+    const response = Object.create({ stdout: 'inherited' }) as object;
+    expect(replaceResponseField(response, ['stdout'], 'y')).toBe(response);
+    expect(replaceResponseField({}, ['__proto__', 'polluted'], 'y')).toEqual({});
   });
 });
 

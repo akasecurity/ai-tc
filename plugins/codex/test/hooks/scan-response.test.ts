@@ -108,3 +108,38 @@ describe('scanResponseFields + responseEmitPayload', () => {
     expect(responseEmitPayload(outcome)).toBeUndefined();
   });
 });
+
+describe('scanResponseFields — deadline', () => {
+  const fields: ScannableResponseField[] = [
+    { path: [0, 'text'], text: 'first' },
+    { path: [1, 'text'], text: 'second' },
+    { path: [2, 'text'], text: 'third' },
+  ];
+
+  it('starts no capture past the deadline and reports what it left unscanned', async () => {
+    let clock = 0;
+    const seen: string[] = [];
+    const outcome = await scanResponseFields(
+      'mcp__s__t',
+      fields,
+      (text) => {
+        seen.push(text);
+        clock += 10;
+        return Promise.resolve({ action: 'log', text: null, findings: [] });
+      },
+      { at: 20, now: () => clock },
+    );
+    expect(seen).toEqual(['first', 'second']);
+    expect(outcome.unscannedFields).toBe(1);
+  });
+
+  it('reports nothing unscanned while inside the deadline', async () => {
+    const outcome = await scanResponseFields(
+      'mcp__s__t',
+      fields,
+      () => Promise.resolve({ action: 'log', text: null, findings: [] }),
+      { at: 1, now: () => 0 },
+    );
+    expect(outcome.unscannedFields).toBe(0);
+  });
+});

@@ -7,8 +7,9 @@
  * scan-response.ts's module comment for why a `redact` outcome escalates to
  * this same whole-result withhold rather than attempting a partial splice.
  *
- * Scans `Bash` output, the built-in web tool's results (`webrun`) and MCP
- * tool results (`mcp__*`) — see tool-response.ts for each shape.
+ * Scans `Bash` output, the `apply_patch` result string, the built-in web
+ * tool's results (`webrun`) and MCP tool results (`mcp__*`) — see
+ * tool-response.ts for each shape.
  *
  * stdin:  { tool_name, tool_input, tool_response, ... }
  * stdout (exit 0):
@@ -22,7 +23,11 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
+import {
+  RESPONSE_SCAN_DEADLINE_MS,
+  responseEmitPayload,
+  scanResponseFields,
+} from './scan-response.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
@@ -57,15 +62,22 @@ async function main(): Promise<void> {
 
   let outcome;
   try {
-    outcome = await scanResponseFields(toolName, fields, (text) =>
-      runtime.capture(
-        { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
-        { persist: 'with-findings' },
-      ),
+    outcome = await scanResponseFields(
+      toolName,
+      fields,
+      (text) =>
+        runtime.capture(
+          { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
+          { persist: 'with-findings' },
+        ),
+      { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();
   }
+  // Out of time before every field was scanned: what was found is still
+  // acted on, and the rest passed through, so count it like any fail-open.
+  if (outcome.unscannedFields > 0) countFailOpen();
 
   const payload = responseEmitPayload(outcome);
   if (payload !== undefined) await emit(payload);

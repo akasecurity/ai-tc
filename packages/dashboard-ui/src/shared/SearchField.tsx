@@ -46,6 +46,7 @@ export function SearchField({
   className,
   iconClassName,
   clearLabel = 'Clear search',
+  maxLength,
 }: {
   value: string;
   onValueChange: (next: string) => void;
@@ -81,6 +82,12 @@ export function SearchField({
    * web-ui/test/search-field-labels.test.ts derives which pages those are.
    */
   clearLabel?: string;
+  /**
+   * The longest term the host will send, when its server refuses a longer one.
+   * Omitted leaves the box uncapped, which is right wherever the query never
+   * leaves the machine.
+   */
+  maxLength?: number;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -146,6 +153,7 @@ export function SearchField({
         // A query is a proper noun about as often as it is a word; the red
         // underline under a rule id or a hostname is noise either way.
         spellCheck={false}
+        maxLength={maxLength}
         placeholder={placeholder}
         aria-label={label}
         className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-hidden"

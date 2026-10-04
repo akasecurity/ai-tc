@@ -184,4 +184,22 @@ describe('SearchField', () => {
     expect(html).toContain('aria-label="Search finding types"');
     expect(html).toContain('placeholder="Search types…"');
   });
+
+  // A host whose server refuses a longer term caps the box at that length, so
+  // the user cannot type past what will be sent. No cap unless one is passed.
+  it('caps the input only when the host passes a maxLength', () => {
+    const field = (extra: { maxLength?: number }) =>
+      renderToStaticMarkup(
+        <SearchField
+          value=""
+          onValueChange={vi.fn()}
+          label="Search sessions"
+          placeholder="Search…"
+          surface="card"
+          {...extra}
+        />,
+      );
+    expect(field({ maxLength: 512 })).toMatch(/maxlength="512"/i);
+    expect(field({})).not.toMatch(/maxlength/i);
+  });
 });

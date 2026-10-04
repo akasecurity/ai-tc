@@ -106,6 +106,7 @@ export function SessionListView({
   onSelect,
   query,
   onQuery,
+  searchMaxLength,
   harness,
   harnessOptions,
   onHarness,
@@ -122,6 +123,9 @@ export function SessionListView({
   onSelect: (id: string) => void;
   query: string;
   onQuery: (q: string) => void;
+  /** The longest search term the host's server accepts; omitted leaves the box
+   * uncapped (the local store has no such limit). */
+  searchMaxLength?: number;
   harness: Harness[];
   /** Harnesses to offer in the filter — omitted shows the full enum. */
   harnessOptions?: Harness[];
@@ -175,6 +179,7 @@ export function SessionListView({
           surface="card"
           className="mb-2 h-8.5 px-2.5"
           iconClassName="size-3.5"
+          {...(searchMaxLength === undefined ? {} : { maxLength: searchMaxLength })}
         />
         <HarnessSelect
           value={harness}

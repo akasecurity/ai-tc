@@ -104,3 +104,16 @@ describe('SessionListView day-groups sessions against the instant it is handed',
     expect(html).not.toContain('>Today<');
   });
 });
+
+// The enterprise routes refuse a search term over their limit; the host passes
+// that limit so the box stops there. The OSS web-ui passes none and keeps an
+// uncapped box.
+describe('SessionListView caps its search box at the limit the host passes', () => {
+  it('sets maxlength on the search input when searchMaxLength is given', () => {
+    expect(render({ searchMaxLength: 512 })).toMatch(/maxlength="512"/i);
+  });
+
+  it('leaves the search input uncapped by default', () => {
+    expect(render()).not.toMatch(/maxlength/i);
+  });
+});

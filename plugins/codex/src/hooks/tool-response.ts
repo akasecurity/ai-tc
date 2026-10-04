@@ -51,6 +51,17 @@ const WEB_TOOL_NAME = 'webrun';
 const WEB_TEXT_BLOCK_TYPES: ReadonlySet<string> = new Set(['input_text', 'text']);
 const MCP_TEXT_BLOCK_TYPES: ReadonlySet<string> = new Set(['text']);
 
+/**
+ * The fixed tool names whose results this module maps: the static table plus
+ * the web tool. The mcp__* family is matched by prefix and is not listed, and
+ * any tool's plain-string result is scanned whole. Exported so the manifest
+ * test can check the PostToolUse matcher selects every one of them.
+ */
+export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = [
+  ...Object.keys(RESPONSE_TEXT_PATHS),
+  WEB_TOOL_NAME,
+];
+
 // Bounds on what one response costs to scan, so an oversized result degrades
 // to partial coverage instead of outrunning the hook timeout (a timed-out hook
 // passes the whole output through unscanned). The same bounds as the Claude

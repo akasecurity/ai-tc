@@ -61,7 +61,11 @@ export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = Object.keys(RESPON
 // detector's own window: each regex rule runs over at most the first 200,000
 // characters of the text it is given (MAX_REGEX_INPUT_LENGTH in the detections
 // package), so a longer string handed over whole is scanned only up to there.
-// A value that straddles a cut with no newline near it can be missed.
+// A value that straddles a cut with no newline near it can be missed. So can a
+// rule gated on a nearby label (requiresNearby): the label is looked for only
+// inside the chunk the value sits in, so a label on the far side of a cut does
+// not count and the value goes unreported even though it is whole in its own
+// chunk.
 //
 // Every chunk or block costs one sequential capture. The walk stops at
 // RESPONSE_MAX_CAPTURES captures or RESPONSE_MAX_TOTAL_CHARS characters,

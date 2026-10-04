@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -55,12 +57,12 @@ describe('scan worker URL is statically traceable', () => {
 
 describe('sourceTwin', () => {
   it('swaps the trailing .js for .ts', () => {
-    const twin = sourceTwin(new URL('file:///repo/src/scan-worker.js'));
-    expect(twin.href).toBe('file:///repo/src/scan-worker.ts');
+    const twin = sourceTwin(pathToFileURL(resolve('repo', 'src', 'scan-worker.js')));
+    expect(twin.href).toBe(pathToFileURL(resolve('repo', 'src', 'scan-worker.ts')).href);
   });
 
   it('leaves a .js elsewhere in the path alone', () => {
-    const twin = sourceTwin(new URL('file:///a.js/dir.js/scan-worker.js'));
-    expect(twin.href).toBe('file:///a.js/dir.js/scan-worker.ts');
+    const twin = sourceTwin(pathToFileURL(resolve('a.js', 'dir.js', 'scan-worker.js')));
+    expect(twin.href).toBe(pathToFileURL(resolve('a.js', 'dir.js', 'scan-worker.ts')).href);
   });
 });

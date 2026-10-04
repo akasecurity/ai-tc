@@ -66,9 +66,9 @@ export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = Object.keys(RESPON
 // Every chunk or block costs one sequential capture. The walk stops at
 // RESPONSE_MAX_CAPTURES captures or RESPONSE_MAX_TOTAL_CHARS characters,
 // whichever comes first, and the text past that point reaches the model
-// unscanned. Wall time is bounded separately, by the scan deadline in
-// scan-response.ts, since a capture's cost depends on the machine and the
-// store, not only on its size.
+// unscanned, and the hook counts that as a fail-open. Wall time is bounded
+// separately, by the scan deadline in scan-response.ts, since a capture's
+// cost depends on the machine and the store, not only on its size.
 export const RESPONSE_CHUNK_CHARS = 200_000;
 export const RESPONSE_MAX_CAPTURES = 2_000;
 export const RESPONSE_MAX_TOTAL_CHARS = 5_000_000;
@@ -98,31 +98,57 @@ export function chunkRanges(text: string, max: number): { start: number; end: nu
   return ranges;
 }
 
+/** The fields to scan, and whether the bounds left any text out of them. */
+export interface ResponseFields {
+  fields: ScannableResponseField[];
+  /**
+   * True when RESPONSE_MAX_TOTAL_CHARS or RESPONSE_MAX_CAPTURES cut some text
+   * out of `fields`, so part of the response reaches the model unscanned. The
+   * hook counts it as a fail-open, as it does a scan cut short by the deadline.
+   */
+  truncated: boolean;
+}
+
 /** Collects fields under the response bounds above. */
 class BoundedFields {
   readonly fields: ScannableResponseField[] = [];
+  truncated = false;
   private remaining = RESPONSE_MAX_TOTAL_CHARS;
 
   /** True once no further field can be added. */
-  get full(): boolean {
+  private full(): boolean {
     return this.fields.length >= RESPONSE_MAX_CAPTURES || this.remaining <= 0;
   }
 
-  /** Adds the string at `path`, chunked; returns false once the bounds are hit. */
-  add(path: PathSegment[], text: string): boolean {
+  /**
+   * Adds the string at `path`, chunked. Text the bounds leave out marks the
+   * collection truncated; callers keep offering every field, so a field
+   * skipped once the bounds are full is counted too.
+   */
+  add(path: PathSegment[], text: string): void {
+    if (this.full()) {
+      this.truncated = true;
+      return;
+    }
     if (text.length <= RESPONSE_CHUNK_CHARS && text.length <= this.remaining) {
-      if (this.full) return false;
       this.fields.push({ path, text });
       this.remaining -= text.length;
-      return true;
+      return;
     }
     const scanned = text.slice(0, Math.max(0, this.remaining));
+    if (scanned.length < text.length) this.truncated = true;
     for (const range of chunkRanges(scanned, RESPONSE_CHUNK_CHARS)) {
-      if (this.full) return false;
+      if (this.full()) {
+        this.truncated = true;
+        return;
+      }
       this.fields.push({ path, text: text.slice(range.start, range.end), range });
       this.remaining -= range.end - range.start;
     }
-    return !this.full;
+  }
+
+  result(): ResponseFields {
+    return { fields: this.fields, truncated: this.truncated };
   }
 }
 
@@ -133,7 +159,7 @@ class BoundedFields {
  * Each field addresses the block's `text` in place, so a rewrite keeps the
  * array, its length and every sibling block intact.
  */
-function mcpResponseFields(response: unknown): ScannableResponseField[] {
+function mcpResponseFields(response: unknown): ResponseFields {
   let blocks: unknown[];
   let base: PathSegment[];
   if (Array.isArray(response)) {
@@ -148,7 +174,7 @@ function mcpResponseFields(response: unknown): ScannableResponseField[] {
     blocks = (response as { content: unknown[] }).content;
     base = ['content'];
   } else {
-    return [];
+    return { fields: [], truncated: false };
   }
 
   const bounded = new BoundedFields();
@@ -158,9 +184,9 @@ function mcpResponseFields(response: unknown): ScannableResponseField[] {
     const path: PathSegment[] = [...base, index, 'text'];
     const text = stringAtPath(response, path);
     if (text === undefined || text === '') continue;
-    if (!bounded.add(path, text)) break;
+    bounded.add(path, text);
   }
-  return bounded.fields;
+  return bounded.result();
 }
 
 /**
@@ -172,10 +198,18 @@ export function scannableResponseFields(
   toolName: string,
   response: unknown,
 ): ScannableResponseField[] {
+  return collectResponseFields(toolName, response).fields;
+}
+
+/**
+ * scannableResponseFields plus whether the response bounds cut any text out,
+ * which the hook needs to count a partial scan as a fail-open.
+ */
+export function collectResponseFields(toolName: string, response: unknown): ResponseFields {
   if (typeof response === 'string') {
     const bounded = new BoundedFields();
     if (response !== '') bounded.add([], response);
-    return bounded.fields;
+    return bounded.result();
   }
   if (toolName.startsWith('mcp__')) return mcpResponseFields(response);
   // hasOwn guard: a bare index would resolve Object.prototype members for
@@ -187,9 +221,9 @@ export function scannableResponseFields(
   for (const path of paths ?? []) {
     const text = stringAtPath(response, path);
     if (text === undefined || text === '') continue;
-    if (!bounded.add(path, text)) break;
+    bounded.add(path, text);
   }
-  return bounded.fields;
+  return bounded.result();
 }
 
 /**

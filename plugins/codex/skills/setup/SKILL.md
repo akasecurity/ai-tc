@@ -822,7 +822,8 @@ later re-scan checks against. Shell commands and tool output are recorded only
 when something is detected. Old bodies are cleared only if local body expiry is
 turned on in the workspace settings. A very large tool result is scanned up to
 a bound (5 million characters or 2,000 pieces, and about 7 seconds), past which
-the rest reaches the model unscanned.
+the rest reaches the model unscanned. A scan cut short by any of these bounds
+counts as a fail-open in `aka status`.
 
 On a Codex release that fires these hooks for `Bash` alone, file-write
 **content is not scanned at all** — not live, and not after the fact either.

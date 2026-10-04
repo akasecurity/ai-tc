@@ -25,9 +25,12 @@ import {
   loadOrCreateFingerprintKey,
 } from '@akasecurity/persistence';
 import {
+  assignedRulePolicies,
   childRel,
+  createPolicyResolver,
   evaluateIgnore,
   type IgnoreLayer,
+  type PolicyResolver,
   readIgnoreLayer,
   toPosix,
   withLayer,
@@ -37,10 +40,11 @@ import type {
   DetectedFindingWithKey,
   EventMetadata,
   IngestEvent,
+  Policy,
   Rule,
   SourceTool,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS, isActionAtLeast, SOURCE_TOOL } from '@akasecurity/schema';
+import { isActionAtLeast, SOURCE_TOOL } from '@akasecurity/schema';
 
 // The filesystem scan pipeline shared by `aka scan` and the web-ui's Scan page:
 // walk a file or directory, run the detection engine over each text file, and
@@ -456,13 +460,19 @@ export interface ScanPathOptions {
   scanText?: ((text: string) => Promise<MatchResult[]>) | undefined;
   // Per-rule enforcement action from the installed snapshot (installedRuleset().
   // ruleActions), so at-rest findings carry the SAME per-pack Monitor/Warn/Redact/
-  // Block decision the live capture path resolves — not the per-category default.
-  // A rule absent from the map (or no map) falls back to DEFAULT_ACTIONS[category].
+  // Block decision the live capture path resolves. Pass `assignedRules` from the
+  // same snapshot with it: only those rules take their pack's action, exactly as
+  // on the live path. Every other rule — an unassigned pack's, one absent from the
+  // map, or all of them with no map — resolves through the store's policies:
+  // a per-category row, then DEFAULT_ACTIONS[category].
   //
   // It decides more than the stamped `actionTaken`: the same resolution picks
   // which spans are masked in the stored file text, so a map that resolves every
   // rule below `redact` leaves the event content byte-identical to the file.
   ruleActions?: ReadonlyMap<string, ActionTaken> | undefined;
+  // installedRuleset().assignedRules: the rules whose pack carries an explicit
+  // policy. Omitted, every entry in `ruleActions` is taken as assigned.
+  assignedRules?: ReadonlySet<string> | undefined;
   sourceTool?: SourceTool | undefined;
   // The ~/.aka/data directory (the same one passed to openLocalDatabase) —
   // where the exception fingerprint key lives. Lets an at-rest finding's
@@ -543,6 +553,35 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
  * round trip. A caller running the compiled-in packs passes no `scanText` and
  * pays nothing for that — the default matcher resolves without ever yielding.
  */
+// The enforcement reading for a scan: the store's own policies, then a
+// per-rule policy for each rule of an ASSIGNED pack, through the same resolver
+// and the same helper the standalone gateway uses to build the live bundle. So
+// a rule resolves byRule → byCategory → DEFAULT_ACTIONS here exactly as it does
+// in a session: an unassigned pack follows its category row, and a category set
+// to redact or block masks the span at rest as it does live. A policies read
+// that fails leaves only the per-rule policies, so the rest fall to
+// DEFAULT_ACTIONS rather than aborting the scan.
+async function scanPolicyResolver(
+  db: LocalDatabase,
+  opts: ScanPathOptions,
+): Promise<PolicyResolver> {
+  let stored: Policy[];
+  try {
+    stored = await db.policies.readPolicies();
+  } catch {
+    stored = [];
+  }
+  const rulePolicies = opts.ruleActions
+    ? assignedRulePolicies({ ruleActions: opts.ruleActions, assignedRules: opts.assignedRules })
+    : [];
+  return createPolicyResolver({
+    version: 'local',
+    policies: [...stored, ...rulePolicies],
+    customKeywords: [],
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
 export async function scanPathIntoStore(
   db: LocalDatabase,
   target: string,
@@ -562,6 +601,8 @@ export async function scanPathIntoStore(
   // unavailable) rather than aborting the scan; computeFindingKey still gets
   // called below, just with the masked-match fallback.
   let fingerprintKey: FingerprintKey | null | undefined;
+  // Built on the first file with a match, so a clean scan reads no policies.
+  let resolver: PolicyResolver | undefined;
   function resolveFingerprintKey(): FingerprintKey | null {
     if (fingerprintKey === undefined) {
       try {
@@ -606,13 +647,14 @@ export async function scanPathIntoStore(
     const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
     if (matches.length === 0) continue;
 
-    // Per-pack action (monitor-by-default) when the installed snapshot supplies
-    // one, else the per-category fallback — mirrors the live path's resolveAction.
-    // Resolved ONCE per match here because two things read it: the stamped
-    // actionTaken below, and the at-rest masking immediately after.
+    // Resolved through the same reading the live path uses (see
+    // scanPolicyResolver), ONCE per match here because two things read it: the
+    // stamped actionTaken below, and the at-rest masking immediately after.
+    resolver ??= await scanPolicyResolver(db, opts);
+    const policy = resolver;
     const resolved = matches.map((match) => ({
       match,
-      action: opts.ruleActions?.get(match.ruleId) ?? DEFAULT_ACTIONS[match.category],
+      action: policy.actionFor(match.ruleId, match.category),
     }));
     // At-rest masking is an ENFORCEMENT effect, not hygiene. A pack assigned
     // Monitor or Warn may log a match and do nothing else to the value, so only

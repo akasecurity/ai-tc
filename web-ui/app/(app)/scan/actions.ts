@@ -134,8 +134,10 @@ export async function runScan(
       // and passing it here as well would name the unbounded in-process path.
       scanText: guard.scanText,
       // Per-pack policy actions from the same snapshot, so at-rest findings carry the
-      // detection's assigned Monitor/Warn/Redact/Block (not the per-category default).
+      // detection's assigned Monitor/Warn/Redact/Block; an unassigned pack's rules
+      // follow the category policies, as they do live.
       ruleActions: ruleset.ruleActions,
+      assignedRules: ruleset.assignedRules,
       sourceTool: SOURCE_TOOL.Cli,
       // Same ~/.aka/data directory as db()'s store, so a finding's finding_key
       // uses the plugin's keyed-HMAC fingerprint and reconciles onto the same

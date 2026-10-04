@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import type {
   BlockedDetectionInput,
   InstalledRuleset,
@@ -23,7 +21,12 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
-import { buildTokenReports, defaultCostModel, readFingerprintKey } from '@akasecurity/plugin-sdk';
+import {
+  assignedRulePolicies,
+  buildTokenReports,
+  defaultCostModel,
+  readFingerprintKey,
+} from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   AuditEventInput,
@@ -347,17 +350,9 @@ export class StandaloneDataGateway
     // meaningful when the installed snapshot is authoritative (rulesComplete) —
     // the bundled-packs fallback keeps the category defaults, since those bundled
     // rule ids have no policy assignment.
-    const rulePolicies: Policy[] = installed
-      ? [...installed.ruleActions]
-          .filter(([ruleId]) => installed.assignedRules.has(ruleId))
-          .map(([ruleId, action]) => ({
-            id: randomUUID(),
-            scope: 'global',
-            target: { ruleId },
-            action,
-            enabled: true,
-          }))
-      : [];
+    // The at-rest file scan builds the same list through the same helper, so
+    // both read one answer for an unassigned pack.
+    const rulePolicies: Policy[] = installed ? assignedRulePolicies(installed) : [];
     // Active exception grants under the CURRENT fingerprint key version —
     // grants written under a rotated-away key are excluded at read. Fail
     // secure: any error (key file, query) omits `exceptions` entirely, so

@@ -4,7 +4,7 @@ import type { Policy, PolicyBundle } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { createPolicyResolver } from '../src/policy-resolver.ts';
+import { assignedRulePolicies, createPolicyResolver } from '../src/policy-resolver.ts';
 
 function bundle(overrides: Partial<PolicyBundle> = {}): PolicyBundle {
   return {
@@ -134,5 +134,43 @@ describe('createPolicyResolver — never throws', () => {
     expect(resolver.actionFor('pack/rule', 'secret')).toBe(DEFAULT_ACTIONS.secret);
     expect(resolver.actionFor('pack/rule', 'nope')).toBe('log');
     expect(resolver.isReversible('pack/rule')).toBe(false);
+  });
+});
+
+describe('assignedRulePolicies', () => {
+  const ruleActions = new Map([
+    ['a/one', 'block' as const],
+    ['b/two', 'log' as const],
+  ]);
+
+  it('emits a per-rule policy only for rules of an assigned pack', () => {
+    const policies = assignedRulePolicies({ ruleActions, assignedRules: new Set(['a/one']) });
+    expect(policies.map((p) => [p.target, p.action, p.enabled])).toEqual([
+      [{ ruleId: 'a/one' }, 'block', true],
+    ]);
+    // So the unassigned rule follows its category row, not the Monitor it is listed at.
+    const resolver = createPolicyResolver(
+      bundle({
+        policies: [
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { category: 'secret' },
+            action: 'redact',
+            enabled: true,
+          },
+          ...policies,
+        ],
+      }),
+    );
+    expect(resolver.actionFor('b/two', 'secret')).toBe('redact');
+    expect(resolver.actionFor('a/one', 'secret')).toBe('block');
+  });
+
+  it('takes every entry as assigned when no assigned set is given', () => {
+    expect(assignedRulePolicies({ ruleActions }).map((p) => p.target)).toEqual([
+      { ruleId: 'a/one' },
+      { ruleId: 'b/two' },
+    ]);
   });
 });

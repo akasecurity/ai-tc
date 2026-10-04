@@ -254,9 +254,9 @@ describe('handleRequest (native-messaging host)', () => {
     db.close();
 
     expect(row.source_tool).toBe('chatgpt');
-    // Monitored, so the row holds the capture verbatim: the unflagged text AND
-    // the matched span, with no placeholder standing in for a value enforcement
-    // was never going to strip.
+    // Warn masks nothing at rest, so the row holds the capture verbatim: the
+    // unflagged text AND the matched span, with no placeholder standing in for
+    // a value enforcement was never going to strip.
     expect(row.content).toContain('here is');
     expect(row.content).toContain('value');
     expect(row.content).toBe(text);

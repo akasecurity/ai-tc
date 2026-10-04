@@ -18,6 +18,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -33,6 +34,13 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
 const SESSION_ID = 'fail-open-e2e-session';
+
+// The PreToolUse payload a live Codex sent for an apply_patch call (see
+// test/fixtures/hooks/README.md). The e2e row below keeps its shape and swaps
+// only the patch text, the session and the working directory.
+const RECORDED_APPLY_PATCH = JSON.parse(
+  readFileSync(new URL('../fixtures/hooks/apply_patch.pre-tool-use.json', import.meta.url), 'utf8'),
+) as { tool_name: string; tool_input: { command: string } } & Record<string, unknown>;
 
 function projectDir(home: string): string {
   const dir = join(home, 'project');
@@ -501,18 +509,22 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
   },
   {
     // A patch body is durable text, not a command, so redact rewrites it in
-    // place. The payload shape is the one a live codex-cli 0.160.0 sends.
+    // place. Built from the recorded live payload, so a payload shape that
+    // stops matching the field mapping fails here.
     name: 'pre-tool-use',
     label: 'pre-tool-use (apply_patch)',
     payload: (home) =>
       JSON.stringify({
-        tool_name: 'apply_patch',
+        ...RECORDED_APPLY_PATCH,
         tool_input: {
-          command: `*** Begin Patch\n*** Add File: .env\n+TWILIO_KEY=${SECRET}\n*** End Patch\n`,
+          ...RECORDED_APPLY_PATCH.tool_input,
+          command: RECORDED_APPLY_PATCH.tool_input.command.replace(
+            '+hello from the patch',
+            `+TWILIO_KEY=${SECRET}`,
+          ),
         },
         session_id: SESSION_ID,
         cwd: projectDir(home),
-        hook_event_name: 'PreToolUse',
       }),
     emits: {
       block: '"permissionDecision":"deny"',

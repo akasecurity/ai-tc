@@ -16,8 +16,10 @@
 // built-in web tool fires as `webrun` and returns a bare array of
 // `{ type: 'input_text', text }` blocks; an MCP tool fires as
 // `mcp__<server>__<tool>` and returns `{ content: [{ type: 'text', text }] }`.
-// `apply_patch` output is not scanned: it reports the patch result, and the
-// patch body itself is scanned at PreToolUse.
+// `apply_patch` returns a plain string reporting the patch result (exit code
+// and the changed paths), which is scanned whole like any plain-string
+// response; the patch body itself is scanned at PreToolUse. Recorded
+// payloads: test/fixtures/hooks/.
 //
 // Kept free of I/O and hook wiring so it can be unit-tested (hook entry modules
 // run main() on import and hang vitest collection).

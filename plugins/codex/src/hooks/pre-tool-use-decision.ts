@@ -23,7 +23,8 @@ import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
 // `apply_patch` and carries the patch text under `tool_input.command`, the
 // same key as `Bash`. Nested `tools.exec_command` arrives as `Bash`. The outer
 // `exec` itself fires no hook, so its JavaScript is seen only through the
-// tool calls it makes.
+// tool calls it makes. The recorded payloads are in test/fixtures/hooks/,
+// and test/hooks/recorded-payloads.test.ts checks this table against them.
 export interface ScannableField {
   field: string;
   executable: boolean;

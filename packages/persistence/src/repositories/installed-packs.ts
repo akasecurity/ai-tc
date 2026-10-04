@@ -147,6 +147,16 @@ export interface InstalledRuleset {
 // hash of the pack's serialized rules is folded in (not just the version) so a
 // rules-only change with no version bump still flips the signature — a
 // version-only signature would silently keep a stale snapshot on disk.
+//
+// A pack's defaultPolicyId is deliberately NOT in it. The stored side is read
+// back from available_packs, which has no column for it, so folding it in would
+// make the two sides differ forever and put a write transaction on every hook
+// open. Nor can leaving it out skip a write that matters: the default is read
+// only by insertMissingStmt, for a pack with no installed row, and a pack the
+// mirror has never seen always flips the signature. A default changed for a
+// pack already installed is ignored by design (first install only), so a
+// re-record would change nothing either. If the default ever starts to apply
+// to existing installs, it has to be mirrored and signed here first.
 function inventorySignature(
   packs: { namespace: string; packId: string; version: string; rulesJson: string }[],
 ): string {

@@ -375,6 +375,21 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  // The inventory signature leaves defaultPolicyId out (see inventorySignature).
+  // What makes that safe is pinned here: a new pack always flips the signature,
+  // so its default is applied even when every other pack is unchanged.
+  it('a pack added beside unchanged ones still takes its defaultPolicyId', () => {
+    const db = store.open();
+    const pii = pack('core-pii', '2.0.0', ['core-pii/email']);
+    db.installedPacks.recordInventory([pii]);
+    db.installedPacks.recordInventory([
+      pii,
+      { ...pack('secrets', '2.0.0', ['secrets/aws']), defaultPolicyId: 'warn' },
+    ]);
+    expect(db.installedPacks.installedRuleset().ruleActions.get('secrets/aws')).toBe('warn');
+    db.close();
+  });
+
   it('maps each rule to its installed pack version', () => {
     const db = store.open();
     db.installedPacks.recordInventory([

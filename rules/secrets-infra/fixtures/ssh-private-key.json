@@ -52,10 +52,28 @@
     "shouldMatch": false
   },
   {
-    "label": "prose between the markers: the span stays on the header",
+    "label": "prose with punctuation between the markers: the span stays on the header",
     "text": "-----BEGIN PRIVATE KEY-----\nThe rest of this note is unrelated text.\n-----END PRIVATE KEY-----",
     "shouldMatch": true,
     "expectedSpans": [{ "start": 0, "end": 27 }]
+  },
+  {
+    "label": "letters-and-spaces prose between the markers: spaces inside a body line end the tail",
+    "text": "-----BEGIN PRIVATE KEY-----\nthe rest of this note is unrelated text\n-----END PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 0, "end": 27 }]
+  },
+  {
+    "label": "indented key in a YAML block scalar keeps its full span",
+    "text": "key: |\n  -----BEGIN PRIVATE KEY-----\n  MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx\n  AAAA==\n  -----END PRIVATE KEY-----\n",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 9, "end": 140 }]
+  },
+  {
+    "label": "key with newlines collapsed to spaces keeps its full span",
+    "text": "-----BEGIN PRIVATE KEY----- MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx AAAA== -----END PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 0, "end": 190 }]
   },
   {
     "label": "END marker with a different qualifier does not close the block",

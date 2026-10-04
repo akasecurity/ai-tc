@@ -165,5 +165,23 @@
     "label": "same command with no capture kind (folder scan) is out of scope",
     "text": "rm -rf ~/projects/demo-app/$WORKDIR",
     "shouldMatch": false
+  },
+  {
+    "label": "env assignment prefix",
+    "text": "X=1 rm -rf /home/x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "remote command over ssh",
+    "text": "ssh host \"rm -rf /home/x\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "eval of a quoted command",
+    "text": "eval \"rm -rf /home/x\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

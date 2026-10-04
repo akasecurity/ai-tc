@@ -350,15 +350,15 @@ export function peekSessionOriginator(transcriptPath: string): string | undefine
 // ───────────────────────────── tool-I/O path ─────────────────────────────
 //
 // A THIRD independent parse of the same rollout files, for the tool-call
-// reconciler. Codex's PreToolUse/PostToolUse HOOKS only reliably fire for
-// `Bash`-equivalent (shell) calls today (see plugins/codex/hooks/hooks.json
-// and the upstream issue it cites — apply_patch calls don't fire hooks yet),
-// so this backfill-time parse of `exec_command_begin`/`exec_command_end` and
-// `patch_apply_begin`/`patch_apply_end` event pairs is currently the ONLY way
-// AKA observes a Codex file write at all, live enforcement aside. It observes
-// the write's changed paths and byte sizes — NOT its content. Nothing on Codex
-// scans file-write content: parseTranscript keeps `message` payloads only, so
-// the backfill scan never sees an apply_patch body either.
+// reconciler. Live, Codex's PreToolUse/PostToolUse hooks fire for `apply_patch`
+// as well as shell calls (observed on codex-cli 0.160.0; recorded payloads in
+// test/fixtures/hooks/), and the PreToolUse hook scans the patch body. This
+// backfill-time parse of `exec_command_begin`/`exec_command_end` and
+// `patch_apply_begin`/`patch_apply_end` event pairs is the after-the-fact
+// record: it observes a write's changed paths and byte sizes, NOT its content.
+// parseTranscript keeps `message` payloads only, so the backfill scan never
+// sees an apply_patch body, and a write made on a Codex release whose hooks
+// did not fire for apply_patch is still never content-scanned.
 export interface ToolCallRecord {
   sessionId: string;
   toolUseId: string; // call_id

@@ -1,6 +1,25 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
-import { replaceResponseField, scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import {
+  chunkRanges,
+  replaceResponseField,
+  RESPONSE_CHUNK_CHARS,
+  RESPONSE_MAX_CAPTURES,
+  RESPONSE_MAX_TOTAL_CHARS,
+  scannableResponseFields,
+  spliceResponseField,
+} from '../../src/hooks/tool-response.ts';
+
+// Grep tool_response objects as a live Claude Code sent them, one per output
+// mode (see the file's own note for the host version).
+const grepRecording = JSON.parse(
+  readFileSync(new URL('../fixtures/grep-tool-response.json', import.meta.url), 'utf8'),
+) as {
+  hostVersion: string;
+  calls: { tool_input: { output_mode: string }; tool_response: unknown }[];
+};
 
 describe('scannableResponseFields', () => {
   it('treats a plain-string response as one scannable field at the root', () => {
@@ -77,7 +96,263 @@ describe('scannableResponseFields', () => {
   });
 });
 
+describe('scannableResponseFields — Grep', () => {
+  function recorded(mode: string, index = 0): unknown {
+    const calls = grepRecording.calls.filter((c) => c.tool_input.output_mode === mode);
+    const call = calls[index];
+    if (!call) throw new Error(`no recorded ${mode} call`);
+    return call.tool_response;
+  }
+
+  it('records an object response for every output mode, never a plain string', () => {
+    expect(grepRecording.hostVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(grepRecording.calls.map((c) => c.tool_input.output_mode).sort()).toEqual([
+      'content',
+      'content',
+      'count',
+      'files_with_matches',
+    ]);
+    for (const call of grepRecording.calls) {
+      expect(typeof call.tool_response, call.tool_input.output_mode).toBe('object');
+    }
+  });
+
+  it('scans the matching lines of a recorded content-mode response', () => {
+    expect(scannableResponseFields('Grep', recorded('content'))).toEqual([
+      { path: ['content'], text: 'src/a.txt:2:beta marker here\nsrc/b.txt:1:marker again' },
+    ]);
+  });
+
+  it('scans the per-file counts of a recorded count-mode response', () => {
+    expect(scannableResponseFields('Grep', recorded('count'))).toEqual([
+      { path: ['content'], text: 'src/a.txt:1\nsrc/b.txt:1' },
+    ]);
+  });
+
+  it('scans nothing for the recorded files_with_matches and no-match responses', () => {
+    expect(scannableResponseFields('Grep', recorded('files_with_matches'))).toEqual([]);
+    expect(scannableResponseFields('Grep', recorded('content', 1))).toEqual([]);
+  });
+
+  it('would scan a plain-string response whole, as for any tool', () => {
+    expect(scannableResponseFields('Grep', 'No files found')).toEqual([
+      { path: [], text: 'No files found' },
+    ]);
+  });
+
+  it('chunks a content result longer than one chunk, line-aligned', () => {
+    const line = `src/a.ts:1:${'z'.repeat(89)}\n`;
+    const content = line.repeat(Math.ceil((RESPONSE_CHUNK_CHARS * 2.5) / line.length));
+    const fields = scannableResponseFields('Grep', { mode: 'content', content });
+    expect(fields.length).toBe(3);
+    for (const field of fields) {
+      expect(field.path).toEqual(['content']);
+      expect(field.text.length).toBeLessThanOrEqual(RESPONSE_CHUNK_CHARS);
+      expect(field.text.endsWith('\n')).toBe(true);
+      expect(content.slice(field.range?.start, field.range?.end)).toBe(field.text);
+    }
+    expect(fields.map((f) => f.text).join('')).toBe(content);
+  });
+
+  it('scans a content result only up to the total character budget', () => {
+    const line = `src/a.ts:1:${'z'.repeat(89)}\n`;
+    const content = line.repeat(Math.ceil((RESPONSE_MAX_TOTAL_CHARS + 50_000) / line.length));
+    const fields = scannableResponseFields('Grep', { mode: 'content', content });
+    const total = fields.reduce((sum, field) => sum + field.text.length, 0);
+    expect(total).toBe(RESPONSE_MAX_TOTAL_CHARS);
+    expect(fields.at(-1)?.range?.end).toBe(RESPONSE_MAX_TOTAL_CHARS);
+  });
+});
+
+describe('chunkRanges', () => {
+  it('returns one range for text that fits', () => {
+    expect(chunkRanges('short', 10)).toEqual([{ start: 0, end: 5 }]);
+  });
+
+  it('cuts after the last newline inside each chunk', () => {
+    expect(chunkRanges('aaa\nbbb\nccccc', 6)).toEqual([
+      { start: 0, end: 4 },
+      { start: 4, end: 8 },
+      { start: 8, end: 13 },
+    ]);
+  });
+
+  it('hard-cuts a line longer than a chunk, never inside a surrogate pair', () => {
+    expect(chunkRanges('abcdefgh', 3)).toEqual([
+      { start: 0, end: 3 },
+      { start: 3, end: 6 },
+      { start: 6, end: 8 },
+    ]);
+    // Cutting at 3 would separate the pair at indices 2 and 3.
+    expect(chunkRanges('ab\u{1F600}cd', 3)[0]).toEqual({ start: 0, end: 2 });
+  });
+});
+
+describe('scannableResponseFields — mcp__* tools', () => {
+  const tool = 'mcp__reader__read_url';
+
+  it('extracts every text block of a bare content-block array', () => {
+    const response = [
+      { type: 'text', text: 'first page section' },
+      { type: 'text', text: 'second page section' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([
+      { path: [0, 'text'], text: 'first page section' },
+      { path: [1, 'text'], text: 'second page section' },
+    ]);
+  });
+
+  it('extracts text blocks wrapped under content', () => {
+    const response = {
+      content: [{ type: 'text', text: 'wrapped text' }],
+      isError: false,
+    };
+    expect(scannableResponseFields(tool, response)).toEqual([
+      { path: ['content', 0, 'text'], text: 'wrapped text' },
+    ]);
+  });
+
+  it('treats a plain-string MCP response as one root field', () => {
+    expect(scannableResponseFields(tool, 'plain result')).toEqual([
+      { path: [], text: 'plain result' },
+    ]);
+  });
+
+  it('ignores non-text blocks, empty text, and malformed entries while keeping indices', () => {
+    const response = [
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      { type: 'resource', resource: { uri: 'memo://notes/x', text: 'resource body' } },
+      { type: 'text', text: '' },
+      { type: 'text', text: 42 },
+      null,
+      'stray string',
+      ['nested'],
+      { text: 'no type field' },
+      { type: 'text', text: 'kept' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([{ path: [8, 'text'], text: 'kept' }]);
+  });
+
+  it('returns nothing for an object that does not wrap a content array', () => {
+    expect(scannableResponseFields(tool, { result: 'x' })).toEqual([]);
+    expect(scannableResponseFields(tool, { content: 'not an array' })).toEqual([]);
+    expect(scannableResponseFields(tool, null)).toEqual([]);
+    expect(scannableResponseFields(tool, 7)).toEqual([]);
+  });
+
+  it('does not read an inherited content property', () => {
+    const response = Object.create({ content: [{ type: 'text', text: 'inherited' }] }) as object;
+    expect(scannableResponseFields(tool, response)).toEqual([]);
+  });
+
+  it('caps the number of captures', () => {
+    const response = Array.from({ length: RESPONSE_MAX_CAPTURES + 50 }, (_, i) => ({
+      type: 'text',
+      text: `block ${String(i)}`,
+    }));
+    const fields = scannableResponseFields(tool, response);
+    expect(fields).toHaveLength(RESPONSE_MAX_CAPTURES);
+    expect(fields.at(-1)?.path).toEqual([RESPONSE_MAX_CAPTURES - 1, 'text']);
+  });
+
+  it('chunks a block longer than one chunk and still scans its siblings', () => {
+    const response = [
+      { type: 'text', text: 'x'.repeat(RESPONSE_CHUNK_CHARS + 1) },
+      { type: 'text', text: 'after the long block' },
+    ];
+    expect(scannableResponseFields(tool, response)).toEqual([
+      {
+        path: [0, 'text'],
+        text: 'x'.repeat(RESPONSE_CHUNK_CHARS),
+        range: { start: 0, end: RESPONSE_CHUNK_CHARS },
+      },
+      {
+        path: [0, 'text'],
+        text: 'x',
+        range: { start: RESPONSE_CHUNK_CHARS, end: RESPONSE_CHUNK_CHARS + 1 },
+      },
+      { path: [1, 'text'], text: 'after the long block' },
+    ]);
+  });
+
+  it('stops once the total character budget is spent', () => {
+    const perBlock = RESPONSE_CHUNK_CHARS;
+    const fitting = Math.floor(RESPONSE_MAX_TOTAL_CHARS / perBlock);
+    const response = Array.from({ length: fitting + 2 }, () => ({
+      type: 'text',
+      text: 'y'.repeat(perBlock),
+    }));
+    const fields = scannableResponseFields(tool, response);
+    expect(fields).toHaveLength(fitting);
+    const total = fields.reduce((sum, field) => sum + field.text.length, 0);
+    expect(total).toBeLessThanOrEqual(RESPONSE_MAX_TOTAL_CHARS);
+  });
+
+  it('applies the block walk only to the mcp__ prefix', () => {
+    const response = [{ type: 'text', text: 'not an mcp tool' }];
+    expect(scannableResponseFields('mcp_reader', response)).toEqual([]);
+    expect(scannableResponseFields('Glob', response)).toEqual([]);
+  });
+});
+
+describe('spliceResponseField', () => {
+  it('splices chunk rewrites by their original ranges and keeps the rest', () => {
+    const response = { mode: 'content', content: 'aaaa\nbbbb\ncccc\n' };
+    const updated = spliceResponseField(
+      response,
+      ['content'],
+      [
+        { start: 10, end: 15, text: '[withheld]\n' },
+        { start: 0, end: 5, text: 'A\n' },
+      ],
+    );
+    expect(updated).toEqual({ mode: 'content', content: 'A\nbbbb\n[withheld]\n' });
+    expect(response.content).toBe('aaaa\nbbbb\ncccc\n');
+  });
+
+  it('leaves the response alone when the path holds no string or a range overlaps', () => {
+    const response = { content: 'abc' };
+    expect(spliceResponseField(response, ['missing'], [{ start: 0, end: 1, text: 'x' }])).toBe(
+      response,
+    );
+    expect(
+      spliceResponseField(
+        response,
+        ['content'],
+        [
+          { start: 0, end: 2, text: 'x' },
+          { start: 1, end: 3, text: 'y' },
+        ],
+      ),
+    ).toBe(response);
+  });
+});
+
 describe('replaceResponseField', () => {
+  it('rewrites one MCP text block in place, keeping the array and sibling blocks', () => {
+    const response = [
+      { type: 'text', text: 'clean' },
+      { type: 'text', text: 'to rewrite' },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ];
+    const updated = replaceResponseField(response, [1, 'text'], '[redacted]');
+    expect(Array.isArray(updated)).toBe(true);
+    expect(updated).toEqual([
+      { type: 'text', text: 'clean' },
+      { type: 'text', text: '[redacted]' },
+      { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+    ]);
+    expect(response[1]?.text).toBe('to rewrite');
+  });
+
+  it('rewrites a wrapped MCP text block in place', () => {
+    const response = { content: [{ type: 'text', text: 'to rewrite' }], isError: false };
+    expect(replaceResponseField(response, ['content', 0, 'text'], '[redacted]')).toEqual({
+      content: [{ type: 'text', text: '[redacted]' }],
+      isError: false,
+    });
+  });
+
   it('replaces the whole response when the path is the root', () => {
     expect(replaceResponseField('original text', [], '[replaced]')).toBe('[replaced]');
   });

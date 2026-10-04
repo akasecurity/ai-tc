@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1062a-652d-7993-a74b-3a0410662dca",
+  "turn_id": "01a1062a-65c2-7de3-95e6-4eb29a5840d6",
+  "transcript_path": "/Users/dev/.codex/sessions/2026/10/04/rollout-2026-10-04T02-06-44-01a1062a-652d-7993-a74b-3a0410662dca.jsonl",
+  "cwd": "/Users/dev/project",
+  "hook_event_name": "PreToolUse",
+  "model": "<model>",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: /Users/dev/project/hello.txt\n+hello from the patch\n*** End Patch"
+  },
+  "tool_use_id": "exec-64f98e17-d70c-498f-b690-8bcf2ca86624"
+}

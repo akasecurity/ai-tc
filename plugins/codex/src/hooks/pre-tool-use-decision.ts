@@ -17,19 +17,14 @@ import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
 // rationale (masking an executable field changes what runs, so it escalates
 // to deny instead of rewriting in place).
 //
-// IMPORTANT — Codex-specific caveat: as of the current `codex` CLI, PreToolUse/
-// PostToolUse hooks only reliably fire for `Bash` calls; `apply_patch` calls do
-// NOT fire them yet (confirmed: github.com/openai/codex/issues/16732 — "Hooks
-// only fire for Bash tool"). The `apply_patch` entry below is registered for
-// forward compatibility (so this table needs no further change once upstream
-// fixes it) but is currently INERT — Codex never invokes this hook for a file
-// write, so live redaction/blocking of file-write content is not yet possible
-// on Codex. Leaked file content is instead caught after the fact by the
-// history backfill scan (../history/scan.ts via the rollout's
-// patch_apply_begin/end events), not before it leaves the sandbox. The exact
-// `apply_patch` tool_input field name below (`input`) is inferred from Codex's
-// own patch-call wire shape (codex-rs/protocol/src/models.rs — CustomToolCall's
-// `input: String`) and should be re-verified once the hook actually fires.
+// Codex fires PreToolUse and PostToolUse for `apply_patch` as well as `Bash`,
+// including when the call is nested inside a code-mode `exec` (observed live,
+// codex-cli 0.160.0, 2026-10-03): the hook payload names the tool
+// `apply_patch` and carries the patch text under `tool_input.command`, the
+// same key as `Bash`. Nested `tools.exec_command` arrives as `Bash`. The outer
+// `exec` itself fires no hook, so its JavaScript is seen only through the
+// tool calls it makes. The recorded payloads are in test/fixtures/hooks/,
+// and test/hooks/recorded-payloads.test.ts checks this table against them.
 export interface ScannableField {
   field: string;
   executable: boolean;
@@ -37,7 +32,7 @@ export interface ScannableField {
 
 export const SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
   Bash: [{ field: 'command', executable: true }],
-  apply_patch: [{ field: 'input', executable: false }],
+  apply_patch: [{ field: 'command', executable: false }],
 };
 
 // One scanned field: its spec plus the runtime's decision for the field text.

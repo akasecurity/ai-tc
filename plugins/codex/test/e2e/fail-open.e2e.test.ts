@@ -18,6 +18,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -33,6 +34,13 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
 const SESSION_ID = 'fail-open-e2e-session';
+
+// The PreToolUse payload a live Codex sent for an apply_patch call (see
+// test/fixtures/hooks/README.md). The e2e row below keeps its shape and swaps
+// only the patch text, the session and the working directory.
+const RECORDED_APPLY_PATCH = JSON.parse(
+  readFileSync(new URL('../fixtures/hooks/apply_patch.pre-tool-use.json', import.meta.url), 'utf8'),
+) as { tool_name: string; tool_input: { command: string } } & Record<string, unknown>;
 
 function projectDir(home: string): string {
   const dir = join(home, 'project');
@@ -72,9 +80,7 @@ const HOOKS: readonly HookCase[] = [
   },
   {
     // Bash's `command` field is in pre-tool-use-decision.ts's SCANNED_FIELDS
-    // map, so this reaches the store. Codex only reliably fires PreToolUse for
-    // Bash — the apply_patch entry there is forward-compatible, so Bash is
-    // also the only shape worth driving here.
+    // map, so this reaches the store.
     name: 'pre-tool-use',
     validPayload: (home) =>
       JSON.stringify({
@@ -86,8 +92,8 @@ const HOOKS: readonly HookCase[] = [
       }),
   },
   {
-    // Bash's stdout/stderr are the only entries in tool-response.ts's
-    // RESPONSE_TEXT_PATHS map, so this reaches the store.
+    // Bash's stdout/stderr are in tool-response.ts's RESPONSE_TEXT_PATHS map,
+    // so this reaches the store.
     name: 'post-tool-use',
     validPayload: (home) =>
       JSON.stringify({
@@ -405,6 +411,8 @@ function seedPolicy(home: string, policy: BuiltinPolicyId): void {
 
 interface EnforcingHook {
   readonly name: string;
+  /** Distinguishes two rows driving the same hook; defaults to `name`. */
+  readonly label?: string;
   /** A payload whose scanned field carries the secret. */
   readonly payload: (home: string) => string;
   /**
@@ -499,13 +507,90 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
       monitor: null,
     },
   },
+  {
+    // A patch body is durable text, not a command, so redact rewrites it in
+    // place. Built from the recorded live payload, so a payload shape that
+    // stops matching the field mapping fails here.
+    name: 'pre-tool-use',
+    label: 'pre-tool-use (apply_patch)',
+    payload: (home) =>
+      JSON.stringify({
+        ...RECORDED_APPLY_PATCH,
+        tool_input: {
+          ...RECORDED_APPLY_PATCH.tool_input,
+          command: RECORDED_APPLY_PATCH.tool_input.command.replace(
+            '+hello from the patch',
+            `+TWILIO_KEY=${SECRET}`,
+          ),
+        },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+      }),
+    emits: {
+      block: '"permissionDecision":"deny"',
+      redact: '"updatedInput"',
+      vault: '"updatedInput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+  {
+    // The built-in web tool (`webrun`) returns bare input_text blocks.
+    name: 'post-tool-use',
+    label: 'post-tool-use (webrun blocks)',
+    payload: (home) =>
+      JSON.stringify({
+        tool_name: 'webrun',
+        tool_input: { open: [{ ref_id: 'https://example.invalid/page' }] },
+        tool_response: [
+          { type: 'input_text', text: 'page heading' },
+          { type: 'input_text', text: `config line: TWILIO_KEY=${SECRET}` },
+        ],
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostToolUse',
+      }),
+    emits: {
+      block: '"decision":"block"',
+      redact: '"decision":"block"',
+      vault: '"decision":"block"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+  {
+    // An MCP tool returns its content blocks under `content`.
+    name: 'post-tool-use',
+    label: 'post-tool-use (mcp content blocks)',
+    payload: (home) =>
+      JSON.stringify({
+        tool_name: 'mcp__reader__read_url',
+        tool_input: { url: 'https://example.invalid/page' },
+        tool_response: {
+          content: [
+            { type: 'text', text: 'page heading' },
+            { type: 'text', text: `config line: TWILIO_KEY=${SECRET}` },
+          ],
+        },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostToolUse',
+      }),
+    emits: {
+      block: '"decision":"block"',
+      redact: '"decision":"block"',
+      vault: '"decision":"block"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
 ];
 
 const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
 describe('the wire protocol never carries an action key, at any action level', () => {
   for (const hook of ENFORCING_HOOKS) {
-    describe(hook.name, () => {
+    describe(hook.label ?? hook.name, () => {
       for (const policy of POLICIES) {
         const expected = hook.emits[policy];
         it(`${policy} policy → ${expected === null ? 'emits nothing' : 'emits ' + expected}`, () => {

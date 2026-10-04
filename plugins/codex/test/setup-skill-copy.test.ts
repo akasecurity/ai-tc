@@ -55,7 +55,7 @@ describe('SKILL.md model-judge egress disclosure', () => {
 
 describe('SKILL.md known-limitation disclosure', () => {
   it('keeps the section and discloses the vault deferral', () => {
-    expect(skillMd).toContain('## Known limitation');
+    expect(skillMd).toMatch(/^## Known limitations$/m);
     expect(skillMd).toMatch(/reversible secret vault is\s+not yet wired for Codex/);
   });
 });
@@ -76,7 +76,7 @@ describe('SKILL.md redact-fallback disclosure', () => {
   });
 
   it('keeps apply_patch on the masked side, where the field classification puts it', () => {
-    // `apply_patch.input` is classified `executable: false`, so the hook
+    // `apply_patch.command` is classified `executable: false`, so the hook
     // captures it rewritable and a redact really is carried out there. This is
     // the half of the disclosure that is a CAPABILITY claim rather than a
     // limitation, so it is the half that must not drift optimistically.

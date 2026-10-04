@@ -1,0 +1,62 @@
+{
+  "host": "Claude Code",
+  "hostVersion": "2.1.288",
+  "event": "PostToolUse",
+  "tool": "Grep",
+  "note": "One Grep call per output mode plus a content-mode call with no match, recorded on hook stdin. tool_input and tool_response are unchanged; the session envelope (ids, transcript path, cwd) is left out.",
+  "calls": [
+    {
+      "tool_input": {
+        "pattern": "marker",
+        "output_mode": "files_with_matches"
+      },
+      "tool_response": {
+        "mode": "files_with_matches",
+        "filenames": ["src/b.txt", "src/a.txt"],
+        "numFiles": 2,
+        "totalFiles": 2
+      }
+    },
+    {
+      "tool_input": {
+        "pattern": "marker",
+        "output_mode": "content"
+      },
+      "tool_response": {
+        "mode": "content",
+        "numFiles": 0,
+        "filenames": [],
+        "content": "src/a.txt:2:beta marker here\nsrc/b.txt:1:marker again",
+        "numLines": 2,
+        "totalLines": 2
+      }
+    },
+    {
+      "tool_input": {
+        "pattern": "marker",
+        "output_mode": "count"
+      },
+      "tool_response": {
+        "mode": "count",
+        "numFiles": 2,
+        "filenames": [],
+        "content": "src/a.txt:1\nsrc/b.txt:1",
+        "numMatches": 2
+      }
+    },
+    {
+      "tool_input": {
+        "pattern": "zzznomatch",
+        "output_mode": "content"
+      },
+      "tool_response": {
+        "mode": "content",
+        "numFiles": 0,
+        "filenames": [],
+        "content": "",
+        "numLines": 0,
+        "totalLines": 0
+      }
+    }
+  ]
+}

@@ -7,8 +7,8 @@
 //
 // It bundles rather than type-strip-imports src/sanitize/index.ts because
 // that module's chain reaches @akasecurity/plugin-sdk/browser ->
-// rule-packs.ts -> bundled-packs.generated.ts, which carries 101 JSON
-// imports with no import attributes — raw Node refuses those at load
+// rule-packs.ts -> bundled-packs.generated.ts, which carries one JSON
+// import per rule with no import attributes — raw Node refuses those at load
 // (ERR_IMPORT_ATTRIBUTE_MISSING). esbuild resolves and inlines them at
 // build time instead, so the bundle Node loads never names a bare JSON
 // specifier.

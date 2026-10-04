@@ -289,7 +289,7 @@ export function backtrackRatio(rule: Rule): { ratio: number; ms: number; benignM
 // permanent verdict, as a share of BUDGET_MS.
 //
 // The measured separation this sits in, taken on an arm64 Mac (14 cores, Node
-// 24.18) with the battery driven over all 101 bundled rules:
+// 24.18) with the battery driven over all the bundled rules (101 then):
 //
 //   - A benign rule's whole battery costs 1.2ms of CPU quiet. Under 96
 //     concurrent CPU burners one crossed the 100ms WALL budget at 104.9ms

@@ -28,5 +28,15 @@
     "label": "lowercase word after bic",
     "text": "bic: fiveword is not a code",
     "shouldMatch": false
+  },
+  {
+    "label": "mixed-case label",
+    "text": "Swift: BOFAUS3N",
+    "shouldMatch": true
+  },
+  {
+    "label": "lowercase label",
+    "text": "bic: CHASGB2LXXX",
+    "shouldMatch": true
   }
 ]

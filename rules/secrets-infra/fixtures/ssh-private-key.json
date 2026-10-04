@@ -50,5 +50,23 @@
     "label": "public key block",
     "text": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----",
     "shouldMatch": false
+  },
+  {
+    "label": "prose between the markers: the span stays on the header",
+    "text": "-----BEGIN PRIVATE KEY-----\nThe rest of this note is unrelated text.\n-----END PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 0, "end": 27 }]
+  },
+  {
+    "label": "END marker with a different qualifier does not close the block",
+    "text": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END EC PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 0, "end": 27 }]
+  },
+  {
+    "label": "legacy encrypted PEM headers stay inside the span",
+    "text": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 0, "end": 157 }]
   }
 ]

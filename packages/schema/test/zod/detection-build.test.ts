@@ -76,10 +76,10 @@ describe('rowToDetectionDetail', () => {
   });
 
   // A matcher alone does not decide whether a rule fires. Half the bundled
-  // catalog (50 of 101 rules) carries at least one of these three, so a consumer
+  // catalog (51 of 103 rules) carries at least one of these three, so a consumer
   // that re-runs a rule from this shape — a preview, a tester — evaluated
   // something the engine never runs: no false-positive guard, and no file
-  // scoping. `examples` is on all 101.
+  // scoping. `examples` is on all 103.
   it('carries the fields that decide whether a rule fires, not just the matcher', () => {
     const scoped: Rule = {
       ...rule('pack/scoped', { type: 'regex', pattern: 'sk-[a-z]+', flags: 'g' }),

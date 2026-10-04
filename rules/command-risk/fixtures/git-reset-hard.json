@@ -75,5 +75,29 @@
     "label": "same command with no capture kind (folder scan) is out of scope",
     "text": "git reset --hard HEAD~1",
     "shouldMatch": false
+  },
+  {
+    "label": "env assignment prefix",
+    "text": "GIT_DIR=/x git reset --hard HEAD~1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "remote command over ssh",
+    "text": "ssh host \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "eval of a quoted command",
+    "text": "eval \"git reset --hard HEAD\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "rg -c counting the text is not a shell -c",
+    "text": "rg -c 'git reset --hard' docs/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

@@ -4,6 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { scan } from '../../src/index.ts';
+import { MAX_REGEX_INPUT_LENGTH } from '../../src/matchers/limits.ts';
 import type { ProbeClock } from '../../src/security/redos-probe.ts';
 import {
   backtrackRatio,
@@ -132,6 +133,55 @@ describe('bundled rules survive adversarial input', () => {
       ).toBeLessThan(BUDGET_MS);
     },
   );
+});
+
+// A shape the probe battery cannot judge, pinned for the one rule that has it.
+// `ssh-private-key` matches a header and then, optionally, scans forward for
+// its END marker. Input made of nothing but headers starts that scan at every
+// header and never finds an END; a tail that may cross other text pays its whole
+// bound each time. That is linear with a large constant rather than
+// catastrophic, so at the battery's probe lengths it stays inside the budget,
+// and at the engine's input cap benign rules cost too much for an absolute
+// budget to separate them. Comparing the rule against its own header alone does
+// separate them: a tail that stops at the next `--` costs about what the header
+// costs, and the `[\s\S]{0,8000}?` tail it replaced cost over an order of
+// magnitude more. Wall time with a warm-up and a min over samples, because both
+// sides are measured the same way and only the ratio is asserted.
+describe('ssh-private-key pays its END-marker tail once per header', () => {
+  it('costs about what the header alone costs on input made of repeated headers', () => {
+    const rule = bundled.find((r) => r.id === 'secrets-infra/ssh-private-key');
+    expect(rule).toBeDefined();
+    if (rule?.matcher.type !== 'regex') return;
+    const headerOnly: Rule = {
+      ...rule,
+      matcher: {
+        ...rule.matcher,
+        pattern: '-----BEGIN (?:RSA |DSA |EC |OPENSSH |SSH2 |ENCRYPTED )?PRIVATE KEY-----',
+      },
+    };
+    const header = '-----BEGIN PRIVATE KEY-----';
+    const text = header
+      .repeat(Math.ceil(MAX_REGEX_INPUT_LENGTH / header.length))
+      .slice(0, MAX_REGEX_INPUT_LENGTH);
+    const cost = (r: Rule): number => {
+      scan(text, [r]);
+      let best = Infinity;
+      for (let i = 0; i < 5; i++) {
+        const start = performance.now();
+        scan(text, [r]);
+        best = Math.min(best, performance.now() - start);
+      }
+      return best;
+    };
+    const tailMs = cost(rule);
+    const headerMs = cost(headerOnly);
+    expect(
+      tailMs,
+      `the rule took ${tailMs.toFixed(1)}ms against ${headerMs.toFixed(1)}ms for its header ` +
+        `alone on ${String(text.length)} chars of repeated headers; the END-marker tail is ` +
+        `scanning past the next header again.`,
+    ).toBeLessThan(Math.max(headerMs, 1) * 5);
+  });
 });
 
 function parseRegexRule(pattern: string) {

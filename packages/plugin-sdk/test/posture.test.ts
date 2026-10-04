@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,7 @@ import type { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecuri
 import { builtinPolicyToAction, severityFloorPosture } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { applyCategoryPosture, detectPostureChanges } from '../src/posture.ts';
 
 function fakeWriter(initial: Partial<Record<DetectionCategory, ActionTaken>> = {}) {
@@ -67,7 +68,7 @@ describe('applyCategoryPosture against the real policies repository', () => {
     dir = mkdtempSync(join(tmpdir(), 'aka-posture-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   });
 
   const floor = severityFloorPosture();

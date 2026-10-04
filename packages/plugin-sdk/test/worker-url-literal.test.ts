@@ -12,7 +12,7 @@ import { sourceTwin } from '../src/isolated-scan.ts';
 // not walk for this pattern), ships a bundle without its worker, and every rule
 // that needs isolation is then dropped. A template string is traced as a file
 // pattern, which can pull in unrelated files, so it is rejected too. Webpack follows the same literal and fails the build when the file
-// is not beside the source, so each call also carries `webpackIgnore`. Only the
+// is not beside the source, so the call also carries `webpackIgnore`. Only the
 // built worker is spelled: the source-run fallback is derived from it at
 // runtime, so no bundle that inlines this module carries a `.ts` worker path.
 // This pins the form, not just the result: the runtime tests below the
@@ -50,6 +50,16 @@ describe('scan worker URL is statically traceable', () => {
     expect(code).not.toMatch(/=>\s*new URL\(/);
   });
 
+  it('probes the built worker before its source twin', () => {
+    // No runtime case can tell the two orders apart: in each environment only
+    // one of the two files exists. Reversed, an install with a stray
+    // `scan-worker.ts` beside the bundle would load the source through type
+    // stripping, the worker would fail to resolve its imports, and every rule
+    // that needs isolation would be dropped.
+    expect(code).toMatch(/\[\s*built\s*,\s*sourceTwin\(\s*built\s*\)\s*\]/);
+    expect(code).not.toMatch(/\[\s*sourceTwin\(\s*built\s*\)\s*,\s*built\s*\]/);
+  });
+
   it('tells webpack to leave the worker URL alone', () => {
     expect(raw).toContain(`new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url)`);
   });
@@ -64,5 +74,22 @@ describe('sourceTwin', () => {
   it('leaves a .js elsewhere in the path alone', () => {
     const twin = sourceTwin(pathToFileURL(resolve('a.js', 'dir.js', 'scan-worker.js')));
     expect(twin.href).toBe(pathToFileURL(resolve('a.js', 'dir.js', 'scan-worker.ts')).href);
+  });
+
+  it('swaps the extension on the path, keeping the query and the fragment', () => {
+    const built = pathToFileURL(resolve('repo', 'src', 'scan-worker.js'));
+    built.search = '?v=1';
+    built.hash = '#x';
+    const expected = pathToFileURL(resolve('repo', 'src', 'scan-worker.ts'));
+    expected.search = '?v=1';
+    expected.hash = '#x';
+    expect(sourceTwin(built).href).toBe(expected.href);
+  });
+
+  it('does not change the URL it is given', () => {
+    const built = pathToFileURL(resolve('repo', 'src', 'scan-worker.js'));
+    const before = built.href;
+    sourceTwin(built);
+    expect(built.href).toBe(before);
   });
 });

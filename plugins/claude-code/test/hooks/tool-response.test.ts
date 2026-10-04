@@ -143,7 +143,7 @@ describe('scannableResponseFields — mcp__* tools', () => {
   it('ignores non-text blocks, empty text, and malformed entries while keeping indices', () => {
     const response = [
       { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
-      { type: 'resource', resource: { uri: 'file:///x', text: 'resource body' } },
+      { type: 'resource', resource: { uri: 'memo://notes/x', text: 'resource body' } },
       { type: 'text', text: '' },
       { type: 'text', text: 42 },
       null,

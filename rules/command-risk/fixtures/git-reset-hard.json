@@ -42,6 +42,30 @@
     "eventKind": "tool_use"
   },
   {
+    "label": "inside sh -c",
+    "text": "sh -c \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "inside a function body",
+    "text": "f() { git reset --hard; }",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "global -C option before reset",
+    "text": "git -C /tmp/demo-repo reset --hard",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "mixed reset with -C",
+    "text": "git -C /tmp/demo-repo reset --mixed HEAD~1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
     "label": "same command quoted in a tool response is out of scope",
     "text": "git reset --hard HEAD~1",
     "eventKind": "response",

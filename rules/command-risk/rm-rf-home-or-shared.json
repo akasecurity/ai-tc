@@ -1,13 +1,13 @@
 {
   "specVersion": 1,
   "id": "command-risk/rm-rf-home-or-shared",
-  "name": "Recursive rm under home or /Users",
+  "name": "Recursive rm of home, /Users or a system directory",
   "category": "custom",
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\brm[ \\t]+(?:-[A-Za-z]+[ \\t]+)*?-(?=[A-Za-z]*[rR])[A-Za-z]+[ \\t]+(?:[^\\s;|&]{1,200}[ \\t]+){0,8}?[\"']?(?:~|\\$HOME|\\$\\{HOME\\}|/Users/|/home/)",
-    "flags": "g"
+    "pattern": "\\brm(?<=(?:^|[;&|({\\x60]|\\$\\(|-[A-Za-z]*c[ \\t]+[\"'])[ \\t]*(?:(?:then|do|else|!)[ \\t]+)?(?:(?:sudo|doas|env|command|exec|nohup|nice|time|xargs)(?:[ \\t]+[^\\s;|&\"'\\x60]{1,100}){0,4}?[ \\t]+)?(?:[\\w.~-]*/){0,8}rm)(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive)(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+[\"']?(?:~|\\$HOME(?!\\w)|\\$\\{HOME\\}|/(?:Users|home)(?=[/\\s\"';|&)]|$)|/(?:etc|var|usr|bin|sbin|lib|opt|System|Library)?/?\\*?(?=[\\s\"';|&)]|$)|\\.\\.(?:/\\.\\.)*/?(?=[\\s\"';|&)]|$))",
+    "flags": "gm"
   },
   "examples": [
     "rm -rf ~/projects/demo-app/$WORKDIR",

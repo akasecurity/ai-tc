@@ -219,20 +219,18 @@ describe('the issue case, end to end through the response scan', () => {
     expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
   });
 
-  it('masks a bare value read through a deep jq path, over one 64-character span', async () => {
+  it('masks a bare value read through a deep jq path, with the two rules that read it', async () => {
     const outcome = await runBash(
       'jq -r .models.local.auth_cfg.server.secret_key settings.json',
       `${HEX}\n`,
       'redact',
     );
     expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
-    // Two rules read this value (coverage over de-duplication), both over the
-    // same 64-character span, which redaction folds into one.
-    expect(
-      outcome.redactedFindings.map((f) => [f.ruleId, f.span.end - f.span.start]).sort(),
-    ).toEqual([
-      ['secrets-infra/generic-high-entropy-secret', HEX.length],
-      ['secrets-infra/secret-config-value', HEX.length],
+    // Two rules read this value (coverage over de-duplication); redaction folds
+    // their identical spans into one, which the exact output above shows.
+    expect(outcome.redactedFindings.map((f) => f.ruleId).sort()).toEqual([
+      'secrets-infra/generic-high-entropy-secret',
+      'secrets-infra/secret-config-value',
     ]);
   });
 

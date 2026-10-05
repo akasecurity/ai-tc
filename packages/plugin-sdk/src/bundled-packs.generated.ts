@@ -286,7 +286,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.2.0',
+    version: '0.2.1',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,

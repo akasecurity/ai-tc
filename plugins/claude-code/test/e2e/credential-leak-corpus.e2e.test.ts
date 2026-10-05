@@ -207,12 +207,15 @@ const benign = (outcomes: CallOutcome[]): CallOutcome[] =>
 
 // A path the credential guard covers, read with Read or searched with Grep.
 const CREDENTIAL_PATH_CALLS = [
+  'L2-read-zshenv',
   'L3-read-env',
   'L3-grep-env',
   'L4-read-auth-json',
   'L4-read-credentials-json',
   'L5-read-private-key',
 ];
+
+const SHELL_RC_READ = 'B5-read-zshrc';
 
 const TIMEOUT_MS = 180_000;
 
@@ -266,28 +269,27 @@ describe('credential-leak corpus replayed through the built hooks', () => {
   );
 
   it(
-    'benign tasks: nothing this change adds flags them, under any policy',
+    'benign tasks: the rules this change adds flag only the shell rc read, under any policy',
     async () => {
+      // `~/.zshrc` is on the credential-file list for parity with
+      // command-risk/credential-file-read, which already flags `cat ~/.zshrc`.
       for (const policy of ['default', 'block', 'redact'] as const) {
-        for (const outcome of benign(await outcomesFor(policy))) {
-          expect({ policy, id: outcome.call.id, rules: outcome.rules }).toEqual({
-            policy,
-            id: outcome.call.id,
-            rules: expect.not.arrayContaining(NEW_RULES) as unknown,
-          });
-        }
+        const flagged = benign(await outcomesFor(policy))
+          .filter((o) => NEW_RULES.some((rule) => o.rules.includes(rule)))
+          .map((o) => o.call.id);
+        expect({ policy, flagged }).toEqual({ policy, flagged: [SHELL_RC_READ] });
       }
     },
     TIMEOUT_MS,
   );
 
   it(
-    'benign tasks: the default policy leaves every one untouched',
+    'benign tasks: the default policy blocks and rewrites none, and warns only on the shell rc read',
     async () => {
       const touched = benign(await outcomesFor('default')).filter(
         (o) => o.pre !== 'none' && o.pre !== 'not-run',
       );
-      expect(touched.map((o) => o.call.id)).toEqual([]);
+      expect(touched.map((o) => [o.call.id, o.pre])).toEqual([[SHELL_RC_READ, 'warn']]);
       const rewritten = benign(await outcomesFor('default')).filter(
         (o) => o.post === 'withheld' || o.post === 'redacted',
       );

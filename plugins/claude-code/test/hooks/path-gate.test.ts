@@ -5,7 +5,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { mayNameCredentialFile, pathGateScript } from '../../src/hooks/credential-name-hints.ts';
 import { buildCorpus } from '../helpers/leak-corpus.ts';
+import { hostEnvWithShim } from '../helpers/run-hook.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const FIXTURES = join(
@@ -33,9 +34,7 @@ chmodSync(gate, 0o755);
 const fakeNode = join(dir, 'node');
 writeFileSync(fakeNode, '#!/bin/sh\nprintf "FORWARDED %s\\n" "$1"\ncat\n');
 chmodSync(fakeNode, 0o755);
-// eslint-disable-next-line n/no-process-env -- the gate needs the host PATH, with the stand-in first
-const HOST_ENV = process.env;
-const GATE_ENV = { ...HOST_ENV, PATH: `${dir}${delimiter}${HOST_ENV.PATH ?? ''}` };
+const GATE_ENV = hostEnvWithShim(dir);
 // The gate joins with '/', which Git Bash on Windows accepts after a backslash path.
 const FORWARD_LINE = `FORWARDED ${dir}/pre-tool-use.js\n`;
 afterAll(() => {

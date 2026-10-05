@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { shimmedPath } from './path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/helpers -> plugins/claude-code
@@ -102,6 +103,13 @@ export function runHookAsync(
   options: RunHookOptions = {},
 ): Promise<HookResult> {
   return spawnScript(process.execPath, join(SCRIPTS_DIR, `${name}.js`), stdin, options);
+}
+
+// The host env with a shim dir first on PATH, for a suite that fakes a command
+// a script under test shells out to (see path-shim.ts on why a shim that does
+// not land fails open, and why the separator must be path.delimiter).
+export function hostEnvWithShim(binDir: string): NodeJS.ProcessEnv {
+  return { ...HOST_ENV, PATH: shimmedPath(binDir, HOST_ENV.PATH) };
 }
 
 // The built Read/Grep path gate (scripts/path-gate.sh), run the way the

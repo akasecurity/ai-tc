@@ -57,6 +57,13 @@ describe('scannableInputFields — Read and Grep paths', () => {
       '/home/agent/.config/somecli/credentials.json',
       '/home/agent/.cli/auth.json',
       'C:\\Users\\agent\\repo\\.env',
+      '/home/agent/.ssh/github_ed25519',
+      '/home/agent/.ssh/server.pem',
+      '/home/agent/.ssh/work.key',
+      '/home/agent/.zshrc',
+      '/home/agent/.bash_profile',
+      '/home/agent/.npmrc',
+      '/home/agent/.aws/config',
     ]) {
       expect(scannableInputFields('Read', { file_path: filePath }), filePath).toEqual([
         { path: ['file_path'], executable: true },

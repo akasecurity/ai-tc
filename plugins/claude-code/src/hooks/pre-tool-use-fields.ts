@@ -99,12 +99,30 @@ const PATH_FIELDS: Record<string, readonly ScannableField[]> = {
 // path finding — for a path no credential rule is about. This is a superset
 // of what command-risk/credential-file-access matches: the rule, and the
 // policy assigned to it, still make the decision.
-const CREDENTIAL_NAME_HINTS = ['env', 'netrc', 'pgpass', 'credential', 'auth.json', 'id_'];
+const CREDENTIAL_NAME_HINTS = [
+  'env',
+  'netrc',
+  'pgpass',
+  'credential',
+  'auth.json',
+  'id_',
+  'rsa',
+  'dsa',
+  'ed25519',
+  '.pem',
+  '.key',
+  'zshrc',
+  'zprofile',
+  'bashrc',
+  'bash_profile',
+  'npmrc',
+];
 
 function mayNameCredentialFile(path: string): boolean {
-  const base = path
-    .slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
-    .toLowerCase();
+  const lower = path.toLowerCase();
+  const base = lower.slice(Math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\')) + 1);
+  // ~/.aws/config is named by its directory, not its file name.
+  if (/[\\/]\.aws[\\/]/.test(lower)) return true;
   return CREDENTIAL_NAME_HINTS.some((hint) => base.includes(hint));
 }
 

@@ -11,9 +11,9 @@ import { resolveRepoAttribution } from './repo.ts';
  * One scope key per working directory for a whole reconcile pass: the canonical
  * `host/owner/repo` of the repository the directory sits in (its origin remote,
  * else the first), or none. A directory in no repository, a repository with no
- * remote and a record that names no cwd all yield no key, and a scoped
- * attachment is to keep a keyless row local (that decision belongs to the
- * forward path, not to this memo).
+ * remote and a record that names no cwd all yield no key. A scoped attachment is
+ * meant to keep a keyless row local; that check is not part of this memo or of
+ * this change.
  *
  * Memoised for two reasons. Cost: a pass pays one `.git` walk per distinct
  * directory, not one per leaf. Consistency: an llm_call's WHOLE attribute bag is
@@ -81,7 +81,8 @@ export function sessionRootScopeKey(cwd: string | undefined): string | undefined
  * keyed by its cwd: the directory it ran in, which is the command's own working
  * directory when its events name one. A call that names an EMPTY file list and
  * no root has nothing to key by and gets no key (it is not treated as naming
- * nothing); no producer emits one today.
+ * nothing). The Codex and Antigravity transcript parsers emit one for a patch
+ * whose events name no file, because a patch always names files.
  *
  * `scopeKeyOf` is the pass's memo (scopeKeyMemo). Only `cwd` and `filePaths` are
  * required of a call: Codex and Antigravity name files and name no root.

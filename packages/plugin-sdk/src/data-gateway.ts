@@ -36,9 +36,10 @@ export interface CaptureRecord {
   dedupe?: 'content-hash' | undefined;
   // The capture's scope key (CaptureInput.scopeKey), carried BESIDE the event
   // and never on it. `event` is what a forwarding gateway serialises: the
-  // attached gateway sends `{ events: [record.event] }` and nothing else from
-  // the record, so the record is the one place a local-only value can ride. An
-  // implementation that forwards must not copy this onto anything it sends.
+  // attached gateway sends `{ events: [record.event] }` plus the record's
+  // `dedupe` hint when it is set, and nothing else from the record, so the
+  // record is the one place a local-only value can ride. An implementation that
+  // forwards must not copy this onto anything it sends.
   // The SQLite gateway stores a non-empty key as the capture row's `scope_key`
   // attribute. Optional, so a gateway with no use for it changes nothing.
   scopeKey?: string | undefined;

@@ -103,8 +103,9 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // The scope key of the checkout this event happened in: the canonical
 // `host/owner/repo` of its origin (else first) remote. It is undefined for a
 // directory with no remote, a remote that is a local path, or no checkout at
-// all. A scoped attachment's verdict compares it against the enrolled repos,
-// and no key keeps the event on this machine.
+// all. A scoped attachment is meant to compare it against the repositories it
+// covers, and to keep an event with no key on this machine; that check is not
+// part of this change.
 //
 // WHICH DIRECTORY. An event that names an ABSOLUTE file (the `filePath` the
 // caller stamps as metadata.filePath; today post-tool-use stamps one from

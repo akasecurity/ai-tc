@@ -8,8 +8,8 @@
  * It is silent when it goes wrong. The key never leaves the machine: the local
  * writer stores it in `attributes.scope_key` (read back here through the
  * `scope_key` column) and every forward path strips it. So standalone mode
- * cannot tell a missing key from a present one, and on a scoped attachment a
- * missing key keeps the event local with nothing to say why.
+ * cannot tell a missing key from a present one, and a scoped attachment is meant
+ * to keep an event with no key local, with nothing to say why.
  *
  * A capture that names an absolute file is keyed by THAT file's checkout, not
  * by the session's cwd. That too is decided at the call site (it must hand its
@@ -17,9 +17,13 @@
  * that name a file, Write before it runs and Read after, with the session in
  * one checkout and the file in another.
  *
+ * A relative file is read against the session cwd, so a `..` that leaves the
+ * session's checkout is keyed where it lands.
+ *
  * A Grep names no file but the root it searched, and its output is what the
- * response site records. It is keyed by that root's checkout when `path` is
- * absolute, and by the session cwd otherwise; the last describe pins both.
+ * response site records. It is keyed by that root's checkout (a relative `path`
+ * is read against the session cwd), and by the session cwd when it names none;
+ * the last describe pins them.
  *
  * The secret comes from a bundled rule's own `examples`, so no secret-shaped
  * literal lives in this file. It is needed because the tool_use and response

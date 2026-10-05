@@ -479,7 +479,7 @@ describe('buildModelRefusalEvent carries the caller spelling beside the id', () 
   });
 });
 
-// The key a scoped attachment's verdict reads off a refusal row. Local only: the
+// The key a refusal row carries for a scoped attachment. Local only: the
 // attached gateway strips it before the row is forwarded, so these cases pin the
 // bag the LOCAL writer stores.
 describe('buildModelRefusalEvent carries the scope key on the local row', () => {

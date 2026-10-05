@@ -45,7 +45,7 @@ const CAPTURE_VERSION_PREFIX = 'capture/';
  *                 side's idempotency stops being a single behaviour.
  *
  *   scope_key     The local scope key a producer stamped into the attributes
- *                 bag. It is this machine's own routing fact, and the request's
+ *                 bag. It is local to this machine, and the request's
  *                 attributes member is an open record that would carry it to
  *                 the receiving side's storage, so it is stripped here exactly
  *                 as the live path strips it (`withoutScopeKey`). Only that

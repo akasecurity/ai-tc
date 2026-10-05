@@ -405,8 +405,8 @@ export function baseMetadata(
  * from a cwd the PAYLOAD carries, on both dialects, and never from the hook
  * process's own.
  * - The slug's CLI fallback is a display guess, and a wrong one only mislabels
- *   a row. A key decides what a scoped attachment lets leave the machine, so it
- *   must come from the event itself.
+ *   a row. A key is what a scoped attachment is meant to decide by, so it must
+ *   come from the event itself.
  * - Under VS Code the process cwd is the home directory anyway.
  * - This host never runs a session start, so there is no session-root key the
  *   fallback would need to match.

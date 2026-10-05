@@ -350,17 +350,17 @@ export const CaptureAttributes = z
     // The scope key this capture was stamped with: the canonical repository
     // (`host/owner/repo`) of the file the capture names by absolute path, else
     // of its own working directory, or a chat account's identity. The store's
-    // local `scope_key` column reads it, so a scoped attachment's forwarding can
-    // be decided per row. Absent when no key could be derived.
+    // local `scope_key` column reads it, so a scoped attachment has a per-row key
+    // to work from. Absent when no key could be derived.
     //
-    // LOCAL ONLY. That is the contract for every path that sends a row, and
-    // nothing writes this key yet, so no path has had to honour it. A capture
-    // row's bag reaches the wire through rebuildCapture, which names each key it
-    // carries and does not name this one; toCaptureAttributes, which builds the
-    // bag from a wire event, never derives it from one. The structural (history)
-    // lane differs: rebuildAuditEvent forwards a structural row's attribute bag
-    // whole, and nothing strips this key there. The structural forward paths
-    // must strip it before any writer stamps it on a structural row.
+    // LOCAL ONLY. That is the contract for every path that sends a row. Producers
+    // stamp it in every attachment mode, and the two structural choke points strip
+    // it: the attached gateway's `reKeyForForward` on the live path, and the
+    // history drain's `rebuildAuditEvent`, which drops it through `withoutScopeKey`.
+    // A capture row's bag reaches the wire through `rebuildCapture`, which builds
+    // the metadata from named keys and never names this one; `toCaptureAttributes`,
+    // which builds the bag from a wire event, never emits it. What a scoped
+    // attachment does with the key is not part of this shape's contract.
     scope_key: z.string().optional(),
   })
   .catchall(z.unknown());

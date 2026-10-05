@@ -1007,12 +1007,13 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
  * to be omitted here rather than passed along hopefully.
  *
  * THE SCOPE KEY GOES ON BOTH BRANCHES, and before either. `attributes.scope_key`
- * is a local routing fact a producer stamps in every attachment mode, and the
- * request's attributes member is an open record, so this is the one place
- * between a stamped row and the receiving side's storage. Every live
+ * is a local-only fact a producer stamps in every attachment mode, and the
+ * request's attributes member is an open record, so this is the one place on the
+ * LIVE path between a stamped row and the receiving side's storage. Every live
  * audit-event route passes through here: the single route, the batch, the
  * batch's per-item fallback and config scans. That is why the strip lives here
- * rather than at each call site. See `scope-strip.ts`.
+ * rather than at each call site. The history drain is the other path: its
+ * `attributesOf` strips the key from a stored row's bag. See `scope-strip.ts`.
  */
 function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedInventory | null): T {
   const outbound = withoutScopeKey(event);

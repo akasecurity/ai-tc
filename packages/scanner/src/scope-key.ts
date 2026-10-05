@@ -7,16 +7,16 @@
 // discovery stops at the first `.git` it meets (./discover.ts), so a submodule,
 // or a personal clone kept inside a work checkout, is walked as part of the
 // root around it. Keyed by the root, that clone's files would carry the root
-// repository's key, and an attachment scoped to that repository would forward
-// them as its own.
+// repository's key, which would claim them for a repository they are not in.
 //
 // A directory is a repository root when it holds a `.git` entry: a directory
 // for a clone, a file for a submodule or a linked worktree. That is the test
 // resolveRepoAttribution's own upward walk applies, so the two agree on where a
 // repository starts. Every root is keyed by resolveRepoAttribution, so a nested
-// repository with no forge remote gets no key, never the enclosing one's, and a
-// keyless capture is never forwarded from a scoped attachment. A file in no
-// nested repository takes the scan root's answer, from the same resolver
+// repository with no forge remote gets no key, never the enclosing one's; a
+// scoped attachment is meant to keep a keyless capture local, and that check is
+// not part of this change. A file in no nested repository takes the scan root's
+// answer, from the same resolver
 // walking up from the root: a root inside a repository (a package directory of
 // a monorepo, a session's working directory) keys by the repository around it.
 //

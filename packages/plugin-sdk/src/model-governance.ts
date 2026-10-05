@@ -514,11 +514,11 @@ export function buildModelRefusalEvent(input: {
    * The canonical repo key (`host/owner/repo`) of the checkout the refusal
    * happened in, when the hook resolved one.
    *
-   * A LOCAL attribute. It is written into the bag so a scoped attachment's
-   * verdict can decide whether this row may leave the machine, and the attached
-   * gateway strips it from every forwarded audit row (`withoutScopeKey`), so no
-   * wire shape changes. Omitted rather than written blank when unknown: an empty
-   * string would read as an identity, and no key is what fails closed.
+   * A LOCAL attribute. It is written into the bag so a scoped attachment can
+   * tell which repository this row belongs to, and the attached gateway strips
+   * it from every forwarded audit row (`withoutScopeKey`), so no wire shape
+   * changes. Omitted rather than written blank when unknown: an empty string
+   * would read as an identity, and a missing key is the safe answer.
    */
   scopeKey?: string | undefined;
 }): {

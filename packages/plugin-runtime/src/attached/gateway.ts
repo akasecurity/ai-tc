@@ -311,7 +311,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     try {
       if (this.deps.attachment.mode === 'machine') return 'forward';
       if (event.eventType !== 'session') {
-        return this.leafVerdict(event.attributes, event.rootSessionId ?? event.parentId);
+        return this.leafVerdict(event.attributes, rootReferenceOf(event));
       }
       // The stored root's verdict is recorded FIRST and whatever this event's own
       // key says, since it is what the leaves are held to. The event is sent only
@@ -362,7 +362,9 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   /**
    * The leaves of a batch that may be forwarded, filtered BEFORE `forwardBatch`
    * and never inside it. That loop tallies everything it does not deliver as a
-   * forward drop, and a row this attachment may not send is not a lost one.
+   * forward drop, and a row this attachment may not send is not a lost one. Each
+   * leaf is held to its root by the same reference `auditVerdict` uses
+   * (`rootReferenceOf`).
    * Machine mode hands back the batch itself, so the batch path is exactly what
    * it was. A throw forwards nothing.
    */
@@ -372,7 +374,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     try {
       if (this.deps.attachment.mode === 'machine') return inputs;
       return inputs.filter(
-        (input) => this.leafVerdict(input.attributes, input.rootSessionId) === 'forward',
+        (input) => this.leafVerdict(input.attributes, rootReferenceOf(input)) === 'forward',
       );
     } catch {
       return [];
@@ -1321,6 +1323,21 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   if (remote.harnessId !== undefined) rekeyed.harnessId = remote.harnessId;
   if (remote.sourceProjectId !== undefined) rekeyed.sourceProjectId = remote.sourceProjectId;
   return rekeyed;
+}
+
+/**
+ * The session root a row hangs off: its `rootSessionId`, else its `parentId`.
+ *
+ * ONE RULE for the single-row verdict (`auditVerdict`) and the batch filter
+ * (`forwardableLeaves`), so the two cannot hold a leaf to different roots. The
+ * parameter admits both references as optional because an audit event does,
+ * though a batch input carries both today.
+ */
+function rootReferenceOf(row: {
+  readonly rootSessionId?: string | undefined;
+  readonly parentId?: string | undefined;
+}): string | undefined {
+  return row.rootSessionId ?? row.parentId;
 }
 
 /**

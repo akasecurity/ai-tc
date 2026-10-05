@@ -2107,6 +2107,43 @@ describe('a child row forwards only beside an in-scope root', () => {
     expect(readForwardDrops(dir)).toBeNull();
   });
 
+  // A batch leaf is held to its root by the reference a single row is held by:
+  // its `rootSessionId`, else its `parentId`. Both input shapes require both
+  // today, so the leaves here are cast past the type to carry only a parent.
+  describe('a batch leaf that names only a parent', () => {
+    const parentOnly = <T extends { rootSessionId: string }>(leaf: T): T => {
+      const copy = { ...leaf };
+      Reflect.deleteProperty(copy, 'rootSessionId');
+      return copy;
+    };
+
+    it('is held back under a personal root, though its own key is enrolled', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', OUT));
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 's1', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 's1', IN))]);
+      expect(calls.batchSizes).toEqual([]);
+      expect(calls.delivered).toEqual([]);
+    });
+
+    it('is held back when its parent was never recorded by this instance', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 'unseen', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 'unseen', IN))]);
+      expect(calls.batchSizes).toEqual([]);
+    });
+
+    // The control: under an enrolled root the same leaves forward, so the two
+    // refusals above are the root rule's and not the cast's.
+    it('forwards under an enrolled root', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', IN));
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 's1', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 's1', IN))]);
+      expect(calls.batchSizes).toEqual([1, 1]);
+    });
+  });
+
   // A GUARD: a gateway with no verdict forwards these rows too. It pins that
   // machine mode answers before the root rule, on the single-row path and the
   // batch path alike, so a machine attachment never loses a leaf to it.

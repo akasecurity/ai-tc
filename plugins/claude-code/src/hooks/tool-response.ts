@@ -38,7 +38,7 @@ const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   // lines in the content mode and the per-file counts in the count mode; the
   // files_with_matches mode leaves it out and lists only `filenames`, which
   // is not scanned. A plain-string response would be scanned whole, like any
-  // tool's (see scannableResponseFields), but Grep has not been seen to send
+  // tool's (see collectResponseFields), but Grep has not been seen to send
   // one. Content-mode output is unbounded by the host (a broad pattern can
   // return megabytes), so it is held to the response bounds below.
   Grep: [['content']],
@@ -195,19 +195,13 @@ function mcpResponseFields(response: unknown): ResponseFields {
 
 /**
  * The text fields of a tool response worth scanning, with the path needed to
- * write a redacted replacement back. Empty strings are skipped — nothing to
- * scan, and rewriting them would be a pointless output replacement.
- */
-export function scannableResponseFields(
-  toolName: string,
-  response: unknown,
-): ScannableResponseField[] {
-  return collectResponseFields(toolName, response).fields;
-}
-
-/**
- * scannableResponseFields plus whether the response bounds cut any text out,
- * which the hook needs to count a partial scan as a fail-open.
+ * write a redacted replacement back, plus whether the response bounds cut any
+ * text out, which the hook needs to count a partial scan as a fail-open. Empty
+ * strings are skipped — nothing to scan, and rewriting them would be a
+ * pointless output replacement.
+ *
+ * The one entry point on purpose: a fields-only wrapper would let a caller
+ * drop `truncated` without noticing, and with it the fail-open count.
  */
 export function collectResponseFields(toolName: string, response: unknown): ResponseFields {
   if (typeof response === 'string') {

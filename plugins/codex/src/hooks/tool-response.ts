@@ -214,19 +214,13 @@ function contentBlockFields(response: unknown, textTypes: ReadonlySet<string>): 
 
 /**
  * The text fields of a tool response worth scanning, with the path needed to
- * write a redacted replacement back. Empty strings are skipped — nothing to
- * scan, and rewriting them would be a pointless output replacement.
- */
-export function scannableResponseFields(
-  toolName: string,
-  response: unknown,
-): ScannableResponseField[] {
-  return collectResponseFields(toolName, response).fields;
-}
-
-/**
- * scannableResponseFields plus whether the response bounds cut any text out,
- * which the hook needs to count a partial scan as a fail-open.
+ * write a redacted replacement back, plus whether the response bounds cut any
+ * text out, which the hook needs to count a partial scan as a fail-open. Empty
+ * strings are skipped — nothing to scan, and rewriting them would be a
+ * pointless output replacement.
+ *
+ * The one entry point on purpose: a fields-only wrapper would let a caller
+ * drop `truncated` without noticing, and with it the fail-open count.
  */
 export function collectResponseFields(toolName: string, response: unknown): ResponseFields {
   if (typeof response === 'string') {

@@ -11,12 +11,11 @@ import {
   RESPONSE_CHUNK_CHARS,
   RESPONSE_MAX_CAPTURES,
   RESPONSE_MAX_TOTAL_CHARS,
-  scannableResponseFields,
 } from '../../src/hooks/tool-response.ts';
 
-describe('scannableResponseFields', () => {
+describe('collectResponseFields', () => {
   it('treats a plain-string response as one scannable field at the root', () => {
-    expect(scannableResponseFields('Bash', 'some output')).toEqual([
+    expect(collectResponseFields('Bash', 'some output').fields).toEqual([
       { path: [], text: 'some output' },
     ]);
   });
@@ -27,7 +26,7 @@ describe('scannableResponseFields', () => {
       stderr: 'err text',
       interrupted: false,
     };
-    expect(scannableResponseFields('Bash', response)).toEqual([
+    expect(collectResponseFields('Bash', response).fields).toEqual([
       { path: ['stdout'], text: 'out text' },
       { path: ['stderr'], text: 'err text' },
     ]);
@@ -35,26 +34,28 @@ describe('scannableResponseFields', () => {
 
   it('skips empty strings so hooks do not scan or rewrite blank fields', () => {
     const response = { stdout: 'out', stderr: '', interrupted: false };
-    expect(scannableResponseFields('Bash', response)).toEqual([{ path: ['stdout'], text: 'out' }]);
+    expect(collectResponseFields('Bash', response).fields).toEqual([
+      { path: ['stdout'], text: 'out' },
+    ]);
   });
 
   it('returns nothing for tools without a known response shape', () => {
-    expect(scannableResponseFields('apply_patch', { changes: {} })).toEqual([]);
-    expect(scannableResponseFields('mcp__server__tool', { result: 'x' })).toEqual([]);
+    expect(collectResponseFields('apply_patch', { changes: {} }).fields).toEqual([]);
+    expect(collectResponseFields('mcp__server__tool', { result: 'x' }).fields).toEqual([]);
   });
 
   it('returns nothing when the expected field is missing or not a string', () => {
-    expect(scannableResponseFields('Bash', { stdout: 42 })).toEqual([]);
-    expect(scannableResponseFields('Bash', null)).toEqual([]);
-    expect(scannableResponseFields('Bash', undefined)).toEqual([]);
+    expect(collectResponseFields('Bash', { stdout: 42 }).fields).toEqual([]);
+    expect(collectResponseFields('Bash', null).fields).toEqual([]);
+    expect(collectResponseFields('Bash', undefined).fields).toEqual([]);
   });
 
   it('does not resolve Object.prototype members as path tables', () => {
     // A bare index lookup would return e.g. Object.prototype.constructor (a
     // non-iterable function, not caught by ??) and crash the for-of.
-    expect(scannableResponseFields('constructor', { stdout: 'x' })).toEqual([]);
-    expect(scannableResponseFields('toString', { stdout: 'x' })).toEqual([]);
-    expect(scannableResponseFields('hasOwnProperty', { stdout: 'x' })).toEqual([]);
+    expect(collectResponseFields('constructor', { stdout: 'x' }).fields).toEqual([]);
+    expect(collectResponseFields('toString', { stdout: 'x' }).fields).toEqual([]);
+    expect(collectResponseFields('hasOwnProperty', { stdout: 'x' }).fields).toEqual([]);
   });
 });
 
@@ -81,13 +82,13 @@ describe('replaceResponseField', () => {
   });
 });
 
-describe('scannableResponseFields — webrun and MCP content blocks', () => {
+describe('collectResponseFields — webrun and MCP content blocks', () => {
   it('scans each input_text block of a webrun result, addressed by index', () => {
     const response = [
       { type: 'input_text', text: 'first result' },
       { type: 'input_text', text: 'second result' },
     ];
-    expect(scannableResponseFields('webrun', response)).toEqual([
+    expect(collectResponseFields('webrun', response).fields).toEqual([
       { path: [0, 'text'], text: 'first result' },
       { path: [1, 'text'], text: 'second result' },
     ]);
@@ -101,24 +102,26 @@ describe('scannableResponseFields — webrun and MCP content blocks', () => {
         { type: 'text', text: '' },
       ],
     };
-    expect(scannableResponseFields('mcp__everything__echo', response)).toEqual([
+    expect(collectResponseFields('mcp__everything__echo', response).fields).toEqual([
       { path: ['content', 0, 'text'], text: 'Echo: probe' },
     ]);
   });
 
   it('accepts a bare block array from an MCP tool', () => {
-    expect(scannableResponseFields('mcp__s__t', [{ type: 'text', text: 'x' }])).toEqual([
+    expect(collectResponseFields('mcp__s__t', [{ type: 'text', text: 'x' }]).fields).toEqual([
       { path: [0, 'text'], text: 'x' },
     ]);
   });
 
   it('does not treat a webrun-style input_text block as MCP text', () => {
-    expect(scannableResponseFields('mcp__s__t', [{ type: 'input_text', text: 'x' }])).toEqual([]);
+    expect(collectResponseFields('mcp__s__t', [{ type: 'input_text', text: 'x' }]).fields).toEqual(
+      [],
+    );
   });
 
   it('chunks a long block and caps the capture count and total size', () => {
     const big = 'a'.repeat(RESPONSE_CHUNK_CHARS + 1);
-    expect(scannableResponseFields('webrun', [{ type: 'input_text', text: big }])).toEqual([
+    expect(collectResponseFields('webrun', [{ type: 'input_text', text: big }]).fields).toEqual([
       {
         path: [0, 'text'],
         text: 'a'.repeat(RESPONSE_CHUNK_CHARS),
@@ -130,11 +133,11 @@ describe('scannableResponseFields — webrun and MCP content blocks', () => {
       type: 'text',
       text: 'x',
     }));
-    expect(scannableResponseFields('mcp__s__t', { content: many })).toHaveLength(
+    expect(collectResponseFields('mcp__s__t', { content: many }).fields).toHaveLength(
       RESPONSE_MAX_CAPTURES,
     );
     const huge = 'line\n'.repeat(Math.ceil((RESPONSE_MAX_TOTAL_CHARS + 10) / 5));
-    const fields = scannableResponseFields('Bash', { stdout: huge, stderr: 'after' });
+    const fields = collectResponseFields('Bash', { stdout: huge, stderr: 'after' }).fields;
     expect(fields.reduce((sum, f) => sum + f.text.length, 0)).toBe(RESPONSE_MAX_TOTAL_CHARS);
     expect(fields.every((f) => f.path[0] === 'stdout')).toBe(true);
   });
@@ -240,8 +243,8 @@ describe('a requiresNearby label on the far side of a chunk cut', () => {
   const line = `${'q'.repeat(99)}\n`;
   const pad = `${'q'.repeat(94)}\n`;
   const dobFindings = (stdout: string): number =>
-    scannableResponseFields('Bash', { stdout })
-      .flatMap((field) => scanText(field.text).findings)
+    collectResponseFields('Bash', { stdout })
+      .fields.flatMap((field) => scanText(field.text).findings)
       .filter((finding) => finding.ruleId === 'core-pii/dob').length;
 
   it('does not corroborate a value whose label ends the previous chunk', () => {

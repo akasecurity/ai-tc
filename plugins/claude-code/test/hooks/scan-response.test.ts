@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ResponseScanOutcome } from '../../src/hooks/scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
-import { RESPONSE_CHUNK_CHARS, scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import { collectResponseFields, RESPONSE_CHUNK_CHARS } from '../../src/hooks/tool-response.ts';
 
 function finding(ruleId: string): CaptureResult['findings'][number] {
   return {
@@ -140,7 +140,7 @@ describe('scanResponseFields — chunked fields', () => {
   const response = { mode: 'content', numFiles: 3, filenames: [], content, numLines: 0 };
 
   it('splices each chunk rewrite back into one string and keeps the rest verbatim', async () => {
-    const fields = scannableResponseFields('Grep', response);
+    const fields = collectResponseFields('Grep', response).fields;
     expect(fields.length).toBeGreaterThan(2);
     const outcome = await scanResponseFields('Grep', response, fields, (text) => {
       if (text.includes('AKIA')) {

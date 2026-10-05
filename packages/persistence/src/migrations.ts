@@ -1248,9 +1248,21 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
  * columns refuse a malformed bag there. What reaches this column damaged is a
  * bag already on disk when the column arrives — ADD COLUMN validates no
  * existing row — or one altered below SQLite. That is rare, and a read must
- * still not wedge on it. The guard adds one call per row a read evaluates: a
- * full scan filtering on the column over 200k in-memory rows measured 10-15%
- * slower than the unguarded form.
+ * still not wedge on it.
+ *
+ * WHAT IT COSTS. The guard is one json_valid call per row the column is
+ * evaluated for. On a read, a full scan filtering on the column over 200k
+ * in-memory rows ran roughly 10% slower than the unguarded form (re-measures
+ * ranged from about 3% to 21%). A write pays for the column too, guard included:
+ * SQLite computes a VIRTUAL generated column on every INSERT and on every UPDATE
+ * of a row, whichever columns the UPDATE names. Measured as this column against
+ * none, on one arm64 machine, over 200k rows of a ~500-byte bag with INSERTs
+ * batched 1,000 to a transaction: an INSERT was not measurably slower (the best
+ * of five runs differed by under 3% either way, less than the spread between
+ * runs), and an UPDATE of an unrelated column across every row was roughly
+ * 5-10% slower, which is 0.1 to 0.6 microseconds a row against an insert cost of
+ * 12 to 17 microseconds a row in the same runs. Re-measure before leaning on
+ * either figure.
  */
 export const SCOPE_KEY_COLUMN_DDL =
   "ALTER TABLE audit_events ADD COLUMN scope_key text GENERATED ALWAYS AS (CASE WHEN json_valid(attributes) THEN json_extract(attributes, '$.scope_key') END) VIRTUAL";

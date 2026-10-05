@@ -42,14 +42,13 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
 // redactFallback; v8 added bodyRetention and webChatCapture; v9 added
-// attachmentScope. Nothing
-// reads it, and nothing re-stamps it — the `.default()` below only fills when
-// the key is absent, and applyOnboarding's merge preserves whatever an existing
-// settings.json already carries. So an already-onboarded machine keeps the
-// version that first wrote its file, however often this is bumped. Every field
-// added so far has been optional/defaulted (backward compatible), which is why
-// no migration has been needed. Re-stamp this on write before relying on it to
-// gate one.
+// attachmentScope. Nothing reads it, and nothing re-stamps it — the
+// `.default()` below only fills when the key is absent, and applyOnboarding's
+// merge preserves whatever an existing settings.json already carries. So an
+// already-onboarded machine keeps the version that first wrote its file,
+// however often this is bumped. Every field added so far has been
+// optional/defaulted (backward compatible), which is why no migration has been
+// needed. Re-stamp this on write before relying on it to gate one.
 export const WORKSPACE_SETTINGS_SPEC_VERSION = 9;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.

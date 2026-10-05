@@ -541,8 +541,10 @@ describe('a garbled attachmentScope', () => {
       // or normalize it. A garbled record kept verbatim still reads as invalid,
       // i.e. deny, and a newer build's keys are still there for it to read.
       expect(after.attachmentScope).toEqual(scope);
-      // And byte for byte, which `toEqual` is not: the stored text of the record
-      // is the text that was there, key order included.
+      // And in key order, which `toEqual` ignores: the record's JSON text, read
+      // back and serialized the same way on both sides, must match. That compares
+      // parsed-and-reserialized text, so it pins key order and values, not the
+      // file's raw bytes: whitespace and escape spelling are normalized away.
       const onDisk = JSON.parse(readFileSync(join(base, 'settings', 'settings.json'), 'utf8')) as {
         attachmentScope?: unknown;
       };

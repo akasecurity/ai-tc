@@ -351,9 +351,16 @@ export const CaptureAttributes = z
     // (`host/owner/repo`) of the file the capture names by absolute path, else
     // of its own working directory, or a chat account's identity. The store's
     // local `scope_key` column reads it, so a scoped attachment's forwarding can
-    // be decided per row. LOCAL ONLY: nothing that leaves the machine may carry
-    // it, which is why toCaptureAttributes, which builds this bag from a wire
-    // event, never maps it. Absent when no key could be derived.
+    // be decided per row. Absent when no key could be derived.
+    //
+    // LOCAL ONLY. That is the contract for every path that sends a row, and
+    // nothing writes this key yet, so no path has had to honour it. A capture
+    // row's bag reaches the wire through rebuildCapture, which names each key it
+    // carries and does not name this one; toCaptureAttributes, which builds the
+    // bag from a wire event, never derives it from one. The structural (history)
+    // lane differs: rebuildAuditEvent forwards a structural row's attribute bag
+    // whole, and nothing strips this key there. The structural forward paths
+    // must strip it before any writer stamps it on a structural row.
     scope_key: z.string().optional(),
   })
   .catchall(z.unknown());

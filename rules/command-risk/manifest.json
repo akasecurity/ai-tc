@@ -10,6 +10,7 @@
     "git-force-push",
     "git-reset-hard",
     "curl-pipe-shell",
-    "credential-file-read"
+    "credential-file-read",
+    "credential-file-access"
   ]
 }

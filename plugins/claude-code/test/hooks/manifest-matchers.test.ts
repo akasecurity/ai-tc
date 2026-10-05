@@ -63,6 +63,12 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     expect(SUBAGENT_TOOLS.has('Agent'), 'the current spelling is in the set').toBe(true);
   });
 
+  it('matches Read and Grep, whose paths the credential-path guard checks', () => {
+    const matcher = matcherFor('PreToolUse');
+    expect(matcher.test('Read')).toBe(true);
+    expect(matcher.test('Grep')).toBe(true);
+  });
+
   it('matches the dynamic handlers the static table cannot speak for', () => {
     // MultiEdit and mcp__* reach fields through their own branches, so they are
     // absent from SCANNED_TOOL_NAMES and the derivation above says nothing
@@ -76,8 +82,8 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     // The control: a matcher rewritten to `.*` would pass every assertion above
     // while removing the bound the hook's own cost argument rests on.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('Read')).toBe(false);
     expect(matcher.test('Glob')).toBe(false);
+    expect(matcher.test('TodoWrite')).toBe(false);
   });
 });
 

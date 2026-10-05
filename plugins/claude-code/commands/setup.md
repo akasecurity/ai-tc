@@ -921,6 +921,18 @@ vault consent is on file. Whichever path applies, the
 recorded finding carries the action that actually happened, never a "redact"
 that did not.
 
+**A `Read` or `Grep` is checked by its PATH before it runs, and only for
+credential files.** A path naming one — `.env` and its variants (not
+`.env.example`), a private key under `~/.ssh` (not `*.pub` or `config`),
+`.netrc`, `.pgpass`, `.git-credentials`, `.aws/credentials`, `credentials*`,
+`*auth.json` — matches `command-risk/credential-file-access`, which follows the
+`command-risk` pack's policy (Warn on a first install). Paths under a `test/` or
+`fixtures/` directory are left alone. Any other file — a config under
+`~/.config` holding a secret under an unfamiliar key, for instance — is not
+checked before it is read; its content is scanned afterwards like any tool
+output. `Glob` is never checked. A redact on a path follows the redact fallback
+above, because a masked path reads a different file.
+
 **Tool OUTPUT is scanned for `Bash`, `Read`, `WebFetch`, `Grep` and every
 `mcp__*` tool, and for no other tool.** `Glob`'s file list, for example, reaches
 the model unscanned. On `Grep` the matching lines (and the per-file counts of

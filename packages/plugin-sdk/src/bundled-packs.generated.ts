@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 110 rules.
+// 8 packs / 111 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -42,6 +42,7 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
@@ -182,6 +183,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskGitResetHard,
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
+      commandRiskCredentialFileAccess,
     ],
   },
   {

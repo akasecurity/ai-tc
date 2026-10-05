@@ -106,6 +106,7 @@ export function SessionListView({
   onSelect,
   query,
   onQuery,
+  searchMaxLength,
   harness,
   harnessOptions,
   onHarness,
@@ -122,6 +123,10 @@ export function SessionListView({
   onSelect: (id: string) => void;
   query: string;
   onQuery: (q: string) => void;
+  /** The longest search term the host's server accepts; omitted leaves the box
+   * uncapped (the local store has no such limit). A typing aid, not a limit:
+   * the host still cuts what it sends — see SearchField's `maxLength`. */
+  searchMaxLength?: number;
   harness: Harness[];
   /** Harnesses to offer in the filter — omitted shows the full enum. */
   harnessOptions?: Harness[];
@@ -166,15 +171,18 @@ export function SessionListView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border p-3">
+      {/* A column with a gap rather than a margin on the field, so the limit hint
+          SearchField renders at the cap is spaced like the controls around it. */}
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border p-3">
         <SearchField
           value={query}
           onValueChange={onQuery}
           label="Search sessions and events"
           placeholder="Search sessions & events…"
           surface="card"
-          className="mb-2 h-8.5 px-2.5"
+          className="h-8.5 px-2.5"
           iconClassName="size-3.5"
+          {...(searchMaxLength === undefined ? {} : { maxLength: searchMaxLength })}
         />
         <HarnessSelect
           value={harness}

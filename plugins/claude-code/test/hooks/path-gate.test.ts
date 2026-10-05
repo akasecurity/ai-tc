@@ -61,8 +61,13 @@ function payload(tool: string, toolInput: Record<string, unknown>, extra = {}): 
   });
 }
 
-function runGate(stdin: string, shell = '/bin/sh'): { status: number | null; stdout: string } {
+function runGate(
+  stdin: string,
+  shell = SHELLS[0] ?? 'sh',
+): { status: number | null; stdout: string } {
   const run = spawnSync(shell, [gate], { input: stdin, encoding: 'utf8', env: GATE_ENV });
+  // A shell that failed to start is a broken test, not a gate that stayed quiet.
+  if (run.error) throw run.error;
   return { status: run.status, stdout: run.stdout };
 }
 
@@ -123,6 +128,19 @@ describe('the path gate forwards everything the credential-path capture would ta
   it('hands the payload on byte for byte, to the pre-tool-use.js beside it', () => {
     const stdin = payload('Read', { file_path: '/home/agent/proj/.env', limit: 20 });
     expect(runGate(stdin).stdout).toBe(`${FORWARD_LINE}${stdin}`);
+    // Command substitution strips trailing newlines; the gate must not.
+    expect(runGate(`${stdin}\n\n`).stdout).toBe(`${FORWARD_LINE}${stdin}\n\n`);
+  });
+
+  it('does not trust where tool_input starts', () => {
+    // Valid JSON the host does not emit today, but the gate must not depend on
+    // its serializer: a spaced outer key, then a nested "tool_input": key.
+    const spaced =
+      '{"tool_name":"Read","tool_input" : {"file_path":"/repo/.env"},"extra":{"tool_input":{}}}';
+    expect(forwards(spaced)).toBe(true);
+    const grep =
+      '{"tool_name":"Grep","tool_input" : {"pattern":"x","path":"/repo/.env"},"x":{"tool_input":{}}}';
+    expect(forwards(grep)).toBe(true);
   });
 
   it('forwards non-ASCII input and \\u escapes rather than matching their bytes', () => {
@@ -155,17 +173,11 @@ describe('the path gate keeps node out of the ordinary call', () => {
     expect(runGate(payload('Grep', { pattern: 'TODO' })).stdout).toBe('');
   });
 
-  it('ignores hints in the fields before tool_input', () => {
-    // cwd and transcript_path name the project, not the file read; a project
-    // directory called "environment" must not send every Read through node.
-    const stdin = payload(
-      'Read',
-      { file_path: '/repo/src/a.ts' },
-      {
-        cwd: '/srv/environment',
-        transcript_path: '/srv/.claude/projects/-srv-environment/s.jsonl',
-      },
-    );
-    expect(runGate(stdin).stdout).toBe('');
+  it('pays a node start, never a miss, for a hint outside tool_input', () => {
+    // The gate matches the whole payload rather than trusting where tool_input
+    // begins, so a project directory called "environment" sends its Reads
+    // through node: slower for that project, never a dropped check.
+    const stdin = payload('Read', { file_path: '/repo/src/a.ts' }, { cwd: '/srv/environment' });
+    expect(forwards(stdin)).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
 // The gate must stay a SUPERSET of `mayNameCredentialFile`: a path the hook
 // would capture and the gate drops is a silent miss. It is, by construction:
 // it matches the same fragments, ASCII-case-insensitively, anywhere in the
-// tool input rather than only in the last path segment, and it forwards any
+// whole payload rather than only in the last path segment, and it forwards any
 // input holding non-ASCII text or a \u escape, the two places where
 // JavaScript's toLowerCase and a byte-wise shell match could disagree.
 //
@@ -82,9 +82,10 @@ function shellGlob(hint: string): string {
  * could name a credential file; otherwise it exits 0 with no output, which is
  * the same "allow unchanged" the node hook answers for such a path.
  *
- * The match runs on the payload from the `"tool_input":` key onward, so the
- * session id, transcript path and cwd before it cannot trigger node. If the
- * key is absent the whole payload is matched, which only forwards more.
+ * The match runs on the whole payload, not from the `"tool_input":` key on:
+ * finding where the real tool input starts would mean parsing JSON in sh, and
+ * a wrong guess is a dropped check. A hint in the cwd or transcript path only
+ * costs a node start.
  */
 export function pathGateScript(): string {
   const globs = [...CREDENTIAL_NAME_HINTS, ...CREDENTIAL_DIR_HINTS].map(shellGlob);
@@ -96,15 +97,16 @@ export function pathGateScript(): string {
     // before node starts, so the hook sees the environment it always did.
     '[ -n "${LC_ALL+set}" ] && caller_lc_all=$LC_ALL',
     'LC_ALL=C',
-    'input=$(cat)',
-    'rest=${input#*\\"tool_input\\":}',
+    // The sentinel keeps the trailing newlines command substitution would strip.
+    'input=$(cat; printf x)',
+    'input=${input%x}',
     'case $0 in *[/\\\\]*) dir=${0%[/\\\\]*} ;; *) dir=. ;; esac',
     'forward() {',
     '  if [ -n "${caller_lc_all+set}" ]; then LC_ALL=$caller_lc_all; else unset LC_ALL; fi',
     '  printf \'%s\' "$input" | node "$dir/pre-tool-use.js"',
     '  exit $?',
     '}',
-    'case $rest in',
+    'case $input in',
     `  ${globs.join('|')}) forward ;;`,
     // Non-ASCII text or a \u escape: let the hook decide rather than match
     // bytes. Tab and newline are the whitespace a pretty-printed payload adds.

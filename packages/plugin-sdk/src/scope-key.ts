@@ -1,4 +1,5 @@
-import { isAbsolute, join, normalize } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize } from 'node:path';
 
 import { resolveRepoAttribution } from './repo.ts';
 
@@ -23,8 +24,9 @@ import { resolveRepoAttribution } from './repo.ts';
  * one lives as long as the pass and is never evicted. A later pass gives the same
  * answer as long as that repository's remote is unchanged.
  *
- * Each string is remembered on its own. `toolCallScopeKey` asks about the path a
- * call names, not its directory, so a named file costs one walk per distinct path.
+ * Each string is remembered on its own. `toolCallScopeKey` asks about a named
+ * file's directory, unless the path is itself a checkout's top level, so a pass
+ * pays one walk per directory its files sit in, not one per file.
  *
  * Only an absolute directory is keyed, and that rule is the resolver's:
  * `resolveRepoAttribution` answers no key for a relative or empty one, which the
@@ -77,6 +79,13 @@ export function sessionRootScopeKey(cwd: string | undefined): string | undefined
  * first probe. Starting at the parent would key that clone by the repository
  * around it.
  *
+ * A named FILE is asked about through the pass memo by its directory unless the
+ * path has a `.git` of its own: that one probe is the walk's first step, and a
+ * miss leaves the walk climbing from the directory, so the key is the same either
+ * way. What it buys is that the memo then answers once per directory a pass's
+ * files sit in, as it did before the path itself was walked, and not once per
+ * file. A search root is asked about as it is: it is a directory, or one file.
+ *
  * Every named location must give a key and every key must be the same, or the
  * leaf gets none; a location in no repository is never replaced by the cwd's.
  * `keyless` marks a call whose named location no single repository covers (a Glob
@@ -105,16 +114,22 @@ export function toolCallScopeKey(
 ): string | undefined {
   if (tc.keyless === true) return undefined;
   if (tc.filePaths === undefined && tc.searchRoot === undefined) return scopeKeyOf(tc.cwd);
-  // Each named location as the path its key is read from: the path itself,
-  // whether it names a file or a directory. join() leaves a relative path
-  // relative when there is no absolute cwd to read it against, and scopeKeyOf
-  // keys no relative path. An absolute path is normalised first: the walk climbs
-  // by name, so a `..` segment left in place would climb back into the directory
-  // it left.
+  // Each named location as the path its key is read from. join() leaves a
+  // relative path relative when there is no absolute cwd to read it against, and
+  // scopeKeyOf keys no relative path. An absolute path is normalised first: the
+  // walk climbs by name, so a `..` segment left in place would climb back into
+  // the directory it left.
   const resolved = (path: string): string =>
     isAbsolute(path) ? normalize(path) : join(tc.cwd ?? '', path);
+  // Where a named file's walk is asked about. The walk from the path probes
+  // `<path>/.git` and, on a miss, climbs to its directory and goes on from there,
+  // so asking about the directory after a miss reads the same repository. A
+  // relative path is never keyed, whichever way it is asked about, so it takes
+  // no probe.
+  const walkStart = (path: string): string =>
+    isAbsolute(path) && existsSync(join(path, '.git')) ? path : dirname(path);
   const locations = [
-    ...(tc.filePaths ?? []).map((path) => resolved(path)),
+    ...(tc.filePaths ?? []).map((path) => walkStart(resolved(path))),
     ...(tc.searchRoot === undefined ? [] : [resolved(tc.searchRoot)]),
   ];
   let agreed: string | undefined;

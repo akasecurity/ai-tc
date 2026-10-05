@@ -22,7 +22,7 @@ vi.mock('../src/repo.ts', async (importOriginal) => {
   return { ...actual, resolveRepoAttribution: resolver };
 });
 
-const { scopeKeyMemo } = await import('../src/scope-key.ts');
+const { scopeKeyMemo, toolCallScopeKey } = await import('../src/scope-key.ts');
 
 // An scp-form remote's userinfo reads as an email address to a scanner, so the
 // fixture builds it from parts.
@@ -100,5 +100,73 @@ describe('scopeKeyMemo — one resolution per directory per pass', () => {
     expect(scopeKeyOf(work)).toBe('github.com/acme/work');
     // The control: a resolver that has forgotten the directory reads the new remote.
     expect(scopeKeyMemo()(work)).toBe('github.com/acme/renamed');
+  });
+});
+
+describe('toolCallScopeKey — a named file costs one resolution per directory per pass', () => {
+  const WORK_KEY = 'github.com/acme/work';
+
+  it('asks the resolver once for two files in one directory, however many calls name them', () => {
+    // The walk starts at the named path, which would be one resolution per file
+    // if the memo were asked about the file. A file has no `.git` of its own, so
+    // the memo is asked about its directory instead, and the answer is the same.
+    const src = join(work, 'src');
+    mkdirSync(src);
+    const scopeKeyOf = scopeKeyMemo();
+    const key = (path: string): string | undefined =>
+      toolCallScopeKey({ cwd: scratch, filePaths: [path] }, scopeKeyOf);
+
+    expect(key(join(src, 'a.ts'))).toBe(WORK_KEY);
+    expect(key(join(src, 'b.ts'))).toBe(WORK_KEY);
+    expect(key(join(src, 'a.ts'))).toBe(WORK_KEY);
+
+    expect(callsFor(src)).toBe(1);
+    expect(callsFor(join(src, 'a.ts'))).toBe(0);
+    expect(callsFor(join(src, 'b.ts'))).toBe(0);
+  });
+
+  it('asks once for files not yet created, whose directories do not exist either', () => {
+    const scopeKeyOf = scopeKeyMemo();
+    const dir = join(work, 'new', 'deep');
+    const key = (name: string): string | undefined =>
+      toolCallScopeKey({ cwd: scratch, filePaths: [join(dir, name)] }, scopeKeyOf);
+
+    expect(key('a.ts')).toBe(WORK_KEY);
+    expect(key('b.ts')).toBe(WORK_KEY);
+    expect(callsFor(dir)).toBe(1);
+  });
+
+  it('asks once for a relative file, read against the call cwd', () => {
+    const src = join(work, 'src');
+    mkdirSync(src);
+    const scopeKeyOf = scopeKeyMemo();
+    const key = (name: string): string | undefined =>
+      toolCallScopeKey({ cwd: work, filePaths: [join('src', name)] }, scopeKeyOf);
+
+    expect(key('a.ts')).toBe(WORK_KEY);
+    expect(key('b.ts')).toBe(WORK_KEY);
+    expect(callsFor(src)).toBe(1);
+  });
+
+  it('still keys a checkout root named directly by that checkout, asked about once', () => {
+    // A clone nested in the work checkout: its own `.git` is found at the named
+    // path, so the memo is asked about the path itself and not about its parent.
+    const nested = join(work, 'vendor', 'lib');
+    mkdirSync(join(nested, '.git'), { recursive: true });
+    writeFileSync(
+      join(nested, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/lib.git\n',
+    );
+    const scopeKeyOf = scopeKeyMemo();
+    const key = (paths: readonly string[]): string | undefined =>
+      toolCallScopeKey({ cwd: work, filePaths: paths }, scopeKeyOf);
+
+    expect(key([nested])).toBe('github.com/acme/lib');
+    expect(key([nested])).toBe('github.com/acme/lib');
+    expect(callsFor(nested)).toBe(1);
+    expect(callsFor(join(work, 'vendor'))).toBe(0);
+    // A file inside it is asked about by its directory, which is the clone's root.
+    expect(key([join(nested, 'index.ts')])).toBe('github.com/acme/lib');
+    expect(callsFor(nested)).toBe(1);
   });
 });

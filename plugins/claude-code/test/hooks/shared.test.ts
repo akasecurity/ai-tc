@@ -1,12 +1,20 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
-import { readHookFailOpens } from '@akasecurity/plugin-sdk';
+import type * as PluginSdk from '@akasecurity/plugin-sdk';
+import { readHookFailOpens, resolveRepo, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { countFailOpen, emit, readStdin } from '../../src/hooks/shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  readStdin,
+  searchRootScopeKey,
+} from '../../src/hooks/shared.ts';
 
 // A hook calls countFailOpen() with no base, so the home directory is resolved
 // on its own path — and `os.homedir()` throws when the platform cannot name
@@ -21,6 +29,19 @@ vi.mock('node:os', async (importActual) => {
       if (osHome.refuse) throw new Error('no home directory');
       return actual.homedir();
     },
+  };
+});
+
+// The two repo resolvers WRAPPED, not replaced: every call still does the real
+// walk. The wrappers exist for the one-walk case at the bottom of this file,
+// which asserts which resolver the metadata and the key ask, and with which
+// directory.
+vi.mock('@akasecurity/plugin-sdk', async (importActual) => {
+  const actual = await importActual<typeof PluginSdk>();
+  return {
+    ...actual,
+    resolveRepo: vi.fn((cwd: string) => actual.resolveRepo(cwd)),
+    resolveRepoAttribution: vi.fn((cwd: string) => actual.resolveRepoAttribution(cwd)),
   };
 });
 
@@ -185,6 +206,263 @@ describe('countFailOpen', () => {
     } finally {
       osHome.refuse = false;
       writeSpy.mockRestore();
+    }
+  });
+});
+
+describe('captureScopeKey', () => {
+  // Fixture checkouts are fake `.git/config` files, the layout plugin-sdk's own
+  // repo tests use: the resolver reads files and never spawns git.
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-scope-key-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A checkout at `root/<name>` whose origin is `remote`, or with no remote. */
+  function checkout(name: string, remote: string | undefined): string {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(
+      join(dir, '.git', 'config'),
+      remote === undefined ? '[core]\n\tbare = false\n' : `[remote "origin"]\n\turl = ${remote}\n`,
+    );
+    return dir;
+  }
+
+  it('keys an event by the canonical form of its checkout origin', () => {
+    // Scheme, userinfo and `.git` dropped, host lowercased, path case kept.
+    const repo = checkout('work', 'git@GitHub.com:acme/work-repo.git');
+    expect(captureScopeKey({ session_id: 's', cwd: repo })).toBe('github.com/acme/work-repo');
+  });
+
+  it('keys a subdirectory of a checkout like the checkout itself', () => {
+    const repo = checkout('work', 'https://github.com/acme/work-repo.git');
+    const sub = join(repo, 'src', 'deep');
+    mkdirSync(sub, { recursive: true });
+    expect(captureScopeKey({ cwd: sub })).toBe('github.com/acme/work-repo');
+  });
+
+  it.each([
+    ['a checkout with no remote', () => checkout('scratch', undefined)],
+    ['a checkout whose remote is a local path', () => checkout('mirror', '/srv/git/work.git')],
+    [
+      'a directory outside any checkout',
+      () => {
+        const dir = join(root, 'plain');
+        mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+    ],
+  ])('passes no key for %s', (_label, make) => {
+    // No key keeps the event on a scoped machine: the fail-closed answer for an
+    // identity that is machine-local or absent.
+    expect(captureScopeKey({ session_id: 's', cwd: make() })).toBeUndefined();
+  });
+
+  it('falls back to the hook process cwd exactly as baseMetadata does', () => {
+    // SessionStart resolves the session root from the same `cwd ?? process.cwd()`,
+    // so the fallback is what keeps an event's key equal to its root's.
+    const repo = checkout('work', 'git@github.com:acme/work-repo.git');
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    try {
+      expect(captureScopeKey({ session_id: 's' })).toBe('github.com/acme/work-repo');
+      expect(baseMetadata({ session_id: 's' })?.repo).toBe('work-repo');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('answers no key, rather than throwing, when the working directory is gone', () => {
+    // `process.cwd()` throws on a deleted directory. Escaping here would reach
+    // the hook's outer catch and cost the capture, not just its key.
+    const spy = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    });
+    try {
+      expect(captureScopeKey({ session_id: 's' })).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reads the same directory through the same resolver as baseMetadata: one walk', () => {
+    const repo = checkout('work', 'git@github.com:acme/work-repo.git');
+    vi.mocked(resolveRepoAttribution).mockClear();
+    vi.mocked(resolveRepo).mockClear();
+    baseMetadata({ session_id: 's', cwd: repo });
+    captureScopeKey({ session_id: 's', cwd: repo });
+    // One resolver, one directory. The resolver memoises per directory, so the
+    // second call is a lookup rather than a second `.git` walk.
+    expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[repo], [repo]]);
+    expect(resolveRepo).not.toHaveBeenCalled();
+  });
+
+  // An event that names an ABSOLUTE file is keyed by that file's checkout,
+  // whatever the session's cwd. A session that starts in a work repo and writes
+  // into a personal one must have each write keyed where it landed.
+  describe('with a file path', () => {
+    const WORK = 'git@github.com:acme/work-repo.git';
+    const WORK_KEY = 'github.com/acme/work-repo';
+
+    it('keys a file in a second checkout by that checkout, not by the session cwd', () => {
+      const work = checkout('work', WORK);
+      const personal = checkout('personal', 'https://github.com/someone/dotfiles.git');
+      vi.mocked(resolveRepoAttribution).mockClear();
+      expect(captureScopeKey({ session_id: 's', cwd: work }, join(personal, 'notes.md'))).toBe(
+        'github.com/someone/dotfiles',
+      );
+      // One walk, from the file's directory. The cwd is not walked for the key.
+      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[personal]]);
+    });
+
+    it('passes no key for a file outside any checkout, rather than the cwd key', () => {
+      const work = checkout('work', WORK);
+      const loose = join(root, 'loose');
+      mkdirSync(loose, { recursive: true });
+      expect(
+        captureScopeKey({ session_id: 's', cwd: work }, join(loose, 'notes.md')),
+      ).toBeUndefined();
+    });
+
+    it('passes no key for a file in a checkout with no remote, rather than the cwd key', () => {
+      const work = checkout('work', WORK);
+      const scratch = checkout('scratch', undefined);
+      expect(captureScopeKey({ cwd: work }, join(scratch, 'notes.md'))).toBeUndefined();
+    });
+
+    it.each([
+      ['a relative path', 'src/index.ts'],
+      ['an empty path', ''],
+      ['no path', undefined],
+    ])('keys %s by the cwd, as an event that names no file', (_label, filePath) => {
+      const work = checkout('work', WORK);
+      expect(captureScopeKey({ session_id: 's', cwd: work }, filePath)).toBe(WORK_KEY);
+    });
+
+    it('keys a file inside the cwd checkout like the cwd, walking up from the file', () => {
+      const work = checkout('work', WORK);
+      // The directory need not exist: a Write may create it, and the walk climbs
+      // by name until it meets the checkout's `.git`.
+      const deep = join(work, 'src', 'deep');
+      vi.mocked(resolveRepoAttribution).mockClear();
+      expect(captureScopeKey({ session_id: 's', cwd: work }, join(deep, 'index.ts'))).toBe(
+        WORK_KEY,
+      );
+      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[deep]]);
+    });
+
+    it('keys a file in a checkout nested inside the cwd checkout by the nested one', () => {
+      // Why there is no "the file is under the cwd root, reuse its key" shortcut.
+      const work = checkout('work', WORK);
+      const nested = checkout(join('work', 'vendor', 'lib'), 'https://github.com/someone/lib.git');
+      expect(captureScopeKey({ cwd: work }, join(nested, 'index.ts'))).toBe(
+        'github.com/someone/lib',
+      );
+    });
+
+    it('does not climb back into a checkout that a `..` segment left', () => {
+      const work = checkout('work', WORK);
+      mkdirSync(join(root, 'loose'), { recursive: true });
+      // Spelled with a literal `..`: join() would normalise it away.
+      const filePath = [work, '..', 'loose', 'notes.md'].join(sep);
+      expect(captureScopeKey({ cwd: work }, filePath)).toBeUndefined();
+    });
+  });
+});
+
+describe('searchRootScopeKey', () => {
+  // The key for an event that names a search root (Grep's `path`): a directory
+  // or one file, keyed by the nearest checkout of the root ITSELF.
+  const WORK = 'git@github.com:acme/work-repo.git';
+  const WORK_KEY = 'github.com/acme/work-repo';
+  const PERSONAL = 'https://github.com/someone/dotfiles.git';
+  const PERSONAL_KEY = 'github.com/someone/dotfiles';
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-search-root-key-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A checkout at `root/<name>` whose origin is `remote`, or with no remote. */
+  function checkout(name: string, remote: string | undefined): string {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(
+      join(dir, '.git', 'config'),
+      remote === undefined ? '[core]\n\tbare = false\n' : `[remote "origin"]\n\turl = ${remote}\n`,
+    );
+    return dir;
+  }
+
+  it('keys a root that IS the top level of another checkout by that checkout', () => {
+    // The case a file-style walk (from the parent directory) gets wrong: the
+    // parent of a checkout's top level is outside the checkout.
+    const work = checkout('work', WORK);
+    const personal = checkout('personal', PERSONAL);
+    vi.mocked(resolveRepoAttribution).mockClear();
+    expect(searchRootScopeKey({ cwd: work }, personal)).toBe(PERSONAL_KEY);
+    expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[personal]]);
+  });
+
+  it('keys a subdirectory root, and a single-file root, by the checkout they sit in', () => {
+    const personal = checkout('personal', PERSONAL);
+    mkdirSync(join(personal, 'src'), { recursive: true });
+    writeFileSync(join(personal, 'src', 'a.txt'), 'x');
+    const work = checkout('work', WORK);
+    expect(searchRootScopeKey({ cwd: work }, join(personal, 'src'))).toBe(PERSONAL_KEY);
+    expect(searchRootScopeKey({ cwd: work }, join(personal, 'src', 'a.txt'))).toBe(PERSONAL_KEY);
+  });
+
+  it('keys a root that is a nested clone inside the cwd checkout by the nested one', () => {
+    // Starting from the root's parent would name the enclosing work checkout.
+    const work = checkout('work', WORK);
+    const nested = checkout(join('work', 'vendor', 'lib'), 'https://github.com/someone/lib.git');
+    expect(searchRootScopeKey({ cwd: work }, nested)).toBe('github.com/someone/lib');
+  });
+
+  it.each([
+    ['a root outside any checkout', () => join(root, 'loose')],
+    ['a root in a checkout with no remote', () => checkout('scratch', undefined)],
+  ])('passes no key for %s, rather than the cwd key', (_label, make) => {
+    const work = checkout('work', WORK);
+    mkdirSync(join(root, 'loose'), { recursive: true });
+    expect(searchRootScopeKey({ cwd: work }, make())).toBeUndefined();
+  });
+
+  it.each([
+    ['a relative root', 'src'],
+    ['an empty root', ''],
+    ['no root', undefined],
+  ])('keys %s by the cwd, as an event that names no search root', (_label, searchRoot) => {
+    const work = checkout('work', WORK);
+    expect(searchRootScopeKey({ cwd: work }, searchRoot)).toBe(WORK_KEY);
+  });
+
+  it('does not climb back into a checkout that a `..` segment left', () => {
+    const work = checkout('work', WORK);
+    mkdirSync(join(root, 'loose'), { recursive: true });
+    // Spelled with a literal `..`: join() would normalise it away.
+    const searchRoot = [work, '..', 'loose'].join(sep);
+    expect(searchRootScopeKey({ cwd: work }, searchRoot)).toBeUndefined();
+  });
+
+  it('answers no key, rather than throwing, when there is no root and no working directory', () => {
+    const spy = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    });
+    try {
+      expect(searchRootScopeKey({ session_id: 's' })).toBeUndefined();
+    } finally {
+      spy.mockRestore();
     }
   });
 });

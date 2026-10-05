@@ -44,7 +44,15 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -63,6 +71,10 @@ async function main(): Promise<void> {
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, sessionId);
   const metadata = input ? baseMetadata(input) : undefined;
+  // Beside the metadata, never inside it: the key is local, the metadata is a
+  // wire shape. A prompt names no file, so this is the cwd key, and free:
+  // baseMetadata has just walked this directory and the resolver is memoised.
+  const scopeKey = input ? captureScopeKey(input) : undefined;
 
   const opened = openGateway(config);
   if (opened.gateway === null) {
@@ -87,6 +99,7 @@ async function main(): Promise<void> {
       config.dataDir,
       sessionId,
       input === null ? undefined : getString(input, 'transcript_path'),
+      input === null ? undefined : getString(input, 'cwd'),
       emit,
     )
   ) {
@@ -101,6 +114,7 @@ async function main(): Promise<void> {
       sourceTool: SOURCE_TOOL.Codex,
       text: prompt,
       metadata,
+      scopeKey,
     });
   } finally {
     await runtime.close();

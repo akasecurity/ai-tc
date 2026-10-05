@@ -13,6 +13,7 @@ import { buildModelRefusalEvent, recordSessionModel } from '@akasecurity/plugin-
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { decidePreModelSwitch, type PreModelSwitchOutput } from './model-guard.ts';
+import { captureScopeKey } from './shared.ts';
 
 export interface PreModelSwitchDeps {
   config: PluginConfig;
@@ -29,12 +30,19 @@ export interface PreModelSwitchDeps {
 /**
  * Decide one requested model switch, and record the model when it is allowed.
  *
+ * `cwd` is the payload's own, and only the refusal path reads it, to key the
+ * refusal row by `captureScopeKey` exactly as the session's path-less captures
+ * are keyed. An allowed switch pays no `.git` walk. It is REQUIRED rather than
+ * optional: the hook entry is the only production caller and no test can
+ * import an entry, so the compiler is the one check that the entry passes it.
+ *
  * Returns whether the switch was refused, purely so a test can assert on the
  * verdict without reading stdout; the entry ignores it.
  */
 export async function runPreModelSwitch(
   toModel: string,
   sessionId: string | undefined,
+  cwd: string | undefined,
   deps: PreModelSwitchDeps,
 ): Promise<boolean> {
   const { config } = deps;
@@ -72,6 +80,7 @@ export async function runPreModelSwitch(
           seam: 'switch',
           sourceTool: SOURCE_TOOL.ClaudeCode,
           occurredAt: (deps.now ?? (() => new Date()))().toISOString(),
+          scopeKey: captureScopeKey({ cwd }),
         }),
       );
     } catch {

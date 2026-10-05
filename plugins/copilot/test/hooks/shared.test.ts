@@ -1,6 +1,7 @@
-// The two stdio helpers in `shared.ts` that are neither the wire union nor the
+// The stdio helpers in `shared.ts` that are neither the wire union nor the
 // fail-open wrapper: `readStdin`, which every hook calls first, and
-// `baseMetadata`, which stamps what a capture is attributed to.
+// `baseMetadata` and `captureScopeKey`, which stamp what a capture is
+// attributed to.
 //
 // Both were reachable only through a spawned process before this file, so
 // nothing in-process saw them — and the e2e that drives them cannot distinguish
@@ -11,10 +12,19 @@
 // ./fail-open-wrapper.test.ts and ../hook-output-shapes.test.ts; this file
 // deliberately does not restate them.
 import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { baseMetadata, getString, parseJson, readStdin } from '../../src/hooks/shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  getString,
+  parseJson,
+  readStdin,
+} from '../../src/hooks/shared.ts';
 
 /**
  * A stand-in for `process.stdin` carrying only what `readStdin` touches.
@@ -208,6 +218,154 @@ describe('baseMetadata', () => {
   it('omits the repo when the cwd resolves to none', () => {
     const meta = baseMetadata('vscode', { session_id: 's', cwd: '/definitely/not/a/repo/xyz' });
     expect(meta).toEqual({ sessionId: 's' });
+  });
+});
+
+describe('captureScopeKey', () => {
+  const WORK = 'git@GitHub.com:acme/work-repo.git';
+  const WORK_KEY = 'github.com/acme/work-repo';
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-copilot-scope-key-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A checkout at `root/<name>` whose origin is `remote`, or with no remote. */
+  function checkout(name: string, remote: string | undefined): string {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(
+      join(dir, '.git', 'config'),
+      remote === undefined ? '[core]\n\tbare = false\n' : `[remote "origin"]\n\turl = ${remote}\n`,
+    );
+    return dir;
+  }
+
+  it('keys a CLI event by the cwd its payload carries', () => {
+    expect(captureScopeKey('cli', { sessionId: 's', cwd: checkout('work', WORK) })).toBe(WORK_KEY);
+  });
+
+  it('keys a VS Code event the same way when its hook entry declared a cwd', () => {
+    // The dialect is a payload format, not a host: a snake_case payload that
+    // carries a cwd is as attributable as a camelCase one.
+    expect(captureScopeKey('vscode', { session_id: 's', cwd: checkout('work', WORK) })).toBe(
+      WORK_KEY,
+    );
+  });
+
+  it('never keys from the process cwd, not even on the CLI where the slug falls back to it', () => {
+    const repo = checkout('work', WORK);
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    // Count from zero here, whatever an earlier case left recorded.
+    spy.mockClear();
+    try {
+      expect(captureScopeKey('cli', { sessionId: 's' })).toBeUndefined();
+      expect(captureScopeKey('vscode', { session_id: 's' })).toBeUndefined();
+      expect(spy).not.toHaveBeenCalled();
+      // The asymmetry is the point: the display slug still takes the fallback.
+      expect(baseMetadata('cli', { sessionId: 's' })?.repo).toBe('work-repo');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never keys a relative payload cwd, which only the process directory resolves', () => {
+    // The walk climbs by name, so fs reads a relative cwd against the process's
+    // real working directory, which a process.cwd spy does not move. So this
+    // changes directory, to where the relative cwd names a keyed checkout.
+    checkout('work', WORK);
+    const before = process.cwd();
+    process.chdir(root);
+    try {
+      expect(captureScopeKey('cli', { sessionId: 's', cwd: 'work' })).toBeUndefined();
+      // The control: the slug, read through the same walk, found the checkout.
+      expect(baseMetadata('cli', { sessionId: 's', cwd: 'work' })?.repo).toBe('work-repo');
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it.each([
+    ['a checkout with no remote', () => checkout('scratch', undefined)],
+    [
+      'a directory outside any checkout',
+      () => {
+        const dir = join(root, 'plain');
+        mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+    ],
+    ['an empty cwd', () => ''],
+  ])('passes no key for %s', (_label, make) => {
+    expect(captureScopeKey('cli', { sessionId: 's', cwd: make() })).toBeUndefined();
+  });
+
+  it('passes no key for a cwd that is not a string', () => {
+    expect(captureScopeKey('cli', { sessionId: 's', cwd: 42 })).toBeUndefined();
+  });
+
+  // An event that names an ABSOLUTE file is keyed by that file's checkout, on
+  // either dialect, and needs no payload cwd for it. The pre-tool-use hook
+  // passes a VS Code single-file writer's target here; its e2e covers which
+  // calls those are.
+  describe('with a file path', () => {
+    const PERSONAL = 'https://github.com/someone/dotfiles.git';
+    const PERSONAL_KEY = 'github.com/someone/dotfiles';
+
+    it('keys a file in a second checkout by that checkout, not by the payload cwd', () => {
+      const work = checkout('work', WORK);
+      const personal = checkout('personal', PERSONAL);
+      expect(
+        captureScopeKey('cli', { sessionId: 's', cwd: work }, join(personal, 'notes.md')),
+      ).toBe(PERSONAL_KEY);
+    });
+
+    it('keys an absolute file with no payload cwd, on either dialect', () => {
+      // A file names its own directory, so the process-cwd question never arises.
+      const file = join(checkout('personal', PERSONAL), 'notes.md');
+      expect(captureScopeKey('cli', { sessionId: 's' }, file)).toBe(PERSONAL_KEY);
+      expect(captureScopeKey('vscode', { session_id: 's' }, file)).toBe(PERSONAL_KEY);
+    });
+
+    it('passes no key for a file outside any checkout, rather than the payload cwd key', () => {
+      const work = checkout('work', WORK);
+      const loose = join(root, 'loose');
+      mkdirSync(loose, { recursive: true });
+      expect(
+        captureScopeKey('cli', { sessionId: 's', cwd: work }, join(loose, 'notes.md')),
+      ).toBeUndefined();
+    });
+
+    it('keys a relative path by the payload cwd, and never by the process cwd', () => {
+      const work = checkout('work', WORK);
+      expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, 'src/index.ts')).toBe(WORK_KEY);
+      const spy = vi.spyOn(process, 'cwd').mockReturnValue(work);
+      spy.mockClear();
+      try {
+        expect(captureScopeKey('cli', { sessionId: 's' }, 'src/index.ts')).toBeUndefined();
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('keys a file inside the payload cwd checkout like the cwd', () => {
+      const work = checkout('work', WORK);
+      const file = join(work, 'src', 'deep', 'index.ts');
+      expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, file)).toBe(WORK_KEY);
+    });
+
+    it('does not climb back into a checkout that a `..` segment left', () => {
+      const work = checkout('work', WORK);
+      mkdirSync(join(root, 'loose'), { recursive: true });
+      // Spelled with a literal `..`: join() would normalise it away.
+      const filePath = [work, '..', 'loose', 'notes.md'].join(sep);
+      expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, filePath)).toBeUndefined();
+    });
   });
 });
 

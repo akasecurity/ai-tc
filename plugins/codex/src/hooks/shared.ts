@@ -4,7 +4,9 @@
 // plugins/claude-code/src/hooks/shared.ts — Codex's hook stdin/stdout
 // contract is the same JSON-over-stdio shape.
 
-import { dataDir, recordHookFailOpen, resolveRepo } from '@akasecurity/plugin-sdk';
+import { dirname, isAbsolute, normalize } from 'node:path';
+
+import { dataDir, recordHookFailOpen, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 export async function readStdin(): Promise<string> {
@@ -84,13 +86,72 @@ export function emit(output: unknown): Promise<void> {
 // undefined when nothing could be derived, so callers keep passing the
 // optional metadata through unchanged. Per-hook fields (filePath, toolName, …)
 // are layered on by the caller.
+//
+// The slug comes from `resolveRepoAttribution`, the memoised walk
+// `captureScopeKey` below shares, so a hook that asks for both pays for one
+// `.git` walk and one config read. `repo` is exactly what `resolveRepo` returned
+// here before.
 export function baseMetadata(input: Record<string, unknown>): EventMetadata | undefined {
   const metadata: EventMetadata = {};
   const sessionId = getString(input, 'session_id');
   if (sessionId) metadata.sessionId = sessionId;
-  const repo = resolveRepo(getString(input, 'cwd') ?? process.cwd());
+  const repo = resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).repo;
   if (repo) metadata.repo = repo;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+// The scope key of the checkout this event happened in: the canonical
+// `host/owner/repo` of its origin (else first) remote. It is undefined for a
+// directory with no remote, a remote that is a local path, or no checkout at
+// all. A scoped attachment's verdict compares it against the enrolled repos,
+// and no key keeps the event on this machine.
+//
+// WHICH DIRECTORY. An event that names an ABSOLUTE file (the `filePath` the
+// caller stamps as metadata.filePath; today post-tool-use stamps one from
+// `tool_input.file_path`) is keyed by that file's checkout, so a session that
+// reads from a second checkout keys that read where the file lives. That key
+// never falls back to the cwd: a file outside any checkout, or in one with no
+// remote, gets no key at all.
+//
+// Every other event (no file, or a relative path) is keyed from the directory
+// baseMetadata reads, fallback included. SessionStart keys the session root
+// from that directory too (session-start.ts resolves `cwd ?? process.cwd()` the
+// same way), so a path-less event and its root agree by construction. An
+// apply_patch names its files inside the patch body, which is not parsed here,
+// so the hooks pass it no key at all rather than calling this (see
+// pre-tool-use.ts and post-tool-use.ts).
+//
+// The path is normalised first. The walk climbs by dirname, so a `..` segment
+// left in place would climb back into the directory it left and find that
+// checkout's `.git` for a file that is not in it.
+//
+// COST. A path-less event pays nothing extra: baseMetadata has just walked the
+// same directory, and the resolver is memoised per directory. A file's
+// directory is one more walk, memoised the same way. It is not skipped for a
+// file under the cwd's checkout, because a nested clone or submodule there is
+// its own checkout with its own key.
+//
+// TOTAL. `process.cwd()` throws when the working directory has been deleted, and
+// a throw here would reach the hook's outer catch and cost the capture itself.
+// A key that cannot be resolved is simply absent: fail closed toward the
+// server, never open toward the harness.
+//
+// The key rides BESIDE the event (`CaptureInput.scopeKey`), never inside
+// EventMetadata, because that is a published wire shape and this attribute is
+// local. metadata.repo stays the cwd's slug either way.
+export function captureScopeKey(
+  input: Record<string, unknown>,
+  filePath?: string,
+): string | undefined {
+  try {
+    const dir =
+      filePath !== undefined && isAbsolute(filePath)
+        ? dirname(normalize(filePath))
+        : (getString(input, 'cwd') ?? process.cwd());
+    return resolveRepoAttribution(dir).scopeKey;
+  } catch {
+    return undefined;
+  }
 }
 
 // The one thing a hook does on its way out of its fail-open catch: count the

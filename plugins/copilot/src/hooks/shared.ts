@@ -36,7 +36,9 @@
 //  4. TWO DIALECTS SHARE ONE `emit`. The narrowed `HookOutput` union below
 //     spans both; see `./dialect.ts` for how a payload is placed.
 
-import { resolveRepo } from '@akasecurity/plugin-sdk';
+import { dirname, isAbsolute, normalize } from 'node:path';
+
+import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 import type { Dialect } from './dialect.ts';
@@ -367,6 +369,10 @@ export async function runHookFailOpen(
  * every capture with whatever happens to live in the user's home. That host
  * therefore gets no fallback, and the metadata simply carries no repo.
  *
+ * The slug is read through `resolveRepoAttribution`, the memoised walk
+ * `captureScopeKey` shares, so a payload cwd is walked once for both. `repo` is
+ * exactly what `resolveRepo` returned here before.
+ *
  * Returns undefined when nothing could be derived, so callers keep passing the
  * optional metadata through unchanged.
  */
@@ -378,7 +384,52 @@ export function baseMetadata(
   const sessionId = readSessionId(dialect, input);
   if (sessionId) metadata.sessionId = sessionId;
   const cwd = readCwd(dialect, input) ?? (dialect === 'cli' ? process.cwd() : undefined);
-  const repo = cwd ? resolveRepo(cwd) : undefined;
+  const repo = cwd ? resolveRepoAttribution(cwd).repo : undefined;
   if (repo) metadata.repo = repo;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+/**
+ * The scope key of the checkout this event happened in: the canonical
+ * `host/owner/repo` of its origin (else first) remote, or undefined.
+ *
+ * An event that names an ABSOLUTE file is keyed by that file's checkout, and
+ * needs no payload cwd for it: the path names its own directory. That key
+ * never falls back to a cwd, so a file outside any checkout gets none. The path
+ * is normalised first, because the walk climbs by dirname and a `..` segment
+ * left in place would climb back into the checkout it left. The pre-tool-use
+ * hook passes the target of a VS Code single-file write, and decides there
+ * which calls those are and what a writer without a readable target gets.
+ *
+ * Every other event is keyed STRICTER THAN `baseMetadata`, on purpose: only
+ * from a cwd the PAYLOAD carries, on both dialects, and never from the hook
+ * process's own.
+ * - The slug's CLI fallback is a display guess, and a wrong one only mislabels
+ *   a row. A key decides what a scoped attachment lets leave the machine, so it
+ *   must come from the event itself.
+ * - Under VS Code the process cwd is the home directory anyway.
+ * - This host never runs a session start, so there is no session-root key the
+ *   fallback would need to match.
+ *
+ * A VS Code payload that does carry a cwd (its hook entry declared one) is keyed
+ * like a CLI one: the dialect is a payload format, not a host.
+ *
+ * TOTAL. A key that cannot be resolved is absent, never a throw that would
+ * cost the capture. The key rides beside the event (`CaptureInput.scopeKey`),
+ * never inside EventMetadata.
+ */
+export function captureScopeKey(
+  dialect: Dialect,
+  input: Record<string, unknown>,
+  filePath?: string,
+): string | undefined {
+  try {
+    if (filePath !== undefined && isAbsolute(filePath)) {
+      return resolveRepoAttribution(dirname(normalize(filePath))).scopeKey;
+    }
+    const cwd = readCwd(dialect, input);
+    return cwd === undefined ? undefined : resolveRepoAttribution(cwd).scopeKey;
+  } catch {
+    return undefined;
+  }
 }

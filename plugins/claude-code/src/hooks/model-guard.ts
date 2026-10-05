@@ -24,6 +24,7 @@ import {
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
+import { captureScopeKey } from './shared.ts';
 
 /**
  * The one arm of `PreToolUseOutput` this seam can produce.
@@ -152,12 +153,20 @@ export async function refuseProhibitedTurn(
  *
  * `emit` is a parameter rather than an import so this module stays free of the
  * stdout contract and testable without one.
+ *
+ * `cwd` is the payload's own, and only the refusal path reads it. The refusal
+ * row is keyed by `captureScopeKey` from the directory the turn's capture is
+ * keyed from, and an allowed turn pays no `.git` walk for a row it never writes.
+ * It is REQUIRED rather than optional: the hook entry is the only production
+ * caller and no test can import an entry, so the compiler is the one check that
+ * the entry passes it.
  */
 export async function handleProhibitedTurn(
   gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
   dataDir: string,
   sessionId: string | undefined,
   transcriptPath: string | undefined,
+  cwd: string | undefined,
   emit: (output: { decision: 'block'; reason: string }) => Promise<void>,
 ): Promise<boolean> {
   const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
@@ -176,6 +185,8 @@ export async function handleProhibitedTurn(
         seam: 'turn',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         occurredAt: new Date().toISOString(),
+        // Total by contract, so it cannot cost the record it stamps.
+        scopeKey: captureScopeKey({ cwd }),
       }),
     );
   } catch {
@@ -362,6 +373,11 @@ export function decideSubagentSpawn(
  * enforce, and resolving the model would be a file read spent to reach the same
  * allow — the same ordering `refuseProhibitedTurn` uses for the same reason.
  *
+ * The refusal row is keyed by `captureScopeKey` from the payload's `cwd`, the
+ * directory and fallback a capture that names no file is keyed from; a spawn
+ * names none. It is keyed only once the spawn is refused, so the tool calls
+ * this seam waves through pay no `.git` walk for it.
+ *
  * TOTAL AND FAIL-OPEN: any failure returns false and the call proceeds.
  */
 export async function handleSubagentSpawn(
@@ -414,6 +430,7 @@ export async function handleSubagentSpawn(
         seam: 'spawn',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         occurredAt: new Date().toISOString(),
+        scopeKey: captureScopeKey({ cwd }),
       }),
     );
   } catch {

@@ -479,6 +479,41 @@ describe('buildModelRefusalEvent carries the caller spelling beside the id', () 
   });
 });
 
+// The key a scoped attachment's verdict reads off a refusal row. Local only: the
+// attached gateway strips it before the row is forwarded, so these cases pin the
+// bag the LOCAL writer stores.
+describe('buildModelRefusalEvent carries the scope key on the local row', () => {
+  const base = {
+    id: 'e1',
+    sessionId: 's1',
+    model: 'claude-opus-5',
+    seam: 'turn' as const,
+    sourceTool: 'claude-code',
+    occurredAt: '2026-09-02T00:00:00.000Z',
+  };
+
+  it('writes scope_key when the caller resolved one', () => {
+    expect(
+      buildModelRefusalEvent({ ...base, scopeKey: 'github.com/acme/work-repo' }).attributes,
+    ).toEqual({
+      model: 'claude-opus-5',
+      refusal_seam: 'turn',
+      source_tool: 'claude-code',
+      scope_key: 'github.com/acme/work-repo',
+    });
+  });
+
+  it.each([
+    ['an absent key', undefined],
+    ['an empty key', ''],
+  ])('omits scope_key for %s rather than writing a blank one', (_label, scopeKey) => {
+    // A blank key would read as an identity; no key is what fails closed.
+    expect(buildModelRefusalEvent({ ...base, scopeKey }).attributes).not.toHaveProperty(
+      'scope_key',
+    );
+  });
+});
+
 describe('prohibitedModelMessage names the right remedy per seam', () => {
   it('sends a spawn refusal to the subagent argument, not to /model', () => {
     // A spawn is refused on an argument the caller chose, so pointing them at

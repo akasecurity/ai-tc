@@ -34,10 +34,12 @@
  * `runHookFailOpen` is what guarantees the exit code; see ./shared.ts for the
  * limit of that guarantee, which is everything that yields.
  */
+import { isAbsolute } from 'node:path';
+
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import type { Dialect } from './dialect.ts';
+import type { Dialect, ToolCall } from './dialect.ts';
 import { detectDialect, readSessionId, readToolCall } from './dialect.ts';
 import { readEventName } from './event-name.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
@@ -47,7 +49,15 @@ import {
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
-import { baseMetadata, parseJson, readStdin, runHookFailOpen, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  getString,
+  parseJson,
+  readStdin,
+  runHookFailOpen,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -78,6 +88,60 @@ function kindFor(dialect: Dialect, toolName: string): 'code_change' | 'tool_use'
       ? ['apply_patch']
       : ['create_file', 'replace_string_in_file', 'insert_edit_into_file', 'apply_patch'];
   return writers.includes(toolName) ? 'code_change' : 'tool_use';
+}
+
+/**
+ * VS Code's single-file writers, which name the one file they write in a
+ * `filePath` input. Doc-derived, like `VSCODE_SCANNABLE_FIELDS`: the fixture
+ * README cites `filePath` for `create_file` and `replace_string_in_file`, and
+ * records only `code` and `explanation` for `insert_edit_into_file`, the same
+ * kind of tool. A wrong guess costs a key, never the capture (see scopeKeyOf).
+ *
+ * `apply_patch` is not one. On either dialect it names its files inside the
+ * patch body (its `input` field), which this hook does not parse. It is
+ * recorded whole as a `code_change`, so it gets NO key (see scopeKeyOf).
+ */
+const VSCODE_FILE_WRITERS: ReadonlySet<string> = new Set([
+  'create_file',
+  'replace_string_in_file',
+  'insert_edit_into_file',
+]);
+
+/**
+ * The scope key of this call's captures. It rides beside the metadata
+ * (`CaptureInput.scopeKey`), never inside it.
+ *
+ * A VS Code single-file writer is keyed by the file it writes and by nothing
+ * else. Its content is recorded whole, so a write into one checkout from a
+ * session whose cwd is another must carry the key of the checkout it wrote.
+ * When `filePath` is missing or not absolute the call gets NO key rather than
+ * the cwd's: the field name is unconfirmed, and no key fails closed where the
+ * cwd's could name a checkout the file is not in. The path is not stamped as
+ * metadata.filePath, because that would change what these events carry on the
+ * wire.
+ *
+ * An `apply_patch`, on either dialect, gets NO key either. Its files are named
+ * inside the patch body, which this hook does not read, and its content is
+ * recorded whole. The payload cwd's key would stamp a patch into a personal
+ * checkout with an enrolled key. With no key the patch stays local on a scoped
+ * attachment, a coverage gap rather than a leak.
+ *
+ * Every other call names no file this hook reads, and is keyed by the payload
+ * cwd alone (see captureScopeKey).
+ */
+function scopeKeyOf(
+  dialect: Dialect,
+  input: Record<string, unknown>,
+  call: ToolCall,
+): string | undefined {
+  if (call.name === 'apply_patch') return undefined;
+  if (dialect !== 'vscode' || !VSCODE_FILE_WRITERS.has(call.name)) {
+    return captureScopeKey(dialect, input);
+  }
+  const target = getString(call.args, 'filePath');
+  return target !== undefined && isAbsolute(target)
+    ? captureScopeKey(dialect, input, target)
+    : undefined;
 }
 
 async function main(): Promise<HookOutput | undefined> {
@@ -133,6 +197,9 @@ async function main(): Promise<HookOutput | undefined> {
   const kind = kindFor(dialect, call.name);
   const metadata = baseMetadata(dialect, input) ?? {};
   metadata.toolName = call.name;
+  // A VS Code single-file write by its own target, every other call by the
+  // payload cwd only; see scopeKeyOf. Resolved once, outside the field loop.
+  const scopeKey = scopeKeyOf(dialect, input, call);
 
   const scanned: ScannedField[] = [];
   try {
@@ -141,7 +208,7 @@ async function main(): Promise<HookOutput | undefined> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because

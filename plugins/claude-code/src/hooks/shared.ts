@@ -2,7 +2,9 @@
 // Detection, policy, and persistence live in @akasecurity/plugin-sdk; these
 // just move bytes between Claude Code and the runtime.
 
-import { dataDir, recordHookFailOpen, resolveRepo } from '@akasecurity/plugin-sdk';
+import { dirname, isAbsolute, normalize } from 'node:path';
+
+import { dataDir, recordHookFailOpen, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 import type { PreModelSwitchOutput } from './model-guard.ts';
@@ -121,13 +123,99 @@ export function emit(output: HookOutput): Promise<void> {
 // hooks run in the project root, so this is the same directory. Returns undefined
 // when nothing could be derived, so callers keep passing the optional metadata
 // through unchanged. Per-hook fields (filePath, …) are layered on by the caller.
+//
+// The slug comes from `resolveRepoAttribution`, the memoised walk
+// `captureScopeKey` below shares, so a hook that asks for both pays for one
+// `.git` walk and one config read. `repo` is exactly what `resolveRepo` returned
+// here before.
 export function baseMetadata(input: Record<string, unknown>): EventMetadata | undefined {
   const metadata: EventMetadata = {};
   const sessionId = getString(input, 'session_id');
   if (sessionId) metadata.sessionId = sessionId;
-  const repo = resolveRepo(getString(input, 'cwd') ?? process.cwd());
+  const repo = resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).repo;
   if (repo) metadata.repo = repo;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+// The scope key of the checkout this event happened in: the canonical
+// `host/owner/repo` of its origin (else first) remote. It is undefined for a
+// directory with no remote, a remote that is a local path, or no checkout at
+// all. A scoped attachment's verdict compares it against the enrolled repos,
+// and no key keeps the event on this machine.
+//
+// WHICH DIRECTORY. An event that names an ABSOLUTE file (the `filePath` the
+// caller stamps as metadata.filePath: a Write, Edit, MultiEdit or NotebookEdit
+// target, a Read source) is keyed by that file's checkout. A session that
+// starts in one repo and writes into another must have each write keyed where
+// it landed, or a file in a personal checkout would leave under the work key.
+// That key never falls back to the cwd: a file outside any checkout, or in one
+// with no remote, gets no key at all.
+//
+// Every other event (no file, or a relative path) is keyed from the directory
+// baseMetadata reads, fallback included. SessionStart keys the session root
+// from that directory too (session-start.ts resolves `cwd ?? process.cwd()` the
+// same way), so a path-less event and its root agree by construction. A
+// relative path is not resolved against the cwd: the file tools take absolute
+// paths, and the cwd key is what an event without one gets.
+//
+// The path is normalised first. The walk climbs by dirname, so a `..` segment
+// left in place would climb back into the directory it left and find that
+// checkout's `.git` for a file that is not in it.
+//
+// COST. A path-less event pays nothing extra: baseMetadata has just walked the
+// same directory, and the resolver is memoised per directory. A file's
+// directory is one more walk (one existsSync per level up to its `.git`, one
+// config read), memoised the same way. It is not skipped for a file under the
+// cwd's checkout, because a nested clone or submodule there is its own
+// checkout with its own key.
+//
+// TOTAL. The resolver never throws by contract, but `process.cwd()` does when
+// the working directory has been deleted. A throw here would reach the hook's
+// outer catch and cost the capture itself. A key that cannot be resolved is
+// simply absent, which fails closed toward the server and never open toward
+// the harness.
+//
+// The key rides BESIDE the event (`CaptureInput.scopeKey`), never inside
+// EventMetadata, because that is a published wire shape and this attribute is
+// local. metadata.repo stays the cwd's slug either way: it is wire too, and
+// machine-mode bytes do not change.
+export function captureScopeKey(
+  input: Record<string, unknown>,
+  filePath?: string,
+): string | undefined {
+  try {
+    const dir =
+      filePath !== undefined && isAbsolute(filePath)
+        ? dirname(normalize(filePath))
+        : (getString(input, 'cwd') ?? process.cwd());
+    return resolveRepoAttribution(dir).scopeKey;
+  } catch {
+    return undefined;
+  }
+}
+
+// The scope key for an event that names a SEARCH ROOT rather than a file: Grep's
+// `path`, which is a directory or a single file. It follows captureScopeKey's
+// rules (an absolute root is normalised and never falls back to the cwd; no
+// root, or a relative one, takes the cwd key) with one difference: the walk
+// starts at the root ITSELF, not at its parent. A root may be a checkout's top
+// level, and starting at the parent would miss that checkout, or name the
+// enclosing one when the root is a nested clone or submodule. A single-file
+// root needs no special case: the resolver climbs by name, and a file has no
+// `.git` of its own to find on the way.
+export function searchRootScopeKey(
+  input: Record<string, unknown>,
+  searchRoot?: string,
+): string | undefined {
+  try {
+    const dir =
+      searchRoot !== undefined && isAbsolute(searchRoot)
+        ? normalize(searchRoot)
+        : (getString(input, 'cwd') ?? process.cwd());
+    return resolveRepoAttribution(dir).scopeKey;
+  } catch {
+    return undefined;
+  }
 }
 
 // The one thing a hook does on its way out of its fail-open catch: count the

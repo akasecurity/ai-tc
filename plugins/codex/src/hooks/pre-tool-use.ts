@@ -30,7 +30,15 @@ import {
   decidePreToolUse,
   SCANNABLE_FIELDS,
 } from './pre-tool-use-decision.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -87,6 +95,13 @@ async function main(): Promise<void> {
   const kind = toolName === 'apply_patch' ? 'code_change' : 'tool_use';
   const metadata = baseMetadata(input) ?? {};
   if (toolName) metadata.toolName = toolName;
+  // Bash is keyed by the session cwd: it names no file this hook reads. An
+  // apply_patch gets NO key. It is recorded whole (persist 'always') and names
+  // its files inside the patch body (`tool_input.command`), which this hook does
+  // not parse, so the cwd's key could name a checkout the patch never wrote. No
+  // key keeps it local on a scoped attachment: a coverage gap, never a leak.
+  // Same rule as Copilot's apply_patch. Beside the metadata, never inside it.
+  const scopeKey = toolName === 'apply_patch' ? undefined : captureScopeKey(input);
 
   const scanned: ScannedField[] = [];
   try {
@@ -95,7 +110,7 @@ async function main(): Promise<void> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because

@@ -20,6 +20,8 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { captureScopeKey } from './shared.ts';
+
 /**
  * The model this Codex session is running on, or undefined when it cannot be
  * told.
@@ -86,12 +88,20 @@ export async function refuseProhibitedTurn(
  *
  * `emit` is a parameter rather than an import so this module stays free of the
  * stdout contract and testable without one.
+ *
+ * `cwd` is the payload's own, and only the refusal path reads it. The refusal
+ * row is keyed by `captureScopeKey` from the directory the turn's capture is
+ * keyed from, and an allowed turn pays no `.git` walk for a row it never writes.
+ * It is REQUIRED rather than optional: the hook entry is the only production
+ * caller and no test can import an entry, so the compiler is the one check that
+ * the entry passes it.
  */
 export async function handleProhibitedTurn(
   gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
   dataDir: string,
   sessionId: string | undefined,
   transcriptPath: string | undefined,
+  cwd: string | undefined,
   emit: (output: { decision: 'block'; reason: string }) => Promise<void>,
 ): Promise<boolean> {
   const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
@@ -108,6 +118,8 @@ export async function handleProhibitedTurn(
         seam: 'turn',
         sourceTool: SOURCE_TOOL.Codex,
         occurredAt: new Date().toISOString(),
+        // Total by contract, so it cannot cost the record it stamps.
+        scopeKey: captureScopeKey({ cwd }),
       }),
     );
   } catch {

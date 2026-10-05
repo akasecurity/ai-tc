@@ -366,6 +366,53 @@ describe('captureScopeKey', () => {
       expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, file)).toBe(WORK_KEY);
     });
 
+    // A named path is walked from the path ITSELF, so one rule serves a file, a
+    // directory and a checkout's top level. The walk probes `<path>/.git` first:
+    // a file has none of its own, and a path not yet created has none to find.
+    describe('that is a directory', () => {
+      const NESTED = 'https://github.com/someone/lib.git';
+      const NESTED_KEY = 'github.com/someone/lib';
+
+      it('keys a checkout top level nested inside the payload cwd checkout by the nested one', () => {
+        const work = checkout('work', WORK);
+        const nested = checkout(join('work', 'vendor', 'lib'), NESTED);
+        expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, nested)).toBe(NESTED_KEY);
+        expect(captureScopeKey('vscode', { session_id: 's', cwd: work }, nested)).toBe(NESTED_KEY);
+      });
+
+      it('keys another checkout top level by that checkout, though its parent is in none', () => {
+        const work = checkout('work', WORK);
+        const personal = checkout('personal', PERSONAL);
+        expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, personal)).toBe(PERSONAL_KEY);
+        // A top level names its own directory, so no payload cwd is needed either.
+        expect(captureScopeKey('cli', { sessionId: 's' }, personal)).toBe(PERSONAL_KEY);
+      });
+
+      it('keys a file inside the nested checkout, and one not yet created, by their checkout', () => {
+        const work = checkout('work', WORK);
+        const nested = checkout(join('work', 'vendor', 'lib'), NESTED);
+        const input = { sessionId: 's', cwd: work };
+        expect(captureScopeKey('cli', input, join(nested, 'index.ts'))).toBe(NESTED_KEY);
+        // Neither the file nor its directories exist: a write may be creating them.
+        expect(captureScopeKey('cli', input, join(work, 'src', 'new', 'index.ts'))).toBe(WORK_KEY);
+        expect(captureScopeKey('cli', input, join(nested, 'new', 'index.ts'))).toBe(NESTED_KEY);
+      });
+
+      it('keys a directory that is not a checkout top level by the checkout around it', () => {
+        const work = checkout('work', WORK);
+        const sub = join(work, 'src', 'deep');
+        mkdirSync(sub, { recursive: true });
+        expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, sub)).toBe(WORK_KEY);
+      });
+
+      it('passes no key for a directory outside any checkout, rather than the payload cwd key', () => {
+        const work = checkout('work', WORK);
+        const loose = join(root, 'loose');
+        mkdirSync(loose, { recursive: true });
+        expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, loose)).toBeUndefined();
+      });
+    });
+
     it('does not climb back into a checkout that a `..` segment left', () => {
       const work = checkout('work', WORK);
       mkdirSync(join(root, 'loose'), { recursive: true });

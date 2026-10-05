@@ -4,7 +4,7 @@
 // plugins/claude-code/src/hooks/shared.ts — Codex's hook stdin/stdout
 // contract is the same JSON-over-stdio shape.
 
-import { dirname, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
+import { isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 
 import { dataDir, recordHookFailOpen, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
@@ -107,14 +107,23 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // covers, and to keep an event with no key on this machine; that check is not
 // part of this change.
 //
-// WHICH DIRECTORY. An event that names a file (the `filePath` the caller stamps
+// WHICH DIRECTORY. An event that names a path (the `filePath` the caller stamps
 // as metadata.filePath; today post-tool-use stamps one from
-// `tool_input.file_path`) is keyed by that file's checkout, so a session that
-// reads from a second checkout keys that read where the file lives. That key
-// never falls back to the cwd: a file outside any checkout, or in one with no
-// remote, gets no key at all.
+// `tool_input.file_path`) is keyed by the checkout that path is in, so a session
+// that reads from a second checkout keys that read where the path lives. That
+// key never falls back to the cwd: a path outside any checkout, or in one with
+// no remote, gets no key at all.
 //
-// A RELATIVE file path names a location too, read against the event's cwd: it is
+// The walk starts at the named path ITSELF, not at its parent. The resolver
+// climbs by name and probes `<start>/.git` before it climbs, so one rule serves
+// every shape a path can have. A file has no `.git` of its own, so the walk
+// reaches the checkout its directory is in. A path that does not exist yet has
+// none either, and lands the same way. A directory that is a checkout's top
+// level, or a clone or submodule nested in another checkout, is found at the
+// first probe, which starting at the parent would skip: the nested clone would
+// be keyed by the checkout around it.
+//
+// A RELATIVE path names a location too, read against the event's cwd: it is
 // resolved against an absolute cwd and keyed as an absolute one is, so a `..`
 // that leaves the checkout the session is in lands in the checkout it really
 // reaches, or in none. The cwd is the payload's own, else the hook process's. A
@@ -129,15 +138,15 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // so the hooks pass it no key at all rather than calling this (see
 // pre-tool-use.ts and post-tool-use.ts).
 //
-// The path is normalised first. The walk climbs by dirname, so a `..` segment
-// left in place would climb back into the directory it left and find that
-// checkout's `.git` for a file that is not in it.
+// The path is normalised first. The walk climbs by name, so a `..` segment left
+// in place would climb back into the directory it left and find that
+// checkout's `.git` for a path that is not in it.
 //
 // COST. A path-less event pays nothing extra: baseMetadata has just walked the
-// same directory, and the resolver is memoised per directory. A file's
-// directory is one more walk, memoised the same way. It is not skipped for a
-// file under the cwd's checkout, because a nested clone or submodule there is
-// its own checkout with its own key.
+// same directory, and the resolver is memoised per directory. A named path is
+// one more walk, memoised the same way. It is not skipped for a path under the
+// cwd's checkout, because a nested clone or submodule there is its own checkout
+// with its own key.
 //
 // TOTAL. `process.cwd()` throws when the working directory has been deleted, and
 // a throw here would reach the hook's outer catch and cost the capture itself.
@@ -155,10 +164,10 @@ export function captureScopeKey(
     if (filePath === undefined || filePath === '') {
       return resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).scopeKey;
     }
-    if (isAbsolute(filePath)) return resolveRepoAttribution(dirname(normalize(filePath))).scopeKey;
+    if (isAbsolute(filePath)) return resolveRepoAttribution(normalize(filePath)).scopeKey;
     const cwd = getString(input, 'cwd') ?? process.cwd();
     if (!isAbsolute(cwd)) return undefined;
-    return resolveRepoAttribution(dirname(resolvePath(cwd, filePath))).scopeKey;
+    return resolveRepoAttribution(resolvePath(cwd, filePath)).scopeKey;
   } catch {
     return undefined;
   }

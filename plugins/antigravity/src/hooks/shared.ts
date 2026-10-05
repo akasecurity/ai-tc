@@ -23,7 +23,7 @@
 //     `session_id`, `cwd`). `workspacePaths` is an ARRAY — there is no `cwd`.
 
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, join, normalize, resolve as resolvePath } from 'node:path';
+import { isAbsolute, join, normalize, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
@@ -343,11 +343,11 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  * first. That would forward personal content from a work-first session, or
  * hold back work content from a personal-first one. So:
  *
- *   - an ABSOLUTE `targetPath` keys by the checkout that holds that file,
- *     found by walking up from its directory. The roots are not consulted,
- *     whether or not the file lies under one: a clone or submodule nested in
+ *   - an ABSOLUTE `targetPath` keys by the checkout that holds that path,
+ *     found by walking up from the path itself. The roots are not consulted,
+ *     whether or not the path lies under one: a clone or submodule nested in
  *     a root is its own checkout with its own key, a root that is a plain
- *     folder of clones has no key while the file's clone does, and a file
+ *     folder of clones has no key while the path's clone does, and a path
  *     outside every checkout, or in one with no remote, gets no key at all.
  *     It never falls back to a root's key, or a write into a personal folder
  *     from a session rooted in a work repo would leave under the work key;
@@ -371,6 +371,15 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  * as it does for the slug. Whether the host sends `TargetFile` absolute is
  * unverified against a live host (see pre-tool-use-decision.ts).
  *
+ * The walk starts at the target ITSELF, not at its parent. The resolver climbs
+ * by name and probes `<start>/.git` before it climbs, so one rule serves every
+ * shape a target can have. A file has no `.git` of its own, so the walk reaches
+ * the checkout its directory is in; a target that does not exist yet has none
+ * either, and lands the same way. A directory that is a checkout's top level,
+ * or a clone nested in a root, is found at the first probe, which starting at
+ * the parent would skip: the nested clone would be keyed by the checkout around
+ * it.
+ *
  * The target is resolved first. Resolving an absolute path is lexical: it never
  * reads `process.cwd()`, and it drops `..` segments, which the walk would
  * otherwise climb back through into the checkout the path left.
@@ -380,8 +389,8 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  * (pre-invocation.ts) is resolved from, so a path-less event and its root agree.
  *
  * COST. Every lookup goes through `resolveRepoAttribution`, memoised per
- * directory. A target's directory is one walk (one existence check per level up
- * to its `.git`, one config read). A path-less event shares the first root's
+ * directory. A target is one walk (one existence check per level up to its
+ * `.git`, one config read). A path-less event shares the first root's
  * walk with `baseMetadata`, and with several roots walks each further root once.
  *
  * TOTAL. Any throw (`process.cwd()` on a deleted directory included) answers no
@@ -394,7 +403,7 @@ export function captureScopeKey(
 ): string | undefined {
   try {
     if (targetPath !== undefined && isAbsolute(targetPath)) {
-      return resolveRepoAttribution(dirname(resolvePath(targetPath))).scopeKey;
+      return resolveRepoAttribution(resolvePath(targetPath)).scopeKey;
     }
     const named = workspaceRoots(input);
     const roots = named.length > 0 ? named : [process.cwd()];
@@ -402,7 +411,7 @@ export function captureScopeKey(
       // A relative target: it names a location, read against the only root.
       const [only] = roots;
       if (roots.length !== 1 || only === undefined || !isAbsolute(only)) return undefined;
-      return resolveRepoAttribution(dirname(normalize(join(only, targetPath)))).scopeKey;
+      return resolveRepoAttribution(normalize(join(only, targetPath))).scopeKey;
     }
     const [first, ...rest] = roots.map((dir) => resolveRepoAttribution(dir).scopeKey);
     return rest.every((key) => key === first) ? first : undefined;

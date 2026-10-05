@@ -110,6 +110,53 @@ describe('captureScopeKey: an absolute target keys by the checkout that holds it
   });
 });
 
+// A named target is walked from the target ITSELF, so one rule serves a file, a
+// directory and a checkout's top level. The walk probes `<target>/.git` first: a
+// file has none of its own, and a target not yet created has none to find.
+describe('captureScopeKey: a target that is a directory keys by that directory', () => {
+  it('keys a checkout top level nested under a root by that checkout, not by the root', () => {
+    const work = checkout('work', WORK);
+    const vendored = checkout(join('work', 'vendor', 'lib'), VENDOR);
+    const input = { workspacePaths: [work] };
+    expect(captureScopeKey(input, vendored)).toBe(VENDOR_KEY);
+    // The control: the same clone, named by a file inside it.
+    expect(captureScopeKey(input, join(vendored, 'index.ts'))).toBe(VENDOR_KEY);
+  });
+
+  it('keys another checkout top level by that checkout, though its parent is in none', () => {
+    const work = checkout('work', WORK);
+    const personal = checkout('personal', PERSONAL);
+    expect(captureScopeKey({ workspacePaths: [work] }, personal)).toBe(PERSONAL_KEY);
+  });
+
+  it('keys a relative checkout top level by that checkout, read against the only root', () => {
+    const work = checkout('work', WORK);
+    checkout(join('work', 'vendor', 'lib'), VENDOR);
+    checkout('personal', PERSONAL);
+    const input = { workspacePaths: [work] };
+    expect(captureScopeKey(input, join('vendor', 'lib'))).toBe(VENDOR_KEY);
+    expect(captureScopeKey(input, join('..', 'personal'))).toBe(PERSONAL_KEY);
+  });
+
+  it('keys a file not yet created, and a directory that is no top level, by the checkout around', () => {
+    const work = checkout('work', WORK);
+    const input = { workspacePaths: [work] };
+    // Neither the file nor its directories exist: a write may be creating them.
+    expect(captureScopeKey(input, join(work, 'src', 'new', 'index.ts'))).toBe(WORK_KEY);
+    expect(captureScopeKey(input, join('src', 'new', 'index.ts'))).toBe(WORK_KEY);
+    mkdirSync(join(work, 'src', 'deep'), { recursive: true });
+    expect(captureScopeKey(input, join(work, 'src', 'deep'))).toBe(WORK_KEY);
+    expect(captureScopeKey(input, join('src', 'deep'))).toBe(WORK_KEY);
+  });
+
+  it('gives no key to a directory outside every checkout, even when every root agrees', () => {
+    const work = checkout('work', WORK);
+    const loose = join(root, 'loose');
+    mkdirSync(loose, { recursive: true });
+    expect(captureScopeKey({ workspacePaths: [work] }, loose)).toBeUndefined();
+  });
+});
+
 describe('captureScopeKey: with no absolute target, every root must agree', () => {
   it('passes no key for an event with no path when the roots disagree', () => {
     const input = { workspacePaths: [checkout('personal', PERSONAL), checkout('work', WORK)] };

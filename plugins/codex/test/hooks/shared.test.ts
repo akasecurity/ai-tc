@@ -181,7 +181,8 @@ describe('captureScopeKey', () => {
       expect(captureScopeKey({ session_id: 's', cwd: work }, join(personal, 'notes.md'))).toBe(
         'github.com/someone/dotfiles',
       );
-      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[personal]]);
+      // One walk, from the named file itself.
+      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[join(personal, 'notes.md')]]);
     });
 
     it('passes no key for a file outside any checkout, rather than the cwd key', () => {
@@ -216,7 +217,9 @@ describe('captureScopeKey', () => {
         expect(captureScopeKey({ session_id: 's', cwd: work }, join('src', 'index.ts'))).toBe(
           WORK_KEY,
         );
-        expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[join(work, 'src')]]);
+        expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([
+          [join(work, 'src', 'index.ts')],
+        ]);
       });
 
       it('keys a path that escapes into a sibling checkout by that checkout', () => {
@@ -273,7 +276,7 @@ describe('captureScopeKey', () => {
       expect(captureScopeKey({ session_id: 's', cwd: work }, join(deep, 'index.ts'))).toBe(
         WORK_KEY,
       );
-      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[deep]]);
+      expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[join(deep, 'index.ts')]]);
     });
 
     it('keys a file in a checkout nested inside the cwd checkout by the nested one', () => {
@@ -282,6 +285,66 @@ describe('captureScopeKey', () => {
       expect(captureScopeKey({ cwd: work }, join(nested, 'index.ts'))).toBe(
         'github.com/someone/lib',
       );
+    });
+
+    // A named path is walked from the path ITSELF, so one rule serves a file, a
+    // directory and a checkout's top level. The walk probes `<path>/.git` first:
+    // a file has none of its own, and a path not yet created has none to find.
+    describe('that is a directory', () => {
+      it('keys a checkout top level nested inside the cwd checkout by the nested one', () => {
+        const work = checkout('work', WORK);
+        const nested = checkout(
+          join('work', 'vendor', 'lib'),
+          'https://github.com/someone/lib.git',
+        );
+        vi.mocked(resolveRepoAttribution).mockClear();
+        expect(captureScopeKey({ session_id: 's', cwd: work }, nested)).toBe(
+          'github.com/someone/lib',
+        );
+        // One walk, from the named path itself and not from its parent.
+        expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[nested]]);
+      });
+
+      it('keys another checkout top level by that checkout, though its parent is in none', () => {
+        const work = checkout('work', WORK);
+        const personal = checkout('personal', 'https://github.com/someone/dotfiles.git');
+        expect(captureScopeKey({ session_id: 's', cwd: work }, personal)).toBe(
+          'github.com/someone/dotfiles',
+        );
+      });
+
+      it('keys a relative checkout top level by that checkout, read against the cwd', () => {
+        const work = checkout('work', WORK);
+        checkout(join('work', 'vendor', 'lib'), 'https://github.com/someone/lib.git');
+        checkout('personal', 'https://github.com/someone/dotfiles.git');
+        expect(captureScopeKey({ session_id: 's', cwd: work }, join('vendor', 'lib'))).toBe(
+          'github.com/someone/lib',
+        );
+        expect(captureScopeKey({ session_id: 's', cwd: work }, join('..', 'personal'))).toBe(
+          'github.com/someone/dotfiles',
+        );
+      });
+
+      it('keys a directory that is not a checkout top level by the checkout around it', () => {
+        const work = checkout('work', WORK);
+        const sub = join(work, 'src', 'deep');
+        mkdirSync(sub, { recursive: true });
+        expect(captureScopeKey({ session_id: 's', cwd: work }, sub)).toBe(WORK_KEY);
+        // The control: inside the nested clone, the clone's key.
+        const nested = checkout(
+          join('work', 'vendor', 'lib'),
+          'https://github.com/someone/lib.git',
+        );
+        mkdirSync(join(nested, 'src'), { recursive: true });
+        expect(captureScopeKey({ cwd: work }, join(nested, 'src'))).toBe('github.com/someone/lib');
+      });
+
+      it('passes no key for a directory outside any checkout, rather than the cwd key', () => {
+        const work = checkout('work', WORK);
+        const loose = join(root, 'loose');
+        mkdirSync(loose, { recursive: true });
+        expect(captureScopeKey({ session_id: 's', cwd: work }, loose)).toBeUndefined();
+      });
     });
 
     it('does not climb back into a checkout that a `..` segment left', () => {

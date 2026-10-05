@@ -255,6 +255,27 @@ describe('every Codex capture site stamps the key of the checkout it ran in', ()
     }, 'aka-codex-scope-key-relative-inside-');
   });
 
+  it('post-tool-use → a file_path naming a clone nested in the cwd checkout carries the clone key', () => {
+    // A path is keyed from the path itself. Starting from its parent would key a
+    // clone kept inside the session's checkout by the checkout around it.
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      const nested = checkout(home, PERSONAL_REMOTE, join('checkout', 'vendor', 'lib'));
+      const payload = {
+        tool_name: 'mcp__files__read_file',
+        tool_input: { file_path: nested },
+        tool_response: `TWILIO_KEY=${SECRET}`,
+        session_id: SESSION_ID,
+        cwd,
+        hook_event_name: 'PostToolUse',
+      };
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: tempHomeEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: PERSONAL_KEY });
+    }, 'aka-codex-scope-key-nested-root-');
+  });
+
   it('pre-tool-use → an apply_patch code_change row carries no key, not the cwd key', () => {
     // An apply_patch is recorded whole (persist 'always') and names its files
     // inside the patch body, which the hook does not parse. The cwd's key could

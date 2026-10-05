@@ -332,6 +332,30 @@ describe('a capture that names a relative file is keyed by where the file resolv
   });
 });
 
+describe('a capture whose file_path names a checkout top level is keyed by that checkout', () => {
+  // A path is keyed from the path itself. Starting from its parent would key a
+  // clone kept inside the session's checkout by the checkout around it.
+  for (const site of FILE_SITES) {
+    it(`${site.hook} → a ${site.kind} row for a clone nested in the cwd checkout carries the clone key`, () => {
+      withTempHome((home) => {
+        seedMonitor(home);
+        const cwd = checkout(home, WORK_REMOTE);
+        const nested = checkout(home, PERSONAL_REMOTE, join('checkout', 'vendor', 'lib'));
+        const run = runHook(site.hook, JSON.stringify(site.payload(cwd, nested)), {
+          env: hookEnv(home),
+        });
+        expect(run.status, run.stderr).toBe(0);
+        // Keyed by the named clone; the slug stays the session's.
+        expectEvery(fileCapturedRows(home), {
+          kind: site.kind,
+          scopeKey: PERSONAL_KEY,
+          repo: 'work-repo',
+        });
+      }, `aka-scope-key-nested-root-${site.hook}-`);
+    });
+  }
+});
+
 describe('a PostToolUse call that names a notebook is keyed by where the notebook is', () => {
   // An MCP tool may name its target in `notebook_path`, as NotebookEdit does at
   // PreToolUse. The response site reads it for the key the same way, absolute or
@@ -437,8 +461,8 @@ describe('a PostToolUse call that names a notebook is keyed by where the noteboo
 describe('a Grep capture is keyed by the search root it names, else by the session cwd', () => {
   // Grep's `path` is the root it searches: a directory or one file. Its output
   // is what the response site records, so the key follows the root. The root
-  // that is another checkout's TOP LEVEL is the case a file-style walk, from
-  // the root's parent, would miss.
+  // that is another checkout's TOP LEVEL is the case a walk from the root's
+  // parent would miss; a named file path is walked from itself by the same rule.
   function grepPayload(cwd: string, toolInput: Record<string, unknown>): Record<string, unknown> {
     return {
       tool_name: 'Grep',

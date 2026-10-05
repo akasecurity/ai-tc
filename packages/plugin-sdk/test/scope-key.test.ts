@@ -169,6 +169,56 @@ describe('toolCallScopeKey', () => {
     expect(keyOf(scratch, [join(work, 'src', 'a.ts'), join(work, 'b.ts')])).toBe(WORK_KEY);
   });
 
+  // A named path is keyed from the path ITSELF, so one rule serves a file, a
+  // directory and a checkout's top level: the walk probes `<path>/.git` first, a
+  // file has none of its own, and a path that does not exist yet has none to
+  // find. Starting from the parent would be right only for a file.
+  describe('a named path that is a directory', () => {
+    const NESTED_KEY = 'github.com/me/nested';
+    let nested: string;
+
+    beforeEach(() => {
+      // A clone kept INSIDE the work checkout: its parent directory belongs to work.
+      nested = checkout(join('work', 'vendor', 'nested'), 'https://github.com/me/nested.git');
+    });
+
+    it('keys a checkout top level by that checkout, not by the checkout around it', () => {
+      expect(keyOf(work, [nested])).toBe(NESTED_KEY);
+      // A top level whose parent is in no repository at all is keyed too.
+      expect(keyOf(scratch, [work])).toBe(WORK_KEY);
+      expect(keyOf(work, [personal])).toBe(PERSONAL_KEY);
+    });
+
+    it('keys a relative checkout top level the same way, read against the cwd', () => {
+      expect(keyOf(work, [join('vendor', 'nested')])).toBe(NESTED_KEY);
+      expect(keyOf(scratch, [join('..', basename(work))])).toBe(WORK_KEY);
+    });
+
+    it('keys a directory that is not a checkout top level by the checkout around it', () => {
+      mkdirSync(join(work, 'src', 'deep'), { recursive: true });
+      expect(keyOf(scratch, [join(work, 'src')])).toBe(WORK_KEY);
+      expect(keyOf(scratch, [join(work, 'src', 'deep')])).toBe(WORK_KEY);
+      // Inside the nested clone, the clone's key.
+      mkdirSync(join(nested, 'lib'), { recursive: true });
+      expect(keyOf(work, [join(nested, 'lib')])).toBe(NESTED_KEY);
+      // A directory in no repository gives no key, whatever the cwd is.
+      expect(keyOf(work, [scratch])).toBeUndefined();
+    });
+
+    it('keys a file inside the nested checkout, and one not yet created, by their checkout', () => {
+      expect(keyOf(work, [join(nested, 'index.ts')])).toBe(NESTED_KEY);
+      // Neither the file nor its directories exist: a Write may be creating them.
+      expect(keyOf(scratch, [join(work, 'src', 'new', 'index.ts')])).toBe(WORK_KEY);
+      expect(keyOf(scratch, [join(nested, 'new', 'index.ts')])).toBe(NESTED_KEY);
+    });
+
+    it('still needs every named location to agree, a checkout top level included', () => {
+      expect(keyOf(scratch, [nested, join(nested, 'a.ts')])).toBe(NESTED_KEY);
+      expect(keyOf(scratch, [nested, join(work, 'b.ts')])).toBeUndefined();
+      expect(keyOf(scratch, [work, join(scratch, 'c.ts')])).toBeUndefined();
+    });
+  });
+
   it('gives no key when the files it names disagree, whichever comes first', () => {
     const [inWork, inPersonal] = [join(work, 'c.ts'), join(personal, 'd.ts')];
 

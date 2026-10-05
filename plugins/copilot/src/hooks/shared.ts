@@ -36,7 +36,7 @@
 //  4. TWO DIALECTS SHARE ONE `emit`. The narrowed `HookOutput` union below
 //     spans both; see `./dialect.ts` for how a payload is placed.
 
-import { dirname, isAbsolute, normalize } from 'node:path';
+import { isAbsolute, normalize } from 'node:path';
 
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
@@ -393,13 +393,23 @@ export function baseMetadata(
  * The scope key of the checkout this event happened in: the canonical
  * `host/owner/repo` of its origin (else first) remote, or undefined.
  *
- * An event that names an ABSOLUTE file is keyed by that file's checkout, and
- * needs no payload cwd for it: the path names its own directory. That key
- * never falls back to a cwd, so a file outside any checkout gets none. The path
- * is normalised first, because the walk climbs by dirname and a `..` segment
- * left in place would climb back into the checkout it left. `callScopeKey`
- * passes the target of a VS Code single-file write, and decides which calls
- * those are and what a writer without a readable target gets.
+ * An event that names an ABSOLUTE path is keyed by the checkout that path is
+ * in, and needs no payload cwd for it: the path names its own location. That
+ * key never falls back to a cwd, so a path outside any checkout gets none.
+ *
+ * The walk starts at the named path ITSELF, not at its parent. The resolver
+ * climbs by name and probes `<start>/.git` before it climbs, so one rule serves
+ * every shape a path can have. A file has no `.git` of its own, so the walk
+ * reaches the checkout its directory is in; a path that does not exist yet has
+ * none either, and lands the same way. A directory that is a checkout's top
+ * level, or a clone nested in another checkout, is found at the first probe,
+ * which starting at the parent would skip: the nested clone would be keyed by
+ * the checkout around it.
+ *
+ * The path is normalised first, because the walk climbs by name and a `..`
+ * segment left in place would climb back into the checkout it left.
+ * `callScopeKey` passes the target of a VS Code single-file write, and decides
+ * which calls those are and what a writer without a readable target gets.
  *
  * Every other event is keyed STRICTER THAN `baseMetadata`, on purpose: only
  * from a cwd the PAYLOAD carries, on both dialects, and never from the hook
@@ -425,7 +435,7 @@ export function captureScopeKey(
 ): string | undefined {
   try {
     if (filePath !== undefined && isAbsolute(filePath)) {
-      return resolveRepoAttribution(dirname(normalize(filePath))).scopeKey;
+      return resolveRepoAttribution(normalize(filePath)).scopeKey;
     }
     const cwd = readCwd(dialect, input);
     return cwd === undefined ? undefined : resolveRepoAttribution(cwd).scopeKey;

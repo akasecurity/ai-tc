@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import { defineConfig } from 'tsup';
 
+import { pathGateScript } from './src/hooks/credential-name-hints.ts';
+
 // esbuild (on releases predating node:sqlite in its builtin list) externalizes
 // the import but strips the `node:` prefix, emitting a bare `sqlite` specifier —
 // a nonexistent npm package that crashes the hook at load. esbuild's own printer
@@ -116,5 +118,9 @@ export default defineConfig({
     // A package.json beside the scripts is the nearest ancestor Node finds, so it
     // reads them as ESM directly and the warning never fires.
     writeFileSync(join('scripts', 'package.json'), JSON.stringify({ type: 'module' }) + '\n');
+    // The Read/Grep path gate hooks.json runs instead of node: a shell filter
+    // that starts pre-tool-use.js only for a path that may name a credential
+    // file. Generated from the same hint list the hook captures with.
+    writeFileSync(join('scripts', 'path-gate.sh'), pathGateScript(), { mode: 0o755 });
   },
 });

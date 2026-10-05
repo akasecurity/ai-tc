@@ -15,6 +15,7 @@
 // Kept free of I/O and hook wiring so it unit-tests without a hook process.
 import type { EventKind, FindingContextBasis } from '@akasecurity/schema';
 
+import { mayNameCredentialFile } from './credential-name-hints.ts';
 import type { PathSegment } from './paths.ts';
 import { stringAtPath } from './paths.ts';
 
@@ -93,38 +94,11 @@ const PATH_FIELDS: Record<string, readonly ScannableField[]> = {
   Grep: [{ path: ['path'], executable: true }],
 };
 
-// The name fragments a credential file carries. A Read or Grep path is
-// captured only when its last segment holds one, which keeps the common Read
-// (source files, docs, logs) from paying a capture — and from recording a
-// path finding — for a path no credential rule is about. This is a superset
-// of what command-risk/credential-file-access matches: the rule, and the
-// policy assigned to it, still make the decision.
-const CREDENTIAL_NAME_HINTS = [
-  'env',
-  'netrc',
-  'pgpass',
-  'credential',
-  'auth.json',
-  'id_',
-  'rsa',
-  'dsa',
-  'ed25519',
-  '.pem',
-  '.key',
-  'zshrc',
-  'zprofile',
-  'bashrc',
-  'bash_profile',
-  'npmrc',
-];
-
-function mayNameCredentialFile(path: string): boolean {
-  const lower = path.toLowerCase();
-  const base = lower.slice(Math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\')) + 1);
-  // ~/.aws/config is named by its directory, not its file name.
-  if (/[\\/]\.aws[\\/]/.test(lower)) return true;
-  return CREDENTIAL_NAME_HINTS.some((hint) => base.includes(hint));
-}
+// A Read or Grep path is captured only when it may name a credential file
+// (credential-name-hints.ts), which keeps the common Read (source files, docs,
+// logs) from paying a capture, and from recording a path finding, for a path no
+// credential rule is about. The manifest's path gate filters on the same hints
+// before node starts.
 
 // Bounds on the MCP walk. A tool payload can be arbitrarily large and the hook
 // has a 10s budget: past these limits it scans what fits and lets the rest

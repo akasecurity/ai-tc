@@ -24,11 +24,21 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Grep|Edit|Write|WebFetch|MultiEdit|NotebookEdit|Task|Agent|mcp__.*",
+        "matcher": "Bash|Edit|Write|WebFetch|MultiEdit|NotebookEdit|Task|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/path-gate.sh\"",
             "timeout": 10
           }
         ]

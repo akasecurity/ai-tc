@@ -28,15 +28,18 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import type { Canary, ToolCall } from '../helpers/leak-corpus.ts';
 import { buildCorpus, leakForms } from '../helpers/leak-corpus.ts';
-import { runHookAsync, tempHomeEnv } from '../helpers/run-hook.ts';
+import { runGateAsync, runHookAsync, tempHomeEnv } from '../helpers/run-hook.ts';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksJson = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')) as {
   hooks: Record<string, { matcher?: string }[]>;
 };
-const matcherOf = (event: string): RegExp =>
-  new RegExp(`^(?:${hooksJson.hooks[event]?.[0]?.matcher ?? '(?!)'})$`);
+const matcherOf = (event: string, index = 0): RegExp =>
+  new RegExp(`^(?:${hooksJson.hooks[event]?.[index]?.matcher ?? '(?!)'})$`);
 const PRE_MATCHER = matcherOf('PreToolUse');
+// Read and Grep reach the hook through the path gate, as the manifest ships it,
+// so the corpus also proves the gate forwards every credential read it holds.
+const GATE_MATCHER = matcherOf('PreToolUse', 1);
 const POST_MATCHER = matcherOf('PostToolUse');
 
 type Policy = 'default' | 'block' | 'redact';
@@ -100,12 +103,15 @@ async function replayCall(call: ToolCall, policy: Policy): Promise<CallOutcome> 
   const home = seededHome(policy);
   const base = { session_id: `leak-corpus-${policy}`, cwd: home, tool_name: call.tool };
   const outcome: CallOutcome = { call, pre: 'not-run', post: 'not-run', rules: [], received: '' };
-  if (PRE_MATCHER.test(call.tool)) {
-    const run = await runHookAsync(
-      'pre-tool-use',
-      JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_input: call.input }),
-      { env: tempHomeEnv(home) },
-    );
+  if (PRE_MATCHER.test(call.tool) || GATE_MATCHER.test(call.tool)) {
+    const stdin = JSON.stringify({
+      ...base,
+      hook_event_name: 'PreToolUse',
+      tool_input: call.input,
+    });
+    const run = PRE_MATCHER.test(call.tool)
+      ? await runHookAsync('pre-tool-use', stdin, { env: tempHomeEnv(home) })
+      : await runGateAsync(stdin, { env: tempHomeEnv(home) });
     expect(run.status).toBe(0);
     outcome.pre = 'none';
     if (run.stdout !== '') {

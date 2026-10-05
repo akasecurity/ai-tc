@@ -171,9 +171,11 @@ jobs:
           for f in session-start user-prompt-submit pre-tool-use post-tool-use stop; do
             test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
           done
+          test -f scripts/path-gate.sh || { echo "::error::missing scripts/path-gate.sh"; exit 1; }
           # The hooks run on the user's machine with no node_modules; junk input
           # must produce no output and exit 0 (the fail-open contract).
           echo 'not json' | node scripts/user-prompt-submit.js
+          test -z "$(echo 'not json' | sh scripts/path-gate.sh)"
           echo "fail-open OK"
 
       - name: Pack tarball (release asset)

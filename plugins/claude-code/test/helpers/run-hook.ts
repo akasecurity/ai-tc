@@ -101,12 +101,27 @@ export function runHookAsync(
   stdin: string,
   options: RunHookOptions = {},
 ): Promise<HookResult> {
-  const scriptPath = join(SCRIPTS_DIR, `${name}.js`);
+  return spawnScript(process.execPath, join(SCRIPTS_DIR, `${name}.js`), stdin, options);
+}
+
+// The built Read/Grep path gate (scripts/path-gate.sh), run the way the
+// manifest runs it: under sh, starting pre-tool-use.js beside it only when the
+// input may name a credential file.
+export function runGateAsync(stdin: string, options: RunHookOptions = {}): Promise<HookResult> {
+  return spawnScript('sh', join(SCRIPTS_DIR, 'path-gate.sh'), stdin, options);
+}
+
+function spawnScript(
+  command: string,
+  scriptPath: string,
+  stdin: string,
+  options: RunHookOptions,
+): Promise<HookResult> {
   if (!existsSync(scriptPath)) {
     return Promise.resolve({ status: 1, stdout: '', stderr: `${scriptPath} does not exist` });
   }
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [scriptPath, ...(options.args ?? [])], {
+    const child = spawn(command, [scriptPath, ...(options.args ?? [])], {
       env: { ...HOST_ENV, ...options.env },
       timeout: options.timeoutMs ?? 15_000,
     });

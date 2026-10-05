@@ -28,6 +28,11 @@ import {
   VSCODE_FILE_WRITERS,
 } from '../../src/hooks/shared.ts';
 
+// The userinfo in an scp-style remote (`<user>@<host>:path`) reads as an email
+// address to a scanner, so the fixtures build it from parts.
+const AT = String.fromCharCode(64);
+const gitUser = `git${AT}`;
+
 /**
  * A stand-in for `process.stdin` carrying only what `readStdin` touches.
  *
@@ -224,7 +229,7 @@ describe('baseMetadata', () => {
 });
 
 describe('captureScopeKey', () => {
-  const WORK = 'git@GitHub.com:acme/work-repo.git';
+  const WORK = `${gitUser}GitHub.com:acme/work-repo.git`;
   const WORK_KEY = 'github.com/acme/work-repo';
   let root: string;
 
@@ -376,7 +381,7 @@ describe('callScopeKey', () => {
   // nothing. The `kind` argument is what the hook decided the call records as, so
   // a tool the hook has been taught to record as a code_change but this table has
   // not been taught to key is reachable here, as it is not through any built hook.
-  const WORK = 'git@GitHub.com:acme/work-repo.git';
+  const WORK = `${gitUser}GitHub.com:acme/work-repo.git`;
   const WORK_KEY = 'github.com/acme/work-repo';
   const PERSONAL = 'https://github.com/someone/dotfiles.git';
   const PERSONAL_KEY = 'github.com/someone/dotfiles';

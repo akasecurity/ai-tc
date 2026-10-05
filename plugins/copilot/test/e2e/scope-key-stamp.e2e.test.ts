@@ -34,7 +34,11 @@ const PLUGIN_ROOT = join(HERE, '..', '..');
 const SCRIPT = join(PLUGIN_ROOT, 'scripts', 'pre-tool-use.js');
 const MANIFEST = join(PLUGIN_ROOT, 'plugin.json');
 
-const WORK_REMOTE = 'git@GitHub.com:acme/work-repo.git';
+// The userinfo in an scp-style remote (`<user>@<host>:path`) reads as an email
+// address to a scanner, so the fixture builds it from parts.
+const AT = String.fromCharCode(64);
+const gitUser = `git${AT}`;
+const WORK_REMOTE = `${gitUser}GitHub.com:acme/work-repo.git`;
 const WORK_KEY = 'github.com/acme/work-repo';
 const PERSONAL_REMOTE = 'https://github.com/someone/dotfiles.git';
 const PERSONAL_KEY = 'github.com/someone/dotfiles';

@@ -194,6 +194,30 @@ describe('pre-tool-use stamps the scope key of the cwd its payload names', () =>
   });
 });
 
+// A CLI call to the file-write tool this host names. Its patch is recorded whole as
+// a `code_change`, and names its files inside its body, which the hook does not read.
+function cliPatch(cwd: string): Record<string, unknown> {
+  return {
+    sessionId: SESSION_ID,
+    timestamp: 1788547866483,
+    cwd,
+    toolName: 'apply_patch',
+    toolArgs: { input: `*** Begin Patch\n*** Add File: notes.ts\n+${CODE}\n*** End Patch\n` },
+  };
+}
+
+describe('a CLI apply_patch is never keyed by the payload cwd', () => {
+  it('records its code_change row with no key, though the cwd is a keyed checkout', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const run = runHook('preToolUse', home, cliPatch(checkout(home)), home);
+      expect(run.status, run.stderr).toBe(0);
+      // The slug is the cwd's; the key is withheld because the patch names its files itself.
+      expectEveryCapture(home, { kind: 'code_change', scopeKey: null, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-cli-patch-');
+  });
+});
+
 describe('a VS Code single-file write is keyed by the file it writes, or not at all', () => {
   it('a write into a second checkout carries that checkout key, not the payload cwd key', () => {
     withTempHome((home) => {

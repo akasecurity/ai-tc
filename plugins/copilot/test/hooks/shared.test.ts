@@ -1,7 +1,7 @@
 // The stdio helpers in `shared.ts` that are neither the wire union nor the
 // fail-open wrapper: `readStdin`, which every hook calls first, and
-// `baseMetadata` and `captureScopeKey`, which stamp what a capture is
-// attributed to.
+// `baseMetadata`, `captureScopeKey` and `callScopeKey`, which stamp what a
+// capture is attributed to.
 //
 // Both were reachable only through a spawned process before this file, so
 // nothing in-process saw them — and the e2e that drives them cannot distinguish
@@ -20,10 +20,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   baseMetadata,
+  callScopeKey,
   captureScopeKey,
   getString,
   parseJson,
   readStdin,
+  VSCODE_FILE_WRITERS,
 } from '../../src/hooks/shared.ts';
 
 /**
@@ -366,6 +368,91 @@ describe('captureScopeKey', () => {
       const filePath = [work, '..', 'loose', 'notes.md'].join(sep);
       expect(captureScopeKey('cli', { sessionId: 's', cwd: work }, filePath)).toBeUndefined();
     });
+  });
+});
+
+describe('callScopeKey', () => {
+  // Which calls are keyed by their file, which by their cwd, and which by
+  // nothing. The `kind` argument is what the hook decided the call records as, so
+  // a tool the hook has been taught to record as a code_change but this table has
+  // not been taught to key is reachable here, as it is not through any built hook.
+  const WORK = 'git@GitHub.com:acme/work-repo.git';
+  const WORK_KEY = 'github.com/acme/work-repo';
+  const PERSONAL = 'https://github.com/someone/dotfiles.git';
+  const PERSONAL_KEY = 'github.com/someone/dotfiles';
+  let root: string;
+  let work: string;
+  let personal: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-copilot-call-key-'));
+    work = checkout('work', WORK);
+    personal = checkout('personal', PERSONAL);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function checkout(name: string, remote: string): string {
+    const dir = join(root, name);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'config'), `[remote "origin"]\n\turl = ${remote}\n`);
+    return dir;
+  }
+
+  const vscodeInput = (cwd: string): Record<string, unknown> => ({ session_id: 's', cwd });
+  const cliInput = (cwd: string): Record<string, unknown> => ({ sessionId: 's', cwd });
+
+  it('keys a known VS Code single-file writer by the absolute file it writes', () => {
+    for (const name of VSCODE_FILE_WRITERS) {
+      const call = { name, args: { filePath: join(personal, 'notes.ts') } };
+      expect(callScopeKey('code_change', 'vscode', vscodeInput(work), call), name).toBe(
+        PERSONAL_KEY,
+      );
+    }
+  });
+
+  it('gives a known writer no key without an absolute file, not the cwd key', () => {
+    for (const args of [{}, { filePath: 'notes.ts' }, { filePath: '' }, { filePath: 42 }]) {
+      const call = { name: 'create_file', args };
+      expect(callScopeKey('code_change', 'vscode', vscodeInput(work), call)).toBeUndefined();
+    }
+  });
+
+  it('gives a code_change tool that is not a known file writer no key, not the cwd key', () => {
+    // A writer added to the set of tools recorded as code_change and not taught
+    // to this table must default to no key: the cwd's key could name a checkout
+    // the write never touched, and the content is recorded whole.
+    const unlisted = { name: 'future_writer', args: { filePath: join(personal, 'notes.ts') } };
+    expect(VSCODE_FILE_WRITERS.has(unlisted.name)).toBe(false);
+    expect(callScopeKey('code_change', 'vscode', vscodeInput(work), unlisted)).toBeUndefined();
+    expect(callScopeKey('code_change', 'cli', cliInput(work), unlisted)).toBeUndefined();
+    // The control: the same call recorded as a plain tool_use is keyed by the cwd.
+    expect(callScopeKey('tool_use', 'vscode', vscodeInput(work), unlisted)).toBe(WORK_KEY);
+  });
+
+  it('gives an apply_patch no key on either dialect, whatever it carries', () => {
+    const patch = {
+      name: 'apply_patch',
+      args: { input: '*** Begin Patch\n*** End Patch\n', filePath: join(personal, 'a.ts') },
+    };
+    expect(callScopeKey('code_change', 'vscode', vscodeInput(work), patch)).toBeUndefined();
+    expect(callScopeKey('code_change', 'cli', cliInput(work), patch)).toBeUndefined();
+  });
+
+  it('does not read a CLI call by a VS Code writer name: the CLI has no file writer', () => {
+    const call = { name: 'create_file', args: { filePath: join(personal, 'notes.ts') } };
+    expect(callScopeKey('code_change', 'cli', cliInput(work), call)).toBeUndefined();
+  });
+
+  it('keys a call that is not a code_change by the payload cwd alone', () => {
+    const run = { name: 'run_in_terminal', args: { command: 'ls', filePath: join(personal, 'x') } };
+    expect(callScopeKey('tool_use', 'vscode', vscodeInput(work), run)).toBe(WORK_KEY);
+    const bash = { name: 'bash', args: { command: 'ls' } };
+    expect(callScopeKey('tool_use', 'cli', cliInput(work), bash)).toBe(WORK_KEY);
+    // No payload cwd: no key, never the process's.
+    expect(callScopeKey('tool_use', 'cli', { sessionId: 's' }, bash)).toBeUndefined();
   });
 });
 

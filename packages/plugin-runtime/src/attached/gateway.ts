@@ -54,6 +54,7 @@ import {
   scopeVerdict,
 } from '@akasecurity/schema';
 
+import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
@@ -118,8 +119,13 @@ export interface AttachedDataGatewayDeps {
    * `CaptureStatusReader` for the same reason: `readCaptureStatuses` below
    * delegates to it, so a `local` that cannot answer would make the
    * delegation a lie too.
+   *
+   * `StoredRootKeyReader` because a scoped attachment decides a session root by
+   * the key the local store holds for it, read back after the local write (see
+   * `rootVerdict`). A `local` that could not answer would leave every root, and
+   * so every leaf under one, refused.
    */
-  local: DataGateway & LocalStoreMaintenance & CaptureStatusReader;
+  local: DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader;
   client: AttachedClient;
   // Reads the out-of-band-pulled organization policy bundle from the on-disk cache.
   // Null when the cache is cold (no pull yet) — the local bundle then stands
@@ -228,7 +234,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 
   /**
    * The verdict this instance reached for each session ROOT it recorded, keyed
-   * by root id. It is what a child row is held to (see `auditVerdict`).
+   * by root id, from the key the local store holds for that root (see
+   * `rootVerdict`). It is what a child row is held to (see `auditVerdict`).
    *
    * Per instance on purpose. An instance is resolved per hook process, per
    * native-host request, and per reconcile or backfill pass, and the
@@ -270,23 +277,28 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   /**
    * The verdict for an audit row, with the session-root rule on top.
    *
-   * A session ROOT is decided by its own key, and the answer is recorded so
-   * the rows that hang off it can be held to it. Any other row with a root
-   * reference (`rootSessionId`, else `parentId`) forwards only when its own
-   * key is in scope AND this instance recorded an in-scope verdict for that
-   * root. The audit-event route has real foreign keys on both columns and
-   * stubs no missing root, so a leaf sent after its root was kept local is
-   * refused there, and a refused forward counts toward the breaker that guards
-   * every other one. A root this instance never saw is therefore `'local'`:
-   * the only answer that cannot orphan a row. A row with no root reference at
-   * all has nothing to orphan, and is decided by its own key.
+   * A session ROOT is decided by the key its row holds in the local store, and
+   * the answer is recorded so the rows that hang off it can be held to it (see
+   * `rootVerdict`). Not by the key on the root event just handed in: roots are
+   * first-write-wins in the store, so when two producers record a root for one
+   * session (the session-start hook, then a reconcile pass) the second leaves
+   * the stored row as it was, and the history drain decides that row, not this
+   * event. Any other row with a root reference (`rootSessionId`, else
+   * `parentId`) forwards only when its own key is in scope AND this instance
+   * recorded an in-scope verdict for that root. The audit-event route has real
+   * foreign keys on both columns and stubs no missing root, so a leaf sent
+   * after its root was kept local is refused there, and a refused forward
+   * counts toward the breaker that guards every other one. A root this
+   * instance never recorded is therefore `'local'`: the only answer that cannot
+   * orphan a row. A row with no root reference at all has nothing to orphan,
+   * and is decided by its own key.
    *
-   * What this costs is stated rather than discovered. A session that started
-   * outside an enrolled repository keeps its token and tool records local,
-   * even the ones that ran inside one. A row recorded by a different process
-   * from its root's cannot see the root's verdict, so it stays local on a
-   * scoped attachment. Captures are not held to this: their route plants a
-   * missing root itself, so they decide per event.
+   * What this costs is stated rather than discovered. A session whose stored
+   * root is not keyed to an enrolled repository keeps its token and tool
+   * records local, even the ones that ran inside one. A row recorded by an
+   * instance that did not record its root cannot see the root's verdict, so it
+   * stays local on a scoped attachment. Captures are not held to this: their
+   * route plants a missing root itself, so they decide per event.
    */
   private auditVerdict(event: AuditEventInput): ScopeVerdict {
     try {
@@ -294,12 +306,31 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       if (event.eventType !== 'session') {
         return this.leafVerdict(event.attributes, event.rootSessionId ?? event.parentId);
       }
-      const own = this.verdictFor(() => scopeKeyOf(event.attributes));
-      this.rootVerdicts.set(event.id, own);
-      return own;
+      return this.rootVerdict(event.id);
     } catch {
       return 'local';
     }
+  }
+
+  /**
+   * A session root's verdict, from the key the local store holds for it.
+   *
+   * Read back ONCE per root per instance, after the local write, and recorded.
+   * The write comes first so the row exists and a stub a leaf planted ahead of
+   * it has been healed; the read is the store's answer, which is the first
+   * authoritative root the session ever had. No key, a row that is not a root,
+   * and a store that cannot answer all mean `'local'`: the read happens inside
+   * `verdictFor`'s guard, so a throw is an answer and never a rejection.
+   *
+   * Scoped mode only: `auditVerdict` answers a machine attachment before it
+   * gets here, so a machine attachment pays no store read.
+   */
+  private rootVerdict(rootId: string): ScopeVerdict {
+    const recorded = this.rootVerdicts.get(rootId);
+    if (recorded !== undefined) return recorded;
+    const verdict = this.verdictFor(() => this.deps.local.readSessionScopeKey(rootId));
+    this.rootVerdicts.set(rootId, verdict);
+    return verdict;
   }
 
   /** A child row's verdict: its own key in scope AND its root's recorded verdict. */

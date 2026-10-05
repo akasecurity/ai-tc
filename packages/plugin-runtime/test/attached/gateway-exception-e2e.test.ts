@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy';
 import type { AttachedClient } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
 
 /**
  * `consumeException` end-to-end, through the REAL runtime.
@@ -70,7 +71,7 @@ const settings = (): WorkspaceSettings => ({
 function makeLocalStore(opts: {
   bundle: PolicyBundle;
   consumeException: (id: string) => Promise<boolean>;
-}): DataGateway & LocalStoreMaintenance & CaptureStatusReader {
+}): DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader {
   return {
     recordCapture: () => Promise.resolve(),
     ensureInventory: () => Promise.resolve({}),
@@ -130,6 +131,7 @@ function makeLocalStore(opts: {
     markCaptureOwed: () => undefined,
     markAuditEventsDelivered: () => undefined,
     readCaptureStatuses: () => Promise.resolve([]),
+    readSessionScopeKey: () => undefined,
   };
 }
 

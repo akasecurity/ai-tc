@@ -36,6 +36,7 @@ import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-po
 import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
@@ -120,7 +121,9 @@ interface Calls {
  */
 function makeLocal(
   calls: Calls,
-  overrides: Partial<DataGateway & LocalStoreMaintenance & CaptureStatusReader> = {},
+  overrides: Partial<
+    DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader
+  > = {},
 ) {
   const base: Record<string, unknown> = {};
   for (const name of PORT_METHODS) {
@@ -192,9 +195,23 @@ function makeLocal(
     calls.order.push('local.readCaptureStatuses');
     return Promise.resolve([]);
   });
+  // The session roots this store holds, FIRST-WRITE-WINS as the real store keeps
+  // them: the key a root was first recorded with is what the verdict reads back,
+  // whatever a later root event for the same id carries.
+  const storedRootKeys = new Map<string, string | undefined>();
+  const recordAuditEvent = base.recordAuditEvent as (event: AuditEventInput) => Promise<undefined>;
+  base.recordAuditEvent = vi.fn((event: AuditEventInput) => {
+    if (event.eventType === 'session' && !storedRootKeys.has(event.id)) {
+      const key = event.attributes?.scope_key;
+      storedRootKeys.set(event.id, typeof key === 'string' ? key : undefined);
+    }
+    return recordAuditEvent(event);
+  });
+  base.readSessionScopeKey = vi.fn((sessionId: string) => storedRootKeys.get(sessionId));
   return Object.assign(base, overrides) as unknown as DataGateway &
     LocalStoreMaintenance &
-    CaptureStatusReader;
+    CaptureStatusReader &
+    StoredRootKeyReader;
 }
 
 function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): AttachedClient {
@@ -1926,11 +1943,12 @@ describe('a child row forwards only beside an in-scope root', () => {
     expect(calls.delivered).toEqual(['s1']);
   });
 
-  // Two producers can key one session differently: a session-start root keyed
-  // from where the session began, and a reconcile root keyed from the record
-  // its pass read first. Whichever root this instance recorded, a leaf from a
-  // personal directory never forwards beside it, and neither does an enrolled
-  // leaf beside a personal root.
+  // A leaf and its session root can be keyed differently: the root from where
+  // the session began, a leaf from the path or directory it names. A leaf
+  // forwards only when its own key AND its root's are enrolled, so a personal
+  // leaf never forwards beside an enrolled root, and neither does an enrolled
+  // leaf beside a personal one. Which root a leaf is held to is the one the
+  // store keeps, which the real-store cases further down pin.
   it('a personal leaf never forwards under an enrolled root', async () => {
     const { gateway, calls } = build({ attachment: SCOPED });
     await gateway.recordAuditEvent(rootRow('s1', IN));
@@ -1959,6 +1977,83 @@ describe('a child row forwards only beside an in-scope root', () => {
       }),
     );
     expect(calls.order).not.toContain('forward.run');
+  });
+
+  // The root's verdict comes from the row the store keeps for it, read back once
+  // after the local write, and never from the key on the event just written.
+  it('judges a root by the key the store holds, not by the key on the event', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { readSessionScopeKey: () => OUT });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    // The event says enrolled; the store says personal.
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordLlmCall(llmLeaf('m2', 's1', IN));
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  it('keeps a root and its leaves local when the store holds no key for it', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { readSessionScopeKey: () => undefined });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  it('reads the stored root once per root per instance', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
+    const local = makeLocal(calls, { readSessionScopeKey: read });
+    const { gateway } = build({
+      attachment: SCOPED,
+      local,
+      client: makeClient(calls),
+      forward: passthroughForward(calls),
+    });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordLlmCall(llmLeaf('m2', 's1', IN));
+    expect(read).toHaveBeenCalledTimes(1);
+    await gateway.recordAuditEvent(rootRow('s2', IN));
+    expect(read).toHaveBeenCalledTimes(2);
+    // Positive control: the root and its leaves did forward, so the single read
+    // above is not a count taken of a gateway that refused everything.
+    expect(calls.delivered).toContain('s1');
+    expect(calls.batchSizes).toEqual([1, 1]);
+  });
+
+  // The read costs a store hit, and machine mode owes none: it answers before
+  // any root is looked at.
+  it('never reads the store in machine mode', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
+    const local = makeLocal(calls, { readSessionScopeKey: read });
+    const { gateway } = build({ attachment: MACHINE, local, forward: passthroughForward(calls) });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    expect(read).not.toHaveBeenCalled();
+    expect(calls.delivered).toContain('s1');
+  });
+
+  // The verdict is total: a store that cannot answer is an answer of local.
+  it('keeps a root and its leaves local, and rejects nothing, when the read throws', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      readSessionScopeKey: () => {
+        throw new Error('store unreadable');
+      },
+    });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    await expect(gateway.recordAuditEvent(rootRow('s1', IN))).resolves.toBeUndefined();
+    await expect(gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)])).resolves.toBeUndefined();
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
   });
 
   // A GUARD: a gateway with no verdict forwards this row too. It pins that the
@@ -2151,6 +2246,115 @@ describe('a refused capture is never marked owed, on a real store', () => {
     } finally {
       raw.close();
     }
+  });
+});
+
+// ── a leaf is held to the stored session root ───────────────────────────────
+
+describe('a leaf is held to the stored session root, on a real store', () => {
+  /**
+   * Two gateway instances over ONE store, the way the producers meet: the hook
+   * that opened the session records its root, and a later reconcile pass, in a
+   * process of its own, records a root event for the same session before its
+   * leaves. Roots are first-write-wins in the store, so the second root event
+   * leaves the stored row as it was, and the history drain decides that row by
+   * the key it holds.
+   */
+  function twoInstances(): {
+    first: { gateway: AttachedDataGateway; calls: Calls };
+    later: { gateway: AttachedDataGateway; calls: Calls };
+  } {
+    migratedStore.seed(dataDir);
+    const instance = () => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const gateway = new AttachedDataGateway({
+        dataDir,
+        local: new StandaloneDataGateway(dataDir, bundledDetections()),
+        client: makeClient(calls),
+        readCachedBundle: () => Promise.resolve(null),
+        forward: passthroughForward(calls),
+        attachment: SCOPED,
+      });
+      return { gateway, calls };
+    };
+    return { first: instance(), later: instance() };
+  }
+
+  const sent = (calls: Calls): string[] => calls.order.filter((step) => step.startsWith('client.'));
+
+  /** `synced_at` of each named row, read raw: the real store stamps delivery itself. */
+  function syncedAt(ids: readonly string[]): Record<string, number | null> {
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    try {
+      const stmt = raw.prepare('SELECT synced_at FROM audit_events WHERE id = :id');
+      return Object.fromEntries(
+        ids.map((id) => [id, (stmt.get({ id }) as { synced_at: number | null }).synced_at]),
+      );
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('forwards nothing when the stored root is personal and a later root event is enrolled', async () => {
+    const { first, later } = twoInstances();
+    try {
+      await first.gateway.recordAuditEvent(rootRow('s-split', OUT));
+      await later.gateway.recordAuditEvent(rootRow('s-split', IN));
+      await later.gateway.recordLlmCalls([llmLeaf('m1', 's-split', IN)]);
+      await later.gateway.recordToolCalls([toolLeaf('t1', 's-split', IN)]);
+      await later.gateway.recordLlmCall(llmLeaf('m2', 's-split', IN));
+    } finally {
+      await first.gateway.close();
+      await later.gateway.close();
+    }
+
+    // Neither instance sent a thing, and nothing was stamped delivered.
+    expect(sent(first.calls)).toEqual([]);
+    expect(sent(later.calls)).toEqual([]);
+    expect(syncedAt(['s-split', llmCallId('s-split', 'm1'), toolCallId('s-split', 't1')])).toEqual({
+      's-split': null,
+      [llmCallId('s-split', 'm1')]: null,
+      [toolCallId('s-split', 't1')]: null,
+    });
+    // The stored root is still the personal one, which is the row the drain reads.
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    try {
+      const root = raw.prepare(`SELECT scope_key FROM audit_events WHERE id = 's-split'`).get();
+      expect(root).toEqual({ scope_key: OUT });
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('forwards the enrolled leaves when the stored root is enrolled and a later root event is personal', async () => {
+    const { first, later } = twoInstances();
+    try {
+      await first.gateway.recordAuditEvent(rootRow('s-mirror', IN));
+      await later.gateway.recordAuditEvent(rootRow('s-mirror', OUT));
+      await later.gateway.recordLlmCalls([llmLeaf('m1', 's-mirror', IN)]);
+      await later.gateway.recordToolCalls([toolLeaf('t1', 's-mirror', IN)]);
+      // A personal leaf beside the same root still never forwards.
+      await later.gateway.recordToolCalls([toolLeaf('t2', 's-mirror', OUT)]);
+    } finally {
+      await first.gateway.close();
+      await later.gateway.close();
+    }
+
+    // The first instance forwarded the stored root, so the leaves have a root to
+    // hang off on the plane.
+    expect(sent(first.calls)).toEqual(['client.recordAuditEvent']);
+    // The later instance forwarded one enrolled llm_call and one enrolled
+    // tool_call, in a batch each, and stamped exactly those two. The personal
+    // tool_call went nowhere.
+    expect(later.calls.batchSizes).toEqual([1, 1]);
+    const stamps = syncedAt([
+      llmCallId('s-mirror', 'm1'),
+      toolCallId('s-mirror', 't1'),
+      toolCallId('s-mirror', 't2'),
+    ]);
+    expect(stamps[llmCallId('s-mirror', 'm1')]).not.toBeNull();
+    expect(stamps[toolCallId('s-mirror', 't1')]).not.toBeNull();
+    expect(stamps[toolCallId('s-mirror', 't2')]).toBeNull();
   });
 });
 

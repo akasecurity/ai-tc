@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy';
 import type { AttachedClient } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
 
 /**
  * The composed policy bundle, judged by what the RUNTIME does with it.
@@ -100,7 +101,7 @@ const bundleOf = (
 
 function makeLocalStore(
   bundle: PolicyBundle,
-): DataGateway & LocalStoreMaintenance & CaptureStatusReader {
+): DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader {
   return {
     recordCapture: () => Promise.resolve(),
     ensureInventory: () => Promise.resolve({}),
@@ -160,6 +161,7 @@ function makeLocalStore(
     markCaptureOwed: () => undefined,
     markAuditEventsDelivered: () => undefined,
     readCaptureStatuses: () => Promise.resolve([]),
+    readSessionScopeKey: () => undefined,
   };
 }
 

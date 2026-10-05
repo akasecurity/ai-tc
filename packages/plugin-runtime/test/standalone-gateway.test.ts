@@ -894,3 +894,34 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
     }
   });
 });
+
+describe('readSessionScopeKey', () => {
+  const ENROLLED = 'github.com/org/api';
+  const PERSONAL = 'github.com/me/dotfiles';
+
+  // Roots are first-write-wins, so the attached gateway cannot read the key it
+  // just handed in and call it the stored one. This is the read that tells them
+  // apart.
+  it('reads back the key of the first root recorded, and nothing for a session it never saw', async () => {
+    const gateway = new StandaloneDataGateway(dir);
+    try {
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:30:00.000Z',
+        attributes: { scope_key: PERSONAL },
+      });
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:31:00.000Z',
+        attributes: { scope_key: ENROLLED },
+      });
+
+      expect(gateway.readSessionScopeKey('s-key')).toBe(PERSONAL);
+      expect(gateway.readSessionScopeKey('s-absent')).toBeUndefined();
+    } finally {
+      await gateway.close();
+    }
+  });
+});

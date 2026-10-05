@@ -13,7 +13,7 @@ import {
   setDefaultGatewayFactory,
   standaloneGatewayFactory,
 } from '@akasecurity/plugin-runtime';
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { type PluginConfig, resolveRepo } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
@@ -854,6 +854,54 @@ describe('scope keys — the root from its project, every leaf from where it ran
     expect(root).toBe(WORK_KEY);
     expect(leaf.get(`${SESSION}:2026-06-20T10:00:20.000Z:1`)).toBeNull();
   });
+
+  it.each([
+    ['a relative cwd', '.'],
+    ['a relative subdirectory', 'src'],
+    ['an empty cwd', ''],
+  ])(
+    'keys no root from %s, though the reconciler runs inside a keyed checkout',
+    async (_label, relativeCwd) => {
+      // A relative cwd is walked from the reconciler's own directory, which a
+      // transcript does not choose, so it would borrow that directory's
+      // repository. Here the process IS in a checkout with a forge remote.
+      mkdirSync(join(workRepo, 'src'), { recursive: true });
+      seed(
+        transcripts,
+        [
+          line({
+            timestamp: '2026-06-20T10:00:00.000Z',
+            type: 'session_meta',
+            payload: { session_id: SESSION, cwd: relativeCwd, cli_version: '0.140.0' },
+          }),
+          line({
+            timestamp: '2026-06-20T10:00:01.000Z',
+            type: 'turn_context',
+            payload: { turn_id: 'turn-1', cwd: relativeCwd, model: 'gemini-3-pro' },
+          }),
+          tokenCount('2026-06-20T10:00:04.000Z', { input: 100, output: 50 }),
+          exec('call-rel', '2026-06-20T10:00:05.000Z', '2026-06-20T10:00:06.000Z'),
+        ].join('\n'),
+      );
+
+      const home = process.cwd();
+      process.chdir(workRepo);
+      try {
+        // The control: this process directory is a repository the resolver finds.
+        expect(resolveRepo('.')).toBe('work');
+        await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+      } finally {
+        // Restored before the shared afterEach removes the fixtures: a process
+        // still standing inside one cannot delete it on Windows.
+        process.chdir(home);
+      }
+
+      const { root, leaf } = keys(dataDir);
+      expect(root).toBeNull();
+      expect(leaf.get(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBeNull();
+      expect(leaf.get('call-rel')).toBeNull();
+    },
+  );
 
   it('a root built from a remoteless repo carries no key', async () => {
     writeFileSync(join(workRepo, '.git', 'config'), '');

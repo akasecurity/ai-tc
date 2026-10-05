@@ -17,7 +17,6 @@
 // inventory then the root (idempotent) BEFORE the leaves — it never trusts
 // SessionStart. Provider is then read back off the ensured root,
 // never from live env (which would mislabel backfilled history under today's env).
-import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -28,6 +27,7 @@ import {
   resolveRepoNwo,
   scanText,
   scopeKeyMemo,
+  sessionRootScopeKey,
   toolCallScopeKey,
 } from '@akasecurity/plugin-sdk';
 import type {
@@ -583,12 +583,12 @@ function buildSessionRoot(
   const nwo = anchor.cwd !== undefined ? resolveRepoNwo(anchor.cwd) : undefined;
   if (nwo !== undefined) attributes.repo = nwo;
   if (anchor.gitBranch !== undefined) attributes.branches = [anchor.gitBranch];
-  // The session's scope key, from the same `ctx` the project came from. It is
-  // the twin of the root key plugin-runtime's handleSessionStart stamps; see
-  // its buildSessionRoot for why a remoteless repository yields none. When
-  // SessionStart's root landed first it wins, and the two normally resolve
-  // the same cwd.
-  const scopeKey = canonicalRepoUrl(ctx.project?.url ?? '');
+  // The session's scope key, from the transcript's own cwd (sessionRootScopeKey):
+  // the twin of the root key plugin-runtime's handleSessionStart stamps, and
+  // absent for a relative or empty cwd, a remoteless repository and a record that
+  // names no cwd. When SessionStart's root landed first it wins; the two agree
+  // whenever the session started in the directory its first record names.
+  const scopeKey = sessionRootScopeKey(anchor.cwd);
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {

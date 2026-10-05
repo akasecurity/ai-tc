@@ -2,9 +2,10 @@ import { dirname, isAbsolute, join, normalize } from 'node:path';
 
 import { resolveRepoAttribution } from './repo.ts';
 
-// The scope-key rules the transcript reconcilers (Claude Code, Codex,
-// Antigravity) share, so each one stamps a leaf the same way. They are pure file
-// I/O through resolveRepoAttribution and never throw.
+// The scope-key rules the session-start hook and the transcript reconcilers
+// (Claude Code, Codex, Antigravity) share, so each one stamps a root and a leaf
+// the same way. They are pure file I/O through resolveRepoAttribution and never
+// throw.
 
 /**
  * One scope key per working directory for a whole reconcile pass: the canonical
@@ -36,6 +37,23 @@ export function scopeKeyMemo(): (cwd: string | undefined) => string | undefined 
     memo.set(cwd, key);
     return key;
   };
+}
+
+/**
+ * A session root's scope key: the canonical `host/owner/repo` of the repository
+ * its own cwd sits in, or none. It is the key a hook stamps for a path-less
+ * capture in the same directory, because both read it from
+ * `resolveRepoAttribution`. A relative or empty cwd, a missing one, a directory
+ * in no repository and a repository with no forge remote all yield no key.
+ *
+ * The cwd is read on its own and never through the inventory context's project:
+ * that project is found by walking from the cwd by name, so a relative cwd would
+ * be read against the hook's or reconciler's own process directory and borrow
+ * whatever repository that process runs in. `resolveRepoAttribution` is the one
+ * place the absolute-only rule lives, so every root builder asks it.
+ */
+export function sessionRootScopeKey(cwd: string | undefined): string | undefined {
+  return cwd === undefined ? undefined : resolveRepoAttribution(cwd).scopeKey;
 }
 
 /**

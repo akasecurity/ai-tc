@@ -18,7 +18,6 @@
 // it never trusts SessionStart. Provider is then read back off the ensured
 // root, never from live env (which would mislabel backfilled history under
 // today's env).
-import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -26,6 +25,7 @@ import {
   resolveInventoryContext,
   scanText,
   scopeKeyMemo,
+  sessionRootScopeKey,
   toolCallScopeKey,
 } from '@akasecurity/plugin-sdk';
 import type {
@@ -372,10 +372,11 @@ function buildSessionRoot(
   const hostName = ctx.host?.attributes.host_name;
   if (typeof hostName === 'string') attributes.host = hostName;
   if (ctx.project) attributes.project = ctx.project.name;
-  // The session's scope key, from the same `ctx` the project came from. It is
-  // the twin of the root key plugin-runtime's handleSessionStart stamps; see
-  // its buildSessionRoot for why a remoteless repository yields none.
-  const scopeKey = canonicalRepoUrl(ctx.project?.url ?? '');
+  // The session's scope key, from the transcript's own cwd (sessionRootScopeKey):
+  // the twin of the root key plugin-runtime's handleSessionStart stamps, and
+  // absent for a relative or empty cwd, a remoteless repository and a record that
+  // names no cwd.
+  const scopeKey = sessionRootScopeKey(anchor.cwd);
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {

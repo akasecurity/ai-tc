@@ -204,6 +204,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'safeMaskedMatch',
   'scanText',
   'scopeKeyMemo',
+  'sessionRootScopeKey',
   'settingsDir',
   'severityFloorPosture',
   'severityWeight',

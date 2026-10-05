@@ -8,7 +8,7 @@ import {
   setDefaultGatewayFactory,
   standaloneGatewayFactory,
 } from '@akasecurity/plugin-runtime';
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { type PluginConfig, resolveRepo } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
@@ -950,6 +950,50 @@ describe('scope keys — the root from its project, each leaf from its own recor
     expect(leaf.get('msg_1')).toBe(WORK_KEY);
     expect(leaf.get('toolu_w')).toBe(WORK_KEY);
   });
+
+  it.each([
+    ['a relative cwd', '.'],
+    ['a relative subdirectory', 'src'],
+    ['an empty cwd', ''],
+  ])(
+    'keys no root from %s, though the reconciler runs inside a keyed checkout',
+    async (_label, relativeCwd) => {
+      // A relative cwd is walked from the reconciler's own directory, which a
+      // transcript does not choose, so it would borrow that directory's
+      // repository. Here the process IS in a checkout with a forge remote.
+      mkdirSync(join(workRepo, 'src'), { recursive: true });
+      seed(
+        transcripts,
+        [
+          prompt,
+          assistant({
+            uuid: 'a-1',
+            messageId: 'msg_1',
+            ts: '2026-06-20T10:00:05.000Z',
+            cwd: relativeCwd,
+            toolUseId: 'toolu_1',
+          }),
+        ].join('\n'),
+      );
+
+      const home = process.cwd();
+      process.chdir(workRepo);
+      try {
+        // The control: this process directory is a repository the resolver finds.
+        expect(resolveRepo('.')).toBe('work');
+        await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+      } finally {
+        // Restored before the shared afterEach removes the fixtures: a process
+        // still standing inside one cannot delete it on Windows.
+        process.chdir(home);
+      }
+
+      const { root, leaf } = keys(dataDir);
+      expect(root).toBeNull();
+      expect(leaf.get('msg_1')).toBeNull();
+      expect(leaf.get('toolu_1')).toBeNull();
+    },
+  );
 
   it('a root built from a remoteless repo carries no key, and neither do its leaves', async () => {
     writeFileSync(join(workRepo, '.git', 'config'), '');

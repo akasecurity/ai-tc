@@ -823,6 +823,39 @@ describe('handleSessionStart — the session root scope key', () => {
     }
   });
 
+  it.each([
+    ['a relative cwd', '.'],
+    ['a relative subdirectory', 'src'],
+    ['an empty cwd', ''],
+  ])(
+    'stamps no key for %s, though the hook process runs inside a keyed checkout',
+    async (_label, relativeCwd) => {
+      // A relative cwd is walked from the hook process's own directory, which
+      // the session does not choose, so it would borrow that directory's
+      // repository. Here the process IS in a checkout with a forge remote.
+      mkdirSync(join(cwd, 'src'), { recursive: true });
+      const home = process.cwd();
+      process.chdir(cwd);
+      try {
+        // The control: the same checkout, named absolutely, is keyed.
+        await handleSessionStart(start('s-abs'), config(dir));
+        expect(rootRow('s-abs').attrs.scope_key).toBe('github.com/org/payments-api');
+
+        await handleSessionStart(start('s-rel', { cwd: relativeCwd }), config(dir));
+      } finally {
+        // Restored before the shared afterEach removes the fixtures: a process
+        // still standing inside one cannot delete it on Windows.
+        process.chdir(home);
+      }
+
+      const { attrs, key } = rootRow('s-rel');
+      expect(attrs).not.toHaveProperty('scope_key');
+      expect(key).toBeNull();
+      // Only the key is withheld; the cwd is recorded as the session reported it.
+      expect(attrs.cwd).toBe(relativeCwd);
+    },
+  );
+
   it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
     'never keys a %s web-chat root, even when its stand-in cwd is a checkout',
     async (tool) => {

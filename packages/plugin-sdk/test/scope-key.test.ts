@@ -1,6 +1,6 @@
-// The scope-key rules the transcript reconcilers share: scopeKeyMemo (one key per
-// working directory) and toolCallScopeKey (where a tool call ran, or what it
-// touched). They run against real checkouts built under a temp directory, so the
+// The scope-key rules the transcript reconcilers and the session roots share:
+// scopeKeyMemo (one key per working directory), sessionRootScopeKey (a session
+// root's key) and toolCallScopeKey (where a tool call ran, or what it touched). They run against real checkouts built under a temp directory, so the
 // key a directory gets is the key the same resolver gives a hook there. The
 // once-per-directory promise is counted in scope-key-memo.test.ts, which needs a
 // module mock this file must not carry.
@@ -10,7 +10,8 @@ import { basename, join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { scopeKeyMemo, toolCallScopeKey } from '../src/scope-key.ts';
+import { resolveRepoAttribution } from '../src/repo.ts';
+import { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from '../src/scope-key.ts';
 
 // An scp-form remote's userinfo reads as an email address to a scanner, so the
 // fixture builds it from parts.
@@ -83,6 +84,48 @@ describe('scopeKeyMemo', () => {
     try {
       expect(scopeKeyMemo()('.')).toBeUndefined();
       expect(scopeKeyMemo()('src')).toBeUndefined();
+    } finally {
+      // Restored before the shared afterEach removes `root`: a process still
+      // standing inside it cannot delete it on Windows.
+      process.chdir(home);
+    }
+  });
+});
+
+describe('sessionRootScopeKey', () => {
+  it('keys a session root by the repository its absolute cwd sits in', () => {
+    mkdirSync(join(work, 'src'), { recursive: true });
+
+    expect(sessionRootScopeKey(work)).toBe(WORK_KEY);
+    expect(sessionRootScopeKey(join(work, 'src'))).toBe(WORK_KEY);
+    expect(sessionRootScopeKey(personal)).toBe(PERSONAL_KEY);
+  });
+
+  it('is the key a hook stamps for the same cwd', () => {
+    expect(sessionRootScopeKey(work)).toBe(resolveRepoAttribution(work).scopeKey);
+  });
+
+  it('gives no key to no cwd, a directory in no repository, or a repository with no remote', () => {
+    const remoteless = checkout('remoteless', undefined);
+
+    expect(sessionRootScopeKey(undefined)).toBeUndefined();
+    expect(sessionRootScopeKey(scratch)).toBeUndefined();
+    expect(sessionRootScopeKey(remoteless)).toBeUndefined();
+  });
+
+  it('gives no key to a relative or empty cwd read from inside a keyed repository', () => {
+    // A relative cwd is walked from this process's own directory, which a session
+    // does not choose, so it would borrow whatever repository the process runs in.
+    mkdirSync(join(work, 'src'), { recursive: true });
+    // The control: named absolutely, the same repository is keyed.
+    expect(sessionRootScopeKey(work)).toBe(WORK_KEY);
+
+    const home = process.cwd();
+    process.chdir(work);
+    try {
+      for (const cwd of ['.', 'src', join('src', '..'), '']) {
+        expect(sessionRootScopeKey(cwd)).toBeUndefined();
+      }
     } finally {
       // Restored before the shared afterEach removes `root`: a process still
       // standing inside it cannot delete it on Windows.

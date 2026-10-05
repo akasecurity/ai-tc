@@ -167,7 +167,7 @@ export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
 export type { CaptureOptions, DecisionOptions, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
-export { scopeKeyMemo, toolCallScopeKey } from './scope-key.ts';
+export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';

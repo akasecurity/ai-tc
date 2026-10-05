@@ -9,6 +9,7 @@ import {
   sourceSpanOf,
 } from '../src/encoded.ts';
 import { redact, scan } from '../src/engine.ts';
+import { maskMatch } from '../src/mask.ts';
 import { loadRule, RULES_DIR } from './helpers/rules.ts';
 
 // A synthetic secret rule, so no credential-shaped literal lives in this file.
@@ -91,7 +92,8 @@ describe('encoded secrets — base64', () => {
     expect(findings.map((f) => f.ruleId)).toEqual(['test/canary']);
     const [finding] = findings;
     expect(finding?.span.start).toBeGreaterThan(text.indexOf('\n'));
-    expect(finding?.rawMatch).toBe(text.slice(finding?.span.start, finding?.span.end));
+    // The span covers the encoding; the value is the decoded secret itself.
+    expect(finding?.rawMatch).toBe(SECRET);
     const redacted = redact(text, findings);
     expect(redacted).toContain('[REDACTED:SECRET]');
     expectNoEncodedLeak(redacted, SECRET);
@@ -149,6 +151,100 @@ describe('encoded secrets — base64', () => {
 
   it('does not decode twice: base64 of base64 is out of reach', () => {
     expect(scan(b64(b64(ENV_FILE)), [CANARY_RULE])).toEqual([]);
+  });
+});
+
+describe('encoded secrets — the finding carries the decoded value', () => {
+  it('reports the same value, and so the same identity, as the plain secret', () => {
+    const plain = scan(ENV_FILE, [CANARY_RULE]);
+    for (const text of [b64(ENV_FILE), xxd(ENV_FILE), hexdumpC(ENV_FILE), hex(ENV_FILE)]) {
+      const encoded = scan(text, [CANARY_RULE]);
+      expect(encoded.map((f) => f.rawMatch)).toEqual(plain.map((f) => f.rawMatch));
+    }
+  });
+
+  it('builds the masked preview from the secret, never from the dump around it', () => {
+    // An email earlier on the dump line used to land in the encoded span, and
+    // the email branch of maskMatch then revealed everything after its '@'.
+    const text = xxd(`mail=a@b.com ${SECRET}\n`);
+    const [finding] = scan(text, [CANARY_RULE]);
+    expect(finding?.rawMatch).toBe(SECRET);
+    const preview = maskMatch(finding?.rawMatch ?? '');
+    for (let k = 0; k + 4 <= SECRET.length; k++) {
+      expect(preview).not.toContain(SECRET.slice(k, k + 4));
+    }
+    expect(preview).not.toContain('@');
+  });
+});
+
+describe('encoded secrets — decoding every value', () => {
+  it('decodes each padded base64 value on its own line', () => {
+    const text = `${b64('ordinary harmless message')}\n${b64(`token ${SECRET}`)}\n`;
+    expect(scan(text, [CANARY_RULE]).map((f) => f.rawMatch)).toEqual([SECRET]);
+  });
+
+  it('decodes two padded values back to back on consecutive lines', () => {
+    const first = b64(`ab ${SECRET}`);
+    const second = b64(`b CANARY-0000AAAA1111`);
+    expect(first.endsWith('=')).toBe(true);
+    const found = scan(`${first}\n${second}\n`, [CANARY_RULE]).map((f) => f.rawMatch);
+    expect(found).toEqual([SECRET, 'CANARY-0000AAAA1111']);
+  });
+
+  it('does not let a printable but wrong alignment hide the right one', () => {
+    const text = `blob=xyz${b64(`${'A'.repeat(500)}${SECRET}`)}`;
+    expect(scan(text, [CANARY_RULE]).map((f) => f.rawMatch)).toEqual([SECRET]);
+  });
+
+  it('decodes UTF-8, so invisible-character normalization still applies', () => {
+    const padded = `${SECRET.slice(0, 10)}\u200b${SECRET.slice(10)}`;
+    expect(scan(`token ${padded}`, [CANARY_RULE])).toHaveLength(1);
+    const findings = scan(b64(`token ${padded}\n`), [CANARY_RULE]);
+    expect(findings).toHaveLength(1);
+    const [segment] = decodeEncodedSegments(b64(`passé ${padded}\n`));
+    expect(segment?.text).toBe(`passé ${padded}\n`);
+  });
+
+  it('reads a short credential: eight bytes is enough', () => {
+    const pinRule: Rule = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/pin',
+      name: 'pin',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'pin=([0-9]{4})', flags: 'g', captureGroup: 1 },
+    });
+    expect(scan(b64('pin=4417'), [pinRule]).map((f) => f.rawMatch)).toEqual(['4417']);
+    expect(scan(hex('pin=4417'), [pinRule]).map((f) => f.rawMatch)).toEqual(['4417']);
+  });
+});
+
+describe('encoded secrets — od and plain hexdump', () => {
+  it('finds a secret in od -An -tx1 output (space-separated bytes)', () => {
+    const bytes = [...Buffer.from(ENV_FILE)].map((b) => b.toString(16).padStart(2, '0'));
+    const lines: string[] = [];
+    for (let at = 0; at < bytes.length; at += 16)
+      lines.push(` ${bytes.slice(at, at + 16).join(' ')}`);
+    const text = `${lines.join('\n')}\n`;
+    const findings = scan(text, [CANARY_RULE]);
+    expect(findings.map((f) => f.rawMatch)).toEqual([SECRET]);
+    expectNoEncodedLeak(redact(text, findings).replace(/ /g, ''), SECRET);
+  });
+
+  it('finds a secret in plain hexdump output (little-endian 16-bit words)', () => {
+    const buf = Buffer.from(ENV_FILE.length % 2 ? `${ENV_FILE} ` : ENV_FILE);
+    const lines: string[] = [];
+    for (let at = 0; at < buf.length; at += 16) {
+      const words: string[] = [];
+      for (let w = at; w < Math.min(at + 16, buf.length); w += 2) {
+        words.push(
+          `${(buf[w + 1] ?? 0).toString(16).padStart(2, '0')}${(buf[w] ?? 0).toString(16).padStart(2, '0')}`,
+        );
+      }
+      lines.push(`${at.toString(16).padStart(7, '0')} ${words.join(' ')}`);
+    }
+    const findings = scan(`${lines.join('\n')}\n`, [CANARY_RULE]);
+    expect(findings.map((f) => f.rawMatch)).toEqual([SECRET]);
   });
 });
 
@@ -218,12 +314,21 @@ describe('encoded secrets — bounds', () => {
     expect(scan(`${pad}\n${b64(ENV_FILE)}\n`, [CANARY_RULE])).toEqual([]);
   });
 
-  it('stops decoding once MAX_DECODED_CHARS characters have been decoded', () => {
-    const filler = b64('x'.repeat(MAX_DECODED_CHARS));
-    const text = `${filler}\n${b64(ENV_FILE)}`.slice(0, MAX_ENCODED_SEARCH_CHARS);
-    const segments = decodeEncodedSegments(text);
+  it('holds the decoded total to a hard cap, truncating the segment that crosses it', () => {
+    const text = `${b64('x'.repeat(120))}\n${b64(ENV_FILE)}\n`;
+    const uncapped = decodeEncodedSegments(text).reduce((n, s) => n + s.text.length, 0);
+    expect(uncapped).toBeGreaterThan(150);
+    const segments = decodeEncodedSegments(text, { maxDecodedChars: 150 });
     const decoded = segments.reduce((n, s) => n + s.text.length, 0);
-    expect(decoded).toBeLessThanOrEqual(MAX_DECODED_CHARS);
+    expect(decoded).toBe(150);
+    for (const segment of segments) {
+      expect(segment.starts.length).toBe(segment.text.length);
+      expect(segment.ends.length).toBe(segment.text.length);
+    }
+  });
+
+  it('keeps the default cap at MAX_DECODED_CHARS', () => {
+    expect(MAX_DECODED_CHARS).toBe(200_000);
   });
 
   it('stays fast on adversarial runs at the search bound', () => {

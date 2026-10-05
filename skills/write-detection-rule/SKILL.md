@@ -169,9 +169,10 @@ false-positive guard simply absent.
 ### Encoded text
 
 A `secret`-category rule also runs over base64 runs and hex dumps (`xxd`, `xxd -p`,
-`hexdump -C`) found in the scanned text. The engine decodes each candidate that decodes to
-readable text, scans it with the secret rules, and maps every finding back onto the encoded
-characters, so a redaction masks the encoding. Nothing extra is needed in the rule: write the
+`hexdump -C`, plain `hexdump`, `od -tx1`) found in the scanned text. The engine decodes each
+candidate that decodes to readable UTF-8, scans it with the secret rules, and maps every finding
+back onto the encoded characters, so a redaction masks the encoding. The finding's `rawMatch` is
+the decoded value, so its preview and fingerprint match the plain secret's. Nothing extra is needed in the rule: write the
 pattern against the plain value. Rules in other categories never see decoded text. Decoding is
 one level deep and bounded (`packages/detections/src/encoded.ts`).
 

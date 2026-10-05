@@ -12,7 +12,7 @@
  * never produce. Callers who want valid input build it themselves, e.g.
  * `runHook('session-start', JSON.stringify({ session_id: 'x' }))`.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -91,6 +91,43 @@ export function runHook(name: string, stdin: string, options: RunHookOptions = {
   // A killed or timed-out child reports status null with a signal; treat that as
   // a failure rather than as a silent 0, which is what `?? 1` is doing here.
   return { status: status ?? 1, stdout: stdout ?? '', stderr: stderr ?? '' };
+}
+
+// The asynchronous twin of runHook, for a suite that drives many hook calls
+// and runs them side by side (each in its own temp home). Same contract: raw
+// stdin in, exit code + stdout/stderr out, never a rejection.
+export function runHookAsync(
+  name: string,
+  stdin: string,
+  options: RunHookOptions = {},
+): Promise<HookResult> {
+  const scriptPath = join(SCRIPTS_DIR, `${name}.js`);
+  if (!existsSync(scriptPath)) {
+    return Promise.resolve({ status: 1, stdout: '', stderr: `${scriptPath} does not exist` });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [scriptPath, ...(options.args ?? [])], {
+      env: { ...HOST_ENV, ...options.env },
+      timeout: options.timeoutMs ?? 15_000,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', (error) => {
+      resolve({ status: 1, stdout, stderr: stderr || error.message });
+    });
+    child.on('close', (status) => {
+      resolve({ status: status ?? 1, stdout, stderr });
+    });
+    child.stdin.end(stdin);
+  });
 }
 
 // An isolated ~/.aka + ~/.claude for one runHook() call: os.homedir() — which

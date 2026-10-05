@@ -15,7 +15,6 @@
  * - block: command-risk, secrets and secrets-infra on Block;
  * - redact: secrets and secrets-infra on Redact, command-risk on Warn.
  */
-import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -29,10 +28,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import type { Canary, ToolCall } from '../helpers/leak-corpus.ts';
 import { buildCorpus, leakForms } from '../helpers/leak-corpus.ts';
-import { tempHomeEnv } from '../helpers/run-hook.ts';
+import { runHookAsync, tempHomeEnv } from '../helpers/run-hook.ts';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SCRIPTS = join(PLUGIN_ROOT, 'scripts');
 const hooksJson = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8')) as {
   hooks: Record<string, { matcher?: string }[]>;
 };
@@ -40,9 +38,6 @@ const matcherOf = (event: string): RegExp =>
   new RegExp(`^(?:${hooksJson.hooks[event]?.[0]?.matcher ?? '(?!)'})$`);
 const PRE_MATCHER = matcherOf('PreToolUse');
 const POST_MATCHER = matcherOf('PostToolUse');
-
-// eslint-disable-next-line n/no-process-env -- the spawned hooks need the host PATH
-const HOST_ENV = process.env;
 
 type Policy = 'default' | 'block' | 'redact';
 const POLICIES: Readonly<Record<Policy, Readonly<Record<string, BuiltinPolicyId>>>> = {
@@ -53,28 +48,6 @@ const POLICIES: Readonly<Record<Policy, Readonly<Record<string, BuiltinPolicyId>
 
 // The rules this change adds; no benign call may be flagged by one of them.
 const NEW_RULES = ['command-risk/credential-file-access', 'secrets-infra/secret-config-value'];
-
-interface HookRun {
-  stdout: string;
-  status: number | null;
-}
-
-function runHookAsync(name: string, payload: unknown, home: string): Promise<HookRun> {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [join(SCRIPTS, `${name}.js`)], {
-      env: { ...HOST_ENV, ...tempHomeEnv(home) },
-    });
-    let stdout = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on('close', (status) => {
-      resolve({ stdout, status });
-    });
-    child.stdin.end(JSON.stringify(payload));
-  });
-}
 
 interface CallOutcome {
   call: ToolCall;
@@ -130,8 +103,8 @@ async function replayCall(call: ToolCall, policy: Policy): Promise<CallOutcome> 
   if (PRE_MATCHER.test(call.tool)) {
     const run = await runHookAsync(
       'pre-tool-use',
-      { ...base, hook_event_name: 'PreToolUse', tool_input: call.input },
-      home,
+      JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_input: call.input }),
+      { env: tempHomeEnv(home) },
     );
     expect(run.status).toBe(0);
     outcome.pre = 'none';
@@ -155,13 +128,13 @@ async function replayCall(call: ToolCall, policy: Policy): Promise<CallOutcome> 
   if (POST_MATCHER.test(call.tool)) {
     const run = await runHookAsync(
       'post-tool-use',
-      {
+      JSON.stringify({
         ...base,
         hook_event_name: 'PostToolUse',
         tool_input: call.input,
         tool_response: call.response,
-      },
-      home,
+      }),
+      { env: tempHomeEnv(home) },
     );
     expect(run.status).toBe(0);
     outcome.post = 'none';

@@ -227,43 +227,67 @@ let resolvedWorkerUrl: URL | null | undefined;
  * on a machine with no `node_modules`, and the worker is one more script beside
  * them — so `./scan-worker.js` resolves against the emitting hook. In the repo
  * (and under vitest) this module is still `src/isolated-scan.ts` and its
- * neighbour is `scan-worker.ts`, which Node loads by stripping the types.
+ * neighbour is the worker's TypeScript source, which Node loads by stripping
+ * the types.
  *
  * `.js` is tried first so a published bundle can never be shadowed by a stray
  * source file. `undefined` — neither present, or a location that is not a file
- * path at all — is a real answer: the caller falls back rather than scanning
- * unbounded.
+ * path at all, including a module URL a relative path cannot be resolved
+ * against (`data:`, say) — is a real answer: the caller falls back rather than
+ * scanning unbounded.
  *
- * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
- * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
- * from a variable is not followed, and neither is one written as an arrow
+ * The built worker is spelled as a literal `new URL('./…', import.meta.url)`,
+ * which static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL
+ * built from a variable is not followed, and neither is one written as an arrow
  * function's expression body, so a bundle traced from either ships without the
  * worker and drops every rule that needs isolation. A template string is
  * followed, but as a file pattern that can pull in whatever else matches it,
- * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
- * FAILS the build when the file is not beside the source — in the repo the
- * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
- * comment is not part of the syntax tree nft reads, so nft still traces it.
- * Do not drop the comment. test/worker-url-literal.test.ts pins both.
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same
+ * literal and FAILS the build when the file is not beside the source, so the
+ * call carries `webpackIgnore`. A comment is not part of the syntax tree nft
+ * reads, so nft still traces it. Do not drop the comment.
+ *
+ * The source fallback is derived from that URL at runtime rather than spelled,
+ * so no bundle that inlines this module carries the source worker's path as a
+ * literal, and a downstream check for the quoted `'./scan-worker.ts'` passes.
+ * The branch itself still ships: in a bundle it probes a sibling `.ts` that no
+ * published artifact contains, which costs one extra existence check when the
+ * built worker is missing. A non-minified esbuild bundle of the worker itself
+ * also names its source file in a module-origin comment, so a check that no
+ * source worker reference ships has to match the quoted reference, or be
+ * scoped to the hook scripts rather than the worker.
+ * test/worker-url-literal.test.ts pins the one literal, its comment, the
+ * absence of a second, and the probe order.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  const candidates = [
-    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
-    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
-  ];
-  for (const candidate of candidates) {
-    try {
+  resolvedWorkerUrl = null;
+  try {
+    const built = new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url);
+    for (const candidate of [built, sourceTwin(built)]) {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;
-        return candidate;
+        break;
       }
-    } catch {
-      // Not a file: URL — a single-file executable, say. Nothing to probe.
     }
+  } catch {
+    // Not a file: URL, or not one a relative path resolves against — a
+    // single-file executable, or a module loaded from a `data:` URL. Nothing to
+    // probe.
   }
-  resolvedWorkerUrl = null;
-  return undefined;
+  return resolvedWorkerUrl ?? undefined;
+}
+
+/**
+ * `url` with the `.js` ending its path swapped for `.ts`; the query and the
+ * fragment are kept. For the unbundled package this names the worker's unbuilt
+ * source beside this module. In a bundle it names a sibling that no published
+ * artifact contains, since each bundle builds its worker from its own entry.
+ */
+export function sourceTwin(url: URL): URL {
+  const twin = new URL(url);
+  twin.pathname = twin.pathname.replace(/\.js$/, '.ts');
+  return twin;
 }
 
 function messageOf(error: unknown): string {

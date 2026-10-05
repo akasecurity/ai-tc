@@ -37,6 +37,7 @@ const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 // isolated-scan.ts). tsup's entry key is what produces it, so the two have to
 // be changed together or the worker becomes unreachable at runtime.
 const WORKER_SCRIPT = 'scan-worker.js';
+const SOURCE_WORKER_REFERENCE = /['"`]\.\/scan-worker\.ts['"`]/;
 
 // A string only `guarded-scan.ts` emits, and it is reachable only through
 // `createPluginRuntime`. Any emitted script carrying it therefore builds a
@@ -105,10 +106,16 @@ describe('the built scan worker', () => {
     expect(derived).toEqual(expect.arrayContaining(KNOWN_RUNTIME_SCRIPTS));
 
     for (const script of derived) {
+      const bundle = readFileSync(join(SCRIPTS_DIR, script), 'utf8');
       // The inlined resolver looks for exactly this name next to itself. If the
       // tsup entry is renamed or dropped, every isolated scan degrades to the
       // built-in packs only — quietly, and only once installed.
-      expect(readFileSync(join(SCRIPTS_DIR, script), 'utf8')).toContain(WORKER_SCRIPT);
+      expect(bundle).toContain(WORKER_SCRIPT);
+      // The source-run fallback is derived from the built URL at runtime, so no
+      // hook carries the source worker's path as a string. Matched quoted: the
+      // worker's own non-minified bundle names its source file in an unquoted
+      // module-origin comment, which is not a reference to load it.
+      expect(bundle).not.toMatch(SOURCE_WORKER_REFERENCE);
     }
   });
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import type { RecordProjectEgressInput } from '@akasecurity/schema';
+import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, AttachmentScopeEntry } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -485,8 +486,9 @@ describe('canonicalRepoUrl', () => {
   // A key is meant to be stamped on each capture, compared against what a user
   // enrolled and printed wherever a scope is listed — and the remote it comes
   // from was written by whoever wrote the repository's git config. So a key is
-  // one a scope entry could hold, printable(512), or there is none. Every one of
-  // these parses as a remote; only its key is refused.
+  // one a scope entry could hold, under its identity's own cap and character
+  // rule, or there is none. Every one of these parses as a remote; only its key
+  // is refused.
   const BEL = String.fromCharCode(7);
   const LF = String.fromCharCode(10);
   const ESC = String.fromCharCode(27);
@@ -514,6 +516,23 @@ describe('canonicalRepoUrl', () => {
     const at = (n: number): string => `https://github.com/acme/${'w'.repeat(n - 16)}`;
     expect(canonicalRepoUrl(at(512))).toHaveLength(512);
     expect(canonicalRepoUrl(at(513))).toBeUndefined();
+  });
+
+  it('takes that cap from the scope entry, so a key is always an identity one could hold', () => {
+    // One number behind both ends: the key is refused past the length an entry's
+    // identity accepts, and a key at that length is accepted by the entry.
+    const cap = ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH;
+    const at = (n: number): string => `https://github.com/acme/${'w'.repeat(n - 16)}`;
+    const key = canonicalRepoUrl(at(cap));
+    expect(key).toHaveLength(cap);
+    expect(canonicalRepoUrl(at(cap + 1))).toBeUndefined();
+    const entry = (identity: string | undefined) => ({
+      kind: 'repo',
+      identity,
+      enrolledAt: '2026-06-18T00:00:00.000Z',
+    });
+    expect(AttachmentScopeEntry.safeParse(entry(key)).success).toBe(true);
+    expect(AttachmentScopeEntry.safeParse(entry('w'.repeat(cap + 1))).success).toBe(false);
   });
 
   it('measures that cap on the key, not on the remote it came from', () => {

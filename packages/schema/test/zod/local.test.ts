@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AttachmentMode } from '../../src/zod/control-plane.ts';
 import type { ResolvedAttachmentScope } from '../../src/zod/local.ts';
 import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   AttachmentScope,
   AttachmentScopeEntry,
   canSweepSyncLane,
@@ -674,6 +675,22 @@ describe('WorkspaceSettings.attachmentScope', () => {
       expect(parseAttachmentScope(parsed.attachmentScope)?.entries ?? []).toEqual([]);
     },
   );
+});
+
+describe('AttachmentScopeEntry identity length', () => {
+  const ofLength = (n: number) => scopeEntry('i'.repeat(n));
+
+  it('is capped at 512 units, and the exported cap says so', () => {
+    expect(ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH).toBe(512);
+    expect(AttachmentScopeEntry.safeParse(ofLength(512)).success).toBe(true);
+    expect(AttachmentScopeEntry.safeParse(ofLength(513)).success).toBe(false);
+  });
+
+  it('reads the exported cap rather than a copy of its value', () => {
+    const cap = ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH;
+    expect(AttachmentScopeEntry.safeParse(ofLength(cap)).success).toBe(true);
+    expect(AttachmentScopeEntry.safeParse(ofLength(cap + 1)).success).toBe(false);
+  });
 });
 
 describe('parseAttachmentScope', () => {

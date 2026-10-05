@@ -235,6 +235,19 @@ export function isHistorySyncConsentStale(
 }
 
 /**
+ * The longest `identity` a scope entry may hold, in the UTF-16 units `printable`
+ * counts.
+ *
+ * Exported so the scope key a repository produces is held to the same length:
+ * `canonicalRepoUrl` refuses a key longer than this, so every key it returns is
+ * one an entry could carry. A second copy of the number would let the two drift
+ * until a key was handed on that no user could enroll.
+ *
+ * A plain number: it registers nothing, and so carries no `.meta({ id })`.
+ */
+export const ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH = 512;
+
+/**
  * One enrolled identity on a SCOPED attachment.
  *
  *   `repo`    — a canonical repository key, `host/owner/repo`: scheme,
@@ -255,7 +268,7 @@ export function isHistorySyncConsentStale(
  */
 export const AttachmentScopeEntry = z.object({
   kind: z.enum(['repo', 'account']),
-  identity: printable(512).min(1),
+  identity: printable(ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH).min(1),
   label: printable(80).optional(),
   enrolledAt: z.iso.datetime(),
 });

@@ -16,7 +16,7 @@ import type {
   RecordProjectEgressInput,
   ResolvedEgressHit,
 } from '@akasecurity/schema';
-import { printable } from '@akasecurity/schema';
+import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/schema';
 
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
@@ -204,10 +204,11 @@ export function hashProjectKey(projectKey: string): string {
 
 /**
  * The shape every scope key has: the shape a scope entry's identity has, at
- * most 512 characters and none of them a control or format character. Built
- * once; `canonicalRepoUrl` checks each key it returns against it.
+ * most ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH characters and none of them a
+ * control or format character. Built once; `canonicalRepoUrl` checks each key it
+ * returns against it.
  */
-const SCOPE_KEY = printable(512);
+const SCOPE_KEY = printable(ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
 
 // What makes a string a URL rather than an scp-style remote: a scheme and `://`.
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -275,16 +276,17 @@ function namesTheHostGitContacts(url: string): boolean {
  * A host with no path is `undefined` too: `github.com` names a forge, not a
  * repository, and enrolling it would enroll every repository on it.
  *
- * So is a key that is not printable: longer than 512 characters, or carrying a
- * control or format character. Whoever wrote a repository's git config chose
- * every byte of its remote, and a key is meant to be stamped on each capture,
- * compared against what a user enrolled and printed wherever a scope is listed.
- * The rule is `printable(512)`, the shape a scope entry's identity has, so every
- * key returned here is one a user could enroll, and a key nobody could enroll
- * is never handed on to be stored, compared or rendered. The check lives here
- * rather than with each caller, so every producer of a key draws the line in
- * the same place, however it found the remote. The digest has no such limit
- * and keeps hashing whatever the parse produced.
+ * So is a key that is not printable: longer than the cap a scope entry's
+ * identity has, or carrying a control or format character. Whoever wrote a
+ * repository's git config chose every byte of its remote, and a key is meant to
+ * be stamped on each capture, compared against what a user enrolled and printed
+ * wherever a scope is listed. The rule is the one `AttachmentScopeEntry.identity`
+ * has, from the same exported cap, so every key returned here is one a user could
+ * enroll, and a key nobody could enroll is never handed on to be stored, compared
+ * or rendered. The check lives here rather than with each caller, so every
+ * producer of a key draws the line in the same place, however it found the
+ * remote. The digest has no such limit and keeps hashing whatever the parse
+ * produced.
  *
  * Path case is kept, for the reason `canonicalGitUrl` gives. Keys are compared
  * byte-exact (scopeVerdict is a set lookup), so two producers that built one

@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "core-pii",
   "name": "Core PII",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "rules": [
     "email",
     "ssn",

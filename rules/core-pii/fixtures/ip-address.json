@@ -35,8 +35,18 @@
     "shouldMatch": false
   },
   {
-    "label": "five-part version string",
-    "text": "firmware 2.4.1.0.9 is current",
+    "label": "six-part version string",
+    "text": "firmware 2.4.1.0.9.3 is current",
     "shouldMatch": false
+  },
+  {
+    "label": "address.port socket as printed by netstat -an / tcpdump",
+    "text": "tcp4  0  0  10.0.0.7.62345  93.184.216.34.443  ESTABLISHED",
+    "shouldMatch": true
+  },
+  {
+    "label": "IP embedded in a wildcard-DNS hostname",
+    "text": "curl http://app.203.0.113.7.nip.io/",
+    "shouldMatch": true
   }
 ]

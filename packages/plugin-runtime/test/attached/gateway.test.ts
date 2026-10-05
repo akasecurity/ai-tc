@@ -1994,6 +1994,33 @@ describe('a child row forwards only beside an in-scope root', () => {
     expect(calls.delivered).toEqual([]);
   });
 
+  // A root event is sent only when its OWN key is in scope as well. Its
+  // attributes (cwd, project, repo) describe where it was recorded from, so a
+  // root event keyed to a personal directory must not leave under an enrolled
+  // stored root. The leaves are held to the stored root alone, so the enrolled
+  // ones still forward: the instance that wrote the stored root forwarded it.
+  it.each([OUT, undefined])(
+    'does not send a root event keyed %s under an enrolled stored root, and still forwards its enrolled leaves',
+    async (eventKey) => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const local = makeLocal(calls, { readSessionScopeKey: () => IN });
+      const { gateway } = build({
+        attachment: SCOPED,
+        local,
+        client: makeClient(calls),
+        forward: passthroughForward(calls),
+      });
+      await gateway.recordAuditEvent(rootRow('s1', eventKey));
+      await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+      expect(calls.order).not.toContain('client.recordAuditEvent');
+      expect(calls.delivered).not.toContain('s1');
+      // The leaf did forward, so the root event's absence is the root event's
+      // own key and not a gateway that refused the session.
+      expect(calls.batchSizes).toEqual([1]);
+      expect(calls.delivered).toContain(llmCallId('s1', 'm1'));
+    },
+  );
+
   it('keeps a root and its leaves local when the store holds no key for it', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, { readSessionScopeKey: () => undefined });
@@ -2326,7 +2353,7 @@ describe('a leaf is held to the stored session root, on a real store', () => {
     }
   });
 
-  it('forwards the enrolled leaves when the stored root is enrolled and a later root event is personal', async () => {
+  it('forwards the enrolled leaves, but not the personal root event, when the stored root is enrolled', async () => {
     const { first, later } = twoInstances();
     try {
       await first.gateway.recordAuditEvent(rootRow('s-mirror', IN));
@@ -2343,9 +2370,11 @@ describe('a leaf is held to the stored session root, on a real store', () => {
     // The first instance forwarded the stored root, so the leaves have a root to
     // hang off on the plane.
     expect(sent(first.calls)).toEqual(['client.recordAuditEvent']);
-    // The later instance forwarded one enrolled llm_call and one enrolled
-    // tool_call, in a batch each, and stamped exactly those two. The personal
-    // tool_call went nowhere.
+    // The later instance did NOT send its personal-keyed root event: its
+    // attributes describe a personal checkout. It forwarded one enrolled
+    // llm_call and one enrolled tool_call, in a batch each, and stamped exactly
+    // those two. The personal tool_call went nowhere.
+    expect(sent(later.calls)).toEqual(['client.recordAuditEvents', 'client.recordAuditEvents']);
     expect(later.calls.batchSizes).toEqual([1, 1]);
     const stamps = syncedAt([
       llmCallId('s-mirror', 'm1'),

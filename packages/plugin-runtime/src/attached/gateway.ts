@@ -277,13 +277,18 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   /**
    * The verdict for an audit row, with the session-root rule on top.
    *
-   * A session ROOT is decided by the key its row holds in the local store, and
-   * the answer is recorded so the rows that hang off it can be held to it (see
-   * `rootVerdict`). Not by the key on the root event just handed in: roots are
+   * A session ROOT has two halves. What the rows that hang off it are held to is
+   * the key its row holds in the local store, recorded per root (see
+   * `rootVerdict`), not the key on the root event just handed in: roots are
    * first-write-wins in the store, so when two producers record a root for one
    * session (the session-start hook, then a reconcile pass) the second leaves
    * the stored row as it was, and the history drain decides that row, not this
-   * event. Any other row with a root reference (`rootSessionId`, else
+   * event. Whether this root EVENT is itself sent takes both keys: the stored
+   * one AND its own. The event's attributes (cwd, project, repo) describe where
+   * it was recorded from, so a root event keyed to a personal directory is never
+   * sent under an enrolled stored root, though the enrolled leaves still forward
+   * under it: the instance that wrote the stored root forwarded it. Any other
+   * row with a root reference (`rootSessionId`, else
    * `parentId`) forwards only when its own key is in scope AND this instance
    * recorded an in-scope verdict for that root. The audit-event route has real
    * foreign keys on both columns and stubs no missing root, so a leaf sent
@@ -306,7 +311,11 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       if (event.eventType !== 'session') {
         return this.leafVerdict(event.attributes, event.rootSessionId ?? event.parentId);
       }
-      return this.rootVerdict(event.id);
+      // The stored root's verdict is recorded FIRST and whatever this event's own
+      // key says, since it is what the leaves are held to. The event is sent only
+      // when its own key is in scope too.
+      if (this.rootVerdict(event.id) === 'local') return 'local';
+      return this.verdictFor(() => scopeKeyOf(event.attributes));
     } catch {
       return 'local';
     }

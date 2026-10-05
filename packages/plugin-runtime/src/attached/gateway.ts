@@ -624,7 +624,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // The scope verdict, with the root rule on top (see `auditVerdict`). A
     // refusal returns before the stamp, deliberately: a stamp claims delivery.
     // The history drain must make that decision itself, from the row's stored
-    // key; this call's verdict is not recorded and does not outlive the call.
+    // key; this call's verdict is held only in this instance's memory (a session
+    // root's, for the rows recorded after it), not on the row.
     if (this.auditVerdict(event) === 'local') return;
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),

@@ -746,8 +746,9 @@ export type SyncLaneRetention =
  *
  * Only a whole, valid record for this deployment earns `hold-keys`. An empty
  * one — attached in scoped mode, nothing enrolled yet — holds nothing on the
- * lane, as a standalone machine would: nothing on it is owed, and enrolling a
- * repository later backfills what is still on disk.
+ * lane, as a standalone machine would: nothing on it is owed. Under a
+ * history-sync grant, enrolling a repository later is meant to backfill what is
+ * still on disk.
  *
  * `settings.controlPlane` is the EFFECTIVE descriptor, as every forward path
  * reads it, so the record is bound to the endpoint the drain actually sends to.

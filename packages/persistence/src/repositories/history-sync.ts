@@ -773,7 +773,9 @@ export class SqliteHistorySyncRepository {
     // Left set across the switch, the drain would read A's markers as B's and
     // ship A's prompts, with their text, to a deployment that never saw them.
     // So EVERY marker is cleared here, unconditionally, whichever writer set
-    // it — the live path above, or `markCaptureBacklogOwedStmt` below.
+    // it: the live path above, either consent-time seed
+    // (`markCaptureBacklogOwedStmt` and its scoped twin), or the enroll re-seed
+    // (`markScopeCapturesOwedStmt`).
     //
     // `rearmFor`'s caller then has the chance to re-mark B's OWN backlog in the
     // SAME transaction (its optional third argument, applied after this wipe):

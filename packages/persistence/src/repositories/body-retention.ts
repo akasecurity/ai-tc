@@ -29,9 +29,12 @@ import { withTransaction } from '../internal/transactions.ts';
  * can retroactively claim the backlog at any later time, with no age bound at
  * all. So the lane is gated by the caller rather than guessed at here —
  * `sweepSyncLane` says which of those rows could still be owed, and expiring
- * one of them is refused outright. On a scoped attachment that is only the rows
- * stamped with an enrolled `scope_key`; on any other attachment, or under a
- * history-sync grant, it is all of them.
+ * one of them is refused outright. What could still be owed follows the
+ * attachment. On a scoped attachment, with or without a history-sync grant, it is
+ * only the rows stamped with an enrolled `scope_key`: the grant there covers the
+ * enrolled repositories, never the whole lane. On a machine attachment, under a
+ * grant with no scoped attachment, or whenever the credential or its scope record
+ * cannot be trusted, it is every unsynced row.
  *
  * `content_hash` is deliberately preserved. It costs none of the reclaimable
  * bytes, it is what backfill idempotency is keyed on, and clearing it would make
@@ -143,7 +146,7 @@ export class SqliteBodyRetentionRepository {
     // The scoped twin of the statement above. A scoped attachment owes only the
     // unsynced sync-lane rows whose stamped key is enrolled, so a row with no
     // key, or with a key outside the list, is no more owed than a `code_change`:
-    // the drain's scoped reads never return it, and nothing can mark it owed.
+    // the drain's scoped reads never return it, whatever marker it carries.
     //
     // `scope_key IS NULL` is spelled out because `NOT IN` cannot say it. A NULL
     // key makes `scope_key NOT IN (…)` NULL rather than true, so without that arm

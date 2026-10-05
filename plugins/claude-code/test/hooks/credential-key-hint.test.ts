@@ -219,14 +219,21 @@ describe('the issue case, end to end through the response scan', () => {
     expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
   });
 
-  it('masks a bare value read through a deep jq path, with one finding', async () => {
+  it('masks a bare value read through a deep jq path, over one 64-character span', async () => {
     const outcome = await runBash(
       'jq -r .models.local.auth_cfg.server.secret_key settings.json',
       `${HEX}\n`,
       'redact',
     );
     expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
-    expect(outcome.redactedFindings.length).toBeGreaterThan(0);
+    // Two rules read this value (coverage over de-duplication), both over the
+    // same 64-character span, which redaction folds into one.
+    expect(
+      outcome.redactedFindings.map((f) => [f.ruleId, f.span.end - f.span.start]).sort(),
+    ).toEqual([
+      ['secrets-infra/generic-high-entropy-secret', HEX.length],
+      ['secrets-infra/secret-config-value', HEX.length],
+    ]);
   });
 
   it('does not mask a commit hash printed after a command that merely mentions a token path', async () => {

@@ -1,0 +1,205 @@
+import type { CaptureResult } from '@akasecurity/plugin-sdk';
+import { scanText } from '@akasecurity/plugin-sdk';
+import { describe, expect, it } from 'vitest';
+
+import {
+  annotateBareValue,
+  annotatedText,
+  credentialKeyFromInput,
+  unannotatedText,
+} from '../../src/hooks/credential-key-hint.ts';
+import { scanResponseFields } from '../../src/hooks/scan-response.ts';
+import { scannableResponseFields } from '../../src/hooks/tool-response.ts';
+
+// Fake values only: random-looking, belonging to no real system.
+const HEX = 'a3f9c27d81b4e605d9f2a7c13e8b4056f1d7a29c8e3b60f4d5a1c97e2b8f3d60';
+const BASE64 = 'Zq81mVtR0aLp44XsYb2NcE7kWd9HfU3oQx5Tg';
+
+const bash = (command: string): unknown => ({ command });
+
+describe('credentialKeyFromInput', () => {
+  it.each([
+    ['jq path', 'jq -r .auth.secret_key settings.json', 'auth.secret_key'],
+    ['jq bracket path', `jq -r '.auth["secret_key"]' settings.json`, 'secret_key'],
+    ['env expansion', 'echo "$API_TOKEN"', 'API_TOKEN'],
+    ['printenv', 'printenv GITHUB_TOKEN', 'GITHUB_TOKEN'],
+    ['yq', 'yq .db.password config.yml', 'db.password'],
+    ['camelCase', 'node -p "require(\'./c.json\').accessKey"', 'accessKey'],
+    ['upper-case with a dash', 'cat conf | grep -i X-Auth-Token', 'X-Auth-Token'],
+  ] as const)('reads the key from a Bash command: %s', (_label, command, key) => {
+    expect(credentialKeyFromInput('Bash', bash(command))).toBe(key);
+  });
+
+  it('reads the key from a Read path', () => {
+    expect(credentialKeyFromInput('Read', { file_path: '/srv/app/secret_key' })).toBe('secret_key');
+  });
+
+  it.each([
+    'jq -r .max_tokens settings.json',
+    'jq -r .token_count settings.json',
+    'jq -r .secret_name settings.json',
+    'jq -r .token.id settings.json',
+    'jq -r .client_secret_id settings.json',
+    'cat notes.txt',
+    'ls -la',
+  ])('names no key for %s', (command) => {
+    expect(credentialKeyFromInput('Bash', bash(command))).toBeUndefined();
+  });
+
+  it('ignores tools whose input does not say where the output came from', () => {
+    expect(credentialKeyFromInput('WebFetch', { url: 'https://example.invalid/token' })).toBe(
+      undefined,
+    );
+    expect(credentialKeyFromInput('Bash', undefined)).toBeUndefined();
+    expect(credentialKeyFromInput('Bash', { command: 42 })).toBeUndefined();
+  });
+
+  it('skips a very long command', () => {
+    expect(credentialKeyFromInput('Bash', bash(`echo ${'a '.repeat(3000)} $API_TOKEN`))).toBe(
+      undefined,
+    );
+  });
+});
+
+describe('annotateBareValue', () => {
+  it('wraps one high-entropy token, keeping the newline', () => {
+    const annotation = annotateBareValue('auth.secret_key', `${HEX}\n`);
+    expect(annotation).toBeDefined();
+    if (!annotation) return;
+    const wrapped = annotatedText(`${HEX}\n`, annotation);
+    expect(wrapped).toBe(`auth.secret_key: "${HEX}"\n`);
+    expect(unannotatedText(wrapped, annotation)).toBe(`${HEX}\n`);
+  });
+
+  it.each([
+    ['a low-entropy token', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+    ['a short token', 'a3f9c27d81b4e605'],
+    ['two lines', `${HEX}\n${HEX}\n`],
+    ['a sentence', 'the quick brown fox jumps over the lazy dog'],
+    ['a path', '/usr/local/lib/python3.12/site-packages/pkg'],
+    ['empty output', ''],
+  ])('leaves %s alone', (_label, output) => {
+    expect(annotateBareValue('secret_key', output)).toBeUndefined();
+  });
+
+  it('does nothing without a key', () => {
+    expect(annotateBareValue(undefined, HEX)).toBeUndefined();
+  });
+
+  it('keeps a rewrite that lost the wrapper', () => {
+    const annotation = annotateBareValue('token', `${HEX}\n`);
+    if (!annotation) throw new Error('expected an annotation');
+    expect(unannotatedText('[REDACTED:SECRET]', annotation)).toBe('[REDACTED:SECRET]');
+  });
+});
+
+describe('scannableResponseFields with a tool input', () => {
+  it('annotates a stdout that is one bare value under a named key', () => {
+    const fields = scannableResponseFields(
+      'Bash',
+      { stdout: `${HEX}\n`, stderr: '' },
+      bash('jq -r .auth.secret_key settings.json'),
+    );
+    expect(fields).toHaveLength(1);
+    expect(fields[0]?.annotation?.prefix).toBe('auth.secret_key: "');
+  });
+
+  it('leaves a field alone when the command names no key', () => {
+    const [field] = scannableResponseFields(
+      'Bash',
+      { stdout: `${HEX}\n`, stderr: '' },
+      bash('sha256sum build.tar'),
+    );
+    expect(field?.annotation).toBeUndefined();
+  });
+
+  it('leaves multi-line output alone', () => {
+    const [field] = scannableResponseFields(
+      'Bash',
+      { stdout: `${HEX}\n${HEX}\n`, stderr: '' },
+      bash('jq -r .auth.secret_key settings.json'),
+    );
+    expect(field?.annotation).toBeUndefined();
+  });
+});
+
+// The capture stand-in runs the real bundled packs: a Redact policy rewrites
+// every finding, a Warn policy reports them and rewrites nothing.
+function capture(policy: 'redact' | 'warn'): (text: string) => Promise<CaptureResult> {
+  return (text) => {
+    const { masked, findings } = scanText(text);
+    const matches: CaptureResult['findings'] = findings.map((f) => ({
+      ruleId: f.ruleId,
+      category: f.category,
+      severity: f.severity,
+      span: f.span,
+      rawMatch: text.slice(f.span.start, f.span.end),
+      confidence: f.confidence,
+    }));
+    if (matches.length === 0) return Promise.resolve({ action: 'log', text: null, findings: [] });
+    return Promise.resolve(
+      policy === 'redact'
+        ? { action: 'redact', text: masked, findings: matches, enforcedFindings: matches }
+        : { action: 'warn', text: null, findings: matches },
+    );
+  };
+}
+
+async function runBash(
+  command: string,
+  stdout: string,
+  policy: 'redact' | 'warn',
+): ReturnType<typeof scanResponseFields> {
+  const response = { stdout, stderr: '' };
+  const fields = scannableResponseFields('Bash', response, bash(command));
+  return scanResponseFields('Bash', response, fields, capture(policy));
+}
+
+describe('the issue case, end to end through the response scan', () => {
+  const json = `{\n  "auth": {\n    "secret_key": "${HEX}"\n  }\n}\n`;
+
+  it('masks the nested JSON value under Redact', async () => {
+    const outcome = await runBash('jq . settings.json', json, 'redact');
+    const { stdout } = outcome.updated as { stdout: string };
+    expect(stdout).not.toContain(HEX);
+    expect(stdout).toContain('"secret_key"');
+    expect(outcome.redactedFindings.length).toBeGreaterThan(0);
+  });
+
+  it('flags the nested JSON value under Warn', async () => {
+    const outcome = await runBash('jq . settings.json', json, 'warn');
+    expect(outcome.warnedFindings.map((f) => f.ruleId)).toContain(
+      'secrets-infra/secret-config-value',
+    );
+  });
+
+  it('masks the bare jq -r value under Redact, keeping the newline', async () => {
+    const outcome = await runBash('jq -r .auth.secret_key settings.json', `${HEX}\n`, 'redact');
+    const { stdout } = outcome.updated as { stdout: string };
+    expect(stdout).not.toContain(HEX);
+    expect(stdout).toBe('[REDACTED:SECRET]\n');
+  });
+
+  it('flags the bare jq -r value under Warn', async () => {
+    const outcome = await runBash('jq -r .auth.secret_key settings.json', `${HEX}\n`, 'warn');
+    expect(outcome.warnedFindings.map((f) => f.ruleId)).toContain(
+      'secrets-infra/secret-config-value',
+    );
+  });
+
+  it('masks a bare base64 value read from an environment variable', async () => {
+    const outcome = await runBash('echo "$SERVICE_API_KEY"', `${BASE64}\n`, 'redact');
+    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
+  });
+
+  it('does not touch the same bare value when the command names no key', async () => {
+    const outcome = await runBash('sha256sum release.tar', `${HEX}\n`, 'redact');
+    expect(outcome.redactedFindings).toEqual([]);
+    expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
+  });
+
+  it('does not touch a bare count under a look-alike key', async () => {
+    const outcome = await runBash('jq -r .max_tokens settings.json', '4096\n', 'redact');
+    expect(outcome.redactedFindings).toEqual([]);
+  });
+});

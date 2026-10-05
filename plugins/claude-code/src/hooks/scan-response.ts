@@ -10,6 +10,7 @@ import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
 import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { RealizedRewrite } from '../protocol/notes.ts';
+import { annotatedText, unannotatedText } from './credential-key-hint.ts';
 import type { PathSegment } from './paths.ts';
 import type { FieldTokenizer } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
@@ -94,7 +95,13 @@ export async function scanResponseFields(
       outcome.unscannedFields = fields.length - index;
       break;
     }
-    const result = await capture(field.text);
+    // A bare credential value the tool's input named is scanned as `key: "value"`
+    // and unwrapped again below; every other field is scanned as it is.
+    const { annotation } = field;
+    const scanText = annotation ? annotatedText(field.text, annotation) : field.text;
+    const unwrap = (text: string): string =>
+      annotation ? unannotatedText(text, annotation) : text;
+    const result = await capture(scanText);
     if (result.findings.length === 0) continue;
 
     if (result.action === 'block') {
@@ -111,16 +118,16 @@ export async function scanResponseFields(
       // vaulted). Without one, the runtime's one-way text stands. A pointer
       // already sitting in the output is never re-tokenized — the scan shields
       // pointer spans before detection runs — so this pass is idempotent.
-      let rewritten = result.text;
+      let rewritten = unwrap(result.text);
       const enforced = result.enforcedFindings ?? [];
       if (tokenizeField && enforced.length > 0) {
         try {
           const tokenized = await tokenizeField(
-            field.text,
+            scanText,
             enforced,
             new Set(result.reversibleFindings ?? []),
           );
-          rewritten = tokenized.text;
+          rewritten = unwrap(tokenized.text);
           for (const token of tokenized.pointers) {
             realized.pointers.push({ token, category: pointerCategoryOf(token) });
           }

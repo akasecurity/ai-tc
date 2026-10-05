@@ -89,7 +89,10 @@ export class StandaloneDataGateway
   }
 
   recordCapture(record: CaptureRecord): Promise<void> {
-    this.db.recordCapture(record.event, record.findings);
+    // The scope key travels beside the event (CaptureRecord.scopeKey) and goes
+    // to the writer as an argument of its own: the writer, not the event, is
+    // what puts it on the row.
+    this.db.recordCapture(record.event, record.findings, record.scopeKey);
     return Promise.resolve();
   }
 

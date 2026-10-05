@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AttachmentMode } from '../../src/zod/control-plane.ts';
+import type { EventMetadata, IngestEvent } from '../../src/zod/event.ts';
 import type { ResolvedAttachmentScope } from '../../src/zod/local.ts';
 import {
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
@@ -21,6 +22,7 @@ import {
   resolveScope,
   scopeFilterOf,
   scopeVerdict,
+  toCaptureAttributes,
   toEventRow,
   toFindingRow,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
@@ -230,6 +232,70 @@ describe('row mappers (tenant-free local store)', () => {
 
     const withoutKey = toFindingRow(base);
     expect(withoutKey.findingKey).toBeNull();
+  });
+
+  // The capture-row mapper is a shared, published function: every key it
+  // emits is stored by whoever maps an event through it. The scope key is
+  // deliberately not one of them. The local writer adds `scope_key` itself,
+  // after this runs, so the emitted key set is pinned exactly, and adding a key
+  // here is a decision a reviewer sees rather than a line that slips through.
+  // `Required<EventMetadata>` makes the fixture a compile error the day the
+  // metadata gains a field, which is when this list has to be looked at again.
+  it('toCaptureAttributes emits a fixed key set, and never a scope key', () => {
+    const metadata: Required<EventMetadata> = {
+      sessionId: 'sess-1',
+      repo: 'widgets',
+      filePath: 'src/index.ts',
+      toolName: 'Bash',
+      gitignored: true,
+      wholeFile: true,
+      model: 'claude-sonnet-4-6',
+      turnIndex: 3,
+      correlationId: '11111111-1111-4111-8111-111111111111',
+      traceId: 'a'.repeat(32),
+      exceptionIds: ['22222222-2222-4222-8222-222222222222'],
+      messageId: 'msg_1',
+      conversationId: 'conv_1',
+      inspectionMs: 7,
+      redactDegradedTo: 'warn',
+    };
+    const event: IngestEvent = {
+      id: EVENT,
+      sourceTool: 'claude-code',
+      kind: 'tool_use',
+      occurredAt: ISO,
+      contentHash: 'hash',
+      content: 'a tool field',
+      metadata,
+    };
+    expect(Object.keys(toCaptureAttributes(event)).sort()).toEqual([
+      'conversation_id',
+      'correlation_id',
+      'exception_ids',
+      'file_path',
+      'gitignored',
+      'inspection_ms',
+      'message_id',
+      'model',
+      'redact_degraded_to',
+      'repo',
+      'source_tool',
+      'tool_name',
+      'trace_id',
+      'turn_index',
+      'whole_file',
+    ]);
+
+    // A key smuggled onto the metadata past the type is not emitted either: the
+    // mapper names each key it reads, so nothing on an event can make it store
+    // one it does not name.
+    const smuggled = {
+      ...event,
+      metadata: { ...metadata, scopeKey: 'github.com/acme/widgets' },
+    } as IngestEvent;
+    const attributes = toCaptureAttributes(smuggled);
+    expect('scope_key' in attributes).toBe(false);
+    expect('scopeKey' in attributes).toBe(false);
   });
 });
 

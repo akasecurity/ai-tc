@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { toolCallId } from '@akasecurity/persistence';
+import { DB_FILENAME, toolCallId } from '@akasecurity/persistence';
 import type {
+  CaptureRecord,
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
@@ -12,6 +14,8 @@ import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
   DetectionCategory,
+  IngestAck,
+  IngestBatch,
   IngestEvent,
   LlmCallInput,
   Policy,
@@ -25,6 +29,8 @@ import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // ── the port, as data ───────────────────────────────────────────────────────
 // Every DataGateway method. The exhaustiveness check below turns a port that
@@ -554,6 +560,65 @@ describe('writes are local-FIRST, then forwarded', () => {
       droppedFiles: [],
     });
     expect(calls.order).toContain('forward.run');
+  });
+});
+
+// ── the scope key stays on this machine ─────────────────────────────────────
+
+describe('the scope key is a local-only carrier', () => {
+  const KEY = 'github.com/acme/widgets';
+  const ack = (): Promise<IngestAck> => Promise.resolve({ accepted: 1, duplicates: 0 });
+
+  it('reaches the local write with the record, and is absent from the ingestEvents body', async () => {
+    // A GUARD rather than a red test: the gateway already hands `record` to the
+    // local write whole and sends only `record.event`. What it pins is that both
+    // stay true now that the record carries something the event must not.
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordCapture = vi.fn<(record: CaptureRecord) => Promise<void>>(() => Promise.resolve());
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({
+      local: makeLocal(calls, { recordCapture }),
+      client: makeClient(calls, { ingestEvents }),
+    });
+
+    await gateway.recordCapture({ event: event('e1'), findings: [], scopeKey: KEY });
+
+    expect(recordCapture.mock.calls[0]?.[0].scopeKey).toBe(KEY);
+    // The absence first, so a body that gained the key fails on the line that
+    // names it; the whole-body comparison then pins that nothing else changed.
+    expect(JSON.stringify(ingestEvents.mock.calls[0]?.[0])).not.toContain(KEY);
+    expect(ingestEvents.mock.calls[0]?.[0]).toEqual({ events: [event('e1')] });
+  });
+
+  it('lands on the real row while the forwarded body is byte-identical to a keyless capture', async () => {
+    migratedStore.seed(dataDir);
+    const local = new StandaloneDataGateway(dataDir);
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({ local, client: makeClient(calls, { ingestEvents }) });
+
+    await gateway.recordCapture({ event: event('keyed'), findings: [], scopeKey: KEY });
+    await gateway.recordCapture({ event: event('keyless'), findings: [] });
+    await local.close();
+
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    const rows = raw
+      .prepare(
+        "SELECT content_hash, scope_key FROM audit_events WHERE event_type = 'prompt' ORDER BY content_hash",
+      )
+      .all() as { content_hash: string; scope_key: string | null }[];
+    raw.close();
+    expect(rows).toEqual([
+      { content_hash: 'hash-keyed', scope_key: KEY },
+      { content_hash: 'hash-keyless', scope_key: null },
+    ]);
+
+    // The keyed capture's body is exactly the body of the same event captured
+    // with no key at all: the key changed what this machine stored and nothing
+    // about what it sent.
+    const keyedBody = JSON.stringify(ingestEvents.mock.calls[0]?.[0]);
+    expect(keyedBody).toBe(JSON.stringify({ events: [event('keyed')] }));
+    expect(keyedBody).not.toContain(KEY);
   });
 });
 

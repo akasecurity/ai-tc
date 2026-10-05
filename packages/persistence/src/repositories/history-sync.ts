@@ -152,6 +152,42 @@ const COUNTED_SCOPE = `
 const SKIPPED = -1;
 
 /**
+ * A column's value is one of the enrolled scope keys.
+ *
+ * THE SCOPE FILTER IS IN THE STATEMENT, never a loop over a page, and the
+ * reason is the cursor these reads do not have: each page is the head of the
+ * unstamped set, and an out-of-scope row is never stamped (it has to stay
+ * eligible for the day its repository is enrolled), so a page filtered in
+ * memory would re-read the same personal rows at its head on every pass and
+ * never reach an enrolled one behind them.
+ *
+ * ONE PARAMETER, a JSON array read back through `json_each`, so a statement is
+ * the same whatever the scope's size and is prepared once (the activity
+ * rollup's id list is the precedent). The comparison is the column's own BINARY
+ * collation, byte for byte, which is the same match the in-memory verdict's
+ * `Set` makes. A NULL key is never `IN` anything, and an empty array matches
+ * nothing: a row with no key, or a scope with no entries, sends nothing.
+ */
+function inScope(column: string): string {
+  return `${column} IN (SELECT value FROM json_each(:scopeKeys))`;
+}
+
+/** The one bound form of a key list. */
+function scopeKeysParam(scopeKeys: readonly string[]): string {
+  return JSON.stringify(scopeKeys);
+}
+
+/**
+ * The scope key of the SESSION ROOT of the `audit_events` row being tested: a
+ * correlated scalar subquery, one primary-key probe per candidate row (the
+ * ledger's plan pins assert the probe). NULL when the root carries no key or
+ * does not exist, and NULL is never in scope.
+ */
+const ROOT_SCOPE_KEY = `(SELECT session_root.scope_key
+     FROM audit_events AS session_root
+    WHERE session_root.id = COALESCE(audit_events.root_session_id, audit_events.id))`;
+
+/**
  * How many structural rows are delivered, waiting, or permanently skipped —
  * plus the capture lane's permanent skips.
  *
@@ -402,6 +438,15 @@ export class SqliteHistorySyncRepository {
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
   private readonly releaseStaleClaimsStmt: StatementSync;
+  // The SCOPED twins, for a scoped attachment: the same reads and seeds with the
+  // scope clause added, prepared once here beside the machine statements, so a
+  // machine attachment's statements are untouched and neither form is compiled
+  // per call.
+  private readonly scopedSessionsStmt: StatementSync;
+  private readonly scopedRowsStmt: StatementSync;
+  private readonly scopedCaptureRowsStmt: StatementSync;
+  private readonly scopedCaptureBacklogOwedStmt: StatementSync;
+  private readonly markScopeCapturesOwedStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.ensureRowStmt = db.prepare(`INSERT OR IGNORE INTO history_sync (id) VALUES (1)`);
@@ -420,6 +465,29 @@ export class SqliteHistorySyncRepository {
         LIMIT :limit`,
     );
 
+    // The scoped twin. A session comes back only while its ROOT carries an
+    // enrolled key AND at least one of its unsent rows does, both in the
+    // statement:
+    //   - the root half: the receiving side's foreign keys are real and it stubs
+    //     no root, so a leaf under a root this machine will never send fails
+    //     every time. A root with no key at all (a stub, or one a build before
+    //     stamping wrote), or no root row, reads NULL and matches nothing.
+    //   - the row half keeps the lane moving: grouped over in-scope rows only, a
+    //     session whose remaining rows are all personal never heads a page again,
+    //     even though its root is enrolled.
+    this.scopedSessionsStmt = db.prepare(
+      `SELECT COALESCE(root_session_id, id) AS sessionId, MIN(started_at) AS earliest
+         FROM audit_events
+        WHERE synced_at IS NULL
+          AND event_type IN (${TYPE_LIST})
+          AND started_at < :before
+          AND ${inScope('scope_key')}
+          AND ${inScope(ROOT_SCOPE_KEY)}
+        GROUP BY sessionId
+        ORDER BY earliest
+        LIMIT :limit`,
+    );
+
     // ROOT FIRST, and not by convention: parent_id and root_session_id are real
     // self-referencing foreign keys on the receiving side, and nothing there
     // stubs a missing root. A leaf that arrives before its session is rejected.
@@ -430,6 +498,21 @@ export class SqliteHistorySyncRepository {
           AND event_type IN (${TYPE_LIST})
           AND started_at < :before
           AND COALESCE(root_session_id, id) = :sessionId
+        ORDER BY (event_type = 'session') DESC, started_at
+        LIMIT :limit`,
+    );
+
+    // The scoped twin: only rows whose OWN key is enrolled. The root half of the
+    // rule lives in scopedSessionsStmt, which is how the drain reaches the
+    // session id it passes here.
+    this.scopedRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events
+        WHERE synced_at IS NULL
+          AND event_type IN (${TYPE_LIST})
+          AND started_at < :before
+          AND COALESCE(root_session_id, id) = :sessionId
+          AND ${inScope('scope_key')}
         ORDER BY (event_type = 'session') DESC, started_at
         LIMIT :limit`,
     );
@@ -454,14 +537,19 @@ export class SqliteHistorySyncRepository {
     // path never marks it, and no ongoing drain pass has a time window to reason
     // about.
     //
-    // The one other writer of this column is `markCaptureBacklogOwedStmt` below,
-    // and it is a deliberate exception rather than a second inference route: it
-    // runs exactly ONCE, at the moment a human grants existing-history consent
-    // (`aka attach`'s `askAboutHistory`), bounded to what was on disk at that
-    // instant rather than to a boundary that moves on every later pass. The
-    // three-weeks failure mode above was an AUTOMATIC, ongoing inference nobody
-    // asked for; this is a single explicit action the consent copy already
-    // describes before it runs.
+    // The two other writers of this column are deliberate exceptions rather than
+    // further inference routes, and each answers one explicit human action:
+    //   - `markCaptureBacklogOwedStmt` below runs when a human grants
+    //     existing-history consent (`aka attach`'s `askAboutHistory`), bounded to
+    //     what was on disk at that instant rather than to a boundary that moves
+    //     on every later pass. `scopedCaptureBacklogOwedStmt` is its form for a
+    //     scoped attachment: a scoped caller uses it in place of the machine one
+    //     at that moment, so the grant covers the enrolled repositories only;
+    //   - `markScopeCapturesOwedStmt` below is the re-seed for an enrollment on a
+    //     scoped attachment: it marks the enrolled repositories' unsent captures,
+    //     which, if scoped callers keep that contract, nothing else would mark.
+    // The three-weeks failure mode above was an AUTOMATIC, ongoing inference
+    // nobody asked for; these are single explicit actions.
     //
     // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
     // correctness: it keeps this pass off rows the live forward is probably
@@ -475,6 +563,24 @@ export class SqliteHistorySyncRepository {
           AND outbox_owed = 1
           AND event_type IN (${CAPTURE_TYPE_LIST})
           AND started_at < :before
+        ORDER BY started_at
+        LIMIT :limit`,
+    );
+
+    // The scoped twin. Per CAPTURE, with no condition on the session root:
+    // /v1/events stubs a missing root, so a capture never waits on its session's
+    // scope. A caller on a scoped attachment must read captures through this
+    // statement and not the machine one: this filter, not either seed's, is what
+    // keeps a personal capture out of a batch, whatever any build marked owed.
+    this.scopedCaptureRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events
+        WHERE synced_at IS NULL
+          AND sync_claimed_at IS NULL
+          AND outbox_owed = 1
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :before
+          AND ${inScope('scope_key')}
         ORDER BY started_at
         LIMIT :limit`,
     );
@@ -504,6 +610,35 @@ export class SqliteHistorySyncRepository {
         WHERE synced_at IS NULL
           AND event_type IN (${CAPTURE_TYPE_LIST})
           AND started_at < :before`,
+    );
+
+    // The scoped twin of the consent-time seed, for a caller on a scoped
+    // attachment: the grant covers the enrolled repositories' backlog, not the
+    // machine's. Hygiene rather than the guarantee (scopedCaptureRowsStmt is
+    // that), but it keeps the owed index to rows a scoped read can return.
+    this.scopedCaptureBacklogOwedStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = 1
+        WHERE synced_at IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :before
+          AND ${inScope('scope_key')}`,
+    );
+
+    // THE ENROLL RE-SEED, the third writer of `outbox_owed`. The contract a scoped
+    // caller keeps is that it marks no out-of-scope capture owed: not on the live
+    // path, and not through the consent seed, which takes the key list for that
+    // reason. An out-of-scope capture therefore stays unmarked until its
+    // repository is enrolled, and this statement is how its unsent captures
+    // become reachable then. No time bound: what was just enrolled is the
+    // repository's unsent history, all of it. `outbox_owed IS NULL` keeps the
+    // count to rows this call newly marked, and `synced_at IS NULL` never
+    // re-opens a delivered or skipped row.
+    this.markScopeCapturesOwedStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = 1
+        WHERE synced_at IS NULL
+          AND outbox_owed IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND ${inScope('scope_key')}`,
     );
 
     this.stampStmt = db.prepare(
@@ -757,16 +892,43 @@ export class SqliteHistorySyncRepository {
    * path's to deliver; this drain exists for what was recorded before it, and a
    * row both paths send is at best a duplicate request and at worst — for a
    * session root — an overwrite of the inventory ids the live path resolved.
+   *
+   * `scopeKeys` is a scoped attachment's filter: a session is offered only while
+   * its root's key is one of them AND at least one of its unsent rows' keys is
+   * (see scopedSessionsStmt). Omitted, this runs the machine statement,
+   * unchanged; an empty list offers nothing.
    */
-  pendingSessions(limit: number, before: number): string[] {
-    return allRows<{ sessionId: string }>(this.sessionsStmt, { limit, before }).map(
-      (r) => r.sessionId,
-    );
+  pendingSessions(limit: number, before: number, scopeKeys?: readonly string[]): string[] {
+    const rows =
+      scopeKeys === undefined
+        ? allRows<{ sessionId: string }>(this.sessionsStmt, { limit, before })
+        : allRows<{ sessionId: string }>(this.scopedSessionsStmt, {
+            limit,
+            before,
+            scopeKeys: scopeKeysParam(scopeKeys),
+          });
+    return rows.map((r) => r.sessionId);
   }
 
-  /** One session's undelivered structural rows within the backlog, root first. */
-  pendingRows(sessionId: string, limit: number, before: number): AuditEventRow[] {
-    return allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit, before });
+  /**
+   * One session's undelivered structural rows within the backlog, root first.
+   *
+   * With `scopeKeys`, only the rows whose own key is one of them.
+   */
+  pendingRows(
+    sessionId: string,
+    limit: number,
+    before: number,
+    scopeKeys?: readonly string[],
+  ): AuditEventRow[] {
+    return scopeKeys === undefined
+      ? allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit, before })
+      : allRows<AuditEventRow>(this.scopedRowsStmt, {
+          sessionId,
+          limit,
+          before,
+          scopeKeys: scopeKeysParam(scopeKeys),
+        });
   }
 
   /**
@@ -776,9 +938,23 @@ export class SqliteHistorySyncRepository {
    * by a time window — see captureRowsStmt for why a window could not express
    * this. `before` is the grace window that leaves a just-recorded capture to
    * the live path.
+   *
+   * With `scopeKeys`, only captures stamped with one of them, decided per
+   * capture: /v1/events stubs a missing root, so a capture never waits on its
+   * session's scope. An empty list reads nothing.
    */
-  pendingCaptureRows(limit: number, before: number): AuditEventRow[] {
-    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, before });
+  pendingCaptureRows(
+    limit: number,
+    before: number,
+    scopeKeys?: readonly string[],
+  ): AuditEventRow[] {
+    return scopeKeys === undefined
+      ? allRows<AuditEventRow>(this.captureRowsStmt, { limit, before })
+      : allRows<AuditEventRow>(this.scopedCaptureRowsStmt, {
+          limit,
+          before,
+          scopeKeys: scopeKeysParam(scopeKeys),
+        });
   }
 
   /**
@@ -812,9 +988,41 @@ export class SqliteHistorySyncRepository {
    * Returns how many rows matched, for the caller to log or test against. Not a
    * count of NEWLY marked rows — a row still unsynced from an earlier call
    * matches again and is counted again, the same as `UPDATE`'s own `changes`.
+   *
+   * `scopeKeys` scopes it for a scoped attachment: only captures stamped with one
+   * of the keys are marked, and an empty list marks none. The scoped capture read
+   * is what keeps a personal capture out of a batch; this keeps the marker to
+   * what the grant covers. Omitted, it runs the machine statement, unchanged.
    */
-  markCaptureBacklogOwed(before: number): number {
-    return Number(this.markCaptureBacklogOwedStmt.run({ before }).changes);
+  markCaptureBacklogOwed(before: number, scopeKeys?: readonly string[]): number {
+    const result =
+      scopeKeys === undefined
+        ? this.markCaptureBacklogOwedStmt.run({ before })
+        : this.scopedCaptureBacklogOwedStmt.run({ before, scopeKeys: scopeKeysParam(scopeKeys) });
+    return Number(result.changes);
+  }
+
+  /**
+   * Mark owed every unsent capture stamped with one of `scopeKeys`: the re-seed
+   * an enrollment runs.
+   *
+   * This ASSUMES the contract a scoped caller keeps, and cannot check it: nothing
+   * else marks an out-of-scope capture owed (the live forward must refuse it
+   * before its owed branch, and the consent-time seed must be handed the key
+   * list). Under that contract, an enrolled repository's unsent captures are
+   * reachable only if this runs when the repository is enrolled. Like the
+   * consent seed it is one explicit human action, never something a pass infers,
+   * and its caller must know the history grant is in force: this method cannot
+   * check consent and must not be called without it.
+   *
+   * No time bound. Delivered and skipped rows are never re-opened, and a row
+   * already owed is not counted, so the return value is how many rows this call
+   * newly marked. An empty list marks nothing.
+   */
+  markScopeCapturesOwed(scopeKeys: readonly string[]): number {
+    return Number(
+      this.markScopeCapturesOwedStmt.run({ scopeKeys: scopeKeysParam(scopeKeys) }).changes,
+    );
   }
 
   /**
@@ -1051,8 +1259,17 @@ export class SqliteHistorySyncRepository {
    * disown from eating THIS SAME CALL's own re-mark is the order, not the
    * bound — disown runs first, re-mark second, both inside the one
    * transaction above.
+   *
+   * `scopeKeys` scopes the re-mark exactly as `markCaptureBacklogOwed` is scoped.
+   * The disown before it is not scoped, and must not be: it clears the previous
+   * deployment's markers whatever their scope.
    */
-  rearmFor(fingerprint: string, backlogBefore: number, backfillCapturesBefore?: number): void {
+  rearmFor(
+    fingerprint: string,
+    backlogBefore: number,
+    backfillCapturesBefore?: number,
+    scopeKeys?: readonly string[],
+  ): void {
     this.ensureRowStmt.run();
     withTransaction(
       this.db,
@@ -1072,7 +1289,7 @@ export class SqliteHistorySyncRepository {
           this.disownCapturesStmt.run({ attachedAt: backlogBefore });
         }
         if (backfillCapturesBefore !== undefined) {
-          this.markCaptureBacklogOwedStmt.run({ before: backfillCapturesBefore });
+          this.markCaptureBacklogOwed(backfillCapturesBefore, scopeKeys);
         }
         this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },

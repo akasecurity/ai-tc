@@ -1171,8 +1171,10 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // touch the column — nearly all of them — do not maintain it at all. WIDTH is a
   // separate claim, and only the LIVE forward path's own marking keeps it to a
   // handful: it marks one row at a time, transiently, between a failed forward
-  // and the drain that settles it. `markCaptureBacklogOwedStmt` is the other
-  // writer, and it marks in bulk — everything on disk as of one grant, at once —
+  // and the drain that settles it. `markCaptureBacklogOwedStmt` (and its scoped
+  // form) and the enroll re-seed, `markScopeCapturesOwedStmt`, are the other
+  // writers, and both mark in bulk — everything on disk as of one grant, or
+  // every unsent capture of a repository just enrolled, at once —
   // so the machine this design is aimed at, one that ran detached and
   // accumulated capture rows, is exactly the one whose FIRST backfill can put its
   // whole unsynced capture set into this index at once. It still narrows the

@@ -307,6 +307,21 @@ describe('canonicalRepoUrl', () => {
     expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
   });
 
+  // The key ignores the port, on purpose. One repository is commonly reached
+  // over ssh on one port and over https on another, so a key that kept the port
+  // would be two keys for it, and a checkout would forward or stay local
+  // depending on how it was cloned. The cost, which the key accepts, is that two
+  // different git services on one host that serve the same org/repo path share
+  // a key. Every spelling here reads as the one key, whatever its port.
+  it.each([
+    ['https on a non-default port', 'https://github.com:8443/org/repo'],
+    ['https on its default port', 'https://github.com:443/org/repo'],
+    ['https with no port', 'https://github.com/org/repo'],
+    ['ssh:// on a non-default port', `ssh://${gitUser}github.com:2222/org/repo.git`],
+  ])('ignores the port: %s is github.com/org/repo', (_label, url) => {
+    expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
+  });
+
   it('keeps path case, so a differently-cased path is a different key', () => {
     // The opposite of the host rule, for the reason canonicalGitUrl gives: a
     // forge on a case-sensitive filesystem can host both, and merging them would

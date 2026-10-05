@@ -325,6 +325,16 @@ function namesTheHostGitContacts(url: string, host: string): boolean {
  * remote. The digest has no such limit and keeps hashing whatever the parse
  * produced.
  *
+ * The port is not part of the key, and that is deliberate. One repository is
+ * commonly reached over ssh on one port and over https on another — ssh on 2222
+ * and https on 443 behind the same host name — so a key that kept the port would
+ * be two keys for it, an enrolled repository would forward or stay local
+ * depending on how a checkout was cloned, and a user would have to enroll each
+ * port separately. The cost is that two different git services on one host,
+ * told apart only by port and serving the same org/repo path, share a key.
+ * Converging every spelling of one repository matters more here than separating
+ * those two, and it is the same trade the digest makes.
+ *
  * Path case is kept, for the reason `canonicalGitUrl` gives. Keys are compared
  * byte-exact (scopeVerdict is a set lookup), so two producers that built one
  * key differently would disagree about it.

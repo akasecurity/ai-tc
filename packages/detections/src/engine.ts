@@ -533,7 +533,14 @@ function scanEncoded(
   for (const segment of decodeEncodedSegments(text)) {
     for (const finding of scanText(segment.text, secretRules, context)) {
       const span = sourceSpanOf(segment, finding.span.start, finding.span.end);
-      encoded.push({ ...finding, span, rawMatch: text.slice(span.start, span.end) });
+      // `span` covers the encoded characters, so a redaction masks the
+      // encoding; `rawMatch` stays the DECODED value the rule matched. Every
+      // consumer that reads rawMatch as "the secret" — the masked preview, the
+      // fingerprint behind exceptions and the blocked-detections ledger, the
+      // raw-egress checks — therefore sees the same value as for the plain
+      // secret, and never the dump text around it. The vault tokenizer, which
+      // requires the span to slice to rawMatch, redacts such a span one-way.
+      encoded.push({ ...finding, span });
     }
   }
   return encoded;

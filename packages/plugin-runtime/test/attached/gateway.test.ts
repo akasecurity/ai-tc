@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -29,6 +29,7 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
 import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
@@ -342,7 +343,7 @@ beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'aka-gateway-'));
 });
 afterEach(() => {
-  rmSync(dataDir, { recursive: true, force: true });
+  removeTree(dataDir);
 });
 
 function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {

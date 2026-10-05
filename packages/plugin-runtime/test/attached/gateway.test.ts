@@ -27,6 +27,7 @@ import type {
   ResolvedAttachmentScope,
   ToolCallInput,
 } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -324,8 +325,19 @@ const toolLeaf = (toolUseId: string, rootId: string, key: string | undefined): T
   inspections: [],
 });
 
-const projectCtx = (url: string | undefined): InventoryContext =>
-  url === undefined ? {} : { project: { url, name: 'repo', attributes: {} } };
+/**
+ * An inventory context as the resolver builds it: the harness the session runs
+ * under, and its project when its directory sits in a repository. The harness
+ * identity is the tool, which is what the verdict reads to tell a web chat
+ * session from a coding one.
+ */
+const projectCtx = (
+  url: string | undefined,
+  tool: string = SOURCE_TOOL.ClaudeCode,
+): InventoryContext => ({
+  harness: { objectType: 'harness', identityKey: tool, title: tool, attributes: {} },
+  ...(url === undefined ? {} : { project: { url, name: 'repo', attributes: {} } }),
+});
 
 const capture = (id: string, key: string | undefined): CaptureRecord => ({
   event: event(id),
@@ -1721,6 +1733,55 @@ describe('the scope verdict, method by method', () => {
     const { gateway, calls } = build({ attachment: SCOPED });
     await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
     expect(calls.order).toContain('client.ingestInventory');
+  });
+
+  // The session root's key is withheld for a web chat session, and the
+  // inventory is held to the same rule: the browser host gives such a session
+  // its home directory as a stand-in working directory, and a home directory
+  // kept under version control resolves a project. Here that project IS enrolled.
+  it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
+    'ensureInventory sends no inventory for a %s session, though its project is enrolled',
+    async (tool) => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const posture = {
+        prepare: vi.fn(() => {
+          calls.order.push('posture.prepare');
+          return Promise.resolve({ deviceId: 'd' } as never);
+        }),
+        send: vi.fn(() => {
+          calls.order.push('posture.send');
+          return Promise.resolve();
+        }),
+      };
+      const { gateway } = build({
+        attachment: SCOPED,
+        posture,
+        local: makeLocal(calls),
+        client: makeClient(calls),
+      });
+      await gateway.ensureInventory(projectCtx('https://github.com/org/api.git', tool));
+      expect(calls.order).toContain('local.ensureInventory');
+      expect(calls.order).not.toContain('client.ingestInventory');
+      // Posture stays unconditional.
+      expect(calls.order).toContain('posture.prepare');
+      expect(calls.order).toContain('posture.send');
+
+      // The control: the same project under a coding harness is sent, so the
+      // refusal above is the harness's doing and not the project's.
+      await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
+      expect(calls.order).toContain('client.ingestInventory');
+    },
+  );
+
+  // A context that names no harness cannot be shown not to be a web chat
+  // session, so it is held back with the rest of what the verdict cannot place.
+  it('ensureInventory sends no inventory for a context that names no harness', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.ensureInventory({
+      project: { url: 'https://github.com/org/api.git', name: 'repo', attributes: {} },
+    });
+    expect(calls.order).toContain('local.ensureInventory');
+    expect(calls.order).not.toContain('client.ingestInventory');
   });
 
   // Posture is the liveness channel: a scoped machine whose sessions are all

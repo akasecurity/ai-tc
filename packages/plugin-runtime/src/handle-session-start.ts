@@ -23,7 +23,7 @@ import type {
   ResolvedInventory,
   SourceTool,
 } from '@akasecurity/schema';
-import { configInventoryInputs, harnessFromTool, WebSourceTool } from '@akasecurity/schema';
+import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
@@ -31,6 +31,7 @@ import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { triggerContentRetention } from './content-retention-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
+import { sessionToolIsKeyed } from './session-root-key.ts';
 
 // How long TERMINAL exception rows (revoked / expired / use-budget exhausted)
 // are retained before the SessionStart sweep purges them — 90 days, aligned
@@ -335,14 +336,13 @@ function buildSessionRoot(
   // names may differ from its root's. The config_scan row (buildConfigScanEvent)
   // is deliberately never keyed: it describes the machine, not a repository.
   //
-  // A web chat session's root is never keyed. It has no working directory: the
-  // browser host passes the home directory as a stand-in so that no project
-  // resolves. A home directory that is itself a checkout does resolve one, and
-  // the root would then carry that repository's key though the session is not
-  // in it. Only the key is withheld; every other attribute resolves as before.
-  const scopeKey = WebSourceTool.safeParse(input.tool).success
-    ? undefined
-    : sessionRootScopeKey(input.cwd);
+  // A web chat session's root is never keyed (sessionToolIsKeyed). It has no
+  // working directory: the browser host passes the home directory as a stand-in
+  // so that no project resolves. A home directory that is itself a checkout does
+  // resolve one, and the root would then carry that repository's key though the
+  // session is not in it. Only the key is withheld; every other attribute
+  // resolves as before.
+  const scopeKey = sessionToolIsKeyed(input.tool) ? sessionRootScopeKey(input.cwd) : undefined;
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {

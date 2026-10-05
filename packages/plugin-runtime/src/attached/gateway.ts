@@ -54,6 +54,7 @@ import {
   scopeVerdict,
 } from '@akasecurity/schema';
 
+import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { withoutScopeKey } from './scope-strip.ts';
@@ -507,12 +508,22 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     //
     // ON A SCOPED ATTACHMENT this call is the one thing here the scope verdict
     // gates. `InventoryContext.project` is the session's repository url and
-    // name, so it is sent only when that repository is enrolled. It is keyed by
-    // the same canonicalization of the same url the session root's key is
-    // stamped from. The posture report below is NOT gated: it is the device's
-    // liveness channel, and a scoped machine whose sessions are all personal
-    // must still report, or it reads as silent.
-    if (this.verdictFor(() => canonicalRepoUrl(ctx.project?.url ?? '')) === 'forward') {
+    // name, so it is sent only when that repository is enrolled AND the session
+    // is one whose root can be keyed. The key is the same canonicalization of
+    // the same url the session root's key is stamped from (`inventoryKey`), and
+    // a session the root rule never keys is never sent: a web chat session, whose
+    // stand-in home directory may itself be a checkout.
+    //
+    // WHAT THIS CANNOT SEE is the working directory. A root is keyed only from
+    // an ABSOLUTE directory, and the context does not carry the directory, so a
+    // session whose relative directory resolved its project from the hook's own
+    // process directory is still judged by that project here, while its root
+    // stays local.
+    //
+    // The posture report below is NOT gated: it is the device's liveness
+    // channel, and a scoped machine whose sessions are all personal must still
+    // report, or it reads as silent.
+    if (this.verdictFor(() => inventoryKey(ctx)) === 'forward') {
       const remote = await this.deps.forward.run(() => this.deps.client.ingestInventory(ctx));
       // UNCONDITIONAL, including on failure. One gateway instance serves many
       // sessions — `reconcileHistory` walks them in a loop — so keeping the
@@ -1280,6 +1291,21 @@ function scopeKeyOf(attributes: Record<string, unknown> | undefined): string | u
   if (attributes == null || !Object.hasOwn(attributes, 'scope_key')) return undefined;
   const key = attributes.scope_key;
   return typeof key === 'string' ? key : undefined;
+}
+
+/**
+ * The key a session's inventory is held to: the canonical repository of the
+ * context's project, for a session whose root can be keyed, and none otherwise.
+ *
+ * The harness identity IS the tool (`resolveInventoryContext` sets it from the
+ * session's own), so it is what tells a web chat session from a coding one. A
+ * context that names no harness cannot be shown to be the second, and gets no
+ * key. A throw is the verdict's to answer: this runs inside its guard.
+ */
+function inventoryKey(ctx: InventoryContext): string | undefined {
+  const tool = ctx.harness?.identityKey;
+  if (tool === undefined || !sessionToolIsKeyed(tool)) return undefined;
+  return canonicalRepoUrl(ctx.project?.url ?? '');
 }
 
 /**

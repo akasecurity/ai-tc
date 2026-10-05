@@ -168,8 +168,8 @@ describe('captureScopeKey', () => {
     expect(resolveRepo).not.toHaveBeenCalled();
   });
 
-  // An event that names an ABSOLUTE file is keyed by that file's checkout,
-  // whatever the session's cwd.
+  // An event that names a file is keyed by that file's checkout, whatever the
+  // session's cwd.
   describe('with a file path', () => {
     const WORK = 'git@github.com:acme/work-repo.git';
     const WORK_KEY = 'github.com/acme/work-repo';
@@ -200,12 +200,70 @@ describe('captureScopeKey', () => {
     });
 
     it.each([
-      ['a relative path', 'src/index.ts'],
       ['an empty path', ''],
       ['no path', undefined],
     ])('keys %s by the cwd, as an event that names no file', (_label, filePath) => {
       const work = checkout('work', WORK);
       expect(captureScopeKey({ session_id: 's', cwd: work }, filePath)).toBe(WORK_KEY);
+    });
+
+    // A relative path names a location, read against the event's cwd. The cwd's
+    // key is not a stand-in for it: a `..` leaves the checkout the session is in.
+    describe('that is relative', () => {
+      it('keys a file under the cwd checkout by it, walking up from the resolved file', () => {
+        const work = checkout('work', WORK);
+        vi.mocked(resolveRepoAttribution).mockClear();
+        expect(captureScopeKey({ session_id: 's', cwd: work }, join('src', 'index.ts'))).toBe(
+          WORK_KEY,
+        );
+        expect(vi.mocked(resolveRepoAttribution).mock.calls).toEqual([[join(work, 'src')]]);
+      });
+
+      it('keys a path that escapes into a sibling checkout by that checkout', () => {
+        const work = checkout('work', WORK);
+        checkout('personal', 'https://github.com/someone/dotfiles.git');
+        expect(
+          captureScopeKey({ session_id: 's', cwd: work }, join('..', 'personal', 'notes.md')),
+        ).toBe('github.com/someone/dotfiles');
+      });
+
+      it('passes no key for a path that escapes into no checkout, rather than the cwd key', () => {
+        const work = checkout('work', WORK);
+        mkdirSync(join(root, 'loose'), { recursive: true });
+        expect(
+          captureScopeKey({ session_id: 's', cwd: work }, join('..', 'loose', 'notes.md')),
+        ).toBeUndefined();
+      });
+
+      it('passes no key when the cwd is not absolute, or is empty', () => {
+        // Resolved against the hook's own directory it would name whatever
+        // repository the process happens to run in.
+        const work = checkout('work', WORK);
+        const home = process.cwd();
+        process.chdir(work);
+        try {
+          expect(captureScopeKey({ session_id: 's', cwd: '.' }, 'notes.md')).toBeUndefined();
+          expect(captureScopeKey({ session_id: 's', cwd: '' }, 'notes.md')).toBeUndefined();
+          // The control: the same checkout, named absolutely, keys.
+          expect(captureScopeKey({ session_id: 's', cwd: work }, 'notes.md')).toBe(WORK_KEY);
+        } finally {
+          process.chdir(home);
+        }
+      });
+
+      it('reads the path against the hook process cwd when the payload names none', () => {
+        const work = checkout('work', WORK);
+        checkout('personal', 'https://github.com/someone/dotfiles.git');
+        const spy = vi.spyOn(process, 'cwd').mockReturnValue(work);
+        try {
+          expect(captureScopeKey({ session_id: 's' }, 'notes.md')).toBe(WORK_KEY);
+          expect(captureScopeKey({ session_id: 's' }, join('..', 'personal', 'notes.md'))).toBe(
+            'github.com/someone/dotfiles',
+          );
+        } finally {
+          spy.mockRestore();
+        }
+      });
     });
 
     it('keys a file inside the cwd checkout like the cwd, walking up from the file', () => {

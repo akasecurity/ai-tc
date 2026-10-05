@@ -60,8 +60,9 @@ async function main(): Promise<void> {
       ? getString(rawToolInput as Record<string, unknown>, 'file_path')
       : undefined;
   if (filePath) metadata.filePath = filePath;
-  // Keyed by the file this response names when its path is absolute, else by
-  // the session's cwd; beside the metadata, never inside it. See captureScopeKey.
+  // Keyed by the file this response names (a relative path is read against the
+  // cwd), else by the session's cwd when it names none; beside the metadata,
+  // never inside it. See captureScopeKey.
   // An apply_patch result gets NO key, like the patch at PreToolUse: it reports
   // the paths the patch body names, which this hook does not parse.
   const scopeKey = rawToolName === 'apply_patch' ? undefined : captureScopeKey(input, filePath);

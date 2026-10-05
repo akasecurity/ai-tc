@@ -4,7 +4,7 @@
 // plugins/claude-code/src/hooks/shared.ts — Codex's hook stdin/stdout
 // contract is the same JSON-over-stdio shape.
 
-import { dirname, isAbsolute, normalize } from 'node:path';
+import { dirname, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 
 import { dataDir, recordHookFailOpen, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
@@ -107,14 +107,21 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // covers, and to keep an event with no key on this machine; that check is not
 // part of this change.
 //
-// WHICH DIRECTORY. An event that names an ABSOLUTE file (the `filePath` the
-// caller stamps as metadata.filePath; today post-tool-use stamps one from
+// WHICH DIRECTORY. An event that names a file (the `filePath` the caller stamps
+// as metadata.filePath; today post-tool-use stamps one from
 // `tool_input.file_path`) is keyed by that file's checkout, so a session that
 // reads from a second checkout keys that read where the file lives. That key
 // never falls back to the cwd: a file outside any checkout, or in one with no
 // remote, gets no key at all.
 //
-// Every other event (no file, or a relative path) is keyed from the directory
+// A RELATIVE file path names a location too, read against the event's cwd: it is
+// resolved against an absolute cwd and keyed as an absolute one is, so a `..`
+// that leaves the checkout the session is in lands in the checkout it really
+// reaches, or in none. The cwd is the payload's own, else the hook process's. A
+// cwd that is not absolute gives no key, because the path would then be read
+// from the hook's own directory, which the session does not choose.
+//
+// Every other event (no file, or an empty path) is keyed from the directory
 // baseMetadata reads, fallback included. SessionStart keys the session root
 // from that directory too (session-start.ts resolves `cwd ?? process.cwd()` the
 // same way), so a path-less event and its root agree by construction. An
@@ -145,11 +152,13 @@ export function captureScopeKey(
   filePath?: string,
 ): string | undefined {
   try {
-    const dir =
-      filePath !== undefined && isAbsolute(filePath)
-        ? dirname(normalize(filePath))
-        : (getString(input, 'cwd') ?? process.cwd());
-    return resolveRepoAttribution(dir).scopeKey;
+    if (filePath === undefined || filePath === '') {
+      return resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).scopeKey;
+    }
+    if (isAbsolute(filePath)) return resolveRepoAttribution(dirname(normalize(filePath))).scopeKey;
+    const cwd = getString(input, 'cwd') ?? process.cwd();
+    if (!isAbsolute(cwd)) return undefined;
+    return resolveRepoAttribution(dirname(resolvePath(cwd, filePath))).scopeKey;
   } catch {
     return undefined;
   }

@@ -5,9 +5,11 @@
  * forgot to pass `scopeKey` is visible only in the row it wrote. The key never
  * leaves the machine, so nothing else would notice.
  *
- * A capture that names an absolute file is keyed by that file's checkout. On
- * Codex only post-tool-use stamps a file (`tool_input.file_path`), and the file
- * case pins that its call site hands that path to captureScopeKey.
+ * A capture that names a file is keyed by that file's checkout; a relative path
+ * is read against the session cwd, so a `..` that leaves the session's checkout
+ * is keyed where it lands. On Codex only post-tool-use stamps a file
+ * (`tool_input.file_path`), and the file cases pin that its call site hands that
+ * path to captureScopeKey.
  *
  * An apply_patch, at either hook, gets NO key: it names its files inside the
  * patch body, which the hooks do not parse, and the cwd's key could name a
@@ -203,6 +205,54 @@ describe('every Codex capture site stamps the key of the checkout it ran in', ()
       expect(run.status, run.stderr).toBe(0);
       expectEveryCapture(home, { kind: 'response', scopeKey: PERSONAL_KEY });
     }, 'aka-codex-scope-key-file-');
+  });
+
+  // The same MCP-style call, naming its file relative to the session cwd. The
+  // cwd's key is not the file's: a `..` leaves the checkout the session is in.
+  function relativeRead(cwd: string, filePath: string): Record<string, unknown> {
+    return {
+      tool_name: 'mcp__files__read_file',
+      tool_input: { file_path: filePath },
+      tool_response: `TWILIO_KEY=${SECRET}`,
+      session_id: SESSION_ID,
+      cwd,
+      hook_event_name: 'PostToolUse',
+    };
+  }
+
+  it('post-tool-use → a relative file_path escaping into a second checkout carries its key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      checkout(home, PERSONAL_REMOTE, 'personal');
+      const payload = relativeRead(cwd, join('..', 'personal', 'notes.md'));
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: tempHomeEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: PERSONAL_KEY });
+    }, 'aka-codex-scope-key-relative-sibling-');
+  });
+
+  it('post-tool-use → a relative file_path escaping into no checkout carries no key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      mkdirSync(join(home, 'loose'), { recursive: true });
+      const payload = relativeRead(cwd, join('..', 'loose', 'notes.md'));
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: tempHomeEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: null });
+    }, 'aka-codex-scope-key-relative-outside-');
+  });
+
+  it('post-tool-use → a relative file_path inside the cwd checkout keeps the checkout key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      const payload = relativeRead(cwd, join('src', 'notes.md'));
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: tempHomeEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: WORK_KEY });
+    }, 'aka-codex-scope-key-relative-inside-');
   });
 
   it('pre-tool-use → an apply_patch code_change row carries no key, not the cwd key', () => {

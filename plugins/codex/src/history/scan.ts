@@ -5,8 +5,6 @@
 // through the same SDK detect→mask→record path the hooks use, so a backfilled
 // finding is indistinguishable from a live one. Identical to
 // plugins/claude-code/src/history/scan.ts except sourceTool.
-import { isAbsolute } from 'node:path';
-
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { EgressHit, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -14,8 +12,8 @@ import {
   createPluginRuntime,
   maskContextSlice,
   RawEgressError,
-  resolveRepoAttribution,
   safeMaskedMatch,
+  scopeKeyMemo,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
@@ -144,6 +142,12 @@ export async function scanHistory(
     // Hashes already in the store (and we add each one we record, so duplicate
     // messages within this same run dedup too).
     const seen = await gateway.knownContentHashes();
+    // One scope-key memo for the whole pass: a directory several messages share
+    // is walked once and keyed the same wherever it recurs. The memo keys only an
+    // absolute directory, because the resolver it asks refuses a relative one,
+    // and it outlives the resolver's own bounded memo, which can start over
+    // mid-pass.
+    const scopeKeyOf = scopeKeyMemo();
     for (const message of iterateHistory(opts)) {
       const hash = contentHashOf(message.text);
       if (seen.has(hash)) {
@@ -154,18 +158,14 @@ export async function scanHistory(
       scanned++;
       // The capture's scope key comes from the directory this message's turn
       // ran in: the canonical `host/owner/repo` of that directory's
-      // repository, or none. A scratch directory, a remoteless repository and
-      // a message no session_meta or turn_context precedes all stay keyless,
-      // and a keyless capture is never forwarded from a scoped attachment. Only
-      // an absolute cwd is resolved; a relative one would be walked from this
-      // process's own directory. The key rides on the capture input, never in
-      // the event's metadata (a published wire shape). No sessionId is added to
-      // the metadata either: it would change the capture's content-addressed
-      // id, and with it the dedup a re-run relies on.
-      const scopeKey =
-        message.cwd !== undefined && isAbsolute(message.cwd)
-          ? resolveRepoAttribution(message.cwd).scopeKey
-          : undefined;
+      // repository, or none. A scratch directory, a remoteless repository, a
+      // relative cwd and a message no session_meta or turn_context precedes all
+      // stay keyless; a scoped attachment is meant to keep a keyless capture
+      // local, and that check is not part of this change. The key rides on the
+      // capture input, never in the event's metadata (a published wire shape).
+      // No sessionId is added to the metadata either: it would change the
+      // capture's content-addressed id, and with it the dedup a re-run relies on.
+      const scopeKey = scopeKeyOf(message.cwd);
       const result = await runtime.capture(
         {
           kind: message.kind,

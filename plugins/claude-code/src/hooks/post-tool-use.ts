@@ -76,12 +76,12 @@ async function main(): Promise<void> {
       : undefined;
   const filePath = toolInput === undefined ? undefined : getString(toolInput, 'file_path');
   if (filePath) metadata.filePath = filePath;
-  // Keyed by the file read when its path is absolute, else by the session's cwd:
-  // see captureScopeKey. A Grep names no file but the root it searched
-  // (`tool_input.path`, a directory or one file), and its output is what is
-  // recorded, so it is keyed by that root the same way: see searchRootScopeKey.
-  // Beside the metadata rather than in it: the key is local, the metadata is
-  // wire.
+  // Keyed by the file read (a relative path is read against the cwd), else by
+  // the session's cwd when it names none: see captureScopeKey. A Grep names no
+  // file but the root it searched (`tool_input.path`, a directory or one file),
+  // and its output is what is recorded, so it is keyed by that root the same
+  // way: see searchRootScopeKey. Beside the metadata rather than in it: the key
+  // is local, the metadata is wire.
   const scopeKey =
     rawToolName === 'Grep'
       ? searchRootScopeKey(

@@ -73,7 +73,8 @@ export function sessionRootScopeKey(cwd: string | undefined): string | undefined
  * Every named location must give a key and every key must be the same, or the
  * leaf gets none; a location in no repository is never replaced by the cwd's.
  * `keyless` marks a call whose named location no single repository covers (a Glob
- * whose own pattern is absolute): it gets no key.
+ * whose own pattern is absolute, or climbs out of its root through a `..`
+ * segment): it gets no key.
  *
  * A relative path or root is read against the call's cwd and is keyless without
  * an absolute one. A call that names nothing (no `filePaths`, no `searchRoot`) is

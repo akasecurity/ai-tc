@@ -236,10 +236,10 @@ async function main(): Promise<void> {
   if (toolName) metadata.toolName = toolName;
   const filePath = inputFilePath(toolInput);
   if (filePath) metadata.filePath = filePath;
-  // Keyed by the file this call names when its path is absolute (a Write, Edit,
-  // MultiEdit or NotebookEdit target), else by the session's cwd: see
-  // captureScopeKey. Beside the metadata rather than in it: the key is local,
-  // the metadata is wire.
+  // Keyed by the file this call names (a Write, Edit, MultiEdit or NotebookEdit
+  // target; a relative path is read against the cwd), else by the session's cwd
+  // when it names none: see captureScopeKey. Beside the metadata rather than in
+  // it: the key is local, the metadata is wire.
   const scopeKey = captureScopeKey(input, filePath);
 
   const scanned: ScannedField[] = [];

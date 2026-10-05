@@ -351,22 +351,23 @@ export interface ToolCallRecord {
   // The reconciler masks it and THEN size-caps the masked value (never persisted raw);
   // undefined when the input has no obvious target.
   target: string | undefined;
-  // The files the call names, which the reconciler keys this leaf's scope by
-  // (each file's repository) rather than by `cwd`:
+  // The files the call names, as its input spells them, which the reconciler
+  // keys this leaf's scope by (each file's repository) rather than by `cwd`:
   // - a file tool (Read, Write, Edit, MultiEdit, NotebookEdit): the one path
-  //   `target` holds, absolute or not;
-  // - any other tool (an MCP tool included): the absolute `file_path` and
-  //   `notebook_path` its input carries. A relative one names no file here,
-  //   and such a call is keyed by `cwd`.
-  // undefined when the call names none.
+  //   `target` holds;
+  // - any other tool (an MCP tool included): the `file_path` and
+  //   `notebook_path` its input carries.
+  // A relative path is read against `cwd` when the key is worked out, and gets
+  // no key without an absolute `cwd`. undefined when the call names none.
   filePaths: readonly string[] | undefined;
-  // The directory (or single file) a Grep, Glob or LS searches: the absolute
-  // `path` of its input. undefined for every other tool, and when `path` is
-  // relative or absent, which leaves the call keyed by `cwd`. The reconciler
-  // keys the leaf by the repository this root itself sits in.
+  // The directory (or single file) a Grep, Glob or LS searches: the `path` of
+  // its input, as spelled, absolute or relative to `cwd`. undefined for every
+  // other tool, and when `path` is absent, which leaves the call keyed by `cwd`.
+  // The reconciler keys the leaf by the repository this root itself sits in.
   searchRoot: string | undefined;
-  // True for a Glob whose own `pattern` is absolute: that pattern names a
-  // location no single repository covers, so the leaf carries no key at all.
+  // True for a Glob whose own `pattern` is absolute, or is relative but climbs
+  // out through a parent (`..`) segment: that pattern names a location no single
+  // repository covers, so the leaf carries no key at all.
   keyless: boolean;
 }
 
@@ -434,15 +435,22 @@ const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'
 // The tools whose `path` input is the directory (or file) they search.
 const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'LS']);
 
+// A `..` that is a whole path segment of a glob, whether it follows a separator
+// of either kind, the start of the pattern, or a brace or comma alternative
+// (`{../a,b}/*.ts`), and ends at a separator, the end, or the next alternative.
+// Dots inside a name (`a..b`, `...`) are not a parent segment.
+const PARENT_SEGMENT = /(?:^|[\\/{,])\.\.(?:$|[\\/},])/;
+
 // The locations a call names besides the directory it ran in, read off its
 // input the way the hooks read what they capture: a file tool by its file, any
-// tool by an absolute `file_path` or `notebook_path`, and a Grep by an absolute
-// `path` (its search root). A Glob or LS follows the same rule as Grep, though
-// the hooks read a search root only for Grep. A Glob whose own pattern is
-// absolute names a location no single repository covers, so it is marked
-// keyless. A relative path on a tool that is not a file tool names nothing, so
-// the leaf is keyed by the directory it ran in. A named location is never
-// given the cwd's key.
+// tool by its `file_path` or `notebook_path`, and a Grep, Glob or LS by its
+// `path` (its search root). Paths are listed as the input spells them, relative
+// ones included: the key rules read a relative path against the record's cwd
+// and give it no key without an absolute one, so a `..` that leaves the cwd's
+// checkout is keyed where it lands and never by the cwd. A Glob whose own
+// pattern is absolute, or relative but climbs out through a `..` segment, names
+// a location no single repository covers, so it is marked keyless. A named
+// location is never given the cwd's key.
 function namedLocations(
   toolName: string,
   input: unknown,
@@ -454,24 +462,26 @@ function namedLocations(
     const v = input[key];
     return typeof v === 'string' && v !== '' ? v : undefined;
   };
-  const absolute = (path: string | undefined): string | undefined =>
-    path !== undefined && isAbsolute(path) ? path : undefined;
 
   let filePaths: string[] | undefined;
   if (target !== undefined && FILE_TOOLS.has(toolName)) {
     filePaths = [target];
   } else {
     const named = new Set<string>();
-    for (const path of [absolute(pick('file_path')), absolute(pick('notebook_path'))]) {
+    for (const path of [pick('file_path'), pick('notebook_path')]) {
       if (path !== undefined) named.add(path);
     }
     if (named.size > 0) filePaths = [...named];
   }
   if (!SEARCH_TOOLS.has(toolName)) return { ...none, filePaths };
+  const pattern = pick('pattern');
   return {
     filePaths,
-    searchRoot: absolute(pick('path')),
-    keyless: toolName === 'Glob' && absolute(pick('pattern')) !== undefined,
+    searchRoot: pick('path'),
+    keyless:
+      toolName === 'Glob' &&
+      pattern !== undefined &&
+      (isAbsolute(pattern) || PARENT_SEGMENT.test(pattern)),
   };
 }
 

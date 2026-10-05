@@ -279,6 +279,55 @@ describe('a capture that names an absolute file is keyed by the checkout of that
   });
 });
 
+describe('a capture that names a relative file is keyed by where the file resolves', () => {
+  it('a Write into a sibling checkout, spelled relative to the cwd, carries that checkout key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      checkout(home, PERSONAL_REMOTE, 'personal');
+      const payload = WRITE_SITE.payload(cwd, join('..', 'personal', 'notes.md'));
+      const run = runHook(WRITE_SITE.hook, JSON.stringify(payload), { env: hookEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEvery(fileCapturedRows(home), {
+        kind: 'code_change',
+        scopeKey: PERSONAL_KEY,
+        repo: 'work-repo',
+      });
+    }, 'aka-scope-key-relative-sibling-');
+  });
+
+  it('a Write that escapes into no checkout stamps no key, not the key of the session cwd', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      mkdirSync(join(home, 'loose'), { recursive: true });
+      const payload = WRITE_SITE.payload(cwd, join('..', 'loose', 'notes.md'));
+      const run = runHook(WRITE_SITE.hook, JSON.stringify(payload), { env: hookEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEvery(fileCapturedRows(home), {
+        kind: 'code_change',
+        scopeKey: null,
+        repo: 'work-repo',
+      });
+    }, 'aka-scope-key-relative-outside-');
+  });
+
+  it('a relative path inside the cwd checkout keeps the checkout key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      const payload = WRITE_SITE.payload(cwd, join('src', 'notes.md'));
+      const run = runHook(WRITE_SITE.hook, JSON.stringify(payload), { env: hookEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEvery(fileCapturedRows(home), {
+        kind: 'code_change',
+        scopeKey: WORK_KEY,
+        repo: 'work-repo',
+      });
+    }, 'aka-scope-key-relative-inside-');
+  });
+});
+
 describe('a Grep capture is keyed by the search root it names, else by the session cwd', () => {
   // Grep's `path` is the root it searches: a directory or one file. Its output
   // is what the response site records, so the key follows the root. The root
@@ -326,7 +375,23 @@ describe('a Grep capture is keyed by the search root it names, else by the sessi
       null,
     ],
     ['no path', () => ({}), WORK_KEY],
-    ['a relative path', () => ({ path: 'src' }), WORK_KEY],
+    ['a relative path inside the cwd checkout', () => ({ path: 'src' }), WORK_KEY],
+    [
+      'a relative path that escapes into another checkout',
+      (home: string) => {
+        checkout(home, PERSONAL_REMOTE, 'personal');
+        return { path: join('..', 'personal') };
+      },
+      PERSONAL_KEY,
+    ],
+    [
+      'a relative path that escapes into no checkout',
+      (home: string) => {
+        mkdirSync(join(home, 'loose'), { recursive: true });
+        return { path: join('..', 'loose') };
+      },
+      null,
+    ],
   ])('%s', (_label, toolInput, expectedKey) => {
     withTempHome((home) => {
       seedMonitor(home);

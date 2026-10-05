@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -1048,9 +1048,27 @@ describe('scope keys — the root from its project, each leaf from its own recor
       { id: 'toolu_ls', name: 'LS', input: { path: personalRepo } },
       // Outside every repository: no key, and never the cwd's.
       { id: 'toolu_out', name: 'Grep', input: { pattern: 'x', path: scratch } },
-      // No root, or a relative one: the directory the call ran in.
+      // No root: the directory the call ran in.
       { id: 'toolu_none', name: 'Grep', input: { pattern: 'x' } },
+      // A relative root is read against the call's cwd, then keyed from itself.
       { id: 'toolu_rel', name: 'Grep', input: { pattern: 'x', path: 'src' } },
+      // One that climbs out of the cwd checkout is keyed by where it lands: a
+      // sibling checkout's top level, or no repository at all.
+      {
+        id: 'toolu_rel_sibling',
+        name: 'Grep',
+        input: { pattern: 'x', path: join('..', basename(personalRepo)) },
+      },
+      {
+        id: 'toolu_rel_ls',
+        name: 'LS',
+        input: { path: join('..', basename(personalRepo), 'src') },
+      },
+      {
+        id: 'toolu_rel_out',
+        name: 'Grep',
+        input: { pattern: 'x', path: join('..', basename(scratch)) },
+      },
     ]);
 
     await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
@@ -1062,9 +1080,73 @@ describe('scope keys — the root from its project, each leaf from its own recor
     expect(leaf.get('toolu_out')).toBeNull();
     expect(leaf.get('toolu_none')).toBe(WORK_KEY);
     expect(leaf.get('toolu_rel')).toBe(WORK_KEY);
+    expect(leaf.get('toolu_rel_sibling')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_rel_ls')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_rel_out')).toBeNull();
   });
 
-  it('keys any tool that names an absolute file by that file, and a Glob with an absolute pattern by nothing', async () => {
+  it('gives a relative search root or file no key when the call has no absolute cwd to read it against', async () => {
+    // A record that names no cwd, and one whose cwd is itself relative. Either
+    // way the path has no known location, and the process directory (here, inside
+    // the work checkout) is not the place to read it from.
+    seed(
+      transcripts,
+      [
+        prompt,
+        assistant({
+          uuid: 'a-1',
+          messageId: 'msg_1',
+          ts: '2026-06-20T10:00:05.000Z',
+          toolUseId: 'toolu_nocwd',
+          tool: { name: 'Grep', input: { pattern: 'x', path: 'src' } },
+        }),
+        assistant({
+          uuid: 'a-2',
+          messageId: 'msg_2',
+          ts: '2026-06-20T10:00:06.000Z',
+          cwd: '.',
+          toolUseId: 'toolu_relcwd',
+          tool: { name: 'mcp__fs__read', input: { file_path: 'a.ts' } },
+        }),
+      ].join('\n'),
+    );
+
+    const home = process.cwd();
+    process.chdir(workRepo);
+    try {
+      await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+    } finally {
+      process.chdir(home);
+    }
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('toolu_nocwd')).toBeNull();
+    expect(leaf.get('toolu_relcwd')).toBeNull();
+  });
+
+  it('keys a Glob whose relative pattern climbs out of its root by nothing', async () => {
+    seedCalls(workRepo, [
+      // Inside the root: the cwd's checkout, as before.
+      { id: 'toolu_glob_in', name: 'Glob', input: { pattern: 'src/**/*.ts' } },
+      // The pattern itself names a place above the root, which no single
+      // repository covers, with or without an explicit path.
+      { id: 'toolu_glob_up', name: 'Glob', input: { pattern: '../personal/**/*.ts' } },
+      {
+        id: 'toolu_glob_up_path',
+        name: 'Glob',
+        input: { pattern: join('..', '*.ts'), path: join(workRepo, 'src') },
+      },
+    ]);
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('toolu_glob_in')).toBe(WORK_KEY);
+    expect(leaf.get('toolu_glob_up')).toBeNull();
+    expect(leaf.get('toolu_glob_up_path')).toBeNull();
+  });
+
+  it('keys any tool that names a file by that file, and a Glob with an absolute pattern by nothing', async () => {
     seedCalls(workRepo, [
       {
         id: 'toolu_mcp_in',
@@ -1081,6 +1163,23 @@ describe('scope keys — the root from its project, each leaf from its own recor
         name: 'mcp__fs__read',
         input: { file_path: 'src/a.ts' },
       },
+      // A relative path is read against the call's cwd: one that climbs out of
+      // the cwd checkout is keyed where it lands, never by the cwd.
+      {
+        id: 'toolu_mcp_rel_sibling',
+        name: 'mcp__fs__read',
+        input: { file_path: join('..', basename(personalRepo), 'a.ts') },
+      },
+      {
+        id: 'toolu_mcp_rel_out',
+        name: 'mcp__fs__read',
+        input: { file_path: join('..', basename(scratch), 'a.ts') },
+      },
+      {
+        id: 'toolu_mcp_rel_nb',
+        name: 'mcp__nb__run',
+        input: { notebook_path: join('..', basename(personalRepo), 'n.ipynb') },
+      },
       { id: 'toolu_glob', name: 'Glob', input: { pattern: '*.ts', path: personalRepo } },
       {
         id: 'toolu_glob_abs',
@@ -1095,8 +1194,11 @@ describe('scope keys — the root from its project, each leaf from its own recor
     expect(leaf.get('toolu_mcp_in')).toBe(PERSONAL_KEY);
     // A file outside every repository leaves the call keyless though it ran in a keyed one.
     expect(leaf.get('toolu_mcp_out')).toBeNull();
-    // A relative path on a tool that is not a file tool names no file: the cwd's key.
+    // A relative path that stays inside the cwd checkout keeps its key.
     expect(leaf.get('toolu_mcp_rel')).toBe(WORK_KEY);
+    expect(leaf.get('toolu_mcp_rel_sibling')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_mcp_rel_out')).toBeNull();
+    expect(leaf.get('toolu_mcp_rel_nb')).toBe(PERSONAL_KEY);
     expect(leaf.get('toolu_glob')).toBe(PERSONAL_KEY);
     expect(leaf.get('toolu_glob_abs')).toBeNull();
   });

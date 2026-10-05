@@ -362,7 +362,7 @@ describe('parseTranscriptToolCalls', () => {
     );
   }
 
-  it('lists the absolute file any tool names, whether or not it is a file tool', () => {
+  it('lists the file any tool names, as the input spells it, whether or not it is a file tool', () => {
     const calls = callsFor([
       { id: 'toolu_mcp', name: 'mcp__fs__read', input: { file_path: '/Users/me/other/a.ts' } },
       {
@@ -371,6 +371,11 @@ describe('parseTranscriptToolCalls', () => {
         input: { notebook_path: '/Users/me/other/n.ipynb' },
       },
       { id: 'toolu_rel', name: 'mcp__fs__read', input: { file_path: 'src/a.ts' } },
+      {
+        id: 'toolu_rel_nb',
+        name: 'mcp__nb__run',
+        input: { notebook_path: '../other/n.ipynb' },
+      },
       { id: 'toolu_none', name: 'mcp__fs__stat', input: { name: 'a.ts' } },
     ]);
     const filesOf = (id: string): readonly string[] | undefined =>
@@ -378,13 +383,14 @@ describe('parseTranscriptToolCalls', () => {
 
     expect(filesOf('toolu_mcp')).toEqual(['/Users/me/other/a.ts']);
     expect(filesOf('toolu_mcp_nb')).toEqual(['/Users/me/other/n.ipynb']);
-    // A relative path on a tool that is not a file tool is not a named file: such a
-    // call is keyed by the directory it ran in.
-    expect(filesOf('toolu_rel')).toBeUndefined();
+    // A relative path names a file too: it is listed as given, and the key rules
+    // read it against the call's cwd (and give it no key without an absolute one).
+    expect(filesOf('toolu_rel')).toEqual(['src/a.ts']);
+    expect(filesOf('toolu_rel_nb')).toEqual(['../other/n.ipynb']);
     expect(filesOf('toolu_none')).toBeUndefined();
   });
 
-  it('records the absolute path a Grep, Glob or LS searches as its search root', () => {
+  it('records the path a Grep, Glob or LS searches as its search root, as the input spells it', () => {
     const calls = callsFor([
       { id: 'toolu_grep', name: 'Grep', input: { pattern: 'x', path: '/Users/me/other' } },
       { id: 'toolu_glob', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
@@ -400,14 +406,15 @@ describe('parseTranscriptToolCalls', () => {
     expect(rootOf('toolu_grep')).toBe('/Users/me/other');
     expect(rootOf('toolu_glob')).toBe('/Users/me/other');
     expect(rootOf('toolu_ls')).toBe('/Users/me/other/src');
-    expect(rootOf('toolu_grep_rel')).toBeUndefined();
+    // A relative root is kept as given; the key rules read it against the cwd.
+    expect(rootOf('toolu_grep_rel')).toBe('src');
     expect(rootOf('toolu_grep_none')).toBeUndefined();
     expect(rootOf('toolu_mcp_path')).toBeUndefined();
     // A search root is not a file the call names.
     expect(calls.find((c) => c.toolUseId === 'toolu_grep')?.filePaths).toBeUndefined();
   });
 
-  it('marks a Glob whose own pattern is absolute as keyless, and nothing else', () => {
+  it('marks a Glob whose own pattern is absolute, or climbs out of its root, as keyless, and nothing else', () => {
     const calls = callsFor([
       { id: 'toolu_abs', name: 'Glob', input: { pattern: '/Users/me/other/**/*.ts' } },
       {
@@ -416,8 +423,20 @@ describe('parseTranscriptToolCalls', () => {
         input: { pattern: '/Users/me/other/*.ts', path: '/Users/me/work' },
       },
       { id: 'toolu_rel', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
+      // A relative pattern with a parent segment names a place outside its root, in
+      // whichever position or spelling the segment appears.
+      { id: 'toolu_up', name: 'Glob', input: { pattern: '../other/**/*.ts' } },
+      { id: 'toolu_up_mid', name: 'Glob', input: { pattern: 'src/../../other/*.ts' } },
+      { id: 'toolu_up_win', name: 'Glob', input: { pattern: '..\\other\\*.ts' } },
+      { id: 'toolu_up_end', name: 'Glob', input: { pattern: 'src/..' } },
+      { id: 'toolu_up_only', name: 'Glob', input: { pattern: '..' } },
+      { id: 'toolu_up_brace', name: 'Glob', input: { pattern: '{../other,src}/*.ts' } },
+      // Dots that are not a parent segment do not count.
+      { id: 'toolu_dots', name: 'Glob', input: { pattern: 'src/**/*..ts' } },
+      { id: 'toolu_ellipsis', name: 'Glob', input: { pattern: '.../*.ts' } },
       // A Grep pattern is a regular expression, not a location.
       { id: 'toolu_grep', name: 'Grep', input: { pattern: '/Users/me/other' } },
+      { id: 'toolu_grep_up', name: 'Grep', input: { pattern: '../other' } },
     ]);
     const keylessOf = (id: string): boolean | undefined =>
       calls.find((c) => c.toolUseId === id)?.keyless;
@@ -425,7 +444,20 @@ describe('parseTranscriptToolCalls', () => {
     expect(keylessOf('toolu_abs')).toBe(true);
     expect(keylessOf('toolu_abs_path')).toBe(true);
     expect(keylessOf('toolu_rel')).toBe(false);
+    for (const id of [
+      'toolu_up',
+      'toolu_up_mid',
+      'toolu_up_win',
+      'toolu_up_end',
+      'toolu_up_only',
+      'toolu_up_brace',
+    ]) {
+      expect(keylessOf(id), id).toBe(true);
+    }
+    expect(keylessOf('toolu_dots')).toBe(false);
+    expect(keylessOf('toolu_ellipsis')).toBe(false);
     expect(keylessOf('toolu_grep')).toBe(false);
+    expect(keylessOf('toolu_grep_up')).toBe(false);
   });
 });
 

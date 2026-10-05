@@ -2,7 +2,7 @@
 // Detection, policy, and persistence live in @akasecurity/plugin-sdk; these
 // just move bytes between Claude Code and the runtime.
 
-import { dirname, isAbsolute, normalize } from 'node:path';
+import { dirname, isAbsolute, normalize, resolve as resolvePath } from 'node:path';
 
 import { dataDir, recordHookFailOpen, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
@@ -151,12 +151,17 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // That key never falls back to the cwd: a file outside any checkout, or in one
 // with no remote, gets no key at all.
 //
-// Every other event (no file, or a relative path) is keyed from the directory
+// A RELATIVE file path names a location too, read against the event's cwd: it is
+// resolved against an absolute cwd and keyed as an absolute one is, so a `..`
+// that leaves the checkout the session is in lands in the checkout it really
+// reaches, or in none. The cwd is the payload's own, else the hook process's. A
+// cwd that is not absolute gives no key, because the path would then be read
+// from the hook's own directory, which the session does not choose.
+//
+// Every other event (no file, or an empty path) is keyed from the directory
 // baseMetadata reads, fallback included. SessionStart keys the session root
 // from that directory too (session-start.ts resolves `cwd ?? process.cwd()` the
-// same way), so a path-less event and its root agree by construction. A
-// relative path is not resolved against the cwd: the file tools take absolute
-// paths, and the cwd key is what an event without one gets.
+// same way), so a path-less event and its root agree by construction.
 //
 // The path is normalised first. The walk climbs by dirname, so a `..` segment
 // left in place would climb back into the directory it left and find that
@@ -184,11 +189,13 @@ export function captureScopeKey(
   filePath?: string,
 ): string | undefined {
   try {
-    const dir =
-      filePath !== undefined && isAbsolute(filePath)
-        ? dirname(normalize(filePath))
-        : (getString(input, 'cwd') ?? process.cwd());
-    return resolveRepoAttribution(dir).scopeKey;
+    if (filePath === undefined || filePath === '') {
+      return resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).scopeKey;
+    }
+    if (isAbsolute(filePath)) return resolveRepoAttribution(dirname(normalize(filePath))).scopeKey;
+    const cwd = getString(input, 'cwd') ?? process.cwd();
+    if (!isAbsolute(cwd)) return undefined;
+    return resolveRepoAttribution(dirname(resolvePath(cwd, filePath))).scopeKey;
   } catch {
     return undefined;
   }
@@ -196,9 +203,10 @@ export function captureScopeKey(
 
 // The scope key for an event that names a SEARCH ROOT rather than a file: Grep's
 // `path`, which is a directory or a single file. It follows captureScopeKey's
-// rules (an absolute root is normalised and never falls back to the cwd; no
-// root, or a relative one, takes the cwd key) with one difference: the walk
-// starts at the root ITSELF, not at its parent. A root may be a checkout's top
+// rules (an absolute root is normalised and never falls back to the cwd; a
+// relative one is resolved against an absolute cwd and gives no key without one;
+// no root takes the cwd key) with one difference: the walk starts at the root
+// ITSELF, not at its parent. A root may be a checkout's top
 // level, and starting at the parent would miss that checkout, or name the
 // enclosing one when the root is a nested clone or submodule. A single-file
 // root needs no special case: the resolver climbs by name, and a file has no
@@ -208,11 +216,13 @@ export function searchRootScopeKey(
   searchRoot?: string,
 ): string | undefined {
   try {
-    const dir =
-      searchRoot !== undefined && isAbsolute(searchRoot)
-        ? normalize(searchRoot)
-        : (getString(input, 'cwd') ?? process.cwd());
-    return resolveRepoAttribution(dir).scopeKey;
+    if (searchRoot === undefined || searchRoot === '') {
+      return resolveRepoAttribution(getString(input, 'cwd') ?? process.cwd()).scopeKey;
+    }
+    if (isAbsolute(searchRoot)) return resolveRepoAttribution(normalize(searchRoot)).scopeKey;
+    const cwd = getString(input, 'cwd') ?? process.cwd();
+    if (!isAbsolute(cwd)) return undefined;
+    return resolveRepoAttribution(resolvePath(cwd, searchRoot)).scopeKey;
   } catch {
     return undefined;
   }

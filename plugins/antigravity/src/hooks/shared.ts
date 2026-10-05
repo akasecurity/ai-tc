@@ -23,7 +23,7 @@
 //     `session_id`, `cwd`). `workspacePaths` is an ARRAY — there is no `cwd`.
 
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, join, normalize, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
@@ -127,8 +127,9 @@ export function readToolCall(input: Record<string, unknown>): ToolCall | undefin
  * hook process's own cwd when it is absent.
  *
  * The SCOPE key does not follow this rule: `captureScopeKey` keys an event
- * that names an absolute target by the checkout holding that file, and an
- * event with no such target only when every root agrees.
+ * that names a target by the checkout holding that file (a relative target is
+ * read against the one root there is), and an event with no target only when
+ * every root agrees.
  */
 export function primaryWorkspacePath(input: Record<string, unknown>): string | undefined {
   const paths = input.workspacePaths;
@@ -350,17 +351,25 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  *     outside every checkout, or in one with no remote, gets no key at all.
  *     It never falls back to a root's key, or a write into a personal folder
  *     from a session rooted in a work repo would leave under the work key;
- *   - otherwise (no path, as on a `run_command`; an empty path; or a relative
- *     one) the event is keyed only when every root resolves to the SAME key.
- *     Roots that disagree, or a mix of keyed and keyless roots, give no key.
- *     The contract is that a scoped attachment's forward check keeps a keyless
- *     event local. A single root is therefore that root's key, as a Claude
- *     Code hook keys a path-less event by its cwd.
+ *   - a NON-EMPTY RELATIVE `targetPath` also names a location, and is keyed by
+ *     where it lands. It is read against the one root there is: with exactly one
+ *     root, and that root absolute, the target is resolved against it and keyed
+ *     as an absolute one is, so a `..` that leaves the root lands in the
+ *     checkout it really reaches, or in none. With several roots the payload
+ *     does not say which one a relative target is relative to, and with a root
+ *     that is itself relative there is no known location, so either gives no
+ *     key, even when every root would agree on one;
+ *   - otherwise (no path, as on a `run_command`, or an empty path) the event is
+ *     keyed only when every root resolves to the SAME key. Roots that disagree,
+ *     or a mix of keyed and keyless roots, give no key. The contract is that a
+ *     scoped attachment's forward check is meant to keep a keyless event local.
+ *     A single root is therefore that root's key, as a Claude Code hook keys a
+ *     path-less event by its cwd.
  *
- * A relative target is not resolved against the hook's own cwd. Whether the
- * host sends `TargetFile` absolute is unverified against a live host (see
- * pre-tool-use-decision.ts), and the cwd is a guess at which root it is
- * relative to.
+ * A relative target is never resolved against the hook's own cwd except where
+ * the payload names no root at all, and then the cwd stands in as the one root,
+ * as it does for the slug. Whether the host sends `TargetFile` absolute is
+ * unverified against a live host (see pre-tool-use-decision.ts).
  *
  * The target is resolved first. Resolving an absolute path is lexical: it never
  * reads `process.cwd()`, and it drops `..` segments, which the walk would
@@ -389,6 +398,12 @@ export function captureScopeKey(
     }
     const named = workspaceRoots(input);
     const roots = named.length > 0 ? named : [process.cwd()];
+    if (targetPath !== undefined && targetPath !== '') {
+      // A relative target: it names a location, read against the only root.
+      const [only] = roots;
+      if (roots.length !== 1 || only === undefined || !isAbsolute(only)) return undefined;
+      return resolveRepoAttribution(dirname(normalize(join(only, targetPath)))).scopeKey;
+    }
     const [first, ...rest] = roots.map((dir) => resolveRepoAttribution(dir).scopeKey);
     return rest.every((key) => key === first) ? first : undefined;
   } catch {

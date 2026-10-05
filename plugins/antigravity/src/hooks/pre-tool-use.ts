@@ -96,9 +96,10 @@ async function main(): Promise<unknown> {
   // carries the path it was written to. Absent on run_command.
   const targetFile = getString(call.args, 'TargetFile');
   if (targetFile) metadata.filePath = targetFile;
-  // An absolute target is keyed by the checkout that holds it, whatever root it
-  // sits under or none, never by the first root the slug above comes from. A
-  // run_command names no path and is keyed only when every root agrees. See
+  // A target is keyed by the checkout that holds it, whatever root it sits under
+  // or none, never by the first root the slug above comes from; a relative one
+  // is read against the one root there is, and with several roots it has no key.
+  // A run_command names no path and is keyed only when every root agrees. See
   // captureScopeKey. Beside the metadata, never inside it: the key is a local
   // attribute and the metadata is a wire shape.
   const scopeKey = captureScopeKey(input, targetFile);

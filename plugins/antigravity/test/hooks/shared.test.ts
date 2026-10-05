@@ -132,12 +132,33 @@ describe('captureScopeKey: with no absolute target, every root must agree', () =
     expect(captureScopeKey(input)).toBeUndefined();
   });
 
-  it('treats a relative or empty target as no path', () => {
-    // A relative path is not resolved against the hook's cwd: that would be a
-    // guess at which root it is relative to.
-    const input = { workspacePaths: [checkout('personal', PERSONAL), checkout('work', WORK)] };
-    expect(captureScopeKey(input, 'src/index.ts')).toBeUndefined();
-    expect(captureScopeKey(input, '')).toBeUndefined();
+  it('treats an empty target as no path', () => {
+    const disagree = { workspacePaths: [checkout('personal', PERSONAL), checkout('work', WORK)] };
+    const agree = {
+      workspacePaths: [
+        checkout('work-ssh', WORK),
+        checkout('work-https', 'https://github.com/acme/work-repo'),
+      ],
+    };
+    expect(captureScopeKey(disagree, '')).toBeUndefined();
+    expect(captureScopeKey(agree, '')).toBe(WORK_KEY);
+  });
+
+  it('gives no key to a relative target when there is not exactly one root to read it against', () => {
+    // A relative target is relative to some root, and with several the payload
+    // does not say which. That holds even when every root agrees on a key: the
+    // target may still land in a different repository.
+    const disagree = { workspacePaths: [checkout('personal', PERSONAL), checkout('work', WORK)] };
+    const agree = {
+      workspacePaths: [
+        checkout('work-ssh', WORK),
+        checkout('work-https', 'https://github.com/acme/work-repo'),
+      ],
+    };
+    expect(captureScopeKey(disagree, 'src/index.ts')).toBeUndefined();
+    expect(captureScopeKey(agree, 'src/index.ts')).toBeUndefined();
+    // The control: the same roots still key an event that names no path.
+    expect(captureScopeKey(agree)).toBe(WORK_KEY);
   });
 
   it("keys a single root's events by it, except an absolute write outside it", () => {
@@ -148,6 +169,31 @@ describe('captureScopeKey: with no absolute target, every root must agree', () =
     expect(captureScopeKey(input, 'src/index.ts')).toBe(WORK_KEY);
     expect(captureScopeKey(input, '')).toBe(WORK_KEY);
     expect(captureScopeKey(input, join(root, 'elsewhere', 'notes.md'))).toBeUndefined();
+  });
+
+  it('keys a relative target by where it resolves against the only root', () => {
+    // `..` escapes the root, so the target may land in a sibling checkout, or in
+    // none, and the root's key must follow it there rather than stay on the root.
+    const work = checkout('work', WORK);
+    const personal = checkout('personal', PERSONAL);
+    mkdirSync(join(work, 'src'), { recursive: true });
+    const input = { workspacePaths: [work] };
+
+    expect(captureScopeKey(input, join('src', 'index.ts'))).toBe(WORK_KEY);
+    expect(captureScopeKey(input, join('src', '..', 'index.ts'))).toBe(WORK_KEY);
+    expect(captureScopeKey(input, join('..', 'personal', 'notes.md'))).toBe(PERSONAL_KEY);
+    expect(captureScopeKey(input, join('..', 'elsewhere', 'notes.md'))).toBeUndefined();
+    expect(captureScopeKey(input, join('..', '..', 'notes.md'))).toBeUndefined();
+    // The control: the sibling is a real checkout, named absolutely.
+    expect(captureScopeKey(input, join(personal, 'notes.md'))).toBe(PERSONAL_KEY);
+  });
+
+  it('gives no key to a relative target when the only root is not absolute', () => {
+    // A relative root is read against the hook's own directory, which the host
+    // does not choose, so the target under it has no known location.
+    const relativeRoot = { workspacePaths: ['work'] };
+    expect(captureScopeKey(relativeRoot, join('src', 'index.ts'))).toBeUndefined();
+    expect(captureScopeKey(relativeRoot, join('..', 'work', 'index.ts'))).toBeUndefined();
   });
 
   it('skips entries that are not usable paths, and counts a repeated root once', () => {
@@ -165,6 +211,24 @@ describe('captureScopeKey: no roots, and failure', () => {
     try {
       expect(captureScopeKey({ conversationId: 'c' })).toBe(WORK_KEY);
       expect(baseMetadata({ conversationId: 'c' })?.repo).toBe('work-repo');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reads a relative target against the hook process cwd when the payload names no root', () => {
+    // The cwd stands in for the one root, as it does for the slug.
+    const work = checkout('work', WORK);
+    checkout('personal', PERSONAL);
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(work);
+    try {
+      expect(captureScopeKey({ conversationId: 'c' }, join('src', 'a.ts'))).toBe(WORK_KEY);
+      expect(captureScopeKey({ conversationId: 'c' }, join('..', 'personal', 'a.ts'))).toBe(
+        PERSONAL_KEY,
+      );
+      expect(
+        captureScopeKey({ conversationId: 'c' }, join('..', 'elsewhere', 'a.ts')),
+      ).toBeUndefined();
     } finally {
       spy.mockRestore();
     }

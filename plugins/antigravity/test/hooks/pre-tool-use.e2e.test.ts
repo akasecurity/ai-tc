@@ -252,6 +252,37 @@ describe('pre-tool-use built hook: the scope key follows the target, not a root'
     }, 'aka-antigravity-ptu-scope-outside-');
   });
 
+  it('keys a relative target by where it resolves, not by the only root it is written against', () => {
+    // `../elsewhere` leaves the single root for a directory in no checkout, and
+    // `../personal` for a sibling checkout. The root's key follows neither out.
+    withTempHome((home) => {
+      const work = checkout(home, 'work', WORK_REMOTE);
+      checkout(home, 'personal', PERSONAL_REMOTE);
+      const outside = writeTo(home, [work], join('..', 'elsewhere', 'notes.md'));
+      expect(decisionOf(outside).decision).toBe('allow');
+      expectEveryCapture(home, { kind: 'code_change', scopeKey: null });
+    }, 'aka-antigravity-ptu-scope-relative-outside-');
+  });
+
+  it('keys a relative target that escapes into a sibling checkout by that checkout', () => {
+    withTempHome((home) => {
+      const work = checkout(home, 'work', WORK_REMOTE);
+      checkout(home, 'personal', PERSONAL_REMOTE);
+      const run = writeTo(home, [work], join('..', 'personal', 'notes.md'));
+      expect(decisionOf(run).decision).toBe('allow');
+      expectEveryCapture(home, { kind: 'code_change', scopeKey: 'github.com/me/dotfiles' });
+    }, 'aka-antigravity-ptu-scope-relative-sibling-');
+  });
+
+  it('keys a relative target that stays inside the only root by that root', () => {
+    withTempHome((home) => {
+      const work = checkout(home, 'work', WORK_REMOTE);
+      const run = writeTo(home, [work], join('src', 'index.ts'));
+      expect(decisionOf(run).decision).toBe('allow');
+      expectEveryCapture(home, { kind: 'code_change', scopeKey: WORK_KEY });
+    }, 'aka-antigravity-ptu-scope-relative-inside-');
+  });
+
   it('stamps no key on a write outside every root of a workspace whose roots disagree', () => {
     withTempHome((home) => {
       const personal = checkout(home, 'personal', PERSONAL_REMOTE);

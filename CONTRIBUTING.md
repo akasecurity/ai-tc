@@ -18,9 +18,8 @@ issues are disabled.
 **Never paste real secrets, tokens, or personal data**, even a value that was correctly
 detected. Redact logs, and build fabricated samples with the same shape as the real value.
 
-**Security vulnerabilities do not go in public issues.** Report them through
-[private vulnerability reporting](https://github.com/akasecurity/ai-tc/security/advisories/new)
-or by email to security@akasecurity.io. See [SECURITY.md](SECURITY.md).
+**Security vulnerabilities do not go in public issues.** Report them by email to
+security@akasecurity.io. See [SECURITY.md](SECURITY.md).
 
 Search existing issues before you open a new one. For a non-trivial change, open an issue
 before the PR so the approach can be agreed first.

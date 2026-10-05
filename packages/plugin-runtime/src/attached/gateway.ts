@@ -287,16 +287,18 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * one AND its own. The event's attributes (cwd, project, repo) describe where
    * it was recorded from, so a root event keyed to a personal directory is never
    * sent under an enrolled stored root, though the enrolled leaves still forward
-   * under it: the instance that wrote the stored root forwarded it. Any other
-   * row with a root reference (`rootSessionId`, else
-   * `parentId`) forwards only when its own key is in scope AND this instance
-   * recorded an in-scope verdict for that root. The audit-event route has real
-   * foreign keys on both columns and stubs no missing root, so a leaf sent
-   * after its root was kept local is refused there, and a refused forward
-   * counts toward the breaker that guards every other one. A root this
-   * instance never recorded is therefore `'local'`: the only answer that cannot
-   * orphan a row. A row with no root reference at all has nothing to orphan,
-   * and is decided by its own key.
+   * under it: the instance that wrote the stored root is expected to have
+   * forwarded it. If it did not (the root was written while standalone or under
+   * another attachment, or its forward failed), the plane refuses those leaves
+   * and the history drain ships the root first. Any other row with a root
+   * reference (`rootSessionId`, else `parentId`) forwards only when its own key
+   * is in scope AND this instance recorded an in-scope verdict for that root.
+   * The audit-event route has real foreign keys on both columns and stubs no
+   * missing root, so a leaf sent after its root was kept local is refused
+   * there, and a refused forward counts toward the breaker that guards every
+   * other one. A root this instance never recorded is therefore `'local'`: the
+   * only answer that cannot orphan a row. A row with no root reference at all
+   * has nothing to orphan, and is decided by its own key.
    *
    * What this costs is stated rather than discovered. A session whose stored
    * root is not keyed to an enrolled repository keeps its token and tool
@@ -548,11 +550,11 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     //
     // ON A SCOPED ATTACHMENT this call is the one thing here the scope verdict
     // gates. `InventoryContext.project` is the session's repository url and
-    // name, so it is sent only when that repository is enrolled AND the session
-    // is one whose root can be keyed. The key is the same canonicalization of
-    // the same url the session root's key is stamped from (`inventoryKey`), and
-    // a session the root rule never keys is never sent: a web chat session, whose
-    // stand-in home directory may itself be a checkout.
+    // name, so it is sent only when that repository is enrolled and the
+    // session's tool is one whose root is ever keyed. The key is the same
+    // canonicalization of the same url the session root's key is stamped from
+    // (`inventoryKey`), and a tool the root rule never keys is never sent: a web
+    // chat session, whose stand-in home directory may itself be a checkout.
     //
     // WHAT THIS CANNOT SEE is the working directory. A root is keyed only from
     // an ABSOLUTE directory, and the context does not carry the directory, so a
@@ -1336,7 +1338,7 @@ function scopeKeyOf(attributes: Record<string, unknown> | undefined): string | u
 
 /**
  * The key a session's inventory is held to: the canonical repository of the
- * context's project, for a session whose root can be keyed, and none otherwise.
+ * context's project, for a tool whose root is ever keyed, and none otherwise.
  *
  * The harness identity IS the tool (`resolveInventoryContext` sets it from the
  * session's own), so it is what tells a web chat session from a coding one. A

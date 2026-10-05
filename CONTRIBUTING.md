@@ -1,7 +1,29 @@
 # Contributing to AI Traffic Control
 
-Thanks for your interest in contributing to `ai-tc`. This guide covers how to get
-set up, the conventions we enforce, and how to contribute detection rules.
+Thanks for your interest in contributing to `ai-tc`. This guide covers how to report
+issues, get set up, the conventions we enforce, and how to contribute detection rules.
+
+## Opening issues
+
+Use the [issue forms](https://github.com/akasecurity/ai-tc/issues/new/choose); blank
+issues are disabled.
+
+- **Bug report** — something in the CLI, dashboard, plugin, or detection engine is broken.
+  Include `aka --version`, your OS and Node.js version, and the steps to reproduce it.
+- **Feature request** — describe the problem first, then the solution you'd like.
+- **Detection rule false positive / false negative** — give the rule ID and a
+  **fabricated** sample that reproduces the behavior. A good sample often becomes a
+  fixture in the fix.
+
+**Never paste real secrets, tokens, or personal data**, even a value that was correctly
+detected. Redact logs, and build fabricated samples with the same shape as the real value.
+
+**Security vulnerabilities do not go in public issues.** Report them through
+[private vulnerability reporting](https://github.com/akasecurity/ai-tc/security/advisories/new)
+or by email to security@akasecurity.io. See [SECURITY.md](SECURITY.md).
+
+Search existing issues before you open a new one. For a non-trivial change, open an issue
+before the PR so the approach can be agreed first.
 
 ## Getting started
 
@@ -128,7 +150,8 @@ so we don't ship false positives.
 
 ## Pull requests
 
-1. Fork and branch from `main`.
+1. Fork and branch from `main`. For a non-trivial change, link the issue it resolves
+   (`Closes #123`).
 2. Keep PRs focused; write a clear description.
 3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm format:check` pass.
 4. Be responsive to review feedback.
@@ -269,7 +292,7 @@ post-merge `push` run. CodeQL is the one to watch, since it is two matrix legs w
 Turning the queue on needs repository-admin rights and cannot be done from a PR. It is
 also only as strong as the set of checks that are actually required — the measured gap
 noted above — since the queue merges an entry once the required checks pass, and a check
-that is not required is not one of them. Enabling it while only two of the eight are
+that is not required is not one of them. Enabling it while only two of the nine are
 required buys the freshness guarantee for those two and nothing else. Raising that set is
 tracked separately.
 

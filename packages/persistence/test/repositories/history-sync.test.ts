@@ -1455,6 +1455,33 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
     expect(ids('all-work')).toEqual(['all-work', 'all-work-llm', 'all-work-tool']);
   });
 
+  // The root half of the rule holds on the rows read as well as on the sessions
+  // read, so a caller that hands pendingRows a session id it did not get from the
+  // scoped session read, or pairs it with the machine one, still sends no row
+  // under a root this machine will never send: the receiving side stubs no root,
+  // so such a row fails every time it is offered.
+  it('offers no row under a root that is not enrolled, even with its session id passed directly', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'personal-root', 0, { root: PERSONAL, leaves: WORK });
+    seedKeyedSession(db, 'keyless-root', 10 * MINUTE, { leaves: WORK });
+    seedKeyedSession(db, 'work-root', 20 * MINUTE, { root: WORK, leaves: WORK });
+
+    const ids = (sessionId: string): string[] =>
+      db.historySync.pendingRows(sessionId, 10, ALL, [WORK]).map((r) => r.id);
+    // The leaves of both carry an enrolled key, so only the root half refuses them.
+    expect(ids('personal-root')).toEqual([]);
+    expect(ids('keyless-root')).toEqual([]);
+    // The control: the same leaves under an enrolled root are offered, so the
+    // two empty reads above are the root's doing and not the leaves'.
+    expect(ids('work-root')).toEqual(['work-root', 'work-root-llm', 'work-root-tool']);
+    // And the machine read is not scoped: it offers them all.
+    expect(db.historySync.pendingRows('personal-root', 10, ALL).map((r) => r.id)).toEqual([
+      'personal-root',
+      'personal-root-llm',
+      'personal-root-tool',
+    ]);
+  });
+
   // An empty scope is a scoped attachment with nothing enrolled, the state a
   // scoped attach starts in, and it means nothing goes, not everything.
   it('reads no session and no row for an empty scope', () => {
@@ -1806,6 +1833,10 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(fullScans(machine.details)).toEqual([]);
     expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
     expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
+    // The root half is one primary-key probe per candidate row, never a scan.
+    expect(scoped.details.join(' | ')).toMatch(
+      /SEARCH session_root USING INDEX sqlite_autoindex_audit_events_1 \(id=\?\)/,
+    );
     expect(fullScans(scoped.details)).toEqual([]);
   });
 

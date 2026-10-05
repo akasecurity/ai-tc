@@ -502,9 +502,12 @@ export class SqliteHistorySyncRepository {
         LIMIT :limit`,
     );
 
-    // The scoped twin: only rows whose OWN key is enrolled. The root half of the
-    // rule lives in scopedSessionsStmt, which is how the drain reaches the
-    // session id it passes here.
+    // The scoped twin: only rows whose OWN key is enrolled AND whose session
+    // ROOT's key is. Both halves are in this statement, as they are in
+    // scopedSessionsStmt, so the rule holds for whatever session id a caller
+    // hands it: a row under a root this machine will never send is a request the
+    // receiving side refuses every time, since it stubs no root. The root half is
+    // one primary-key probe per candidate row, as there.
     this.scopedRowsStmt = db.prepare(
       `SELECT ${ROW_COLUMNS}
          FROM audit_events
@@ -513,6 +516,7 @@ export class SqliteHistorySyncRepository {
           AND started_at < :before
           AND COALESCE(root_session_id, id) = :sessionId
           AND ${inScope('scope_key')}
+          AND ${inScope(ROOT_SCOPE_KEY)}
         ORDER BY (event_type = 'session') DESC, started_at
         LIMIT :limit`,
     );
@@ -915,7 +919,8 @@ export class SqliteHistorySyncRepository {
   /**
    * One session's undelivered structural rows within the backlog, root first.
    *
-   * With `scopeKeys`, only the rows whose own key is one of them.
+   * With `scopeKeys`, only the rows whose own key AND whose session root's key
+   * are among them, whichever session id is passed.
    */
   pendingRows(
     sessionId: string,

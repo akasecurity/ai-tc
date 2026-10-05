@@ -412,6 +412,16 @@ export interface ToolCallRecord {
   toolUseId: string; // call_id
   toolName: string; // 'shell' | 'apply_patch'
   runKey: string | undefined; // turn_id
+  // The directory the call ran in, which the reconciler keys this leaf's scope
+  // by: a shell call's own working directory when its exec events name one,
+  // else the running session_meta/turn_context cwd when the call began.
+  // undefined on a tail chunk that names no directory. The leaf then carries
+  // no key, never its session root's.
+  cwd: string | undefined;
+  // The paths a patch changed (its `changes` keys); undefined for a shell call
+  // and for a patch that names none. The reconciler keys a patch by these
+  // files' repository, because its target lists them.
+  filePaths: readonly string[] | undefined;
   occurredAt: string;
   inputSize: number | undefined;
   isError: boolean | undefined;
@@ -442,9 +452,19 @@ export function parseTranscriptToolCalls(
   // usage parser: exec/patch events carry no turn_id of their own on current
   // rollouts, so without this fallback tool calls would never group by turn.
   let runKey: string | undefined;
+  // The running cwd, threaded exactly as parseTranscriptUsage threads it:
+  // session_meta sets it, and a turn_context that names one moves it.
+  let cwd: string | undefined;
   const begins = new Map<
     string,
-    { toolName: string; runKey: string | undefined; occurredAt: string; target: string | undefined }
+    {
+      toolName: string;
+      runKey: string | undefined;
+      cwd: string | undefined;
+      filePaths: readonly string[] | undefined;
+      occurredAt: string;
+      target: string | undefined;
+    }
   >();
   const out: ToolCallRecord[] = [];
 
@@ -463,12 +483,15 @@ export function parseTranscriptToolCalls(
 
     if (rec.type === 'session_meta') {
       sessionIdBySessionMeta.current = optString(payload.session_id) ?? optString(payload.id);
+      cwd = optString(payload.cwd);
       continue;
     }
     if (rec.type === 'turn_context') {
       // Same reset-per-turn rule (and timestamp fallback) as the usage parser.
       const turnTs = optString(rec.timestamp);
       runKey = optString(payload.turn_id) ?? (turnTs !== undefined ? `turn-${turnTs}` : undefined);
+      const turnCwd = optString(payload.cwd);
+      if (turnCwd) cwd = turnCwd;
       continue;
     }
     if (rec.type !== 'event_msg') continue;
@@ -486,6 +509,10 @@ export function parseTranscriptToolCalls(
       begins.set(callId, {
         toolName: 'shell',
         runKey: optString(payload.turn_id) ?? runKey,
+        // The command's own working directory (a shell call can run in another
+        // directory than its turn's), else the directory its turn ran in.
+        cwd: optString(payload.cwd) ?? cwd,
+        filePaths: undefined,
         occurredAt,
         target: command,
       });
@@ -501,6 +528,9 @@ export function parseTranscriptToolCalls(
         toolUseId: callId,
         toolName: 'shell',
         runKey: begin?.runKey ?? optString(payload.turn_id) ?? runKey,
+        // The end event's own cwd, else the begin's (its own, or its turn's).
+        cwd: optString(payload.cwd) ?? begin?.cwd ?? cwd,
+        filePaths: undefined,
         occurredAt: begin?.occurredAt ?? occurredAt,
         inputSize: begin?.target !== undefined ? begin.target.length : undefined,
         isError: typeof exitCode === 'number' ? exitCode !== 0 : undefined,
@@ -516,6 +546,8 @@ export function parseTranscriptToolCalls(
       begins.set(callId, {
         toolName: 'apply_patch',
         runKey: optString(payload.turn_id) ?? runKey,
+        cwd,
+        filePaths: changes.length > 0 ? changes : undefined,
         occurredAt,
         target: changes.length > 0 ? changes.join(', ') : undefined,
       });
@@ -530,6 +562,8 @@ export function parseTranscriptToolCalls(
         toolUseId: callId,
         toolName: 'apply_patch',
         runKey: begin?.runKey ?? optString(payload.turn_id) ?? runKey,
+        cwd: begin?.cwd ?? cwd,
+        filePaths: begin?.filePaths,
         occurredAt: begin?.occurredAt ?? occurredAt,
         inputSize: begin?.target !== undefined ? begin.target.length : undefined,
         isError: typeof payload.success === 'boolean' ? !payload.success : undefined,

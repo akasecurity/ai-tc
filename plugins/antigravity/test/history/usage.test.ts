@@ -618,3 +618,249 @@ describe('the reconcilers resolve their gateway with this build as pluginBuild',
     expect(captured).toStrictEqual({ pluginBuild: pluginBuild() });
   });
 });
+
+describe('scope keys — the root from its project, every leaf from where it ran', () => {
+  // An scp-form remote's userinfo reads as an email address to a scanner, so
+  // the fixture builds it from parts.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  const WORK_KEY = 'github.com/acme/work';
+  let dataDir: string;
+  let transcripts: string;
+  let workRepo: string;
+  let personalRepo: string;
+  let scratch: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-usage-key-data-'));
+    transcripts = mkdtempSync(join(tmpdir(), 'aka-usage-key-tx-'));
+    workRepo = mkdtempSync(join(tmpdir(), 'aka-usage-key-repo-'));
+    mkdirSync(join(workRepo, '.git'), { recursive: true });
+    writeFileSync(
+      join(workRepo, '.git', 'config'),
+      `[remote "origin"]\n\turl = ${gitUser}github.com:acme/work.git\n`,
+    );
+    // A second checkout with its own forge remote.
+    personalRepo = mkdtempSync(join(tmpdir(), 'aka-usage-key-personal-'));
+    mkdirSync(join(personalRepo, '.git'), { recursive: true });
+    writeFileSync(
+      join(personalRepo, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/me/personal.git\n',
+    );
+    scratch = mkdtempSync(join(tmpdir(), 'aka-usage-key-scratch-'));
+  });
+  afterEach(() => {
+    for (const d of [dataDir, transcripts, workRepo, personalRepo, scratch]) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  // One shell call. `cwd`, when given, is the command's own working directory
+  // on both of its events.
+  function exec(callId: string, beginTs: string, endTs: string, cwd?: string): string {
+    const own = cwd !== undefined ? { cwd } : {};
+    return [
+      line({
+        timestamp: beginTs,
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_begin',
+          call_id: callId,
+          command: ['ls'],
+          parsed_cmd: [],
+          ...own,
+        },
+      }),
+      line({
+        timestamp: endTs,
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: callId,
+          command: ['ls'],
+          parsed_cmd: [],
+          aggregated_output: 'a\n',
+          exit_code: 0,
+          ...own,
+        },
+      }),
+    ].join('\n');
+  }
+
+  // One apply_patch call that changed `paths`.
+  function patch(callId: string, beginTs: string, endTs: string, paths: string[]): string {
+    const changes = Object.fromEntries(paths.map((p) => [p, { type: 'update' }]));
+    return [
+      line({
+        timestamp: beginTs,
+        type: 'event_msg',
+        payload: { type: 'patch_apply_begin', call_id: callId, auto_approved: true, changes },
+      }),
+      line({
+        timestamp: endTs,
+        type: 'event_msg',
+        payload: {
+          type: 'patch_apply_end',
+          call_id: callId,
+          stdout: 'applied',
+          stderr: '',
+          success: true,
+          changes,
+        },
+      }),
+    ].join('\n');
+  }
+
+  // Turn 1 runs in the work checkout. Turn 2 runs in a directory in no repository.
+  function rollout(): string {
+    return [
+      line({
+        timestamp: '2026-06-20T10:00:00.000Z',
+        type: 'session_meta',
+        payload: { session_id: SESSION, cwd: workRepo, cli_version: '0.140.0' },
+      }),
+      line({
+        timestamp: '2026-06-20T10:00:01.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 'turn-1', cwd: workRepo, model: 'gemini-3-pro' },
+      }),
+      tokenCount('2026-06-20T10:00:04.000Z', { input: 100, output: 50 }),
+      exec('call-w', '2026-06-20T10:00:05.000Z', '2026-06-20T10:00:06.000Z'),
+      line({
+        timestamp: '2026-06-20T10:00:10.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 'turn-2', cwd: scratch, model: 'gemini-3-pro' },
+      }),
+      tokenCount('2026-06-20T10:00:14.000Z', { input: 10, output: 5 }),
+      exec('call-s', '2026-06-20T10:00:15.000Z', '2026-06-20T10:00:16.000Z'),
+    ].join('\n');
+  }
+
+  // The scope_key column of the session root, and of every leaf keyed by its
+  // message_id (llm_call, the synthetic eventKey) or tool_use_id (tool_call).
+  function keys(dir: string): {
+    root: string | null | undefined;
+    leaf: Map<string, string | null>;
+  } {
+    const db = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      const rows = db
+        .prepare(
+          `SELECT event_type AS type, scope_key AS key,
+                  COALESCE(json_extract(attributes, '$.message_id'),
+                           json_extract(attributes, '$.tool_use_id')) AS ref
+             FROM audit_events
+            WHERE event_type IN ('session', 'llm_call', 'tool_call')`,
+        )
+        .all() as { type: string; key: string | null; ref: string | null }[];
+      let root: string | null | undefined;
+      const leaf = new Map<string, string | null>();
+      for (const row of rows) {
+        if (row.type === 'session') root = row.key;
+        else if (row.ref !== null) leaf.set(row.ref, row.key);
+      }
+      return { root, leaf };
+    } finally {
+      db.close();
+    }
+  }
+
+  it('keys the root by its project and each leaf by the cwd its own turn ran in', async () => {
+    seed(transcripts, rollout());
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    const { root, leaf } = keys(dataDir);
+    expect(root).toBe(WORK_KEY);
+    expect(leaf.get(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(WORK_KEY);
+    expect(leaf.get('call-w')).toBe(WORK_KEY);
+    // Turn 2 moved to a directory in no repository. Its leaves carry no key,
+    // and they never inherit the root's.
+    expect(leaf.get(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBeNull();
+    expect(leaf.get('call-s')).toBeNull();
+  });
+
+  it('keys a shell call by its own cwd, and a patch by the files it changed', async () => {
+    seed(
+      transcripts,
+      [
+        line({
+          timestamp: '2026-06-20T10:00:00.000Z',
+          type: 'session_meta',
+          payload: { session_id: SESSION, cwd: scratch, cli_version: '0.140.0' },
+        }),
+        line({
+          timestamp: '2026-06-20T10:00:01.000Z',
+          type: 'turn_context',
+          payload: { turn_id: 'turn-1', cwd: scratch, model: 'gemini-3-pro' },
+        }),
+        tokenCount('2026-06-20T10:00:04.000Z', { input: 100, output: 50 }),
+        // A command run in the work checkout from a turn in the scratch directory.
+        exec('call-in-work', '2026-06-20T10:00:05.000Z', '2026-06-20T10:00:06.000Z', workRepo),
+        // Two files in different directories of one repository agree on its key.
+        patch('patch-in-work', '2026-06-20T10:00:07.000Z', '2026-06-20T10:00:08.000Z', [
+          join(workRepo, 'src', 'a.ts'),
+          join(workRepo, 'b.ts'),
+        ]),
+        // One file in each checkout: the target names both, so the leaf carries
+        // neither key.
+        patch('patch-mixed', '2026-06-20T10:00:09.000Z', '2026-06-20T10:00:10.000Z', [
+          join(workRepo, 'c.ts'),
+          join(personalRepo, 'd.ts'),
+        ]),
+        line({
+          timestamp: '2026-06-20T10:00:11.000Z',
+          type: 'turn_context',
+          payload: { turn_id: 'turn-2', cwd: workRepo, model: 'gemini-3-pro' },
+        }),
+        tokenCount('2026-06-20T10:00:12.000Z', { input: 10, output: 5 }),
+        // A command run in the scratch directory from a turn in the work checkout.
+        exec('call-in-scratch', '2026-06-20T10:00:13.000Z', '2026-06-20T10:00:14.000Z', scratch),
+      ].join('\n'),
+    );
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('call-in-work')).toBe(WORK_KEY);
+    expect(leaf.get('patch-in-work')).toBe(WORK_KEY);
+    expect(leaf.get('patch-mixed')).toBeNull();
+    expect(leaf.get('call-in-scratch')).toBeNull();
+  });
+
+  it('a second pass stamps every row exactly as the first did', async () => {
+    seed(transcripts, rollout());
+    const opts = { dir: transcripts, now: FIXTURE_NOW };
+
+    await reconcileHistory(config(dataDir), opts);
+    const first = keys(dataDir);
+    await reconcileHistory(config(dataDir), opts);
+
+    expect(first.root).toBe(WORK_KEY);
+    expect(keys(dataDir)).toEqual(first);
+  });
+
+  it('a tail chunk that starts mid-turn keys its leaves by nothing, never by the root', async () => {
+    const transcriptPath = join(transcripts, `rollout-${SESSION}.jsonl`);
+    writeFileSync(transcriptPath, `${rollout()}\n`);
+    await reconcileSessionTail(config(dataDir), SESSION, transcriptPath);
+    // The next chunk holds one token_count and no session_meta or turn_context.
+    appendFileSync(
+      transcriptPath,
+      `${tokenCount('2026-06-20T10:00:20.000Z', { input: 7, output: 3 })}\n`,
+    );
+    await reconcileSessionTail(config(dataDir), SESSION, transcriptPath);
+
+    const { root, leaf } = keys(dataDir);
+    expect(root).toBe(WORK_KEY);
+    expect(leaf.get(`${SESSION}:2026-06-20T10:00:20.000Z:1`)).toBeNull();
+  });
+
+  it('a root built from a remoteless repo carries no key', async () => {
+    writeFileSync(join(workRepo, '.git', 'config'), '');
+    seed(transcripts, rollout());
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    expect(keys(dataDir).root).toBeNull();
+  });
+});

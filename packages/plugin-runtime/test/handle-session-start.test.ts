@@ -2,9 +2,15 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, type DataGateway, type PluginConfig } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  type DataGateway,
+  type PluginConfig,
+  resolveRepoAttribution,
+} from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -745,4 +751,97 @@ describe('handleSessionStart — gateway resolution meta', () => {
 
     expect(captured).toStrictEqual({ recordedBy: 'plugin@0.9.8' });
   });
+});
+
+describe('handleSessionStart — the session root scope key', () => {
+  function rootRow(sessionId: string): { attrs: Record<string, unknown>; key: string | null } {
+    const db = open();
+    try {
+      const row = db
+        .prepare(
+          "SELECT attributes, scope_key AS key FROM audit_events WHERE event_type = 'session' AND id = :id",
+        )
+        .get({ id: sessionId }) as { attributes: string; key: string | null };
+      return { attrs: JSON.parse(row.attributes) as Record<string, unknown>, key: row.key };
+    } finally {
+      db.close();
+    }
+  }
+
+  it("stamps the canonical repo key onto the root, equal to a hook's key in the same cwd", async () => {
+    await handleSessionStart(start('s-key'), config(dir));
+
+    const { attrs, key } = rootRow('s-key');
+    // The fixture's scp-form origin for org/payments-api, canonicalized.
+    expect(attrs.scope_key).toBe('github.com/org/payments-api');
+    // The local generated column reads the same value.
+    expect(key).toBe('github.com/org/payments-api');
+    // A hook in this cwd keys identically, and a scoped attachment's decision
+    // about a structural leaf is to compare exactly these two keys.
+    expect(attrs.scope_key).toBe(resolveRepoAttribution(cwd).scopeKey);
+
+    // The config_scan row describes the machine, not a repository: never keyed.
+    const db = open();
+    try {
+      const scan = db
+        .prepare("SELECT scope_key AS key FROM audit_events WHERE event_type = 'config_scan'")
+        .get() as { key: string | null };
+      expect(scan.key).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keys a linked-worktree session like its main checkout', async () => {
+    await handleSessionStart(start('s-wt', { cwd: linkedWorktree('wt-key') }), config(dir));
+
+    expect(rootRow('s-wt').attrs.scope_key).toBe('github.com/org/payments-api');
+  });
+
+  it.each([
+    ['a repository with no remote', ''],
+    ['a local-path remote', '[remote "origin"]\n\turl = /srv/git/payments-api.git\n'],
+    [
+      'a file:// remote',
+      `[remote "origin"]\n\turl = ${pathToFileURL('/srv/git/payments-api.git').href}\n`,
+    ],
+  ])('stamps no key for %s, though the project still resolves', async (_label, gitConfig) => {
+    writeFileSync(join(cwd, '.git', 'config'), gitConfig);
+
+    await handleSessionStart(start('s-nokey'), config(dir));
+
+    const { attrs, key } = rootRow('s-nokey');
+    expect(attrs).not.toHaveProperty('scope_key');
+    expect(key).toBeNull();
+    // The project still resolves, by path. Only the key is withheld, because a
+    // path identity is machine-local.
+    const db = open();
+    try {
+      expect(count(db, 'source_project')).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
+    'never keys a %s web-chat root, even when its stand-in cwd is a checkout',
+    async (tool) => {
+      // The browser host passes the home directory as a web chat session's
+      // cwd. Here that directory is a checkout with a forge remote, as a home
+      // directory kept under version control is.
+      await handleSessionStart(start('s-web', { tool }), config(dir));
+
+      const { attrs, key } = rootRow('s-web');
+      expect(attrs).not.toHaveProperty('scope_key');
+      expect(key).toBeNull();
+      // Only the key is withheld. The project still resolves exactly as it
+      // did, so a machine attachment sends the same root as before.
+      const db = open();
+      try {
+        expect(count(db, 'source_project')).toBe(1);
+      } finally {
+        db.close();
+      }
+    },
+  );
 });

@@ -326,6 +326,11 @@ export interface ToolCallRecord {
   uuid: string | undefined;
   parentUuid: string | undefined;
   occurredAt: string; // record's own ISO timestamp
+  // The working directory of the assistant record that issued the call, when
+  // that record names one. The reconciler keys this leaf's scope by it, unless
+  // the call names a file (filePaths below). It is never the session's first
+  // cwd, because a session can move between directories.
+  cwd: string | undefined;
   inputSize: number | undefined;
   isError: boolean | undefined;
   outputSize: number | undefined;
@@ -333,6 +338,11 @@ export interface ToolCallRecord {
   // The reconciler masks it and THEN size-caps the masked value (never persisted raw);
   // undefined when the input has no obvious target.
   target: string | undefined;
+  // The file a file tool (Read, Write, Edit, MultiEdit, NotebookEdit) reads or
+  // writes, as a one-element list: the same path `target` holds. undefined for
+  // every other tool. The reconciler keys such a leaf by that file's repository
+  // rather than by `cwd`, because the leaf's target IS that path.
+  filePaths: readonly string[] | undefined;
 }
 
 // The single most identifying field of a tool's input — what answers "which
@@ -391,6 +401,11 @@ function toolTarget(toolName: string, input: unknown): string | undefined {
   return raw;
 }
 
+// The tools whose target is a file path (toolTarget's `file_path` and
+// `notebook_path` cases). Their leaves are keyed by that file's repository; a
+// tool missing here is keyed by the directory its record ran in instead.
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
 // Character length of a serialized tool input/output block — a size metric, never
 // the payload. Strings measure directly; structured content is JSON-serialized.
 // undefined when absent/unserializable so the size stays OUT of the bag rather than
@@ -440,6 +455,7 @@ export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRe
         const toolName = optString(block.name);
         if (toolUseId === undefined || toolName === undefined) continue;
         if (uses.has(toolUseId)) continue;
+        const target = toolTarget(toolName, block.input);
         uses.set(toolUseId, {
           sessionId,
           toolUseId,
@@ -447,10 +463,12 @@ export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRe
           uuid: optString(rec.uuid),
           parentUuid: optString(rec.parentUuid),
           occurredAt,
+          cwd: optString(rec.cwd),
           inputSize: contentSize(block.input),
           isError: undefined,
           outputSize: undefined,
-          target: toolTarget(toolName, block.input),
+          target,
+          filePaths: target !== undefined && FILE_TOOLS.has(toolName) ? [target] : undefined,
         });
       }
       continue;

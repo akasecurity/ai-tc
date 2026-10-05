@@ -244,6 +244,77 @@ describe('parseTranscriptToolCalls', () => {
     const after = Date.parse('2026-06-21T00:00:00.000Z');
     expect(parseTranscriptToolCalls(TOOL_TRANSCRIPT, after)).toHaveLength(0);
   });
+
+  it("carries the issuing assistant record's own cwd, or none when it names none", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-work',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_W', name: 'Bash', input: { command: 'ls' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-bare',
+        timestamp: '2026-06-20T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_N', name: 'Bash', input: { command: 'pwd' } }],
+        },
+      }),
+    ].join('\n');
+
+    const calls = parseTranscriptToolCalls(jsonl);
+    expect(calls.find((c) => c.toolUseId === 'toolu_W')?.cwd).toBe('/Users/me/work');
+    expect(calls.find((c) => c.toolUseId === 'toolu_N')?.cwd).toBeUndefined();
+  });
+
+  it('lists the file a file tool names, and nothing for any other tool', () => {
+    const jsonl = JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: 'a-files',
+      cwd: '/Users/me/work',
+      timestamp: '2026-06-20T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_E',
+            name: 'Edit',
+            input: { file_path: '/Users/me/other/a.ts' },
+          },
+          {
+            type: 'tool_use',
+            id: 'toolu_NB',
+            name: 'NotebookEdit',
+            input: { notebook_path: '/Users/me/other/nb.ipynb' },
+          },
+          {
+            type: 'tool_use',
+            id: 'toolu_B',
+            name: 'Bash',
+            input: { command: 'cat /Users/me/other/a.ts' },
+          },
+        ],
+      },
+    });
+
+    const calls = parseTranscriptToolCalls(jsonl);
+    const filesOf = (id: string): readonly string[] | undefined =>
+      calls.find((c) => c.toolUseId === id)?.filePaths;
+    expect(filesOf('toolu_E')).toEqual(['/Users/me/other/a.ts']);
+    expect(filesOf('toolu_NB')).toEqual(['/Users/me/other/nb.ipynb']);
+    // A path inside a command line is not a file the call names.
+    expect(filesOf('toolu_B')).toBeUndefined();
+  });
 });
 
 describe('iterateHistory', () => {

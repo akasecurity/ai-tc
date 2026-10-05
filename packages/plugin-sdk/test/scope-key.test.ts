@@ -1,0 +1,156 @@
+// The scope-key rules the transcript reconcilers share: scopeKeyMemo (one key per
+// working directory) and toolCallScopeKey (where a tool call ran, or what it
+// touched). They run against real checkouts built under a temp directory, so the
+// key a directory gets is the key the same resolver gives a hook there. The
+// once-per-directory promise is counted in scope-key-memo.test.ts, which needs a
+// module mock this file must not carry.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, sep } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { scopeKeyMemo, toolCallScopeKey } from '../src/scope-key.ts';
+
+// An scp-form remote's userinfo reads as an email address to a scanner, so the
+// fixture builds it from parts.
+const AT = String.fromCharCode(64);
+const gitUser = `git${AT}`;
+const WORK_KEY = 'github.com/acme/work';
+const PERSONAL_KEY = 'github.com/me/personal';
+
+let root: string;
+let work: string;
+let personal: string;
+let scratch: string;
+
+// A checkout under the temp root: a `.git` directory whose config names `origin`
+// as `remote`, or names no remote at all.
+function checkout(name: string, remote: string | undefined): string {
+  const dir = join(root, name);
+  mkdirSync(join(dir, '.git'), { recursive: true });
+  writeFileSync(
+    join(dir, '.git', 'config'),
+    remote === undefined ? '' : `[remote "origin"]\n\turl = ${remote}\n`,
+  );
+  return dir;
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'aka-scope-key-'));
+  work = checkout('work', `${gitUser}github.com:acme/work.git`);
+  personal = checkout('personal', 'https://github.com/me/personal.git');
+  // A directory in no repository at all.
+  scratch = join(root, 'scratch');
+  mkdirSync(scratch);
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe('scopeKeyMemo', () => {
+  it('keys a directory by the repository it sits in, from the root or from below it', () => {
+    const scopeKeyOf = scopeKeyMemo();
+    mkdirSync(join(work, 'src', 'deep'), { recursive: true });
+
+    expect(scopeKeyOf(work)).toBe(WORK_KEY);
+    expect(scopeKeyOf(join(work, 'src', 'deep'))).toBe(WORK_KEY);
+    expect(scopeKeyOf(personal)).toBe(PERSONAL_KEY);
+  });
+
+  it('gives no key to no directory, a directory in no repository, or a repository with no remote', () => {
+    const scopeKeyOf = scopeKeyMemo();
+    const remoteless = checkout('remoteless', undefined);
+
+    expect(scopeKeyOf(undefined)).toBeUndefined();
+    expect(scopeKeyOf(scratch)).toBeUndefined();
+    expect(scopeKeyOf(remoteless)).toBeUndefined();
+  });
+
+  it('gives no key to a relative directory, though it sits in a keyed repository', () => {
+    // A relative directory is read against this process's own working
+    // directory, which a transcript does not choose. The resolver keys only an
+    // absolute one; this pins that the memo inherits that, rather than asking
+    // the resolver to guess.
+    const scopeKeyOf = scopeKeyMemo();
+    mkdirSync(join(work, 'src'), { recursive: true });
+    // The control: named absolutely, the same repository is keyed.
+    expect(scopeKeyOf(work)).toBe(WORK_KEY);
+
+    const home = process.cwd();
+    process.chdir(work);
+    try {
+      expect(scopeKeyMemo()('.')).toBeUndefined();
+      expect(scopeKeyMemo()('src')).toBeUndefined();
+    } finally {
+      // Restored before the shared afterEach removes `root`: a process still
+      // standing inside it cannot delete it on Windows.
+      process.chdir(home);
+    }
+  });
+});
+
+describe('toolCallScopeKey', () => {
+  // A call as the reconcilers hold it: where it ran and the files it named.
+  const call = (
+    cwd: string | undefined,
+    filePaths: readonly string[] | undefined,
+  ): Parameters<typeof toolCallScopeKey>[0] => ({ cwd, filePaths });
+  const keyOf = (
+    cwd: string | undefined,
+    filePaths: readonly string[] | undefined,
+  ): string | undefined => toolCallScopeKey(call(cwd, filePaths), scopeKeyMemo());
+
+  it('keys a call that names no file by the directory it ran in', () => {
+    expect(keyOf(work, undefined)).toBe(WORK_KEY);
+    expect(keyOf(scratch, undefined)).toBeUndefined();
+    // Nothing names a directory, so nothing keys the call.
+    expect(keyOf(undefined, undefined)).toBeUndefined();
+  });
+
+  it('keys a call by the repository of the file it names, not by where it ran', () => {
+    expect(keyOf(scratch, [join(work, 'src', 'a.ts')])).toBe(WORK_KEY);
+    // A file in no repository leaves the call keyless though it ran in a keyed one.
+    expect(keyOf(work, [join(scratch, 'notes.md')])).toBeUndefined();
+  });
+
+  it('keys files in different directories of one repository by that repository', () => {
+    expect(keyOf(scratch, [join(work, 'src', 'a.ts'), join(work, 'b.ts')])).toBe(WORK_KEY);
+  });
+
+  it('gives no key when the files it names disagree, whichever comes first', () => {
+    const [inWork, inPersonal] = [join(work, 'c.ts'), join(personal, 'd.ts')];
+
+    expect(keyOf(work, [inWork, inPersonal])).toBeUndefined();
+    expect(keyOf(work, [inPersonal, inWork])).toBeUndefined();
+  });
+
+  it('gives no key when any file it names sits in no keyed repository', () => {
+    const inWork = join(work, 'a.ts');
+    const loose = join(scratch, 'n.md');
+
+    expect(keyOf(work, [inWork, loose])).toBeUndefined();
+    expect(keyOf(work, [loose, inWork])).toBeUndefined();
+  });
+
+  it("reads a relative path against the call's cwd", () => {
+    expect(keyOf(work, [join('src', 'a.ts')])).toBe(WORK_KEY);
+    // From the scratch directory, a path that climbs out and into the work checkout.
+    expect(keyOf(scratch, [join('..', basename(work), 'x.ts')])).toBe(WORK_KEY);
+  });
+
+  it('gives no key to a relative path when the call has no absolute cwd to read it against', () => {
+    expect(keyOf(undefined, [join('src', 'a.ts')])).toBeUndefined();
+    expect(keyOf(undefined, ['a.ts'])).toBeUndefined();
+    expect(keyOf('src', [join('src', 'a.ts')])).toBeUndefined();
+  });
+
+  it('reads a path with dot-dot segments as it resolves, not as it is spelled', () => {
+    // Spelled inside the work checkout, resolving to a file beside it. The walk
+    // climbs by name, so an unresolved spelling would find the work checkout.
+    const climbsOut = [work, '..', 'loose.txt'].join(sep);
+
+    expect(keyOf(work, [climbsOut])).toBeUndefined();
+  });
+});

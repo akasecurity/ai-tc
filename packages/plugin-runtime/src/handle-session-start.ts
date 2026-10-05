@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { canonicalRepoUrl } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
   claimSessionStart,
@@ -22,7 +23,7 @@ import type {
   ResolvedInventory,
   SourceTool,
 } from '@akasecurity/schema';
-import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
+import { configInventoryInputs, harnessFromTool, WebSourceTool } from '@akasecurity/schema';
 
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
@@ -319,6 +320,28 @@ function buildSessionRoot(
   const nwo = resolveRepoNwo(input.cwd);
   if (nwo !== undefined) attributes.repo = nwo;
   if (branch !== undefined) attributes.branches = [branch];
+  // The session's scope key: the canonical `host/owner/repo` of the project
+  // `ctx` resolved for this cwd. A local-only attribute that every forward path
+  // strips. It exists for scoped attachments, which are to forward a structural
+  // leaf only when its own key AND its root's are both enrolled; that decision
+  // belongs to the forward path, not to this builder.
+  // `ctx.project.url` is the remote, or the worktree PATH for a repository with
+  // no remote; canonicalRepoUrl refuses a path, so a remoteless repository
+  // yields no key rather than a machine-local one. For the same cwd it equals
+  // the key a hook stamps, because both canonicalize the one remote the
+  // resolver picks (origin, else the first). The config_scan row
+  // (buildConfigScanEvent) is deliberately never keyed: it describes the
+  // machine, not a repository.
+  //
+  // A web chat session's root is never keyed. It has no working directory: the
+  // browser host passes the home directory as a stand-in so that no project
+  // resolves. A home directory that is itself a checkout does resolve one, and
+  // the root would then carry that repository's key though the session is not
+  // in it. Only the key is withheld; every other attribute resolves as before.
+  const scopeKey = WebSourceTool.safeParse(input.tool).success
+    ? undefined
+    : canonicalRepoUrl(ctx.project?.url ?? '');
+  if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {
     id: sessionId,

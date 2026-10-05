@@ -315,6 +315,91 @@ describe('parseTranscriptToolCalls', () => {
     // A path inside a command line is not a file the call names.
     expect(filesOf('toolu_B')).toBeUndefined();
   });
+
+  // One assistant record issuing one tool_use per entry, each under its own id.
+  function callsFor(
+    tools: { id: string; name: string; input: Record<string, unknown> }[],
+  ): ReturnType<typeof parseTranscriptToolCalls> {
+    return parseTranscriptToolCalls(
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-named',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: tools.map((t) => ({ type: 'tool_use', ...t })),
+        },
+      }),
+    );
+  }
+
+  it('lists the absolute file any tool names, whether or not it is a file tool', () => {
+    const calls = callsFor([
+      { id: 'toolu_mcp', name: 'mcp__fs__read', input: { file_path: '/Users/me/other/a.ts' } },
+      {
+        id: 'toolu_mcp_nb',
+        name: 'mcp__nb__run',
+        input: { notebook_path: '/Users/me/other/n.ipynb' },
+      },
+      { id: 'toolu_rel', name: 'mcp__fs__read', input: { file_path: 'src/a.ts' } },
+      { id: 'toolu_none', name: 'mcp__fs__stat', input: { name: 'a.ts' } },
+    ]);
+    const filesOf = (id: string): readonly string[] | undefined =>
+      calls.find((c) => c.toolUseId === id)?.filePaths;
+
+    expect(filesOf('toolu_mcp')).toEqual(['/Users/me/other/a.ts']);
+    expect(filesOf('toolu_mcp_nb')).toEqual(['/Users/me/other/n.ipynb']);
+    // A relative path on a tool that is not a file tool is not a named file: such a
+    // call is keyed by the directory it ran in.
+    expect(filesOf('toolu_rel')).toBeUndefined();
+    expect(filesOf('toolu_none')).toBeUndefined();
+  });
+
+  it('records the absolute path a Grep, Glob or LS searches as its search root', () => {
+    const calls = callsFor([
+      { id: 'toolu_grep', name: 'Grep', input: { pattern: 'x', path: '/Users/me/other' } },
+      { id: 'toolu_glob', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
+      { id: 'toolu_ls', name: 'LS', input: { path: '/Users/me/other/src' } },
+      { id: 'toolu_grep_rel', name: 'Grep', input: { pattern: 'x', path: 'src' } },
+      { id: 'toolu_grep_none', name: 'Grep', input: { pattern: 'x' } },
+      // `path` means a search root only on these three tools.
+      { id: 'toolu_mcp_path', name: 'mcp__fs__list', input: { path: '/Users/me/other' } },
+    ]);
+    const rootOf = (id: string): string | undefined =>
+      calls.find((c) => c.toolUseId === id)?.searchRoot;
+
+    expect(rootOf('toolu_grep')).toBe('/Users/me/other');
+    expect(rootOf('toolu_glob')).toBe('/Users/me/other');
+    expect(rootOf('toolu_ls')).toBe('/Users/me/other/src');
+    expect(rootOf('toolu_grep_rel')).toBeUndefined();
+    expect(rootOf('toolu_grep_none')).toBeUndefined();
+    expect(rootOf('toolu_mcp_path')).toBeUndefined();
+    // A search root is not a file the call names.
+    expect(calls.find((c) => c.toolUseId === 'toolu_grep')?.filePaths).toBeUndefined();
+  });
+
+  it('marks a Glob whose own pattern is absolute as keyless, and nothing else', () => {
+    const calls = callsFor([
+      { id: 'toolu_abs', name: 'Glob', input: { pattern: '/Users/me/other/**/*.ts' } },
+      {
+        id: 'toolu_abs_path',
+        name: 'Glob',
+        input: { pattern: '/Users/me/other/*.ts', path: '/Users/me/work' },
+      },
+      { id: 'toolu_rel', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
+      // A Grep pattern is a regular expression, not a location.
+      { id: 'toolu_grep', name: 'Grep', input: { pattern: '/Users/me/other' } },
+    ]);
+    const keylessOf = (id: string): boolean | undefined =>
+      calls.find((c) => c.toolUseId === id)?.keyless;
+
+    expect(keylessOf('toolu_abs')).toBe(true);
+    expect(keylessOf('toolu_abs_path')).toBe(true);
+    expect(keylessOf('toolu_rel')).toBe(false);
+    expect(keylessOf('toolu_grep')).toBe(false);
+  });
 });
 
 describe('iterateHistory', () => {

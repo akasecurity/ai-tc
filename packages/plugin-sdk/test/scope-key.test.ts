@@ -101,6 +101,12 @@ describe('toolCallScopeKey', () => {
     cwd: string | undefined,
     filePaths: readonly string[] | undefined,
   ): string | undefined => toolCallScopeKey(call(cwd, filePaths), scopeKeyMemo());
+  // A call that also names a search root (a Grep's `path`), or is marked keyless.
+  const keyWith = (
+    extra: { searchRoot?: string | undefined; keyless?: boolean | undefined },
+    cwd: string | undefined,
+    filePaths?: readonly string[],
+  ): string | undefined => toolCallScopeKey({ ...call(cwd, filePaths), ...extra }, scopeKeyMemo());
 
   it('keys a call that names no file by the directory it ran in', () => {
     expect(keyOf(work, undefined)).toBe(WORK_KEY);
@@ -152,5 +158,68 @@ describe('toolCallScopeKey', () => {
     const climbsOut = [work, '..', 'loose.txt'].join(sep);
 
     expect(keyOf(work, [climbsOut])).toBeUndefined();
+  });
+
+  it('says an empty file list keys nothing, rather than falling back to the cwd', () => {
+    // A call that names a list of files and no file in it has nothing to key by.
+    // That is not the same as a call that names no file at all.
+    expect(keyOf(work, [])).toBeUndefined();
+  });
+
+  describe('a search root', () => {
+    it('keys a call by the root it names, not by where it ran', () => {
+      expect(keyWith({ searchRoot: personal }, work)).toBe(PERSONAL_KEY);
+      expect(keyWith({ searchRoot: join(personal, 'src', 'deep') }, scratch)).toBe(PERSONAL_KEY);
+    });
+
+    it('walks from the root itself, so a checkout top level is that checkout and not its parent', () => {
+      // The parent of the top level is the temp root, which is in no repository.
+      // A walk that started at the parent would find nothing, or the enclosing
+      // checkout when the root is a nested clone.
+      expect(keyWith({ searchRoot: work }, scratch)).toBe(WORK_KEY);
+      const nested = checkout(join('work', 'vendor', 'nested'), 'https://github.com/me/nested.git');
+      expect(keyWith({ searchRoot: nested }, work)).toBe('github.com/me/nested');
+    });
+
+    it('never falls back to the cwd: a root in no repository gives no key', () => {
+      expect(keyWith({ searchRoot: scratch }, work)).toBeUndefined();
+    });
+
+    it('keys by the root and the files together only when they all agree', () => {
+      const inWork = join(work, 'a.ts');
+      const inPersonal = join(personal, 'b.ts');
+      expect(keyWith({ searchRoot: work }, scratch, [inWork])).toBe(WORK_KEY);
+      expect(keyWith({ searchRoot: work }, scratch, [inPersonal])).toBeUndefined();
+      expect(keyWith({ searchRoot: personal }, work, [inWork])).toBeUndefined();
+      // A keyless file or a keyless root sinks an otherwise agreeing call.
+      expect(keyWith({ searchRoot: work }, work, [join(scratch, 'n.md')])).toBeUndefined();
+      expect(keyWith({ searchRoot: scratch }, work, [inWork])).toBeUndefined();
+    });
+
+    it('keys a root alongside an empty file list by the root', () => {
+      expect(keyWith({ searchRoot: personal }, work, [])).toBe(PERSONAL_KEY);
+    });
+
+    it('reads the root as it resolves, not as it is spelled', () => {
+      // Spelled inside the work checkout, resolving to a directory beside it.
+      const climbsOut = [work, '..', 'loose'].join(sep);
+
+      expect(keyWith({ searchRoot: climbsOut }, work)).toBeUndefined();
+    });
+
+    it("reads a relative root against the call's cwd, and keys nothing without one", () => {
+      // From the scratch directory, a root that climbs out and into the work checkout.
+      expect(keyWith({ searchRoot: join('..', basename(work)) }, scratch)).toBe(WORK_KEY);
+      expect(keyWith({ searchRoot: 'src' }, undefined)).toBeUndefined();
+    });
+  });
+
+  it('gives no key to a call marked keyless, whatever else it names', () => {
+    expect(keyWith({ keyless: true }, work)).toBeUndefined();
+    expect(
+      keyWith({ keyless: true, searchRoot: work }, work, [join(work, 'a.ts')]),
+    ).toBeUndefined();
+    // The marker is opt-in: false changes nothing.
+    expect(keyWith({ keyless: false }, work)).toBe(WORK_KEY);
   });
 });

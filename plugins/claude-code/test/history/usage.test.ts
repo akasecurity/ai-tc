@@ -718,9 +718,11 @@ describe('scope keys — the root from its project, each leaf from its own recor
   const AT = String.fromCharCode(64);
   const gitUser = `git${AT}`;
   const WORK_KEY = 'github.com/acme/work';
+  const PERSONAL_KEY = 'github.com/me/personal';
   let dataDir: string;
   let transcripts: string;
   let workRepo: string;
+  let personalRepo: string;
   let scratch: string;
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'aka-usage-key-data-'));
@@ -731,10 +733,17 @@ describe('scope keys — the root from its project, each leaf from its own recor
       join(workRepo, '.git', 'config'),
       `[remote "origin"]\n\turl = ${gitUser}github.com:acme/work.git\n`,
     );
+    // A second checkout with its own forge remote.
+    personalRepo = mkdtempSync(join(tmpdir(), 'aka-usage-key-personal-'));
+    mkdirSync(join(personalRepo, '.git'), { recursive: true });
+    writeFileSync(
+      join(personalRepo, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/me/personal.git\n',
+    );
     scratch = mkdtempSync(join(tmpdir(), 'aka-usage-key-scratch-'));
   });
   afterEach(() => {
-    for (const d of [dataDir, transcripts, workRepo, scratch]) {
+    for (const d of [dataDir, transcripts, workRepo, personalRepo, scratch]) {
       rmSync(d, { recursive: true, force: true });
     }
   });
@@ -962,5 +971,89 @@ describe('scope keys — the root from its project, each leaf from its own recor
     const { root, leaf } = keys(dataDir);
     expect(root).toBeNull();
     expect(leaf.get('msg_1')).toBeNull();
+  });
+
+  // One session whose every record ran in `cwd` and issued one tool call each.
+  function seedCalls(
+    cwd: string,
+    calls: { id: string; name: string; input: Record<string, unknown> }[],
+  ): void {
+    seed(
+      transcripts,
+      [
+        prompt,
+        ...calls.map((c, i) =>
+          assistant({
+            uuid: `a-${String(i)}`,
+            messageId: `msg_${String(i)}`,
+            ts: `2026-06-20T10:00:${String(5 + i).padStart(2, '0')}.000Z`,
+            cwd,
+            toolUseId: c.id,
+            tool: { name: c.name, input: c.input },
+          }),
+        ),
+      ].join('\n'),
+    );
+  }
+
+  it("keys a Grep or LS leaf by the root it searched, from the root itself, not the cwd's", async () => {
+    seedCalls(workRepo, [
+      // A checkout's top level: the parent directory is in no repository.
+      { id: 'toolu_top', name: 'Grep', input: { pattern: 'x', path: personalRepo } },
+      { id: 'toolu_sub', name: 'Grep', input: { pattern: 'x', path: join(personalRepo, 'src') } },
+      { id: 'toolu_ls', name: 'LS', input: { path: personalRepo } },
+      // Outside every repository: no key, and never the cwd's.
+      { id: 'toolu_out', name: 'Grep', input: { pattern: 'x', path: scratch } },
+      // No root, or a relative one: the directory the call ran in.
+      { id: 'toolu_none', name: 'Grep', input: { pattern: 'x' } },
+      { id: 'toolu_rel', name: 'Grep', input: { pattern: 'x', path: 'src' } },
+    ]);
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('toolu_top')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_sub')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_ls')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_out')).toBeNull();
+    expect(leaf.get('toolu_none')).toBe(WORK_KEY);
+    expect(leaf.get('toolu_rel')).toBe(WORK_KEY);
+  });
+
+  it('keys any tool that names an absolute file by that file, and a Glob with an absolute pattern by nothing', async () => {
+    seedCalls(workRepo, [
+      {
+        id: 'toolu_mcp_in',
+        name: 'mcp__fs__read',
+        input: { file_path: join(personalRepo, 'a.ts') },
+      },
+      {
+        id: 'toolu_mcp_out',
+        name: 'mcp__fs__read',
+        input: { file_path: join(scratch, 'a.ts') },
+      },
+      {
+        id: 'toolu_mcp_rel',
+        name: 'mcp__fs__read',
+        input: { file_path: 'src/a.ts' },
+      },
+      { id: 'toolu_glob', name: 'Glob', input: { pattern: '*.ts', path: personalRepo } },
+      {
+        id: 'toolu_glob_abs',
+        name: 'Glob',
+        input: { pattern: join(personalRepo, '**', '*.ts') },
+      },
+    ]);
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('toolu_mcp_in')).toBe(PERSONAL_KEY);
+    // A file outside every repository leaves the call keyless though it ran in a keyed one.
+    expect(leaf.get('toolu_mcp_out')).toBeNull();
+    // A relative path on a tool that is not a file tool names no file: the cwd's key.
+    expect(leaf.get('toolu_mcp_rel')).toBe(WORK_KEY);
+    expect(leaf.get('toolu_glob')).toBe(PERSONAL_KEY);
+    expect(leaf.get('toolu_glob_abs')).toBeNull();
   });
 });

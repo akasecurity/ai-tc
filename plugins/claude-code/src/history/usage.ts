@@ -287,8 +287,10 @@ export async function reconcileSessionToolCalls(
     if (tc.uuid !== undefined) attributes.uuid = tc.uuid;
     if (tc.parentUuid !== undefined) attributes.parent_uuid = tc.parentUuid;
     if (runKey !== undefined) attributes.run_key = runKey;
-    // See toolCallScopeKey: a file tool by its file's repository, any other
-    // call by the cwd of the record that issued it.
+    // See toolCallScopeKey: a call that names a file or a search root is keyed by
+    // the repository of what it names, as the hooks key a captured file or Grep
+    // (the hooks read a search root only for Grep; a Glob or LS leaf follows the
+    // same rule); any other call is keyed by the cwd of the record that issued it.
     const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
     if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {

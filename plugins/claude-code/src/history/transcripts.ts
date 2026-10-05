@@ -9,7 +9,7 @@
 // walk so the parser unit-tests without touching disk.
 import { readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import type { EventKind } from '@akasecurity/schema';
 
@@ -328,8 +328,9 @@ export interface ToolCallRecord {
   occurredAt: string; // record's own ISO timestamp
   // The working directory of the assistant record that issued the call, when
   // that record names one. The reconciler keys this leaf's scope by it, unless
-  // the call names a file (filePaths below). It is never the session's first
-  // cwd, because a session can move between directories.
+  // the call names a location of its own (filePaths, searchRoot and keyless
+  // below). It is never the session's first cwd, because a session can move
+  // between directories.
   cwd: string | undefined;
   inputSize: number | undefined;
   isError: boolean | undefined;
@@ -338,11 +339,23 @@ export interface ToolCallRecord {
   // The reconciler masks it and THEN size-caps the masked value (never persisted raw);
   // undefined when the input has no obvious target.
   target: string | undefined;
-  // The file a file tool (Read, Write, Edit, MultiEdit, NotebookEdit) reads or
-  // writes, as a one-element list: the same path `target` holds. undefined for
-  // every other tool. The reconciler keys such a leaf by that file's repository
-  // rather than by `cwd`, because the leaf's target IS that path.
+  // The files the call names, which the reconciler keys this leaf's scope by
+  // (each file's repository) rather than by `cwd`:
+  // - a file tool (Read, Write, Edit, MultiEdit, NotebookEdit): the one path
+  //   `target` holds, absolute or not;
+  // - any other tool (an MCP tool included): the absolute `file_path` and
+  //   `notebook_path` its input carries. A relative one names no file here,
+  //   and such a call is keyed by `cwd`.
+  // undefined when the call names none.
   filePaths: readonly string[] | undefined;
+  // The directory (or single file) a Grep, Glob or LS searches: the absolute
+  // `path` of its input. undefined for every other tool, and when `path` is
+  // relative or absent, which leaves the call keyed by `cwd`. The reconciler
+  // keys the leaf by the repository this root itself sits in.
+  searchRoot: string | undefined;
+  // True for a Glob whose own `pattern` is absolute: that pattern names a
+  // location no single repository covers, so the leaf carries no key at all.
+  keyless: boolean;
 }
 
 // The single most identifying field of a tool's input — what answers "which
@@ -402,9 +415,53 @@ function toolTarget(toolName: string, input: unknown): string | undefined {
 }
 
 // The tools whose target is a file path (toolTarget's `file_path` and
-// `notebook_path` cases). Their leaves are keyed by that file's repository; a
-// tool missing here is keyed by the directory its record ran in instead.
+// `notebook_path` cases). Their leaves are keyed by that file's repository,
+// relative path or not.
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+// The tools whose `path` input is the directory (or file) they search.
+const SEARCH_TOOLS = new Set(['Grep', 'Glob', 'LS']);
+
+// The locations a call names besides the directory it ran in, read off its
+// input the way the hooks read what they capture: a file tool by its file, any
+// tool by an absolute `file_path` or `notebook_path`, and a Grep by an absolute
+// `path` (its search root). A Glob or LS follows the same rule as Grep, though
+// the hooks read a search root only for Grep. A Glob whose own pattern is
+// absolute names a location no single repository covers, so it is marked
+// keyless. A relative path on a tool that is not a file tool names nothing, so
+// the leaf is keyed by the directory it ran in. A named location is never
+// given the cwd's key.
+function namedLocations(
+  toolName: string,
+  input: unknown,
+  target: string | undefined,
+): Pick<ToolCallRecord, 'filePaths' | 'searchRoot' | 'keyless'> {
+  const none = { filePaths: undefined, searchRoot: undefined, keyless: false };
+  if (!isRecord(input)) return none;
+  const pick = (key: string): string | undefined => {
+    const v = input[key];
+    return typeof v === 'string' && v !== '' ? v : undefined;
+  };
+  const absolute = (path: string | undefined): string | undefined =>
+    path !== undefined && isAbsolute(path) ? path : undefined;
+
+  let filePaths: string[] | undefined;
+  if (target !== undefined && FILE_TOOLS.has(toolName)) {
+    filePaths = [target];
+  } else {
+    const named = new Set<string>();
+    for (const path of [absolute(pick('file_path')), absolute(pick('notebook_path'))]) {
+      if (path !== undefined) named.add(path);
+    }
+    if (named.size > 0) filePaths = [...named];
+  }
+  if (!SEARCH_TOOLS.has(toolName)) return { ...none, filePaths };
+  return {
+    filePaths,
+    searchRoot: absolute(pick('path')),
+    keyless: toolName === 'Glob' && absolute(pick('pattern')) !== undefined,
+  };
+}
 
 // Character length of a serialized tool input/output block — a size metric, never
 // the payload. Strings measure directly; structured content is JSON-serialized.
@@ -468,7 +525,7 @@ export function parseTranscriptToolCalls(jsonl: string, sinceMs = 0): ToolCallRe
           isError: undefined,
           outputSize: undefined,
           target,
-          filePaths: target !== undefined && FILE_TOOLS.has(toolName) ? [target] : undefined,
+          ...namedLocations(toolName, block.input, target),
         });
       }
       continue;

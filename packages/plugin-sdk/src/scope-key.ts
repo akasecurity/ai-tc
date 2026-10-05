@@ -39,29 +39,59 @@ export function scopeKeyMemo(): (cwd: string | undefined) => string | undefined 
 }
 
 /**
- * A tool_call leaf's scope key. A call that names files (a file tool's one
- * file, a patch's every changed file) is keyed by those files' repository, not
- * by the directory it ran from: a write into a personal checkout from a work
- * session must not leave under the work key. Every file a call names must give
- * the same key, or the leaf gets none. A relative path is read against the
- * call's cwd and is keyless without an absolute one. A call that names no file
- * is keyed by its cwd: the directory it ran in, which is the command's own
- * working directory when its events name one.
+ * A tool_call leaf's scope key: never a repository other than the ones the call
+ * names. A call that names a location is keyed by it, not by the directory it ran
+ * from, so a write into a personal checkout from a work session cannot leave
+ * under the work key. What a call can name:
+ * - files (`filePaths`: a file tool's one file, an MCP tool's absolute
+ *   `file_path`, a patch's every changed file), keyed by the repository the
+ *   file's directory sits in;
+ * - a search root (`searchRoot`: a Grep, Glob or LS `path`, a directory or one
+ *   file), keyed by the repository the root itself sits in. The walk starts at
+ *   the root, not at its parent: a root may be a checkout's top level, and its
+ *   parent would miss that checkout, or name the enclosing one when the root is
+ *   a nested clone.
  *
- * `scopeKeyOf` is the pass's memo (scopeKeyMemo). The call's members are the
- * ones every reconciler's tool-call record carries.
+ * Every named location must give a key and every key must be the same, or the
+ * leaf gets none; a location in no repository is never replaced by the cwd's.
+ * `keyless` marks a call whose named location no single repository covers (a Glob
+ * whose own pattern is absolute): it gets no key.
+ *
+ * A relative path or root is read against the call's cwd and is keyless without
+ * an absolute one. A call that names nothing (no `filePaths`, no `searchRoot`) is
+ * keyed by its cwd: the directory it ran in, which is the command's own working
+ * directory when its events name one. A call that names an EMPTY file list and
+ * no root has nothing to key by and gets no key (it is not treated as naming
+ * nothing); no producer emits one today.
+ *
+ * `scopeKeyOf` is the pass's memo (scopeKeyMemo). Only `cwd` and `filePaths` are
+ * required of a call: Codex and Antigravity name files and name no root.
  */
 export function toolCallScopeKey(
-  tc: { readonly cwd: string | undefined; readonly filePaths: readonly string[] | undefined },
+  tc: {
+    readonly cwd: string | undefined;
+    readonly filePaths: readonly string[] | undefined;
+    readonly searchRoot?: string | undefined;
+    readonly keyless?: boolean | undefined;
+  },
   scopeKeyOf: (cwd: string | undefined) => string | undefined,
 ): string | undefined {
-  if (tc.filePaths === undefined) return scopeKeyOf(tc.cwd);
+  if (tc.keyless === true) return undefined;
+  if (tc.filePaths === undefined && tc.searchRoot === undefined) return scopeKeyOf(tc.cwd);
+  // Each named location as the directory its key is read from. join() leaves a
+  // relative path relative when there is no absolute cwd to read it against, and
+  // scopeKeyOf keys no relative directory. An absolute path is normalised first:
+  // the walk climbs by name, so a `..` segment left in place would climb back
+  // into the directory it left.
+  const resolved = (path: string): string =>
+    isAbsolute(path) ? normalize(path) : join(tc.cwd ?? '', path);
+  const directories = [
+    ...(tc.filePaths ?? []).map((path) => dirname(resolved(path))),
+    ...(tc.searchRoot === undefined ? [] : [resolved(tc.searchRoot)]),
+  ];
   let agreed: string | undefined;
-  for (const path of tc.filePaths) {
-    // join() leaves the path relative when there is no absolute cwd to read it
-    // against, and scopeKeyOf keys no relative directory.
-    const file = isAbsolute(path) ? normalize(path) : join(tc.cwd ?? '', path);
-    const key = scopeKeyOf(dirname(file));
+  for (const directory of directories) {
+    const key = scopeKeyOf(directory);
     if (key === undefined || (agreed !== undefined && key !== agreed)) return undefined;
     agreed = key;
   }

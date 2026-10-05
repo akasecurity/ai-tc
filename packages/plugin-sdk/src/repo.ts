@@ -320,11 +320,13 @@ function remoteUrl(ctx: GitContext): string | undefined {
 }
 
 // One repository, located from `cwd`: ONE ancestor walk (findGitRoot) and,
-// when the `.git` entry resolves, ONE config read (remoteUrl). Every resolver
-// that reports a remote-derived value reads the remote through here, so "the
-// remote" names the same thing in all of them: `origin`, else the first remote
-// in config order. `remote` is the `url =` value verbatim, undefined with no
-// remote; `headRoot` is the HEAD worktree root (a linked worktree's main
+// when the `.git` entry resolves, ONE config read (remoteUrl). resolveRepo,
+// resolveRepoIdentity and resolveRepoAttribution read the remote through here,
+// so "the remote" names the same thing in all three: `origin`, else the first
+// remote in config order. That rule lives in remoteUrl above, which
+// resolveRepoNwo also uses, though it walks and reads on its own rather than
+// through this locator. `remote` is the `url =` value verbatim, undefined with
+// no remote; `headRoot` is the HEAD worktree root (a linked worktree's main
 // checkout, else the checkout itself).
 interface RepoLocation {
   headRoot: string;

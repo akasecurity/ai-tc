@@ -805,9 +805,15 @@ describe('the local scope_key column', () => {
     // fails at once, and the other opener's ALTER is issued from inside the
     // opener's own re-check, so the interleaving is fixed rather than raced.
     type HostMethod = (...args: unknown[]) => unknown;
+    const SQLITE_BUSY = 5;
     withTempStore((store) => {
       const opener = store.openRaw();
-      opener.exec('PRAGMA journal_mode = WAL');
+      // The pragma answers with the mode it landed in. In rollback-journal mode a
+      // DEFERRED re-check would pass this case too, so the mode is pinned rather
+      // than assumed: without this the case could stop pinning the lock mode and
+      // stay green.
+      const journal = opener.prepare('PRAGMA journal_mode = WAL').get() as { journal_mode: string };
+      expect(journal.journal_mode).toBe('wal');
       opener.exec('PRAGMA busy_timeout = 0');
       applyMigrations(opener);
       opener.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
@@ -816,7 +822,7 @@ describe('the local scope_key column', () => {
 
       const realPrepare = opener.prepare.bind(opener);
       let interleaved = false;
-      let otherOutcome: string | undefined;
+      let otherOutcome: 'added' | { errcode: unknown; message: string } | undefined;
       Object.defineProperty(opener, 'prepare', {
         configurable: true,
         value: (sql: string) => {
@@ -837,7 +843,10 @@ describe('the local scope_key column', () => {
                     other.exec(SCOPE_KEY_COLUMN_DDL);
                     otherOutcome = 'added';
                   } catch (error) {
-                    otherOutcome = error instanceof Error ? error.message : String(error);
+                    otherOutcome = {
+                      errcode: (error as { errcode?: unknown }).errcode,
+                      message: error instanceof Error ? error.message : String(error),
+                    };
                   }
                 }
                 return rows;
@@ -857,7 +866,8 @@ describe('the local scope_key column', () => {
       // Without this the case passes on an implementation that holds no
       // transaction across its check.
       expect(interleaved).toBe(true);
-      expect(otherOutcome).toMatch(/locked/);
+      // Refused by SQLite's own result code rather than by its wording.
+      expect(otherOutcome).toMatchObject({ errcode: SQLITE_BUSY });
       expect(scopeKeyColumns(opener)).toEqual(['scope_key']);
       // The refused opener runs its own check on its next open and finds it there.
       expect(() => {

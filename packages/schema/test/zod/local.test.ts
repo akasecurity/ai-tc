@@ -756,7 +756,7 @@ describe('parseAttachmentScope', () => {
 
   it('strips an unknown key on the envelope too, so a later field there does not break this reader', () => {
     expect(
-      parseAttachmentScope({ endpoint: ENDPOINT, entries: [], builtFor: { tenant: 'Acme' } }),
+      parseAttachmentScope({ endpoint: ENDPOINT, entries: [], builtFor: { org: 'Acme' } }),
     ).toEqual({ endpoint: ENDPOINT, entries: [] });
   });
 
@@ -830,6 +830,30 @@ describe('resolveScope and scopeVerdict — the forwarding verdict', () => {
   it('machine mode forwards even with a garbled scope and no endpoint: the mode decides', () => {
     const machine = resolveScope({ mode: 'machine', scope: 'garbled', endpoint: undefined });
     expect(scopeVerdict(machine, undefined)).toBe('forward');
+  });
+
+  it('machine mode never reads the scope, however hostile it is', () => {
+    // A scope whose every property throws when read and counts the attempt.
+    // parseAttachmentScope swallows a throw, so a throw alone could not show that
+    // resolveScope looked: the count does, and the throw covers a read that does
+    // not go through that parser.
+    let reads = 0;
+    const hostile = {
+      get endpoint(): unknown {
+        reads += 1;
+        throw new Error('boom');
+      },
+      get entries(): unknown {
+        reads += 1;
+        throw new Error('boom');
+      },
+    };
+    const machine = resolveScope({ mode: 'machine', scope: hostile, endpoint: ENDPOINT });
+    expect(machine.mode).toBe('machine');
+    for (const key of [WORK_REPO, '', undefined]) {
+      expect(scopeVerdict(machine, key)).toBe('forward');
+    }
+    expect(reads).toBe(0);
   });
 
   it('scoped mode forwards a key in scope', () => {

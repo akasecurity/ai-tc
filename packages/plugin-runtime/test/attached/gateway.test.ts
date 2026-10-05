@@ -1445,6 +1445,80 @@ describe('the live forward stamps what it delivered', () => {
   });
 });
 
+// ── the local scope key ─────────────────────────────────────────────────────
+
+describe('the local scope key never reaches the client', () => {
+  /**
+   * `scope_key` is this machine's own routing fact, and every audit-event
+   * request's attributes member is an open record that the outbound parse
+   * passes straight through. So the strip is the only thing between a stamped
+   * row and the receiving side's storage. It has to hold on every route, and on
+   * both of reKeyForForward's branches: before the inventory resolved (ids
+   * dropped) and after it (ids substituted).
+   */
+  it('is absent from every body, on every route and both re-key branches', async () => {
+    const KEY = 'github.com/org/api';
+    const sent: string[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = makeClient(calls, {
+      ingestEvents: (batch) => {
+        sent.push(JSON.stringify(batch));
+        return Promise.resolve({ accepted: 1, duplicates: 0 });
+      },
+      ingestInventory: (context) => {
+        sent.push(JSON.stringify(context));
+        return Promise.resolve({ hostId: 'tenant-host' });
+      },
+      recordAuditEvent: (body) => {
+        sent.push(JSON.stringify(body));
+        return Promise.resolve();
+      },
+      recordAuditEvents: (bodies) => {
+        sent.push(JSON.stringify(bodies));
+        return Promise.resolve({ accepted: bodies.length });
+      },
+    });
+    const { gateway } = build({ client, local: makeLocal(calls) });
+
+    // Before any inventory resolved: reKeyForForward's null branch.
+    await gateway.recordAuditEvent(
+      auditEvent({ id: 'root-a', attributes: { cwd: '/w', scope_key: KEY } }),
+    );
+    await gateway.recordLlmCall({
+      ...llmCallInput('m-a'),
+      attributes: { model: 'claude-opus-5', scope_key: KEY },
+    });
+    await gateway.recordConfigScan({
+      items: [],
+      scanEvent: {
+        id: 'scan-a',
+        eventType: 'config_scan',
+        startedAt: '2026-08-19T10:00:00.000Z',
+        attributes: { skills: 1, scope_key: KEY },
+      },
+    });
+    // After it resolved: the substitution branch.
+    await gateway.ensureInventory({});
+    await gateway.recordAuditEvent(auditEvent({ id: 'root-b', attributes: { scope_key: KEY } }));
+    await gateway.recordLlmCalls([
+      { ...llmCallInput('m-b'), attributes: { model: 'claude-opus-5', scope_key: KEY } },
+    ]);
+    await gateway.recordToolCalls([
+      { ...toolCallInput('t-b'), attributes: { tool_name: 'Bash', scope_key: KEY } },
+    ]);
+    // A capture carries its key BESIDE the event, so its body never had one.
+    await gateway.recordCapture({ event: event('e1'), findings: [], scopeKey: KEY });
+
+    // Positive control: all eight forwards reached the client, so the absence
+    // below is the strip's doing and not a forward that never ran.
+    expect(sent).toHaveLength(8);
+    for (const body of sent) {
+      expect(body).not.toContain('scope_key');
+      expect(body).not.toContain(KEY);
+    }
+  });
+});
+
 describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('returns the local bundle untouched when the tenant cache is cold', async () => {
     const { gateway } = build({ readCachedBundle: () => Promise.resolve(null) });

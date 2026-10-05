@@ -43,6 +43,7 @@ import { AUDIT_EVENT_BATCH_MAX, mergeRaiseOnly, ruleCategoryMap } from '@akasecu
 
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import { withoutScopeKey } from './scope-strip.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
 /**
@@ -991,7 +992,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 }
 
 /**
- * Rewrite an outgoing audit event's inventory ids into the BACKEND's id space.
+ * Rewrite an outgoing audit event's inventory ids into the BACKEND's id space,
+ * and drop the local scope key.
  *
  * Only ids the control plane actually resolved are substituted; a field it did not
  * resolve is OMITTED rather than left as the local value, so a partial remote
@@ -1003,8 +1005,17 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
  * from: an AuditEventInput carries ids, and `pgAuditValues` writes them straight
  * into FK columns with no re-resolution step. That is why an unresolved id has
  * to be omitted here rather than passed along hopefully.
+ *
+ * THE SCOPE KEY GOES ON BOTH BRANCHES, and before either. `attributes.scope_key`
+ * is a local routing fact a producer stamps in every attachment mode, and the
+ * request's attributes member is an open record, so this is the one place
+ * between a stamped row and the receiving side's storage. Every live
+ * audit-event route passes through here: the single route, the batch, the
+ * batch's per-item fallback and config scans. That is why the strip lives here
+ * rather than at each call site. See `scope-strip.ts`.
  */
 function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedInventory | null): T {
+  const outbound = withoutScopeKey(event);
   // No remote resolution: DROP the local ids rather than send them. They are a
   // different id space by construction — the device content-addresses
   // `['inventory', …]` while the control plane hashes them under its own scope —
@@ -1015,7 +1026,7 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   // them wrong costs the whole session. All three are `.optional()` on
   // AuditEventInput, so omitting them is valid on the wire.
   if (remote === null) {
-    const stripped: T = { ...event };
+    const stripped: T = { ...outbound };
     delete stripped.hostId;
     delete stripped.harnessId;
     delete stripped.sourceProjectId;
@@ -1029,7 +1040,7 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   // answer of `{}` is schema-valid and would forward every local id — precisely
   // the outcome the null branch above deletes them to avoid, reached by the
   // path that looks like it succeeded.
-  const rekeyed = { ...event };
+  const rekeyed = { ...outbound };
   delete rekeyed.hostId;
   delete rekeyed.harnessId;
   delete rekeyed.sourceProjectId;

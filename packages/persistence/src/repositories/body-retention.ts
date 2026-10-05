@@ -1,5 +1,6 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
+import type { SyncLaneRetention } from '@akasecurity/schema';
 import { CAPTURE_EVENT_TYPES_SQL } from '@akasecurity/schema';
 
 import { OUTBOX_CAPTURE_TYPE_LIST } from '../internal/outbox-lane.ts';
@@ -27,8 +28,10 @@ import { withTransaction } from '../internal/transactions.ts';
  * expire merely because nothing is currently claiming it: `aka sync-history --on`
  * can retroactively claim the backlog at any later time, with no age bound at
  * all. So the lane is gated by the caller rather than guessed at here —
- * `sweepSyncLane` is false whenever an attach or a history-sync consent could
- * still make those rows owed, and expiring them then is refused outright.
+ * `sweepSyncLane` says which of those rows could still be owed, and expiring
+ * one of them is refused outright. On a scoped attachment that is only the rows
+ * stamped with an enrolled `scope_key`; on any other attachment, or under a
+ * history-sync grant, it is all of them.
  *
  * `content_hash` is deliberately preserved. It costs none of the reclaimable
  * bytes, it is what backfill idempotency is keyed on, and clearing it would make
@@ -55,12 +58,22 @@ export interface BodyExpiryOptions {
   /** Bodies on events older than this instant are candidates. */
   readonly cutoff: number;
   /**
-   * Whether `prompt`/`response`/`tool_use` bodies with no `synced_at` may be
-   * expired. FALSE on any machine where an attach or a history-sync consent
-   * could still make them owed; the caller decides, because that depends on
-   * settings this module does not read.
+   * What the sync lane — `prompt`/`response`/`tool_use` bodies with no
+   * `synced_at` — may lose on this pass, as `syncLaneRetentionOf` decides it:
+   *
+   *   - `sweep`: nothing could make those rows owed, so they age out like any
+   *     other body;
+   *   - `hold-all`: an attach or a history-sync grant could still claim any of
+   *     them, so none is expired;
+   *   - `hold-keys`: a scoped attachment owes only the rows stamped with one of
+   *     its keys, so those are held and every other one ages out.
+   *
+   * `true` and `false` are the two-state gate this option was before scoped
+   * attachments, and read as `sweep` and `hold-all`. The caller decides,
+   * because the answer depends on settings and a credential this module does
+   * not read.
    */
-  readonly sweepSyncLane: boolean;
+  readonly sweepSyncLane: boolean | SyncLaneRetention;
   /** Stamped into `content_expired_at`. */
   readonly now: number;
   /** Hard cap per pass, so a first run on a large store stays bounded. */
@@ -93,10 +106,16 @@ const DEFAULT_MAX_ROWS = 50_000;
  */
 const SYNC_LANE_TYPES_SQL = OUTBOX_CAPTURE_TYPE_LIST;
 
+/** The two answers `true` and `false` stood for before scoped attachments. */
+const SWEEP: SyncLaneRetention = { kind: 'sweep' };
+const HOLD_ALL: SyncLaneRetention = { kind: 'hold-all' };
+
 export class SqliteBodyRetentionRepository {
   private readonly candidatesStmt: StatementSync;
   private readonly candidatesSyncSafeStmt: StatementSync;
+  private readonly candidatesScopedStmt: StatementSync;
   private readonly heldBySyncStmt: StatementSync;
+  private readonly heldByScopeStmt: StatementSync;
   private readonly expireStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
@@ -121,6 +140,27 @@ export class SqliteBodyRetentionRepository {
     this.candidatesSyncSafeStmt = this.db.prepare(
       select(`AND (event_type NOT IN (${SYNC_LANE_TYPES_SQL}) OR synced_at IS NOT NULL)`),
     );
+    // The scoped twin of the statement above. A scoped attachment owes only the
+    // unsynced sync-lane rows whose stamped key is enrolled, so a row with no
+    // key, or with a key outside the list, is no more owed than a `code_change`:
+    // the drain's scoped reads never return it, and nothing can mark it owed.
+    //
+    // `scope_key IS NULL` is spelled out because `NOT IN` cannot say it. A NULL
+    // key makes `scope_key NOT IN (…)` NULL rather than true, so without that arm
+    // every unstamped row — all history recorded before stamping shipped — would
+    // be held for ever on a machine that can never send it.
+    //
+    // The keys bind as ONE JSON array through json_each, so this is one
+    // statement prepared here whatever the scope's size, and the recorder that
+    // plan-pins it sees the statement the product runs. Comparison is BINARY,
+    // the rule the in-memory verdict applies, so the two never disagree about a
+    // key.
+    this.candidatesScopedStmt = this.db.prepare(
+      select(
+        `AND (event_type NOT IN (${SYNC_LANE_TYPES_SQL}) OR synced_at IS NOT NULL
+              OR scope_key IS NULL OR scope_key NOT IN (SELECT value FROM json_each(:scopeKeys)))`,
+      ),
+    );
     this.heldBySyncStmt = this.db.prepare(`
       SELECT COUNT(*) AS n
         FROM audit_events
@@ -128,6 +168,16 @@ export class SqliteBodyRetentionRepository {
          AND started_at < :cutoff
          AND event_type IN (${SYNC_LANE_TYPES_SQL})
          AND synced_at IS NULL`);
+    // The exact complement, within the sync lane, of what the scoped candidates
+    // statement lets through: unsynced AND stamped with an enrolled key.
+    this.heldByScopeStmt = this.db.prepare(`
+      SELECT COUNT(*) AS n
+        FROM audit_events
+       WHERE content IS NOT NULL
+         AND started_at < :cutoff
+         AND event_type IN (${SYNC_LANE_TYPES_SQL})
+         AND synced_at IS NULL
+         AND scope_key IN (SELECT value FROM json_each(:scopeKeys))`);
     // content_hash is NOT cleared — see the module comment.
     this.expireStmt = this.db.prepare(
       `UPDATE audit_events SET content = NULL, content_expired_at = :now WHERE id = :id`,
@@ -136,13 +186,12 @@ export class SqliteBodyRetentionRepository {
 
   /** How many bytes a pass with these options would free, changing nothing. */
   preview(opts: Omit<BodyExpiryOptions, 'now'>): Omit<BodyExpiryOutcome, 'done'> {
-    const limit = opts.maxRows ?? DEFAULT_MAX_ROWS;
-    const stmt = opts.sweepSyncLane ? this.candidatesStmt : this.candidatesSyncSafeStmt;
-    const rows = stmt.all({ cutoff: opts.cutoff, limit }) as { id: string; bytes: number }[];
+    const lane = laneOf(opts.sweepSyncLane);
+    const rows = this.candidates(lane, opts.cutoff, opts.maxRows ?? DEFAULT_MAX_ROWS);
     return {
       rowsExpired: rows.length,
       bytesFreed: rows.reduce((sum, r) => sum + r.bytes, 0),
-      rowsHeldBySync: this.countHeldBySync(opts),
+      rowsHeldBySync: this.countHeldBySync(lane, opts.cutoff),
     };
   }
 
@@ -150,7 +199,7 @@ export class SqliteBodyRetentionRepository {
   expire(opts: BodyExpiryOptions): BodyExpiryOutcome {
     const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
     const maxRows = opts.maxRows ?? DEFAULT_MAX_ROWS;
-    const stmt = opts.sweepSyncLane ? this.candidatesStmt : this.candidatesSyncSafeStmt;
+    const lane = laneOf(opts.sweepSyncLane);
 
     let rowsExpired = 0;
     let bytesFreed = 0;
@@ -158,10 +207,7 @@ export class SqliteBodyRetentionRepository {
 
     while (rowsExpired < maxRows) {
       const remaining = Math.min(batchSize, maxRows - rowsExpired);
-      const batch = stmt.all({ cutoff: opts.cutoff, limit: remaining }) as {
-        id: string;
-        bytes: number;
-      }[];
+      const batch = this.candidates(lane, opts.cutoff, remaining);
       if (batch.length === 0) break;
 
       // One transaction per batch, and the lock is released between them. The
@@ -186,16 +232,55 @@ export class SqliteBodyRetentionRepository {
       if (rowsExpired >= maxRows) {
         // Cap reached rather than candidates exhausted — say so, so a caller
         // running to completion knows to come back.
-        done = stmt.all({ cutoff: opts.cutoff, limit: 1 }).length === 0;
+        done = this.candidates(lane, opts.cutoff, 1).length === 0;
       }
     }
 
-    return { rowsExpired, bytesFreed, rowsHeldBySync: this.countHeldBySync(opts), done };
+    return {
+      rowsExpired,
+      bytesFreed,
+      rowsHeldBySync: this.countHeldBySync(lane, opts.cutoff),
+      done,
+    };
   }
 
-  private countHeldBySync(opts: { cutoff: number; sweepSyncLane: boolean }): number {
-    if (opts.sweepSyncLane) return 0;
-    const row = this.heldBySyncStmt.get({ cutoff: opts.cutoff }) as { n: number };
+  /**
+   * One batch of candidates under `lane`, bound with exactly the parameters its
+   * statement names — node:sqlite refuses a named parameter a statement does not
+   * declare, so the key list goes to the scoped statements only.
+   *
+   * Anything that is not `sweep` or `hold-keys` takes the hold-all statement.
+   * The type admits no fourth kind, but this decides what is destroyed, and the
+   * direction an unforeseen value falls has to be holding.
+   */
+  private candidates(
+    lane: SyncLaneRetention,
+    cutoff: number,
+    limit: number,
+  ): { id: string; bytes: number }[] {
+    const rows =
+      lane.kind === 'sweep'
+        ? this.candidatesStmt.all({ cutoff, limit })
+        : lane.kind === 'hold-keys'
+          ? this.candidatesScopedStmt.all({ cutoff, limit, scopeKeys: JSON.stringify(lane.keys) })
+          : this.candidatesSyncSafeStmt.all({ cutoff, limit });
+    return rows as { id: string; bytes: number }[];
+  }
+
+  private countHeldBySync(lane: SyncLaneRetention, cutoff: number): number {
+    if (lane.kind === 'sweep') return 0;
+    const row = (
+      lane.kind === 'hold-keys'
+        ? this.heldByScopeStmt.get({ cutoff, scopeKeys: JSON.stringify(lane.keys) })
+        : this.heldBySyncStmt.get({ cutoff })
+    ) as { n: number };
     return row.n;
   }
+}
+
+/** The caller's lane decision, with the two-state spellings read as their kinds. */
+function laneOf(gate: boolean | SyncLaneRetention): SyncLaneRetention {
+  if (gate === true) return SWEEP;
+  if (gate === false) return HOLD_ALL;
+  return gate;
 }

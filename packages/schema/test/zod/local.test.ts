@@ -22,6 +22,7 @@ import {
   resolveScope,
   scopeFilterOf,
   scopeVerdict,
+  syncLaneRetentionOf,
   toCaptureAttributes,
   toEventRow,
   toFindingRow,
@@ -1184,4 +1185,147 @@ describe('resolveScope extra entries — merged in memory, never persisted', () 
     expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
     expect(parseAttachmentScope(stored)?.entries[0]).not.toHaveProperty('source');
   });
+});
+
+describe('syncLaneRetentionOf', () => {
+  const connection = { endpoint: ENDPOINT, attachedAt: ISO };
+  const ALPHA = 'github.com/acme/alpha';
+  const ZETA = 'github.com/acme/zeta';
+  const entry = (identity: string): AttachmentScopeEntry => ({
+    kind: 'repo',
+    identity,
+    enrolledAt: ISO,
+  });
+  const attached = (attachmentScope?: unknown): WorkspaceSettings => ({
+    ...defaultWorkspaceSettings(),
+    runMode: 'attached',
+    controlPlane: connection,
+    ...(attachmentScope === undefined ? {} : { attachmentScope }),
+  });
+  const scopedFor = (
+    settings: WorkspaceSettings,
+    extra?: readonly AttachmentScopeEntry[],
+  ): ResolvedAttachmentScope =>
+    resolveScope(
+      {
+        mode: 'scoped',
+        scope: settings.attachmentScope,
+        endpoint: settings.controlPlane?.endpoint,
+      },
+      extra,
+    );
+  const throwingKeys = (): ResolvedAttachmentScope => ({
+    mode: 'scoped',
+    get keys(): ReadonlySet<string> {
+      throw new Error('scope could not be resolved');
+    },
+  });
+
+  it('sweeps a machine that has never attached and never granted', () => {
+    expect(syncLaneRetentionOf(defaultWorkspaceSettings(), undefined)).toEqual({ kind: 'sweep' });
+  });
+
+  it('holds only the enrolled keys, sorted, on a scoped attachment with a whole record', () => {
+    const settings = attached({ endpoint: ENDPOINT, entries: [entry(ZETA), entry(ALPHA)] });
+    expect(syncLaneRetentionOf(settings, scopedFor(settings))).toEqual({
+      kind: 'hold-keys',
+      keys: [ALPHA, ZETA],
+    });
+  });
+
+  it('holds nothing on the lane when a valid record enrolls nothing', () => {
+    // Attached in scoped mode with nothing enrolled: no body on the lane is
+    // owed, so they age out as a standalone machine's do, and enrolling later
+    // backfills what is still on disk.
+    const settings = attached({ endpoint: ENDPOINT, entries: [] });
+    expect(syncLaneRetentionOf(settings, scopedFor(settings))).toEqual({
+      kind: 'hold-keys',
+      keys: [],
+    });
+  });
+
+  it('holds the in-memory extra entries as well as the persisted ones', () => {
+    const settings = attached({ endpoint: ENDPOINT, entries: [entry(ZETA)] });
+    expect(syncLaneRetentionOf(settings, scopedFor(settings, [entry(ALPHA)]))).toEqual({
+      kind: 'hold-keys',
+      keys: [ALPHA, ZETA],
+    });
+  });
+
+  // Every input retention cannot trust. Each must hold every unsynced body:
+  // here the safe direction is keeping data, the opposite of the forwarding
+  // verdict's.
+  const valid = attached({ endpoint: ENDPOINT, entries: [entry(ALPHA)] });
+  const HOLD_ALL_CASES: [string, WorkspaceSettings, ResolvedAttachmentScope | undefined][] = [
+    ['an attachment whose credential could not be read', valid, undefined],
+    ['a machine attachment', valid, { mode: 'machine', keys: new Set<string>() }],
+    [
+      'a scoped attachment with no scope record, as an older writer leaves it',
+      attached(),
+      { mode: 'scoped', keys: new Set([ALPHA]) },
+    ],
+    [
+      'a scope record that is not an object',
+      attached('enrolled'),
+      { mode: 'scoped', keys: new Set([ALPHA]) },
+    ],
+    [
+      'a scope record for another deployment',
+      attached({ endpoint: 'https://other.example', entries: [entry(ALPHA)] }),
+      { mode: 'scoped', keys: new Set([ALPHA]) },
+    ],
+    [
+      'a record that lost an entry to validation',
+      attached({
+        endpoint: ENDPOINT,
+        entries: [entry(ALPHA), { kind: 'org', identity: ZETA, enrolledAt: ISO }],
+      }),
+      { mode: 'scoped', keys: new Set([ALPHA]) },
+    ],
+    [
+      'a resolved key set that misses an enrolled identity, as a failed resolve returns',
+      valid,
+      { mode: 'scoped', keys: new Set<string>() },
+    ],
+    [
+      'half an attachment',
+      { ...defaultWorkspaceSettings(), runMode: 'attached' },
+      { mode: 'scoped', keys: new Set([ALPHA]) },
+    ],
+    [
+      'a detached machine still holding a history-sync grant',
+      { ...defaultWorkspaceSettings(), historySyncConsent: consent(HISTORY_SYNC_PAYLOAD_VERSION) },
+      undefined,
+    ],
+  ];
+
+  it.each(HOLD_ALL_CASES)('holds every unsynced body for %s', (_label, settings, resolved) => {
+    expect(syncLaneRetentionOf(settings, resolved)).toEqual({ kind: 'hold-all' });
+  });
+
+  it('holds every unsynced body when the settings throw as they are read', () => {
+    const unreadable = new Proxy(defaultWorkspaceSettings(), {
+      get() {
+        throw new Error('settings could not be read');
+      },
+    });
+    expect(syncLaneRetentionOf(unreadable, { mode: 'scoped', keys: new Set([ALPHA]) })).toEqual({
+      kind: 'hold-all',
+    });
+  });
+
+  // Both shapes of record. With one entry, the coverage check is the first
+  // read of the keys; with none, that check reads nothing and the key list
+  // itself is the first read. A throw from either must reach the hold-all.
+  const THROWING_BESIDE: [string, WorkspaceSettings][] = [
+    ['a record that enrolls one repository', valid],
+    ['a record that enrolls nothing', attached({ endpoint: ENDPOINT, entries: [] })],
+  ];
+
+  it.each(THROWING_BESIDE)(
+    'holds every unsynced body when the resolved scope throws, beside %s',
+    (_label, settings) => {
+      expect(syncLaneRetentionOf(settings, throwingKeys())).toEqual({ kind: 'hold-all' });
+    },
+  );
 });

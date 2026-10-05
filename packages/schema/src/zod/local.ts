@@ -699,6 +699,95 @@ export function canSweepSyncLane(settings: WorkspaceSettings): boolean {
 }
 
 /**
+ * What local body expiry may do to the SYNC LANE on this machine — the third
+ * answer `canSweepSyncLane`'s yes-or-no cannot give once an attachment can be
+ * scoped.
+ *
+ *   - `sweep`: nothing could make an unsynced sync-lane body owed, so it ages
+ *     out like any other body;
+ *   - `hold-all`: every unsynced sync-lane body could still be owed, so none is
+ *     expired;
+ *   - `hold-keys`: a scoped attachment owes only the unsynced bodies stamped
+ *     with one of `keys`, so those are held and every other one ages out. A body
+ *     with no key is in the second group, because nothing can ever forward it
+ *     from a scoped machine.
+ */
+export type SyncLaneRetention =
+  | { readonly kind: 'sweep' }
+  | { readonly kind: 'hold-all' }
+  | { readonly kind: 'hold-keys'; readonly keys: readonly string[] };
+
+/**
+ * The sync lane's retention, from the settings in force and the scope the
+ * credential's mode resolves to. `resolved` is undefined when the attachment's
+ * credential could not be read.
+ *
+ * FAIL-CLOSED TOWARD HOLDING — the opposite direction from the forwarding
+ * verdict, and that difference is why this is more than `scopeFilterOf`. An
+ * empty key set is the safe answer for forwarding, send nothing, and the
+ * destructive one here, hold nothing: the bodies of every enrolled repository
+ * would expire, unrecoverably, since the drain skips for ever a body it can no
+ * longer rebuild. `resolveScope` returns exactly that empty set when the scope
+ * record is unreadable or when it throws, and `scopeFilterOf` returns `[]` when
+ * the keys throw as they are read. So the record is checked here directly, the
+ * keys are read here directly, and every input this cannot trust holds
+ * everything:
+ *
+ *   - an attachment whose credential could not be read;
+ *   - a machine attachment, which owes every unsynced body;
+ *   - a scope record that is absent, not an object, or for another deployment —
+ *     an older settings writer strips the record, and that must not read as
+ *     'nothing enrolled';
+ *   - a record that lost an entry to validation, whose bodies may still be owed
+ *     once the record is repaired;
+ *   - a resolved key set that misses an identity the record names, or that
+ *     cannot be read;
+ *   - any throw.
+ *
+ * Only a whole, valid record for this deployment earns `hold-keys`. An empty
+ * one — attached in scoped mode, nothing enrolled yet — holds nothing on the
+ * lane, as a standalone machine would: nothing on it is owed, and enrolling a
+ * repository later backfills what is still on disk.
+ *
+ * `settings.controlPlane` is the EFFECTIVE descriptor, as every forward path
+ * reads it, so the record is bound to the endpoint the drain actually sends to.
+ */
+export function syncLaneRetentionOf(
+  settings: WorkspaceSettings,
+  resolved: ResolvedAttachmentScope | undefined,
+): SyncLaneRetention {
+  try {
+    if (canSweepSyncLane(settings)) return { kind: 'sweep' };
+    if (resolved?.mode !== 'scoped') return { kind: 'hold-all' };
+    const raw = settings.attachmentScope;
+    if (!isAttachmentScopeValid(raw, settings.controlPlane?.endpoint)) return { kind: 'hold-all' };
+    const persisted = parseAttachmentScope(raw);
+    if (persisted === undefined || !keptEveryEntry(raw, persisted)) return { kind: 'hold-all' };
+    if (persisted.entries.some((entry) => !resolved.keys.has(entry.identity))) {
+      return { kind: 'hold-all' };
+    }
+    // The list scopeFilterOf gives in scoped mode, read here rather than
+    // through it: scopeFilterOf answers a throw with `[]`, and a record that
+    // enrolls nothing never reached the keys above, so this read is the one a
+    // throwing key set has to fail into the catch.
+    return { kind: 'hold-keys', keys: [...resolved.keys].sort() };
+  } catch {
+    return { kind: 'hold-all' };
+  }
+}
+
+/** True when validation kept every entry the record on disk carries. */
+function keptEveryEntry(raw: unknown, parsed: AttachmentScope): boolean {
+  return (
+    typeof raw === 'object' &&
+    raw !== null &&
+    'entries' in raw &&
+    Array.isArray(raw.entries) &&
+    raw.entries.length === parsed.entries.length
+  );
+}
+
+/**
  * How the attached deployment should be named on screen: the administrator's
  * label if one was supplied, else the raw endpoint. One function so every
  * surface names it the same way.

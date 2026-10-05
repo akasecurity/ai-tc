@@ -4,7 +4,12 @@ import { pathToFileURL } from 'node:url';
 import type { RecordProjectEgressInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { hashProjectKey, toEgressIngestRequest } from '../src/egress-wire.ts';
+import {
+  canonicalRepoUrl,
+  hashProjectKey,
+  scopeKeyOfProjectKey,
+  toEgressIngestRequest,
+} from '../src/egress-wire.ts';
 import { resolvedHit as hit } from './helpers/egress-hits.ts';
 import { expectNoEchoOf } from './helpers/no-echo.ts';
 
@@ -233,6 +238,195 @@ describe('hashProjectKey — cross-device convergence', () => {
       .update('v2:git:github.com/acme/widgets', 'utf8')
       .digest('hex');
     expect(hashProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(expected);
+  });
+
+  // The exact string each branch of the canonicalization hands the digest,
+  // stated as a construction rather than inferred from two calls agreeing. It
+  // has to stay green across any change to how the parse is factored: a digest
+  // that moved would re-bucket every project on the receiving side, and nothing
+  // on either side could say which rule produced a given hash.
+  const DIGESTED_AS = [
+    ['scp form', `${gitUser}github.com:acme/widgets.git`, 'github.com/acme/widgets'],
+    [
+      'a capitalised host and a trailing slash',
+      'https://GitHub.com/acme/widgets/',
+      'github.com/acme/widgets',
+    ],
+    [
+      'ssh:// with a port',
+      `ssh://${gitUser}github.com:22/acme/widgets.git`,
+      'github.com/acme/widgets',
+    ],
+    ['path case', 'https://example.com/acme/Widgets', 'example.com/acme/Widgets'],
+    ['a subgroup path', 'https://gitlab.com/group/sub/project.git', 'gitlab.com/group/sub/project'],
+    ['a bare host', 'https://github.com', 'github.com'],
+    ['a POSIX path', '/Users/dev/demo', '/Users/dev/demo'],
+    ['a Windows path', 'D:/repos/demo.git', 'D:/repos/demo.git'],
+    ['an unrecognised remote, trimmed', '  some-local-remote-name  ', 'some-local-remote-name'],
+    ['an empty remote', '', ''],
+  ] as const;
+
+  it.each(DIGESTED_AS)('digests %s over exactly its canonical string', (_label, url, canonical) => {
+    const expected = createHash('sha256').update(`v2:git:${canonical}`, 'utf8').digest('hex');
+    expect(hashProjectKey(`git:${url}`)).toBe(expected);
+  });
+});
+
+// ─── canonicalRepoUrl: the scope key ───────────────────────────────────────
+
+describe('canonicalRepoUrl', () => {
+  // Every spelling one remote is really cloned under. A scope key is matched
+  // byte for byte against what a user enrolled, so two of these disagreeing
+  // would make one checkout of an enrolled repository forward while another
+  // stayed local.
+  const ONE_REMOTE = [
+    ['scp form with a capitalised host', `${gitUser}GitHub.com:org/repo.git`],
+    [
+      'https with userinfo, a port and a trailing slash',
+      `https://user${AT}github.com:443/org/repo/`,
+    ],
+    ['ssh:// form', `ssh://${gitUser}github.com/org/repo.git`],
+    ['https without .git', 'https://github.com/org/repo'],
+    ['surrounding whitespace', '  https://github.com/org/repo.git  '],
+  ] as const;
+
+  it.each(ONE_REMOTE)('reads %s as github.com/org/repo', (_label, url) => {
+    expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
+  });
+
+  it('keeps path case, so a differently-cased path is a different key', () => {
+    // The opposite of the host rule, for the reason canonicalGitUrl gives: a
+    // forge on a case-sensitive filesystem can host both, and merging them would
+    // forward one repository because the other was enrolled.
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).toBe('github.com/Org/Repo');
+    expect(canonicalRepoUrl('https://github.com/Org/Repo')).not.toBe(
+      canonicalRepoUrl('https://github.com/org/repo'),
+    );
+  });
+
+  it('drops userinfo, so a key never carries who cloned the repository', () => {
+    const key = canonicalRepoUrl(`https://${aliceUser}github.com/acme/widgets.git`);
+    expect(key).toBe('github.com/acme/widgets');
+    expect(key).not.toContain('alice');
+  });
+
+  it('agrees with the digest about the canonical form of a remote', () => {
+    // One parse behind both: for every remote that has a key, the digest of the
+    // remote is the digest of its key.
+    for (const [, url] of ONE_REMOTE) {
+      const expected = createHash('sha256')
+        .update(`v2:git:${canonicalRepoUrl(url) ?? ''}`, 'utf8')
+        .digest('hex');
+      expect(hashProjectKey(`git:${url}`)).toBe(expected);
+    }
+  });
+
+  it('still reads scp form against a host that is merely named file', () => {
+    // The positive control on the file:// cases below: the refusal is the `://`
+    // spelling, exactly as for the digest, not the word.
+    expect(canonicalRepoUrl('file:acme/widgets.git')).toBe('file/acme/widgets');
+  });
+
+  // A key must name a repository every clone shares. Each of these is a place on
+  // one machine, a forge rather than a repository, or nothing at all — and
+  // resolveRepoIdentity hands back a worktree PATH for a repository with no
+  // remote, so the path cases are real inputs, not hypotheticals.
+  const BACKSLASH = String.fromCharCode(92);
+  const NO_KEY: [string, string][] = [
+    ['a POSIX worktree path', '/Users/dev/demo'],
+    ['a relative path remote', '../sibling.git'],
+    ['a bare relative path', 'repos/demo'],
+    ['an unrecognised remote', 'some-local-remote-name'],
+    ['a canonical key, which is not itself a remote', 'github.com/acme/widgets'],
+    ['a Windows path', 'D:/repos/demo'],
+    ['a Windows path with backslashes', ['C:', 'Users', 'dev', 'demo'].join(BACKSLASH)],
+    ['a file:// URL', pathToFileURL('/srv/repos/demo').href],
+    ['a file:// URL with an authority', 'file://localhost/srv/repos/demo'],
+    ['an uppercase FILE:// URL', 'FILE:///srv/repos/demo'],
+    ['a bare host', 'https://github.com'],
+    ['a bare host with a slash', 'https://github.com/'],
+    ['a bare host whose path is only .git', 'https://github.com/.git'],
+    ['scp form with an empty path', `${gitUser}github.com:/`],
+    ['a host and port with no path', `ssh://${gitUser}github.com:22`],
+    ['an empty string', ''],
+    ['only whitespace', '   '],
+  ];
+
+  it.each(NO_KEY)('gives no key for %s', (_label, url) => {
+    expect(canonicalRepoUrl(url)).toBeUndefined();
+  });
+
+  // A key is meant to be stamped on each capture, compared against what a user
+  // enrolled and printed wherever a scope is listed — and the remote it comes
+  // from was written by whoever wrote the repository's git config. So a key is
+  // one a scope entry could hold, printable(512), or there is none. Every one of
+  // these parses as a remote; only its key is refused.
+  const BEL = String.fromCharCode(7);
+  const LF = String.fromCharCode(10);
+  const ESC = String.fromCharCode(27);
+  const DEL = String.fromCharCode(127);
+  // RIGHT-TO-LEFT OVERRIDE: a format character rather than a control one, which
+  // is why the rule names both.
+  const RLO = String.fromCodePoint(0x202e);
+  const UNPRINTABLE: [string, string][] = [
+    ['a path that takes its key past 512 characters', `https://github.com/acme/${'w'.repeat(600)}`],
+    ['a BEL in the path', `https://github.com/acme/wid${BEL}gets`],
+    ['an escape sequence in the path', `https://github.com/acme/${ESC}[2Kwidgets`],
+    // Both URL forms take any character but `/` and `:` as part of a host.
+    ['a newline in the host', `https://git${LF}hub.com/acme/widgets`],
+    ['a right-to-left override in the path', `https://github.com/acme/${RLO}stegdiw`],
+    ['a DEL in scp form', `${gitUser}github.com:acme/wid${DEL}gets.git`],
+  ];
+
+  it.each(UNPRINTABLE)('gives no key for %s', (_label, url) => {
+    expect(canonicalRepoUrl(url)).toBeUndefined();
+  });
+
+  it('caps the key at 512 characters, measured on the key', () => {
+    // `github.com/acme/` is 16 characters, so at(n) is a remote whose key is
+    // exactly n long.
+    const at = (n: number): string => `https://github.com/acme/${'w'.repeat(n - 16)}`;
+    expect(canonicalRepoUrl(at(512))).toHaveLength(512);
+    expect(canonicalRepoUrl(at(513))).toBeUndefined();
+  });
+
+  it('measures that cap on the key, not on the remote it came from', () => {
+    // Userinfo, a port, slash runs at either end of the path and surrounding
+    // whitespace are all gone before the key exists. A remote far past the cap
+    // can still name an ordinary repository, and must read as the same key as
+    // its short spelling, or two clones of one enrolled repository would split.
+    const slashes = '/'.repeat(600);
+    const padded = `  https://${'u'.repeat(600)}${AT}github.com:443${slashes}org/repo${slashes}  `;
+    expect(padded.length).toBeGreaterThan(1800);
+    expect(canonicalRepoUrl(padded)).toBe('github.com/org/repo');
+  });
+});
+
+// ─── scopeKeyOfProjectKey: the scan's pre-hash key ─────────────────────────
+
+describe('scopeKeyOfProjectKey', () => {
+  it('reads a git: key as the canonical repository of its remote', () => {
+    expect(scopeKeyOfProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(
+      'github.com/acme/widgets',
+    );
+    expect(scopeKeyOfProjectKey('git:https://GitHub.com/acme/widgets')).toBe(
+      'github.com/acme/widgets',
+    );
+  });
+
+  it.each([
+    ['a path: key', 'path:/Users/alice/code/widgets'],
+    ['the no-remote fallback, which keeps the git: prefix', 'git:/Users/dev/demo'],
+    ['the Windows no-remote fallback', 'git:C:/Users/dev/demo'],
+    ['a git: key naming a bare host', 'git:https://github.com'],
+    ['a bare git: prefix', 'git:'],
+    ['a remote with no prefix at all', 'https://github.com/acme/widgets'],
+    [
+      'a prefix in another case, which the digest does not read as git: either',
+      'GIT:https://github.com/acme/widgets',
+    ],
+  ])('gives no key for %s', (_label, key) => {
+    expect(scopeKeyOfProjectKey(key)).toBeUndefined();
   });
 });
 
@@ -489,6 +683,29 @@ describe('hashProjectKey — linear in the remote URL', () => {
     expect(hashProjectKey(`git:https://H.Example${run}`)).toBe(
       hashProjectKey(`git:https://h.example${run}.git`),
     );
+  });
+
+  it('refuses the same hostile remote as a scope key, inside the budget', () => {
+    // The key shares the digest's parse, so it shares the digest's exposure to a
+    // clone URL chosen by whoever wrote the repository's config — and the cap's
+    // own check may then run over the whole 100,000-character key before
+    // refusing it. Both have to stay linear.
+    const url = `https://h.example${slashRun(HOSTILE_LENGTH)}`;
+
+    const spent = fastest(() => canonicalRepoUrl(url));
+
+    expect(spent).toBeLessThan(BUDGET_MS);
+    // Its key is far past 512 characters, so there is none.
+    expect(canonicalRepoUrl(url)).toBeUndefined();
+  });
+
+  it('reads that shape as a real key below the cap, so the refusal above is the cap', () => {
+    // The positive control on the case above: the same middle slash run, short
+    // enough to leave a 412-character key, is parsed and canonicalized rather
+    // than declined.
+    const run = slashRun(400);
+    expect(canonicalRepoUrl(`https://h.example${run}`)).toBe(`h.example${run}`);
+    expect(canonicalRepoUrl(`https://H.Example${run}.git`)).toBe(`h.example${run}`);
   });
 
   it('would blow that budget on a fraction of the input, through the retired form', () => {

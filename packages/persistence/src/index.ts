@@ -24,7 +24,12 @@ export {
 } from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
-export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
+export {
+  canonicalRepoUrl,
+  hashProjectKey,
+  scopeKeyOfProjectKey,
+  toEgressIngestRequest,
+} from './egress-wire.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FileLockFailure, FileLockOptions } from './file-lock.ts';

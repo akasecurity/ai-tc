@@ -16,6 +16,7 @@ import type {
   RecordProjectEgressInput,
   ResolvedEgressHit,
 } from '@akasecurity/schema';
+import { printable } from '@akasecurity/schema';
 
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
@@ -97,6 +98,32 @@ function trimSlashes(path: string): string {
 }
 
 /**
+ * The two halves of a remote URL that every clone of one repository shares —
+ * the host, lowercased, and the path with its slash runs and a trailing `.git`
+ * removed — or `undefined` when the string is not a remote at all: a Windows
+ * drive path, a `file://` URL, or a shape neither form recognizes, which is
+ * where every POSIX path lands.
+ *
+ * ONE parse behind both readers of a remote, so the digest and the scope key
+ * cannot disagree about what a remote is. They differ only in what they make of
+ * the result. `canonicalGitUrl` passes a non-remote through, trimmed, as a
+ * stable identity for one machine's project, and digests every remote it gets.
+ * `canonicalRepoUrl` refuses a non-remote, and also a remote whose key would
+ * name no repository or could not be enrolled. The rules themselves are the
+ * ones `canonicalGitUrl` documents below.
+ */
+function parseGitRemote(url: string): { readonly host: string; readonly path: string } | undefined {
+  const trimmed = url.trim();
+  if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return undefined;
+  const scheme = SCHEME_FORM.exec(trimmed);
+  const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
+  const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
+  if (host === undefined) return undefined;
+  const bare = trimSlashes((scheme === null ? scp?.[2] : scheme[2]) ?? '');
+  return { host, path: bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare };
+}
+
+/**
  * One repository's remote URL reduced to the form every clone of it shares.
  *
  * The same repository is cloned four ways that produce four different strings —
@@ -133,16 +160,9 @@ function trimSlashes(path: string): string {
  * one machine rather than a remote every clone shares.
  */
 function canonicalGitUrl(url: string): string {
-  const trimmed = url.trim();
-  if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return trimmed;
-  const scheme = SCHEME_FORM.exec(trimmed);
-  const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
-  const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
-  if (host === undefined) return trimmed;
-  const path = (scheme === null ? scp?.[2] : scheme[2]) ?? '';
-  const bare = trimSlashes(path);
-  const cleaned = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
-  return cleaned === '' ? host : `${host}/${cleaned}`;
+  const remote = parseGitRemote(url);
+  if (remote === undefined) return url.trim();
+  return remote.path === '' ? remote.host : `${remote.host}/${remote.path}`;
 }
 
 /**
@@ -180,6 +200,73 @@ export function hashProjectKey(projectKey: string): string {
   return createHash('sha256')
     .update(`${PROJECT_KEY_DIGEST_VERSION}:${canonical}`, 'utf8')
     .digest('hex');
+}
+
+/**
+ * The shape every scope key has: the shape a scope entry's identity has, at
+ * most 512 characters and none of them a control or format character. Built
+ * once; `canonicalRepoUrl` checks each key it returns against it.
+ */
+const SCOPE_KEY = printable(512);
+
+/**
+ * A repository's identity as a scope key: `host/path`, the canonical form
+ * above, or `undefined` when the URL names no remote every clone shares.
+ *
+ * The digest and the key want OPPOSITE things from a value that is not a
+ * remote. The digest keeps it, trimmed, because a stable identity for one
+ * machine's project is still worth having. A scope key must not: it is matched
+ * against what a user enrolled, and every machine-local spelling — a POSIX or
+ * Windows worktree path, which is what a repository with no remote resolves to;
+ * a `file://` URL; a relative path remote — would let a repository with no
+ * shared identity be enrolled by where it happens to sit on one disk. Those are
+ * `undefined`, and scopeVerdict keeps an event with no key local on a scoped
+ * attachment.
+ *
+ * A host with no path is `undefined` too: `github.com` names a forge, not a
+ * repository, and enrolling it would enroll every repository on it.
+ *
+ * So is a key that is not printable: longer than 512 characters, or carrying a
+ * control or format character. Whoever wrote a repository's git config chose
+ * every byte of its remote, and a key is meant to be stamped on each capture,
+ * compared against what a user enrolled and printed wherever a scope is listed.
+ * The rule is `printable(512)`, the shape a scope entry's identity has, so every
+ * key returned here is one a user could enroll, and a key nobody could enroll
+ * is never handed on to be stored, compared or rendered. The check lives here
+ * rather than with each caller, so every producer of a key draws the line in
+ * the same place, however it found the remote. The digest has no such limit
+ * and keeps hashing whatever the parse produced.
+ *
+ * Path case is kept, for the reason `canonicalGitUrl` gives. Keys are compared
+ * byte-exact (scopeVerdict is a set lookup), so two producers that built one
+ * key differently would disagree about it.
+ *
+ * A canonical key is not itself a remote — `github.com/acme/widgets` has neither
+ * a scheme nor an scp colon — so it reads as `undefined` here. A caller holding a
+ * key a user typed validates it by its own rule rather than feeding it back
+ * through this.
+ */
+export function canonicalRepoUrl(url: string): string | undefined {
+  const remote = parseGitRemote(url);
+  if (remote === undefined || remote.path === '') return undefined;
+  const key = `${remote.host}/${remote.path}`;
+  return SCOPE_KEY.safeParse(key).success ? key : undefined;
+}
+
+/**
+ * The scope key of a scan's pre-hash `projectKey`: the canonical repository of a
+ * `git:` key's remote, and `undefined` for anything else.
+ *
+ * A `path:` key is a directory with no remote. So is a `git:` key whose suffix
+ * is a worktree path — both producers keep the `git:` prefix on the no-remote
+ * fallback — and `canonicalRepoUrl` refuses that suffix. The prefix match is
+ * case-sensitive, exactly as `hashProjectKey`'s is, so the two never read one
+ * key two ways.
+ */
+export function scopeKeyOfProjectKey(projectKey: string): string | undefined {
+  return projectKey.startsWith('git:')
+    ? canonicalRepoUrl(projectKey.slice('git:'.length))
+    : undefined;
 }
 
 function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {

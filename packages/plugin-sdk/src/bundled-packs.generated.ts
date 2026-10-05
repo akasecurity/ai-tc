@@ -174,7 +174,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.1.0',
+    version: '0.2.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -286,7 +286,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.1.1',
+    version: '0.2.0',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,

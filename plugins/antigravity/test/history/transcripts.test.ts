@@ -508,6 +508,111 @@ describe('parseTranscriptToolCalls — exec_command and patch_apply pairs', () =
     ]);
   });
 
+  describe('an apply_patch names its files', () => {
+    const begin = (changes?: Record<string, unknown>): string =>
+      line({
+        timestamp: '2026-07-14T10:00:07.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'patch_apply_begin',
+          call_id: 'call-p',
+          turn_id: 'turn-2',
+          auto_approved: true,
+          ...(changes === undefined ? {} : { changes }),
+        },
+      });
+    const end = (changes?: Record<string, unknown>): string =>
+      line({
+        timestamp: '2026-07-14T10:00:08.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'patch_apply_end',
+          call_id: 'call-p',
+          turn_id: 'turn-2',
+          stdout: 'applied',
+          stderr: '',
+          success: true,
+          ...(changes === undefined ? {} : { changes }),
+        },
+      });
+    const update = { type: 'update' };
+
+    it('lists no file for a patch whose events carry no changes, rather than none at all', () => {
+      // `undefined` would read as "names nothing" and key the leaf by the cwd; a
+      // patch always names files, so unknown files must key nothing.
+      for (const jsonl of [
+        [SESSION_META, begin(), end()],
+        [SESSION_META, begin({}), end({})],
+      ]) {
+        const [call] = parseTranscriptToolCalls(jsonl.join('\n'));
+        expect(call?.toolName).toBe('apply_patch');
+        expect(call?.filePaths).toEqual([]);
+        expect(call?.target).toBeUndefined();
+      }
+    });
+
+    it('lists no file for an end event with no changes and no begin to read them from', () => {
+      const [call] = parseTranscriptToolCalls([SESSION_META, end()].join('\n'));
+      expect(call?.toolName).toBe('apply_patch');
+      expect(call?.filePaths).toEqual([]);
+    });
+
+    it("reads the files from the end event's own changes when there is no begin", () => {
+      const [call] = parseTranscriptToolCalls(
+        [SESSION_META, end({ '/home/me/proj/a.txt': update })].join('\n'),
+      );
+      expect(call?.filePaths).toEqual(['/home/me/proj/a.txt']);
+      // The recorded target still follows the begin event alone.
+      expect(call?.target).toBeUndefined();
+    });
+
+    it("reads the end event's changes when its begin named none", () => {
+      const [call] = parseTranscriptToolCalls(
+        [SESSION_META, begin(), end({ '/home/me/proj/a.txt': update })].join('\n'),
+      );
+      expect(call?.filePaths).toEqual(['/home/me/proj/a.txt']);
+      expect(call?.target).toBeUndefined();
+    });
+
+    it('lists every file either event names, begin first, each once', () => {
+      const [call] = parseTranscriptToolCalls(
+        [
+          SESSION_META,
+          begin({ '/home/me/proj/a.txt': update, '/home/me/proj/b.txt': update }),
+          end({ '/home/me/proj/b.txt': update, '/home/me/other/c.txt': update }),
+        ].join('\n'),
+      );
+      expect(call?.filePaths).toEqual([
+        '/home/me/proj/a.txt',
+        '/home/me/proj/b.txt',
+        '/home/me/other/c.txt',
+      ]);
+      expect(call?.target).toBe('/home/me/proj/a.txt, /home/me/proj/b.txt');
+    });
+
+    it('leaves a shell call with no file list', () => {
+      const [call] = parseTranscriptToolCalls(
+        [
+          SESSION_META,
+          line({
+            timestamp: '2026-07-14T10:00:05.000Z',
+            type: 'event_msg',
+            payload: {
+              type: 'exec_command_end',
+              call_id: 'call-s',
+              command: ['ls'],
+              parsed_cmd: [],
+              aggregated_output: '',
+              exit_code: 0,
+            },
+          }),
+        ].join('\n'),
+      );
+      expect(call?.toolName).toBe('shell');
+      expect(call?.filePaths).toBeUndefined();
+    });
+  });
+
   it('drops calls before session_meta has been seen (unattributable)', () => {
     const jsonl = line({
       timestamp: '2026-07-14T10:00:06.000Z',

@@ -625,6 +625,7 @@ describe('scope keys — the root from its project, every leaf from where it ran
   const AT = String.fromCharCode(64);
   const gitUser = `git${AT}`;
   const WORK_KEY = 'github.com/acme/work';
+  const PERSONAL_KEY = 'github.com/me/personal';
   let dataDir: string;
   let transcripts: string;
   let workRepo: string;
@@ -825,6 +826,128 @@ describe('scope keys — the root from its project, every leaf from where it ran
     expect(leaf.get('patch-in-work')).toBe(WORK_KEY);
     expect(leaf.get('patch-mixed')).toBeNull();
     expect(leaf.get('call-in-scratch')).toBeNull();
+  });
+
+  // One apply_patch call whose events carry the given file lists. A member that
+  // is absent leaves that event out altogether; a member with no `changes` is an
+  // event that names no file.
+  function patchEvents(
+    callId: string,
+    beginTs: string,
+    endTs: string,
+    events: { begin?: { changes?: string[] }; end?: { changes?: string[] } },
+  ): string[] {
+    const named = (paths: string[] | undefined): Record<string, unknown> =>
+      paths === undefined
+        ? {}
+        : { changes: Object.fromEntries(paths.map((path) => [path, { type: 'update' }])) };
+    const out: string[] = [];
+    if (events.begin !== undefined) {
+      out.push(
+        line({
+          timestamp: beginTs,
+          type: 'event_msg',
+          payload: {
+            type: 'patch_apply_begin',
+            call_id: callId,
+            auto_approved: true,
+            ...named(events.begin.changes),
+          },
+        }),
+      );
+    }
+    if (events.end !== undefined) {
+      out.push(
+        line({
+          timestamp: endTs,
+          type: 'event_msg',
+          payload: {
+            type: 'patch_apply_end',
+            call_id: callId,
+            stdout: 'applied',
+            stderr: '',
+            success: true,
+            ...named(events.end.changes),
+          },
+        }),
+      );
+    }
+    return out;
+  }
+
+  it('keys a patch by the files its events name, and a patch with no parsed files by nothing', async () => {
+    seed(
+      transcripts,
+      [
+        line({
+          timestamp: '2026-06-20T10:00:00.000Z',
+          type: 'session_meta',
+          payload: { session_id: SESSION, cwd: workRepo, cli_version: '0.140.0' },
+        }),
+        line({
+          timestamp: '2026-06-20T10:00:01.000Z',
+          type: 'turn_context',
+          payload: { turn_id: 'turn-1', cwd: workRepo, model: 'gemini-3-pro' },
+        }),
+        tokenCount('2026-06-20T10:00:04.000Z', { input: 100, output: 50 }),
+        // A patch always names files, so one whose events name none has unknown
+        // files and carries no key: not the key of the directory it ran from.
+        ...patchEvents(
+          'patch-begin-empty',
+          '2026-06-20T10:00:05.000Z',
+          '2026-06-20T10:00:06.000Z',
+          {
+            begin: {},
+            end: {},
+          },
+        ),
+        // A lone end event that names no file.
+        ...patchEvents('patch-end-empty', '2026-06-20T10:00:07.000Z', '2026-06-20T10:00:08.000Z', {
+          end: {},
+        }),
+        // A lone end event reads its files from its own changes, and keys by
+        // their repository, which is not the cwd's.
+        ...patchEvents(
+          'patch-end-personal',
+          '2026-06-20T10:00:09.000Z',
+          '2026-06-20T10:00:10.000Z',
+          {
+            end: { changes: [join(personalRepo, 'e.ts')] },
+          },
+        ),
+        // A begin that named none, with an end that does.
+        ...patchEvents(
+          'patch-late-personal',
+          '2026-06-20T10:00:11.000Z',
+          '2026-06-20T10:00:12.000Z',
+          {
+            begin: {},
+            end: { changes: [join(personalRepo, 'f.ts')] },
+          },
+        ),
+        // A begin and an end that disagree about which repository the patch touched:
+        // every file counts, so no single repository covers it.
+        ...patchEvents('patch-disagree', '2026-06-20T10:00:13.000Z', '2026-06-20T10:00:14.000Z', {
+          begin: { changes: [join(workRepo, 'g.ts')] },
+          end: { changes: [join(personalRepo, 'h.ts')] },
+        }),
+        // The control: a patch that names a file in the work checkout.
+        ...patchEvents('patch-work', '2026-06-20T10:00:15.000Z', '2026-06-20T10:00:16.000Z', {
+          begin: { changes: [join(workRepo, 'i.ts')] },
+          end: { changes: [join(workRepo, 'i.ts')] },
+        }),
+      ].join('\n'),
+    );
+
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    const { leaf } = keys(dataDir);
+    expect(leaf.get('patch-begin-empty')).toBeNull();
+    expect(leaf.get('patch-end-empty')).toBeNull();
+    expect(leaf.get('patch-end-personal')).toBe(PERSONAL_KEY);
+    expect(leaf.get('patch-late-personal')).toBe(PERSONAL_KEY);
+    expect(leaf.get('patch-disagree')).toBeNull();
+    expect(leaf.get('patch-work')).toBe(WORK_KEY);
   });
 
   it('a second pass stamps every row exactly as the first did', async () => {

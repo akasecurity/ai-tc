@@ -200,8 +200,8 @@ export async function reconcileSessionToolCalls(
     // Same chunk-boundary seed fallback as reconcileSession's llm_call pass.
     const runKey = tc.runKey ?? opts.seedPromptId;
     if (runKey !== undefined) attributes.run_key = runKey;
-    // See toolCallScopeKey: a patch by its files' repository, a shell call by
-    // its own cwd.
+    // See toolCallScopeKey: a patch by its files' repository (and by nothing when
+    // its events name no file), a shell call by its own cwd.
     const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
     if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {

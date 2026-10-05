@@ -418,9 +418,11 @@ export interface ToolCallRecord {
   // undefined on a tail chunk that names no directory. The leaf then carries
   // no key, never its session root's.
   cwd: string | undefined;
-  // The paths a patch changed (its `changes` keys); undefined for a shell call
-  // and for a patch that names none. The reconciler keys a patch by these
-  // files' repository, because its target lists them.
+  // The paths a patch changed: the `changes` keys of its begin event and of its
+  // end event, each file once. undefined for a shell call. A patch always names
+  // files, so an apply_patch whose events name none carries an EMPTY list, which
+  // keys nothing, never undefined, which would key it by its cwd. The reconciler
+  // keys a patch by these files' repository.
   filePaths: readonly string[] | undefined;
   occurredAt: string;
   inputSize: number | undefined;
@@ -547,7 +549,7 @@ export function parseTranscriptToolCalls(
         toolName: 'apply_patch',
         runKey: optString(payload.turn_id) ?? runKey,
         cwd,
-        filePaths: changes.length > 0 ? changes : undefined,
+        filePaths: changes,
         occurredAt,
         target: changes.length > 0 ? changes.join(', ') : undefined,
       });
@@ -557,13 +559,18 @@ export function parseTranscriptToolCalls(
       const callId = optString(payload.call_id);
       if (callId === undefined || sessionIdBySessionMeta.current === undefined) continue;
       const begin = begins.get(callId);
+      // The files come from both events: a begin that carries none, or no begin
+      // at all (a tail chunk that starts mid-patch), still has the end event's
+      // own list. A file either event names counts, so a patch whose two events
+      // disagree is covered by no single repository.
+      const endChanges = isRecord(payload.changes) ? Object.keys(payload.changes) : [];
       out.push({
         sessionId: sessionIdBySessionMeta.current,
         toolUseId: callId,
         toolName: 'apply_patch',
         runKey: begin?.runKey ?? optString(payload.turn_id) ?? runKey,
         cwd: begin?.cwd ?? cwd,
-        filePaths: begin?.filePaths,
+        filePaths: [...new Set([...(begin?.filePaths ?? []), ...endChanges])],
         occurredAt: begin?.occurredAt ?? occurredAt,
         inputSize: begin?.target !== undefined ? begin.target.length : undefined,
         isError: typeof payload.success === 'boolean' ? !payload.success : undefined,

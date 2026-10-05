@@ -332,6 +332,108 @@ describe('a capture that names a relative file is keyed by where the file resolv
   });
 });
 
+describe('a PostToolUse call that names a notebook is keyed by where the notebook is', () => {
+  // An MCP tool may name its target in `notebook_path`, as NotebookEdit does at
+  // PreToolUse. The response site reads it for the key the same way, absolute or
+  // relative to the session cwd, and still stamps no file path on the event: the
+  // metadata is a wire shape and PostToolUse has only ever stamped `file_path`.
+  function notebookCall(cwd: string, toolInput: Record<string, unknown>): Record<string, unknown> {
+    return {
+      tool_name: 'mcp__notebooks__run_cell',
+      tool_input: toolInput,
+      tool_response: `TWILIO_KEY=${SECRET}`,
+      session_id: SESSION_ID,
+      cwd,
+      hook_event_name: 'PostToolUse',
+    };
+  }
+
+  function filePathColumn(home: string): (string | null)[] {
+    const db = new DatabaseSync(join(home, '.aka', 'data', 'aka.db'), { readOnly: true });
+    try {
+      const rows = db
+        .prepare("SELECT file_path AS filePath FROM audit_events WHERE event_type = 'response'")
+        .all() as { filePath: string | null }[];
+      return rows.map((row) => row.filePath);
+    } finally {
+      db.close();
+    }
+  }
+
+  it.each([
+    [
+      'an absolute notebook_path in a second checkout',
+      (home: string) => ({
+        notebook_path: join(checkout(home, PERSONAL_REMOTE, 'personal'), 'n.ipynb'),
+      }),
+      PERSONAL_KEY,
+    ],
+    [
+      'a relative notebook_path escaping into a second checkout',
+      (home: string) => {
+        checkout(home, PERSONAL_REMOTE, 'personal');
+        return { notebook_path: join('..', 'personal', 'n.ipynb') };
+      },
+      PERSONAL_KEY,
+    ],
+    [
+      'an absolute notebook_path outside any checkout',
+      (home: string) => {
+        mkdirSync(join(home, 'loose'), { recursive: true });
+        return { notebook_path: join(home, 'loose', 'n.ipynb') };
+      },
+      null,
+    ],
+    [
+      'a relative notebook_path escaping into no checkout',
+      (home: string) => {
+        mkdirSync(join(home, 'loose'), { recursive: true });
+        return { notebook_path: join('..', 'loose', 'n.ipynb') };
+      },
+      null,
+    ],
+    [
+      'a relative notebook_path inside the cwd checkout',
+      () => ({ notebook_path: join('nb', 'n.ipynb') }),
+      WORK_KEY,
+    ],
+  ])('%s', (_label, toolInput, expectedKey) => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      const payload = notebookCall(cwd, toolInput(home));
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: hookEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEvery(fileCapturedRows(home), {
+        kind: 'response',
+        scopeKey: expectedKey,
+        repo: 'work-repo',
+      });
+      // The key moved; the published metadata did not.
+      expect(filePathColumn(home)).toEqual([null]);
+    }, 'aka-scope-key-notebook-');
+  });
+
+  it('file_path wins when a call names both, as at PreToolUse', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const cwd = checkout(home, WORK_REMOTE);
+      const personal = checkout(home, PERSONAL_REMOTE, 'personal');
+      const payload = notebookCall(cwd, {
+        file_path: join(personal, 'a.md'),
+        notebook_path: join(cwd, 'n.ipynb'),
+      });
+      const run = runHook('post-tool-use', JSON.stringify(payload), { env: hookEnv(home) });
+      expect(run.status, run.stderr).toBe(0);
+      expectEvery(fileCapturedRows(home), {
+        kind: 'response',
+        scopeKey: PERSONAL_KEY,
+        repo: 'work-repo',
+      });
+    }, 'aka-scope-key-notebook-both-');
+  });
+});
+
 describe('a Grep capture is keyed by the search root it names, else by the session cwd', () => {
   // Grep's `path` is the root it searches: a directory or one file. Its output
   // is what the response site records, so the key follows the root. The root

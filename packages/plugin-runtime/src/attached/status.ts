@@ -421,7 +421,11 @@ function postureLines(dataDir: string, nowMs: number): string[] {
 }
 
 /**
- * How often a hook has thrown and fallen open on this machine, if ever.
+ * How often a hook has fallen open on this machine, if ever: thrown out of its
+ * main(), or let part of a response through unscanned because the scan
+ * deadline or the response size bound cut it short. "failed open" is the right
+ * word for both — each is content the host received with no verdict on it —
+ * so the line does not split them, and the tally does not record which it was.
  *
  * A fail-open is silent by contract — no output, exit 0, the session never
  * notices — so a machine whose hooks throw on every call reads exactly like

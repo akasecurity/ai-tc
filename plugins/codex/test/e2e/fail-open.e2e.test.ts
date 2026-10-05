@@ -626,6 +626,12 @@ describe('post-tool-use counts a response the bounds cut short as a fail-open', 
   // RESPONSE_MAX_TOTAL_CHARS is 5,000,000. The secret sits on the last line,
   // so it is past the cap in the longer stdout and inside it in the shorter.
   // Filler lines keep every chunk cut on a newline.
+  //
+  // This is the integration check that the size bound counts a fail-open. The
+  // longer case's count is also what a scan-deadline cut would produce, so it
+  // cannot tell the two apart; the unit suite (test/hooks/tool-response.test.ts)
+  // pins the boundary itself, asserting collectResponseFields reports
+  // `truncated` for this same 5,000,050-character stdout and not for 4,999,000.
   const line = `build step ${'q'.repeat(88)}\n`;
   const stdoutOf = (length: number): string => {
     const tail = `TWILIO_KEY=${SECRET}\n`;

@@ -196,6 +196,24 @@ describe('collectResponseFields — truncation', () => {
     expect(fields.every((f) => f.path[0] === 'stdout')).toBe(true);
   });
 
+  // The unit half of the e2e size-bound case in test/e2e/fail-open.e2e.test.ts: the
+  // same stdout shape and lengths, so the hook's fail-open count there rests on
+  // this fact rather than on the scan deadline, which a 5,000,050-character
+  // response can also trip and would satisfy that assertion on its own.
+  it('is truncated for the e2e 5,000,050-character Bash stdout and not for 4,999,000', () => {
+    const line = `build step ${'q'.repeat(88)}\n`;
+    const stdoutOf = (length: number): string => {
+      const tail = 'last line\n';
+      const fill = line.repeat(Math.ceil(length / line.length)).slice(0, length - tail.length);
+      return fill + tail;
+    };
+    const response = (stdout: string): unknown => stdout;
+    const over = stdoutOf(5_000_050);
+    expect(over).toHaveLength(5_000_050);
+    expect(collectResponseFields('Bash', response(over)).truncated).toBe(true);
+    expect(collectResponseFields('Bash', response(stdoutOf(4_999_000))).truncated).toBe(false);
+  });
+
   it('is truncated past the capture cap and not at it', () => {
     const blocks = (n: number) => Array.from({ length: n }, () => ({ type: 'text', text: 'x' }));
     expect(collectResponseFields('mcp__s__t', blocks(RESPONSE_MAX_CAPTURES)).truncated).toBe(false);

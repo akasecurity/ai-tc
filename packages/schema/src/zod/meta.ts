@@ -347,6 +347,14 @@ export const CaptureAttributes = z
     // here too. The full statement is on EventMetadata.redactDegradedTo; it is
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
+    // The scope key this capture was stamped with: the canonical repository
+    // (`host/owner/repo`) of the file the capture names by absolute path, else
+    // of its own working directory, or a chat account's identity. The store's
+    // local `scope_key` column reads it, so a scoped attachment's forwarding can
+    // be decided per row. LOCAL ONLY: nothing that leaves the machine may carry
+    // it, which is why toCaptureAttributes, which builds this bag from a wire
+    // event, never maps it. Absent when no key could be derived.
+    scope_key: z.string().optional(),
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;

@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -12,7 +13,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ManagedSettings, SimpleDetectionPolicy } from '@akasecurity/schema';
-import { canSweepSyncLane, isAttached } from '@akasecurity/schema';
+import {
+  canSweepSyncLane,
+  isAttached,
+  isAttachmentScopeValid,
+  parseAttachmentScope,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyOnboarding, readEffectiveSettings, readWorkspaceSettings } from '../src/settings.ts';
@@ -402,4 +408,145 @@ describe('applyOnboarding (an attach under a pinned connection)', () => {
     );
     expect(canSweepSyncLane(readEffectiveSettings(base, null).settings)).toBe(true);
   });
+});
+
+describe('a garbled attachmentScope', () => {
+  // The scope record sits in the same file as the attachment it scopes, and the
+  // reader parses that file whole or falls back to unonboarded defaults. So one
+  // bad enrollment must cost that enrollment and nothing else: a record that
+  // took the file down with it would read as a machine that was never attached
+  // or onboarded, and the next save would write those defaults over it.
+  const ENDPOINT = 'https://plane.example.test';
+  const AT = '2026-09-01T00:00:00.000Z';
+  const WORK = 'github.com/acme/work';
+  const BEL = String.fromCharCode(7);
+  const ATTACHED = {
+    specVersion: 9,
+    runMode: 'attached',
+    controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+    historySyncConsent: { acknowledgedAt: AT, payloadVersion: 3, endpoint: ENDPOINT },
+    modelJudgeConsent: { acknowledgedAt: AT, payloadVersion: 1 },
+    vaultConsent: { acknowledgedAt: AT, version: 1 },
+    onboardedAt: AT,
+  } as const;
+  const good = { kind: 'repo', identity: WORK, enrolledAt: AT };
+
+  const ONE_BAD_ENTRY: [string, unknown][] = [
+    ['an unknown kind', { kind: 'org', identity: 'github.com/acme/other', enrolledAt: AT }],
+    [
+      'a control character in its label',
+      { kind: 'repo', identity: 'github.com/acme/other', label: `work${BEL}`, enrolledAt: AT },
+    ],
+    [
+      'a timestamp that is not one',
+      { kind: 'repo', identity: 'github.com/acme/other', enrolledAt: 'yesterday' },
+    ],
+  ];
+  const NOT_A_SCOPE: [string, unknown][] = [
+    ['a string', 'enrolled'],
+    ['an array', [good]],
+    ['entries that is not an array', { endpoint: ENDPOINT, entries: good }],
+    ['no endpoint', { entries: [good] }],
+  ];
+  const GARBLED: [string, unknown][] = [
+    ...ONE_BAD_ENTRY.map(([label, bad]): [string, unknown] => [
+      `an entry with ${label}`,
+      { endpoint: ENDPOINT, entries: [good, bad] },
+    ]),
+    ...NOT_A_SCOPE,
+  ];
+  // Wholly valid, and carrying keys this build does not know: what a newer build
+  // writes. The readers strip those keys, so a save that normalized the record
+  // through them, even only when it is valid, would erase what the newer build
+  // wrote. None of the rows above can tell that writer apart from a correct one:
+  // each holds something the readers drop, so it is never normalized.
+  const FUTURE_SHAPED: [string, unknown][] = [
+    [
+      'an entry with a key this build does not know',
+      { endpoint: ENDPOINT, entries: [{ ...good, futureKey: 1 }] },
+    ],
+    [
+      'a record with a key this build does not know',
+      { endpoint: ENDPOINT, entries: [good], futureKey: { nested: [1, 2] } },
+    ],
+    [
+      'unknown keys on the record and on every entry',
+      {
+        futureKey: 'record',
+        endpoint: ENDPOINT,
+        entries: [
+          { ...good, futureKey: 1 },
+          { ...good, identity: 'github.com/acme/app', other: [] },
+        ],
+      },
+    ],
+  ];
+
+  /** Every field the attachment and the onboarding are made of, as read back. */
+  function expectAttachmentIntact(): void {
+    const settings = readWorkspaceSettings(base);
+    expect(settings.runMode).toBe('attached');
+    expect(settings.controlPlane).toEqual(ATTACHED.controlPlane);
+    expect(settings.historySyncConsent).toEqual(ATTACHED.historySyncConsent);
+    expect(settings.modelJudgeConsent).toEqual(ATTACHED.modelJudgeConsent);
+    expect(settings.vaultConsent).toEqual(ATTACHED.vaultConsent);
+    expect(settings.onboardedAt).toBe(AT);
+  }
+
+  it.each(ONE_BAD_ENTRY)(
+    'drops an entry with %s by itself and keeps the rest of the file',
+    (_label, bad) => {
+      writeSettings({ ...ATTACHED, attachmentScope: { endpoint: ENDPOINT, entries: [good, bad] } });
+      expectAttachmentIntact();
+      const scope = parseAttachmentScope(readWorkspaceSettings(base).attachmentScope);
+      expect(scope?.entries.map((e) => e.identity)).toEqual([WORK]);
+    },
+  );
+
+  it.each(NOT_A_SCOPE)(
+    'reads %s as no valid scope, which means deny, and keeps the rest of the file',
+    (_label, scope) => {
+      writeSettings({ ...ATTACHED, attachmentScope: scope });
+      expectAttachmentIntact();
+      expect(isAttachmentScopeValid(readWorkspaceSettings(base).attachmentScope, ENDPOINT)).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each(FUTURE_SHAPED)(
+    'reads %s as a valid scope, unknown keys and all, and keeps the rest of the file',
+    (_label, scope) => {
+      // Pins what makes these rows the ones they are: if the reader refused them
+      // they would be one more garbled record, and the save case below would
+      // stop testing a writer that normalizes only what it can fully read.
+      writeSettings({ ...ATTACHED, attachmentScope: scope });
+      expectAttachmentIntact();
+      expect(isAttachmentScopeValid(readWorkspaceSettings(base).attachmentScope, ENDPOINT)).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([...GARBLED, ...FUTURE_SHAPED])(
+    'survives a save over %s, and so does the attachment',
+    (_label, scope) => {
+      writeSettings({ ...ATTACHED, attachmentScope: scope });
+      applyOnboarding({ policy: 'warn' }, base);
+
+      expectAttachmentIntact();
+      const after = readWorkspaceSettings(base);
+      expect(after.policy).toBe('warn');
+      // Left on disk as it was found: the save is not the place to repair, drop
+      // or normalize it. A garbled record kept verbatim still reads as invalid,
+      // i.e. deny, and a newer build's keys are still there for it to read.
+      expect(after.attachmentScope).toEqual(scope);
+      // And byte for byte, which `toEqual` is not: the stored text of the record
+      // is the text that was there, key order included.
+      const onDisk = JSON.parse(readFileSync(join(base, 'settings', 'settings.json'), 'utf8')) as {
+        attachmentScope?: unknown;
+      };
+      expect(JSON.stringify(onDisk.attachmentScope)).toBe(JSON.stringify(scope));
+    },
+  );
 });

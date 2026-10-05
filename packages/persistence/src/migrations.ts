@@ -208,6 +208,10 @@ export function applyMigrations(
   // the drop below has run (a VIEW never needs a column added to it — and
   // ALTER TABLE on one would throw), so there is no equivalent call for it.
   ensureSyncedAtColumn(db, 'audit_events');
+  // The scope key each row was stamped with, as a column a scoped attachment's
+  // reads can filter on — local-only forwarding state like the columns above,
+  // installed the same way. See ensureScopeKeyColumn.
+  ensureScopeKeyColumn(db);
   ensureScanLedgerTable(db);
   ensureHistorySyncTable(db);
   ensureBlockedDetectionsTable(db);
@@ -1209,6 +1213,80 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
     `CREATE INDEX IF NOT EXISTS idx_audit_claimed
        ON audit_events (sync_claimed_at) WHERE sync_claimed_at IS NOT NULL`,
   );
+}
+
+/**
+ * The scope key an event was stamped with at capture, read out of its attribute
+ * bag, as a column a scoped attachment's forwarding reads can filter on in SQL.
+ *
+ * WHY HERE AND NOT IN THE SCHEMA'S MIGRATIONS. The drizzle `audit_events` table
+ * is type-pinned to BaseAuditEventRow, the row contract the hosted store
+ * shares, so a column declared there becomes a column that store's table has to
+ * grow too. This one is forwarding state that never leaves the machine —
+ * exactly like `synced_at` and `outbox_owed` above — and it is installed the
+ * same way: idempotently, on every open, outside the drizzle history. It is not
+ * in the drizzle table, so a reader names it in raw SQL.
+ *
+ * VIRTUAL, like every attribute column on this table, so it stores nothing and
+ * the ALTER is a schema edit at any table size. No CHECK and no NOT NULL: either
+ * would make the ALTER validate every existing row on the hook's open path (the
+ * 23 seconds measured above for a CHECK). No index: none is justified by a
+ * measured plan yet.
+ *
+ * GUARDED WITH json_valid, which its siblings are not. json_extract throws
+ * `malformed JSON` on a bag that is not JSON, and an unguarded expression
+ * carries that throw into every statement that evaluates the column over the
+ * damaged row. A read that filters on the column evaluates it for every
+ * candidate row, so one such row would fail that read on every pass rather than
+ * stay local. Guarded, it reads NULL: the row has no key, which no enrolled
+ * scope can match, even when the damaged text still spells an enrolled key.
+ * json_valid with no flags accepts strict JSON text only, so a bag json_extract
+ * would read as JSON5 reads NULL here too; nothing in this tree writes JSON5.
+ *
+ * Such a row cannot be WRITTEN on today's table. SQLite computes every
+ * generated column on INSERT and on any UPDATE, and the sibling json_extract
+ * columns refuse a malformed bag there. What reaches this column damaged is a
+ * bag already on disk when the column arrives — ADD COLUMN validates no
+ * existing row — or one altered below SQLite. That is rare, and a read must
+ * still not wedge on it. The guard adds one call per row a read evaluates: a
+ * full scan filtering on the column over 200k in-memory rows measured 10-15%
+ * slower than the unguarded form.
+ */
+export const SCOPE_KEY_COLUMN_DDL =
+  "ALTER TABLE audit_events ADD COLUMN scope_key text GENERATED ALWAYS AS (CASE WHEN json_valid(attributes) THEN json_extract(attributes, '$.scope_key') END) VIRTUAL";
+
+/**
+ * Install `scope_key` if this store lacks it.
+ *
+ * Probed with table_xinfo, never table_info: table_info omits generated columns,
+ * so a guard copied from ensureSyncedAtColumn would re-run the ALTER on every
+ * open and fail on `duplicate column name`. Also probes the TABLE first, for the
+ * reason ensureTokenUsageColumns gives.
+ *
+ * CHECKED TWICE, the second time under an IMMEDIATE transaction. Every store
+ * that predates this column gains it on its first open after an upgrade, and a
+ * session start opens the store from several processes at once: two that both
+ * saw it absent would both ALTER, and the loser's `duplicate column name` would
+ * fail that hook's whole open. The first check keeps the ordinary case — the
+ * column already there — free of a write lock on every open; the second is the
+ * one a concurrent opener cannot race, because it runs holding the lock the
+ * winner's ALTER needed. withTransaction rather than a bare BEGIN, for the
+ * reason the sync_failure ALTER above gives.
+ */
+export function ensureScopeKeyColumn(db: DatabaseSync): void {
+  if (!schemaObjectExists(db, 'table', 'audit_events')) return;
+  if (hasScopeKeyColumn(db)) return;
+  withTransaction(
+    db,
+    () => {
+      if (!hasScopeKeyColumn(db)) db.exec(SCOPE_KEY_COLUMN_DDL);
+    },
+    'IMMEDIATE',
+  );
+}
+
+function hasScopeKeyColumn(db: DatabaseSync): boolean {
+  return columnNames(db, 'audit_events', { includeGenerated: true }).includes('scope_key');
 }
 
 // Worktree-scan bookkeeping: which files the scanner has already run under which

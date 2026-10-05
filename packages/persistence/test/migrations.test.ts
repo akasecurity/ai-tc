@@ -13,10 +13,12 @@ import {
 import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
 import {
   applyMigrations,
+  ensureScopeKeyColumn,
   LEGACY_BACKFILL_BATCH_SIZE,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
   runLegacyHistoryBackfill,
+  SCOPE_KEY_COLUMN_DDL,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
 import { SYNC_FAILURE_REASONS } from '../src/sync-failure.ts';
@@ -610,6 +612,259 @@ describe('applyMigrations token-usage backfill', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+// ─── The local scope_key column ──────────────────────────────────────────────
+
+describe('the local scope_key column', () => {
+  // table_xinfo, never table_info: a generated column is invisible to the latter.
+  const scopeKeyColumns = (db: DatabaseSync): string[] =>
+    columnNames(db, 'audit_events', { includeGenerated: true }).filter((n) => n === 'scope_key');
+
+  it('is a VIRTUAL generated column on a fresh store, which table_info cannot see', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const column = (
+        db.prepare('PRAGMA table_xinfo(audit_events)').all() as { name: string; hidden: number }[]
+      ).find((c) => c.name === 'scope_key');
+      // table_xinfo reports a VIRTUAL generated column as hidden = 2 and a STORED
+      // one as 3. VIRTUAL is what keeps the ALTER a schema edit at any table
+      // size: there is nothing to write into the rows already there.
+      expect(column?.hidden).toBe(2);
+      // The trap every guard on this column has to avoid.
+      expect(columnNames(db, 'audit_events')).not.toContain('scope_key');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is installed once: a second open neither throws nor adds it again', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      // A guard probing table_info would re-run the ALTER here and throw
+      // `duplicate column name`.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(scopeKeyColumns(db)).toEqual(['scope_key']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reads attributes.scope_key back, and NULL for a row without one', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const insert = db.prepare(
+        'INSERT INTO audit_events (id, event_type, started_at, attributes) VALUES (?, ?, ?, ?)',
+      );
+      insert.run(
+        'keyed',
+        'prompt',
+        1,
+        JSON.stringify({ repo: 'acme/work', scope_key: 'github.com/acme/work' }),
+      );
+      insert.run('unkeyed', 'prompt', 2, JSON.stringify({ repo: 'acme/app' }));
+      // A stub session root carries no attribute bag at all.
+      insert.run('stub-root', 'session', 3, null);
+
+      expect(
+        db.prepare('SELECT id, scope_key FROM audit_events ORDER BY started_at').all(),
+      ).toEqual([
+        { id: 'keyed', scope_key: 'github.com/acme/work' },
+        { id: 'unkeyed', scope_key: null },
+        { id: 'stub-root', scope_key: null },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reaches a store migrated before the column existed, and reads its old rows', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      db.prepare(
+        'INSERT INTO audit_events (id, event_type, started_at, attributes) VALUES (?, ?, ?, ?)',
+      ).run('old', 'prompt', 1, JSON.stringify({ scope_key: 'github.com/acme/work' }));
+      // Walked back rather than hand-built, as the delivery-failure cases below
+      // do: a hand-written old schema would drift from what those stores hold.
+      db.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
+      expect(scopeKeyColumns(db)).toEqual([]);
+
+      applyMigrations(db);
+
+      expect(scopeKeyColumns(db)).toEqual(['scope_key']);
+      expect(db.prepare('SELECT scope_key FROM audit_events WHERE id = ?').get('old')).toEqual({
+        scope_key: 'github.com/acme/work',
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reads NULL for a bag that is not JSON, and a read over the column does not throw', () => {
+    // A migrated store cannot be handed this row. SQLite computes every generated
+    // column on INSERT and on any UPDATE, so the sibling json_extract columns
+    // refuse a malformed bag at the write. The damaged bag that does reach this
+    // column is one already on disk when the column arrives — ADD COLUMN
+    // validates no existing row — so that is the store built here: the row first,
+    // in a table without the column, then the install.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('CREATE TABLE audit_events (id text PRIMARY KEY NOT NULL, attributes text)');
+      const insert = db.prepare('INSERT INTO audit_events (id, attributes) VALUES (?, ?)');
+      // Truncated mid-write, and still spelling an enrolled key: the column must
+      // not read a key out of it.
+      insert.run('damaged', '{"scope_key": "github.com/acme/work"');
+      insert.run('keyed', JSON.stringify({ scope_key: 'github.com/acme/work' }));
+
+      ensureScopeKeyColumn(db);
+
+      // Unguarded, json_extract throws `malformed JSON` here, from every
+      // statement that evaluates the column over the damaged row.
+      expect(db.prepare('SELECT id, scope_key FROM audit_events ORDER BY id').all()).toEqual([
+        { id: 'damaged', scope_key: null },
+        { id: 'keyed', scope_key: 'github.com/acme/work' },
+      ]);
+      // The shape a scoped read filters with: the damaged row is simply not in
+      // scope.
+      expect(
+        db
+          .prepare(
+            'SELECT id FROM audit_events WHERE scope_key IN (SELECT value FROM json_each(?))',
+          )
+          .all(JSON.stringify(['github.com/acme/work'])),
+      ).toEqual([{ id: 'keyed' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds nothing when another opener added it between the probe and the lock', () => {
+    // Simulated on one connection: the first table_xinfo probe answers from a
+    // store without the column, and the other opener's ALTER lands right after
+    // that answer — the window two hook processes can both fall into.
+    type HostMethod = (...args: unknown[]) => unknown;
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      db.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
+      const realPrepare = db.prepare.bind(db);
+      let raced = false;
+      Object.defineProperty(db, 'prepare', {
+        configurable: true,
+        value: (sql: string) => {
+          const stmt = realPrepare(sql);
+          if (raced || !sql.startsWith('PRAGMA table_xinfo')) return stmt;
+          return new Proxy(stmt, {
+            get(target, prop) {
+              const value: unknown = Reflect.get(target, prop, target);
+              if (typeof value !== 'function') return value;
+              if (prop !== 'all') return (value as HostMethod).bind(target);
+              return (...args: unknown[]): unknown => {
+                const rows = (value as HostMethod).apply(target, args);
+                raced = true;
+                db.exec(SCOPE_KEY_COLUMN_DDL);
+                return rows;
+              };
+            },
+          });
+        },
+      });
+      try {
+        expect(() => {
+          ensureScopeKeyColumn(db);
+        }).not.toThrow();
+      } finally {
+        Object.defineProperty(db, 'prepare', { configurable: true, value: realPrepare });
+      }
+      // Without this the case passes on an implementation that never probed.
+      expect(raced).toBe(true);
+      expect(scopeKeyColumns(db)).toEqual(['scope_key']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('holds the write lock while it re-checks, so another opener cannot add it in between', () => {
+    // The case above pins the second check. The lock mode is the other half of
+    // what keeps two openers from both adding the column, and one connection
+    // cannot show it: this takes two on one file, in WAL as the product opens it.
+    // WAL is what makes the modes differ. A writer there goes ahead of a reader's
+    // open snapshot, so a transaction that only began deferred would let the
+    // other opener's ALTER commit after its check and fail its own ALTER with
+    // `database is locked`. Taken IMMEDIATE, the lock is already held through
+    // the check, and the other opener's ALTER is the one refused.
+    //
+    // No sleeps and no waiting: busy_timeout is 0 on both, so a refused write
+    // fails at once, and the other opener's ALTER is issued from inside the
+    // opener's own re-check, so the interleaving is fixed rather than raced.
+    type HostMethod = (...args: unknown[]) => unknown;
+    withTempStore((store) => {
+      const opener = store.openRaw();
+      opener.exec('PRAGMA journal_mode = WAL');
+      opener.exec('PRAGMA busy_timeout = 0');
+      applyMigrations(opener);
+      opener.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
+      const other = store.openRaw();
+      other.exec('PRAGMA busy_timeout = 0');
+
+      const realPrepare = opener.prepare.bind(opener);
+      let interleaved = false;
+      let otherOutcome: string | undefined;
+      Object.defineProperty(opener, 'prepare', {
+        configurable: true,
+        value: (sql: string) => {
+          const stmt = realPrepare(sql);
+          if (interleaved || !sql.startsWith('PRAGMA table_xinfo')) return stmt;
+          return new Proxy(stmt, {
+            get(target, prop) {
+              const value: unknown = Reflect.get(target, prop, target);
+              if (typeof value !== 'function') return value;
+              if (prop !== 'all') return (value as HostMethod).bind(target);
+              return (...args: unknown[]): unknown => {
+                const rows = (value as HostMethod).apply(target, args);
+                // Only the probe made inside the opener's transaction: the first
+                // one, outside it, is the ordinary free check.
+                if (opener.isTransaction) {
+                  interleaved = true;
+                  try {
+                    other.exec(SCOPE_KEY_COLUMN_DDL);
+                    otherOutcome = 'added';
+                  } catch (error) {
+                    otherOutcome = error instanceof Error ? error.message : String(error);
+                  }
+                }
+                return rows;
+              };
+            },
+          });
+        },
+      });
+      try {
+        expect(() => {
+          ensureScopeKeyColumn(opener);
+        }).not.toThrow();
+      } finally {
+        Object.defineProperty(opener, 'prepare', { configurable: true, value: realPrepare });
+      }
+
+      // Without this the case passes on an implementation that holds no
+      // transaction across its check.
+      expect(interleaved).toBe(true);
+      expect(otherOutcome).toMatch(/locked/);
+      expect(scopeKeyColumns(opener)).toEqual(['scope_key']);
+      // The refused opener runs its own check on its next open and finds it there.
+      expect(() => {
+        ensureScopeKeyColumn(other);
+      }).not.toThrow();
+      expect(scopeKeyColumns(other)).toEqual(['scope_key']);
+    });
   });
 });
 

@@ -153,6 +153,8 @@ function build(wire: Wire, opts: { forward?: ForwardPolicy; client?: AttachedCli
     client: opts.client ?? recordingClient(wire),
     readCachedBundle: () => Promise.resolve(null),
     forward: opts.forward ?? passthrough,
+    // MACHINE mode: what this whole suite is about.
+    attachment: { mode: 'machine', keys: new Set<string>() },
   });
 }
 

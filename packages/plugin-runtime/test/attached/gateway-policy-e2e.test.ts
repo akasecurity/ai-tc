@@ -199,6 +199,8 @@ function buildRuntime(localPolicies: Policy[], remotePolicies: Policy[]) {
     client: noopClient(),
     readCachedBundle: () => Promise.resolve(bundleOf(remotePolicies, 'tenant')),
     forward: passthrough(),
+    // Machine mode: this suite is about the composed policy bundle, not the scope verdict.
+    attachment: { mode: 'machine', keys: new Set<string>() },
   });
   return { gateway, runtime: createPluginRuntime(gateway, settings(), { dataDir: dir }) };
 }

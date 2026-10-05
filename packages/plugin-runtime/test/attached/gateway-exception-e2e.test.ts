@@ -200,6 +200,8 @@ function buildRuntime(consumeException: (id: string) => Promise<boolean>) {
     client: noopClient(),
     readCachedBundle: () => Promise.resolve(null),
     forward: passthrough(),
+    // Machine mode: this suite is about the exception consume, not the scope verdict.
+    attachment: { mode: 'machine', keys: new Set<string>() },
   });
   return { runtime: createPluginRuntime(gateway, settings(), { dataDir: dir }), consume };
 }

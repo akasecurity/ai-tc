@@ -88,6 +88,82 @@ export const AttachedCredential = z.object({
 });
 export type AttachedCredential = z.infer<typeof AttachedCredential>;
 
+// How much of this machine's activity an attachment forwards.
+//
+//   `machine` — everything, as every attachment has since attaching existed.
+//   `scoped`  — only what the attachment's enrolled scope covers; the rest stays
+//               in the local store.
+//
+// Recorded on the CREDENTIAL, not in settings.json: this file is the one half
+// of an attachment that settings writers, the managed overlay and older builds
+// never rewrite. A settings field holding the mode could be dropped by any of
+// them, and with an absent mode meaning machine-wide, each drop would widen what
+// is sent.
+//
+// NO `.meta({ id })`: nothing on any wire names it, and an id would publish it.
+export const AttachmentMode = z.enum(['machine', 'scoped']);
+export type AttachmentMode = z.infer<typeof AttachmentMode>;
+
+// The credential version a scoped attachment is written at. Separate from
+// ATTACHED_CREDENTIAL_SPEC_VERSION, which stays 1: a machine attachment keeps
+// writing exactly the file it always has.
+export const ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION = 2;
+
+// The machine-wide credential under its versioned name. The SAME schema object
+// as `AttachedCredential`, not a copy, so the two names can never disagree.
+export const AttachedCredentialV1 = AttachedCredential;
+export type AttachedCredentialV1 = AttachedCredential;
+
+// A scoped attachment's credential: v1's members at specVersion 2, plus the
+// mode.
+//
+// A NEW VERSION, NOT A FIELD ON v1. Every build already installed parses
+// `specVersion` as the literal 1, so it reads this file as `malformed` and falls
+// back to standalone — a build that cannot enforce scope forwards nothing on a
+// scoped machine. A `mode` key on a v1 file would do the opposite:
+// `AttachedCredential` is not strict, so those builds would strip the key and
+// read the machine as machine-wide.
+//
+// Built with `.extend`, so v2's endpoint, key, prefix and mint-time rules ARE
+// v1's; changing one changes both.
+//
+// NOT YET READ ANYWHERE. `readControlPlaneCredentialFile` in
+// @akasecurity/persistence still parses `AttachedCredential`, v1 only, so this
+// build too reads a v2 file as `malformed`. Moving that reader to
+// `AttachedCredentialAny` is what makes a scoped attachment usable, and it
+// belongs with the change that makes every forward path consult the mode: a
+// reader that accepts v2 before that forwards everything a scoped machine
+// captures.
+//
+// NO `.meta({ id })` on this shape or the union below. EVER. Same bearer
+// credential, same rule as `AttachedCredential`.
+export const AttachedCredentialV2 = AttachedCredential.extend({
+  specVersion: z.literal(ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION),
+  mode: z.literal('scoped'),
+});
+export type AttachedCredentialV2 = z.infer<typeof AttachedCredentialV2>;
+
+// Either version, dispatched on `specVersion`. Any other version is refused, so
+// a credential written by a newer build still reads as `malformed`.
+export const AttachedCredentialAny = z.discriminatedUnion('specVersion', [
+  AttachedCredentialV1,
+  AttachedCredentialV2,
+]);
+export type AttachedCredentialAny = z.infer<typeof AttachedCredentialAny>;
+
+/**
+ * The attachment mode a credential records: v1 is machine-wide, and v2 carries
+ * its mode, which is always `scoped`.
+ *
+ * Only an exact v1 answers `machine`. Anything else answers `scoped`, the
+ * direction that forwards less, so a value that reached here without a parse —
+ * a cast, or a member added to the union without this being revisited — can
+ * never widen what is sent. Pure; no I/O.
+ */
+export function attachmentModeOf(credential: AttachedCredentialAny): AttachmentMode {
+  return credential.specVersion === ATTACHED_CREDENTIAL_SPEC_VERSION ? 'machine' : 'scoped';
+}
+
 // ─── Whether an endpoint is safe to send a credential to ─────────────────────
 
 /**

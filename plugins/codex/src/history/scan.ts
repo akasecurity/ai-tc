@@ -5,6 +5,8 @@
 // through the same SDK detect→mask→record path the hooks use, so a backfilled
 // finding is indistinguishable from a live one. Identical to
 // plugins/claude-code/src/history/scan.ts except sourceTool.
+import { isAbsolute } from 'node:path';
+
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { EgressHit, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -12,6 +14,7 @@ import {
   createPluginRuntime,
   maskContextSlice,
   RawEgressError,
+  resolveRepoAttribution,
   safeMaskedMatch,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
@@ -149,12 +152,27 @@ export async function scanHistory(
       }
       seen.add(hash);
       scanned++;
+      // The capture's scope key comes from the directory this message's turn
+      // ran in: the canonical `host/owner/repo` of that directory's
+      // repository, or none. A scratch directory, a remoteless repository and
+      // a message no session_meta or turn_context precedes all stay keyless,
+      // and a keyless capture is never forwarded from a scoped attachment. Only
+      // an absolute cwd is resolved; a relative one would be walked from this
+      // process's own directory. The key rides on the capture input, never in
+      // the event's metadata (a published wire shape). No sessionId is added to
+      // the metadata either: it would change the capture's content-addressed
+      // id, and with it the dedup a re-run relies on.
+      const scopeKey =
+        message.cwd !== undefined && isAbsolute(message.cwd)
+          ? resolveRepoAttribution(message.cwd).scopeKey
+          : undefined;
       const result = await runtime.capture(
         {
           kind: message.kind,
           sourceTool: SOURCE_TOOL.Codex,
           text: message.text,
           occurredAt: message.occurredAt,
+          ...(scopeKey !== undefined ? { scopeKey } : {}),
         },
         // 'content-hash': a backfill re-run would otherwise re-record identical
         // messages under fresh event ids — the gateway uses the hash to drop

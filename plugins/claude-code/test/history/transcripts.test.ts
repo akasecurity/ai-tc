@@ -124,6 +124,33 @@ describe('parseTranscript', () => {
     expect(msgs.map((m) => m.text)).not.toContain('ancient prompt');
     expect(msgs).toHaveLength(3);
   });
+
+  it("carries each record's own cwd onto its message, and none when the record names none", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'user',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: { role: 'user', content: 'from work' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-20T10:00:02.000Z',
+        message: { role: 'user', content: 'no cwd here' },
+      }),
+    ].join('\n');
+
+    const msgs = parseTranscript(jsonl);
+    expect(msgs.map((m) => m.cwd)).toEqual(['/Users/me/work', '/Users/me/work', undefined]);
+    // Absent, not undefined, so a cwd-less message keeps its exact old shape.
+    expect(msgs[2]).not.toHaveProperty('cwd');
+  });
 });
 
 describe('parseTranscriptToolCalls', () => {

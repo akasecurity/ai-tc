@@ -38,6 +38,11 @@ export interface ScannedMessage {
   text: string;
   occurredAt: string;
   filePath: string;
+  // The working directory the message was written in, when the file names
+  // one: the running session_meta/turn_context cwd at that line. The backfill
+  // keys this message's capture by the repository it sits in. A message
+  // without one gets no key.
+  cwd?: string | undefined;
 }
 
 // Where Codex CLI writes its rollout files. Codex itself honors a CODEX_HOME
@@ -91,6 +96,12 @@ export function parseTranscript(
   filePath = '',
 ): ScannedMessage[] {
   const out: ScannedMessage[] = [];
+  // The running working directory, threaded exactly as parseTranscriptUsage
+  // threads it: session_meta opens the file with one, and a turn_context that
+  // names one moves it. It is tracked before the window and cutoff checks
+  // below, so a message keeps the cwd of a header line that is itself out of
+  // the window.
+  let cwd: string | undefined;
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
     if (trimmed === '') continue;
@@ -101,6 +112,15 @@ export function parseTranscript(
       continue;
     }
     if (!isRecord(rec)) continue;
+    if (rec.type === 'session_meta' || rec.type === 'turn_context') {
+      const header = rec.payload;
+      if (isRecord(header)) {
+        const named = optString(header.cwd);
+        if (rec.type === 'session_meta') cwd = named;
+        else if (named) cwd = named;
+      }
+      continue;
+    }
     if (rec.type !== 'response_item') continue;
     const occurredAt = optString(rec.timestamp) ?? '';
     if (occurredAt === '') continue;
@@ -118,7 +138,13 @@ export function parseTranscript(
     if (role !== 'user' && role !== 'assistant') continue;
     const text = extractContentText(payload.content);
     if (text.trim() === '') continue;
-    out.push({ kind: role === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
+    out.push({
+      kind: role === 'user' ? 'prompt' : 'response',
+      text,
+      occurredAt,
+      filePath,
+      ...(cwd !== undefined && cwd !== '' ? { cwd } : {}),
+    });
   }
   return out;
 }

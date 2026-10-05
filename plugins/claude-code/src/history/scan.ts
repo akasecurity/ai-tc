@@ -4,6 +4,8 @@
 // Claude Code transcript shape lives in ./transcripts; here we just feed each
 // message through the same SDK detect→mask→record path the hooks use, so a
 // backfilled finding is indistinguishable from a live one.
+import { isAbsolute } from 'node:path';
+
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { EgressHit, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -11,6 +13,7 @@ import {
   createPluginRuntime,
   maskContextSlice,
   RawEgressError,
+  resolveRepoAttribution,
   safeMaskedMatch,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
@@ -165,12 +168,28 @@ export async function scanHistory(
       }
       seen.add(hash);
       scanned++;
+      // The capture's scope key comes from the directory this transcript record
+      // was written in: the canonical `host/owner/repo` of that directory's
+      // repository, or none. A scratch directory, a remoteless repository and a
+      // record that names no cwd all stay keyless, and a keyless capture is
+      // never forwarded from a scoped attachment. Only an absolute cwd is
+      // resolved; a relative one would be walked from this process's own
+      // directory and borrow whatever repository the backfill runs in. The key
+      // rides on the capture input, never in the event's metadata (a published
+      // wire shape). No sessionId is added to the metadata either: it would
+      // change the capture's content-addressed id, and with it the dedup a
+      // re-run relies on.
+      const scopeKey =
+        message.cwd !== undefined && isAbsolute(message.cwd)
+          ? resolveRepoAttribution(message.cwd).scopeKey
+          : undefined;
       const result = await runtime.capture(
         {
           kind: message.kind,
           sourceTool: SOURCE_TOOL.ClaudeCode,
           text: message.text,
           occurredAt: message.occurredAt,
+          ...(scopeKey !== undefined ? { scopeKey } : {}),
         },
         // 'content-hash': a backfill re-run would otherwise re-record identical
         // messages under fresh event ids — the gateway uses the hash to drop

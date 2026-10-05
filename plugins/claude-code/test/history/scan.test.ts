@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
@@ -361,5 +362,84 @@ describe('scanHistory — onHit sink', () => {
     // The throw is contained — the sweep still records the finding normally.
     expect(summary.findings).toBe(1);
     expect(summary.scanned).toBe(2);
+  });
+});
+
+describe('scanHistory — the scope key of each backfilled message', () => {
+  // An scp-form remote's userinfo reads as an email address to a scanner, so
+  // the fixture builds it from parts.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  let dataDir: string;
+  let root: string;
+  let workRepo: string;
+  let scratch: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-scan-key-data-'));
+    root = mkdtempSync(join(tmpdir(), 'aka-scan-key-tx-'));
+    // A checkout whose origin canonicalizes to github.com/acme/work, and a
+    // directory in no repository at all.
+    workRepo = mkdtempSync(join(tmpdir(), 'aka-scan-key-repo-'));
+    mkdirSync(join(workRepo, '.git'), { recursive: true });
+    writeFileSync(
+      join(workRepo, '.git', 'config'),
+      `[remote "origin"]\n\turl = ${gitUser}github.com:acme/work.git\n`,
+    );
+    scratch = mkdtempSync(join(tmpdir(), 'aka-scan-key-scratch-'));
+  });
+  afterEach(() => {
+    for (const d of [dataDir, root, workRepo, scratch]) rmSync(d, { recursive: true, force: true });
+  });
+
+  // Three leaking prompts: one written in the work checkout, one in a scratch
+  // directory, one whose record names no cwd. Their texts differ, so the
+  // content-hash dedup keeps all three.
+  function seedScoped(): void {
+    const dir = join(root, '-scope-project');
+    mkdirSync(dir, { recursive: true });
+    const records = [
+      {
+        type: 'user',
+        cwd: workRepo,
+        timestamp: '2026-06-20T12:00:00.000Z',
+        message: { role: 'user', content: `work note ${BACKFILL_SECRET}` },
+      },
+      {
+        type: 'user',
+        cwd: scratch,
+        timestamp: '2026-06-20T12:00:01.000Z',
+        message: { role: 'user', content: `scratch note ${BACKFILL_SECRET}` },
+      },
+      {
+        type: 'user',
+        timestamp: '2026-06-20T12:00:02.000Z',
+        message: { role: 'user', content: `bare note ${BACKFILL_SECRET}` },
+      },
+    ];
+    writeFileSync(
+      join(dir, 'scope-session.jsonl'),
+      records.map((r) => JSON.stringify(r)).join('\n'),
+    );
+  }
+
+  it("keys a capture by its record's repository, and leaves scratch and cwd-less ones keyless", async () => {
+    seedScoped();
+    const cfg = config(dataDir, 'full');
+
+    await scanHistory(cfg, { dir: root, now: NOW });
+
+    const db = new DatabaseSync(cfg.dbPath);
+    try {
+      const rows = db
+        .prepare(
+          "SELECT scope_key AS key, root_session_id AS root FROM audit_events WHERE event_type = 'prompt' ORDER BY started_at",
+        )
+        .all() as { key: string | null; root: string | null }[];
+      expect(rows.map((r) => r.key)).toEqual(['github.com/acme/work', null, null]);
+      // No sessionId was added to the capture: one would re-key the row and its dedup.
+      expect(rows.every((r) => r.root === null)).toBe(true);
+    } finally {
+      db.close();
+    }
   });
 });

@@ -24,6 +24,11 @@ export interface ScannedMessage {
   // later be located and struck in place. Empty when the source path is unknown
   // (e.g. a bare `parseTranscript` call in a unit test that passes no path).
   filePath: string;
+  // The working directory the record was written from, when it names one
+  // (Claude Code stamps `cwd` on its user and assistant records). The backfill
+  // keys this message's capture by the repository it sits in. A message
+  // without one gets no key.
+  cwd?: string | undefined;
 }
 
 // Where Claude Code writes its per-project, per-session transcripts. `home`
@@ -94,7 +99,14 @@ export function parseTranscript(
     if (!isRecord(message)) continue;
     const text = extractText(message.content);
     if (text.trim() === '') continue;
-    out.push({ kind: rec.type === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
+    const cwd = typeof rec.cwd === 'string' && rec.cwd !== '' ? rec.cwd : undefined;
+    out.push({
+      kind: rec.type === 'user' ? 'prompt' : 'response',
+      text,
+      occurredAt,
+      filePath,
+      ...(cwd !== undefined ? { cwd } : {}),
+    });
   }
   return out;
 }

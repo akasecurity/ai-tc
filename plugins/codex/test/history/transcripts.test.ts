@@ -64,12 +64,14 @@ describe('parseTranscript — prompt/response text', () => {
         text: 'here is my api key sk-abc123',
         occurredAt: '2026-07-14T10:00:01.000Z',
         filePath: '',
+        cwd: '/home/me/proj',
       },
       {
         kind: 'response',
         text: 'I will not echo that key back.',
         occurredAt: '2026-07-14T10:00:02.000Z',
         filePath: '',
+        cwd: '/home/me/proj',
       },
     ]);
   });
@@ -179,6 +181,68 @@ describe('parseTranscript — prompt/response text', () => {
     });
     const sinceMs = Date.parse('2026-06-01T00:00:00.000Z');
     expect(parseTranscript(jsonl, sinceMs)).toEqual([]);
+  });
+
+  it('threads the running session_meta/turn_context cwd onto each message', () => {
+    const userMessage = (timestamp: string, text: string): string =>
+      line({
+        timestamp,
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      });
+    const jsonl = [
+      SESSION_META, // cwd /home/me/proj
+      userMessage('2026-07-14T10:00:01.000Z', 'first'),
+      line({
+        timestamp: '2026-07-14T10:00:02.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 't2', cwd: '/home/me/other' },
+      }),
+      userMessage('2026-07-14T10:00:03.000Z', 'second'),
+      // A turn_context that names no cwd keeps the last one, as the usage parser does.
+      line({
+        timestamp: '2026-07-14T10:00:04.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 't3' },
+      }),
+      userMessage('2026-07-14T10:00:05.000Z', 'third'),
+    ].join('\n');
+
+    expect(parseTranscript(jsonl).map((m) => m.cwd)).toEqual([
+      '/home/me/proj',
+      '/home/me/other',
+      '/home/me/other',
+    ]);
+  });
+
+  it('keeps the cwd of a session_meta line that is itself older than the window', () => {
+    const jsonl = [
+      SESSION_META, // 2026-07-14, cwd /home/me/proj
+      line({
+        timestamp: '2026-07-20T10:00:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'in window' }],
+        },
+      }),
+    ].join('\n');
+
+    const sinceMs = Date.parse('2026-07-15T00:00:00.000Z');
+    expect(parseTranscript(jsonl, sinceMs).map((m) => m.cwd)).toEqual(['/home/me/proj']);
+  });
+
+  it('carries no cwd on a message that no session_meta or turn_context precedes', () => {
+    const jsonl = line({
+      timestamp: '2026-07-14T10:00:01.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'orphan' }] },
+    });
+
+    const [msg] = parseTranscript(jsonl);
+    expect(msg?.text).toBe('orphan');
+    expect(msg).not.toHaveProperty('cwd');
   });
 });
 

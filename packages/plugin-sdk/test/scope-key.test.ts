@@ -1,9 +1,10 @@
 // The scope-key rules the transcript reconcilers and the session roots share:
 // scopeKeyMemo (one key per working directory), sessionRootScopeKey (a session
-// root's key) and toolCallScopeKey (where a tool call ran, or what it touched). They run against real checkouts built under a temp directory, so the
-// key a directory gets is the key the same resolver gives a hook there. The
-// once-per-directory promise is counted in scope-key-memo.test.ts, which needs a
-// module mock this file must not carry.
+// root's key) and toolCallScopeKey (where a tool call ran, or what it touched).
+// They run against real checkouts built under a temp directory, so the key a
+// directory gets is the key the same resolver gives a hook there. The
+// once-per-directory promise is counted in scope-key-memo.test.ts, which needs
+// a module mock this file must not carry.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';

@@ -16,9 +16,9 @@
 // repository with no forge remote gets no key, never the enclosing one's; a
 // scoped attachment is meant to keep a keyless capture local, and that check is
 // not part of this change. A file in no nested repository takes the scan root's
-// answer, from the same resolver
-// walking up from the root: a root inside a repository (a package directory of
-// a monorepo, a session's working directory) keys by the repository around it.
+// answer, from the same resolver walking up from the root: a root inside a
+// repository (a package directory of a monorepo, a session's working directory)
+// keys by the repository around it.
 //
 // Lazy and scan-local. scanDir asks only for a file that reaches capture, so a
 // re-run that skips every file at the ledger reads no repository. The answer

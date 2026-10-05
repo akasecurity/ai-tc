@@ -202,12 +202,12 @@ export function captureScopeKey(
   }
 }
 
-// The scope key for an event that names a SEARCH ROOT rather than a file: Grep's
-// `path`, which is a directory or a single file. It follows captureScopeKey's
-// rules (an absolute root is normalised and never falls back to the cwd; a
-// relative one is resolved against an absolute cwd and gives no key without one;
-// no root takes the cwd key) with one difference: the walk starts at the root
-// ITSELF, not at its parent. A root may be a checkout's top
+// The scope key for an event that names a SEARCH ROOT rather than a file:
+// Grep's `path`, which is a directory or a single file. It follows
+// captureScopeKey's rules (an absolute root is normalised and never falls back
+// to the cwd; a relative one is resolved against an absolute cwd and gives no
+// key without one; no root takes the cwd key) with one difference: the walk
+// starts at the root ITSELF, not at its parent. A root may be a checkout's top
 // level, and starting at the parent would miss that checkout, or name the
 // enclosing one when the root is a nested clone or submodule. A single-file
 // root needs no special case: the resolver climbs by name, and a file has no

@@ -348,10 +348,11 @@ export const CaptureAttributes = z
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
     // The scope key this capture was stamped with: the canonical repository
-    // (`host/owner/repo`) of the file the capture names by absolute path, else
-    // of its own working directory, or a chat account's identity. The store's
-    // local `scope_key` column reads it, so a scoped attachment has a per-row key
-    // to work from. Absent when no key could be derived.
+    // (`host/owner/repo`) of the path the capture names (a relative path is read
+    // against its working directory), else of its own working directory, or a
+    // chat account's identity. The store's local `scope_key` column reads it, so
+    // a scoped attachment has a per-row key to work from. Absent when no key
+    // could be derived.
     //
     // LOCAL ONLY. That is the contract for every path that sends a row. Producers
     // stamp it in every attachment mode, and the two structural choke points strip

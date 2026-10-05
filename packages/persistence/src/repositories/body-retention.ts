@@ -31,10 +31,12 @@ import { withTransaction } from '../internal/transactions.ts';
  * `sweepSyncLane` says which of those rows could still be owed, and expiring
  * one of them is refused outright. What could still be owed follows the
  * attachment. On a scoped attachment, with or without a history-sync grant, it is
- * only the rows stamped with an enrolled `scope_key`: the grant there covers the
- * enrolled repositories, never the whole lane. On a machine attachment, under a
- * grant with no scoped attachment, or whenever the credential or its scope record
- * cannot be trusted, it is every unsynced row.
+ * the rows stamped with an enrolled `scope_key`, plus any row still marked owed
+ * (a machine attachment's undelivered forward leaves that marker on a row of any
+ * key, and enrolling its repository later makes it reachable): the grant there
+ * covers the enrolled repositories, never the whole lane. On a machine
+ * attachment, under a grant with no scoped attachment, or whenever the
+ * credential or its scope record cannot be trusted, it is every unsynced row.
  *
  * `content_hash` is deliberately preserved. It costs none of the reclaimable
  * bytes, it is what backfill idempotency is keyed on, and clearing it would make
@@ -68,8 +70,9 @@ export interface BodyExpiryOptions {
    *     other body;
    *   - `hold-all`: an attach or a history-sync grant could still claim any of
    *     them, so none is expired;
-   *   - `hold-keys`: a scoped attachment owes only the rows stamped with one of
-   *     its keys, so those are held and every other one ages out.
+   *   - `hold-keys`: a scoped attachment owes the rows stamped with one of its
+   *     keys, and any row still marked owed, so those are held and every other
+   *     one ages out.
    *
    * `true` and `false` are the two-state gate this option was before scoped
    * attachments, and read as `sweep` and `hold-all`. The caller decides,
@@ -143,10 +146,22 @@ export class SqliteBodyRetentionRepository {
     this.candidatesSyncSafeStmt = this.db.prepare(
       select(`AND (event_type NOT IN (${SYNC_LANE_TYPES_SQL}) OR synced_at IS NOT NULL)`),
     );
-    // The scoped twin of the statement above. A scoped attachment owes only the
+    // The scoped twin of the statement above. A scoped attachment owes the
     // unsynced sync-lane rows whose stamped key is enrolled, so a row with no
     // key, or with a key outside the list, is no more owed than a `code_change`:
     // the drain's scoped reads never return it, whatever marker it carries.
+    //
+    // EXCEPT A ROW STILL MARKED OWED (`outbox_owed = 1`), which is held whatever
+    // its key. A machine attachment's live forward that did not deliver leaves
+    // that marker on a row of any key, and a re-attach to the same endpoint as a
+    // scoped one does not clear it. Its repository may be enrolled later, and
+    // from then on the scoped drain returns it; with its body already expired it
+    // could not be rebuilt and would become a permanent skip. So an owed row's
+    // body outlives the sweep, until it is delivered or skipped like any other
+    // unsent one. A row with no key is held too: no scope will ever return it,
+    // but a machine attachment still could, and retention errs toward holding.
+    // `IS NOT 1` is the exact complement of `= 1`, NULL included, because the
+    // marker is NULL on every row nothing has marked.
     //
     // `scope_key IS NULL` is spelled out because `NOT IN` cannot say it. A NULL
     // key makes `scope_key NOT IN (…)` NULL rather than true, so without that arm
@@ -161,7 +176,9 @@ export class SqliteBodyRetentionRepository {
     this.candidatesScopedStmt = this.db.prepare(
       select(
         `AND (event_type NOT IN (${SYNC_LANE_TYPES_SQL}) OR synced_at IS NOT NULL
-              OR scope_key IS NULL OR scope_key NOT IN (SELECT value FROM json_each(:scopeKeys)))`,
+              OR (outbox_owed IS NOT 1
+                  AND (scope_key IS NULL
+                       OR scope_key NOT IN (SELECT value FROM json_each(:scopeKeys)))))`,
       ),
     );
     this.heldBySyncStmt = this.db.prepare(`
@@ -172,7 +189,8 @@ export class SqliteBodyRetentionRepository {
          AND event_type IN (${SYNC_LANE_TYPES_SQL})
          AND synced_at IS NULL`);
     // The exact complement, within the sync lane, of what the scoped candidates
-    // statement lets through: unsynced AND stamped with an enrolled key.
+    // statement lets through: unsynced AND (still marked owed OR stamped with an
+    // enrolled key).
     this.heldByScopeStmt = this.db.prepare(`
       SELECT COUNT(*) AS n
         FROM audit_events
@@ -180,7 +198,8 @@ export class SqliteBodyRetentionRepository {
          AND started_at < :cutoff
          AND event_type IN (${SYNC_LANE_TYPES_SQL})
          AND synced_at IS NULL
-         AND scope_key IN (SELECT value FROM json_each(:scopeKeys))`);
+         AND (outbox_owed = 1
+              OR scope_key IN (SELECT value FROM json_each(:scopeKeys)))`);
     // content_hash is NOT cleared — see the module comment.
     this.expireStmt = this.db.prepare(
       `UPDATE audit_events SET content = NULL, content_expired_at = :now WHERE id = :id`,

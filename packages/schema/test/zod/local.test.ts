@@ -1234,8 +1234,9 @@ describe('syncLaneRetentionOf', () => {
   });
 
   it('holds nothing on the lane when a valid record enrolls nothing', () => {
-    // Attached in scoped mode with nothing enrolled: no body on the lane is
-    // owed, so they age out as a standalone machine's do. Under a history-sync
+    // Attached in scoped mode with nothing enrolled: no key is enrolled, so no
+    // body is held for its key and they age out as a standalone machine's do
+    // (the retention pass still holds a body marked owed). Under a history-sync
     // grant, enrolling later is meant to backfill what is still on disk.
     const settings = attached({ endpoint: ENDPOINT, entries: [] });
     expect(syncLaneRetentionOf(settings, scopedFor(settings))).toEqual({

@@ -707,10 +707,13 @@ export function canSweepSyncLane(settings: WorkspaceSettings): boolean {
  *     out like any other body;
  *   - `hold-all`: every unsynced sync-lane body could still be owed, so none is
  *     expired;
- *   - `hold-keys`: a scoped attachment owes only the unsynced bodies stamped
- *     with one of `keys`, so those are held and every other one ages out. A body
- *     with no key is in the second group, because nothing can ever forward it
- *     from a scoped machine.
+ *   - `hold-keys`: a scoped attachment owes the unsynced bodies stamped with
+ *     one of `keys`, so those are held, and so is any unsent body still marked
+ *     owed whatever its key (an earlier machine attachment's undelivered forward
+ *     leaves that marker, and enrolling its repository later makes it
+ *     reachable). Every other one ages out. A body with no key and no owed
+ *     marker is in that group, because nothing can ever forward it from a scoped
+ *     machine.
  */
 export type SyncLaneRetention =
   | { readonly kind: 'sweep' }
@@ -745,10 +748,10 @@ export type SyncLaneRetention =
  *   - any throw.
  *
  * Only a whole, valid record for this deployment earns `hold-keys`. An empty
- * one — attached in scoped mode, nothing enrolled yet — holds nothing on the
- * lane, as a standalone machine would: nothing on it is owed. Under a
- * history-sync grant, enrolling a repository later is meant to backfill what is
- * still on disk.
+ * one — attached in scoped mode, nothing enrolled yet — holds no body for its
+ * key, as a standalone machine would, since no key is enrolled; the retention
+ * pass still holds any body marked owed. Under a history-sync grant, enrolling a
+ * repository later is meant to backfill what is still on disk.
  *
  * `settings.controlPlane` is the EFFECTIVE descriptor, as every forward path
  * reads it, so the record is bound to the endpoint the drain actually sends to.

@@ -29,9 +29,9 @@
     "@commitlint/config-conventional": "^21.2.3",
     "@types/node": "^24.13.3",
     "eslint": "^9.39.5",
-    "lefthook": "^2.1.14",
+    "lefthook": "^2.1.16",
     "prettier": "^3.9.9",
-    "turbo": "^2.11.4",
+    "turbo": "^2.11.6",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
   },

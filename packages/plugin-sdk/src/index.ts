@@ -147,10 +147,12 @@ export {
   RawEgressError,
   safeMaskedMatch,
 } from './raw-egress.ts';
+export type { RepoAttribution } from './repo.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,
+  resolveRepoAttribution,
   resolveRepoIdentity,
   resolveRepoNwo,
   resolveWorktreeRoot,

@@ -195,6 +195,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveProjectFiles',
   'resolveProvider',
   'resolveRepo',
+  'resolveRepoAttribution',
   'resolveRepoIdentity',
   'resolveRepoNwo',
   'resolveWorktreeRoot',

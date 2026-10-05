@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, sep } from 'node:path';
 
+import { canonicalRepoUrl } from '@akasecurity/persistence';
+
 // Repo attribution for a captured event. The Security dashboard's Top-Sources
 // (by repo) and the recommendation engine both group findings by `repo`, but the
 // adapters only ever knew the hook's `cwd` — never a repo slug. This derives one.
@@ -20,11 +22,8 @@ import { basename, dirname, isAbsolute, join, sep } from 'node:path';
  */
 export function resolveRepo(cwd: string): string | undefined {
   try {
-    const root = findGitRoot(cwd);
-    if (!root) return undefined;
-    const ctx = resolveGitContext(root);
-    const url = ctx ? remoteUrl(ctx) : undefined;
-    return (url ? slugFromUrl(url) : undefined) ?? basename(ctx?.headRoot ?? root);
+    const location = locateRepo(cwd);
+    return location ? slugOf(location) : undefined;
   } catch {
     return undefined;
   }
@@ -43,21 +42,118 @@ export function resolveRepo(cwd: string): string | undefined {
  */
 export function resolveRepoIdentity(cwd: string): { url: string; name: string } | undefined {
   try {
-    const root = findGitRoot(cwd);
-    if (!root) return undefined;
-    const ctx = resolveGitContext(root);
-    const headRoot = ctx?.headRoot ?? root;
-    const url = ctx ? remoteUrl(ctx) : undefined;
+    const location = locateRepo(cwd);
+    if (!location) return undefined;
     return {
       // The path fallback is normalized to posix separators (a no-op outside
       // win32) so the persistence layer's `/`-separated checkout-path patterns
       // (the ghost sweep + the read-side worktree filter) match it as written.
-      url: url ?? headRoot.split(sep).join('/'),
-      name: (url ? slugFromUrl(url) : undefined) ?? basename(headRoot),
+      url: location.remote ?? location.headRoot.split(sep).join('/'),
+      name: slugOf(location),
     };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * What a captured event needs from its working directory: the repo slug and
+ * the event's scope key. Both members are absent outside a git repo; `scopeKey`
+ * is also absent when the repo has no forge remote, and whenever the working
+ * directory is not an absolute path.
+ */
+export interface RepoAttribution {
+  /** The slug `resolveRepo` gives for the same directory. */
+  readonly repo?: string | undefined;
+  /**
+   * The canonical `host/owner/repo` (see `canonicalRepoUrl`) of the remote
+   * `resolveRepoIdentity` picks for the same directory: `origin`, else the
+   * first remote in config order.
+   */
+  readonly scopeKey?: string | undefined;
+}
+
+// How many directories resolveRepoAttribution remembers before it starts over.
+const ATTRIBUTION_MEMO_LIMIT = 64;
+const attributionMemo = new Map<string, RepoAttribution>();
+const NO_ATTRIBUTION: RepoAttribution = Object.freeze({});
+
+/**
+ * The repo slug `resolveRepo` gives AND the event's scope key, from one `.git`
+ * walk and one config read.
+ *
+ * The scope key is the canonical `host/owner/repo` of the remote
+ * `resolveRepoIdentity` picks (`origin`, else the first remote in config
+ * order), so for an absolute `cwd`, `canonicalRepoUrl(resolveRepoIdentity(cwd).url)`
+ * and this key are equal; repo.test.ts pins that across layouts. Anything
+ * keyed from an inventory context's project url, which `resolveRepoIdentity`
+ * produces, therefore lands on the same key as an event keyed here. Both read
+ * the remote through `locateRepo`, which is what keeps them from drifting.
+ *
+ * The key is derived from the RAW remote, never from
+ * `resolveRepoIdentity(cwd).url`: that value falls back to the worktree path
+ * when there is no remote, and nothing downstream could tell the two apart.
+ * Here "no remote" is structural: there is no remote string, so there is no
+ * key. A remote that names a location on this machine (a filesystem path, a
+ * `file://` URL) gets no key either, because `canonicalRepoUrl` answers
+ * undefined for anything that is not a forge address. Such a key never
+ * converges with another machine's clone, so it could never match an entry
+ * anyone enrolled.
+ *
+ * ONLY AN ABSOLUTE `cwd` IS KEYED. The walk climbs by name, so a relative
+ * `cwd` resolves against this process's own working directory, which a hook
+ * does not choose and need not share with the event it reports. Such a `cwd`
+ * still gets the slug `resolveRepo` gives for the same string, because the
+ * slug has always been read that way; it gets no key, because a key read from
+ * the wrong directory could put the event in a scope that does not cover it.
+ *
+ * WHY ONE WALK. This sits on the capture path, where the slug was already being
+ * resolved. Calling `resolveRepo` and `resolveRepoIdentity` back to back would
+ * repeat the ancestor walk (one `existsSync` per directory up to the repo root)
+ * and the config read for every event.
+ *
+ * WHY THE MEMO. A caller that needs the slug and the key at different points of
+ * one event resolves the same directory twice, and the second call should cost
+ * nothing. Answers are kept per exact `cwd` string, at most
+ * `ATTRIBUTION_MEMO_LIMIT` of them, and the whole map is dropped when it is
+ * full rather than evicted entry by entry: a capture touches one directory and
+ * a pass over transcripts or scan roots a handful, so the bound exists only to
+ * stop a long-running caller from growing without limit, and starting over
+ * costs one walk per directory. The price is staleness: a remote edited after
+ * the first answer is not seen until the map starts over, so a caller that
+ * must notice that should not rely on this. (A relative `cwd` is remembered by
+ * its string too; its slug depends on the process's working directory, which
+ * a hook never changes.)
+ *
+ * Same pure, never-spawns-git, never-throws contract as `resolveRepo`. Outside
+ * a git repo the answer is empty (no slug, no key). A failure answers empty too,
+ * but is not remembered, so the next call tries again.
+ */
+export function resolveRepoAttribution(cwd: string): RepoAttribution {
+  try {
+    const remembered = attributionMemo.get(cwd);
+    if (remembered !== undefined) return remembered;
+    const attribution = attributeRepo(cwd);
+    if (attributionMemo.size >= ATTRIBUTION_MEMO_LIMIT) attributionMemo.clear();
+    attributionMemo.set(cwd, attribution);
+    return attribution;
+  } catch {
+    return NO_ATTRIBUTION;
+  }
+}
+
+// The uncached resolution behind resolveRepoAttribution. Frozen, because the
+// memo hands the same object to every caller for that directory. The remote is
+// consulted for a key only when `cwd` is absolute (see the doc comment above).
+function attributeRepo(cwd: string): RepoAttribution {
+  const location = locateRepo(cwd);
+  if (!location) return NO_ATTRIBUTION;
+  const remote = isAbsolute(cwd) ? location.remote : undefined;
+  const scopeKey = remote === undefined ? undefined : canonicalRepoUrl(remote);
+  return Object.freeze({
+    repo: slugOf(location),
+    ...(scopeKey === undefined ? {} : { scopeKey }),
+  });
 }
 
 /**
@@ -221,6 +317,33 @@ function remoteUrl(ctx: GitContext): string | undefined {
   if (config === undefined) return undefined;
   const remotes = parseRemoteUrls(config);
   return remotes.origin ?? Object.values(remotes)[0];
+}
+
+// One repository, located from `cwd`: ONE ancestor walk (findGitRoot) and,
+// when the `.git` entry resolves, ONE config read (remoteUrl). Every resolver
+// that reports a remote-derived value reads the remote through here, so "the
+// remote" names the same thing in all of them: `origin`, else the first remote
+// in config order. `remote` is the `url =` value verbatim, undefined with no
+// remote; `headRoot` is the HEAD worktree root (a linked worktree's main
+// checkout, else the checkout itself).
+interface RepoLocation {
+  headRoot: string;
+  remote: string | undefined;
+}
+
+function locateRepo(cwd: string): RepoLocation | undefined {
+  const root = findGitRoot(cwd);
+  if (!root) return undefined;
+  const ctx = resolveGitContext(root);
+  return { headRoot: ctx?.headRoot ?? root, remote: ctx ? remoteUrl(ctx) : undefined };
+}
+
+// The repo's display slug: the remote's last path segment, else the HEAD
+// worktree basename, never an arbitrary directory name (see the header).
+function slugOf(location: RepoLocation): string {
+  return (
+    (location.remote ? slugFromUrl(location.remote) : undefined) ?? basename(location.headRoot)
+  );
 }
 
 // Map remote name -> url from git config's `[remote "name"]` sections. Only the

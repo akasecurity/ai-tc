@@ -98,6 +98,7 @@ export function pathGateScript(): string {
     '[ -n "${LC_ALL+set}" ] && caller_lc_all=$LC_ALL',
     'LC_ALL=C',
     // The sentinel keeps the trailing newlines command substitution would strip.
+    // (A raw NUL byte is still dropped; it is never valid JSON, and \u0000 survives.)
     'input=$(cat; printf x)',
     'input=${input%x}',
     'case $0 in *[/\\\\]*) dir=${0%[/\\\\]*} ;; *) dir=. ;; esac',

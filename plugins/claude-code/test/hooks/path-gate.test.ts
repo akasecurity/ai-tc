@@ -125,22 +125,24 @@ describe('the path gate forwards everything the credential-path capture would ta
     expect(dropped).toEqual([]);
   });
 
-  it('hands the payload on byte for byte, to the pre-tool-use.js beside it', () => {
+  it.each(SHELLS)('hands any valid JSON payload on unchanged, under %s', (shell) => {
+    // Unchanged for any valid JSON text. A raw NUL byte (never valid JSON)
+    // would be dropped by the shell; an escaped \u0000 survives.
     const stdin = payload('Read', { file_path: '/home/agent/proj/.env', limit: 20 });
-    expect(runGate(stdin).stdout).toBe(`${FORWARD_LINE}${stdin}`);
+    expect(runGate(stdin, shell).stdout).toBe(`${FORWARD_LINE}${stdin}`);
     // Command substitution strips trailing newlines; the gate must not.
-    expect(runGate(`${stdin}\n\n`).stdout).toBe(`${FORWARD_LINE}${stdin}\n\n`);
+    expect(runGate(`${stdin}\n\n`, shell).stdout).toBe(`${FORWARD_LINE}${stdin}\n\n`);
   });
 
-  it('does not trust where tool_input starts', () => {
+  it.each(SHELLS)('does not trust where tool_input starts, under %s', (shell) => {
     // Valid JSON the host does not emit today, but the gate must not depend on
     // its serializer: a spaced outer key, then a nested "tool_input": key.
     const spaced =
       '{"tool_name":"Read","tool_input" : {"file_path":"/repo/.env"},"extra":{"tool_input":{}}}';
-    expect(forwards(spaced)).toBe(true);
+    expect(forwards(spaced, shell)).toBe(true);
     const grep =
       '{"tool_name":"Grep","tool_input" : {"pattern":"x","path":"/repo/.env"},"x":{"tool_input":{}}}';
-    expect(forwards(grep)).toBe(true);
+    expect(forwards(grep, shell)).toBe(true);
   });
 
   it('forwards non-ASCII input and \\u escapes rather than matching their bytes', () => {

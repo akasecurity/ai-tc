@@ -1557,8 +1557,8 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
   });
 
   // THE ENROLL RE-SEED, the one way a repository's history becomes reachable
-  // once it is enrolled: on a scoped attachment no other writer marks an
-  // out-of-scope capture.
+  // once it is enrolled, assuming scoped callers keep the contract that nothing
+  // else marks an out-of-scope capture.
   it('marks every unsent, unmarked capture of the enrolled keys, and nothing else', () => {
     const db = store.open();
     const raw = store.openRaw();
@@ -1661,14 +1661,26 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
   ];
 
   /**
-   * The full-table passes in a plan, UNDER ANY NAME. SQLite prints a scan by the
-   * alias the query used, and the scoped session read looks its roots up
-   * through one, so the `SCAN audit_events` refusals in this block would wave a
-   * `SCAN session_root` through. classifyPlanRow reads the row's shape instead.
+   * The full passes in a plan, UNDER ANY NAME and over a table OR an index.
+   *
+   * Under any name: SQLite prints a scan by the alias the query used, and the
+   * scoped session read looks its roots up through one, so the
+   * `SCAN audit_events` refusals in this block would wave a `SCAN session_root`
+   * through. classifyPlanRow reads the row's shape instead.
+   *
+   * Over an index too: `SCAN audit_events USING INDEX idx_audit_outbox_owed`
+   * walks every entry of the index rather than seeking in it, and classifyPlanRow
+   * calls that `full-index`, not `full-table`. `indexesIn` matches
+   * `USING INDEX <name>` for a SEARCH and a SCAN alike, so a scoped statement
+   * that stopped seeking an index and started walking it would still name the
+   * same index as its machine twin. This is the check that tells the two apart.
    */
-  const fullTableScans = (details: readonly string[]): string[] => {
+  const fullScans = (details: readonly string[]): string[] => {
     const owners = indexOwners(store.openRaw());
-    return details.filter((d) => classifyPlanRow(d, owners).kind === 'full-table');
+    return details.filter((d) => {
+      const { kind } = classifyPlanRow(d, owners);
+      return kind === 'full-table' || kind === 'full-index';
+    });
   };
 
   it('answers the per-kind breakdown through the index, with no temp B-tree', () => {
@@ -1781,7 +1793,7 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(scoped.details.join(' | ')).toMatch(
       /SEARCH session_root USING INDEX sqlite_autoindex_audit_events_1 \(id=\?\)/,
     );
-    expect(fullTableScans(scoped.details)).toEqual([]);
+    expect(fullScans(scoped.details)).toEqual([]);
   });
 
   // pendingRows had no plan pin at all. Both forms get one: the machine read must
@@ -1791,10 +1803,10 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     const scoped = recordFor((ledger) => ledger.pendingRows('s-1', 10, ALL, [WORK]));
 
     expect(indexesIn(machine.details).length).toBeGreaterThan(0);
-    expect(fullTableScans(machine.details)).toEqual([]);
+    expect(fullScans(machine.details)).toEqual([]);
     expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
     expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
-    expect(fullTableScans(scoped.details)).toEqual([]);
+    expect(fullScans(scoped.details)).toEqual([]);
   });
 
   it('finds scoped owed captures on the machine read partial index', () => {
@@ -1804,7 +1816,7 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
     expect(indexesIn(machine.details)).toContain('idx_audit_outbox_owed');
     expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
-    expect(fullTableScans(scoped.details)).toEqual([]);
+    expect(fullScans(scoped.details)).toEqual([]);
   });
 
   it('finds the scoped capture backlog to mark on the machine seed index', () => {
@@ -1819,7 +1831,7 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(indexesIn(machine.details)).toContain('idx_audit_type_t');
     expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
     expect(scoped.details.join(' | ')).toContain('SEARCH');
-    expect(fullTableScans(scoped.details)).toEqual([]);
+    expect(fullScans(scoped.details)).toEqual([]);
   });
 
   it('finds the scoped enroll re-seed rows by an index search, not a scan', () => {
@@ -1830,6 +1842,6 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(details.join(' | ')).toMatch(
       /SEARCH audit_events USING (?:COVERING )?INDEX idx_audit_(?:events_sync|type_t) \(event_type=\?/,
     );
-    expect(fullTableScans(details)).toEqual([]);
+    expect(fullScans(details)).toEqual([]);
   });
 });

@@ -825,7 +825,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      `./scan-worker` subpath and reachable only from `@akasecurity/detections`
                      + `./isolated-scan-protocol.ts`. It must stay that narrow: Node loads it
                      directly (bundled `.js` when installed, type-stripped `.ts` in the repo),
-                     so `src/bundled-packs.generated.ts` — 101 JSON imports without import
+                     so `src/bundled-packs.generated.ts` — a JSON import per rule, without import
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
                      `src/bare-command.ts` is the shared bare-name spawn planner
@@ -853,8 +853,13 @@ cosmetic.** Each plugin's `skills/setup/SKILL.md` carries a "Known limitations" 
 is the authority on what its host can actually enforce; keep it accurate when the adapter
 changes. The gaps that exist today:
 
-- **Codex** does not yet fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls,
-  only `Bash`.
+- **Codex** fires its tool hooks per tool call, including each call a code-mode `exec`
+  script makes (`exec_command` arrives as `Bash`, the web tool as `webrun`, MCP tools as
+  `mcp__<server>__<tool>`); the script itself fires no hook. The plugin's PreToolUse
+  matcher is `Bash|apply_patch`, so inputs are scanned for shell commands and file
+  writes only. PostToolUse adds `webrun` and `mcp__*`, so web and MCP traffic is
+  scanned on the way out only. PostToolUse cannot rewrite output, so a redact there
+  withholds the whole result.
 - **Antigravity** is the most constrained and the most different. It has only five events —
   no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
   off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be

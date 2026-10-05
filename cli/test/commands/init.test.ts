@@ -484,16 +484,16 @@ describe('runInit and the bundled detection inventory', () => {
     try {
       const policies = await db.policies.readPolicies();
       expect(policies).toHaveLength(categories.length);
-      // Every seeded row carries the action the catalog defines for its
-      // category — a table filled with the wrong action is not "seeded".
-      for (const [category, action] of Object.entries(DEFAULT_ACTIONS)) {
+      // Every seeded row is Monitor: an unassigned pack's rules follow these rows,
+      // so anything stronger here would enforce on a default install.
+      for (const category of Object.keys(DEFAULT_ACTIONS)) {
         const row = policies.find(
           // The target is a union — a seeded default is the CATEGORY arm, and a
           // rule-targeted row must not satisfy this lookup by accident.
           (p) => p.scope === 'global' && 'category' in p.target && p.target.category === category,
         );
         expect(row, `no seeded policy for category ${category}`).toBeDefined();
-        expect(row?.action).toBe(action);
+        expect(row?.action).toBe('log');
         expect(row?.enabled).toBe(true);
       }
     } finally {

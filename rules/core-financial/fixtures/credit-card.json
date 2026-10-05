@@ -23,5 +23,15 @@
     "label": "too short",
     "text": "Card: 4111",
     "shouldMatch": false
+  },
+  {
+    "label": "fraction digits that pass luhn",
+    "text": "{\"size_gb\":3.4111111111111111,\"count\":512}",
+    "shouldMatch": false
+  },
+  {
+    "label": "cost float that passes luhn",
+    "text": "subtotal 0.5500000000000004 after rounding",
+    "shouldMatch": false
   }
 ]

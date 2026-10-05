@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "command-risk/git-reset-hard",
+  "name": "git reset --hard at command position",
+  "category": "custom",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bgit(?<=(?:^|[;&|({\\x60]|\\$\\(|-[A-Za-z]*c[ \\t]+[\"'])[ \\t]*(?:(?:then|do|else|!)[ \\t]+)?(?:(?:sudo|doas|env|command|exec|nohup|nice|time|xargs)(?:[ \\t]+[^\\s;|&\"'\\x60]{1,100}){0,4}?[ \\t]+)?(?:[\\w.~-]*/){0,8}git)(?:[ \\t]+(?:-[Cc][ \\t]+[^\\s;|&]{1,200}|--[a-z][a-z-]{0,40}(?:=[^\\s;|&]{1,200})?)){0,4}[ \\t]+reset(?:[ \\t]+[^\\s;|&]{1,200}){0,8}?[ \\t]+--hard\\b",
+    "flags": "gm"
+  },
+  "examples": ["git reset --hard HEAD~1", "cd /tmp/demo-repo && git reset --hard origin/main"],
+  "appliesTo": {
+    "eventKinds": ["tool_use"]
+  }
+}

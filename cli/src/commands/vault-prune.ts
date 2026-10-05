@@ -84,7 +84,6 @@ const VAULTING_FLOOR: ActionTaken = 'redact';
 /** One vault entry the current policy no longer justifies holding. */
 export interface OutOfPolicyEntry {
   pointerId: string;
-  valueFingerprint: string;
   ruleId: string;
   // The action this entry's detection resolves to NOW — always below the floor.
   action: ActionTaken;
@@ -158,7 +157,6 @@ export function selectOutOfPolicy(
     }
     selection.outOfPolicy.push({
       pointerId: row.pointerId,
-      valueFingerprint: row.valueFingerprint,
       ruleId: row.ruleId,
       action,
     });
@@ -240,8 +238,11 @@ function isJson(line: string): boolean {
 async function analyseText(
   text: string,
   deps: {
-    entryFor: (valueFingerprint: string) => OutOfPolicyEntry | undefined;
-    identify: (token: string) => Promise<{ valueFingerprint: string } | null>;
+    entryFor: (pointerId: string) => OutOfPolicyEntry | undefined;
+    // Keyed on the ROW, not on a fingerprint: a value and its invisibly padded
+    // twin share an identity fingerprint but are two rows with two plaintexts,
+    // and this verb restores plaintext.
+    identify: (token: string) => Promise<string | null>;
   },
 ): Promise<{ hits: Map<string, OutOfPolicyEntry>; occurrences: number; unattributable: number }> {
   const hits = new Map<string, OutOfPolicyEntry>();
@@ -250,15 +251,15 @@ async function analyseText(
   let unattributable = 0;
 
   for (const token of tokens) {
-    const identity = await deps.identify(token);
-    if (identity === null) {
+    const pointerId = await deps.identify(token);
+    if (pointerId === null) {
       // A token this vault cannot identify at all. It is attributable to no
       // entry, so it may be one we are about to delete — every entry sighted in
       // this file therefore loses its claim to being pruned.
       unattributable += 1;
       continue;
     }
-    const entry = deps.entryFor(identity.valueFingerprint);
+    const entry = deps.entryFor(pointerId);
     if (entry === undefined) continue; // an in-policy entry — leave it alone
     hits.set(token, entry);
   }
@@ -419,7 +420,7 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
       return;
     }
 
-    const byFingerprint = new Map(selection.outOfPolicy.map((e) => [e.valueFingerprint, e]));
+    const byPointerId = new Map(selection.outOfPolicy.map((e) => [e.pointerId, e]));
     const ledger = sightingLedger(db);
 
     // Where each out-of-policy entry's pointer was written. A sighting whose
@@ -446,8 +447,8 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
 
     const analyse = async (text: string): Promise<Awaited<ReturnType<typeof analyseText>>> =>
       analyseText(text, {
-        entryFor: (fingerprint) => byFingerprint.get(fingerprint),
-        identify: (token) => vault.resolvePointerIdentity(token),
+        entryFor: (pointerId) => byPointerId.get(pointerId),
+        identify: (token) => vault.resolvePointerRowId(token),
       });
 
     // ── PHASE 1: restore. Nothing below this loop may delete anything. ──────

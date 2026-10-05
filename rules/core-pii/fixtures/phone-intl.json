@@ -18,5 +18,21 @@
     "label": "too short",
     "text": "+12",
     "shouldMatch": false
+  },
+  {
+    "label": "signed percentage in benchmark prose",
+    "text": "score went from 41.10 to 64.16 points (+56.1%)",
+    "shouldMatch": false
+  },
+  {
+    "label": "signed delta with too few digits",
+    "text": "model B gained +12.4 at concurrency 2",
+    "shouldMatch": false
+  },
+  {
+    "label": "phone-shaped number before a percent sign keeps its full span",
+    "text": "the licence fee is +44 20 7946 0958% of revenue",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 19, "end": 35 }]
   }
 ]

@@ -31,7 +31,7 @@ import type {
   InventoryInput,
   SourceProjectInput,
 } from './meta.ts';
-import { RedactFallback } from './policy.ts';
+import { type BuiltinPolicyId, RedactFallback } from './policy.ts';
 import type { Rule } from './rule.ts';
 import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 
@@ -777,4 +777,7 @@ export interface InstalledPackInput {
   name: string;
   // The rules actually loaded for this pack — snapshotted to rules_json.
   rules: Rule[];
+  // The policy a FIRST install assigns (installed_packs.policy_id). Absent
+  // leaves the pack unassigned, so its rules follow the category policies.
+  defaultPolicyId?: BuiltinPolicyId | undefined;
 }

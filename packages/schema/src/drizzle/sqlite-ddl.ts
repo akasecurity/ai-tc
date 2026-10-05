@@ -171,4 +171,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0035_share_destination_provider_id',
     sql: 'ALTER TABLE `share_destination` ADD `provider_id` text;',
   },
+  {
+    tag: '0036_secret_vault_identity_fingerprint',
+    sql: "ALTER TABLE `secret_vault` ADD `value_identity_fingerprint` text DEFAULT '' NOT NULL;--> statement-breakpoint\nUPDATE `secret_vault` SET `value_identity_fingerprint` = `value_fingerprint`;\n",
+  },
 ];

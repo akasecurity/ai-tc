@@ -183,7 +183,7 @@ let bundlesPacked = false;
  *
  * Detection exceptions: between scan and the action collapse, findings whose
  * resolved action is block/redact are matched against the bundle's exception
- * entries by (ruleId, keyed fingerprint of the exact raw match). A matched +
+ * entries by (ruleId, keyed identity fingerprint of the raw match, invisible padding removed). A matched +
  * consumed grant downgrades those findings to 'allow'. This step — unlike the
  * rest of the runtime — fails SECURE: any doubt (missing dataDir, bad key file,
  * consume error) means no exception applies and enforcement proceeds; the
@@ -471,8 +471,9 @@ export function createPluginRuntime(
     return { action: worst, text, findings, ...degraded };
   }
 
-  // Compute (and memoize per call) the keyed fingerprint of a finding's exact
-  // raw match — at most once per finding, shared between exception matching and
+  // Compute (and memoize per call) the keyed identity fingerprint of a finding's
+  // raw match (invisible padding characters removed; `rawMatch` itself stays
+  // byte-exact) — at most once per finding, shared between exception matching and
   // the blocked-detections ledger.
   function fingerprintOf(
     key: FingerprintKey,
@@ -715,7 +716,7 @@ export function createPluginRuntime(
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
-      filePath ? { filePath } : undefined,
+      { filePath, eventKind: input.kind },
       {
         sourceTool: input.sourceTool,
         metadata: input.metadata,

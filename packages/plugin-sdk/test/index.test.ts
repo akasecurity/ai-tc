@@ -101,6 +101,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'applyOnboarding',
   'applySetupTriageSuppressions',
   'assertRawFree',
+  'assignedRulePolicies',
   'buildIngestEvent',
   'buildModelRefusalEvent',
   'buildRecommendations',

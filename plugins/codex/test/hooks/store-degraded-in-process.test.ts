@@ -231,7 +231,11 @@ describe('the store-open branch, driven through the hook entries', () => {
       // silence is what a healthy run looks like here. The findings row above
       // is the presence assertion, and the case in the describe above is the
       // positive control for this absence: it proves a failure DOES print.
-      expect(stdoutWrites).toEqual([]);
+      // The planted key's secrets pack ships on Warn, so the one payload is that
+      // warning and nothing about the store.
+      expect(payloads(stdoutWrites).map((payload) => payload.systemMessage)).toEqual([
+        expect.stringMatching(/^AKA flagged sensitive content/),
+      ]);
       expect(exit).toHaveBeenCalledWith(0);
     });
 

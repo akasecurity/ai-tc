@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "core-code-context",
   "name": "Code Context",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "rules": [
     "internal-ip",
     "localhost-ref",
@@ -11,6 +11,7 @@
     "stack-trace",
     "internal-url",
     "feature-flag",
-    "db-table-name"
+    "db-table-name",
+    "gcp-service-account-email"
   ]
 }

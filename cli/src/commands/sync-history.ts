@@ -192,7 +192,7 @@ function grant(
       'deliver, alike: for a captured prompt, reply or tool result, either one includes its\n' +
       'text. A value in that text is masked only where the policy assigned to the detection\n' +
       'that flagged it is redact or block; under monitor or warn it goes as it was seen, and\n' +
-      'every detection ships on monitor. It goes in the background, a little at a time,\n' +
+      'no detection ships on redact or block. It goes in the background, a little at a time,\n' +
       'starting with your next session. Anything already sent cannot be recalled.\n',
   );
   return true;
@@ -240,8 +240,8 @@ function describe(settings: WorkspaceSettings): string {
     ? `Not sending this machine's unsent activity to ${where}: your grant predates a change.\n` +
         'It now also covers the text of the activity recorded before this machine attached —\n' +
         'not just what a live send failed to deliver afterward — in which a value is masked\n' +
-        'only where the detection that flagged it is set to redact or block, and every\n' +
-        'detection ships on monitor.\n' +
+        'only where the detection that flagged it is set to redact or block, and no\n' +
+        'detection ships on redact or block.\n' +
         'Run `aka sync-history --on` to grant it again.'
     : `Not sending this machine's unsent activity to ${where}: the earlier grant no longer\n` +
         'applies. Run `aka sync-history --on` to grant it again.';

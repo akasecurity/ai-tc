@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ResponseScanOutcome } from '../../src/hooks/scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
+import { RESPONSE_CHUNK_CHARS, scannableResponseFields } from '../../src/hooks/tool-response.ts';
 
 function finding(ruleId: string): CaptureResult['findings'][number] {
   return {
@@ -129,6 +130,92 @@ describe('scanResponseFields', () => {
   });
 });
 
+describe('scanResponseFields — chunked fields', () => {
+  // A Grep content result past one chunk, with a value to redact in the
+  // second chunk and one to withhold in the third.
+  const filler = `src/a.ts:1:${'x'.repeat(99)}\n`;
+  const lines = Math.ceil(RESPONSE_CHUNK_CHARS / filler.length);
+  const content =
+    filler.repeat(lines) + 'src/b.ts:2:mail AKAMAIL\n' + filler.repeat(lines) + 'src/c.ts:3:AKIA\n';
+  const response = { mode: 'content', numFiles: 3, filenames: [], content, numLines: 0 };
+
+  it('splices each chunk rewrite back into one string and keeps the rest verbatim', async () => {
+    const fields = scannableResponseFields('Grep', response);
+    expect(fields.length).toBeGreaterThan(2);
+    const outcome = await scanResponseFields('Grep', response, fields, (text) => {
+      if (text.includes('AKIA')) {
+        return Promise.resolve(
+          result({ action: 'block', findings: [finding('secrets/aws-access-key')] }),
+        );
+      }
+      if (text.includes('AKAMAIL')) {
+        return Promise.resolve(
+          result({
+            action: 'redact',
+            text: text.replace('AKAMAIL', '[REDACTED]'),
+            findings: [finding('core-pii/email')],
+          }),
+        );
+      }
+      return Promise.resolve(result({}));
+    });
+    const updated = outcome.updated as typeof response;
+    expect(updated.mode).toBe('content');
+    expect(updated.content).not.toContain('AKAMAIL');
+    expect(updated.content).not.toContain('AKIA\n');
+    expect(updated.content).toContain('src/b.ts:2:mail [REDACTED]\n');
+    expect(updated.content).toContain('[AKA SECURITY] Grep content withheld');
+    // The first chunk was clean and is untouched, byte for byte.
+    expect(updated.content.startsWith(filler.repeat(lines))).toBe(true);
+    expect(response.content).toBe(content);
+  });
+});
+
+describe('scanResponseFields — deadline', () => {
+  const fields: ScannableResponseField[] = [
+    { path: [0, 'text'], text: 'first' },
+    { path: [1, 'text'], text: 'second' },
+    { path: [2, 'text'], text: 'third AKIA' },
+  ];
+  const response = fields.map((f) => ({ type: 'text', text: f.text }));
+
+  it('starts no capture past the deadline and reports what it left unscanned', async () => {
+    let clock = 0;
+    const seen: string[] = [];
+    const outcome = await scanResponseFields(
+      'mcp__s__t',
+      response,
+      fields,
+      (text) => {
+        seen.push(text);
+        clock += 10;
+        return Promise.resolve(
+          text.includes('AKIA')
+            ? result({ action: 'block', findings: [finding('secrets/aws-access-key')] })
+            : result({}),
+        );
+      },
+      undefined,
+      { at: 20, now: () => clock },
+    );
+    expect(seen).toEqual(['first', 'second']);
+    expect(outcome.unscannedFields).toBe(1);
+    expect(outcome.updated).toBe(response);
+  });
+
+  it('scans everything and reports nothing unscanned while inside the deadline', async () => {
+    const outcome = await scanResponseFields(
+      'mcp__s__t',
+      response,
+      fields,
+      () => Promise.resolve(result({})),
+      undefined,
+      { at: 1, now: () => 0 },
+    );
+    expect(outcome.unscannedFields).toBe(0);
+  });
+});
+
 function outcome(partial: Partial<ResponseScanOutcome>): ResponseScanOutcome {
   return {
     updated: {},
@@ -138,6 +225,7 @@ function outcome(partial: Partial<ResponseScanOutcome>): ResponseScanOutcome {
     blockedReferences: [],
     redactedReferences: [],
     realized: null,
+    unscannedFields: 0,
     ...partial,
   };
 }

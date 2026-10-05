@@ -37,7 +37,11 @@ const packDirs = readdirSync(rulesDir, { withFileTypes: true })
   .sort();
 
 const imports = []; // { id, spec }
-const packs = []; // { packId, name, version, ruleIdents: [] }
+const packs = []; // { packId, name, version, defaultPolicy?, ruleIdents: [] }
+// The built-in policy ids a manifest's `defaultPolicy` may name (BuiltinPolicyId
+// in @akasecurity/schema). Checked here so a typo fails the generator rather than
+// shipping a pack that silently installs unassigned.
+const BUILTIN_POLICY_IDS = new Set(['monitor', 'warn', 'redact', 'vault', 'block']);
 
 for (const dir of packDirs) {
   const manifest = JSON.parse(readFileSync(join(rulesDir, dir, 'manifest.json'), 'utf8'));
@@ -51,7 +55,16 @@ for (const dir of packDirs) {
     imports.push({ id, spec: `${IMPORT_PREFIX}/${dir}/${stem}.json` });
     ruleIdents.push(id);
   }
-  packs.push({ packId: manifest.id, name: manifest.name, version: manifest.version, ruleIdents });
+  if (manifest.defaultPolicy !== undefined && !BUILTIN_POLICY_IDS.has(manifest.defaultPolicy)) {
+    throw new Error(`${dir}/manifest.json: unknown defaultPolicy "${manifest.defaultPolicy}"`);
+  }
+  packs.push({
+    packId: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    defaultPolicy: manifest.defaultPolicy,
+    ruleIdents,
+  });
 }
 
 // Guard against an identifier collision (would silently drop a rule import).
@@ -69,7 +82,11 @@ const importLines = [...imports]
 const packEntries = packs
   .map(
     (p) =>
-      `  {\n    packId: ${JSON.stringify(p.packId)},\n    name: ${JSON.stringify(p.name)},\n    version: ${JSON.stringify(p.version)},\n    rawRules: [${p.ruleIdents.join(', ')}],\n  }`,
+      `  {\n    packId: ${JSON.stringify(p.packId)},\n    name: ${JSON.stringify(p.name)},\n    version: ${JSON.stringify(p.version)},\n` +
+      (p.defaultPolicy === undefined
+        ? ''
+        : `    defaultPolicy: ${JSON.stringify(p.defaultPolicy)},\n`) +
+      `    rawRules: [${p.ruleIdents.join(', ')}],\n  }`,
   )
   .join(',\n');
 
@@ -89,12 +106,15 @@ const file = `// The rule packs shipped with every AKA plugin — the complete o
 //
 // ${String(packs.length)} packs / ${String(ruleTotal)} rules.
 /* eslint-disable simple-import-sort/imports */
+import type { BuiltinPolicyId } from '@akasecurity/schema';
 ${importLines}
 
 export interface BundledPack {
   packId: string;
   name: string;
   version: string;
+  // The built-in policy a first install assigns; absent leaves the pack unassigned.
+  defaultPolicy?: BuiltinPolicyId;
   rawRules: unknown[];
 }
 

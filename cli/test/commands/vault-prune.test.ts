@@ -231,6 +231,7 @@ function storedRow(ruleId: string, n: number, userAuthorized = false): VaultRow 
   return {
     pointerId: `p${String(n)}`,
     valueFingerprint: `f${String(n)}`,
+    valueIdentityFingerprint: `i${String(n)}`,
     fingerprintKeyVersion: 1,
     keyVersion: 1,
     formatVersion: 2,

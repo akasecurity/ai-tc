@@ -38,7 +38,7 @@ import type {
  * queued behind a loop that is not running — and would report the crash as a
  * timeout after waiting out the entire budget.
  *
- * What it costs, measured on an arm64 Mac against the 101 bundled rules plus a
+ * What it costs, measured on an arm64 Mac against the bundled rules (101 then) plus a
  * pulled pack, and paid ONLY on a machine that has a pulled/custom regex rule at
  * all (see `guarded-scan.ts` — otherwise no worker is started):
  *
@@ -64,7 +64,7 @@ import type {
  *     understatement. `checkRuleTiming` reads a second clock either side of
  *     every probe, which is what lets a wall breach be told apart from a stall
  *     before anything is written to the verdict cache. Measured apples to apples
- *     over the 101 bundled rules, the battery walk goes from 0.1055 ms/rule to
+ *     over the bundled rules (101 then), the battery walk goes from 0.1055 ms/rule to
  *     0.1773 ms/rule — about 68% — so read the number above as the floor rather
  *     than the cost. It is still paid once per rule ever and still bounded by
  *     the pre-flight's own pass budget, which is what makes it affordable.
@@ -233,11 +233,26 @@ let resolvedWorkerUrl: URL | null | undefined;
  * source file. `undefined` — neither present, or a location that is not a file
  * path at all — is a real answer: the caller falls back rather than scanning
  * unbounded.
+ *
+ * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
+ * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
+ * from a variable is not followed, and neither is one written as an arrow
+ * function's expression body, so a bundle traced from either ships without the
+ * worker and drops every rule that needs isolation. A template string is
+ * followed, but as a file pattern that can pull in whatever else matches it,
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
+ * FAILS the build when the file is not beside the source — in the repo the
+ * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
+ * comment is not part of the syntax tree nft reads, so nft still traces it.
+ * Do not drop the comment. test/worker-url-literal.test.ts pins both.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  for (const name of ['scan-worker.js', 'scan-worker.ts']) {
-    const candidate = new URL(name, import.meta.url);
+  const candidates = [
+    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
+    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
+  ];
+  for (const candidate of candidates) {
     try {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;
@@ -550,6 +565,7 @@ export function createIsolatedScanner(
               id,
               text,
               filePath: context?.filePath,
+              eventKind: context?.eventKind,
               attribute: scanOpts?.attribute === true,
             }),
             reply: (message) => {

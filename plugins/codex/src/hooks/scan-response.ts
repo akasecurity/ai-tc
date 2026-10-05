@@ -25,6 +25,22 @@ import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { ScannableResponseField } from './tool-response.ts';
 
+// The wall-time budget for the field loop, in milliseconds since the hook
+// process started (performance.now()'s origin). The hook's own timeout is
+// 10 s, and a timed-out hook passes the whole output through unscanned, so
+// the loop starts no capture past this point and leaves the remaining fields
+// unscanned instead. The margin covers closing the store and writing the
+// reply. A capture that has already started is not interrupted. Same budget
+// as the Claude Code plugin.
+export const RESPONSE_SCAN_DEADLINE_MS = 7_000;
+
+/** When the field loop must stop starting new captures. */
+export interface ScanDeadline {
+  /** Absolute time, on the same clock as `now`. */
+  at: number;
+  now: () => number;
+}
+
 export interface ResponseScanOutcome {
   withheldFindings: { ruleId: string }[];
   // Collected separately from withheldFindings so the banner/reason can name
@@ -35,12 +51,16 @@ export interface ResponseScanOutcome {
   blockedReferences: BlockedDetectionRef[];
   redactedReferences: BlockedDetectionRef[];
   toolName: string;
+  // Fields left unscanned because the deadline passed. The caller counts a
+  // non-zero value as a fail-open exit.
+  unscannedFields: number;
 }
 
 export async function scanResponseFields(
   toolName: string,
   fields: ScannableResponseField[],
   capture: (text: string) => Promise<CaptureResult>,
+  deadline?: ScanDeadline,
 ): Promise<ResponseScanOutcome> {
   const outcome: ResponseScanOutcome = {
     withheldFindings: [],
@@ -49,9 +69,14 @@ export async function scanResponseFields(
     blockedReferences: [],
     redactedReferences: [],
     toolName,
+    unscannedFields: 0,
   };
 
-  for (const field of fields) {
+  for (const [index, field] of fields.entries()) {
+    if (deadline !== undefined && deadline.now() >= deadline.at) {
+      outcome.unscannedFields = fields.length - index;
+      break;
+    }
     const result = await capture(field.text);
     if (result.findings.length === 0) continue;
 

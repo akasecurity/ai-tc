@@ -211,10 +211,9 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   let egress: EgressRecordResult | null;
   try {
     // Evaluate the bundled packs via the process-global registry, but resolve each
-    // finding's action from the installed snapshot's per-pack policy (ruleActions)
-    // so at-rest labels match the plugin's per-pack enforcement; rules not in the
-    // snapshot fall back to the per-category default.
-    const { ruleActions } = db.installedPacks.installedRuleset();
+    // finding's action as the plugin does: an assigned pack's policy, else the
+    // store's per-category policy, else the per-category default.
+    const { ruleActions, assignedRules } = db.installedPacks.installedRuleset();
     // dataDir: same directory as the plugin's fingerprint key, so a file the
     // plugin already scanned and one `aka scan` re-scans reconcile onto the
     // same finding_key instead of duplicating (see scanPathIntoStore).
@@ -228,6 +227,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     // createGuardedFileScanner for exactly that reason.
     result = await scanPathIntoStore(db, target, {
       ruleActions,
+      assignedRules,
       sourceTool: SOURCE_TOOL.Cli,
       dataDir: storeDir,
       // The AKA home this invocation is actually using, so the scanner's

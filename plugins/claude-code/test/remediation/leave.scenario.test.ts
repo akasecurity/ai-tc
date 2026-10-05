@@ -118,9 +118,9 @@ describe('Leave exits the remediation flow with zero side effects', () => {
     expect(decision.secretCount).toBe(3);
     expect(decision.options.map((o) => o.id)).toContain('leave');
 
-    // Baseline: the store seeds 'warn' for 'secret' on open — a posture write would be
+    // Baseline: the store seeds Monitor ('log') for 'secret' on open — a posture write would be
     // an observable change from it.
-    expect(db.policies.getCategoryAction('secret')).toBe('warn');
+    expect(db.policies.getCategoryAction('secret')).toBe('log');
     const transcriptBefore = readFileSync(transcriptFile);
     const tempBefore = readFileSync(tempFile);
     const projectBefore = readFileSync(projectFile);
@@ -151,8 +151,8 @@ describe('Leave exits the remediation flow with zero side effects', () => {
     expect(existsSync(join(workingDir, 'rotation-checklist.md'))).toBe(false);
 
     // No posture is written: the policies store is untouched — 'secret' still at the
-    // seeded 'warn' baseline, and settings.json was never created.
-    expect(db.policies.getCategoryAction('secret')).toBe('warn');
+    // seeded 'log' baseline, and settings.json was never created.
+    expect(db.policies.getCategoryAction('secret')).toBe('log');
     expect(existsSync(join(base, 'settings', 'settings.json'))).toBe(false);
 
     // The repo working tree is unchanged: the ordinary project file is byte-identical

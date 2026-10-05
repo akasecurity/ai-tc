@@ -181,7 +181,7 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
   // empty spaced div.
   return (
     <div className="mt-4 flex flex-col gap-3">
-      {rule.appliesTo && (
+      {rule.appliesTo?.extensions && (
         <Field label="Only in files">
           <div className="flex flex-wrap gap-1.5">
             {rule.appliesTo.extensions.map((ext, i) => (
@@ -189,6 +189,16 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
               // [".py", ".py"] is valid input and a content-derived key collides
               // on it. Index-suffixed, like the examples and fixtures lists.
               <Chip key={`${ext}-${String(i)}`}>{ext}</Chip>
+            ))}
+          </div>
+        </Field>
+      )}
+
+      {rule.appliesTo?.eventKinds && (
+        <Field label="Only on">
+          <div className="flex flex-wrap gap-1.5">
+            {rule.appliesTo.eventKinds.map((kind, i) => (
+              <Chip key={`${kind}-${String(i)}`}>{kind}</Chip>
             ))}
           </div>
         </Field>
@@ -248,6 +258,11 @@ function GatingDetail({ rule }: { rule: DetectionRule }) {
  */
 function FixtureList({ fixtures }: { fixtures: readonly RuleFixture[] }) {
   const shown = fixtures.slice(0, MAX_SAMPLES);
+  // A rule scoped by `appliesTo.eventKinds` ships the same text more than once,
+  // matching on one capture kind and not on another (or on none). Without the
+  // kind beside each case those rows read as contradictory, so once any
+  // fixture names a kind, every row says which kind it was scanned as.
+  const showsKind = fixtures.some((f) => f.eventKind !== undefined);
   return (
     <div className="flex flex-col gap-2">
       {shown.map((f, i) => (
@@ -270,6 +285,11 @@ function FixtureList({ fixtures }: { fixtures: readonly RuleFixture[] }) {
               {f.shouldMatch ? 'matches' : 'does not match'}
             </span>
             <span className="text-xs text-text-2">{clamp(f.label, MAX_LABEL_CHARS)}</span>
+            {showsKind && (
+              <span className="font-mono text-label text-text-3">
+                {f.eventKind !== undefined ? `on ${f.eventKind}` : 'no capture kind'}
+              </span>
+            )}
             {f.filePath !== undefined && (
               <span className="font-mono text-label text-text-3">
                 {clamp(f.filePath, MAX_LABEL_CHARS)}

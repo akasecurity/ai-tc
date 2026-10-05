@@ -53,6 +53,7 @@ export function bundledDetections(): InstalledPackInput[] {
     version: pack.version,
     name: pack.name,
     rules: pack.rawRules.map((raw) => Rule.parse(raw)),
+    defaultPolicyId: pack.defaultPolicy,
   }));
   return cachedDetections;
 }

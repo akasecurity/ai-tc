@@ -2,6 +2,7 @@ export * from './drizzle/deferred-migrations.ts';
 export * from './drizzle/sqlite-ddl.ts';
 export * from './exception-scope.ts';
 export * from './identity.ts';
+export * from './invisible-padding.ts';
 // Curated model catalog: vendor/platform vocabulary, the builder that declares a
 // model, the price table `token/cost-model.ts` reads, and id resolution.
 export * from './model/index.ts';

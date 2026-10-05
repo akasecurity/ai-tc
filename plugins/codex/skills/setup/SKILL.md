@@ -806,18 +806,33 @@ watching out for Codex going forward."
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.
 
-## Known limitation
+## Known limitations
 
-Live PreToolUse/PostToolUse redaction currently covers `Bash` shell calls only —
-Codex does not yet fire these hooks for `apply_patch` (file-write) calls (an
-upstream Codex hook-coverage gap). File-write **content is not scanned at all**
-on Codex — not live, and not after the fact either. The consent-gated historical
-scan this wizard offers in steps 1/3 reads conversation messages only, and the
-tool-call reconciler records a write's changed paths and byte sizes, never the
-bytes themselves. So a secret written into a file through `apply_patch` is
-neither redacted before it lands nor reported afterwards; only the path is
-recorded. If the user asks why a secret in a file edit wasn't caught, say so
-plainly rather than implying it is picked up somewhere else.
+Live scanning covers `Bash` shell calls and `apply_patch` file writes before
+they run, and the output of shell calls, Codex's web tool and MCP tools after
+they return. That includes the calls a code-mode `exec` makes: Codex fires the
+hooks for each tool the script calls (confirmed on codex-cli 0.160.0). The
+script itself fires no hook, so it is seen only through those calls, and web
+and MCP tool **inputs** are not scanned on the way in.
+
+The full text of every `apply_patch` call is **recorded in the local store**,
+with the values AKA detects masked, whether or not anything was found, the
+same as file writes on the other assistants AKA covers. That record is what a
+later re-scan checks against. Shell commands and tool output are recorded only
+when something is detected. Old bodies are cleared only if local body expiry is
+turned on in the workspace settings. A very large tool result is scanned up to
+a bound (5 million characters or 2,000 pieces, and about 7 seconds), past which
+the rest reaches the model unscanned.
+
+On a Codex release that fires these hooks for `Bash` alone, file-write
+**content is not scanned at all** — not live, and not after the fact either.
+The consent-gated historical scan this wizard offers in steps 1/3 reads
+conversation messages only, and the tool-call reconciler records a write's
+changed paths and byte sizes, never the bytes themselves. So there a secret
+written into a file through `apply_patch` is neither redacted before it lands
+nor reported afterwards; only the path is recorded. If the user asks why a
+secret in a file edit wasn't caught, say so plainly rather than implying it is
+picked up somewhere else.
 
 A redact policy cannot mask a **shell command**, because rewriting one silently
 changes what runs. What happens in its place is the workspace's **redact fallback** (`redactFallback` in

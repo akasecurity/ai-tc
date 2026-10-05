@@ -28,5 +28,15 @@
     "label": "invalid",
     "text": "Year: 1800",
     "shouldMatch": false
+  },
+  {
+    "label": "Portuguese date-of-birth label",
+    "text": "Nome: Maria Exemplo Silva, Data Nascimento: 22/03/1985, Processo 0000",
+    "shouldMatch": true
+  },
+  {
+    "label": "German date-of-birth label",
+    "text": "Geburtsdatum: 03/22/1985",
+    "shouldMatch": true
   }
 ]

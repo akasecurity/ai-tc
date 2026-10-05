@@ -129,6 +129,7 @@ describe('the store retention surface', () => {
       {
         pointerId,
         valueFingerprint: PROBE_FINGERPRINT,
+        valueIdentityFingerprint: PROBE_FINGERPRINT,
         fingerprintKeyVersion: 1,
         keyVersion: 1,
         category: 'secret',

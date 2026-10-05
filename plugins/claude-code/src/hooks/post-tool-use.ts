@@ -11,10 +11,10 @@
  *   no output → pass through
  *
  * tool_response arrives in the tool's native shape (Read: file.content, Bash:
- * stdout/stderr, WebFetch: result — see tool-response.ts), and updatedToolOutput
- * must be emitted in that same shape: Claude Code validates it against the
- * tool's output schema and falls back to the original output on mismatch.
- * TODO: extend RESPONSE_TEXT_PATHS as the matcher grows (MCP tools).
+ * stdout/stderr, WebFetch: result, Grep: content, mcp__*: text content blocks
+ * — see tool-response.ts), and updatedToolOutput must be emitted in that same
+ * shape: Claude Code validates it against the tool's output schema and falls
+ * back to the original output on mismatch.
  * Fail-open: any error → no output, exit 0.
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
@@ -25,7 +25,11 @@ import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
-import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
+import {
+  RESPONSE_SCAN_DEADLINE_MS,
+  responseEmitPayload,
+  scanResponseFields,
+} from './scan-response.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
@@ -104,10 +108,14 @@ async function main(): Promise<void> {
                 : { location: `${toolName} output`, kind: 'tool-output' },
             })
         : undefined,
+      { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();
   }
+  // Out of time before every field was scanned: what was found is still
+  // acted on, and the rest passed through, so count it like any fail-open.
+  if (outcome.unscannedFields > 0) countFailOpen();
 
   // The model note + user disclosure ride only on a tokenized outcome; a
   // narration fault drops the notes, never the rewrite.

@@ -6,7 +6,7 @@
   "severity": "low",
   "matcher": {
     "type": "regex",
-    "pattern": "(?<![A-Za-z0-9.-])[A-Za-z0-9][A-Za-z0-9.-]{0,251}\\.(?:internal|corp|local|lan|intranet|private|dev|staging|test|qa)(?:\\.(?:com|net|org|io|co|app))?\\b",
+    "pattern": "(?<![A-Za-z0-9.-])[A-Za-z0-9][A-Za-z0-9.-]{0,251}\\.(?:internal|corp|local|lan|intranet|private|staging|test|qa)(?:\\.(?:com|net|org|io|co|app))?\\b(?!\\.[A-Za-z0-9-]+(?!\\.?[A-Za-z0-9]))(?!\\.(?:d|tsx?|jsx?|mjs|cjs|json|md|py|sh|ya?ml|toml|txt|log|snap|html|css|rs|go)\\b)",
     "flags": "gi"
   },
   "examples": ["db.internal.com", "app.corp.local", "api.staging.example.com"]

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { FingerprintKey } from '../../src/fingerprint.ts';
 import {
+  exactFingerprintValue,
   fingerprintValue,
   loadOrCreateFingerprintKey,
   rotateFingerprintKey,
@@ -115,6 +116,26 @@ describe('SecretVault', () => {
       expect(await tokenize(SECRET)).toBe(await tokenize(SECRET));
       expect(repo.countEntries()).toBe(1);
       expect(must(repo.listAll()[0], 'a vault row').occurrenceCount).toBe(2);
+    });
+
+    it('keeps a value and its format-character-padded twin apart, each restoring its own exact text', async () => {
+      const padded = `${SECRET.slice(0, 4)}\u200B${SECRET.slice(4)}`;
+      const paddedToken = await tokenize(padded);
+      const cleanToken = await tokenize(SECRET);
+      expect(cleanToken).not.toBe(paddedToken);
+      expect(repo.countEntries()).toBe(2);
+      await expect(
+        vault.detokenize(paddedToken, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(padded);
+      await expect(
+        vault.detokenize(cleanToken, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(SECRET);
+
+      // Re-keying fingerprints the exact bytes too, so the twins do not collide.
+      const next = rotateFingerprintKey(dir);
+      await expect(vault.refreshFingerprints(next)).resolves.toBe(2);
+      expect(repo.byValueFingerprint(exactFingerprintValue(next, padded))).not.toBeNull();
+      expect(repo.byValueFingerprint(exactFingerprintValue(next, SECRET))).not.toBeNull();
     });
 
     it('returns distinct pointers for distinct values', async () => {
@@ -243,6 +264,7 @@ describe('SecretVault', () => {
         {
           pointerId: base32Encode(pointerId),
           valueFingerprint: fingerprintValue(fingerprintKey, raw),
+          valueIdentityFingerprint: fingerprintValue(fingerprintKey, raw),
           fingerprintKeyVersion: fingerprintKey.version,
           keyVersion: version,
           formatVersion: OLD_GENERATION,

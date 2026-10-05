@@ -170,7 +170,7 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'INCLUDES ITS TEXT. What is masked in that text follows the policy assigned to ' +
   'the detection that flagged the value: it is masked only where that policy is redact or ' +
   'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
-  'a flagged span. Every detection ships on monitor, so on a default install nothing in that ' +
+  'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
   'text is masked. Live sending is part of being attached and this setting does not change ' +
   'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
   'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
@@ -219,7 +219,7 @@ export const WEB_CHAT_SECTION_LABEL = 'Web chat capture';
 //   qualify the MASKING by the same standard the history-sync row states above,
 //     because it is the same mechanism: stored text is masked only where the
 //     detection that flagged the value resolves to redact or stronger, and
-//     every detection ships on monitor. "Masked at every detected span" would
+//     no detection ships on redact or block. "Masked at every detected span" would
 //     promise a default install a protection it does not have
 //   keep ENFORCEMENT out of the bargain. Blocking, redaction and warnings on
 //     what a user sends are not gated on this grant, so a machine that never
@@ -237,7 +237,7 @@ export const WEB_CHAT_SECTION_DESCRIPTION =
   'found something in. What is masked in that text follows the policy assigned to the detection ' +
   'that flagged the value: it is masked only where that policy is redact, vault or block, and ' +
   'under monitor or warn the value is stored as it was seen, as is everything outside a flagged ' +
-  'span. Every detection ships on monitor, so on a default install nothing in that text is ' +
+  'span. No detection ships on redact or block, so on a default install nothing in that text is ' +
   'masked. Your own messages are already recorded and this grant does not widen that; account, ' +
   'plan and quota data are not covered by it. What is recorded goes to the local store under ' +
   '~/.aka, and on a machine attached to a deployment it is forwarded there like any other ' +
@@ -261,7 +261,7 @@ export const WEB_CHAT_CHOICES: Choice<WebChatChoice>[] = [
       'The extension may record per-turn model, token and masked tool-call metadata, and may ' +
       'store the assistant reply text this machine is set to keep under ~/.aka — in which a ' +
       'value is masked only where the detection that flagged it is set to redact, vault or ' +
-      'block, and every detection ships on monitor.',
+      'block, and detections ship on monitor or warn, none on redact or block.',
   },
 ];
 

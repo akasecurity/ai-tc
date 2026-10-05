@@ -1,0 +1,169 @@
+[
+  {
+    "label": "home subdir with var",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "second arg is under home",
+    "text": "rm -rf ~/worktrees/x ~/.claude-demo/projects/-Users-x",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "absolute user dir",
+    "text": "rm -rf /Users/someone/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "HOME var after cd",
+    "text": "cd /tmp && rm -rf \"$HOME/cache-old\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "split flags",
+    "text": "rm -f -r ~/scratch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "relative dist",
+    "text": "rm -rf ./dist",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tmp dir",
+    "text": "rm -rf /tmp/x",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "node_modules",
+    "text": "rm -rf node_modules",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "single file under home, not recursive",
+    "text": "rm -f ~/.cache/demo.lock",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose",
+    "text": "Cleanup removes the build output; it never touches your home directory.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "GNU long flags",
+    "text": "rm --recursive --force /home/alice/build",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare /home",
+    "text": "rm -rf /home",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bare /Users",
+    "text": "rm -rf /Users",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "filesystem root",
+    "text": "rm -rf /",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "filesystem root glob",
+    "text": "rm -rf /*",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "system dir behind sudo",
+    "text": "sudo rm -rf /etc",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "system dir with slash",
+    "text": "rm -rf /var/",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "usr",
+    "text": "rm -rf /usr",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "parent directory",
+    "text": "rm -rf ..",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "end of options marker",
+    "text": "rm -rf -- ~/scratch",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed text",
+    "text": "echo \"rm -rf ~/projects\" > /tmp/note.txt",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "prose naming the command",
+    "text": "Never run rm -rf ~ on a shared box.",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "temp dir under /var",
+    "text": "rm -rf /var/folders/ab/T/tmp.1",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "one app dir under /usr",
+    "text": "rm -rf /usr/local/lib/demo-cache",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "sibling build dir",
+    "text": "rm -rf ../build",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "variable that only starts with HOME",
+    "text": "rm -rf $HOMEBREW_PREFIX/var/demo",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "same command quoted in a tool response is out of scope",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "eventKind": "response",
+    "shouldMatch": false
+  },
+  {
+    "label": "same command with no capture kind (folder scan) is out of scope",
+    "text": "rm -rf ~/projects/demo-app/$WORKDIR",
+    "shouldMatch": false
+  }
+]

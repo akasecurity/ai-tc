@@ -160,6 +160,7 @@ function vaultRow(pointerId: string): VaultRowInsert {
     // The store's identity key, unique per VALUE. Derived from the pointer id so
     // the mapping is 1:1 and a failing row is identifiable from either side.
     valueFingerprint: createHash('sha256').update(pointerId).digest('hex'),
+    valueIdentityFingerprint: createHash('sha256').update(pointerId).digest('hex'),
     fingerprintKeyVersion: 1,
     keyVersion: 1,
     category: 'secret',

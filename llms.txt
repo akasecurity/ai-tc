@@ -18,7 +18,7 @@ Detection and enforcement run locally. A handful of narrow paths do reach the ne
 - **Event** — a prompt, response, tool call, or file read captured from an agent session.
 - **Finding** — a rule match the detection engine produces against an event.
 - **Rule** — a JSON file describing what to detect: a keyword list, a regex pattern, or a validator.
-- **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Seven ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`.
+- **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Eight ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`, `command-risk`.
 - **Policy** — the decision taken when a rule or category fires.
 - **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop; separate packages ship for Codex CLI and Antigravity, plus a browser extension for ChatGPT and Claude.ai web chat.
 
@@ -42,7 +42,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 - `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex` and `@akasecurity/ai-tc-antigravity`.
 - `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
-- `rules/` — the seven built-in rule packs and their fixtures.
+- `rules/` — the eight built-in rule packs and their fixtures.
 - `skills/write-detection-rule/` — the authoring skill for new detection rules.
 - `web-ui/` — the local dashboard.
 

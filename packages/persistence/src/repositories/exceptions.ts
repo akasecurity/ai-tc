@@ -160,8 +160,8 @@ export const ACTIVE_REVEAL_GRANT_PREDICATE = `capability = 'reveal_to_model'
 
 /**
  * Detection-exception grants + the short-lived blocked-detections ledger,
- * bound to one open DB. An exception is keyed by (ruleId, keyed fingerprint of
- * the exact detected value): rows carry the HMAC fingerprint and a masked
+ * bound to one open DB. An exception is keyed by (ruleId, keyed identity
+ * fingerprint of the detected value, invisible padding removed): rows carry the HMAC fingerprint and a masked
  * preview — never the raw value, and never a reversible copy. Consumed,
  * expired, and revoked rows are audit evidence: nothing here hard-deletes
  * except the retention sweep over long-terminal rows and the 30-minute

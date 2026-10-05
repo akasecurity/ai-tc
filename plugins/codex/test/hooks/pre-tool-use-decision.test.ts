@@ -31,7 +31,7 @@ const IP = ['45', '79', '142', '6'].join('.');
 const EMAIL = ['user1', 'example.com'].join('@');
 
 const BASH_COMMAND: ScannableField = { field: 'command', executable: true };
-const APPLY_PATCH_INPUT: ScannableField = { field: 'input', executable: false };
+const APPLY_PATCH_INPUT: ScannableField = { field: 'command', executable: false };
 
 type Finding = CaptureResult['findings'][number];
 
@@ -101,12 +101,12 @@ function denyReason(output: PreToolUseOutput | null): string {
 }
 
 describe('SCANNABLE_FIELDS', () => {
-  it('marks Bash command as executable and apply_patch input as stored', () => {
+  it('marks Bash command as executable and apply_patch command as stored', () => {
     // The executable flag is the whole fix — flipping one silently reopens
     // in-place rewriting of command text (or breaks stored-text redaction).
     expect(SCANNABLE_FIELDS).toEqual({
       Bash: [{ field: 'command', executable: true }],
-      apply_patch: [{ field: 'input', executable: false }],
+      apply_patch: [{ field: 'command', executable: false }],
     });
   });
 });
@@ -167,7 +167,7 @@ describe('decidePreToolUse — a redact carrying no text denies instead of allow
   });
 
   it('denies the apply_patch call rather than passing the input through', () => {
-    const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+    const output = decidePreToolUse('apply_patch', { command: PATCH }, [
       { spec: APPLY_PATCH_INPUT, result: unredactable() },
     ]);
 
@@ -189,7 +189,7 @@ describe('decidePreToolUse — a redact carrying no text denies instead of allow
     // only a rewritable field can produce. The two notes answer different
     // questions and cannot both apply: this one is a runtime failure, the
     // executable one is a host limitation.
-    const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+    const output = decidePreToolUse('apply_patch', { command: PATCH }, [
       { spec: APPLY_PATCH_INPUT, result: unredactable() },
     ]);
     const reason = denyReason(output);
@@ -207,7 +207,7 @@ describe('decidePreToolUse — a redact carrying no text denies instead of allow
     // Driving both fields in one call is what makes this reachable: every
     // other degraded-redact case in this file is single-finding, and the
     // module's job is precisely not to cross-attribute between them.
-    const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+    const output = decidePreToolUse('apply_patch', { command: PATCH }, [
       { spec: BASH_COMMAND, result: degradedRedact('warn', PATCH, 'core-pii/ip-address', IP) },
       { spec: APPLY_PATCH_INPUT, result: unredactable() },
     ]);
@@ -234,7 +234,7 @@ describe('decidePreToolUse — apply_patch stored text keeps true redaction', ()
   it('apply_patch input: allow with the redacted field in updatedInput', () => {
     const input = `*** Begin Patch\n*** Update File: notes.txt\n+support = ${EMAIL}\n*** End Patch`;
     const result = redactResult(input, 'core-pii/email', EMAIL, '9c04d7');
-    const output = decidePreToolUse('apply_patch', { input }, [
+    const output = decidePreToolUse('apply_patch', { command: input }, [
       { spec: APPLY_PATCH_INPUT, result },
     ]);
 
@@ -243,7 +243,7 @@ describe('decidePreToolUse — apply_patch stored text keeps true redaction', ()
     }
     expect(output.hookSpecificOutput.permissionDecision).toBe('allow');
     expect(output.hookSpecificOutput.updatedInput).toEqual({
-      input: input.replace(EMAIL, '[REDACTED:PII]'),
+      command: input.replace(EMAIL, '[REDACTED:PII]'),
     });
     expect(output.systemMessage).toBe(
       'AKA redacted sensitive content in apply_patch input — flagged core-pii/email.' +
@@ -493,7 +493,7 @@ describe('decideInputPointerDeny', () => {
     // apply_patch content is durable text, not something the host executes —
     // a pointer there is data, decided by the regular capture pipeline.
     expect(
-      decideInputPointerDeny('apply_patch', { input: `body ${POINTER}` }, [APPLY_PATCH_INPUT]),
+      decideInputPointerDeny('apply_patch', { command: `body ${POINTER}` }, [APPLY_PATCH_INPUT]),
     ).toBeNull();
   });
 

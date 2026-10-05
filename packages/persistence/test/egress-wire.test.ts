@@ -56,23 +56,61 @@ describe('hashProjectKey', () => {
 const AT = String.fromCharCode(64);
 const gitUser = `git${AT}`;
 const aliceUser = `alice${AT}`;
+// A password, built for the same reason: `user:<password>@host` is a credential
+// shape to a scanner, so no case carries one as a literal.
+const TOKEN = ['t', 'ok'].join('');
+// A userinfo whose first colon comes before its `@`. In scp form git reads
+// everything before the first colon as the host, so this one names host `a`.
+const colonUser = `${['a', 'b'].join(':')}${AT}`;
+const BACKSLASH = String.fromCharCode(92);
+
+// The digest of a canonical string, from the documented construction rather
+// than through hashProjectKey, so a case can state what the digest was handed.
+const digestOver = (canonical: string): string =>
+  createHash('sha256').update(`v2:git:${canonical}`, 'utf8').digest('hex');
+
+// The four spellings one repository really produces, depending only on how it
+// was cloned. Two engineers on the same repo land in the same project only if
+// these agree, which is the whole reason the digest exists.
+const SAME_REPO = [
+  ['scp form', `${gitUser}github.com:acme/widgets.git`],
+  ['scp form without .git', `${gitUser}github.com:acme/widgets`],
+  ['https with .git', 'https://github.com/acme/widgets.git'],
+  ['https without .git', 'https://github.com/acme/widgets'],
+  ['https with credentials in the URL', `https://${aliceUser}github.com/acme/widgets.git`],
+  ['a capitalised host', 'https://GitHub.com/acme/widgets.git'],
+  ['a trailing slash', 'https://github.com/acme/widgets/'],
+  ['ssh:// form', `ssh://${gitUser}github.com/acme/widgets.git`],
+  ['an explicit port', 'https://github.com:443/acme/widgets.git'],
+] as const;
+
+// The exact string each branch of the canonicalization hands the digest,
+// stated as a construction rather than inferred from two calls agreeing. It
+// has to stay green across any change to how the parse is factored: a digest
+// that moved would re-bucket every project on the receiving side, and nothing
+// on either side could say which rule produced a given hash.
+const DIGESTED_AS = [
+  ['scp form', `${gitUser}github.com:acme/widgets.git`, 'github.com/acme/widgets'],
+  [
+    'a capitalised host and a trailing slash',
+    'https://GitHub.com/acme/widgets/',
+    'github.com/acme/widgets',
+  ],
+  [
+    'ssh:// with a port',
+    `ssh://${gitUser}github.com:22/acme/widgets.git`,
+    'github.com/acme/widgets',
+  ],
+  ['path case', 'https://example.com/acme/Widgets', 'example.com/acme/Widgets'],
+  ['a subgroup path', 'https://gitlab.com/group/sub/project.git', 'gitlab.com/group/sub/project'],
+  ['a bare host', 'https://github.com', 'github.com'],
+  ['a POSIX path', '/Users/dev/demo', '/Users/dev/demo'],
+  ['a Windows path', 'D:/repos/demo.git', 'D:/repos/demo.git'],
+  ['an unrecognised remote, trimmed', '  some-local-remote-name  ', 'some-local-remote-name'],
+  ['an empty remote', '', ''],
+] as const;
 
 describe('hashProjectKey — cross-device convergence', () => {
-  // The four spellings one repository really produces, depending only on how it
-  // was cloned. Two engineers on the same repo land in the same project only if
-  // these agree, which is the whole reason the digest exists.
-  const SAME_REPO = [
-    ['scp form', `${gitUser}github.com:acme/widgets.git`],
-    ['scp form without .git', `${gitUser}github.com:acme/widgets`],
-    ['https with .git', 'https://github.com/acme/widgets.git'],
-    ['https without .git', 'https://github.com/acme/widgets'],
-    ['https with credentials in the URL', `https://${aliceUser}github.com/acme/widgets.git`],
-    ['a capitalised host', 'https://GitHub.com/acme/widgets.git'],
-    ['a trailing slash', 'https://github.com/acme/widgets/'],
-    ['ssh:// form', `ssh://${gitUser}github.com/acme/widgets.git`],
-    ['an explicit port', 'https://github.com:443/acme/widgets.git'],
-  ] as const;
-
   const digestOf = (url: string): string => hashProjectKey(`git:${url}`);
 
   it.each(SAME_REPO)('converges %s onto one digest', (_label, url) => {
@@ -240,32 +278,6 @@ describe('hashProjectKey — cross-device convergence', () => {
     expect(hashProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(expected);
   });
 
-  // The exact string each branch of the canonicalization hands the digest,
-  // stated as a construction rather than inferred from two calls agreeing. It
-  // has to stay green across any change to how the parse is factored: a digest
-  // that moved would re-bucket every project on the receiving side, and nothing
-  // on either side could say which rule produced a given hash.
-  const DIGESTED_AS = [
-    ['scp form', `${gitUser}github.com:acme/widgets.git`, 'github.com/acme/widgets'],
-    [
-      'a capitalised host and a trailing slash',
-      'https://GitHub.com/acme/widgets/',
-      'github.com/acme/widgets',
-    ],
-    [
-      'ssh:// with a port',
-      `ssh://${gitUser}github.com:22/acme/widgets.git`,
-      'github.com/acme/widgets',
-    ],
-    ['path case', 'https://example.com/acme/Widgets', 'example.com/acme/Widgets'],
-    ['a subgroup path', 'https://gitlab.com/group/sub/project.git', 'gitlab.com/group/sub/project'],
-    ['a bare host', 'https://github.com', 'github.com'],
-    ['a POSIX path', '/Users/dev/demo', '/Users/dev/demo'],
-    ['a Windows path', 'D:/repos/demo.git', 'D:/repos/demo.git'],
-    ['an unrecognised remote, trimmed', '  some-local-remote-name  ', 'some-local-remote-name'],
-    ['an empty remote', '', ''],
-  ] as const;
-
   it.each(DIGESTED_AS)('digests %s over exactly its canonical string', (_label, url, canonical) => {
     const expected = createHash('sha256').update(`v2:git:${canonical}`, 'utf8').digest('hex');
     expect(hashProjectKey(`git:${url}`)).toBe(expected);
@@ -310,15 +322,129 @@ describe('canonicalRepoUrl', () => {
     expect(key).not.toContain('alice');
   });
 
-  it('agrees with the digest about the canonical form of a remote', () => {
-    // One parse behind both: for every remote that has a key, the digest of the
-    // remote is the digest of its key.
-    for (const [, url] of ONE_REMOTE) {
-      const expected = createHash('sha256')
-        .update(`v2:git:${canonicalRepoUrl(url) ?? ''}`, 'utf8')
-        .digest('hex');
-      expect(hashProjectKey(`git:${url}`)).toBe(expected);
+  // WHERE THE KEY AND THE DIGEST PART WAYS. Both read a remote through one parse,
+  // and for every remote the key accepts they agree. The key is also the one that
+  // gates forwarding, so it is stricter, and on three shapes it departs on
+  // purpose. The digest's own parse is frozen, because a moved digest would
+  // re-bucket every project on the receiving side; each departure is therefore
+  // made by the key alone, and the table and the case below state what the
+  // digest still reads, so a change to either side shows up here.
+  //
+  //   - a remote whose host is not the one git contacts is REFUSED by the key:
+  //     userinfo carrying a `?`, `#` or backslash, which ends a URL's authority
+  //     before the `@`; and, in scp form, userinfo carrying a colon, since git
+  //     takes everything before the first colon as the host.
+  //   - a string that begins with a URL scheme but fits no URL form this parse
+  //     reads (a bracketed IPv6 host, a non-numeric port) is REFUSED, instead of
+  //     being re-read as scp form with the scheme as the host.
+  //   - a `/.git` directory under the path CONVERGES onto the repository, where
+  //     the digest keeps the slash the suffix left behind.
+  const HOST_NOT_NAMED = [
+    [
+      'a ? in the userinfo, which ends the authority before the @',
+      `https://other.example?${AT}github.com/acme/work`,
+      'github.com/acme/work',
+    ],
+    [
+      'a # in the userinfo',
+      `https://other.example#${AT}github.com/acme/work`,
+      'github.com/acme/work',
+    ],
+    [
+      'a backslash in the userinfo',
+      `https://other.example${BACKSLASH}${AT}github.com/acme/work`,
+      'github.com/acme/work',
+    ],
+    [
+      'a colon in the userinfo of an scp remote',
+      `${colonUser}github.com:acme/work.git`,
+      'github.com/acme/work',
+    ],
+    [
+      'a bracketed IPv6 host with a password',
+      `https://user:${TOKEN}${AT}[fd00::1]/acme/work.git`,
+      `https/user:${TOKEN}${AT}[fd00::1]/acme/work`,
+    ],
+    [
+      'a bracketed IPv6 host over ssh://',
+      `ssh://${gitUser}[2001:db8::1]/acme/work.git`,
+      `ssh/${gitUser}[2001:db8::1]/acme/work`,
+    ],
+    ['a non-numeric port', 'https://github.com:abc/org/repo', 'https/github.com:abc/org/repo'],
+  ] as const;
+
+  it.each(HOST_NOT_NAMED)(
+    'gives no key for %s, though the digest reads it as it always did',
+    (_label, url, digestedAs) => {
+      expect(canonicalRepoUrl(url)).toBeUndefined();
+      expect(hashProjectKey(`git:${url}`)).toBe(digestOver(digestedAs));
+    },
+  );
+
+  it('converges a .git directory under the path onto the repository, which the digest does not', () => {
+    // The `.git` suffix strip leaves the slash in front of it behind, so the
+    // path read `org/repo/`. The key trims that slash again.
+    for (const url of [
+      'https://github.com/org/repo/.git',
+      'https://github.com/org/repo/.git/',
+      `${gitUser}github.com:org/repo/.git`,
+    ]) {
+      expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
     }
+    expect(hashProjectKey('git:https://github.com/org/repo/.git')).toBe(
+      digestOver('github.com/org/repo/'),
+    );
+  });
+
+  // The controls on the refusals above: each is the same family of remote with
+  // an ordinary userinfo, and must still key. Without them a key that refused
+  // every remote with userinfo would satisfy every case above.
+  it.each([
+    ['a plain user@host scp remote', `${gitUser}github.com:org/repo.git`],
+    [
+      'an https remote with a user and an explicit port',
+      `https://user${AT}github.com:443/org/repo`,
+    ],
+    [
+      'an https remote with a password, which is where a URL carries one',
+      `https://user:${TOKEN}${AT}github.com/org/repo`,
+    ],
+    ['an ssh:// remote with a user and a port', `ssh://${gitUser}github.com:22/org/repo.git`],
+  ])('still keys %s', (_label, url) => {
+    expect(canonicalRepoUrl(url)).toBe('github.com/org/repo');
+  });
+
+  // Every remote the digest pin tables cover, whichever table it is in.
+  const PINNED_REMOTES: readonly (readonly [string, string])[] = [
+    ...SAME_REPO,
+    ...DIGESTED_AS.map(([label, url]) => [label, url] as const),
+    ...ONE_REMOTE,
+  ];
+  // Of those, the ones that name no repository every clone shares: a forge with
+  // no path, a place on one machine, a string that is no remote, or nothing.
+  const PINNED_BUT_NOT_KEYED = [
+    'a bare host',
+    'a POSIX path',
+    'a Windows path',
+    'an unrecognised remote, trimmed',
+    'an empty remote',
+  ];
+
+  it('agrees with the digest about every pinned remote it keys', () => {
+    // For every remote that has a key, the digest of the remote is the digest of
+    // its key. Checked over every spelling the digest pins cover, not one key,
+    // and the refusals are listed rather than skipped, so a key that quietly
+    // refused more would fail here instead of passing for want of rows.
+    const refused: string[] = [];
+    for (const [label, url] of PINNED_REMOTES) {
+      const key = canonicalRepoUrl(url);
+      if (key === undefined) {
+        refused.push(label);
+        continue;
+      }
+      expect(hashProjectKey(`git:${url}`), label).toBe(digestOver(key));
+    }
+    expect(refused).toEqual(PINNED_BUT_NOT_KEYED);
   });
 
   it('still reads scp form against a host that is merely named file', () => {
@@ -331,7 +457,6 @@ describe('canonicalRepoUrl', () => {
   // one machine, a forge rather than a repository, or nothing at all — and
   // resolveRepoIdentity hands back a worktree PATH for a repository with no
   // remote, so the path cases are real inputs, not hypotheticals.
-  const BACKSLASH = String.fromCharCode(92);
   const NO_KEY: [string, string][] = [
     ['a POSIX worktree path', '/Users/dev/demo'],
     ['a relative path remote', '../sibling.git'],
@@ -350,6 +475,7 @@ describe('canonicalRepoUrl', () => {
     ['a host and port with no path', `ssh://${gitUser}github.com:22`],
     ['an empty string', ''],
     ['only whitespace', '   '],
+    ...HOST_NOT_NAMED.map(([label, url]): [string, string] => [label, url]),
   ];
 
   it.each(NO_KEY)('gives no key for %s', (_label, url) => {

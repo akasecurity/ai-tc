@@ -209,6 +209,55 @@ export function hashProjectKey(projectKey: string): string {
  */
 const SCOPE_KEY = printable(512);
 
+// What makes a string a URL rather than an scp-style remote: a scheme and `://`.
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+// The userinfo `parseGitRemote` skips: what its optional `[^@/]+@` group takes at
+// the start of the authority (scheme form) or of the string (scp form), which is
+// everything up to the first `@` when no `/` comes first.
+const SKIPPED_USERINFO = /^([^@/]+)@/;
+
+// A character that ends a URL's authority before git gets as far as an `@`.
+const ENDS_AUTHORITY = /[?#\\]/;
+
+/**
+ * Whether the host `parseGitRemote` read out of this remote is the one git would
+ * contact, judged on what the parse skipped on the way to it. KEY ONLY: the
+ * digest has no such refusal and hashes whatever the parse produced.
+ *
+ * The parse takes any `[^@/]+@` prefix as userinfo and, when the URL form does
+ * not match, falls back to scp form. A string git reads differently then names a
+ * host it would never contact, and a key built from it could be matched against
+ * an enrolled repository on a host that checkout does not talk to. Three shapes:
+ *
+ *   - a URL whose skipped userinfo holds a `?`, `#` or `\`. Each ends the
+ *     authority before the `@`, so git's request goes to the host in front of
+ *     that character, and what follows the `@` is a query or a fragment.
+ *   - an scp remote whose skipped userinfo holds a `:`. Git takes everything
+ *     before the first colon as the host, so it ssh-connects to the text in
+ *     front of that colon and reads the rest, `@` and all, as the path.
+ *   - a string that begins with a URL scheme but fits no URL form the parse
+ *     reads: a bracketed IPv6 host, a non-numeric port. Those fall through to scp
+ *     form, which keeps the scheme as the host and the userinfo, a password
+ *     included, in the path, so the key would carry it.
+ *
+ * The userinfo is the text before the first `@`, which is what the parse's group
+ * takes whenever it takes anything. It can refuse one scp remote the parse read
+ * no userinfo from: a colon in front of an `@` inside the first path segment.
+ * That costs a key and forwards nothing, which is the safe side of the choice.
+ */
+function namesTheHostGitContacts(url: string): boolean {
+  const trimmed = url.trim();
+  const scheme = URL_SCHEME.exec(trimmed);
+  if (scheme === null) {
+    const userinfo = SKIPPED_USERINFO.exec(trimmed)?.[1];
+    return !userinfo?.includes(':');
+  }
+  if (!SCHEME_FORM.test(trimmed)) return false;
+  const userinfo = SKIPPED_USERINFO.exec(trimmed.slice(scheme[0].length))?.[1];
+  return userinfo === undefined || !ENDS_AUTHORITY.test(userinfo);
+}
+
 /**
  * A repository's identity as a scope key: `host/path`, the canonical form
  * above, or `undefined` when the URL names no remote every clone shares.
@@ -248,8 +297,13 @@ const SCOPE_KEY = printable(512);
  */
 export function canonicalRepoUrl(url: string): string | undefined {
   const remote = parseGitRemote(url);
-  if (remote === undefined || remote.path === '') return undefined;
-  const key = `${remote.host}/${remote.path}`;
+  if (remote === undefined || !namesTheHostGitContacts(url)) return undefined;
+  // The `.git` strip leaves the slash in front of a `/.git` directory behind, so
+  // a path read `org/repo/` there. The digest keeps that, and must; the key does
+  // not, or it would read a second key for the repository `org/repo` names.
+  const path = trimSlashes(remote.path);
+  if (path === '') return undefined;
+  const key = `${remote.host}/${path}`;
   return SCOPE_KEY.safeParse(key).success ? key : undefined;
 }
 

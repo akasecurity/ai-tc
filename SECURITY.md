@@ -7,9 +7,7 @@ project itself seriously.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Report privately through GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
-("Report a vulnerability" under the repository's **Security** tab), or by email to
-**security@akasecurity.io**.
+Report privately by email to **security@akasecurity.io**.
 
 Please include:
 

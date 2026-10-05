@@ -13,6 +13,7 @@
     "bearer-token",
     "env-key-value",
     "password-field",
+    "secret-config-value",
     "docker-config-auth",
     "kubeconfig-token",
     "api-key-header",

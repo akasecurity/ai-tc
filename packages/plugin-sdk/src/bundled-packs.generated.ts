@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 109 rules.
+// 8 packs / 110 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -99,6 +99,7 @@ import secretsInfraJwtToken from '../../../rules/secrets-infra/jwt-token.json';
 import secretsInfraKubeconfigToken from '../../../rules/secrets-infra/kubeconfig-token.json';
 import secretsInfraPasswordField from '../../../rules/secrets-infra/password-field.json';
 import secretsInfraPgpPrivateKey from '../../../rules/secrets-infra/pgp-private-key.json';
+import secretsInfraSecretConfigValue from '../../../rules/secrets-infra/secret-config-value.json';
 import secretsInfraSshPrivateKey from '../../../rules/secrets-infra/ssh-private-key.json';
 import secretsAnthropicApiKey from '../../../rules/secrets/anthropic-api-key.json';
 import secretsAwsAccessKey from '../../../rules/secrets/aws-access-key.json';
@@ -294,6 +295,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       secretsInfraBearerToken,
       secretsInfraEnvKeyValue,
       secretsInfraPasswordField,
+      secretsInfraSecretConfigValue,
       secretsInfraDockerConfigAuth,
       secretsInfraKubeconfigToken,
       secretsInfraApiKeyHeader,

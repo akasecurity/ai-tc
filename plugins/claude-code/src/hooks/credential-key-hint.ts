@@ -15,20 +15,59 @@ import { isHighEntropy } from '@akasecurity/plugin-sdk';
 const CREDENTIAL_WORD =
   'secret(?:[_-]?key)?|token|passw(?:or)?d|credentials?|bearer|(?:api|private|access|auth|session|signing|encryption)[_-]?key';
 
-// A name in a command or path: starts at a word edge, may carry a dotted or
-// dashed prefix (`auth.secret_key`, `X-Auth-Token`), ends on the credential
-// word with nothing identifier-like (or a `.suffix`) after it.
-const KEY_IN_INPUT = new RegExp(
-  String.raw`(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,64}?(?:${CREDENTIAL_WORD})(?![A-Za-z0-9_-]|\.[A-Za-z])`,
-  'i',
-);
+// An identifier run in a command or path. A run is a credential NAME only when
+// it ends in a credential word at a word edge: the whole run (`token`), after a
+// separator (`API_TOKEN`, `X-Auth-Token`) or at a camelCase hump (`accessToken`).
+// `jsonwebtoken` ends in "token" but is a package name, so it is not one.
+const RUN = /[A-Za-z0-9_-]+/g;
+const ENDS_IN_CREDENTIAL_WORD = new RegExp(`(?:${CREDENTIAL_WORD})$`, 'i');
 
 // Only a short input is searched: a long script names many things, and the
 // output gate below is what keeps a stray match from mattering.
 const MAX_INPUT_CHARS = 4_000;
 
+// A command that prints a file's content, so the last component of its path
+// names what the output holds (`cat /run/secrets/api_token`). For any other
+// command a credential word inside a path (`cd src/token`) is a directory or a
+// package, not a field.
+const FILE_READER = /^\s*(?:cat|head|tail|less|more|bat)\b/;
+
+function isCredentialName(run: string): boolean {
+  const name = run.replace(/^[_-]+/, '');
+  const word = ENDS_IN_CREDENTIAL_WORD.exec(name);
+  if (word === null) return false;
+  const before = name.slice(0, word.index);
+  if (before === '' || /[_-]$/.test(before)) return true;
+  const first = word[0].charAt(0);
+  return /[a-z0-9]$/.test(before) && first !== first.toLowerCase();
+}
+
+// The credential name a command mentions as a field, variable or argument: the
+// first identifier run that is a credential name, is not part of a path (unless
+// the command reads a file) and is not followed by a `.suffix` (`token.id`,
+// `secret_key.txt`, `.token.value` name something other than the secret). Only
+// the run itself is returned, so `.models.local.server.secret_key` yields
+// `secret_key`.
+function nameInCommand(command: string): string | undefined {
+  const readsFile = FILE_READER.test(command);
+  for (const match of command.matchAll(RUN)) {
+    const run = match[0];
+    if (!isCredentialName(run)) continue;
+    const before = command.charAt(match.index - 1);
+    const after = command.charAt(match.index + run.length);
+    const next = command.charAt(match.index + run.length + 1);
+    const inPath = before === '/' || before === '\\' || after === '/' || after === '\\';
+    if (inPath && !(readsFile && (before === '/' || before === '\\') && !/[/\\]/.test(after))) {
+      continue;
+    }
+    if (after === '.' && /[A-Za-z]/.test(next)) continue;
+    return run.replace(/^[_-]+/, '');
+  }
+  return undefined;
+}
+
 // The tool inputs that name where the printed value came from. Bash: the
-// command. Read: the file path.
+// command. Read: the file path, whose last component is the name.
 const INPUT_FIELD: Record<string, string> = { Bash: 'command', Read: 'file_path' };
 
 /** The credential-like name a tool call's input mentions, if any. */
@@ -37,12 +76,16 @@ export function credentialKeyFromInput(toolName: string, toolInput: unknown): st
   if (field === undefined || typeof toolInput !== 'object' || toolInput === null) return undefined;
   const text: unknown = (toolInput as Record<string, unknown>)[field];
   if (typeof text !== 'string' || text.length > MAX_INPUT_CHARS) return undefined;
-  const match = KEY_IN_INPUT.exec(text);
-  return match?.[0].replace(/^[.-]+/, '');
+  if (toolName === 'Read') {
+    const base = text.slice(Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\')) + 1);
+    return isCredentialName(base) ? base.replace(/^[_-]+/, '') : undefined;
+  }
+  return nameInCommand(text);
 }
 
-// One token: no whitespace or quotes, not starting like a path.
-const BARE_TOKEN = /^[A-Za-z0-9+_=-][A-Za-z0-9+/_=.~-]{19,511}$/;
+// One token: no whitespace or quotes, not starting like a path. At most 256
+// characters, the longest value the config-value rule reads.
+const BARE_TOKEN = /^[A-Za-z0-9+_=-][A-Za-z0-9+/_=.~-]{19,255}$/;
 
 /** A scanned text that wraps the real one so a rule can see the key name. */
 export interface KeyAnnotation {

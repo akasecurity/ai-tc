@@ -19,15 +19,27 @@ const bash = (command: string): unknown => ({ command });
 
 describe('credentialKeyFromInput', () => {
   it.each([
-    ['jq path', 'jq -r .auth.secret_key settings.json', 'auth.secret_key'],
+    ['jq path', 'jq -r .auth.secret_key settings.json', 'secret_key'],
     ['jq bracket path', `jq -r '.auth["secret_key"]' settings.json`, 'secret_key'],
     ['env expansion', 'echo "$API_TOKEN"', 'API_TOKEN'],
     ['printenv', 'printenv GITHUB_TOKEN', 'GITHUB_TOKEN'],
-    ['yq', 'yq .db.password config.yml', 'db.password'],
+    ['yq', 'yq .db.password config.yml', 'password'],
     ['camelCase', 'node -p "require(\'./c.json\').accessKey"', 'accessKey'],
     ['upper-case with a dash', 'cat conf | grep -i X-Auth-Token', 'X-Auth-Token'],
   ] as const)('reads the key from a Bash command: %s', (_label, command, key) => {
     expect(credentialKeyFromInput('Bash', bash(command))).toBe(key);
+  });
+
+  it('uses only the last component of a deep lookup path', () => {
+    expect(
+      credentialKeyFromInput('Bash', bash('jq -r .models.local.auth_cfg.server.secret_key c.json')),
+    ).toBe('secret_key');
+    expect(credentialKeyFromInput('Bash', bash('jq -r .a.b.c.d.bearer c.json'))).toBe('bearer');
+  });
+
+  it('reads the last path component only for a command that prints a file', () => {
+    expect(credentialKeyFromInput('Bash', bash('cat /run/secrets/api_token'))).toBe('api_token');
+    expect(credentialKeyFromInput('Bash', bash('ls /run/secrets/api_token'))).toBeUndefined();
   });
 
   it('reads the key from a Read path', () => {
@@ -39,7 +51,11 @@ describe('credentialKeyFromInput', () => {
     'jq -r .token_count settings.json',
     'jq -r .secret_name settings.json',
     'jq -r .token.id settings.json',
+    'jq -r .token.value settings.json',
     'jq -r .client_secret_id settings.json',
+    'cd ~/src/token && git rev-parse HEAD',
+    'git log -1 --format=%H -- src/auth/token',
+    'npm view jsonwebtoken dist.shasum',
     'cat notes.txt',
     'ls -la',
   ])('names no key for %s', (command) => {
@@ -82,6 +98,11 @@ describe('annotateBareValue', () => {
     expect(annotateBareValue('secret_key', output)).toBeUndefined();
   });
 
+  it('leaves a token longer than the rule reads alone', () => {
+    expect(annotateBareValue('secret_key', `${'0123456789abcdef'.repeat(16)}0`)).toBeUndefined();
+    expect(annotateBareValue('secret_key', '0123456789abcdef'.repeat(16))).toBeDefined();
+  });
+
   it('does nothing without a key', () => {
     expect(annotateBareValue(undefined, HEX)).toBeUndefined();
   });
@@ -101,7 +122,7 @@ describe('scannableResponseFields with a tool input', () => {
       bash('jq -r .auth.secret_key settings.json'),
     );
     expect(fields).toHaveLength(1);
-    expect(fields[0]?.annotation?.prefix).toBe('auth.secret_key: "');
+    expect(fields[0]?.annotation?.prefix).toBe('secret_key: "');
   });
 
   it('leaves a field alone when the command names no key', () => {
@@ -196,6 +217,28 @@ describe('the issue case, end to end through the response scan', () => {
     const outcome = await runBash('sha256sum release.tar', `${HEX}\n`, 'redact');
     expect(outcome.redactedFindings).toEqual([]);
     expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
+  });
+
+  it('masks a bare value read through a deep jq path, with one finding', async () => {
+    const outcome = await runBash(
+      'jq -r .models.local.auth_cfg.server.secret_key settings.json',
+      `${HEX}\n`,
+      'redact',
+    );
+    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
+    expect(outcome.redactedFindings.length).toBeGreaterThan(0);
+  });
+
+  it('does not mask a commit hash printed after a command that merely mentions a token path', async () => {
+    for (const command of [
+      'cd ~/src/token && git rev-parse HEAD',
+      'git log -1 --format=%H -- src/auth/token',
+      'npm view jsonwebtoken dist.shasum',
+    ]) {
+      const outcome = await runBash(command, `${HEX}\n`, 'redact');
+      expect(outcome.redactedFindings, command).toEqual([]);
+      expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
+    }
   });
 
   it('does not touch a bare count under a look-alike key', async () => {

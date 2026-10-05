@@ -221,16 +221,36 @@ const SKIPPED_USERINFO = /^([^@/]+)@/;
 // A character that ends a URL's authority before git gets as far as an `@`.
 const ENDS_AUTHORITY = /[?#\\]/;
 
+// A plain host name: letters, digits, dot, underscore and hyphen, and nothing
+// else. The hyphen and underscore keep an ssh config alias such as
+// `github.com-personal` valid. The parse lowercases the host, so the capitals
+// are here for the reader, not for a value that reaches it.
+const PLAIN_HOST = /^[A-Za-z0-9._-]+$/;
+
+// A query or a fragment, which no repository's identity includes.
+const QUERY_OR_FRAGMENT = /[?#]/;
+
 /**
  * Whether the host `parseGitRemote` read out of this remote is the one git would
- * contact, judged on what the parse skipped on the way to it. KEY ONLY: the
- * digest has no such refusal and hashes whatever the parse produced.
+ * contact: a plain host name, and judged also on what the parse skipped on the
+ * way to it. KEY ONLY: the digest has no such refusal and hashes whatever the
+ * parse produced.
  *
- * The parse takes any `[^@/]+@` prefix as userinfo and, when the URL form does
- * not match, falls back to scp form. A string git reads differently then names a
- * host it would never contact, and a key built from it could be matched against
- * an enrolled repository on a host that checkout does not talk to. Three shapes:
+ * The parse takes any `[^@/]+@` prefix as userinfo, then any run of characters
+ * but `/` and `:` as the host, and when the URL form does not match it falls back
+ * to scp form. A string git reads differently then names a host it would never
+ * contact, and a key built from it could be matched against an enrolled
+ * repository on a host that checkout does not talk to. Four shapes:
  *
+ *   - a host that is not a plain host name: one with any character outside
+ *     letters, digits, dot, underscore and hyphen. The parse puts no limit on
+ *     what the host holds, so a `?`, `#` or `\` (each ends a URL's authority, so
+ *     git contacts the text in front of it), an `@` (a second userinfo separator,
+ *     or one with nothing on a side of it) or a control character can sit in it.
+ *     An ssh config alias such as `github.com-personal` is plain and keeps its
+ *     key. A host written with non-ASCII characters is not plain and gets no key;
+ *     its punycode spelling is, and does. A bracketed IPv6 literal gets none
+ *     either, as it did before.
  *   - a URL whose skipped userinfo holds a `?`, `#` or `\`. Each ends the
  *     authority before the `@`, so git's request goes to the host in front of
  *     that character, and what follows the `@` is a query or a fragment.
@@ -247,7 +267,8 @@ const ENDS_AUTHORITY = /[?#\\]/;
  * no userinfo from: a colon in front of an `@` inside the first path segment.
  * That costs a key and forwards nothing, which is the safe side of the choice.
  */
-function namesTheHostGitContacts(url: string): boolean {
+function namesTheHostGitContacts(url: string, host: string): boolean {
+  if (!PLAIN_HOST.test(host)) return false;
   const trimmed = url.trim();
   const scheme = URL_SCHEME.exec(trimmed);
   if (scheme === null) {
@@ -276,6 +297,22 @@ function namesTheHostGitContacts(url: string): boolean {
  * A host with no path is `undefined` too: `github.com` names a forge, not a
  * repository, and enrolling it would enroll every repository on it.
  *
+ * So is a remote whose host is not one git would contact as the parse read it,
+ * which `namesTheHostGitContacts` judges. The host must be a plain host name —
+ * letters, digits, dot, underscore and hyphen — so a `?`, `#`, backslash, `@` or
+ * control character inside it gives no key, and so does a host spelled in
+ * non-ASCII characters (its punycode spelling keys). The userinfo the parse
+ * skipped is judged too: a `?`, `#` or backslash in a URL's, or a colon in an scp
+ * remote's, means git reads a different host. A string that begins with a URL
+ * scheme but fits no URL form the parse reads, such as a bracketed IPv6 host or a
+ * non-numeric port, gets none, rather than being re-read as scp form.
+ *
+ * So is a path with a query or a fragment in it, a `?` or `#` anywhere in the
+ * path. Neither is part of a repository's identity. A query can carry a token,
+ * which a key would then store, stamp on each capture and print wherever a scope
+ * is listed; and a fragment would give one repository a second key. The refusal
+ * is on the character, whatever follows it.
+ *
  * So is a key that is not printable: longer than the cap a scope entry's
  * identity has, or carrying a control or format character. Whoever wrote a
  * repository's git config chose every byte of its remote, and a key is meant to
@@ -299,12 +336,12 @@ function namesTheHostGitContacts(url: string): boolean {
  */
 export function canonicalRepoUrl(url: string): string | undefined {
   const remote = parseGitRemote(url);
-  if (remote === undefined || !namesTheHostGitContacts(url)) return undefined;
+  if (remote === undefined || !namesTheHostGitContacts(url, remote.host)) return undefined;
   // The `.git` strip leaves the slash in front of a `/.git` directory behind, so
   // a path read `org/repo/` there. The digest keeps that, and must; the key does
   // not, or it would read a second key for the repository `org/repo` names.
   const path = trimSlashes(remote.path);
-  if (path === '') return undefined;
+  if (path === '' || QUERY_OR_FRAGMENT.test(path)) return undefined;
   const key = `${remote.host}/${path}`;
   return SCOPE_KEY.safeParse(key).success ? key : undefined;
 }

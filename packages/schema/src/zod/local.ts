@@ -645,8 +645,19 @@ export function scopeVerdict(
 
 /**
  * The scope as the filter value a store read takes: `undefined` in machine mode,
- * meaning no filter, else the resolved keys, sorted. An empty list is a real
- * answer and matches nothing.
+ * meaning no filter at all, else the resolved keys, sorted. An empty list is a
+ * real answer and matches nothing.
+ *
+ * HOW A CALLER CONSUMES IT. A list is bound as ONE parameter, a JSON array, and
+ * matched with `IN (SELECT value FROM json_each(:scopeKeys))`, where `[]` selects
+ * no row. It is never interpolated into an `IN (…)` list: that puts values taken
+ * from remote URLs someone else wrote into the SQL text. Nor is it spread into
+ * one placeholder per key, which keeps the values out of the text but makes the
+ * statement depend on how many keys there are, so it cannot be prepared once
+ * beside the machine-mode statement. `undefined` is machine mode: run the
+ * statement WITHOUT the filter. Test for `undefined` itself, never for
+ * emptiness, because reading `[]` as "no filter" would turn the answer that
+ * selects nothing into the one that selects everything.
  *
  * One function, so every read is handed the same value and the machine/scoped
  * choice is written once. A throw while reading the keys gives `[]`: a read that

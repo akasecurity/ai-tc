@@ -49,6 +49,15 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     expect(s.onboardedAt).toBeUndefined();
   });
 
+  it('pins the settings spec version, so moving it is a decision rather than a side effect', () => {
+    // The case above compares through the constant, so it stays green whatever
+    // the constant says: reverting the bump for the attachment scope would pass
+    // it. The version is a changelog marker that nothing reads, which is exactly
+    // why a change to it needs a test that names the number. The next field that
+    // bumps it changes this literal on purpose.
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(9);
+  });
+
   it('enables in-place Data Shares extraction by default', () => {
     expect(WorkspaceSettings.parse({}).dataSharesInPlace).toBe(true);
   });

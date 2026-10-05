@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -278,7 +279,7 @@ describe('resolveRepoAttribution', () => {
     // could ever be enrolled. The slug is unaffected.
     const remoteless = repoAt('remoteless', '[core]\n\tbare = false\n');
     const localPath = repoAt('local-path', ORIGIN('/srv/repos/widgets.git'));
-    const fileUrl = repoAt('file-url', ORIGIN('file:///srv/repos/widgets.git'));
+    const fileUrl = repoAt('file-url', ORIGIN(pathToFileURL('/srv/repos/widgets.git').href));
     expect(resolveRepoAttribution(remoteless)).toEqual({ repo: 'remoteless' });
     expect(resolveRepoAttribution(localPath)).toEqual({ repo: 'widgets' });
     expect(resolveRepoAttribution(fileUrl)).toEqual({ repo: 'widgets' });

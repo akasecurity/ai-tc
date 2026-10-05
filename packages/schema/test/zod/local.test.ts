@@ -1,16 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
+import type { AttachmentMode } from '../../src/zod/control-plane.ts';
+import type { ResolvedAttachmentScope } from '../../src/zod/local.ts';
 import {
+  AttachmentScope,
+  AttachmentScopeEntry,
   canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
+  isAttachmentScopeValid,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
+  parseAttachmentScope,
+  resolveScope,
+  scopeFilterOf,
+  scopeVerdict,
   toEventRow,
   toFindingRow,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
@@ -588,5 +597,475 @@ describe('canSweepSyncLane', () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+// Fixtures for the attachment-scope suites below. Identities are canonical repo
+// keys (`host/owner/repo`), and every comparison on them is byte-for-byte.
+const WORK_REPO = 'github.com/acme/work-repo';
+const OTHER_WORK_REPO = 'github.com/acme/infra';
+const PERSONAL_REPO = 'github.com/someone/dotfiles';
+// Built at runtime so this file holds no raw control byte.
+const ESC = String.fromCharCode(0x1b);
+
+const scopeEntry = (identity: string, extra: Record<string, unknown> = {}) => ({
+  kind: 'repo',
+  identity,
+  enrolledAt: ISO,
+  ...extra,
+});
+
+const scopeFor = (endpoint: string, ...identities: string[]) => ({
+  endpoint,
+  entries: identities.map((identity) => scopeEntry(identity)),
+});
+
+// Garbled or future-shaped records. Each must cost nothing but itself.
+const GARBLED_SCOPES: [string, unknown][] = [
+  ['a string', 'not-a-scope'],
+  ['a number', 42],
+  ['null', null],
+  ['an array', []],
+  ['an envelope with a non-string endpoint', { endpoint: 7, entries: [] }],
+  ['an envelope whose entries is not an array', { endpoint: ENDPOINT, entries: 'x' }],
+  [
+    'an envelope holding only a future-shaped entry',
+    { endpoint: ENDPOINT, entries: [scopeEntry(WORK_REPO, { kind: 'org' })] },
+  ],
+];
+
+describe('WorkspaceSettings.attachmentScope', () => {
+  it('is absent by default, with no default to fill, so a fresh settings file is unchanged', () => {
+    expect(WorkspaceSettings.parse({}).attachmentScope).toBeUndefined();
+    expect(JSON.stringify(defaultWorkspaceSettings())).not.toContain('attachmentScope');
+  });
+
+  it('carries NO meta id — not on the field, not on either shape', () => {
+    expect(WorkspaceSettings.shape.attachmentScope.meta()?.id).toBeUndefined();
+    expect(AttachmentScope.meta()?.id).toBeUndefined();
+    expect(AttachmentScopeEntry.meta()?.id).toBeUndefined();
+  });
+
+  it('round-trips a well-formed record untouched', () => {
+    const scope = scopeFor(ENDPOINT, WORK_REPO);
+    expect(WorkspaceSettings.parse({ attachmentScope: scope }).attachmentScope).toEqual(scope);
+  });
+
+  // The reason the field is untyped: a settings.json that fails this schema
+  // reads as unonboarded defaults, and the next save writes those back.
+  it.each(GARBLED_SCOPES)(
+    'keeps every other setting, and the raw value, when the record is %s',
+    (_label, raw) => {
+      const file = {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+        historySyncConsent: consent(HISTORY_SYNC_PAYLOAD_VERSION),
+        onboardedAt: ISO,
+        attachmentScope: raw,
+      };
+      const parsed = WorkspaceSettings.parse(file);
+      expect(isAttached(parsed)).toBe(true);
+      expect(parsed.controlPlane).toEqual(file.controlPlane);
+      expect(parsed.historySyncConsent).toEqual(file.historySyncConsent);
+      expect(parsed.onboardedAt).toBe(ISO);
+      // Kept exactly as found, so the next save writes it back rather than losing it,
+      expect(parsed.attachmentScope).toEqual(raw);
+      // and it names nothing.
+      expect(parseAttachmentScope(parsed.attachmentScope)?.entries ?? []).toEqual([]);
+    },
+  );
+});
+
+describe('parseAttachmentScope', () => {
+  const NOT_A_SCOPE: [string, unknown][] = [
+    ['undefined', undefined],
+    ['a string', 'not-a-scope'],
+    ['a number', 42],
+    ['null', null],
+    ['an array', []],
+    ['an envelope with no endpoint', { entries: [] }],
+    ['an envelope with an empty endpoint', { endpoint: '', entries: [] }],
+    ['an envelope with a non-string endpoint', { endpoint: 7, entries: [] }],
+    ['an envelope with no entries', { endpoint: ENDPOINT }],
+    [
+      'an envelope whose entries is an object',
+      { endpoint: ENDPOINT, entries: { 0: scopeEntry(WORK_REPO) } },
+    ],
+  ];
+
+  it('reads a well-formed record', () => {
+    const raw = {
+      endpoint: ENDPOINT,
+      entries: [
+        scopeEntry(WORK_REPO, { label: 'Work repo' }),
+        { kind: 'account', identity: 'claude:org-1234', enrolledAt: ISO },
+      ],
+    };
+    expect(parseAttachmentScope(raw)).toEqual(raw);
+  });
+
+  it('reads an empty entry list as a valid, empty scope', () => {
+    expect(parseAttachmentScope(scopeFor(ENDPOINT))).toEqual({ endpoint: ENDPOINT, entries: [] });
+  });
+
+  it('drops a bad entry by itself and keeps the rest', () => {
+    const raw = {
+      endpoint: ENDPOINT,
+      entries: [
+        scopeEntry(WORK_REPO),
+        scopeEntry(PERSONAL_REPO, { kind: 'org' }), // an unknown kind
+        scopeEntry(`${OTHER_WORK_REPO}${ESC}[2J`), // a control character in the identity
+        scopeEntry(OTHER_WORK_REPO, { label: `Infra${ESC}[2J` }), // and in the label
+        scopeEntry(OTHER_WORK_REPO, { enrolledAt: 'last tuesday' }), // a bad timestamp
+        scopeEntry(''), // an empty identity
+        'not-an-entry',
+        null,
+      ],
+    };
+    expect(parseAttachmentScope(raw)).toEqual({
+      endpoint: ENDPOINT,
+      entries: [scopeEntry(WORK_REPO)],
+    });
+  });
+
+  it('strips an unknown key on an entry, such as a provenance marker, rather than refusing it', () => {
+    const parsed = parseAttachmentScope({
+      endpoint: ENDPOINT,
+      entries: [scopeEntry(WORK_REPO, { source: 'org' })],
+    });
+    expect(parsed?.entries).toEqual([scopeEntry(WORK_REPO)]);
+    expect(parsed?.entries[0]).not.toHaveProperty('source');
+  });
+
+  it('strips an unknown key on the envelope too, so a later field there does not break this reader', () => {
+    expect(
+      parseAttachmentScope({ endpoint: ENDPOINT, entries: [], builtFor: { tenant: 'Acme' } }),
+    ).toEqual({ endpoint: ENDPOINT, entries: [] });
+  });
+
+  it.each(NOT_A_SCOPE)('reads %s as no scope at all', (_label, raw) => {
+    expect(parseAttachmentScope(raw)).toBeUndefined();
+  });
+
+  it('never throws, even on a value whose properties throw', () => {
+    const hostile = {
+      get endpoint(): string {
+        throw new Error('boom');
+      },
+      entries: [],
+    };
+    expect(parseAttachmentScope(hostile)).toBeUndefined();
+  });
+});
+
+describe('isAttachmentScopeValid', () => {
+  it('is true for a record built for this deployment', () => {
+    expect(isAttachmentScopeValid(scopeFor(ENDPOINT, WORK_REPO), ENDPOINT)).toBe(true);
+  });
+
+  it('is true for an empty record built for this deployment', () => {
+    expect(isAttachmentScopeValid(scopeFor(ENDPOINT), ENDPOINT)).toBe(true);
+  });
+
+  // Bound by value, like HistorySyncConsent: a scope built for one deployment is
+  // not a scope for another.
+  it('is false for a record built for a different deployment', () => {
+    const elsewhere = scopeFor('https://other.example.com', WORK_REPO);
+    expect(isAttachmentScopeValid(elsewhere, ENDPOINT)).toBe(false);
+  });
+
+  it('is false when the machine is not attached to any endpoint', () => {
+    expect(isAttachmentScopeValid(scopeFor(ENDPOINT, WORK_REPO), undefined)).toBe(false);
+  });
+
+  it('is false when there is no record, or the record is not one', () => {
+    expect(isAttachmentScopeValid(undefined, ENDPOINT)).toBe(false);
+    expect(isAttachmentScopeValid('not-a-scope', ENDPOINT)).toBe(false);
+    expect(isAttachmentScopeValid({ endpoint: ENDPOINT, entries: 'x' }, ENDPOINT)).toBe(false);
+  });
+
+  it('compares the endpoint exactly, the way the credential binding does', () => {
+    expect(isAttachmentScopeValid(scopeFor(`${ENDPOINT}/`, WORK_REPO), ENDPOINT)).toBe(false);
+  });
+
+  it('accepts what the schema actually parses out of a settings.json', () => {
+    const parsed = WorkspaceSettings.parse({ attachmentScope: scopeFor(ENDPOINT, WORK_REPO) });
+    expect(isAttachmentScopeValid(parsed.attachmentScope, ENDPOINT)).toBe(true);
+  });
+});
+
+describe('resolveScope and scopeVerdict — the forwarding verdict', () => {
+  const scoped = (scope: unknown) => resolveScope({ mode: 'scoped', scope, endpoint: ENDPOINT });
+
+  it('machine mode forwards every event, keyed or not, and reads no scope', () => {
+    const machine = resolveScope({
+      mode: 'machine',
+      scope: scopeFor(ENDPOINT, WORK_REPO),
+      endpoint: ENDPOINT,
+    });
+    expect(machine.mode).toBe('machine');
+    expect(machine.keys.size).toBe(0);
+    for (const key of [WORK_REPO, PERSONAL_REPO, '', undefined]) {
+      expect(scopeVerdict(machine, key)).toBe('forward');
+    }
+  });
+
+  it('machine mode forwards even with a garbled scope and no endpoint: the mode decides', () => {
+    const machine = resolveScope({ mode: 'machine', scope: 'garbled', endpoint: undefined });
+    expect(scopeVerdict(machine, undefined)).toBe('forward');
+  });
+
+  it('scoped mode forwards a key in scope', () => {
+    const resolved = scoped(scopeFor(ENDPOINT, WORK_REPO, OTHER_WORK_REPO));
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
+    expect(scopeVerdict(resolved, OTHER_WORK_REPO)).toBe('forward');
+  });
+
+  it('scoped mode keeps a key out of scope local', () => {
+    expect(scopeVerdict(scoped(scopeFor(ENDPOINT, WORK_REPO)), PERSONAL_REPO)).toBe('local');
+  });
+
+  it('scoped mode keeps an event with no key, or an empty key, local', () => {
+    const resolved = scoped(scopeFor(ENDPOINT, WORK_REPO));
+    expect(scopeVerdict(resolved, undefined)).toBe('local');
+    expect(scopeVerdict(resolved, '')).toBe('local');
+  });
+
+  it('compares keys byte-for-byte: path case is part of the identity', () => {
+    const resolved = scoped(scopeFor(ENDPOINT, WORK_REPO));
+    expect(scopeVerdict(resolved, 'github.com/Acme/Work-Repo')).toBe('local');
+  });
+
+  it('an empty scope keeps everything local', () => {
+    expect(scopeVerdict(scoped(scopeFor(ENDPOINT)), WORK_REPO)).toBe('local');
+  });
+
+  it('an absent or invalid scope resolves to no keys and keeps everything local', () => {
+    for (const scope of [undefined, null, 'garbled', { endpoint: ENDPOINT, entries: 'x' }]) {
+      const resolved = scoped(scope);
+      expect(resolved).toEqual({ mode: 'scoped', keys: new Set() });
+      expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+    }
+  });
+
+  it('a scope built for another deployment keeps everything local', () => {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: scopeFor('https://other.example.com', WORK_REPO),
+      endpoint: ENDPOINT,
+    });
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+  });
+
+  it('a machine attached to no endpoint keeps everything local', () => {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: scopeFor(ENDPOINT, WORK_REPO),
+      endpoint: undefined,
+    });
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+  });
+
+  it('counts only the valid entries of a partly garbled scope', () => {
+    const resolved = scoped({
+      endpoint: ENDPOINT,
+      entries: [scopeEntry(WORK_REPO), scopeEntry(PERSONAL_REPO, { enrolledAt: 'never' })],
+    });
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
+    expect(scopeVerdict(resolved, PERSONAL_REPO)).toBe('local');
+  });
+
+  it('reads anything but an exact machine mode as scoped', () => {
+    const resolved = resolveScope({
+      mode: 'everything' as never,
+      scope: undefined,
+      endpoint: ENDPOINT,
+    });
+    expect(resolved.mode).toBe('scoped');
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+  });
+
+  it('resolveScope never throws: a throwing input resolves to scoped with no keys', () => {
+    const throwingMode = {
+      get mode(): AttachmentMode {
+        throw new Error('boom');
+      },
+      scope: scopeFor(ENDPOINT, WORK_REPO),
+      endpoint: ENDPOINT,
+    };
+    const throwingScope = {
+      mode: 'scoped' as const,
+      get scope(): unknown {
+        throw new Error('boom');
+      },
+      endpoint: ENDPOINT,
+    };
+    const throwingExtras = {
+      [Symbol.iterator]() {
+        throw new Error('boom');
+      },
+    } as unknown as readonly AttachmentScopeEntry[];
+    for (const resolved of [
+      resolveScope(throwingMode),
+      resolveScope(throwingScope),
+      resolveScope(
+        { mode: 'scoped', scope: scopeFor(ENDPOINT, WORK_REPO), endpoint: ENDPOINT },
+        throwingExtras,
+      ),
+    ]) {
+      expect(resolved).toEqual({ mode: 'scoped', keys: new Set() });
+      expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+    }
+  });
+
+  it('scopeVerdict never throws: a resolved scope that throws answers local', () => {
+    const throwingKeys: ResolvedAttachmentScope = {
+      mode: 'scoped',
+      keys: {
+        has: () => {
+          throw new Error('boom');
+        },
+      } as unknown as ReadonlySet<string>,
+    };
+    const throwingModeRead: ResolvedAttachmentScope = {
+      get mode(): AttachmentMode {
+        throw new Error('boom');
+      },
+      keys: new Set([WORK_REPO]),
+    };
+    expect(scopeVerdict(throwingKeys, WORK_REPO)).toBe('local');
+    expect(scopeVerdict(throwingModeRead, WORK_REPO)).toBe('local');
+  });
+});
+
+describe('scopeFilterOf — the one filter value every store read takes', () => {
+  it('is undefined in machine mode: no filter at all', () => {
+    const machine = resolveScope({
+      mode: 'machine',
+      scope: scopeFor(ENDPOINT, WORK_REPO),
+      endpoint: ENDPOINT,
+    });
+    expect(scopeFilterOf(machine)).toBeUndefined();
+  });
+
+  it('is the resolved keys, sorted, in scoped mode', () => {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: scopeFor(ENDPOINT, PERSONAL_REPO, WORK_REPO, OTHER_WORK_REPO),
+      endpoint: ENDPOINT,
+    });
+    expect(scopeFilterOf(resolved)).toEqual([OTHER_WORK_REPO, WORK_REPO, PERSONAL_REPO]);
+  });
+
+  it('is an empty list, which matches nothing, on a scoped machine with no valid scope', () => {
+    const resolved = resolveScope({ mode: 'scoped', scope: undefined, endpoint: ENDPOINT });
+    expect(scopeFilterOf(resolved)).toEqual([]);
+  });
+
+  it('reads anything but an exact machine mode as scoped', () => {
+    expect(scopeFilterOf({ mode: 'everything' as never, keys: new Set([WORK_REPO]) })).toEqual([
+      WORK_REPO,
+    ]);
+  });
+
+  it('fails toward matching nothing when the keys cannot be read', () => {
+    const unreadable: ResolvedAttachmentScope = {
+      mode: 'scoped',
+      keys: {
+        [Symbol.iterator]() {
+          throw new Error('boom');
+        },
+      } as unknown as ReadonlySet<string>,
+    };
+    expect(scopeFilterOf(unreadable)).toEqual([]);
+  });
+});
+
+// Freeze every level, so an in-place write anywhere below throws. resolveScope
+// catches that throw and resolves to no keys, so a case using this must assert
+// the verdict too, not only that the object is unchanged.
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+describe('resolveScope extra entries — merged in memory, never persisted', () => {
+  // Stand-in for identities that arrive from somewhere other than settings.json.
+  // Shaped as AttachmentScopeEntry and held only in memory.
+  const published: readonly AttachmentScopeEntry[] = [
+    { kind: 'repo', identity: OTHER_WORK_REPO, enrolledAt: ISO },
+  ];
+  const attachedWith = (attachmentScope: unknown) =>
+    WorkspaceSettings.parse({
+      runMode: 'attached',
+      controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+      attachmentScope,
+    });
+
+  it('forwards a key only an extra entry names, beside the stored entries', () => {
+    const settings = attachedWith(scopeFor(ENDPOINT, WORK_REPO));
+    const resolved = resolveScope(
+      {
+        mode: 'scoped',
+        scope: settings.attachmentScope,
+        endpoint: settings.controlPlane?.endpoint,
+      },
+      published,
+    );
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
+    expect(scopeVerdict(resolved, OTHER_WORK_REPO)).toBe('forward');
+    expect(scopeVerdict(resolved, PERSONAL_REPO)).toBe('local');
+  });
+
+  it('counts extra entries even when the stored record is absent or for another deployment', () => {
+    for (const scope of [undefined, scopeFor('https://other.example.com', WORK_REPO)]) {
+      const resolved = resolveScope({ mode: 'scoped', scope, endpoint: ENDPOINT }, published);
+      expect(scopeVerdict(resolved, OTHER_WORK_REPO)).toBe('forward');
+      expect(scopeVerdict(resolved, WORK_REPO)).toBe('local');
+    }
+  });
+
+  it('validates extra entries like stored ones: a bad one is dropped by itself', () => {
+    const extras = [
+      { kind: 'repo', identity: OTHER_WORK_REPO, enrolledAt: ISO },
+      { kind: 'org', identity: PERSONAL_REPO, enrolledAt: ISO },
+    ] as unknown as readonly AttachmentScopeEntry[];
+    const resolved = resolveScope({ mode: 'scoped', scope: undefined, endpoint: ENDPOINT }, extras);
+    expect([...resolved.keys]).toEqual([OTHER_WORK_REPO]);
+  });
+
+  it('leaves the settings object exactly as it found it', () => {
+    const settings = deepFreeze(attachedWith(scopeFor(ENDPOINT, WORK_REPO)));
+    const before = JSON.stringify(settings);
+    const resolved = resolveScope(
+      { mode: 'scoped', scope: settings.attachmentScope, endpoint: ENDPOINT },
+      published,
+    );
+    // A write into the frozen record would throw inside resolveScope, which
+    // resolves a throw to no keys: these two lines are what would show it.
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
+    expect(scopeVerdict(resolved, OTHER_WORK_REPO)).toBe('forward');
+    expect(JSON.stringify(settings)).toBe(before);
+  });
+
+  it('never carries an extra entry into a serialised WorkspaceSettings', () => {
+    const settings = attachedWith(scopeFor(ENDPOINT, WORK_REPO));
+    resolveScope(
+      { mode: 'scoped', scope: settings.attachmentScope, endpoint: ENDPOINT },
+      published,
+    );
+    const written = JSON.stringify(WorkspaceSettings.parse(settings));
+    expect(written).toContain(WORK_REPO);
+    expect(written).not.toContain(OTHER_WORK_REPO);
+  });
+
+  it('honours a stored entry that carries a provenance marker, with the marker stripped', () => {
+    const stored = { endpoint: ENDPOINT, entries: [scopeEntry(WORK_REPO, { source: 'org' })] };
+    const resolved = resolveScope({ mode: 'scoped', scope: stored, endpoint: ENDPOINT });
+    expect(scopeVerdict(resolved, WORK_REPO)).toBe('forward');
+    expect(parseAttachmentScope(stored)?.entries[0]).not.toHaveProperty('source');
   });
 });

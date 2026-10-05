@@ -20,6 +20,8 @@ import type {
   sourceProject,
 } from '../drizzle/local/sqlite.ts';
 import { isoToEpochMillis } from '../time.ts';
+import type { AttachmentMode } from './control-plane.ts';
+import { printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding } from './finding.ts';
 import type {
@@ -39,7 +41,8 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
-// redactFallback; v8 added bodyRetention and webChatCapture. Nothing
+// redactFallback; v8 added bodyRetention and webChatCapture; v9 added
+// attachmentScope. Nothing
 // reads it, and nothing re-stamps it — the `.default()` below only fills when
 // the key is absent, and applyOnboarding's merge preserves whatever an existing
 // settings.json already carries. So an already-onboarded machine keeps the
@@ -47,7 +50,7 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // added so far has been optional/defaulted (backward compatible), which is why
 // no migration has been needed. Re-stamp this on write before relying on it to
 // gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 8;
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 9;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -231,6 +234,105 @@ export function isHistorySyncConsentStale(
   return consent.endpoint === endpoint && consent.payloadVersion !== HISTORY_SYNC_PAYLOAD_VERSION;
 }
 
+/**
+ * One enrolled identity on a SCOPED attachment.
+ *
+ *   `repo`    — a canonical repository key, `host/owner/repo`: scheme,
+ *               userinfo, port and `.git` dropped, host lowercased, path case
+ *               kept, so one repository cloned over SSH or HTTPS has one key.
+ *   `account` — a web-chat workspace identity, `<provider>:<workspace-id>`.
+ *
+ * `identity` and `label` refuse control and format characters (`printable`, the
+ * rule the whoami fields follow), because both are echoed to a terminal.
+ * `identity` must also be non-empty: an event with no identity carries no key,
+ * and an empty one must never match it.
+ *
+ * NOT STRICT. An unknown key, a provenance marker say, is stripped rather than
+ * refused, so an entry written by a newer build still reads here. An unknown
+ * `kind` fails the entry, and parseAttachmentScope drops that entry alone.
+ *
+ * NO `.meta({ id })`: this is on-disk settings, under WorkspaceSettings' rule.
+ */
+export const AttachmentScopeEntry = z.object({
+  kind: z.enum(['repo', 'account']),
+  identity: printable(512).min(1),
+  label: printable(80).optional(),
+  enrolledAt: z.iso.datetime(),
+});
+export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
+
+/**
+ * The identities a SCOPED attachment forwards, and the deployment they were
+ * enrolled for.
+ *
+ * Bound by VALUE, HistorySyncConsent's rule: the record names its endpoint, and
+ * a record for any other endpoint does not count (isAttachmentScopeValid).
+ * Enrolling a repository with one deployment is not enrolling it with another,
+ * and that holds without any writer having to remember to clear the record.
+ *
+ * NOT STRICT, so a field added to the envelope later is stripped by this reader
+ * rather than failing it. NO `.meta({ id })`.
+ *
+ * Stored as `WorkspaceSettings.attachmentScope`, but NOT typed there: see that
+ * field's note. Read a stored value through parseAttachmentScope.
+ */
+export const AttachmentScope = z.object({
+  endpoint: z.string().min(1),
+  entries: z.array(AttachmentScopeEntry),
+});
+export type AttachmentScope = z.infer<typeof AttachmentScope>;
+
+// The envelope with its entries left unread, so one bad entry cannot fail the
+// whole record. Module-private: callers get back an AttachmentScope.
+const AttachmentScopeEnvelope = AttachmentScope.extend({ entries: z.array(z.unknown()) });
+
+/**
+ * A stored `attachmentScope`, validated where it is used.
+ *
+ * The envelope first: anything that is not an object with a non-empty string
+ * `endpoint` and an array `entries` is no scope at all, `undefined`. Then each
+ * entry on its own, keeping the valid ones, so an unknown `kind`, a control
+ * character or a bad timestamp costs that entry and nothing else. Unknown keys
+ * are stripped from both levels.
+ *
+ * Never throws: a value that throws while it is read is no scope. Pure; no I/O.
+ */
+export function parseAttachmentScope(raw: unknown): AttachmentScope | undefined {
+  try {
+    const envelope = AttachmentScopeEnvelope.safeParse(raw);
+    if (!envelope.success) return undefined;
+    const entries: AttachmentScopeEntry[] = [];
+    for (const candidate of envelope.data.entries) {
+      const entry = AttachmentScopeEntry.safeParse(candidate);
+      if (entry.success) entries.push(entry.data);
+    }
+    return { endpoint: envelope.data.endpoint, entries };
+  } catch {
+    return undefined;
+  }
+}
+
+// The stored scope when it counts for `endpoint`, else undefined. The one
+// definition isAttachmentScopeValid and resolveScope share.
+function scopeForEndpoint(raw: unknown, endpoint: string | undefined): AttachmentScope | undefined {
+  if (endpoint === undefined) return undefined;
+  const scope = parseAttachmentScope(raw);
+  return scope?.endpoint === endpoint ? scope : undefined;
+}
+
+/**
+ * Whether a stored scope counts for the deployment this machine is attached to
+ * now: it parses (parseAttachmentScope) and names exactly that endpoint.
+ *
+ * Exact string equality, the comparison the credential's own endpoint binding
+ * makes, so an endpoint spelled differently on re-attach reads as a different
+ * deployment: the direction that forwards less. A valid record may hold no
+ * entries. Pure; no I/O; never throws.
+ */
+export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefined): boolean {
+  return scopeForEndpoint(raw, endpoint) !== undefined;
+}
+
 // The behavior the user consented to when they allowed the browser extension to
 // write down what it observes on a web chat. A grant recorded against an older
 // version stops counting, so widening what is recorded re-asks rather than
@@ -387,6 +489,23 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
+  // The identities a SCOPED attachment forwards and the deployment they were
+  // enrolled for (see AttachmentScope). Absent until something is enrolled.
+  //
+  // `z.unknown()`, NOT `AttachmentScope`, and the difference is this field's
+  // whole failure mode. A settings.json that fails this schema reads as the
+  // unonboarded defaults (readUserSettings in @akasecurity/persistence), and the
+  // next save writes those defaults back over it. Typed, one entry with an
+  // unknown `kind`, a control character or a bad timestamp would cost the
+  // attachment, every consent and onboardedAt, permanently. Untyped, the value
+  // is kept exactly as found and validated where it is used: parseAttachmentScope
+  // drops a bad entry by itself, and on a scoped attachment resolveScope reads a
+  // bad envelope as no entries, which keeps every event local.
+  //
+  // No default: absent must stay absent, so defaultWorkspaceSettings() and a
+  // fresh settings.json do not change. No `.meta({ id })`, like every field
+  // here. Not a ManagedSettingKey.
+  attachmentScope: z.unknown().optional(),
   // What the browser extension may record from a web chat, and the grant that
   // authorizes it. Absent until the user answers: recording something that was
   // never recorded before is never an assumed grant on upgrade, so the whole
@@ -432,6 +551,102 @@ export function webChatCaptureOf(settings: WorkspaceSettings): WebChatCapture {
  */
 export function isAttached(settings: WorkspaceSettings): boolean {
   return settings.runMode === 'attached' && settings.controlPlane !== undefined;
+}
+
+/** What a forward path does with one event: send it, or keep it on this machine. */
+export type ScopeVerdict = 'forward' | 'local';
+
+/**
+ * The scope a forward path decides against: built once from a settings read by
+ * resolveScope, then asked per event by scopeVerdict for the price of a Set
+ * lookup. In `machine` mode `keys` is empty and never consulted.
+ */
+export interface ResolvedAttachmentScope {
+  readonly mode: AttachmentMode;
+  readonly keys: ReadonlySet<string>;
+}
+
+/**
+ * Resolve an attachment's mode and stored scope into what scopeVerdict reads.
+ *
+ *   machine — everything forwards; the stored scope is not read at all.
+ *   scoped  — the identities of the stored scope's valid entries, when the
+ *             record counts for `endpoint` (isAttachmentScopeValid), plus
+ *             `extraEntries`.
+ *
+ * `extraEntries` is how identities that never live in settings.json join the
+ * set. They are merged here, in memory; `scope` is only read, so nothing passed
+ * this way can reach a saved file. Each is validated exactly like a stored
+ * entry, and they count whether or not the stored record does: the caller
+ * vouches for them, so they are not checked against `endpoint`.
+ *
+ * Anything but an exact `'machine'` resolves as scoped. A throw anywhere — a
+ * hostile input, an extra-entry list that cannot be iterated — resolves to
+ * scoped with no keys, so everything stays local. Resolve again after every
+ * settings read: a set kept across reads would keep forwarding a repository
+ * after it was unenrolled. Pure; no I/O.
+ */
+export function resolveScope(
+  input: { mode: AttachmentMode; scope: unknown; endpoint: string | undefined },
+  extraEntries?: readonly AttachmentScopeEntry[],
+): ResolvedAttachmentScope {
+  try {
+    if (input.mode === 'machine') return { mode: 'machine', keys: new Set() };
+    const keys = new Set<string>();
+    const stored = scopeForEndpoint(input.scope, input.endpoint);
+    for (const entry of stored?.entries ?? []) {
+      keys.add(entry.identity);
+    }
+    for (const candidate of extraEntries ?? []) {
+      const entry = AttachmentScopeEntry.safeParse(candidate);
+      if (entry.success) keys.add(entry.data.identity);
+    }
+    return { mode: 'scoped', keys };
+  } catch {
+    return { mode: 'scoped', keys: new Set() };
+  }
+}
+
+/**
+ * The one forwarding decision: send this event, or keep it local.
+ *
+ *   machine — 'forward', whatever the key.
+ *   scoped  — 'forward' only for a non-empty key in the resolved set, compared
+ *             byte-for-byte. No key, an empty key, a key out of scope, or a
+ *             throw is 'local'.
+ *
+ * Fail-closed toward the deployment. It answers what to send, never whether to
+ * capture. O(1): a Set lookup, with no I/O and no re-validation.
+ */
+export function scopeVerdict(
+  resolved: ResolvedAttachmentScope,
+  key: string | undefined,
+): ScopeVerdict {
+  try {
+    if (resolved.mode === 'machine') return 'forward';
+    if (typeof key !== 'string' || key === '') return 'local';
+    return resolved.keys.has(key) ? 'forward' : 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+/**
+ * The scope as the filter value a store read takes: `undefined` in machine mode,
+ * meaning no filter, else the resolved keys, sorted. An empty list is a real
+ * answer and matches nothing.
+ *
+ * One function, so every read is handed the same value and the machine/scoped
+ * choice is written once. A throw while reading the keys gives `[]`: a read that
+ * cannot tell what is in scope selects nothing. Pure; no I/O.
+ */
+export function scopeFilterOf(resolved: ResolvedAttachmentScope): readonly string[] | undefined {
+  try {
+    if (resolved.mode === 'machine') return undefined;
+    return [...resolved.keys].sort();
+  } catch {
+    return [];
+  }
 }
 
 /**

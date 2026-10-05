@@ -28,6 +28,7 @@ import {
 } from './pre-tool-use-decision.ts';
 import {
   baseMetadata,
+  captureScopeKey,
   getString,
   parseJson,
   readStdin,
@@ -95,6 +96,12 @@ async function main(): Promise<unknown> {
   // carries the path it was written to. Absent on run_command.
   const targetFile = getString(call.args, 'TargetFile');
   if (targetFile) metadata.filePath = targetFile;
+  // An absolute target is keyed by the checkout that holds it, whatever root it
+  // sits under or none, never by the first root the slug above comes from. A
+  // run_command names no path and is keyed only when every root agrees. See
+  // captureScopeKey. Beside the metadata, never inside it: the key is a local
+  // attribute and the metadata is a wire shape.
+  const scopeKey = captureScopeKey(input, targetFile);
 
   const scanned: ScannedField[] = [];
   try {
@@ -103,7 +110,7 @@ async function main(): Promise<unknown> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // This host's PreToolUse has no `updatedInput`, so NO argument can be

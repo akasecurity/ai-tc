@@ -22,10 +22,17 @@
 //
 // Lazy and scan-local. scanDir asks only for a file that reaches capture, so a
 // re-run that skips every file at the ledger reads no repository. The answer
-// for every directory a lookup climbs through is remembered, so no directory is
-// probed for `.git` twice and no repository root is resolved twice in one scan.
-// The memory belongs to the one scan that made it: it grows with the tree
+// for every directory the climbing lookup climbs through is remembered, so it
+// probes no directory for `.git` twice and reads each repository root once per
+// scan. The memory belongs to the one scan that made it: it grows with the tree
 // rather than up to a fixed count, and is dropped when the scan ends.
+//
+// That per-scan memory is the only one this file trusts. Every call to
+// resolveRepoAttribution here passes `{ cache: false }`, so nothing in this file
+// reads or writes the resolver's own memory, which lasts for the life of the
+// process and is keyed by the directory's path string. An answer in it for a
+// nested directory, given while that directory was an ordinary one, is the
+// enclosing repository's, and a clone made there since would be keyed by it.
 //
 // A second lookup, `ofRepositoryRoot`, keys a directory the caller already
 // knows to be a repository root, and never climbs. The climbing lookup above is
@@ -76,13 +83,13 @@ export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
       // its own parent. The root's `.git`, and any above it, are the
       // resolver's to find: it walks up from the root itself.
       if (parent === dir) {
-        key = resolveRepoAttribution(base).scopeKey;
+        key = resolveRepoAttribution(base, { cache: false }).scopeKey;
         break;
       }
       // A nested repository root. The climb starts at the file, so the first
       // one met is the deepest.
       if (existsSync(join(base, dir, '.git'))) {
-        key = resolveRepoAttribution(join(base, dir)).scopeKey;
+        key = resolveRepoAttribution(join(base, dir), { cache: false }).scopeKey;
         break;
       }
       dir = parent;

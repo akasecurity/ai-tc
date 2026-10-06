@@ -26,12 +26,32 @@
 // probed for `.git` twice and no repository root is resolved twice in one scan.
 // The memory belongs to the one scan that made it: it grows with the tree
 // rather than up to a fixed count, and is dropped when the scan ends.
+//
+// A second lookup, `ofRepositoryRoot`, keys a directory the caller already
+// knows to be a repository root, and never climbs. The climbing lookup above is
+// right for a FILE: a file under a `.git` that is not a repository (a link to
+// nowhere) belongs to the repository around it, as git itself reads it. It is
+// wrong for a directory a walk named as a root, because there climbing past an
+// unusable `.git` answers with the enclosing repository's key, as if the
+// nested directory were that repository. `ofRepositoryRoot` answers for the
+// directory itself or not at all.
 import { existsSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
 
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 
-export function scopeKeysUnder(rootDir: string): (relativePath: string) => string | undefined {
+export interface ScopeKeyLookup {
+  /** The key of the nearest repository holding the file at this posix path under the root. */
+  (relativePath: string): string | undefined;
+  /**
+   * The key of the repository rooted exactly at this posix directory under the
+   * root, or `undefined` when that directory has no `.git` that exists now, or
+   * has no forge remote. Never the key of a repository around it.
+   */
+  readonly ofRepositoryRoot: (relativeDir: string) => string | undefined;
+}
+
+export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
   // Absolute, because resolveRepoAttribution returns no key for a directory
   // that is not: it would read a relative one against the process's own working
   // directory, which need not be the one the scan was pointed at. A relative
@@ -41,7 +61,7 @@ export function scopeKeysUnder(rootDir: string): (relativePath: string) => strin
   // its nearest repository. `has` tells "no key" apart from "not looked up",
   // so a keyless directory is not probed again either.
   const keyByDir = new Map<string, string | undefined>();
-  return (relativePath) => {
+  const keyOfFile = (relativePath: string): string | undefined => {
     const climbed: string[] = [];
     let dir = posix.dirname(relativePath);
     let key: string | undefined;
@@ -70,4 +90,29 @@ export function scopeKeysUnder(rootDir: string): (relativePath: string) => strin
     for (const at of climbed) keyByDir.set(at, key);
     return key;
   };
+
+  // Does not use `keyByDir`: an entry there can be an ANCESTOR's key. A climb
+  // that starts below a directory whose `.git` is not usable stores the
+  // enclosing repository's key for that directory too, which is the answer this
+  // lookup must never give. What it shares with the climbing lookup is the
+  // resolver's own per-directory memory, which both of them reach only after
+  // seeing the `.git` exist, so a nested repository that captures already
+  // resolved costs nothing more.
+  const ofRepositoryRoot = (relativeDir: string): string | undefined => {
+    const root = join(base, relativeDir);
+    const dotGit = join(root, '.git');
+    if (!existsSync(dotGit)) return undefined;
+    const key = resolveRepoAttribution(root).scopeKey;
+    // Checked again AFTER the read. The resolver climbs when `root` has no
+    // `.git`, so a `.git` removed between the check above and the read would
+    // answer with the enclosing repository's key. The resolver does not say
+    // which root it answered for, so this is how a read that lost that race is
+    // told apart from one that did not: the key stands only if the `.git` it was
+    // read under is still there. (A read that did lose the race leaves the
+    // resolver's memory holding the enclosing answer for this directory; the
+    // window is the length of one config read.)
+    return existsSync(dotGit) ? key : undefined;
+  };
+
+  return Object.assign(keyOfFile, { ofRepositoryRoot });
 }

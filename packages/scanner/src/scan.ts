@@ -455,7 +455,7 @@ async function scanDir(
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
-  const committed = await commitEgress(gateway, egress, scopeKeyOf);
+  const committed = await commitEgress(gateway, egress, scopeKeyOf.ofRepositoryRoot);
   if (committed === null) {
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
@@ -544,7 +544,7 @@ function scanManifests(
 async function commitEgress(
   gateway: DataGateway,
   egress: EgressAccumulator | null,
-  scopeKeyOf: (relativePath: string) => string | undefined,
+  repositoryRootKeyOf: (relativeDir: string) => string | undefined,
 ): Promise<ReadonlySet<string> | null> {
   if (!egress) return EMPTY_DROPPED;
   const { project, files, scannedFiles, deletedFiles, nestedRoots } = egress;
@@ -564,20 +564,22 @@ async function commitEgress(
         hits: resolveEgress(files),
       },
       {
-        // One key per nested root, from this scan's own lookup
-        // (./scope-key.ts). Asked about an entry inside the root, it answers
-        // with that root's key, so a root this scan's captures already
-        // resolved costs nothing more. `undefined` for a nested repository
-        // with no forge remote. Always a list, even an empty one: a scoped
-        // gateway reads a missing list as a register nobody vouched for.
-        // The repository lookups it makes do not throw on these inputs, and
-        // the gateway reads any throw in this read as local anyway.
+        // One key per nested root, from this scan's own lookup of a
+        // repository ROOT (./scope-key.ts): the directory's own key, found
+        // without climbing. A nested directory whose `.git` is a link to
+        // nowhere, or is gone by the time a gateway asks, is `undefined` here
+        // rather than the key of the repository around it; so is a nested
+        // repository with no forge remote. A root this scan's captures
+        // already resolved costs nothing more. Always a list, even an empty
+        // one: a scoped gateway reads a missing list as a register nobody
+        // vouched for. The repository lookups it makes do not throw on these
+        // inputs, and the gateway reads any throw in this read as local anyway.
         //
         // A getter, memoized: only a gateway that reads the list causes a
         // repository read. The standalone gateway ignores it, and a
         // machine-wide attachment answers before reading it.
         get nestedScopeKeys(): readonly (string | undefined)[] {
-          nestedKeys ??= nestedRoots.map((dir) => scopeKeyOf(`${dir}/.git`));
+          nestedKeys ??= nestedRoots.map((dir) => repositoryRootKeyOf(dir));
           return nestedKeys;
         },
       },

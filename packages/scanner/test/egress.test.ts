@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 
@@ -684,5 +692,41 @@ describe('scanWorktree — repositories nested in the scanned project', () => {
     gitRepo(join(repo, 'tools', 'mine'), LIB_URL);
 
     expect(nestedKeysOfLastCall()).toEqual(['github.com/acme/lib']);
+  });
+
+  it("keys a nested directory whose `.git` is a dangling link as keyless, never by the project's", async (ctx) => {
+    // The walk names `tools/mine` off its `.git` entry. A link that points
+    // nowhere is no repository at all, and the lookup the captures use would
+    // climb past it to the checkout around it and answer with that checkout's
+    // key. A scoped gateway would then see an enrolled key and forward a
+    // register that carries this directory's call sites.
+    const dir = join(repo, 'tools', 'mine');
+    mkdirSync(dir, { recursive: true });
+    try {
+      symlinkSync(join(repo, 'no-such-git-dir'), join(dir, '.git'));
+    } catch (err) {
+      // Creating one needs a privilege on Windows. `ctx.skip` rather than a
+      // return: a return reports as a pass, which is a claim the run never made.
+      ctx.skip(`symlink unavailable on this host: ${err instanceof Error ? err.message : ''}`);
+    }
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'tools/mine/notify.ts', NOTIFY_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual([undefined]);
+  });
+
+  it("keys a nested clone whose `.git` went away after the walk as keyless, never by the project's", async () => {
+    // Removed between the scan and the moment a gateway reads the keys. The
+    // directory was a repository when the walk named it and is not one now, so
+    // it has no key of its own, and the checkout around it cannot supply one.
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+    rmSync(join(repo, 'tools', 'mine', '.git'), { recursive: true, force: true });
+
+    expect(nestedKeysOfLastCall()).toEqual([undefined]);
   });
 });

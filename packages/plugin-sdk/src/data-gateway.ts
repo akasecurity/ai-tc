@@ -73,6 +73,24 @@ export interface RuleProbeVerdictEntry {
 }
 
 /**
+ * What a scan knows about the register it hands `recordProjectEgress` that the
+ * register itself does not say.
+ *
+ * A worktree walk descends into every repository nested below its root — a
+ * submodule, a clone kept inside the checkout — and folds their files into the
+ * scanned project's register, under that project's key. `nestedScopeKeys` is
+ * the scope key of each such repository the walk passed through: its canonical
+ * `host/owner/repo`, or `undefined` for one with no forge remote. It is empty
+ * when the walk passed through none.
+ *
+ * Local only: the keys decide whether the register may be forwarded, and are
+ * never part of what is sent.
+ */
+export interface ProjectEgressContext {
+  readonly nestedScopeKeys?: readonly (string | undefined)[] | undefined;
+}
+
+/**
  * The single data port the plugin runtime depends on.
  * `@akasecurity/plugin-runtime` resolves the concrete implementation from PluginConfig:
  * a SQLite-backed gateway (via @akasecurity/persistence). Every method is
@@ -212,7 +230,18 @@ export interface DataGateway {
   // succeed while still declining some of its input: `droppedFiles` names the
   // files the per-write cap left unrecorded, and a ledger-keeping caller must
   // withhold exactly those ledger entries or it will never read them again.
-  recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary>;
+  //
+  // `context` carries what the scanning code knows and the register does not
+  // say: the scope key of every repository nested below the scan root that the
+  // walk passed through (see ProjectEgressContext). Optional, so an
+  // implementation with no forward to gate may take the register alone and
+  // ignore it. A caller that walks a tree passes it every time, empty when
+  // nothing is nested, because a gateway that forwards by scope reads its
+  // absence as a register nobody vouched for.
+  recordProjectEgress(
+    input: RecordProjectEgressInput,
+    context?: ProjectEgressContext,
+  ): Promise<EgressWriteSummary>;
   close(): Promise<void>;
 }
 

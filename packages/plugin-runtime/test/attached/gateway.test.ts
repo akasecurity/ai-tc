@@ -10,6 +10,7 @@ import type {
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
+  ProjectEgressContext,
 } from '@akasecurity/plugin-sdk';
 import { bundledDetections, hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
@@ -1721,10 +1722,11 @@ describe('the scope verdict, method by method', () => {
 
   it('recordProjectEgress forwards a scan of an enrolled remote, keyed before hashing', async () => {
     const { gateway, calls } = build({ attachment: SCOPED });
-    const summary = await gateway.recordProjectEgress({
-      ...egressInput(),
-      projectKey: 'git:https://github.com/org/api.git',
-    });
+    const summary = await gateway.recordProjectEgress(
+      { ...egressInput(), projectKey: 'git:https://github.com/org/api.git' },
+      // The scan walked no nested repository, and says so.
+      { nestedScopeKeys: [] },
+    );
     expect(calls.order).toContain('client.recordProjectEgress');
     expect(summary.destinations).toBe(1);
   });
@@ -2465,10 +2467,10 @@ describe('the verdict decides whether a row is sent, never what is sent', () => 
       );
       await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
       await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
-      await gateway.recordProjectEgress({
-        ...egressInput(),
-        projectKey: 'git:https://github.com/org/api.git',
-      });
+      await gateway.recordProjectEgress(
+        { ...egressInput(), projectKey: 'git:https://github.com/org/api.git' },
+        { nestedScopeKeys: [] },
+      );
       return sent;
     };
     const scoped = await sentBy(SCOPED);
@@ -2588,6 +2590,124 @@ describe("a scoped capture forwards its key's repository name", () => {
     expect(stamped).toHaveLength(1);
     expect(stamped[0]).toBe(record.event);
     expect(record.event.metadata?.repo).toBe('personal-repo');
+  });
+});
+
+// ── repositories nested in a scanned project ────────────────────────────────
+
+describe('recordProjectEgress holds a register to every repository nested in it', () => {
+  // The scanner folds a nested clone's or submodule's files into the scanned
+  // project's register, and hands the key of each nested repository beside it.
+  const SHARED = 'github.com/org/shared-lib';
+  const SCOPED_WITH_SHARED: ResolvedAttachmentScope = {
+    mode: 'scoped',
+    keys: new Set<string>([IN, SHARED]),
+  };
+  const enrolledScan = (): RecordProjectEgressInput => ({
+    ...egressInput(),
+    projectKey: 'git:https://github.com/org/api.git',
+  });
+  const LOCAL_SUMMARY = {
+    destinations: 1,
+    endpoints: 2,
+    callSites: 3,
+    truncated: false,
+    droppedFiles: [],
+  };
+
+  it('forwards when the project and every repository nested in it are in scope', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED_WITH_SHARED });
+    await gateway.recordProjectEgress(enrolledScan(), { nestedScopeKeys: [SHARED] });
+    expect(calls.order).toContain('client.recordProjectEgress');
+  });
+
+  it('forwards a scan that walked no nested repository', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordProjectEgress(enrolledScan(), { nestedScopeKeys: [] });
+    expect(calls.order).toContain('client.recordProjectEgress');
+  });
+
+  it.each([
+    ['a remote that is not enrolled', [OUT]],
+    ['no remote at all', [undefined]],
+    ['an empty key', ['']],
+    ['one repository out of scope among in-scope ones', [SHARED, OUT]],
+  ] as const)(
+    'keeps the register local when a nested repository has %s',
+    async (_label, nestedScopeKeys) => {
+      const { gateway, calls } = build({ attachment: SCOPED_WITH_SHARED });
+      const summary = await gateway.recordProjectEgress(enrolledScan(), { nestedScopeKeys });
+      expect(calls.order).toContain('local.recordProjectEgress');
+      expect(calls.order).not.toContain('forward.run');
+      // The scanner reads a throw as a failed write: the local summary comes
+      // back whatever the verdict.
+      expect(summary).toEqual(LOCAL_SUMMARY);
+    },
+  );
+
+  it('keeps the register local when the caller does not say what its scan walked', async () => {
+    // Only the code that walked the tree can say what is nested in it. A
+    // register nobody vouched for is not one a scoped attachment may send.
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordProjectEgress(enrolledScan());
+    expect(calls.order).toContain('local.recordProjectEgress');
+    expect(calls.order).not.toContain('forward.run');
+  });
+
+  it('keeps the register local when the nested keys cannot be read', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    const unreadable: ProjectEgressContext = {
+      get nestedScopeKeys(): readonly string[] {
+        throw new Error('nested keys unreadable');
+      },
+    };
+    await expect(gateway.recordProjectEgress(enrolledScan(), unreadable)).resolves.toEqual(
+      LOCAL_SUMMARY,
+    );
+    expect(calls.order).not.toContain('forward.run');
+  });
+
+  it('keeps an out-of-scope project local, and never reads what is nested in it', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED_WITH_SHARED });
+    let reads = 0;
+    const counted: ProjectEgressContext = {
+      get nestedScopeKeys(): readonly string[] {
+        reads += 1;
+        return [SHARED];
+      },
+    };
+    await gateway.recordProjectEgress(
+      { ...egressInput(), projectKey: 'git:https://github.com/me/personal.git' },
+      counted,
+    );
+    expect(calls.order).not.toContain('forward.run');
+    // The project's own key is decided first, so the list is never read.
+    expect(reads).toBe(0);
+  });
+
+  it('never reads the nested keys on a machine attachment: the same request either way', async () => {
+    const requestSent = async (context?: ProjectEgressContext): Promise<string> => {
+      // The fake held in a local, as elsewhere in this file: an unbound method
+      // read off `client` would trip the unbound-method lint rule.
+      const recordProjectEgress = vi.fn<AttachedClient['recordProjectEgress']>(() =>
+        Promise.resolve({}),
+      );
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const { gateway } = build({ client: makeClient(calls, { recordProjectEgress }) });
+      await gateway.recordProjectEgress(enrolledScan(), context);
+      const request = recordProjectEgress.mock.calls[0]?.[0];
+      expect(request).toBeDefined();
+      return JSON.stringify(request);
+    };
+    const unreadable: ProjectEgressContext = {
+      get nestedScopeKeys(): readonly string[] {
+        throw new Error('a machine attachment must not read this');
+      },
+    };
+
+    const plain = await requestSent();
+    expect(await requestSent({ nestedScopeKeys: [OUT, undefined] })).toBe(plain);
+    expect(await requestSent(unreadable)).toBe(plain);
   });
 });
 

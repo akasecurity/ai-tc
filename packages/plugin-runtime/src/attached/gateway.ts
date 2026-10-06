@@ -11,6 +11,7 @@ import type {
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
+  ProjectEgressContext,
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
@@ -378,6 +379,38 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       );
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The verdict for the repositories nested in a scanned project, answered
+   * TOTALLY: `'forward'` or `'local'`, never a throw.
+   *
+   * A walk descends into a nested clone or submodule and folds its files into
+   * the project it is walking, so one register can carry several
+   * repositories' call sites under one project key. Each of them must be in
+   * scope for it to forward. One key out of scope, or a nested repository with
+   * no remote (an `undefined` key), keeps the whole register local.
+   *
+   * An ABSENT list is `'local'` too. Only the code that walked the tree can say
+   * what is nested in it, and every scan passes the list, empty when nothing
+   * is nested. A register nobody vouched for is not one a scoped attachment
+   * may send.
+   *
+   * Machine mode answers before reading the context, so a machine attachment
+   * forwards exactly what it always has.
+   */
+  private nestedVerdict(context: ProjectEgressContext | undefined): ScopeVerdict {
+    try {
+      if (this.deps.attachment.mode === 'machine') return 'forward';
+      const keys = context?.nestedScopeKeys;
+      if (keys === undefined) return 'local';
+      for (const key of keys) {
+        if (this.verdictFor(() => key) === 'local') return 'local';
+      }
+      return 'forward';
+    } catch {
+      return 'local';
     }
   }
 
@@ -974,8 +1007,18 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * payload onto the wire-boundary-safe shape (no snippet, hashed
    * projectKey), and its result is discarded: `forward.run` never throws or
    * rejects, so there is nothing here to act on.
+   *
+   * `context.nestedScopeKeys` is what the scanner knows and the register does
+   * not say: the key of every repository nested below the scan root, whose
+   * files the walk folded into this register. On a scoped attachment the
+   * register is forwarded only when the project's own key AND every one of
+   * those is in scope (see `nestedVerdict`). Machine mode never reads it, and
+   * the local write never receives it.
    */
-  async recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary> {
+  async recordProjectEgress(
+    input: RecordProjectEgressInput,
+    context?: ProjectEgressContext,
+  ): Promise<EgressWriteSummary> {
     const summary = await this.deps.local.recordProjectEgress(input);
     // Keyed by the scan's own project key BEFORE it is hashed. A `git:<remote>`
     // key canonicalizes to the repository key; a `path:` key (a project with no
@@ -983,6 +1026,9 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // summary is returned either way, since the scanner reads a throw as a
     // failed write.
     if (this.verdictFor(() => scopeKeyOfProjectKey(input.projectKey)) === 'local') return summary;
+    // Then every repository nested in it. Decided after the project's own key,
+    // so a project already out of scope is refused without reading the list.
+    if (this.nestedVerdict(context) === 'local') return summary;
     await this.deps.forward.run(() =>
       this.deps.client.recordProjectEgress(toEgressIngestRequest(input)),
     );

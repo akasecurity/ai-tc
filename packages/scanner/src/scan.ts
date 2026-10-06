@@ -162,6 +162,12 @@ interface EgressAccumulator {
   files: FileEgressHits[];
   scannedFiles: string[];
   deletedFiles: string[];
+  // Every directory below the scan root that the manifest walk listed and that
+  // holds a `.git` entry (a nested clone, a submodule, a linked worktree), as a
+  // posix path relative to the scan root. The walks fold such a repository's
+  // files into THIS project's register, so its scope key travels beside the
+  // register to the gateway (see commitEgress).
+  nestedRoots: string[];
 }
 
 // Open an accumulator for this scan, or null when the project identity cannot
@@ -170,7 +176,7 @@ interface EgressAccumulator {
 function startEgress(rootDir: string): EgressAccumulator | null {
   const project = resolveEgressProject(rootDir);
   if (project === null) return null;
-  return { project, files: [], scannedFiles: [], deletedFiles: [] };
+  return { project, files: [], scannedFiles: [], deletedFiles: [], nestedRoots: [] };
 }
 
 // Extract one just-read file's egress. Code files yield URL/IP hits; manifests
@@ -449,7 +455,7 @@ async function scanDir(
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
-  const committed = await commitEgress(gateway, egress);
+  const committed = await commitEgress(gateway, egress, scopeKeyOf);
   if (committed === null) {
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
@@ -483,7 +489,20 @@ function scanManifests(
   updates: ScanLedgerEntry[],
   rootDir: string,
 ): void {
-  for (const manifest of collectManifests(rootDir)) {
+  // The manifest walk is also where this scan learns which repositories are
+  // nested below its root. It is the widest walk the scan makes: the same
+  // walker as the source walk, with the same SKIP_DIRS and .akaignore reading
+  // but none of the host's excludePatterns, so it lists every directory the
+  // source walk lists, and it reads manifests out of all of them. That holds
+  // while host patterns only narrow: a `!` negation among them could send the
+  // source walk into a SKIP_DIRS directory this walk still skips, and no
+  // caller passes one. It lists directories whether or not anything under
+  // them changed, so a nested repository is reported because the scan passed
+  // through it, not because this run happened to re-read one of its files.
+  const nestedRoot = (relativeDir: string): void => {
+    egress.nestedRoots.push(relativeDir);
+  };
+  for (const manifest of collectManifests(rootDir, undefined, nestedRoot)) {
     const prev = ledger.previous.get(manifest.path);
     if (prev?.mtime === manifest.mtime) continue;
 
@@ -516,24 +535,53 @@ function scanManifests(
 // record (empty in the ordinary case). `projectId` is null because this
 // pipeline resolves no source project; the writer treats that as "inherit",
 // so passing null keeps whatever link the CLI pipeline already stored.
+//
+// Beside the register goes the scope key of every repository nested below the
+// scan root that the walk passed through. A gateway that forwards by scope
+// sends the register only when each of them may be sent too; the local store
+// ignores them. The keys are resolved only when a gateway reads them, so a
+// gateway that never asks costs no repository read.
 async function commitEgress(
   gateway: DataGateway,
   egress: EgressAccumulator | null,
+  scopeKeyOf: (relativePath: string) => string | undefined,
 ): Promise<ReadonlySet<string> | null> {
   if (!egress) return EMPTY_DROPPED;
-  const { project, files, scannedFiles, deletedFiles } = egress;
+  const { project, files, scannedFiles, deletedFiles, nestedRoots } = egress;
   if (scannedFiles.length === 0 && deletedFiles.length === 0 && files.length === 0) {
     return EMPTY_DROPPED;
   }
 
+  // Filled on the first read of `nestedScopeKeys` below, and only then.
+  let nestedKeys: readonly (string | undefined)[] | undefined;
   try {
-    const summary = await gateway.recordProjectEgress({
-      projectKey: project.projectKey,
-      project: project.project,
-      projectId: null,
-      reconcile: { mode: 'ledger', scannedFiles, deletedFiles },
-      hits: resolveEgress(files),
-    });
+    const summary = await gateway.recordProjectEgress(
+      {
+        projectKey: project.projectKey,
+        project: project.project,
+        projectId: null,
+        reconcile: { mode: 'ledger', scannedFiles, deletedFiles },
+        hits: resolveEgress(files),
+      },
+      {
+        // One key per nested root, from this scan's own lookup
+        // (./scope-key.ts). Asked about an entry inside the root, it answers
+        // with that root's key, so a root this scan's captures already
+        // resolved costs nothing more. `undefined` for a nested repository
+        // with no forge remote. Always a list, even an empty one: a scoped
+        // gateway reads a missing list as a register nobody vouched for.
+        // The repository lookups it makes do not throw on these inputs, and
+        // the gateway reads any throw in this read as local anyway.
+        //
+        // A getter, memoized: only a gateway that reads the list causes a
+        // repository read. The standalone gateway ignores it, and a
+        // machine-wide attachment answers before reading it.
+        get nestedScopeKeys(): readonly (string | undefined)[] {
+          nestedKeys ??= nestedRoots.map((dir) => scopeKeyOf(`${dir}/.git`));
+          return nestedKeys;
+        },
+      },
+    );
     return new Set(summary.droppedFiles);
   } catch {
     return null;

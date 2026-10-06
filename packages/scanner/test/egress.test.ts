@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 
-import type { PluginConfig, RecordProjectEgressInput } from '@akasecurity/plugin-sdk';
+import type {
+  PluginConfig,
+  ProjectEgressContext,
+  RecordProjectEgressInput,
+} from '@akasecurity/plugin-sdk';
 import { loadConfig, manifestKindOf, resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -518,5 +522,167 @@ describe('scanWorktree — Data Shares kill-switch', () => {
 
     expect(recordProjectEgress).toHaveBeenCalledTimes(2);
     expect(scannedFilesOf(lastEgressInput())).toEqual(['src/pay.ts']);
+  });
+});
+
+describe('scanWorktree — repositories nested in the scanned project', () => {
+  // The walks descend into a nested clone or submodule and fold its files into
+  // this project's register. What the scanner hands the gateway BESIDE the
+  // register is the scope key of every such repository the walk passed
+  // through. The gateway decides with it; this suite pins what is reported.
+  const PERSONAL_URL = 'https://github.com/me/personal.git';
+  // An scp-style remote's userinfo reads as an email address to a scanner, so
+  // it is built from parts.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  const LIB_URL = `${gitUser}github.com:acme/lib.git`;
+  const NOTIFY_CALL = "await fetch('https://api.github.com/repos/me/personal/dispatches');\n";
+
+  function nestedKeysOfLastCall(): readonly (string | undefined)[] | undefined {
+    const call = recordProjectEgress.mock.calls.at(-1) as
+      [RecordProjectEgressInput, ProjectEgressContext | undefined] | undefined;
+    if (call === undefined) throw new Error('recordProjectEgress was never called');
+    return call[1]?.nestedScopeKeys;
+  }
+
+  // A repository whose config names no remote.
+  function remotelessRepo(dir: string): void {
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+  }
+
+  it("reports a nested clone's key, and leaves the register as it was", async () => {
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'tools/mine/notify.ts', NOTIFY_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
+    // Still folded in: the register is unchanged, and what decides whether it
+    // may leave the machine travels beside it.
+    expect(scannedFilesOf(lastEgressInput())).toContain('tools/mine/notify.ts');
+    expect(lastEgressInput().projectKey).toBe(`git:${ORIGIN_URL}`);
+  });
+
+  it('reports a nested repository with no remote as keyless', async () => {
+    remotelessRepo(join(repo, 'scratch'));
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'scratch/try.ts', NOTIFY_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual([undefined]);
+  });
+
+  it('keys a submodule by its own remote: a `.git` file marks a repository too', async () => {
+    const modules = join(repo, '.git', 'modules', 'lib');
+    mkdirSync(modules, { recursive: true });
+    writeFileSync(join(modules, 'config'), `[remote "origin"]\n\turl = ${LIB_URL}\n`);
+    write(repo, 'lib/index.ts', NOTIFY_CALL);
+    writeFileSync(join(repo, 'lib', '.git'), 'gitdir: ../.git/modules/lib\n');
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/acme/lib']);
+  });
+
+  it('reports an empty list, never no list, for a project with nothing nested in it', async () => {
+    // A scoped gateway reads a MISSING list as a register nobody vouched for,
+    // so every scan says what it found, even when that is nothing.
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual([]);
+  });
+
+  it('reports a nested repository this run walked but did not read', async () => {
+    // Walked, not read: the answer depends on the tree, not on which files
+    // changed since the last scan. The second run re-reads only the new root
+    // file, and the clone is still reported.
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'tools/mine/notify.ts', NOTIFY_CALL);
+    const config = configWith(true);
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    write(repo, 'src/refund.ts', "await fetch('https://api.stripe.com/v1/refunds');\n");
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(recordProjectEgress).toHaveBeenCalledTimes(2);
+    expect(scannedFilesOf(lastEgressInput())).toEqual(['src/refund.ts']);
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
+  });
+
+  it('reports a repository only the manifest walk reaches, whose manifest joins the register', async () => {
+    // The host's excludePatterns narrow the SOURCE walk. The manifest walk
+    // still lists the excluded directory and reads its manifests into this
+    // register, so a repository in it is reported like any other.
+    gitRepo(join(repo, 'legacy', 'old'), PERSONAL_URL);
+    write(repo, 'legacy/old/package.json', STRIPE_MANIFEST);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), {
+      rootDir: repo,
+      sourceTool: 'claude-code',
+      excludePatterns: ['legacy/'],
+    });
+
+    expect(scannedFilesOf(lastEgressInput())).toContain('legacy/old/package.json');
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
+  });
+
+  it('reports nothing under a directory both walks skip', async () => {
+    gitRepo(join(repo, 'node_modules', 'dep'), PERSONAL_URL);
+    write(repo, 'node_modules/dep/index.js', NOTIFY_CALL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual([]);
+  });
+
+  it('reports a repository nested inside a nested one, each by its own remote', async () => {
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    gitRepo(join(repo, 'tools', 'mine', 'deps', 'lib'), LIB_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    const keys = nestedKeysOfLastCall();
+    expect(keys).toHaveLength(2);
+    expect(keys).toContain('github.com/me/personal');
+    expect(keys).toContain('github.com/acme/lib');
+  });
+
+  it("never reports the scan root's own repository, even one nested in another", async () => {
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    write(repo, 'tools/mine/notify.ts', NOTIFY_CALL);
+
+    await scanWorktree(configWith(true), {
+      rootDir: join(repo, 'tools', 'mine'),
+      sourceTool: 'claude-code',
+    });
+
+    expect(lastEgressInput().projectKey).toBe(`git:${PERSONAL_URL}`);
+    expect(nestedKeysOfLastCall()).toEqual([]);
+  });
+
+  it('reads no nested repository until the gateway asks for its key', async () => {
+    // Only a scoped gateway reads the list. A standalone or machine-wide
+    // gateway never does, so the scan must not read a nested repository's
+    // config on their behalf. No file of the clone is captured here, so
+    // nothing else looks it up. Its remote is changed AFTER the scan returns,
+    // and the key read afterwards is the new one: nothing was resolved
+    // before it was asked for.
+    gitRepo(join(repo, 'tools', 'mine'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+    gitRepo(join(repo, 'tools', 'mine'), LIB_URL);
+
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/acme/lib']);
   });
 });

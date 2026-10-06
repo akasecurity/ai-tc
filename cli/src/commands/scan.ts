@@ -267,12 +267,16 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   // or unreachable deployment delays the forward line and never the summary
   // the command was run for. JSON mode is one object and must wait for both.
   const recorded = egress;
+  // Every repository the walk passed through below the target. Their call
+  // sites are in the register, so a scoped attachment holds it to each of them.
+  const nestedRepositories = result.nestedRepositories;
   const runForward = async (): Promise<SharesForwardOutcome | null> => {
     if (recorded === null) return null;
     try {
       return await forwardProjectEgress(home, recorded.input, {
         send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
+        nestedRepositories,
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit

@@ -512,7 +512,13 @@ describe('scanPathIntoStore', () => {
     const db = openLocalDatabase(store);
     try {
       const result = await scanPathIntoStore(db, root, { rules: RULES });
-      expect(result).toEqual({ scanned: 1, findings: 0, files: [], egress: { files: [] } });
+      expect(result).toEqual({
+        scanned: 1,
+        findings: 0,
+        files: [],
+        egress: { files: [] },
+        nestedRepositories: [],
+      });
       expect(storedEvents(store)).toEqual([]);
     } finally {
       db.close();

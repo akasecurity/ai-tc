@@ -269,6 +269,14 @@ export interface CollectFilesOptions {
   // AKA's own home (`~/.aka` by default). A SECOND base rather than a subpath of
   // `home`, because `--home` relocates this one alone.
   akaHome?: string | undefined;
+  // Told every directory BELOW the target that this walk lists and that holds a
+  // `.git` entry — a nested clone (a directory), a submodule or a linked
+  // worktree (a file) — spelled as the caller spelled the target, like every
+  // yielded path. Read off the listing the walk already made, so it costs no
+  // I/O, and only what the walk enters is reported: a skipped, protected or
+  // `.akaignore`'d directory is never listed. The target itself is never
+  // reported.
+  onNestedRepository?: ((dir: string) => void) | undefined;
 }
 
 export function* collectFiles(
@@ -308,7 +316,7 @@ export function* collectFiles(
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, canonicalTarget, '', [], [], false, protectedRoots);
+  yield* visit(target, canonicalTarget, '', [], [], false, protectedRoots, opts.onNestedRepository);
 }
 
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
@@ -330,6 +338,8 @@ function* visit(
   skipLayers: readonly IgnoreLayer[],
   inIgnoredDir: boolean,
   protectedRoots: readonly string[],
+  // See CollectFilesOptions.onNestedRepository. Threaded like the roots above.
+  onNestedRepository: ((dir: string) => void) | undefined,
 ): Generator<CollectedFile> {
   // The listing comes FIRST, before either ignore file is read. Two reasons,
   // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
@@ -363,6 +373,17 @@ function* visit(
     // is worth doing and is a change to this function's contract, so it is
     // tracked separately rather than smuggled in here.
     return;
+  }
+
+  // A repository nested below the target, told by the `.git` entry this listing
+  // already holds. `dirRel` is '' only at the target, whose repository is the
+  // scan's own project.
+  if (
+    onNestedRepository !== undefined &&
+    dirRel !== '' &&
+    dirents.some((entry) => entry.name === '.git')
+  ) {
+    onNestedRepository(dir);
   }
 
   const dirMarkLayers = withLayer(
@@ -413,6 +434,7 @@ function* visit(
         dirSkipLayers,
         dirIgnored,
         protectedRoots,
+        onNestedRepository,
       );
     } else if (entry.isFile()) {
       // THE guarantee for a walked tree: a prefix match, so it covers a
@@ -508,6 +530,13 @@ export interface ScanPathResult {
   // `file` is the ABSOLUTE walked path here; the recording pass relativizes it
   // to the project root before anything reaches the store.
   egress: { files: FileEgressHits[] };
+  // Every directory strictly below the target that the walk listed and that
+  // holds a `.git` entry — a nested clone, a submodule, a linked worktree — in
+  // walk order, spelled like the walked paths. The walk folds such a
+  // repository's files, and with them its egress, into the target's project.
+  // The Data Shares forward is handed this list so that a scoped attachment
+  // can hold the register to each repository in it.
+  nestedRepositories: string[];
 }
 
 // What the egress pass extracts from one already-read file, or null when the
@@ -622,8 +651,12 @@ export async function scanPathIntoStore(
   // (ON CONFLICT (finding_key)) across the two tools. resolve() is relative to
   // process.cwd() — the same base the callers' statSync(target) already uses —
   // and is a no-op on the already-absolute paths the web-ui folder picker passes.
+  const nestedRepositories: string[] = [];
   for (const { path: file, gitignored } of collectFiles(resolve(target), {
     akaHome: opts.akaHome,
+    onNestedRepository: (dir) => {
+      nestedRepositories.push(dir);
+    },
   })) {
     let text: string;
     try {
@@ -722,5 +755,11 @@ export async function scanPathIntoStore(
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;
   }
-  return { scanned, findings: findingCount, files, egress: { files: egressFiles } };
+  return {
+    scanned,
+    findings: findingCount,
+    files,
+    egress: { files: egressFiles },
+    nestedRepositories,
+  };
 }

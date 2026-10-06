@@ -1,10 +1,15 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
+  canonicalRepoUrl,
   readControlPlaneCredential,
   readWorkspaceSettings,
   scopeKeyOfProjectKey,
   settingsDir,
   toEgressIngestRequest,
 } from '@akasecurity/persistence';
+import { resolveRepoIdentity } from '@akasecurity/plugin-sdk';
 import type {
   AttachedCredentialAny,
   EgressIngestRequest,
@@ -73,8 +78,10 @@ export type SharesForwardSender = (
  * `not-enrolled` is a SCOPED attachment declining to send. The machine
  * forwards only repositories enrolled for this deployment, and this project's
  * is not one of them — or it has no remote to enroll by, which is true of
- * every path-keyed project. Nothing was sent, by design rather than by fault,
- * so it reads as information, not as a failure to fix.
+ * every path-keyed project — or a repository nested inside the project (a
+ * submodule, a clone kept in the checkout), whose call sites the walk folded
+ * into this register, is not. Nothing was sent, by design rather than by
+ * fault, so it reads as information, not as a failure to fix.
  */
 export type SharesForwardOutcome =
   | { status: 'not-attached' }
@@ -110,6 +117,17 @@ export interface SharesForwardDeps {
   send: SharesForwardSender;
   /** Default true. False is an explicit opt-out for this run, not a policy. */
   enabled?: boolean;
+  /**
+   * Every directory below the scan target that the caller's walk listed and
+   * that holds a `.git` entry: `ScanPathResult.nestedRepositories`, passed as
+   * the walk reported it. The walk folds those repositories' files into this
+   * project's register, so a SCOPED attachment forwards the register only when
+   * each of them is enrolled as well (see `nestedVerdict`). Pass an empty list
+   * when the walk found none. If it is absent, nothing vouches for what the
+   * register carries, and a scoped attachment keeps it local. A machine-wide
+   * attachment never reads it.
+   */
+  nestedRepositories?: readonly string[] | undefined;
 }
 
 /**
@@ -152,6 +170,70 @@ function projectVerdict(
   } catch {
     return 'local';
   }
+}
+
+/**
+ * Whether every repository nested in the scanned project may be forwarded with
+ * it: `'forward'` or `'local'`, never a throw.
+ *
+ * A walk folds a nested clone's or submodule's files into the project it is
+ * walking, so the register this forward would send carries their call sites
+ * under the project's key. On a scoped attachment it is sent only when each of
+ * those repositories is enrolled as well. One with no remote never is.
+ *
+ * Absent, the list is `'local'`: nobody has said what the register carries. A
+ * walk that found nothing passes an empty list.
+ *
+ * Machine-wide, it answers before reading the list, so a machine attachment
+ * looks at no repository and sends what it always has.
+ */
+function nestedVerdict(
+  settings: WorkspaceSettings,
+  endpoint: string,
+  credential: AttachedCredentialAny,
+  nestedRepositories: readonly string[] | undefined,
+): ScopeVerdict {
+  try {
+    const mode = attachmentModeOf(credential);
+    if (mode === 'machine') return 'forward';
+    if (nestedRepositories === undefined) return 'local';
+    const resolved = resolveScope({ mode, scope: settings.attachmentScope, endpoint });
+    for (const dir of nestedRepositories) {
+      if (scopeVerdict(resolved, nestedRepositoryKey(dir)) === 'local') return 'local';
+    }
+    return 'forward';
+  } catch {
+    return 'local';
+  }
+}
+
+/**
+ * The scope key of the repository rooted exactly at `dir`, or undefined.
+ *
+ * It is derived the way this pipeline keys a project: the repository
+ * identity's remote, canonicalized. `egress-record.ts` keys a project
+ * `git:<identity.url>`, and the project verdict canonicalizes that. That is
+ * also the key the plugin's resolver stamps on that repository's own
+ * captures:
+ * - origin, else the first remote;
+ * - a submodule's own remote;
+ * - a linked worktree's main checkout.
+ *
+ * A repository with no remote has no key: its identity falls back to a local
+ * path, which never canonicalizes.
+ *
+ * `dir` must still hold its `.git`. Without one, the identity resolver climbs
+ * to the repository AROUND it, and a nested directory whose `.git` vanished
+ * since the walk would be judged by the enclosing project's key.
+ *
+ * It reads the repository afresh on every call rather than through the
+ * plugin's per-directory memo. This runs in the dashboard's long-lived server,
+ * where a remembered remote could outlive an edit to it.
+ */
+function nestedRepositoryKey(dir: string): string | undefined {
+  if (!existsSync(join(dir, '.git'))) return undefined;
+  const identity = resolveRepoIdentity(dir);
+  return identity === undefined ? undefined : canonicalRepoUrl(identity.url);
 }
 
 /**
@@ -204,9 +286,28 @@ export async function forwardProjectEgress(
     // to read without one — a missing credential stays `no-credential`, the
     // state with something to do about it. Before, because a register this
     // machine keeps local must not even be assembled into a request.
+    //
+    // The project's own key first, so a project already out of scope never
+    // has its nested repositories read.
     if (projectVerdict(settings, connection.endpoint, credential, input.projectKey) === 'local') {
       return { status: 'not-enrolled', endpoint };
     }
+    // Then every repository its walk found nested in it: one register, so one
+    // verdict. A machine-wide attachment answers before the list is read. On a
+    // scoped one, the list is read inside this guard, never as a call argument
+    // outside it: a list that throws while being read is then not-enrolled,
+    // like one that throws while being walked, and never reaches the outer
+    // catch as an unreachable deployment.
+    let nested: ScopeVerdict;
+    try {
+      nested =
+        attachmentModeOf(credential) === 'machine'
+          ? 'forward'
+          : nestedVerdict(settings, connection.endpoint, credential, deps.nestedRepositories);
+    } catch {
+      nested = 'local';
+    }
+    if (nested === 'local') return { status: 'not-enrolled', endpoint };
 
     // The projection is the privacy boundary: source snippets out, the project
     // key digested, the per-project cap applied. Sending `input` itself is the

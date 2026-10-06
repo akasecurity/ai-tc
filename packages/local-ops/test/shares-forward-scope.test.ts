@@ -132,7 +132,8 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     const outcome = await forwardProjectEgress(
       home,
       input('git:https://github.com/acme/payments-api.git'),
-      { send: transport.send },
+      // A walk that found no nested repository says so with an empty list.
+      { send: transport.send, nestedRepositories: [] },
     );
 
     expect(outcome).toEqual({ status: 'forwarded', endpoint: ENDPOINT, callSites: 0 });
@@ -150,7 +151,10 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     attach(enrolled(WORK_REPO));
     const transport = recorder();
 
-    const outcome = await forwardProjectEgress(home, input(projectKey), { send: transport.send });
+    const outcome = await forwardProjectEgress(home, input(projectKey), {
+      send: transport.send,
+      nestedRepositories: [],
+    });
 
     expect(outcome).toEqual({ status: 'forwarded', endpoint: ENDPOINT, callSites: 0 });
   });

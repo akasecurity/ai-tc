@@ -21,9 +21,10 @@ const V1_RECORD = { specVersion: 1, endpoint: ENDPOINT, apiKey: TEST_KEY };
 const V2_RECORD = { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: TEST_KEY };
 
 describe('AttachedCredentialV1', () => {
-  it('is the very same schema object as AttachedCredential, which the credential reader parses with', () => {
-    // Pointing the reader's name at anything wider would widen what every build
-    // reads, so the two names are one object rather than two copies.
+  it('is the same schema object as AttachedCredential, the member v1 files parse as', () => {
+    // `AttachedCredentialAny` dispatches a specVersion-1 file to this object, so
+    // a machine-wide credential reads exactly as it did when the reader parsed
+    // v1 alone. One object, not two copies, so the two names cannot drift apart.
     expect(AttachedCredentialV1).toBe(AttachedCredential);
   });
 

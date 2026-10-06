@@ -2,7 +2,7 @@ import { chmodSync, lstatSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type {
-  AttachedCredential,
+  AttachedCredentialAny,
   ControlPlaneConnection,
   CredentialState,
   CredentialUnusableReason,
@@ -10,7 +10,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_FILENAME,
-  AttachedCredential as CredentialSchema,
+  AttachedCredentialAny as CredentialSchema,
   isSafeEndpoint,
   originOnly,
   unsafeEndpointReason,
@@ -69,9 +69,15 @@ export type { CredentialState, CredentialUnusableReason };
  * Reachable only by asking for it by name. That is the whole mechanism: the
  * narrow state is what a caller gets by default, and the wide read is a visible
  * act at the call site.
+ *
+ * The usable branch carries EITHER credential version, and the version is the
+ * attachment's mode: v1 is a machine-wide attachment and v2 a scoped one. A
+ * caller that FORWARDS reads the mode before it sends; a caller that only
+ * presents the key — the policy pull, an attach rollback — treats the two
+ * alike, and a rollback that rewrites what it read keeps the mode it found.
  */
 export type CredentialFileRead =
-  { usable: true; credential: AttachedCredential } | Extract<CredentialState, { usable: false }>;
+  { usable: true; credential: AttachedCredentialAny } | Extract<CredentialState, { usable: false }>;
 
 /**
  * Repair a too-permissive mode, or refuse the file.
@@ -211,6 +217,17 @@ export function readControlPlaneCredentialFile(
     return { usable: false, reason: 'malformed' };
   }
 
+  // BOTH versions, keyed on `specVersion`: v1, a machine-wide attachment read
+  // exactly as it always has been, and v2, a scoped attachment carrying
+  // `mode: 'scoped'`. Accepting v2 here is what switches scoped forwarding on,
+  // and it is safe only because every path that forwards what this machine
+  // recorded (captured activity, history, the Data Shares register, a device
+  // command's scan) consults the scope verdict before it sends. The policy
+  // pull, the posture report and the command poll and ack send without a
+  // verdict, by design. A build older than that parses `specVersion` as the
+  // literal 1, reads v2 as malformed, and forwards nothing. So a version is
+  // accepted here only in the same change that teaches every forwarder what it
+  // means.
   const result = CredentialSchema.safeParse(parsed);
   if (!result.success) return { usable: false, reason: 'malformed' };
 
@@ -245,7 +262,7 @@ export function readControlPlaneCredentialFile(
 export function readControlPlaneCredential(
   settingsDir: string,
   connection: ControlPlaneConnection,
-): AttachedCredential | null {
+): AttachedCredentialAny | null {
   const read = readControlPlaneCredentialFile(settingsDir, connection);
   return read.usable ? read.credential : null;
 }
@@ -283,10 +300,15 @@ function unsafeEndpointRefusal(reason: UnsafeEndpointReason): string {
  *
  * THROWS, unlike every read path here, because a failed attach must be visible
  * to whoever ran it. Only the read side is fail-open.
+ *
+ * Either version, serialised exactly as handed over and with nothing added: a
+ * machine-wide attach writes v1 byte for byte as it always has, and a scoped
+ * one writes v2. The version on disk is the caller's choice, and it is what a
+ * reader that predates scoped attachments keys its refusal on.
  */
 export function writeControlPlaneCredential(
   settingsDir: string,
-  credential: AttachedCredential,
+  credential: AttachedCredentialAny,
 ): void {
   const reason = unsafeEndpointReason(credential.endpoint);
   if (reason !== null) {

@@ -1,6 +1,6 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
-import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
+import type { AttachedCredentialAny, ControlPlaneConnection } from '@akasecurity/schema';
 import { isAttached } from '@akasecurity/schema';
 
 import { classifyFailure } from './failure.ts';
@@ -99,8 +99,13 @@ function isInvalidBundle(err: unknown): boolean {
 export interface PullPolicyBundleDeps {
   /** Which deployment, from settings. */
   connection: ControlPlaneConnection;
-  /** The credential for THAT deployment — already endpoint-matched. */
-  credential: AttachedCredential;
+  /**
+   * The credential for THAT deployment — already endpoint-matched. Either
+   * version: the pull presents the key and nothing else, so a scoped machine
+   * pulls its organization's bundle exactly as a machine-wide one does. What a
+   * scoped machine may SEND is decided by the forwarders, not here.
+   */
+  credential: AttachedCredentialAny;
   store: PolicyStore;
 }
 

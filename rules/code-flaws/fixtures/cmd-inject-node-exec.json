@@ -52,6 +52,17 @@
     "shouldMatch": true
   },
   {
+    "label": "bundler-emitted node_child_process alias",
+    "text": "const node_child_process = require('node:child_process');\nconst cmd = req.query.cmd;\nnode_child_process.execSync(cmd, { stdio });",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 104, "end": 113 }]
+  },
+  {
+    "label": "member chain ending in an allowlisted receiver",
+    "text": "mod.child_process.exec(req.query.cmd);",
+    "shouldMatch": true
+  },
+  {
     "label": "exec with literal string argument",
     "text": "exec('ls -la', (err, stdout) => console.log(stdout));",
     "shouldMatch": false

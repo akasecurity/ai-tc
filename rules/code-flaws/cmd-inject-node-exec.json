@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "(?:\\b(?:child_process|childProcess|cp)\\s*\\??\\.\\s*|\\brequire\\s*\\(\\s*['\"](?:node:)?child_process['\"]\\s*\\)\\s*\\??\\.\\s*|(?<![\\w$.]))(exec(?:Sync)?\\s*\\(\\s*)(?!['\"`])",
+    "pattern": "(?:\\b(?:(?:node_)?child_process|childProcess|cp)\\s*\\??\\.\\s*|\\brequire\\s*\\(\\s*['\"](?:node:)?child_process['\"]\\s*\\)\\s*\\??\\.\\s*|(?<![\\w$.]))(exec(?:Sync)?\\s*\\(\\s*)(?!['\"`])",
     "flags": "g",
     "captureGroup": 1
   },

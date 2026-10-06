@@ -1,6 +1,13 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+  // On by default, this makes turbo write a managed block into the root
+  // AGENTS.md whenever it detects an AI coding agent running a
+  // repository-scoped command, so every agent's checkout came out of
+  // `pnpm lint`, `typecheck` or `test` with a tracked file modified. AGENTS.md
+  // here is a hand-written pointer at CLAUDE.md and stays that way. `false`
+  // stops future writes only: it does not remove a block already in the file.
+  "agentGuidance": false,
   // test/setup/** is the no-network guard every package loads as a vitest
   // setupFile. It lives outside every package, so nothing would otherwise put it
   // in a `test` task's hash — weakening or deleting it would leave every package

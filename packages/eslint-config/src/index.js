@@ -461,7 +461,13 @@ const AMBIENT_LOCALE_MESSAGE =
  * Known limits, in the shape the clock ban states its own: a locale argument
  * that is a variable holding `undefined`, an aliased method
  * (`const f = n.toLocaleString; f()`), a constructor reached through a renamed
- * `Intl`, and `localeCompare` (collation, not display) are not matched.
+ * `Intl`, and `localeCompare` (collation, not display) are not matched. Nor is
+ * any spelling the selectors cannot read a name or an argument off: a computed
+ * member (`n['toLocaleString']()`, `new Intl['NumberFormat']()`), since the
+ * property is then a literal with no `name`; a spread first argument
+ * (`n.toLocaleString(...[])`); and a detached call
+ * (`Number.prototype.toLocaleString.call(n)`, `.apply`). Each is the same bypass
+ * as an alias.
  *
  * @param {{ everyModule?: boolean }} [opts]
  * @returns {{ selector: string, message: string }[]}

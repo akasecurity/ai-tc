@@ -12,9 +12,12 @@ import { reactSyntaxBans, tonalInkTokens, tonalInkTokensPresentational } from '.
 // compiler enforces; this ban is what stops a call site formatting around them
 // with a bare toLocaleString(), which typechecks perfectly.
 //
-// Same shape as ambient-clock.test.js: lint snippets with the SHIPPED rule value
-// imported from ../src/index.js, so weakening the ban in the config fails here
-// rather than passing as a config-shape check.
+// Same shape as ambient-clock.test.js: lint snippets against rule VALUES built
+// from ../src/index.js, so a selector removed or broken in `reactSyntaxBans`
+// fails here. What this suite cannot see is whether a package's config still
+// applies the widened value — `PRESENTATIONAL_RULE` and `ROUTE_RULE` below are
+// built here, not read from the config that ships them. That half is
+// package-walls.test.js's, which resolves each package's REAL config.
 
 const linter = new Linter();
 
@@ -78,6 +81,10 @@ const DEFAULT_LOCALE_SHAPES = [
   ['new Intl.RelativeTimeFormat()', 'export const f = new Intl.RelativeTimeFormat();'],
   ['new Intl.PluralRules()', 'export const f = new Intl.PluralRules();'],
   ['new Intl.ListFormat()', 'export const f = new Intl.ListFormat();'],
+  [
+    'new Intl.DisplayNames(undefined, options)',
+    'export const f = new Intl.DisplayNames(undefined, { type: "region" });',
+  ],
 ];
 
 describe('a client component may not format in the runtime’s locale', () => {

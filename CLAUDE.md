@@ -1084,8 +1084,11 @@ locale is a second value a route captures per request and passes down:
   `undefined` spellings, and the `Intl` formatter constructors in the same three
   forms. Unlike the clock ban, nothing in a UI package legitimately reads the
   runtime's locale, so it is widened to every module in `dashboard-ui` and
-  `ui-kit` (`src/**`) and in `web-ui`'s `app/**` — server components included,
-  which is where the server-locale form lived. A NAMED locale passes, which is
+  `ui-kit` (`src/**`) and in `web-ui`'s `app/**` and `middleware.ts` — server
+  components included, which is where the server-locale form lived. That
+  widening is held against each package's REAL resolved config by
+  `packages/eslint-config/test/package-walls.test.js`; `ambient-locale.test.js`
+  tests the selectors and cannot see a config that stopped applying them. A NAMED locale passes, which is
   what lets the deliberate pins stay: compact notation (`compactCount`,
   `compactNumber`) is pinned to `en-US` because K/M/B/T is a product-wide
   convention shared with the CLI and the plugins, and `relativeTime` is pinned to
@@ -1096,12 +1099,16 @@ dashboard answers only loopback requests (`web-ui/middleware.ts`), so the browse
 and the server share a machine and a zone, and a request carries no zone to pass.
 And the same locale can still format differently under two ICU builds — Node's and
 the browser's — so a CLDR change between them is a residual mismatch no prop
-closes. `web-ui/test/pages/locale-hydration.test.ts` is what holds the rest: it
-server-renders the routes under one runtime default and hydrates them under
-another (`test/helpers/runtime-locale.ts` moves the default), and its first case
-is the control that a bare `toLocaleString()` is reported through the same
-harness. `suppressHydrationWarning` silences a warning without reconciling
-anything, so it is never a substitute for passing an instant or a locale.
+closes. Two suites hold the rest, one per layer.
+`web-ui/test/pages/locale-hydration.test.ts` server-renders the route CLIENT
+components and the dashboard views — never a `page.tsx` — under one runtime
+default and hydrates them under another (`test/helpers/runtime-locale.ts` moves
+the default); its first cases are the control that a bare `toLocaleString()` is
+reported through the same harness. `web-ui/test/pages/render-instant-wiring.test.ts`
+calls the pages themselves, and is what proves a route reads the request's
+`Accept-Language` and hands that locale to every consumer.
+`suppressHydrationWarning` silences a warning without reconciling anything, so it
+is never a substitute for passing an instant or a locale.
 
 ## Detection rules
 

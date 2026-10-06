@@ -176,9 +176,9 @@ const ROUTES = [
   },
 ] as const;
 
-// `vault/page.tsx` and `settings/page.tsx` are synchronous and take no
-// arguments; the other five take `searchParams` as a promise, the way Next
-// hands it.
+// `vault/page.tsx` and `settings/page.tsx` take no arguments (vault is
+// synchronous, settings async); the other five take `searchParams` as a
+// promise, the way Next hands it.
 // `await`ing a non-promise return still resolves, so only the call shape
 // differs.
 interface Route {

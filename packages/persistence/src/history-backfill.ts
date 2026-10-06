@@ -24,6 +24,15 @@ import { DB_FILENAME } from './paths.ts';
  * answer. `undefined` marks every capture as before, a list marks only captures
  * stamped with one of its keys, and an empty list marks nothing.
  *
+ * `scopeKeys` can be a FUNCTION returning that answer, and a caller whose answer
+ * takes a read to work out (the credential file's) should pass one. It is
+ * evaluated here, after the store check and inside this helper's best-effort
+ * envelope, so a throw while working it out cannot turn a recorded grant into a
+ * reported failure. A throw means `undefined`, every capture, never no seed:
+ * marking is not sending, and the drain's own capture read applies the scope in
+ * SQL whatever was marked. On a machine with no store the function is never
+ * called, so no credential is read for a backlog that does not exist.
+ *
  * BEST-EFFORT and deliberately silent, for the reason
  * `clearAttachmentDerivedState` gives for its own callers: the grant has
  * already been recorded by the time anything reaches this, and a store that
@@ -45,13 +54,21 @@ import { DB_FILENAME } from './paths.ts';
 export function seedCaptureBacklogOwed(
   dataDir: string,
   beforeMs: number,
-  scopeKeys?: readonly string[],
+  scopeKeys?: readonly string[] | (() => readonly string[] | undefined),
 ): void {
   if (!existsSync(join(dataDir, DB_FILENAME))) return;
+  let keys: readonly string[] | undefined;
+  try {
+    keys = typeof scopeKeys === 'function' ? scopeKeys() : scopeKeys;
+  } catch {
+    // Unscoped, as documented above: a scope that cannot be worked out marks
+    // everything rather than nothing.
+    keys = undefined;
+  }
   try {
     const db = openLocalDatabase(dataDir);
     try {
-      db.historySync.markCaptureBacklogOwed(beforeMs, scopeKeys);
+      db.historySync.markCaptureBacklogOwed(beforeMs, keys);
     } finally {
       db.close();
     }

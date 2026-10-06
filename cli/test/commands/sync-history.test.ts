@@ -22,7 +22,8 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // The credential reader, wrapped for the scoped cases at the end of this file.
 // They arm `credentialRead` with a usable scoped read rather than writing a
 // scoped credential file, so they exercise the backfill's scope independently
-// of what the reader accepts. Unarmed, every call reaches the real reader.
+// of what the reader accepts; armed with an Error, the reader throws it.
+// Unarmed, every call reaches the real reader.
 const credentialRead = vi.hoisted<{ value: unknown }>(() => ({ value: undefined }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
@@ -30,10 +31,14 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     ...actual,
     readControlPlaneCredentialFile: (
       ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
-    ): ReturnType<typeof actual.readControlPlaneCredentialFile> =>
-      (credentialRead.value as
-        ReturnType<typeof actual.readControlPlaneCredentialFile> | undefined) ??
-      actual.readControlPlaneCredentialFile(...args),
+    ): ReturnType<typeof actual.readControlPlaneCredentialFile> => {
+      if (credentialRead.value instanceof Error) throw credentialRead.value;
+      return (
+        (credentialRead.value as
+          ReturnType<typeof actual.readControlPlaneCredentialFile> | undefined) ??
+        actual.readControlPlaneCredentialFile(...args)
+      );
+    },
   };
 });
 
@@ -374,6 +379,23 @@ describe('aka sync-history --on — the capture backfill and the attachment scop
 
     await runSyncHistory(['--on'], deps(recorder()));
 
+    expect(owedIds()).toEqual(['personal-prompt', 'work-prompt']);
+  });
+
+  // The grant is already recorded when the seed runs, so a credential read that
+  // throws while the seed works out its scope must not turn it into a failure:
+  // the seed falls back to marking every capture, which is safe because marking
+  // is not sending.
+  it('still records the grant, and marks every capture, when the credential read throws', async () => {
+    attach();
+    enroll([WORK]);
+    seedCaptures({ 'work-prompt': WORK, 'personal-prompt': PERSONAL });
+    credentialRead.value = new Error('the credential file could not be inspected');
+
+    await runSyncHistory(['--on'], deps(recorder()));
+
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
     expect(owedIds()).toEqual(['personal-prompt', 'work-prompt']);
   });
 });

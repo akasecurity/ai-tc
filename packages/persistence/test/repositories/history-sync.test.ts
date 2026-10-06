@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
 import { seedCaptureBacklogOwed } from '../../src/history-backfill.ts';
@@ -1570,6 +1570,52 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
 
     expect(outboxOwed(raw, 'cap-w')).toBe(true);
     expect(outboxOwed(raw, 'cap-p')).toBe(false);
+  });
+
+  // The scope can be handed over as a function, evaluated inside the helper's own
+  // best-effort envelope: the computation that yields it (a credential read) can
+  // throw, and the grant it follows is already recorded.
+  it('takes the scope as a function, and marks only its keys', () => {
+    const db = store.open();
+    const raw = store.openRaw();
+    seedKeyedCapture(db, 'cap-w', MINUTE, WORK, false);
+    seedKeyedCapture(db, 'cap-p', 2 * MINUTE, PERSONAL, false);
+
+    seedCaptureBacklogOwed(store.dataDir, ALL, () => [WORK]);
+
+    expect(outboxOwed(raw, 'cap-w')).toBe(true);
+    expect(outboxOwed(raw, 'cap-p')).toBe(false);
+  });
+
+  // A scope that cannot be computed falls back to the unscoped seed rather than
+  // to no seed, and does not throw: marking is not sending, and the drain's own
+  // capture read applies the scope in SQL whatever was marked.
+  it('marks every capture, and does not throw, when the scope function throws', () => {
+    const db = store.open();
+    const raw = store.openRaw();
+    seedKeyedCapture(db, 'cap-w', MINUTE, WORK, false);
+    seedKeyedCapture(db, 'cap-p', 2 * MINUTE, PERSONAL, false);
+
+    expect(() => {
+      seedCaptureBacklogOwed(store.dataDir, ALL, () => {
+        throw new Error('the credential read failed');
+      });
+    }).not.toThrow();
+
+    expect(outboxOwed(raw, 'cap-w')).toBe(true);
+    expect(outboxOwed(raw, 'cap-p')).toBe(true);
+  });
+
+  // No store, nothing to mark, so nothing to compute a scope for: the credential
+  // read behind it is skipped as well.
+  it('does not evaluate the scope function on a machine with no store', () => {
+    withTempStore((bare) => {
+      const scope = vi.fn(() => [WORK]);
+
+      seedCaptureBacklogOwed(bare.dataDir, ALL, scope);
+
+      expect(scope).not.toHaveBeenCalled();
+    }, 'aka-history-sync-bare-');
   });
 
   it('reads no capture and marks none for an empty scope', () => {

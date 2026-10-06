@@ -453,11 +453,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // credential this attach wrote: a machine credential means every capture, as
   // before, and on a scoped attachment it is the keys enrolled for this
   // endpoint. That is none on a first attach, so such a machine's backlog waits
-  // for its repositories to be enrolled and re-seeded.
+  // for its repositories to be enrolled and re-seeded. Passed as a function,
+  // like the other seed callers, so working it out stays inside the seed's own
+  // best-effort guard.
   if (historyConsent !== undefined) {
-    seedCaptureBacklogOwed(
-      dataDirOf(base),
-      attachedAt.getTime(),
+    seedCaptureBacklogOwed(dataDirOf(base), attachedAt.getTime(), () =>
       captureBackfillScope({ usable: true, credential }, committed),
     );
   }

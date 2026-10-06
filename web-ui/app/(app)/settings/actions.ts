@@ -270,19 +270,20 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
     // from the settings as they stand after this write and through the same read
     // the drain makes, so the administrator's overlay counts here exactly as it
     // does there. The credential is read here, server-side, and nothing of it
-    // but its mode leaves this block.
-    const settings = readWorkspaceSettings();
-    const connection = settings.controlPlane;
-    seedCaptureBacklogOwed(
-      dataDir(),
-      historySyncBackfillAsOf,
-      captureBackfillScope(
+    // but its mode leaves this block. Passed as a function, settings read
+    // included, so all of it runs inside the seed's own best-effort guard: the
+    // grant is already recorded, and a throw there must not turn it into a
+    // failure.
+    seedCaptureBacklogOwed(dataDir(), historySyncBackfillAsOf, () => {
+      const settings = readWorkspaceSettings();
+      const connection = settings.controlPlane;
+      return captureBackfillScope(
         connection === undefined
           ? undefined
           : readControlPlaneCredentialFile(settingsDir(), connection),
         settings,
-      ),
-    );
+      );
+    });
   }
   revalidatePath('/settings');
   return { ok: true };

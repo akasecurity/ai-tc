@@ -50,10 +50,19 @@ function attempted(result: Awaited<ReturnType<typeof runHistorySync>>): HistoryS
 // independently of what the reader accepts. Unarmed, every call reaches the
 // real reader, so every other case here is unaffected.
 const credentialRead = vi.hoisted<{ value: unknown }>(() => ({ value: undefined }));
+// How many times the pass read settings through the package entry, for the case
+// that pins a machine attachment to its single read at pass start.
+const settingsReads = vi.hoisted<{ count: number }>(() => ({ count: 0 }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
+    readWorkspaceSettings: (
+      ...args: Parameters<typeof actual.readWorkspaceSettings>
+    ): ReturnType<typeof actual.readWorkspaceSettings> => {
+      settingsReads.count += 1;
+      return actual.readWorkspaceSettings(...args);
+    },
     readControlPlaneCredentialFile: (
       ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
     ): ReturnType<typeof actual.readControlPlaneCredentialFile> =>
@@ -1883,6 +1892,77 @@ describe('runHistorySync — a scoped attachment', () => {
 
     expect(batches).toEqual([100]);
     expect(delivery('cap-w-149')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // The structural lane's twin of the case above: the scope is re-read before
+  // every page of sessions and every page of rows, so an unenroll that lands
+  // mid-pass takes that repository out of the very next read rather than the
+  // next pass. The first session is enrolled work, then thirty sessions of a
+  // repository that is unenrolled while the first batch is in flight, then one
+  // more of the repository that stays.
+  it('stops sending a repository unenrolled between two structural pages', async () => {
+    attachScoped([WORK, OTHER_WORK]);
+    seedKeyedSession('w-first', 0, { root: WORK, leaf: WORK });
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`o-${String(i)}`, (i + 1) * 60_000, { root: OTHER_WORK, leaf: OTHER_WORK });
+    }
+    seedKeyedSession('w-last', 31 * 60_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+    let unenrolled = false;
+
+    await run({
+      sendBatch: (events) => {
+        l.structural.push(...events);
+        // The unenroll, written while the first session's batch is in flight.
+        if (!unenrolled) {
+          unenrolled = true;
+          enroll([WORK]);
+        }
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: l.sendCaptures,
+    });
+
+    // The rest of the unenrolled repository's first page of sessions, and every
+    // session after it, are held back; the repository that stayed still goes.
+    expect(l.structural.map((e) => e.id)).toEqual([
+      'w-first',
+      'w-first-llm',
+      'w-last',
+      'w-last-llm',
+    ]);
+    expect(delivery('o-0')).toEqual({ syncedAt: null, owed: null });
+    expect(delivery('o-29-llm')).toEqual({ syncedAt: null, owed: null });
+  });
+
+  // A MACHINE attachment has no scope to re-read: it reads settings once, at the
+  // start of the pass, and a scope changing underneath it changes nothing.
+  it('reads settings once on a machine attachment, whatever happens to the stored scope', async () => {
+    attach({ grantFor: ENDPOINT });
+    enroll([WORK]);
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`p-${String(i)}`, i * 60_000, { root: PERSONAL, leaf: PERSONAL });
+    }
+    seedKeyedSession('w-1', 31 * 60_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+    let rewritten = false;
+    settingsReads.count = 0;
+
+    await run({
+      sendBatch: (events) => {
+        l.structural.push(...events);
+        if (!rewritten) {
+          rewritten = true;
+          enroll([]);
+        }
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: l.sendCaptures,
+    });
+
+    // Thirty-one sessions of a root and a leaf each, across two session pages.
+    expect(l.structural).toHaveLength(62);
+    expect(settingsReads.count).toBe(1);
   });
 
   // The enroll re-seed and the drain together: captures the live path refused

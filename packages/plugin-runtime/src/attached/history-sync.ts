@@ -332,13 +332,18 @@ export async function runHistorySync(
     const scopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>
       resolveScope({ mode, scope: live.attachmentScope, endpoint: connection.endpoint });
     const passScope = scopeOf(settings);
+    // Taken once: it scopes the consent re-mark below, which runs once per pass.
     const passFilter = scopeFilterOf(passScope);
-    // The CAPTURE lane's scope, re-read from settings before every batch. A pass
-    // runs for up to two minutes, and an unenroll that lands inside it must take
-    // that repository out of the very next batch rather than the next pass: the
-    // user has just said those captures are not the deployment's. Machine mode
-    // has no scope to change, so it reads nothing.
-    const captureScope = (): ResolvedAttachmentScope =>
+    // THE LIVE SCOPE, for both lanes: re-read from settings before every page
+    // either one reads (a page of sessions, a page of one session's rows, a batch
+    // of captures). A pass runs for up to two minutes, and an unenroll that lands
+    // inside it must take that repository out of the very next read rather than
+    // the next pass: the user has just said that activity is not the
+    // deployment's. One read per page, never one per row. Machine mode has no
+    // scope to change, so it answers the pass-start scope and reads nothing. A
+    // settings file that cannot be read gives the unonboarded defaults, which
+    // resolve to no keys, so a failed read sends nothing.
+    const liveScope = (): ResolvedAttachmentScope =>
       mode === 'machine' ? passScope : scopeOf(readWorkspaceSettings(deps.base));
 
     // READ-ONLY. A long-running child must never write the breaker: its view of
@@ -503,8 +508,7 @@ export async function runHistorySync(
         budgetMs,
         pid,
         backlogBefore,
-        structuralFilter: passFilter,
-        captureScope,
+        liveScope,
       });
     } finally {
       ledger.release(pid);
@@ -560,20 +564,14 @@ interface DrainDeps {
   /** Rows at or after this instant belong to the live path, not to this drain. */
   backlogBefore: number;
   /**
-   * The STRUCTURAL lane's scope filter, resolved once at pass start: `undefined`
-   * on a machine attachment (today's statements), otherwise the enrolled keys,
-   * possibly none, which sends nothing. Once per pass, unlike the capture
-   * lane's: a structural row carries no prompt or reply text, and an unenroll
-   * that lands mid-pass reaches this lane at the next pass. Nothing out of scope
-   * is ever stamped, so nothing is lost by the wait.
+   * What this pass may send, for BOTH lanes: re-resolved from live settings on
+   * every call on a scoped attachment, the pass-start scope on a machine one
+   * (today's statements, and no settings read). Called before every page of
+   * sessions, every page of one session's rows and every batch of captures, and
+   * by the "is anything owed" probe, so an unenroll that lands mid-pass takes
+   * its repository out of the very next read.
    */
-  structuralFilter: readonly string[] | undefined;
-  /**
-   * The CAPTURE lane's scope: re-resolved from live settings on every call on a
-   * scoped attachment, the pass-start scope on a machine one. Called before
-   * every batch and by both "is anything owed" probes.
-   */
-  captureScope: () => ResolvedAttachmentScope;
+  liveScope: () => ResolvedAttachmentScope;
 }
 
 /**
@@ -639,11 +637,11 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
 
   /**
    * Whether any capture is owed IN SCOPE, as one LIMIT 1 probe through the
-   * capture lane's own scope, so the probe and the lane agree about what is
+   * live scope, so the probe and the capture lane agree about what is
    * outstanding.
    */
   const capturesOwed = (): boolean => {
-    const filter = scopeFilterOf(d.captureScope());
+    const filter = scopeFilterOf(d.liveScope());
     return d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS, filter).length > 0;
   };
 
@@ -653,7 +651,12 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const drainStructural = async (until: number): Promise<HistorySyncOutcome> => {
     let stopped: HistorySyncOutcome = 'ok';
     outer: while (d.now() < until) {
-      const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore, d.structuralFilter);
+      // The scope is asked afresh for every page: see `liveScope`.
+      const sessions = d.ledger.pendingSessions(
+        SESSION_PAGE,
+        d.backlogBefore,
+        scopeFilterOf(d.liveScope()),
+      );
       if (sessions.length === 0) break;
 
       for (const sessionId of sessions) {
@@ -661,7 +664,12 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
         // self-referencing foreign keys and stubs no missing root, so a leaf that
         // overtakes its session is rejected — which is why this is sequential
         // rather than concurrent.
-        const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore, d.structuralFilter);
+        const rows = d.ledger.pendingRows(
+          sessionId,
+          ROW_PAGE,
+          d.backlogBefore,
+          scopeFilterOf(d.liveScope()),
+        );
         if (rows.length === 0) continue;
 
         // Rebuilt first, so a row that can never be expressed is counted and
@@ -853,10 +861,10 @@ async function drainCaptures(
     // is owed for one of those reasons; this loop enforces none of them.
     //
     // WHAT IT DOES ENFORCE is the scope, re-read for every batch (see
-    // `captureScope`): on a scoped attachment the read returns only captures
+    // `liveScope`): on a scoped attachment the read returns only captures
     // stamped with an enrolled key, so a repository unenrolled since the last
     // batch is already out of this one.
-    const scope = d.captureScope();
+    const scope = d.liveScope();
     const rows = d.ledger.pendingCaptureRows(
       CAPTURE_BATCH_SIZE,
       d.now() - CAPTURE_GRACE_MS,

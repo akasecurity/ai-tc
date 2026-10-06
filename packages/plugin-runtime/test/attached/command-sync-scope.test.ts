@@ -11,6 +11,7 @@ import {
 } from '@akasecurity/persistence';
 import type * as Remote from '@akasecurity/remote';
 import type { ControlPlaneConnection } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CommandScan } from '../../src/attached/command-sync.ts';
@@ -218,6 +219,69 @@ describe('runCommandSync — a scoped attachment', () => {
       reason: 'expired',
       projectsScanned: 0,
     });
+  });
+});
+
+describe('commandScanFor — a session directory that cannot be read', () => {
+  // A working directory that was removed under a running session makes
+  // `process.cwd()` throw. The scan is built while the sync entry evaluates its
+  // arguments, so a throw there would end the whole sync — the policy pull
+  // included — where it used to fail only the scan, and say so.
+  const unreadableDirectory = () => {
+    throw new Error('ENOENT: no such file or directory, uv_cwd');
+  };
+
+  async function buildWithUnreadableDirectory() {
+    const scanWorktree = vi.fn(() => Promise.resolve({ scanned: 1 }));
+    const { commandScanFor } = await import('../../src/attached/command-sync.ts');
+    const build = () =>
+      commandScanFor({ dataDir: dataDirOf(base) } as never, scanWorktree, SOURCE_TOOL.ClaudeCode);
+    const spy = vi.spyOn(process, 'cwd').mockImplementation(unreadableDirectory);
+    try {
+      // Built twice on purpose: the first asserts the build does not throw, the
+      // second is the scan the case then drives.
+      expect(build).not.toThrow();
+      return { scan: build(), scanWorktree };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('builds anyway: no key, and a scan that rejects', async () => {
+    const { scan, scanWorktree } = await buildWithUnreadableDirectory();
+
+    // No key, so a scoped attachment never services a command from here.
+    expect(scan.rootScopeKey()).toBeUndefined();
+    // A rejection, so the command channel's own catch acks `scan_failed`.
+    await expect(scan.run()).rejects.toThrow();
+    expect(scanWorktree).not.toHaveBeenCalled();
+  });
+
+  it('acks a machine-wide attachment as scan_failed, exactly as it always has', async () => {
+    reader.scoped = false;
+    attach();
+    const { scan, scanWorktree } = await buildWithUnreadableDirectory();
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan))).resolves.toBe('failed');
+
+    expect(scanWorktree).not.toHaveBeenCalled();
+    expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
+      outcome: 'failed',
+      reason: 'scan_failed',
+      projectsScanned: 0,
+    });
+  });
+
+  it('leaves the command for a scoped attachment: no scan, and NO ack', async () => {
+    attach(enrolled(WORK_REPO));
+    const { scan, scanWorktree } = await buildWithUnreadableDirectory();
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan))).resolves.toBe('out-of-scope');
+
+    expect(scanWorktree).not.toHaveBeenCalled();
+    expect(ackCommand).not.toHaveBeenCalled();
   });
 });
 

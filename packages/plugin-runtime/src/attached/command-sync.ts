@@ -87,8 +87,9 @@ export type CommandSyncOutcome =
  * `rootScopeKey` NAMES that scope's directory, for the one question asked
  * before it is scanned on a SCOPED attachment: may this directory be reported
  * on at all? It returns the canonical `host/owner/repo` key of the repository
- * the scan root sits in, or undefined when there is none (no repository, or one
- * with no remote), which a scoped attachment never services. It is a function
+ * the scan root sits in, or undefined when there is none (no repository, one
+ * with no remote, or a session directory that could not be read), which a
+ * scoped attachment never services. It is a function
  * rather than a value so the repository files are read only once a command has
  * actually arrived on a scoped attachment, never on the ordinary poll that
  * finds nothing. A key source that throws gets the command skipped, never
@@ -379,6 +380,19 @@ export type WorktreeScan = (
 ) => Promise<{ scanned: number }>;
 
 /**
+ * The session's own directory, inherited by this detached child, and never
+ * anything the wire named. Undefined when the process cannot say what it is:
+ * `process.cwd()` throws once the directory has been removed.
+ */
+function readSessionDirectory(): string | undefined {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Build the injected scan from a host's scanner.
  *
  * A thin adapter, but it exists so the SCOPE is written ONCE, here, next to the
@@ -392,18 +406,26 @@ export type WorktreeScan = (
  * agree. The key is `resolveRepoAttribution(root).scopeKey`, the same key a
  * capture recorded in that directory carries, and undefined outside a
  * repository or in one with no remote.
+ *
+ * NEVER THROWS, which matters because it is built while a sync entry evaluates
+ * its arguments. A working directory removed under a running session makes
+ * `process.cwd()` throw, and a throw here would end the whole sync, the policy
+ * pull included, where a failed directory read used to fail only the scan. So
+ * a directory that cannot be read leaves a scan with no key, which a scoped
+ * attachment treats as not enrolled, and a `run` that rejects, which
+ * `runCommandSync` acks as `scan_failed` exactly as it does any failed scan.
  */
 export function commandScanFor(
   config: PluginConfig,
   scanWorktree: WorktreeScan,
   sourceTool: SourceTool,
 ): CommandScan {
-  // The session's own directory, inherited by this detached child, and never
-  // anything the wire named.
-  const rootDir = process.cwd();
+  const rootDir = readSessionDirectory();
   return {
-    rootScopeKey: () => resolveRepoAttribution(rootDir).scopeKey,
+    rootScopeKey: () =>
+      rootDir === undefined ? undefined : resolveRepoAttribution(rootDir).scopeKey,
     run: async () => {
+      if (rootDir === undefined) throw new Error('the session working directory cannot be read');
       const summary = await scanWorktree(config, { sourceTool, rootDir });
       // 0 or 1: this mode scans exactly one worktree, so the count answers "was
       // there anything here to scan", not "how many projects were found". A

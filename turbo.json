@@ -1,6 +1,9 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+  // AGENTS.md is hand-written and points at CLAUDE.md; this keeps turbo (2.11.6+)
+  // from appending its managed guidance block to it on agent-run commands.
+  "agentGuidance": false,
   // test/setup/** is the no-network guard every package loads as a vitest
   // setupFile. It lives outside every package, so nothing would otherwise put it
   // in a `test` task's hash — weakening or deleting it would leave every package

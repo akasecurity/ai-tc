@@ -138,26 +138,26 @@ describe('createFindingLocator — a code finding', () => {
     expect(context.match?.start).toBeGreaterThan(CONTEXT_LINE_MAX / 4);
   });
 
-  it('redacts a secret on a neighbouring line', () => {
+  it('drops the neighbouring lines when one of them holds a secret', () => {
     const text = [
       `const key = "${AWS_KEY}";`,
       'const element = document.getElementById("out");',
       'element.innerHTML = userInput;',
     ].join('\n');
     const { hits, locate } = locateAll(text);
+    // Control: the key really is detected in the window.
+    expect(hits.map((h) => h.ruleId)).toContain('secrets/aws-access-key');
     const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
-    const shown = context.lines.join('\n');
-    // Positive control: the line holding the secret is in the excerpt.
-    expect(context.lines[0]).toContain('const key = "');
-    expect(shown).toContain('[REDACTED:SECRET]');
-    expect(() => assertRawFree(shown, [AWS_KEY])).not.toThrow();
+    expect(context.firstLine).toBe(3);
+    expect(context.lines).toEqual(['element.innerHTML = userInput;']);
+    expect(() => assertRawFree(context.lines.join('\n'), [AWS_KEY])).not.toThrow();
   });
 
   it('redacts a value only the original scan reported, which the backstop cannot see', () => {
     // A custom rule's hit: no bundled rule recognises this value, so the
     // backstop re-scan cannot be what removes it.
     const value = 'zz-custom-token-value-zz';
-    const text = [`const banner = "${value}";`, 'element.innerHTML = userInput;'].join('\n');
+    const text = [`element.innerHTML = "${value}";`, 'next();'].join('\n');
     const ruleset = rules();
     // Control: across the whole text the bundled rules see only the code hit.
     expect(scan(text, ruleset).map((h) => h.ruleId)).toEqual(['code-flaws/xss-inner-html']);
@@ -178,13 +178,16 @@ describe('createFindingLocator — a code finding', () => {
       evidenceOf: evidenceLookup(ruleset),
       backstopRules: ruleset,
     });
-    const shown = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html'))).lines.join('\n');
-    expect(shown).toContain('const banner = "[REDACTED:SECRET]";');
-    expect(() => assertRawFree(shown, [value])).not.toThrow();
+    const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
+    // The value's line is the matched line, so the window holds only it.
+    expect(context.lines).toEqual(['element.innerHTML = "[REDACTED:SECRET]";']);
+    expect(() => assertRawFree(context.lines.join('\n'), [value])).not.toThrow();
   });
 
-  it('redacts a secret the original scan did not report, through the backstop', () => {
-    const text = [`const key = "${AWS_KEY}";`, 'element.innerHTML = userInput;'].join('\n');
+  it('cuts the window at a secret the original scan did not report, through the backstop', () => {
+    const text = [`const key = "${AWS_KEY}";`, 'element.innerHTML = userInput;', 'next();'].join(
+      '\n',
+    );
     const ruleset = rules();
     // Only the code hit is handed over, as when the pack that would have caught
     // the key was disabled for the capture.
@@ -197,9 +200,9 @@ describe('createFindingLocator — a code finding', () => {
       evidenceOf: evidenceLookup(ruleset),
       backstopRules: ruleset,
     });
-    const shown = contextOf(locate(hitOf(codeHits, 'code-flaws/xss-inner-html'))).lines.join('\n');
-    expect(shown).toContain('const key = "');
-    expect(() => assertRawFree(shown, [AWS_KEY])).not.toThrow();
+    const context = contextOf(locate(hitOf(codeHits, 'code-flaws/xss-inner-html')));
+    expect(context.lines).toEqual(['element.innerHTML = userInput;']);
+    expect(() => assertRawFree(context.lines.join('\n'), [AWS_KEY])).not.toThrow();
   });
 
   it('redacts a secret inside the matched code itself', () => {
@@ -213,7 +216,7 @@ describe('createFindingLocator — a code finding', () => {
 });
 
 describe('createFindingLocator — a code window next to a secret', () => {
-  it('stops at a PGP key header below the match, so the key body never shows', () => {
+  it('keeps only the matched line when a PGP key header sits below it', () => {
     const text = ['a();', 'element.innerHTML = userInput;', PGP_HEADER, KEY_BODY, KEY_BODY].join(
       '\n',
     );
@@ -221,17 +224,25 @@ describe('createFindingLocator — a code window next to a secret', () => {
     expect(scan(KEY_BODY, rules())).toEqual([]);
     const { hits, locate } = locateAll(text);
     const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
-    expect(context.firstLine).toBe(1);
-    expect(context.lines).toEqual(['a();', 'element.innerHTML = userInput;', '[REDACTED:SECRET]']);
-    expect(context.lines.join('\n')).not.toContain(KEY_BODY);
+    expect(context.firstLine).toBe(2);
+    expect(context.lines).toEqual(['element.innerHTML = userInput;']);
   });
 
-  it('stops at a value above the match too, and shows nothing beyond it', () => {
-    const text = [KEY_BODY, PGP_HEADER, 'element.innerHTML = userInput;', 'b();'].join('\n');
+  it('keeps only the matched line when the header is above it and the body below', () => {
+    const text = [PGP_HEADER, 'element.innerHTML = userInput;', KEY_BODY, KEY_BODY].join('\n');
     const { hits, locate } = locateAll(text);
     const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
     expect(context.firstLine).toBe(2);
-    expect(context.lines).toEqual(['[REDACTED:SECRET]', 'element.innerHTML = userInput;', 'b();']);
+    expect(context.lines).toEqual(['element.innerHTML = userInput;']);
+    expect(context.lines.join('\n')).not.toContain(KEY_BODY);
+  });
+
+  it('keeps only the matched line when the value is above it', () => {
+    const text = [KEY_BODY, PGP_HEADER, 'element.innerHTML = userInput;', 'b();'].join('\n');
+    const { hits, locate } = locateAll(text);
+    const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
+    expect(context.firstLine).toBe(3);
+    expect(context.lines).toEqual(['element.innerHTML = userInput;']);
   });
 
   it('keeps the window to the matched line when the value sits on it', () => {

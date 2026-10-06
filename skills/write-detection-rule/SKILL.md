@@ -139,9 +139,9 @@ size the window against the text a reader sees.
 **evidence** — `"code"` or `"value"` (default `"value"`). It decides what a finding's excerpt
 in the dashboard shows. A `"value"` rule's match is itself sensitive (a key, a password, an
 email): the excerpt is the matched line alone with the match redacted. A `"code"` rule's match
-is a code pattern (`exec(`, `innerHTML =`): the excerpt is the matched line plus up to two
-lines either side — stopping at the first line that holds a recognised value — with the match
-left readable and highlighted. Set `"code"` only when the matched
+is a code pattern (`exec(`, `innerHTML =`): the excerpt is the matched line plus two lines
+either side — cut to the matched line alone when any of those lines holds a recognised value —
+with the match left readable and highlighted. Set `"code"` only when the matched
 text can never contain a secret value — a rule whose match includes a hardcoded password or key
 stays `"value"` even though it is a code flaw.
 

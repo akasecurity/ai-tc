@@ -202,9 +202,9 @@ export type FindingContextBasis = z.infer<typeof FindingContextBasis>;
 
 // The masked lines around a finding, built when the finding is detected. Every
 // value a detection rule recognises in `lines` is replaced by a
-// `[REDACTED:<CATEGORY>]` placeholder, and the window never reaches past a line
-// holding one; only the matched text of a rule whose evidence is code is left
-// readable. Text no rule recognises is shown as written. `match` locates the
+// `[REDACTED:<CATEGORY>]` placeholder, and a window in which any line holds one
+// is cut to the matched line alone; only the matched text of a rule whose
+// evidence is code is left readable. Text no rule recognises is shown as written. `match` locates the
 // matched text for highlighting and is null when it is redacted.
 export const FindingContext = z
   .object({

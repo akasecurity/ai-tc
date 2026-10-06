@@ -17,11 +17,11 @@ import type {
 
 import { assertRawFree } from './raw-egress.ts';
 
-// Lines shown either side of a code finding's matched line, cut short at the
-// first line holding a value (see stopAtValues). A value finding (a secret, an
-// email) gets its matched line only: some secret rules match just the first
-// line of a multi-line secret (a PGP block's header), so a neighbouring line can
-// be the secret itself, unmarked by any rule.
+// Lines shown either side of a code finding's matched line, when none of the
+// window's lines holds a recognised value (see cutAtValues). A value finding (a
+// secret, an email) gets its matched line only: some secret rules match just the
+// first line of a multi-line secret (a PGP block's header), so a neighbouring
+// line can be the secret itself, unmarked by any rule.
 //
 // Masking is as complete as the rules are: text that no rule recognises, and
 // that sits in a window with no recognised value beside it, is shown as written.
@@ -186,7 +186,7 @@ function buildContext(
     rawValues.push(found.rawMatch);
   }
   const merged = mergeRegions(regions);
-  const shown = stopAtValues(segments, lineIndex, valueLinesOf(merged, starts));
+  const shown = cutAtValues(segments, lineIndex, valueLinesOf(merged, starts));
 
   const lines: string[] = [];
   let match: FindingContext['match'] = null;
@@ -223,26 +223,20 @@ function valueLinesOf(regions: readonly Region[], starts: number[]): Set<number>
   return lines;
 }
 
-// The window, cut so it never reaches past a line holding a value. Some secret
-// rules match only one line of a multi-line secret (a PGP block's header), and
-// the lines beyond it can be the secret itself with nothing marking them. So the
-// window grows outward from the matched line one line at a time and stops after
-// the first line that holds a value: that line is shown, redacted, and nothing
-// beyond it is. A value on the matched line itself keeps the window to that line.
-function stopAtValues(
+// The window, cut to the matched line alone when any of its lines holds a
+// recognised value. Some secret rules match only one line of a multi-line secret
+// (a PGP block's header), and the lines around it can be the secret itself with
+// nothing marking them — on either side of the match, since the match can sit
+// between a header and its body. Stopping a walk at the value closes only the
+// side it walks; dropping the neighbours closes both. A window with no value
+// keeps its full reach.
+function cutAtValues(
   segments: readonly Segment[],
   lineIndex: number,
   valueLines: ReadonlySet<number>,
 ): Segment[] {
-  const at = segments.findIndex((segment) => segment.lineIndex === lineIndex);
-  if (at === -1) return [...segments];
-  let first = at;
-  while (first > 0 && !valueLines.has(segments[first]?.lineIndex ?? -1)) first -= 1;
-  let last = at;
-  while (last < segments.length - 1 && !valueLines.has(segments[last]?.lineIndex ?? -1)) {
-    last += 1;
-  }
-  return segments.slice(first, last + 1);
+  if (!segments.some((segment) => valueLines.has(segment.lineIndex))) return [...segments];
+  return segments.filter((segment) => segment.lineIndex === lineIndex);
 }
 
 // Hits whose span overlaps [start, end), from a list sorted by span start.

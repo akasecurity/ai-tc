@@ -30,7 +30,9 @@ export class SqliteInspectionFindingsRepository {
     // transaction. The conflict refreshes `inspection_definition_id` to whatever
     // definition fired THIS time: without that, a finding re-detected under a
     // bumped rule version would keep pointing at the stale definition row, and its
-    // stored severity/category would never track a pack update.
+    // stored severity/category would never track a pack update. `line`, `col`
+    // and `context` are deliberately NOT refreshed here: a re-read of the same
+    // hit must not bring back an excerpt that body expiry already cleared.
     //
     // 2) ON CONFLICT (finding_key) DO UPDATE SET …: the live capture path
     // (recordCapture) mints a plain random `id` per detection — like the legacy
@@ -52,12 +54,13 @@ export class SqliteInspectionFindingsRepository {
       `INSERT INTO inspection_findings
          (id, audit_event_id, inspection_definition_id, classified_data_id,
           span_start, span_end, masked_match, action_taken, confidence,
-          finding_key, first_detected_at)
+          finding_key, first_detected_at, line, col, context)
        VALUES
          (:id, :auditEventId, :inspectionDefinitionId, :classifiedDataId,
           :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence,
           :findingKey,
-          COALESCE(:firstDetectedAt, (SELECT started_at FROM audit_events WHERE id = :auditEventId)))
+          COALESCE(:firstDetectedAt, (SELECT started_at FROM audit_events WHERE id = :auditEventId)),
+          :line, :col, :context)
        ON CONFLICT(id) DO UPDATE SET
          inspection_definition_id = excluded.inspection_definition_id
        ON CONFLICT (finding_key) DO UPDATE SET
@@ -68,7 +71,10 @@ export class SqliteInspectionFindingsRepository {
          span_end = excluded.span_end,
          masked_match = excluded.masked_match,
          action_taken = excluded.action_taken,
-         confidence = excluded.confidence`,
+         confidence = excluded.confidence,
+         line = excluded.line,
+         col = excluded.col,
+         context = excluded.context`,
     );
 
     // Has this (rule, masked value) already been recorded somewhere in this
@@ -157,6 +163,9 @@ export class SqliteInspectionFindingsRepository {
         confidence: row.confidence,
         findingKey: row.findingKey,
         firstDetectedAt: row.firstDetectedAt,
+        line: row.line,
+        col: row.col,
+        context: row.context,
       }),
     );
   }

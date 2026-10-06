@@ -193,12 +193,56 @@ export type ResolutionMethod = z.infer<typeof ResolutionMethod>;
 
 // ─── Object shapes ────────────────────────────────────────────────────────────
 
+// What a finding's line number counts in. 'file' when the scanned text was a
+// whole file (a file write, the worktree scanner, the folder scan), so the line
+// is the file's own; 'excerpt' when it was a fragment (an edit's replacement
+// text, a prompt, a shell command), so the line counts within that fragment.
+export const FindingContextBasis = z.enum(['file', 'excerpt']).meta({ id: 'FindingContextBasis' });
+export type FindingContextBasis = z.infer<typeof FindingContextBasis>;
+
+// The masked lines around a finding, built when the finding is detected. Every
+// secret and personal value in `lines` is already replaced by a
+// `[REDACTED:<CATEGORY>]` placeholder; only the matched text of a rule whose
+// evidence is code is left readable. `match` locates that text for
+// highlighting and is null when the finding's own match is redacted.
+export const FindingContext = z
+  .object({
+    basis: FindingContextBasis,
+    // 1-based line number of `lines[0]`.
+    firstLine: z.number().int().positive(),
+    lines: z.array(z.string()).min(1).max(5),
+    match: z
+      .object({
+        // 1-based line number, within [firstLine, firstLine + lines.length).
+        line: z.number().int().positive(),
+        // Offsets into that entry of `lines`, end exclusive.
+        start: z.number().int().nonnegative(),
+        end: z.number().int().nonnegative(),
+      })
+      .nullable(),
+  })
+  .meta({ id: 'FindingContext' });
+export type FindingContext = z.infer<typeof FindingContext>;
+
+// Where a finding sits in the text it was detected in: 1-based line and column
+// of the match start, plus the masked excerpt (null when none could be built
+// safely). Local-store only — never part of a forwarded payload.
+export const FindingLocation = z.object({
+  line: z.number().int().positive(),
+  col: z.number().int().positive(),
+  context: FindingContext.nullable(),
+});
+export type FindingLocation = z.infer<typeof FindingLocation>;
+
 export const FindingMatch = z
   .object({
     // Masked preview of the matched value. Never raw content.
     maskedValue: z.string(),
-    // Redacted source-line prefix. Currently empty (pending privacy review).
+    // Deprecated: always empty. Superseded by `context`.
     contextPrefix: z.string(),
+    // The masked lines around the match. Absent when the finding predates
+    // context capture or none could be built safely.
+    context: FindingContext.optional(),
   })
   .meta({ id: 'FindingMatch' });
 export type FindingMatch = z.infer<typeof FindingMatch>;
@@ -239,6 +283,10 @@ export const FindingInstance = z
     provider: FindingProvider,
     repo: z.string(),
     file: z.string(),
+    // 1-based line and column of the match start in the scanned text. Absent
+    // for findings that predate location capture or have no source text.
+    line: z.number().int().positive().optional(),
+    col: z.number().int().positive().optional(),
     // Who the capturing event is attributed to. Optional: a single-user store
     // has no one to attribute a finding to and never sets it.
     user: FindingUser.optional(),
@@ -530,6 +578,11 @@ export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
 // the vault reads. The types read caps at 100 and is set separately: the two
 // are distinct contracts, so neither cap is derived from the other.
 export const MAX_FLAT_FINDINGS_LIMIT = 200;
+
+// One finding's excerpt, by its id — the drawer's read. A whole-input shape so
+// a Server Action parses everything it was posted before reading a field.
+export const FindingContextQuery = z.object({ id: z.string().min(1).max(256) });
+export type FindingContextQuery = z.infer<typeof FindingContextQuery>;
 
 export const ListFindingInstancesQuery = z.object({
   severity: z.array(Severity).optional(),

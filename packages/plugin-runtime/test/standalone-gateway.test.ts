@@ -925,3 +925,62 @@ describe('readSessionScopeKey', () => {
     }
   });
 });
+
+describe("StandaloneDataGateway — a tool call's finding location", () => {
+  it('stores the line, column and excerpt the reconciler located', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    const context = {
+      basis: 'excerpt' as const,
+      firstLine: 1,
+      lines: ['run innerHTML = x'],
+      match: { line: 1, start: 4, end: 15 },
+    };
+    // The leaf hangs off its session root, which has to exist first.
+    await gw.recordAuditEvent({
+      id: 'sess-loc',
+      eventType: 'session',
+      startedAt: new Date().toISOString(),
+    });
+    await gw.recordToolCalls([
+      {
+        sessionId: 'sess-loc',
+        toolUseId: 'tool-loc',
+        parentId: 'sess-loc',
+        rootSessionId: 'sess-loc',
+        startedAt: new Date().toISOString(),
+        attributes: { tool_name: 'Bash', tool_use_id: 'tool-loc' },
+        inspections: [
+          {
+            ruleId: 'code-flaws/xss-inner-html',
+            ruleName: 'innerHTML assignment',
+            ruleVersion: '1',
+            category: 'code_flaw',
+            severity: 'high',
+            span: { start: 4, end: 15 },
+            maskedMatch: 'i*********=',
+            actionTaken: 'log',
+            confidence: 0.8,
+            line: 1,
+            col: 5,
+            context,
+          },
+        ],
+      },
+    ]);
+    await gw.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT line, col, context FROM inspection_findings`).get() as {
+        line: number;
+        col: number;
+        context: string;
+      };
+      expect(row.line).toBe(1);
+      expect(row.col).toBe(5);
+      expect(JSON.parse(row.context)).toEqual(context);
+    } finally {
+      raw.close();
+    }
+  });
+});

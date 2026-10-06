@@ -569,3 +569,119 @@ describe('body expiry', () => {
     expect(bodyOf(raw, 'old').content_expired_at).toBe(NOW);
   });
 });
+
+describe('body expiry — finding excerpts', () => {
+  let store: OwnedTempStore;
+  let raw: DatabaseSync;
+
+  beforeEach(() => {
+    store = createTempStore('aka-body-retention-excerpt-', { migrated: true });
+    raw = corpusConnection(store.open());
+  });
+  afterEach(() => {
+    store.destroy();
+  });
+
+  const EXCERPT = JSON.stringify({
+    basis: 'file',
+    firstLine: 3,
+    lines: ['const a = 1;', 'run(input);', 'const b = 2;'],
+    match: { line: 4, start: 0, end: 4 },
+  });
+
+  // Gives a seeded finding the excerpt, position and first-detection time the
+  // real writer stamps (`insertFinding` always sets first_detected_at).
+  function withExcerpt(id: string, ageDays: number): void {
+    raw
+      .prepare(
+        `UPDATE inspection_findings
+            SET context = ?, line = 4, col = 1, first_detected_at = ?
+          WHERE id = ?`,
+      )
+      .run(EXCERPT, NOW - ageDays * DAY, `find-${id}`);
+  }
+
+  const findingOf = (id: string) =>
+    raw
+      .prepare(`SELECT context, line, col FROM inspection_findings WHERE id = ?`)
+      .get(`find-${id}`) as { context: string | null; line: number | null; col: number | null };
+
+  it('clears the excerpt with the body, and keeps the line and column', () => {
+    seed(raw, [
+      { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },
+      { id: 'new', kind: 'code_change', ageDays: 1, content: 'y'.repeat(100) },
+    ]);
+    withExcerpt('old', 60);
+    withExcerpt('new', 1);
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    // Control: the old body really did expire.
+    expect(bodyOf(raw, 'old').content).toBeNull();
+    expect(findingOf('old')).toEqual({ context: null, line: 4, col: 1 });
+    expect(findingOf('new').context).toBe(EXCERPT);
+  });
+
+  it('clears the excerpt of a tool call past the horizon, which never had a body', () => {
+    seed(raw, [
+      { id: 'old-call', kind: 'tool_call', ageDays: 60, content: null },
+      { id: 'new-call', kind: 'tool_call', ageDays: 1, content: null },
+    ]);
+    withExcerpt('old-call', 60);
+    withExcerpt('new-call', 1);
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(findingOf('old-call').context).toBeNull();
+    expect(findingOf('new-call').context).toBe(EXCERPT);
+  });
+
+  it("judges the horizon by the finding's current event, not its first detection", () => {
+    // Re-detected: first seen 60 days ago, but its current event is a day old.
+    seed(raw, [{ id: 'recent-call', kind: 'tool_call', ageDays: 1, content: null }]);
+    withExcerpt('recent-call', 60);
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(findingOf('recent-call').context).toBe(EXCERPT);
+  });
+
+  it('clears at most the pass cap of excerpts, and the next pass the rest', () => {
+    const ids = ['call-a', 'call-b', 'call-c'];
+    seed(
+      raw,
+      ids.map((id) => ({ id, kind: 'tool_call', ageDays: 60, content: null })),
+    );
+    for (const id of ids) withExcerpt(id, 60);
+    const cleared = () => ids.filter((id) => findingOf(id).context === null).length;
+
+    const db = store.open();
+    db.bodyRetention.expire({
+      cutoff: CUTOFF,
+      sweepSyncLane: true,
+      now: NOW,
+      maxRows: 2,
+      batchSize: 1,
+    });
+    expect(cleared()).toBe(2);
+    db.bodyRetention.expire({
+      cutoff: CUTOFF,
+      sweepSyncLane: true,
+      now: NOW,
+      maxRows: 2,
+      batchSize: 1,
+    });
+    expect(cleared()).toBe(3);
+  });
+
+  it('keeps the excerpt of a body the sync lane still holds', () => {
+    seed(raw, [{ id: 'owed', kind: 'prompt', ageDays: 60, content: 'z'.repeat(100) }]);
+    withExcerpt('owed', 60);
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: false, now: NOW });
+
+    // Control: the lane held the body, so the excerpt beside it stays too.
+    expect(bodyOf(raw, 'owed').content).not.toBeNull();
+    expect(findingOf('owed').context).toBe(EXCERPT);
+  });
+});

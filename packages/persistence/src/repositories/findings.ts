@@ -53,6 +53,8 @@ import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-curso
 import { allRows, countBy, countScalar, iterateRows } from '../internal/rows.ts';
 import type {
   DashboardViews,
+  FindingContextSource,
+  FindingContextView,
   FindingInstancesView,
   FindingsReadPort,
   FindingTypesView,
@@ -116,6 +118,9 @@ interface FindingGroupRowJoined {
   sync_failed_at: number | null;
   sync_failure: string | null;
   outbox_owed: number | null;
+  // Where the match sits in the scanned text (null before location capture).
+  line: number | null;
+  col: number | null;
 }
 
 // Per-row FindingStatus — a thin snake_case adapter over @akasecurity/schema's
@@ -159,6 +164,8 @@ function toFlatFindingRow(r: FindingGroupRowJoined): FlatFindingRow {
     repo: r.repo ?? '',
     file: r.file ?? '',
     ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+    ...(r.line === null ? {} : { line: r.line }),
+    ...(r.col === null ? {} : { col: r.col }),
     eventId: r.event_id,
     ...(r.session_id === null ? {} : { sessionId: r.session_id }),
     status: deriveInstanceStatus(r),
@@ -324,7 +331,8 @@ const FINDING_ROW_COLUMNS_SQL = `f.id AS id, d.rule_id AS rule_id, d.category AS
               ${latestResolutionStatusSql('f')} AS latest_status,
               e.synced_at AS synced_at, e.sync_claimed_at AS sync_claimed_at,
               e.sync_failed_at AS sync_failed_at, e.sync_failure AS sync_failure,
-              e.outbox_owed AS outbox_owed`;
+              e.outbox_owed AS outbox_owed,
+              f.line AS line, f.col AS col`;
 
 const DAY_MS = 86_400_000;
 
@@ -352,7 +360,12 @@ interface FindingRowJoined {
  * writes the old table by name. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteFindingsRepository
-  implements FindingsReadPort, DashboardViews, FindingTypesView, FindingInstancesView
+  implements
+    FindingsReadPort,
+    DashboardViews,
+    FindingTypesView,
+    FindingInstancesView,
+    FindingContextView
 {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -905,6 +918,42 @@ export class SqliteFindingsRepository
       )
       .get(id) as unknown as FindingGroupRowJoined | undefined;
     return Promise.resolve(row === undefined ? null : toInstanceDetail(toFlatFindingRow(row)));
+  }
+
+  /**
+   * One finding's excerpt source (see FindingContextSource). A primary-key
+   * seek, like `findingInstance`, and the only findings read that touches the
+   * event's text — which is why the list never projects the excerpt and the
+   * drawer asks for it here, one finding at a time.
+   */
+  findingContextSource(id: string): FindingContextSource | null {
+    const row = this.db
+      .prepare(
+        `SELECT f.context AS context, e.content AS content,
+                f.span_start AS spanStart, f.span_end AS spanEnd,
+                d.rule_id AS ruleId, d.category AS category,
+                json_extract(e.attributes, '$.whole_file') AS wholeFile,
+                e.tool_name AS toolName, e.event_type AS eventType
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+          WHERE f.id = ?`,
+      )
+      .get(id) as
+      | {
+          context: string | null;
+          content: string | null;
+          spanStart: number;
+          spanEnd: number;
+          ruleId: string;
+          category: string;
+          wholeFile: number | null;
+          toolName: string | null;
+          eventType: string;
+        }
+      | undefined;
+    if (row === undefined) return null;
+    return { ...row, wholeFile: row.wholeFile === 1 };
   }
 
   /**

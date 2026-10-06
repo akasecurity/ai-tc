@@ -38,7 +38,7 @@ import type {
   ResolvedInventory,
   ToolCallAttributes,
   ToolCallInput,
-  ToolCallInspection,
+  ToolCallInspectionInput,
 } from '@akasecurity/schema';
 import { harnessFromTool, isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
@@ -263,9 +263,9 @@ export async function reconcileSessionToolCalls(
     // Mask the FULL raw target, THEN size-cap the masked value: masking first
     // guarantees any secret is redacted whole before truncation, so a secret can't
     // straddle the cap and leak an unmasked prefix.
-    let inspections: ToolCallInspection[] = [];
+    let inspections: ToolCallInspectionInput[] = [];
     if (tc.target !== undefined) {
-      const { masked, findings } = scanText(tc.target, ruleVersions);
+      const { masked, findings } = scanText(tc.target, ruleVersions, { locate: true });
       if (masked !== '') attributes.target = truncateTarget(masked);
       // actionTaken = 'log': these are observed post-hoc from the transcript, not
       // enforced at the time (the tool already ran) — an audit record, not a block.
@@ -279,6 +279,9 @@ export async function reconcileSessionToolCalls(
         maskedMatch: f.maskedMatch,
         actionTaken: 'log',
         confidence: f.confidence,
+        line: f.location.line,
+        col: f.location.col,
+        context: f.location.context,
       }));
     }
     if (tc.isError !== undefined) attributes.is_error = tc.isError;

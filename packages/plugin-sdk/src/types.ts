@@ -3,6 +3,7 @@ import type {
   ActionTaken,
   EventKind,
   EventMetadata,
+  FindingContextBasis,
   PolicyBundle,
   SourceTool,
 } from '@akasecurity/schema';
@@ -36,6 +37,11 @@ export interface CaptureInput {
   // gateway beside the event (CaptureRecord.scopeKey), and only the local
   // writer turns it into a stored attribute.
   scopeKey?: string | undefined;
+  // What a finding's line number counts in (see FindingContextBasis). 'file'
+  // when `text` is the whole file a tool wrote; omitted otherwise, and a
+  // capture marked `metadata.wholeFile` counts as 'file' too. Beside the
+  // metadata for the same reason as `scopeKey`: it is local.
+  lineBasis?: FindingContextBasis | undefined;
 }
 
 // One blocked-detections ledger row reference, as surfaced to adapters: the

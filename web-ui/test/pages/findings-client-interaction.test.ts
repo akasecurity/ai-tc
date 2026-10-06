@@ -17,6 +17,7 @@
 //   - Paging closes the drawer. Left open, it points at a row the new page no
 //     longer contains.
 import type {
+  FindingContext,
   FindingFacets,
   FindingInstanceDetail,
   FindingLocationSummary,
@@ -42,7 +43,12 @@ vi.mock('next/navigation', () => ({
 const loadMoreFindingInstances = vi.fn<(q: unknown) => Promise<ListFindingInstancesResponse>>();
 const loadMoreFindingTypes = vi.fn<(q: unknown) => Promise<ListFindingTypesResponse>>();
 const loadMoreFindingLocations = vi.fn<(q: unknown) => Promise<ListFindingLocationsResponse>>();
+// The drawer's excerpt read. No excerpt unless a case says otherwise.
+const loadFindingContextAction = vi.fn<(q: unknown) => Promise<FindingContext | null>>(() =>
+  Promise.resolve(null),
+);
 vi.mock('../../app/(app)/findings/actions', () => ({
+  loadFindingContextAction: (q: unknown) => loadFindingContextAction(q),
   loadMoreFindingInstances: (q: unknown) => loadMoreFindingInstances(q),
   loadMoreFindingTypes: (q: unknown) => loadMoreFindingTypes(q),
   loadMoreFindingLocations: (q: unknown) => loadMoreFindingLocations(q),
@@ -411,6 +417,31 @@ describe('By-type view — the findings panel pages on its own', () => {
     await clickPanelNext();
 
     expect(openDrawers()).toBe(0);
+  });
+});
+
+describe('findings drawer — the excerpt', () => {
+  it("fetches the open finding's excerpt by its id and shows it", async () => {
+    const excerpt: FindingContext = {
+      basis: 'file',
+      firstLine: 7,
+      lines: ['element.innerHTML = userInput;'],
+      match: { line: 7, start: 8, end: 19 },
+    };
+    loadFindingContextAction.mockResolvedValueOnce(excerpt);
+    mount({ deepLinkedInstance: instance('deep-ctx') });
+    // Control: before the read settles the drawer says it is loading.
+    expect(document.body.textContent).toContain('Loading the code around this match');
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(loadFindingContextAction).toHaveBeenCalledWith({ id: 'deep-ctx' });
+    expect([...document.querySelectorAll('mark')].map((m) => m.textContent)).toEqual([
+      'innerHTML =',
+    ]);
+    expect(document.body.textContent).toContain('src/config.ts:7');
   });
 });
 

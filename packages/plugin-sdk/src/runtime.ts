@@ -20,6 +20,7 @@ import {
 
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
+import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
@@ -27,6 +28,7 @@ import type { GuardedScanner } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
 import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
 import { createIsolatedScanner } from './isolated-scan.ts';
+import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
 import { createPolicyResolver } from './policy-resolver.ts';
@@ -211,6 +213,9 @@ export function createPluginRuntime(
   let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
   let rules: Rule[] = [];
+  // Whether each rule's match is code or a value, over the effective ruleset —
+  // rebuilt only when that ruleset is.
+  let evidenceOf = evidenceLookup(rules);
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
   // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
   // is known (see ensureInitialized).
@@ -294,6 +299,7 @@ export function createPluginRuntime(
       else verified.push(rule);
     }
     rules = [...verified, ...unverified];
+    evidenceOf = evidenceLookup(rules);
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     // Raise-only, over the one enforcement ladder: an organization can tighten
@@ -804,6 +810,17 @@ export function createPluginRuntime(
       const isAtRest = input.kind === 'code_change' && filePath !== undefined;
       const findingKeyFingerprintKey = isAtRest ? keyForLedger() : null;
       const findingKeyFpCache = new Map<MatchResult, string>();
+      // Line, column and the masked excerpt of each finding, built here while
+      // the raw text is in memory: the stored content is redacted, so its
+      // offsets no longer line up with the spans once anything was masked.
+      const locate = createFindingLocator({
+        text: input.text,
+        basis: input.metadata?.wholeFile === true ? 'file' : (input.lineBasis ?? 'excerpt'),
+        hits: decision.findings,
+        evidenceOf,
+        backstopRules: bundledMaskingRules(),
+        enforcedHits: new Set(maskedFindings),
+      });
       // Mask the real secret here — no finding row ever carries the raw value,
       // whatever the action resolved to and whatever the stored content shows.
       // Every finding is recorded with the action that actually applied to IT —
@@ -837,6 +854,7 @@ export function createPluginRuntime(
           actionTaken: actionForFinding(match, excepted, opts.rewritable),
           confidence: match.confidence,
           ...(findingKey ? { findingKey } : {}),
+          location: locate(match),
         };
       });
       // The scope key rides BESIDE the event, never inside it. `event` is the

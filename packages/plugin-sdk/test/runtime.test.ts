@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
 import { contentHashOf } from '../src/events.ts';
+import { assertRawFree } from '../src/raw-egress.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
 import { createPluginRuntime } from '../src/runtime.ts';
 
@@ -1508,5 +1509,69 @@ describe('processText carries the rewritable flag', () => {
     expect(out.action).toBe('block');
     expect(out.redactDegradedTo).toBeUndefined();
     await runtime.close();
+  });
+});
+
+describe('capture — where each finding sits', () => {
+  const TEXT = ['first line', 'second line', 'deploy with SECRET_MARKER now', 'last line'].join(
+    '\n',
+  );
+
+  type CaptureArg = Parameters<ReturnType<typeof createPluginRuntime>['capture']>[0];
+
+  async function recordedLocation(input: Partial<CaptureArg>) {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({ kind: 'code_change', sourceTool: 'claude-code', text: TEXT, ...input });
+    await rt.close();
+    const location = gw.records[0]?.findings[0]?.location;
+    if (location === undefined) throw new Error('expected a recorded location');
+    return location;
+  }
+
+  it('records the line, the column and a masked excerpt of the matched line', async () => {
+    const location = await recordedLocation({});
+    expect(location.line).toBe(3);
+    expect(location.col).toBe('deploy with '.length + 1);
+    // A secret is a value: its line alone, with the value redacted.
+    expect(location.context?.lines).toEqual(['deploy with [REDACTED:SECRET] now']);
+    expect(location.context?.match).toBeNull();
+    expect(() => assertRawFree(JSON.stringify(location), ['SECRET_MARKER'])).not.toThrow();
+  });
+
+  it('counts the line within a fragment unless the capture says it is a whole file', async () => {
+    expect((await recordedLocation({})).context?.basis).toBe('excerpt');
+    expect((await recordedLocation({ lineBasis: 'file' })).context?.basis).toBe('file');
+    expect(
+      (await recordedLocation({ metadata: { filePath: '/repo/a.ts', wholeFile: true } })).context
+        ?.basis,
+    ).toBe('file');
+  });
+
+  it('redacts matched code in the excerpt when its policy redacts it at rest', async () => {
+    const TEXT_CODE = 'a();\nelement.innerHTML = userInput;\nb();';
+    async function excerptUnder(action: 'redact' | 'log') {
+      const b = bundle();
+      b.policies = [
+        {
+          id: randomUUID(),
+          scope: 'global',
+          target: { ruleId: 'code-flaws/xss-inner-html' },
+          action,
+          enabled: true,
+        },
+      ];
+      const gw = fakeGateway(b);
+      const rt = createPluginRuntime(gw, settings());
+      await rt.capture({ kind: 'code_change', sourceTool: 'claude-code', text: TEXT_CODE });
+      await rt.close();
+      const finding = gw.records[0]?.findings.find((f) => f.ruleId === 'code-flaws/xss-inner-html');
+      return finding?.location?.context?.lines.join('\n') ?? '';
+    }
+    // Control: logged, the matched code stays readable.
+    expect(await excerptUnder('log')).toContain('innerHTML =');
+    const redacted = await excerptUnder('redact');
+    expect(redacted).toContain('[REDACTED:CODE_FLAW]');
+    expect(redacted).not.toContain('innerHTML =');
   });
 });

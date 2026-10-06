@@ -136,6 +136,19 @@ visible characters, for all three kinds: invisible format characters (zero-width
 BOMs, soft hyphens, ZWNJ and the rest of Unicode `Cf`) between the two take up no room, so
 size the window against the text a reader sees.
 
+**evidence** — `"code"` or `"value"` (default `"value"`). It decides what a finding's excerpt
+in the dashboard shows. A `"value"` rule's match is itself sensitive (a key, a password, an
+email): the excerpt is the matched line alone with the match redacted. A `"code"` rule's match
+is a code pattern (`exec(`, `innerHTML =`): the excerpt is the matched line plus two lines
+either side, with the match left readable and highlighted. Set `"code"` only when the matched
+text can never contain a secret value — a rule whose match includes a hardcoded password or key
+stays `"value"` even though it is a code flaw.
+
+Bundled rules do **not** carry this field in their JSON. An older plugin build parses installed
+rules strictly and would drop any rule carrying a key it does not know, so the built-in packs take
+their evidence from the compiled-in map in `packages/detections/src/evidence.ts` instead. A new
+bundled code-pattern rule is added there; the field is for custom and pulled packs.
+
 ### Post-validators
 
 A post-validator is a checksum or heuristic (not a standalone matcher, used via `postValidators`). Each runs against the matched span (or `captureGroup` if set) and must pass for the match to become a finding. Reference one as a bare name, or as `{ "name": ..., "config": { ... } }` for per-rule tuning.

@@ -681,6 +681,14 @@ export const inspectionFindings = sqliteTable(
     // findings.firstDetectedAt. Nullable — added via a plain ADD COLUMN with no
     // backfill. Not yet populated — no writer sets it.
     firstDetectedAt: integer(COL.firstDetectedAt),
+    // 1-based line and column of the match start in the scanned text, and the
+    // masked lines around it (a FindingContext JSON document). All nullable: a
+    // finding recorded before location capture, or with no source text, has
+    // none. Body expiry clears `context` with the event's text and keeps the
+    // position.
+    line: integer(COL.line),
+    col: integer(COL.col),
+    context: text(COL.context),
   },
   (t) => [
     index('idx_inspection_findings_event').on(t.auditEventId),
@@ -701,6 +709,14 @@ export const inspectionFindings = sqliteTable(
       t.findingKey,
       t.id,
     ),
+    // Only the findings that still hold an excerpt, ordered by first
+    // detection, so the expiry sweep SEEKS the ones old enough to clear rather
+    // than walking them all. A finding is never first detected after its
+    // current event started, so `first_detected_at < cutoff` holds for every
+    // finding whose event is past the horizon.
+    index('idx_inspection_findings_context')
+      .on(t.firstDetectedAt)
+      .where(sql`context IS NOT NULL`),
   ],
 );
 

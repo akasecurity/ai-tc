@@ -26,9 +26,12 @@ import {
 } from '@akasecurity/persistence';
 import {
   assignedRulePolicies,
+  bundledMaskingRules,
   childRel,
+  createFindingLocator,
   createPolicyResolver,
   evaluateIgnore,
+  evidenceLookup,
   type IgnoreLayer,
   type PolicyResolver,
   readIgnoreLayer,
@@ -688,6 +691,18 @@ export async function scanPathIntoStore(
       ),
       metadata,
     };
+    // Line, column and the masked excerpt, from the raw text while it is still
+    // here: `content` above is redacted, so its offsets shift wherever a span
+    // was masked. A rule supplied through the scanText seam is not visible
+    // here, so its evidence falls to the bundled classification.
+    const locate = createFindingLocator({
+      text,
+      basis: 'file',
+      hits: matches,
+      evidenceOf: evidenceLookup(opts.rules ?? []),
+      backstopRules: bundledMaskingRules(),
+      enforcedHits: new Set(enforced.map(({ match }) => match)),
+    });
     const findings: DetectedFindingWithKey[] = resolved.map(({ match: m, action }) => {
       const maskedMatch = maskMatch(m.rawMatch);
       const key = resolveFingerprintKey();
@@ -716,6 +731,7 @@ export async function scanPathIntoStore(
         // filePath), unlike the plugin's in-flight captures, so — unlike
         // runtime.ts's isAtRest branch — a finding_key is unconditional here.
         findingKey: computeFindingKey({ ruleId: m.ruleId, filePath: file, valueFingerprint }),
+        location: locate(m),
       };
     });
     db.recordCapture(event, findings);

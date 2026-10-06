@@ -39,6 +39,7 @@ import {
   fieldText,
   inputEventKind,
   inputFilePath,
+  inputLineBasis,
   isSyntheticField,
   scannableInputFields,
 } from './pre-tool-use-fields.ts';
@@ -254,7 +255,14 @@ async function main(): Promise<void> {
       if (text === undefined || text === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
+        {
+          kind,
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          text,
+          metadata,
+          scopeKey,
+          lineBasis: inputLineBasis(toolName),
+        },
         // code_change keeps the default 'always': those events are the at-rest
         // trail the re-scan resolver reconciles against, so a benign one still
         // has to exist. tool_use records only what was flagged — this hook sees

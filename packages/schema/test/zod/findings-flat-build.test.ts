@@ -428,6 +428,23 @@ describe('toInstanceDetail', () => {
     expect(toInstanceDetail(row()).eventId).toBe('e1');
   });
 
+  it('carries the line, column and excerpt, and omits them when absent', () => {
+    const context = {
+      basis: 'file' as const,
+      firstLine: 2,
+      lines: ['run(input);'],
+      match: { line: 2, start: 0, end: 3 },
+    };
+    const detail = toInstanceDetail(row({ line: 2, col: 1, context }));
+    expect(detail.line).toBe(2);
+    expect(detail.col).toBe(1);
+    expect(detail.match.context).toEqual(context);
+    const bare = toInstanceDetail(row());
+    expect(bare).not.toHaveProperty('line');
+    expect(bare).not.toHaveProperty('col');
+    expect(bare.match).not.toHaveProperty('context');
+  });
+
   it('carries the attributed user and omits an absent one', () => {
     const user = { id: 'u1', name: 'alice@example.com' };
     expect(toInstanceDetail(row({ user })).user).toEqual(user);

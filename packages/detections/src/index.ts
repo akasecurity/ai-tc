@@ -3,6 +3,8 @@ export {
   EGRESS_CODE_EXTENSIONS,
   extractEgress,
   isVendoredPath,
+  lineIndexAt,
+  lineStartOffsets,
   redactSnippet,
 } from './egress/extract.ts';
 export type { ManifestKind, ManifestSdkHit } from './egress/manifests.ts';
@@ -18,6 +20,7 @@ export type { FileEgressHits } from './egress/resolve.ts';
 export { resolveEgress } from './egress/resolve.ts';
 export type { ScanContext } from './engine.ts';
 export { getLoadedRules, redact, registerPack, scan } from './engine.ts';
+export { bundledCodeEvidenceIds, ruleEvidence } from './evidence.ts';
 export { maskMatch } from './mask.ts';
 export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
 export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';

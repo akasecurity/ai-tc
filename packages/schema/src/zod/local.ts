@@ -23,7 +23,7 @@ import { isoToEpochMillis } from '../time.ts';
 import type { AttachmentMode } from './control-plane.ts';
 import { printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
-import type { ActionTaken, DetectedFinding } from './finding.ts';
+import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
 import type {
   AuditEventInput,
   CaptureAttributes,
@@ -829,7 +829,13 @@ export function toEventRow(event: IngestEvent): EventRow {
 // part of the public finding contract.
 // Optional/nullable: only at-rest (worktree-scan) findings carry one — see
 // @akasecurity/plugin-sdk's createPluginRuntime capture().
-export type DetectedFindingWithKey = DetectedFinding & { findingKey?: string | null };
+//
+// `location` is local-only for the same reason: the masked excerpt is stored on
+// this machine and never forwarded (see FindingLocation).
+export type DetectedFindingWithKey = DetectedFinding & {
+  findingKey?: string | null;
+  location?: FindingLocation;
+};
 
 // DetectedFinding (already masked + assigned id/eventId/actionTaken by the SDK)
 // -> findings row. `span` is split into the span_start/span_end columns. The raw
@@ -952,6 +958,9 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     confidence: input.confidence,
     findingKey: input.findingKey ?? null,
     firstDetectedAt: input.firstDetectedAt ? isoToEpochMillis(input.firstDetectedAt) : null,
+    line: input.line ?? null,
+    col: input.col ?? null,
+    context: input.context ? JSON.stringify(input.context) : null,
   };
 }
 

@@ -1854,7 +1854,7 @@ three with 24 CPU burners added on its 8 cores:
 
 | Property                                    | Measured                             | Gate                   |
 | ------------------------------------------- | ------------------------------------ | ---------------------- |
-| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal         | ±15% band ✅           |
+| Store growth, 5k → 10k                      | **1,066.6 B/event** marginal         | ±15% band ✅           |
 | `recordCapture` 2k → 20k                    | ratio **1.02–1.08** (fastest of 200) | ratio < 3 ✅           |
 | `openLocalDatabase` 2k → 20k                | ratio **0.72–1.03** (fastest of 20)  | ratio < 3 ✅           |
 | `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200)   | backstop ≤ 1,000 ms ✅ |
@@ -1880,7 +1880,9 @@ had to be retaken, because the marginal creeps with size — 902.8 B/event acros
 `idx_audit_capture_rollup` is bytes per row like any other index, and the 5k→10k marginal
 went 902.8 → 1,048.6 — past the old ceiling of 1,038.2, which is how it announced itself.
 That is the index being paid for rather than a regression, and the figures above describe
-the corpus before it.
+the corpus before it. Migration 0037 moved it again, 1,048.6 → 1,066.6 (+1.7%): three nullable
+`inspection_findings` columns and a partial index, paid for even by findings that leave all
+three empty. Inside the band, so nothing failed — which is exactly why it was re-taken anyway.
 
 **Nor across a CORPUS change, which is the harder one to remember because the test's own
 size did not move.** That centre was 797.9 until the generator's finding rate went from
@@ -2070,8 +2072,12 @@ for one of the unbounded tables is a deliberate edit rather than a silent one.
 **A THIRD sweep expires BODIES, and it is on neither list because the lists are about
 ROWS.** Local body expiry (`bodyRetention` in settings, OFF by default, 30 days when
 switched on) clears `audit_events.content` past a horizon and stamps `content_expired_at`;
-the row, its timestamps and severity, and every finding derived from it are untouched, so
-`audit_events` stays among the tables nothing sweeps. That is where the bytes are — one
+the row, its timestamps and severity, and every finding derived from it are kept, so
+`audit_events` stays among the tables nothing sweeps. The one thing a finding loses is its
+masked excerpt (`inspection_findings.context`, the lines the dashboard drawer shows): it is a
+copy of the body's lines, so it goes with the body, and a `tool_call` finding's excerpt —
+which has no body to follow — goes once its event is past the same horizon. Its `line` and
+`col` stay. An excerpt beside a body the sync lane holds stays with that body. That is where the bytes are — one
 measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
 row — so this is the difference between a store that settles and one that grows at
 ~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:

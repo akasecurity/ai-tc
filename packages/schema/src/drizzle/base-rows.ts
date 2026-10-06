@@ -214,4 +214,7 @@ export interface BaseInspectionFindingRow {
   confidence: number;
   findingKey: string | null;
   firstDetectedAt: number | null;
+  line: number | null;
+  col: number | null;
+  context: string | null;
 }

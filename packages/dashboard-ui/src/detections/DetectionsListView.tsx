@@ -9,15 +9,9 @@ import { Card } from '@akasecurity/ui-kit';
 
 import { ArrowUpIcon } from '../shared/icons.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
-import {
-  OriginBadge,
-  PolicyTag,
-  type UnassignedPolicy,
-  UnassignedPolicyTag,
-  UpdateBadge,
-} from './atoms.tsx';
-import { PLACEHOLDER_POLICY } from './meta.ts';
-import type { DetectionPolicyFloor } from './policy-floor.ts';
+import { OriginBadge, PolicyTag, UnassignedPolicyTag, UpdateBadge } from './atoms.tsx';
+import { PLACEHOLDER_POLICY, type UnassignedPolicy } from './meta.ts';
+import { type DetectionPolicyFloor, unassignedPolicyFor } from './policy-floor.ts';
 
 // The default tab set — "Updates" is fed by the local available_packs mirror
 // recorded by the plugin/CLI.
@@ -42,6 +36,7 @@ function DetectionRow({
   unassignedPolicy?: UnassignedPolicy | undefined;
   onClick: () => void;
 }) {
+  const unassigned = unassignedPolicyFor(d.policyId, floor, unassignedPolicy);
   return (
     <button
       type="button"
@@ -75,9 +70,8 @@ function DetectionRow({
         </div>
         <div className="flex flex-wrap gap-1.5 mt-1">
           <OriginBadge origin={d.origin} />
-          {/* A floor names a concrete archetype, so it wins over the host's label. */}
-          {d.policyId === undefined && unassignedPolicy !== undefined && !floor ? (
-            <UnassignedPolicyTag label={unassignedPolicy.label} />
+          {unassigned ? (
+            <UnassignedPolicyTag label={unassigned.label} />
           ) : (
             <PolicyTag policy={d.policyId ?? PLACEHOLDER_POLICY} floor={floor} />
           )}
@@ -126,9 +120,9 @@ export function DetectionsListView({
   floorsById?: ReadonlyMap<string, DetectionPolicyFloor> | undefined;
   /**
    * What a row with no assigned policy is labelled, for a host whose unassigned
-   * detections do not resolve to Monitor. A row under a floor still shows the
-   * floor's policy. Omit it and unassigned rows render as Monitor exactly as
-   * before.
+   * detections do not resolve to Monitor. A row under a locked floor still shows
+   * the floor's policy; an unlocked floor is only a minimum, so the row keeps
+   * this label. Omit it and unassigned rows render as Monitor exactly as before.
    */
   unassignedPolicy?: UnassignedPolicy | undefined;
   filterTabs?: readonly [string, string][] | undefined;

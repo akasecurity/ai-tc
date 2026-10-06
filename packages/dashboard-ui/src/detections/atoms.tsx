@@ -7,8 +7,14 @@ import { type Tone, toneColors } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
-import { ArrowUpIcon, BranchIcon, BuildingIcon, PolicyIcon } from '../shared/icons.tsx';
-import { ORIGIN_META, policyMeta, PUBLISHER_META } from './meta.ts';
+import { ArrowUpIcon, BranchIcon, BuildingIcon } from '../shared/icons.tsx';
+import {
+  ORIGIN_META,
+  type PolicyMeta,
+  policyMeta,
+  PUBLISHER_META,
+  unassignedPolicyMeta,
+} from './meta.ts';
 import {
   type DetectionPolicyFloor,
   effectivePolicyId,
@@ -44,6 +50,37 @@ export function TonePill({
 }
 
 /**
+ * The pill both policy tags render, so an archetype, a custom policy and a
+ * host's unassigned policy sit in one row with the same markup. `reason` adds
+ * the organization marker and the sentence behind it.
+ */
+function PolicyPill({ meta, reason }: { meta: PolicyMeta; reason?: string | undefined }) {
+  const [fg, bg] = toneColors(meta.tone);
+  const Icon = meta.icon;
+  return (
+    <span
+      className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-xs font-semibold"
+      style={{ color: fg, background: bg }}
+      title={reason}
+    >
+      <Icon aria-hidden focusable={false} className="size-3" />
+      {meta.label}
+      {reason !== undefined && (
+        <>
+          {/* The glyph says "not this machine's decision"; `title` is invisible
+              on touch and unreliable for assistive tech, so the sentence itself
+              is carried in text only a screen reader reads. The pill sits inside
+              a row button where visible prose has nowhere to go — the detail
+              pane is where the same sentence is shown to everyone. */}
+          <BuildingIcon aria-hidden focusable={false} className="size-3" />
+          <span className="sr-only">{reason}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
+/**
  * A tone-colored pill for a detection's enforcement policy.
  *
  * With a `floor`, it names what is ENFORCED rather than what is stored: an
@@ -64,57 +101,19 @@ export function PolicyTag({
 }) {
   const shown = effectivePolicyId(policy, floor);
   const governed = isPolicyGoverned(policy, floor);
-  const m = policyMeta(shown);
-  const [fg, bg] = toneColors(m.tone);
-  const Icon = m.icon;
   // Non-null whenever `governed` is: both require a floor. Read through a
   // conditional anyway so the reason and the marker cannot come apart.
   const reason = governed && floor ? policyFloorReason(floor) : undefined;
-  return (
-    <span
-      className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-xs font-semibold"
-      style={{ color: fg, background: bg }}
-      title={reason}
-    >
-      <Icon aria-hidden focusable={false} className="size-3" />
-      {m.label}
-      {reason !== undefined && (
-        <>
-          {/* The glyph says "not this machine's decision"; `title` is invisible
-              on touch and unreliable for assistive tech, so the sentence itself
-              is carried in text only a screen reader reads. The pill sits inside
-              a row button where visible prose has nowhere to go — the detail
-              pane is where the same sentence is shown to everyone. */}
-          <BuildingIcon aria-hidden focusable={false} className="size-3" />
-          <span className="sr-only">{reason}</span>
-        </>
-      )}
-    </span>
-  );
+  return <PolicyPill meta={policyMeta(shown)} reason={reason} />;
 }
 
 /**
- * How a host names the policy a detection with no assigned policy follows, for a
- * host where that is not Monitor. `label` is the short pill text; `description`
- * is the sentence the detail pane shows in place of an archetype's.
+ * A neutral pill for a detection with no assigned policy, named by the host.
+ * Its icon differs from a custom policy's, so the two read apart even when the
+ * host's label and the custom policy's name are the same.
  */
-export interface UnassignedPolicy {
-  label: string;
-  description: string;
-}
-
-/** A neutral pill for a detection with no assigned policy, named by the host. */
 export function UnassignedPolicyTag({ label }: { label: string }) {
-  const [fg, bg] = toneColors('neutral');
-  return (
-    <span
-      className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-xs font-semibold"
-      style={{ color: fg, background: bg }}
-    >
-      <PolicyIcon aria-hidden focusable={false} className="size-3" />
-      {label}
-    </span>
-  );
+  return <PolicyPill meta={unassignedPolicyMeta({ label, description: '' })} />;
 }
 
 export function OriginBadge({ origin }: { origin: OriginEnum }) {

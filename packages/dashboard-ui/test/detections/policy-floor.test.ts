@@ -9,6 +9,7 @@ import {
   isDisableRefused,
   isPolicyGoverned,
   policyFloorReason,
+  unassignedPolicyFor,
   unavailableUnderFloor,
 } from '../../src/detections/policy-floor.ts';
 
@@ -236,6 +237,47 @@ describe('DETECTION_STAYS_ON_REASON', () => {
     // archetype, which is not what was refused.
     for (const locked of [false, true]) {
       expect(DETECTION_STAYS_ON_REASON).not.toBe(policyFloorReason(floor({ locked })));
+    }
+  });
+});
+
+describe('unassignedPolicyFor', () => {
+  const HOST = { label: 'Category policy', description: 'Follows its category.' };
+
+  it('applies the host policy to an unassigned detection under no floor', () => {
+    expect(unassignedPolicyFor(undefined, undefined, HOST)).toBe(HOST);
+    expect(unassignedPolicyFor(undefined, null, HOST)).toBe(HOST);
+  });
+
+  it('treats a null assignment as unassigned, as `??` does elsewhere', () => {
+    expect(unassignedPolicyFor(null, undefined, HOST)).toBe(HOST);
+    expect(unassignedPolicyFor(null, floor({ locked: true }), HOST)).toBeUndefined();
+  });
+
+  it('never applies to an assigned detection', () => {
+    for (const assigned of ['monitor', 'warn', 'custom-policy']) {
+      expect(unassignedPolicyFor(assigned, undefined, HOST)).toBeUndefined();
+    }
+  });
+
+  it('never applies when the host names no policy of its own', () => {
+    expect(unassignedPolicyFor(undefined, undefined, undefined)).toBeUndefined();
+    expect(unassignedPolicyFor(null, floor(), undefined)).toBeUndefined();
+  });
+
+  it('still applies under an unlocked floor, which is a minimum and not a value', () => {
+    // Monitor restricts nothing; Warn restricts something. Neither says what
+    // the host policy resolves to, so neither replaces the host's label.
+    expect(unassignedPolicyFor(undefined, floor({ floor: 'monitor' }), HOST)).toBe(HOST);
+    expect(unassignedPolicyFor(undefined, floor({ floor: 'warn' }), HOST)).toBe(HOST);
+    expect(unassignedPolicyFor(undefined, floor({ floor: 'block' }), HOST)).toBe(HOST);
+  });
+
+  it('gives way to a locked floor, which names the policy outright', () => {
+    for (const level of ['monitor', 'warn', 'block'] as const) {
+      expect(unassignedPolicyFor(undefined, floor({ floor: level, locked: true }), HOST)).toBe(
+        undefined,
+      );
     }
   });
 });

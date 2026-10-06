@@ -79,10 +79,12 @@ export const DetectionListItem = z
     // Per-pack enforcement-policy assignment. Holds a BuiltinPolicyId ARCHETYPE
     // (monitor|warn|redact|block) — NOT a policies-table Policy.id guid; a
     // detection is a PACK, and its policy is the archetype applied to all its
-    // rules. Absent == unassigned, which resolves to Monitor everywhere
-    // (DEFAULT_PACK_POLICY_ID). Every enforcement surface expands it into
-    // per-rule policies (see policyIdToAction). Typed z.string() (not
-    // the enum) to keep the OpenAPI response tolerant of a future custom id.
+    // rules. Absent == unassigned, which resolves to Monitor by default
+    // (DEFAULT_PACK_POLICY_ID); a host may resolve it to a policy of its own
+    // (see the dashboard's `unassignedPolicy`). Every enforcement surface
+    // expands it into per-rule policies (see policyIdToAction). Typed
+    // z.string() (not the enum) to keep the OpenAPI response tolerant of a
+    // future custom id.
     policyId: z.string().optional(),
     // Set ONLY when a newer snapshot is available for this pack (OSS: the
     // bundled inventory recorded in available_packs differs from the installed
@@ -213,10 +215,12 @@ export const DetectionDetail = z
     // Per-pack enforcement-policy assignment. Holds a BuiltinPolicyId ARCHETYPE
     // (monitor|warn|redact|block) — NOT a policies-table Policy.id guid; a
     // detection is a PACK, and its policy is the archetype applied to all its
-    // rules. Absent == unassigned, which resolves to Monitor everywhere
-    // (DEFAULT_PACK_POLICY_ID). Every enforcement surface expands it into
-    // per-rule policies (see policyIdToAction). Typed z.string() (not
-    // the enum) to keep the OpenAPI response tolerant of a future custom id.
+    // rules. Absent == unassigned, which resolves to Monitor by default
+    // (DEFAULT_PACK_POLICY_ID); a host may resolve it to a policy of its own
+    // (see the dashboard's `unassignedPolicy`). Every enforcement surface
+    // expands it into per-rule policies (see policyIdToAction). Typed
+    // z.string() (not the enum) to keep the OpenAPI response tolerant of a
+    // future custom id.
     policyId: z.string().optional(),
   })
   .meta({ id: 'DetectionDetail' });

@@ -729,4 +729,23 @@ describe('scanWorktree — repositories nested in the scanned project', () => {
 
     expect(nestedKeysOfLastCall()).toEqual([undefined]);
   });
+
+  it('reports a repository only the source walk reaches, when the host re-includes a skipped directory', async () => {
+    // A `!` pattern from the host sends the SOURCE walk into `vendor/`, which
+    // both walks skip by default. The manifest walk takes no host patterns, so
+    // it never lists the clone, yet the clone's files reach this register. The
+    // roots reported are what either walk passed through.
+    gitRepo(join(repo, 'vendor', 'lib'), PERSONAL_URL);
+    write(repo, 'vendor/lib/notify.ts', NOTIFY_CALL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), {
+      rootDir: repo,
+      sourceTool: 'claude-code',
+      excludePatterns: ['!vendor/'],
+    });
+
+    expect(scannedFilesOf(lastEgressInput())).toContain('vendor/lib/notify.ts');
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
+  });
 });

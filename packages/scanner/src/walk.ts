@@ -103,6 +103,11 @@ export interface WalkOptions {
   // This is where scan-ledger mtime skips save the actual I/O — on an unchanged
   // tree the walk degrades to stat calls only.
   shouldRead?: (meta: WalkedFileMeta) => boolean;
+  // Told every directory below rootDir that this walk lists and that holds a
+  // `.git` entry, as walkTree's option of the same name does (posix path
+  // relative to rootDir; rootDir itself is never reported). Additive: a caller
+  // that does not pass it walks exactly as before.
+  onRepositoryRoot?: ((relativeDir: string) => void) | undefined;
 }
 
 // The layer representation, the deepest-first lookup and the walk-relative path
@@ -257,6 +262,7 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
   for (const file of walkTree(rootDir, {
     excludePatterns: opts.excludePatterns,
     trackGitignore: true,
+    onRepositoryRoot: opts.onRepositoryRoot,
   })) {
     // extname handles dotfiles (.eslintrc → '') and extension-less names
     // (Makefile → '') — both fall out at the allowlist check.

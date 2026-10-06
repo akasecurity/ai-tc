@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { walkTree } from '../src/walk.ts';
+import { walkSourceFiles, walkTree } from '../src/walk.ts';
 
 // The walker names every directory below its root that it lists and that holds
 // a `.git` entry: a nested clone (a directory), or a submodule or linked
@@ -92,5 +92,27 @@ describe('walkTree — repository roots below the walk root', () => {
         .sort();
 
     expect(paths(true)).toEqual(paths(false));
+  });
+
+  it('names the same roots from the source walk, and the files it yields do not change', () => {
+    // The source walk takes the host's patterns and the manifest walk does not,
+    // so the two can list different directories; the scanner listens to both.
+    clone('tools/mine');
+    write('tools/mine/a.ts');
+    write('src/b.ts');
+    const roots: string[] = [];
+
+    const told = [
+      ...walkSourceFiles({
+        rootDir: tmp,
+        onRepositoryRoot: (dir) => {
+          roots.push(dir);
+        },
+      }),
+    ].map((file) => file.path);
+    const untold = [...walkSourceFiles({ rootDir: tmp })].map((file) => file.path);
+
+    expect(roots).toEqual(['tools/mine']);
+    expect(told.sort()).toEqual(untold.sort());
   });
 });

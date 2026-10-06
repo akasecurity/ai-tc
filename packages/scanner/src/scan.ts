@@ -49,7 +49,10 @@ import { type WalkOptions, walkSourceFiles } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
 // findings originate from (required!).
-export interface ScanOptions extends WalkOptions {
+//
+// Without `onRepositoryRoot`: a scan listens for the repositories nested in its
+// root itself (see scanDir), so the walk's own option is not one a host sets.
+export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot'> {
   sourceTool: SourceTool;
 }
 
@@ -162,11 +165,12 @@ interface EgressAccumulator {
   files: FileEgressHits[];
   scannedFiles: string[];
   deletedFiles: string[];
-  // Every directory below the scan root that the manifest walk listed and that
-  // holds a `.git` entry (a nested clone, a submodule, a linked worktree), as a
-  // posix path relative to the scan root. The walks fold such a repository's
-  // files into THIS project's register, so its scope key travels beside the
-  // register to the gateway (see commitEgress).
+  // Every directory below the scan root that the source walk or the manifest
+  // walk listed and that holds a `.git` entry (a nested clone, a submodule, a
+  // linked worktree), as a posix path relative to the scan root. A directory
+  // both walks listed appears twice. The walks fold such a repository's files
+  // into THIS project's register, so its scope key travels beside the register
+  // to the gateway (see commitEgress).
   nestedRoots: string[];
 }
 
@@ -347,6 +351,15 @@ async function scanDir(
     ...opts,
     rootDir,
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
+    // The source walk reports the repositories it passes through too (the
+    // manifest walk does the same, see scanManifests), because the two can list
+    // different directories. With no register there is nobody to tell.
+    onRepositoryRoot:
+      egress === null
+        ? undefined
+        : (relativeDir) => {
+            egress.nestedRoots.push(relativeDir);
+          },
   })) {
     const hash = contentHashOf(file.content);
     const ledgerEntry: ScanLedgerEntry = {
@@ -489,16 +502,15 @@ function scanManifests(
   updates: ScanLedgerEntry[],
   rootDir: string,
 ): void {
-  // The manifest walk is also where this scan learns which repositories are
-  // nested below its root. It is the widest walk the scan makes: the same
-  // walker as the source walk, with the same SKIP_DIRS and .akaignore reading
-  // but none of the host's excludePatterns, so it lists every directory the
-  // source walk lists, and it reads manifests out of all of them. That holds
-  // while host patterns only narrow: a `!` negation among them could send the
-  // source walk into a SKIP_DIRS directory this walk still skips, and no
-  // caller passes one. It lists directories whether or not anything under
-  // them changed, so a nested repository is reported because the scan passed
-  // through it, not because this run happened to re-read one of its files.
+  // The manifest walk reports the repositories nested below the root, and so
+  // does the source walk (see scanDir): the nested roots are the union of the
+  // two. Neither is the wider one. This walk takes none of the host's
+  // excludePatterns, so it lists directories those patterns narrow away; the
+  // source walk takes them, and a `!` negation among them can send it into a
+  // directory this walk skips. Both list directories whether or not anything
+  // under them changed, so a nested repository is reported because the scan
+  // passed through it, not because this run happened to re-read one of its
+  // files.
   const nestedRoot = (relativeDir: string): void => {
     egress.nestedRoots.push(relativeDir);
   };
@@ -579,7 +591,8 @@ async function commitEgress(
         // repository read. The standalone gateway ignores it, and a
         // machine-wide attachment answers before reading it.
         get nestedScopeKeys(): readonly (string | undefined)[] {
-          nestedKeys ??= nestedRoots.map((dir) => repositoryRootKeyOf(dir));
+          // De-duplicated: a directory both walks listed is one repository.
+          nestedKeys ??= [...new Set(nestedRoots)].map((dir) => repositoryRootKeyOf(dir));
           return nestedKeys;
         },
       },

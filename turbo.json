@@ -3,6 +3,9 @@
   "ui": "tui",
   // AGENTS.md is hand-written and points at CLAUDE.md; this keeps turbo (2.11.6+)
   // from appending its managed guidance block to it on agent-run commands.
+  // turbo older than 2.11.6 rejects this key ("Found an unknown key") and
+  // every turbo command fails, the pre-push hook included: run `pnpm install`.
+  // packages/eslint-config/test/agent-guidance.test.js pins the key.
   "agentGuidance": false,
   // test/setup/** is the no-network guard every package loads as a vitest
   // setupFile. It lives outside every package, so nothing would otherwise put it

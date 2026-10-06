@@ -14,6 +14,8 @@ import {
   FindingTypesListView,
   PageHead,
   rangeLabel,
+  type SummaryStatItem,
+  SummaryStripView,
   TIME_RANGE_OPTIONS,
   type TimeRange,
 } from '@akasecurity/dashboard-ui';
@@ -22,6 +24,7 @@ import type {
   FindingGroup,
   FindingInstanceDetail,
   FindingLocationSummary,
+  FindingsOverview,
   ListFindingInstancesResponse,
   ListFindingLocationsResponse,
   ListFindingTypesResponse,
@@ -44,7 +47,15 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
-import { TerminalIcon, XIcon } from '../../components/icons';
+import {
+  AlertIcon,
+  CheckCircleIcon,
+  ListIcon,
+  ShieldCheckIcon,
+  SlashCircleIcon,
+  TerminalIcon,
+  XIcon,
+} from '../../components/icons';
 import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import {
@@ -90,6 +101,57 @@ interface CommonProps {
    * hides the Deployment column, filter and drawer row.
    */
   deployment: DeploymentDisplay | null;
+  /**
+   * Whole-store counts for the summary strip. Deliberately NOT narrowed by the
+   * filters, range or session above: the tally in the page head already
+   * follows those, and the strip is the fixed reference beside it.
+   */
+  overview: FindingsOverview;
+}
+
+/**
+ * The summary strip's cells. Built here rather than on the server because each
+ * carries an icon component, and a function cannot cross into a client
+ * component's props.
+ *
+ * The counts are formatted in the renderer's own locale, the same as the Tally
+ * in the page head — see its doc for why that hydration mismatch is accepted
+ * rather than pinned or suppressed. Formatting the two differently would show
+ * one reader two separators for numbers sitting side by side.
+ */
+function overviewStatItems(overview: FindingsOverview): SummaryStatItem[] {
+  return [
+    {
+      icon: ListIcon,
+      value: overview.findings.toLocaleString(),
+      label: 'Findings',
+      tone: 'neutral',
+    },
+    {
+      icon: AlertIcon,
+      value: overview.open.toLocaleString(),
+      label: 'Open',
+      tone: 'primary',
+    },
+    {
+      icon: ShieldCheckIcon,
+      value: overview.handled.toLocaleString(),
+      label: 'Handled',
+      tone: 'teal',
+    },
+    {
+      icon: CheckCircleIcon,
+      value: overview.resolved.toLocaleString(),
+      label: 'Resolved',
+      tone: 'ok',
+    },
+    {
+      icon: SlashCircleIcon,
+      value: overview.dismissed.toLocaleString(),
+      label: 'Dismissed',
+      tone: 'violet',
+    },
+  ];
 }
 
 type ViewProps =
@@ -152,6 +214,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     file,
     renderedAt,
     deployment,
+    overview,
   } = props;
   const pathname = usePathname();
   const { isPending, push } = useNavigationTransition();
@@ -299,6 +362,11 @@ export function FindingsClient(props: CommonProps & ViewProps) {
           </div>
         }
       />
+
+      {/* Never withheld while a navigation is pending: no filter, range or
+          view change is an input to these numbers. The store is re-read on
+          every navigation, so they still pick up newly captured findings. */}
+      <SummaryStripView items={overviewStatItems(overview)} isLoading={false} />
 
       {/* The flat and locations views share a toolbar; the By-type view has none,
           because it splits its filters between the two panels, each beside the

@@ -366,6 +366,28 @@ export const FindingStats = z
   .meta({ id: 'FindingStats' });
 export type FindingStats = z.infer<typeof FindingStats>;
 
+// FindingsOverview: the Findings page's summary strip — whole-store counts,
+// untouched by the page's filters, range and session scope.
+//
+// Every field counts FINDINGS, the unit the flat list counts, and each one is
+// exactly the `totals.findings` that list reports for the same filters: `open`
+// is `?view=flat&status=open`, and `handled`, `resolved` and `dismissed` are
+// the same with their own status. That is what lets a number on the strip and
+// the list it heads be compared at all.
+//
+// The four status counts cover every FindingStatus, and every finding has
+// exactly one, so they always add up to `findings`.
+export const FindingsOverview = z
+  .object({
+    findings: z.number().int().nonnegative(),
+    open: z.number().int().nonnegative(),
+    handled: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+    dismissed: z.number().int().nonnegative(),
+  })
+  .meta({ id: 'FindingsOverview' });
+export type FindingsOverview = z.infer<typeof FindingsOverview>;
+
 export const FindingFacetItem = z
   .object({
     value: z.string(),

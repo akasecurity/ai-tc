@@ -20,6 +20,7 @@ import type {
   EnforcementActionsResponse,
   FileDetail,
   FindingInstanceDetail,
+  FindingsOverview,
   FindingsTimeseriesResponse,
   FindingView,
   GetActivityStatsResponse,
@@ -126,6 +127,12 @@ export interface FindingInstancesView {
    * type is this?" and "what does the drawer show?".
    */
   findingInstance(id: string): Promise<FindingInstanceDetail | null>;
+  /**
+   * Whole-store counts for the Findings page's summary strip, in the same unit
+   * as listFindingInstances: each field equals that read's `totals.findings`
+   * under the matching filters. Untouched by any filter, range or session.
+   */
+  findingsOverview(): Promise<FindingsOverview>;
 }
 
 /**

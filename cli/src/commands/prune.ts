@@ -1,12 +1,21 @@
 import { parseArgs } from 'node:util';
 
-import { dataDir, openLocalDatabase, readEffectiveSettings } from '@akasecurity/persistence';
-import type { ManagedSettings } from '@akasecurity/schema';
 import {
+  dataDir,
+  openLocalDatabase,
+  readControlPlaneCredentialFile,
+  readEffectiveSettings,
+  settingsDir,
+} from '@akasecurity/persistence';
+import type { ManagedSettings, SyncLaneRetention, WorkspaceSettings } from '@akasecurity/schema';
+import {
+  attachmentModeOf,
   BodyRetention,
-  canSweepSyncLane,
+  isAttached,
   isFieldManaged,
   managedByLabel,
+  resolveScope,
+  syncLaneRetentionOf,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -51,6 +60,43 @@ function fmtBytes(n: number): string {
     i += 1;
   }
   return `${v.toFixed(1)} ${units[i] ?? 'GB'}`;
+}
+
+/**
+ * What the sync lane may lose on this machine, from the settings in force and
+ * the attachment mode its credential records.
+ *
+ * The mode is read off the credential, not the settings, because that is where
+ * an attachment records it and no settings writer can remove it.
+ * `syncLaneRetentionOf` owns the answer; this only gathers its two inputs. The
+ * background retention pass has the same helper, written the same way: they are
+ * two copies, so they must stay identical, and both suites pin the same four
+ * states (scoped, machine, unparseable credential, read that throws).
+ *
+ * TOTAL, and every failure holds. An attachment whose credential cannot be read
+ * resolves to no scope, which `syncLaneRetentionOf` reads as hold-all, and a
+ * throw anywhere here is hold-all too — this command has no catch of its own
+ * further out, and a crash would only hide the decision from the user.
+ */
+function syncLaneRetentionFor(settings: WorkspaceSettings, base: string): SyncLaneRetention {
+  try {
+    const connection = settings.controlPlane;
+    if (!isAttached(settings) || connection === undefined) {
+      return syncLaneRetentionOf(settings, undefined);
+    }
+    const read = readControlPlaneCredentialFile(settingsDir(base), connection);
+    if (!read.usable) return syncLaneRetentionOf(settings, undefined);
+    return syncLaneRetentionOf(
+      settings,
+      resolveScope({
+        mode: attachmentModeOf(read.credential),
+        scope: settings.attachmentScope,
+        endpoint: connection.endpoint,
+      }),
+    );
+  } catch {
+    return { kind: 'hold-all' };
+  }
 }
 
 export function runPrune(
@@ -129,10 +175,12 @@ export function runPrune(
   const now = Date.now();
   const cutoff = now - days * DAY_MS;
 
-  // Asked of the shared predicate rather than re-derived here: this command and
-  // the background sweep must never disagree about which bodies are still owed
-  // to a deployment, and two copies of that rule would be two answers.
-  const sweepSyncLane = canSweepSyncLane(settings);
+  // The decision itself is `syncLaneRetentionOf`'s, not re-derived here. This
+  // command and the background sweep each gather its two inputs with their own
+  // copy of the same helper, so the two copies must stay identical; both suites
+  // pin the same four states (scoped, machine, unparseable credential, read
+  // that throws).
+  const sweepSyncLane = syncLaneRetentionFor(settings, base);
 
   const db = openLocalDatabase(dataDir(base));
   const plan = db.bodyRetention.preview({ cutoff, sweepSyncLane });

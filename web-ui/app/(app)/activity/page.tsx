@@ -1,5 +1,6 @@
 import {
   ActivityTokenUsageView,
+  formatNumber,
   PageHead,
   rangeLabel,
   rangeToFromIso,
@@ -17,6 +18,7 @@ import {
 } from '../../components/icons';
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { renderInstant } from '../../lib/rendered-at';
 import { ActivityClient } from './ActivityClient';
 import {
@@ -60,6 +62,8 @@ export default async function ActivityPage({
   // rendered label this request produces come from the SAME instant, rather
   // than a range bound computed a clock read apart from the labels it scopes.
   const renderedAt = renderInstant();
+  // And the one locale every count and time below is formatted in.
+  const locale = await renderLocale();
 
   // The time-range lower bound the session list uses, reused to scope the token
   // panel and the harness filter to the window on screen (range maps to `now − N
@@ -103,31 +107,31 @@ export default async function ActivityPage({
   const items: SummaryStatItem[] = [
     {
       icon: TerminalIcon,
-      value: stats.sessionsToday.toLocaleString(),
+      value: formatNumber(stats.sessionsToday, locale),
       label: 'Sessions today',
       tone: 'neutral',
     },
     {
       icon: BoltIcon,
-      value: stats.liveNow.toLocaleString(),
+      value: formatNumber(stats.liveNow, locale),
       label: 'Live now',
       tone: 'ok',
     },
     {
       icon: ListIcon,
-      value: stats.toolCallsToday.toLocaleString(),
+      value: formatNumber(stats.toolCallsToday, locale),
       label: 'Tool calls',
       tone: 'neutral',
     },
     {
       icon: ShieldCheckIcon,
-      value: stats.findingsToday.toLocaleString(),
+      value: formatNumber(stats.findingsToday, locale),
       label: 'Findings triggered',
       tone: 'critical',
     },
     {
       icon: ExternalShareIcon,
-      value: stats.egressToday.toLocaleString(),
+      value: formatNumber(stats.egressToday, locale),
       label: 'Egress events',
       tone: 'teal',
     },
@@ -170,6 +174,7 @@ export default async function ActivityPage({
         showEmpty={showEmpty}
         expanded={expanded}
         renderedAt={renderedAt}
+        locale={locale}
       />
     </div>
   );

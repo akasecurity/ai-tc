@@ -431,10 +431,67 @@ function ambientClockSelectors(opts = {}) {
   ];
 }
 
+const AMBIENT_LOCALE_MESSAGE =
+  "Formatting a number or a date without a locale reads the RENDERER's own locale. A " +
+  '`use client` component renders TWICE — on the server and again when the browser ' +
+  'hydrates it — and the two need not share a locale, so the text differs and React ' +
+  'discards the server HTML for the subtree; a server component renders once, but in the ' +
+  "Node process's locale rather than the reader's. Take the `locale` the route resolved " +
+  'from the request (`renderLocale()` in web-ui) as a prop and format through ' +
+  '`formatNumber` / `formatDateTime` from @akasecurity/dashboard-ui, or name a locale ' +
+  "literal where the format is a fixed convention rather than the reader's.";
+
+/**
+ * The `no-restricted-syntax` entries that reject a number or date formatted in
+ * the RUNTIME's default locale — inside a module carrying the `use client`
+ * directive, or, with `everyModule: true`, inside every module in scope.
+ *
+ * "The runtime's default" is the three spellings that select it: no locale
+ * argument at all, an empty array, and a literal `undefined`. They are rejected
+ * on `toLocaleString` / `toLocaleDateString` / `toLocaleTimeString` and on the
+ * `Intl` formatter constructors, called with or without `new`. A NAMED locale —
+ * a variable such as the `locale` prop, or a literal such as the `'en-US'`
+ * compact notation is pinned to — is not a default and passes.
+ *
+ * Unlike the clock, nothing in a UI package has to read the runtime's locale:
+ * a server component that wants the reader's takes it from the request. So the
+ * widening is safe for `web-ui`'s routes as well as the two presentational
+ * packages, where for the clock it is not.
+ *
+ * Known limits, in the shape the clock ban states its own: a locale argument
+ * that is a variable holding `undefined`, an aliased method
+ * (`const f = n.toLocaleString; f()`), a constructor reached through a renamed
+ * `Intl`, and `localeCompare` (collation, not display) are not matched.
+ *
+ * @param {{ everyModule?: boolean }} [opts]
+ * @returns {{ selector: string, message: string }[]}
+ */
+function ambientLocaleSelectors(opts = {}) {
+  const { everyModule = false } = opts;
+  const scope = everyModule ? '' : "Program:has(> ExpressionStatement[directive='use client']) ";
+  const callees = [
+    'CallExpression[callee.property.name=/^toLocale(?:String|DateString|TimeString)$/]',
+    ':matches(CallExpression, NewExpression)[callee.object.name="Intl"]' +
+      '[callee.property.name=/^(?:NumberFormat|DateTimeFormat|RelativeTimeFormat|PluralRules|ListFormat|DisplayNames)$/]',
+  ];
+  const defaults = [
+    '[arguments.length=0]',
+    "[arguments.0.type='ArrayExpression'][arguments.0.elements.length=0]",
+    "[arguments.0.type='Identifier'][arguments.0.name='undefined']",
+  ];
+  return callees.flatMap((callee) =>
+    defaults.map((arg) => ({
+      selector: `${scope}${callee}${arg}`,
+      message: AMBIENT_LOCALE_MESSAGE,
+    })),
+  );
+}
+
 // The assembled `no-restricted-syntax` value for the packages that render in a
 // browser: ui-kit, dashboard-ui and web-ui. Named for the tonal guard it was
 // introduced to carry; it is the ONE entry these packages get, so it also carries
-// the ambient-clock ban and, below, the two bans it must not drop.
+// the ambient-clock and ambient-locale bans and, below, the two bans it must not
+// drop.
 //
 // It re-lists the network AND drizzle selectors rather than only its own, because
 // a flat-config `rules` entry REPLACES the rule's options instead of merging them
@@ -454,8 +511,8 @@ function ambientClockSelectors(opts = {}) {
  *   { files: ['src/lib/useRenderClock.ts'],
  *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowAmbientClock: true }) } }
  *
- * The other three groups come along by construction, so an opt-out for one ban
- * cannot become an opt-out for four by omission.
+ * The other groups come along by construction, so an opt-out for one ban
+ * cannot become an opt-out for all five by omission.
  *
  * `allowNetwork` is the same idea for the network group, and takes module names
  * rather than a boolean: a file that legitimately binds a loopback socket needs
@@ -471,18 +528,32 @@ function ambientClockSelectors(opts = {}) {
  * `allowAmbientClock` wins if both are set, since a file that opted all the
  * way out has nothing left to widen.
  *
+ * `allowAmbientLocale` and `ambientLocaleEveryModule` are the same pair for the
+ * ambient-locale group (`ambientLocaleSelectors`), and `allowAmbientLocale`
+ * wins the same way.
+ *
  * @param {{ allowAmbientClock?: boolean, allowNetwork?: readonly string[],
- *   ambientClockEveryModule?: boolean }} [opts]
+ *   ambientClockEveryModule?: boolean, allowAmbientLocale?: boolean,
+ *   ambientLocaleEveryModule?: boolean }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function reactSyntaxBans(opts = {}) {
-  const { allowAmbientClock = false, allowNetwork = [], ambientClockEveryModule = false } = opts;
+  const {
+    allowAmbientClock = false,
+    allowNetwork = [],
+    ambientClockEveryModule = false,
+    allowAmbientLocale = false,
+    ambientLocaleEveryModule = false,
+  } = opts;
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
     ...networkSyntaxSelectors({ allow: allowNetwork }),
     ...drizzleSyntaxSelectors(),
     ...tonalInkSelectors(),
     ...(allowAmbientClock ? [] : ambientClockSelectors({ everyModule: ambientClockEveryModule })),
+    ...(allowAmbientLocale
+      ? []
+      : ambientLocaleSelectors({ everyModule: ambientLocaleEveryModule })),
   ]);
 }
 
@@ -496,17 +567,21 @@ export const tonalInkTokens = [
 ];
 
 /**
- * The same assembled value, with the ambient-clock ban widened to every
- * module in the package rather than only ones carrying `use client`. For
- * `dashboard-ui` and `ui-kit`: both are pure-presentational packages that
- * never legitimately capture a render instant (that is `web-ui`'s
- * `renderInstant()`, outside either), so the directive is not what should
- * decide whether a clock read there is caught — see `ambientClockSelectors`.
+ * The same assembled value, with the ambient-clock and ambient-locale bans
+ * widened to every module in the package rather than only ones carrying
+ * `use client`. For `dashboard-ui` and `ui-kit`: both are pure-presentational
+ * packages that never legitimately capture a render instant (that is
+ * `web-ui`'s `renderInstant()`, outside either) or read the runtime's locale,
+ * so the directive is not what should decide whether either is caught — see
+ * `ambientClockSelectors` and `ambientLocaleSelectors`.
  */
 export const tonalInkTokensPresentational = [
   {
     rules: {
-      'no-restricted-syntax': reactSyntaxBans({ ambientClockEveryModule: true }),
+      'no-restricted-syntax': reactSyntaxBans({
+        ambientClockEveryModule: true,
+        ambientLocaleEveryModule: true,
+      }),
     },
   },
 ];

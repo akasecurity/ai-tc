@@ -12,7 +12,7 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { BranchIcon, TargetIcon, UserIcon } from '../shared/icons.tsx';
-import { numberFormat, WidgetError } from './widget-shared.tsx';
+import { formatNumber, WidgetError } from './widget-shared.tsx';
 
 export interface TopSourcesView {
   items: TopSource[];
@@ -27,9 +27,21 @@ export interface TopSourcesView {
    * count the row shows.
    */
   sourceHrefs?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. Required — a renderer's own locale is the server's, not the
+   * reader's, and differs again in a browser that hydrates. See ../lib/locale.ts.
+   */
+  locale: string;
 }
 
-export function TopSourcesCardView({ items, isLoading, error, sourceHrefs }: TopSourcesView) {
+export function TopSourcesCardView({
+  items,
+  isLoading,
+  error,
+  sourceHrefs,
+  locale,
+}: TopSourcesView) {
   return (
     <Card className="flex flex-col shadow-sm min-w-0">
       <CardHeader>
@@ -51,7 +63,7 @@ export function TopSourcesCardView({ items, isLoading, error, sourceHrefs }: Top
         ) : (
           items.map((s) => {
             const href = sourceHrefs?.[s.id];
-            return <SourceRow key={s.id} source={s} {...(href ? { href } : {})} />;
+            return <SourceRow key={s.id} source={s} locale={locale} {...(href ? { href } : {})} />;
           })
         )}
       </CardContent>
@@ -59,7 +71,7 @@ export function TopSourcesCardView({ items, isLoading, error, sourceHrefs }: Top
   );
 }
 
-function SourceRow({ source, href }: { source: TopSource; href?: string }) {
+function SourceRow({ source, href, locale }: { source: TopSource; href?: string; locale: string }) {
   const isUser = source.kind === 'user';
   const Icon = isUser ? UserIcon : BranchIcon;
   const Row = href ? 'a' : 'div';
@@ -90,7 +102,7 @@ function SourceRow({ source, href }: { source: TopSource; href?: string }) {
           {source.name}
         </span>
         <span className="text-sm font-bold text-text shrink-0">
-          {numberFormat.format(source.findingsCount)}
+          {formatNumber(source.findingsCount, locale)}
         </span>
       </div>
     </Row>

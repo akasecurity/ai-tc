@@ -20,7 +20,8 @@
 // the SHORT form, which fits the column and is also the only one that closes
 // the hydration question outright — the long form goes through
 // Intl.RelativeTimeFormat, and a locale mismatch is what passing an instant
-// explicitly does not reconcile.
+// explicitly does not reconcile. The exact count it shows on hover takes the
+// request's `locale` for the same reason.
 import type { FindingLocationSummary } from '@akasecurity/schema';
 import {
   Badge,
@@ -34,7 +35,7 @@ import {
 } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
-import { compactCount, numberFormat } from '../lib/numberFormat.ts';
+import { compactCount, formatNumber } from '../lib/numberFormat.ts';
 import { relativeTimeShort } from '../lib/relativeTime.ts';
 import { findingStatusMeta } from './meta.ts';
 
@@ -53,11 +54,13 @@ function LocationRow({
   sel,
   onClick,
   renderedAt,
+  locale,
 }: {
   location: FindingLocationSummary;
   sel: boolean;
   onClick: () => void;
   renderedAt: number;
+  locale: string;
 }) {
   const shown = location.ruleIds.slice(0, LOCATION_RULE_CHIPS);
   // Counted against the WHOLE list, never against `shown` — off the slice this
@@ -132,11 +135,12 @@ function LocationRow({
         </span>
         {/* Compact, with the exact count on the title. The short form rounds
             across its own boundary — 9,999 reads `10k` — so the number a reader
-            might act on has to stay reachable. Both formatters pin en-US, so
-            neither is a hydration mismatch. */}
+            might act on has to stay reachable. The compact form pins en-US and
+            the exact one takes the request's locale, so neither is a hydration
+            mismatch. */}
         <span
           className="shrink-0 text-xs font-semibold tabular-nums text-text-2"
-          title={`${numberFormat.format(location.instanceCount)} ${
+          title={`${formatNumber(location.instanceCount, locale)} ${
             location.instanceCount === 1 ? 'finding' : 'findings'
           }`}
         >
@@ -160,6 +164,7 @@ export function FindingLocationsListView({
   activeId,
   onSelect,
   renderedAt,
+  locale,
   hasNextPage = false,
   hasPreviousPage = false,
   onNextPage,
@@ -180,6 +185,11 @@ export function FindingLocationsListView({
    * and another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /**
+   * The locale the exact counts are formatted in: the one the host resolved for
+   * this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
   hasNextPage?: boolean;
   hasPreviousPage?: boolean;
   onNextPage?: (() => void) | undefined;
@@ -208,6 +218,7 @@ export function FindingLocationsListView({
               location={location}
               sel={location.id === activeId}
               renderedAt={renderedAt}
+              locale={locale}
               onClick={() => {
                 onSelect(location);
               }}

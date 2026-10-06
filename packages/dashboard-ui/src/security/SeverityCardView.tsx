@@ -14,7 +14,7 @@ import { AlertOctagonIcon } from '../shared/icons.tsx';
 import { tint } from './heat-tint.ts';
 import { SEVERITY_META } from './meta.ts';
 import { COMBINED_STATUS_COLUMNS, SPLIT_STATUS_COLUMNS, statusHrefKey } from './status-columns.ts';
-import { compactCount, numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
+import { compactCount, formatNumber, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // Props = the data the connected wrapper's hook (or a server fetch) produces.
 // `bySeverity` is expected pre-normalized to display order (zero-filled).
@@ -44,6 +44,13 @@ export interface SeveritySummaryView {
    * A cell with no entry, or a count of 0, renders as plain text.
    */
   statusHrefs?: Record<string, string> | undefined;
+  /**
+   * The locale the exact counts are formatted in: the one the host resolved for
+   * this request. Required — a renderer's own locale is the server's, not the
+   * reader's, and differs again in a browser that hydrates. The compact form
+   * stays en-US by design (see ../lib/numberFormat.ts). See ../lib/locale.ts.
+   */
+  locale: string;
 }
 
 // From this size up a count is shown short (`12k`) so a five-digit cell cannot
@@ -54,12 +61,14 @@ function Count({
   value,
   href,
   label,
+  locale,
 }: {
   value: number;
   href?: string | undefined;
   label: string;
+  locale: string;
 }) {
-  const exact = numberFormat.format(value);
+  const exact = formatNumber(value, locale);
   const compact = value >= COMPACT_FROM;
   // The short form is for the eye; the exact figure is what assistive tech reads and
   // what a pointer sees on hover.
@@ -149,11 +158,13 @@ function Matrix({
   total,
   severityHrefs,
   statusHrefs,
+  locale,
 }: {
   bySeverity: SeveritySummaryItem[];
   total: number;
   severityHrefs: SeveritySummaryView['severityHrefs'];
   statusHrefs: SeveritySummaryView['statusHrefs'];
+  locale: string;
 }) {
   const hasStatus = bySeverity.some(
     (s) =>
@@ -225,6 +236,7 @@ function Matrix({
                     style={{ backgroundColor: tint(meta.color, n, max) }}
                   >
                     <Count
+                      locale={locale}
                       value={n}
                       href={statusHrefs?.[statusHrefKey(s.severity, c.key)]}
                       label={`${meta.label.toLowerCase()} ${c.label.toLowerCase()}`}
@@ -233,7 +245,12 @@ function Matrix({
                 );
               })}
               <td data-cell={`${s.severity}-all`} className="p-0 text-right text-text-2">
-                <Count value={s.count} href={href} label={meta.label.toLowerCase()} />
+                <Count
+                  value={s.count}
+                  href={href}
+                  label={meta.label.toLowerCase()}
+                  locale={locale}
+                />
               </td>
             </tr>
           );
@@ -251,6 +268,7 @@ function Matrix({
               className="p-0 text-right text-text-2"
             >
               <Count
+                locale={locale}
                 value={n}
                 href={statusHrefs?.[statusHrefKey('all', column.key)]}
                 label={column.label.toLowerCase()}
@@ -258,7 +276,12 @@ function Matrix({
             </td>
           ))}
           <td data-cell="all-all" className="p-0 text-right font-bold text-text">
-            <Count value={total} href={statusHrefs?.[statusHrefKey('all', 'all')]} label="all" />
+            <Count
+              value={total}
+              href={statusHrefs?.[statusHrefKey('all', 'all')]}
+              label="all"
+              locale={locale}
+            />
           </td>
         </tr>
       </tfoot>
@@ -273,6 +296,7 @@ export function SeverityCardView({
   statusHrefs,
   isLoading,
   error,
+  locale,
 }: SeveritySummaryView) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -283,7 +307,7 @@ export function SeverityCardView({
         <CardHeading>
           <CardTitle>Findings by severity and status</CardTitle>
           <CardDescription>
-            {isLoading ? 'Loading…' : error ? '—' : `${numberFormat.format(total)} findings`}
+            {isLoading ? 'Loading…' : error ? '—' : `${formatNumber(total, locale)} findings`}
           </CardDescription>
         </CardHeading>
       </CardHeader>
@@ -298,6 +322,7 @@ export function SeverityCardView({
           <Matrix
             bySeverity={bySeverity}
             total={total}
+            locale={locale}
             severityHrefs={severityHrefs}
             statusHrefs={statusHrefs}
           />

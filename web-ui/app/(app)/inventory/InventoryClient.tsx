@@ -60,6 +60,7 @@ export function InventoryClient({
   fq,
   drawer,
   renderedAt,
+  locale,
 }: {
   harnesses: HarnessSummary[];
   assetGroups: AssetGroup[];
@@ -86,6 +87,12 @@ export function InventoryClient({
    * go on showing "Today" for an event days old were this never advanced.
    */
   renderedAt: number;
+  /**
+   * The locale the SERVER resolved from the request's Accept-Language header.
+   * Every timestamp below is formatted in it, on the server and again in
+   * the browser, so the two renders agree. See app/lib/render-locale.ts.
+   */
+  locale: string;
 }) {
   const renderClock = useRenderClock(renderedAt);
   const pathname = usePathname();
@@ -220,12 +227,14 @@ export function InventoryClient({
             onToggleBlocked={() => {
               setShowBlocked((s) => !s);
             }}
+            locale={locale}
           />
         ) : (
           <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {selHarness ? (
               <HarnessOverview
                 renderedAt={renderClock}
+                locale={locale}
                 harness={selHarness}
                 events={harnessEvents}
                 onSelect={selectAsset}
@@ -260,6 +269,7 @@ export function InventoryClient({
             (fileDetail ? (
               <FileDetailDrawer
                 file={fileDetail}
+                locale={locale}
                 onChange={(v: AccessLevel) => {
                   runWrite('update file access', () => setFileAccess(proj.id, fileDetail.path, v));
                 }}

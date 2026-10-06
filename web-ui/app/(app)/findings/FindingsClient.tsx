@@ -12,6 +12,7 @@ import {
   FindingsToolbarView,
   type FindingsView,
   FindingTypesListView,
+  formatNumber,
   PageHead,
   rangeLabel,
   type SummaryStatItem,
@@ -95,6 +96,12 @@ interface CommonProps {
    */
   renderedAt: number;
   /**
+   * The locale the SERVER resolved from the request's Accept-Language header.
+   * Every count on the page is formatted in it, on the server and again in
+   * the browser, so the two renders agree. See app/lib/render-locale.ts.
+   */
+  locale: string;
+  /**
    * The deployment this machine sends to, or null when it is not attached. Null
    * hides the Deployment column, filter and drawer row.
    */
@@ -112,40 +119,40 @@ interface CommonProps {
  * carries an icon component, and a function cannot cross into a client
  * component's props.
  *
- * The counts are formatted in the renderer's own locale, the same as the Tally
- * in the page head — see its doc for why that hydration mismatch is accepted
- * rather than pinned or suppressed. Formatting the two differently would show
- * one reader two separators for numbers sitting side by side.
+ * The counts are formatted in the locale the server resolved for the request,
+ * the same one the Tally in the page head uses, so the server render and the
+ * hydration produce one string. Formatting the two differently would show one
+ * reader two separators for numbers sitting side by side.
  */
-function overviewStatItems(overview: FindingsOverview): SummaryStatItem[] {
+function overviewStatItems(overview: FindingsOverview, locale: string): SummaryStatItem[] {
   return [
     {
       icon: ListIcon,
-      value: overview.findings.toLocaleString(),
+      value: formatNumber(overview.findings, locale),
       label: 'Findings',
       tone: 'neutral',
     },
     {
       icon: AlertIcon,
-      value: overview.open.toLocaleString(),
+      value: formatNumber(overview.open, locale),
       label: 'Open',
       tone: 'primary',
     },
     {
       icon: ShieldCheckIcon,
-      value: overview.handled.toLocaleString(),
+      value: formatNumber(overview.handled, locale),
       label: 'Handled',
       tone: 'teal',
     },
     {
       icon: CheckCircleIcon,
-      value: overview.resolved.toLocaleString(),
+      value: formatNumber(overview.resolved, locale),
       label: 'Resolved',
       tone: 'ok',
     },
     {
       icon: SlashCircleIcon,
-      value: overview.dismissed.toLocaleString(),
+      value: formatNumber(overview.dismissed, locale),
       label: 'Dismissed',
       tone: 'violet',
     },
@@ -211,6 +218,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     repo,
     file,
     renderedAt,
+    locale,
     deployment,
     overview,
   } = props;
@@ -334,7 +342,9 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         // these describe the TYPE list, which the detail panel's own filters do
         // not narrow — sat next to them, a number that never moved read as a
         // filter that had stopped working.
-        sub={<Tally findings={tally.findings} count={tally.count} unit={tally.unit} />}
+        sub={
+          <Tally findings={tally.findings} count={tally.count} unit={tally.unit} locale={locale} />
+        }
         actions={
           <div className="flex items-center gap-2">
             <RangeFilter
@@ -364,7 +374,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
       {/* Never withheld while a navigation is pending: no filter, range or
           view change is an input to these numbers. The store is re-read on
           every navigation, so they still pick up newly captured findings. */}
-      <SummaryStripView items={overviewStatItems(overview)} isLoading={false} />
+      <SummaryStripView items={overviewStatItems(overview, locale)} isLoading={false} />
 
       {/* The flat and locations views share a toolbar; the By-type view has none,
           because it splits its filters between the two panels, each beside the
@@ -483,6 +493,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
+            locale={locale}
             deployment={deployment}
             onSelectLocation={(nextLoc) => {
               pushState(filters, query, session, { loc: nextLoc });
@@ -523,22 +534,30 @@ const PAGE_SUB = 'Every sensitive-data finding across providers';
  * rather than middot-separated — nesting the same separator would read as three
  * peers instead of a description followed by its numbers.
  *
- * The LOCALE half is not closeable here. This is a `'use client'` module, so the
- * subtitle renders twice, and `toLocaleString` renders in the renderer's own
- * locale — a Node host on en-US emits `6,456` where a de-DE browser hydrates
- * `6.456`. Passing an instant reconciles a clock and does not touch this;
- * `suppressHydrationWarning` would silence the warning without reconciling
- * anything, and is deliberately NOT used, because the mismatch here is text the
- * reader can see rather than an attribute they cannot. React re-renders the
- * subtree and the browser's own separator wins, which is the right outcome —
- * nothing structural depends on the string.
+ * The counts are formatted in the locale the server resolved from the
+ * request's Accept-Language header and passed down as `locale`. This is a
+ * `'use client'` module, so the subtitle renders twice; `toLocaleString()` would
+ * format each render in that renderer's own locale — a Node host on en-US
+ * emitting `6,456` where a de-DE browser hydrates `6.456` — and React would
+ * discard the server's markup to reconcile them. One explicit locale gives both
+ * renders the reader's separator.
  */
-function Tally({ findings, count, unit }: { findings: number; count: number; unit: string }) {
+function Tally({
+  findings,
+  count,
+  unit,
+  locale,
+}: {
+  findings: number;
+  count: number;
+  unit: string;
+  locale: string;
+}) {
   return (
     <>
-      {PAGE_SUB} · <span className="font-semibold text-text">{findings.toLocaleString()}</span>
+      {PAGE_SUB} · <span className="font-semibold text-text">{formatNumber(findings, locale)}</span>
       {findings === 1 ? ' finding' : ' findings'},{' '}
-      <span className="font-semibold text-text">{count.toLocaleString()}</span>
+      <span className="font-semibold text-text">{formatNumber(count, locale)}</span>
       {count === 1 ? ` ${unit}` : ` ${unit}s`}
     </>
   );
@@ -1016,6 +1035,7 @@ function LocationsMasterDetail({
   sessionHref,
   emptyState,
   renderedAt,
+  locale,
   deployment,
   onSelectLocation,
 }: {
@@ -1042,6 +1062,7 @@ function LocationsMasterDetail({
   sessionHref: string | null;
   emptyState: React.ReactNode;
   renderedAt: number;
+  locale: string;
   deployment: DeploymentDisplay | null;
   onSelectLocation: (loc: string) => void;
 }) {
@@ -1078,6 +1099,7 @@ function LocationsMasterDetail({
           onSelectLocation(l.id);
         }}
         renderedAt={renderedAt}
+        locale={locale}
         onNextPage={locationPages.onNextPage}
         onPreviousPage={locationPages.onPreviousPage}
         hasNextPage={locationPages.hasNextPage}

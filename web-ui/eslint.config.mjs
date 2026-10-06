@@ -14,6 +14,18 @@ export default [
   },
   ...rootConfigFiles,
   {
+    // The ambient-locale ban, widened from `use client` modules to every route
+    // module. A Server Component formatting with a bare `toLocaleString()`
+    // renders in the Node process's locale rather than the reader's, and nothing
+    // under app/ has a reason to read the runtime's: a route takes the reader's
+    // from the request with `renderLocale()`. The clock ban stays
+    // directive-scoped here, because a Server Component is exactly where a
+    // render instant is legitimately captured. Built through `reactSyntaxBans`
+    // so the network, Drizzle and tonal bans come along unchanged.
+    files: ['app/**', 'middleware.ts'],
+    rules: { 'no-restricted-syntax': reactSyntaxBans({ ambientLocaleEveryModule: true }) },
+  },
+  {
     // The suite for the Scan page's Data Shares forward stands a real server on
     // loopback and reads the request off the wire: a stubbed transport can show
     // what the action decided, never what it sent, and the claims that forward

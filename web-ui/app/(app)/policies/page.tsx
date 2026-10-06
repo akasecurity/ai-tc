@@ -1,6 +1,7 @@
 import { PageHead, PolicyStatsView } from '@akasecurity/dashboard-ui';
 
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { PoliciesClient } from './PoliciesClient';
 
 export const runtime = 'nodejs';
@@ -41,7 +42,7 @@ export default async function PoliciesPage({
     <div className="flex min-h-full flex-col p-6 lg:h-full lg:min-h-0">
       <PageHead title="Policies" sub="Enforcement actions detections take when they match" />
 
-      <PolicyStatsView stats={stats} />
+      <PolicyStatsView stats={stats} locale={await renderLocale()} />
 
       <PoliciesClient items={list.items} detail={detail} selectedId={selectedId} />
     </div>

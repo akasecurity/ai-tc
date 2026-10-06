@@ -73,7 +73,12 @@ export const presentationalUiPackage = [
   ...reactUiPackage,
   {
     files: ['src/**'],
-    rules: { 'no-restricted-syntax': reactSyntaxBans({ ambientClockEveryModule: true }) },
+    rules: {
+      'no-restricted-syntax': reactSyntaxBans({
+        ambientClockEveryModule: true,
+        ambientLocaleEveryModule: true,
+      }),
+    },
   },
 ];
 

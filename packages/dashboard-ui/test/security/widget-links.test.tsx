@@ -38,6 +38,7 @@ describe('EnforcementCardView', () => {
         isLoading={false}
         error={null}
         rangeLabel="Last 7 days"
+        locale="en-US"
         {...props}
       />,
     );
@@ -83,6 +84,7 @@ describe('SeverityCardView', () => {
         total={16}
         isLoading={false}
         error={null}
+        locale="en-US"
         {...props}
       />,
     );
@@ -102,7 +104,7 @@ describe('SeverityCardView', () => {
 describe('TopSourcesCardView', () => {
   const render = (props: Partial<Parameters<typeof TopSourcesCardView>[0]>) =>
     renderToStaticMarkup(
-      <TopSourcesCardView items={[]} isLoading={false} error={null} {...props} />,
+      <TopSourcesCardView items={[]} isLoading={false} error={null} locale="en-US" {...props} />,
     );
   const repo: TopSource = { id: 'repo_api', name: 'acme/api', kind: 'repo', findingsCount: 9 };
   const user: TopSource = { id: 'user_a', name: 'a@example.com', kind: 'user', findingsCount: 5 };

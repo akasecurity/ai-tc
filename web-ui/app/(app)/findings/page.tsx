@@ -7,6 +7,7 @@ import {
 import { encodeLocationId, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { renderInstant } from '../../lib/rendered-at';
 import {
   type FindingsScope,
@@ -99,6 +100,8 @@ export default async function FindingsPage({
   // before `from` below so the query window derives from the same instant
   // rather than a clock read apart from the labels it scopes.
   const renderedAt = renderInstant();
+  // And the one locale every count on the page is formatted in.
+  const locale = await renderLocale();
   // An absent/unknown range means all time — this list has never had a default
   // window, and applying one silently would hide findings.
   const from = range ? rangeToFromIso(range, renderedAt) : null;
@@ -129,6 +132,7 @@ export default async function FindingsPage({
         repo={repo}
         file={file}
         renderedAt={renderedAt}
+        locale={locale}
         deployment={deployment}
         overview={overview}
       />
@@ -206,6 +210,7 @@ export default async function FindingsPage({
         repo={repo}
         file={file}
         renderedAt={renderedAt}
+        locale={locale}
         deployment={deployment}
         overview={overview}
       />
@@ -280,6 +285,7 @@ export default async function FindingsPage({
       repo={repo}
       file={file}
       renderedAt={renderedAt}
+      locale={locale}
       deployment={deployment}
       overview={overview}
     />

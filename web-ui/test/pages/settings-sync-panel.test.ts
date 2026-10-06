@@ -80,8 +80,8 @@ afterEach(() => {
 type PanelProps = ComponentProps<typeof SyncPanel>;
 
 /** The panel's props, or null when the page rendered no panel at all. */
-function renderPanel(): PanelProps | null {
-  const element = SettingsPage() as ReactElement;
+async function renderPanel(): Promise<PanelProps | null> {
+  const element = (await SettingsPage()) as ReactElement;
   const head = element.props as { children: unknown };
   const children = (Array.isArray(head.children) ? head.children : [head.children]).flat();
   for (const child of children) {
@@ -98,8 +98,8 @@ function renderPanel(): PanelProps | null {
 }
 
 /** The panel's props, failing loudly rather than reading every field as undefined. */
-function panel(): PanelProps['sync'] {
-  const props = renderPanel();
+async function panel(): Promise<PanelProps['sync']> {
+  const props = await renderPanel();
   if (props === null) throw new Error('the page rendered no sync panel');
   return props.sync;
 }
@@ -187,16 +187,16 @@ describe('the settings route — the sync panel', () => {
   // A machine that has never attached is not a machine with nothing to sync —
   // it is one this panel has no business describing. Zeros in a bar and absence
   // look identical and mean different things, so the page renders neither.
-  it('renders no panel at all on a standalone machine', () => {
-    expect(renderPanel()).toBeNull();
+  it('renders no panel at all on a standalone machine', async () => {
+    expect(await renderPanel()).toBeNull();
   });
 
   // `runMode: 'attached'` alone is a stored answer, not an attachment: the
   // descriptor is what names a deployment, and without one there is nothing to
   // put in the panel's own header line.
-  it('renders no panel for an attached run mode with no deployment named', () => {
+  it('renders no panel for an attached run mode with no deployment named', async () => {
     applyOnboarding({ runMode: 'attached' }, akaHome());
-    expect(renderPanel()).toBeNull();
+    expect(await renderPanel()).toBeNull();
   });
 
   // The mirror, and the half a descriptor check alone would miss: a settings
@@ -205,38 +205,38 @@ describe('the settings route — the sync panel', () => {
   // file that still names one. The machine sends nothing in that state, and a
   // panel describing a backlog to a deployment it does not talk to is the same
   // false claim as a panel of zeros.
-  it('renders no panel when the run mode says standalone, whatever the file names', () => {
+  it('renders no panel when the run mode says standalone, whatever the file names', async () => {
     applyOnboarding(
       { runMode: 'standalone', controlPlane: { endpoint: ENDPOINT, attachedAt: AT } },
       akaHome(),
     );
-    expect(renderPanel()).toBeNull();
+    expect(await renderPanel()).toBeNull();
   });
 
-  it('renders a panel once the machine is attached', () => {
+  it('renders a panel once the machine is attached', async () => {
     attach();
-    expect(renderPanel()).not.toBeNull();
+    expect(await renderPanel()).not.toBeNull();
   });
 
   // ─── Which state it is in, and the order those questions are asked ──────────
 
-  it('names the deployment’s label when it has one, and the endpoint otherwise', () => {
+  it('names the deployment’s label when it has one, and the endpoint otherwise', async () => {
     attach({ label: 'Acme Prod' });
-    expect(panel().deployment).toBe('Acme Prod');
+    expect((await panel()).deployment).toBe('Acme Prod');
 
     applyOnboarding({ controlPlane: { endpoint: ENDPOINT, attachedAt: AT } }, akaHome());
     dropMemoisedDb();
-    expect(panel().deployment).toBe(ENDPOINT);
+    expect((await panel()).deployment).toBe(ENDPOINT);
   });
 
-  it('reports a machine holding no key as unable to use it, not as unshared', () => {
+  it('reports a machine holding no key as unable to use it, not as unshared', async () => {
     applyOnboarding(
       { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: AT } },
       akaHome(),
     );
     grant();
 
-    const state = panel().state;
+    const state = (await panel()).state;
     expect(state.status).toBe('credential-unusable');
     if (state.status !== 'credential-unusable') throw new Error('unreachable');
     expect(state.detail).toContain('Re-attach');
@@ -248,29 +248,29 @@ describe('the settings route — the sync panel', () => {
   // made; on a machine whose key will not authenticate, they made no such
   // decision, and the sentence would send them to change a setting that is not
   // the problem.
-  it('blames the key, not the sharing setting, when both are wrong', () => {
+  it('blames the key, not the sharing setting, when both are wrong', async () => {
     applyOnboarding(
       { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: AT } },
       akaHome(),
     );
 
-    expect(panel().state.status).toBe('credential-unusable');
+    expect((await panel()).state.status).toBe('credential-unusable');
   });
 
-  it('blames the key ahead of a grant that has merely gone stale', () => {
+  it('blames the key ahead of a grant that has merely gone stale', async () => {
     applyOnboarding(
       { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: AT } },
       akaHome(),
     );
     grant({ payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1 });
 
-    expect(panel().state.status).toBe('credential-unusable');
+    expect((await panel()).state.status).toBe('credential-unusable');
   });
 
   // The one unusable reason a user can act on, and the only one whose fix
   // depends on which endpoint is which. Naming just one of them would send the
   // reader to undo the wrong half.
-  it('names both endpoints when the key belongs to another deployment', () => {
+  it('names both endpoints when the key belongs to another deployment', async () => {
     attach();
     grant();
     writeControlPlaneCredential(settingsDir(akaHome()), {
@@ -279,7 +279,7 @@ describe('the settings route — the sync panel', () => {
       apiKey: KEY,
     });
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'credential-unusable') throw new Error('expected an unusable key');
     expect(state.detail).toContain('https://old.example.com');
     expect(state.detail).toContain(ENDPOINT);
@@ -289,37 +289,37 @@ describe('the settings route — the sync panel', () => {
   // counts a backlog on every attached machine; without a grant, nothing has
   // been told it may send that backlog, so a progress bar would promise
   // delivery of rows that will sit for ever.
-  it('shows no bars, and no backlog, on a machine that has not shared its history', () => {
+  it('shows no bars, and no backlog, on a machine that has not shared its history', async () => {
     attach();
     seedSession('s-1');
 
-    expect(panel().state).toEqual({ status: 'not-shared' });
+    expect((await panel()).state).toEqual({ status: 'not-shared' });
   });
 
   // Stale and absent both fail the validity check and only one of them can be
   // resumed in place, so they must not collapse into one sentence.
-  it('separates a grant that predates the payload from no grant at all', () => {
+  it('separates a grant that predates the payload from no grant at all', async () => {
     attach();
     grant({ payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1 });
 
-    expect(panel().state).toEqual({ status: 'consent-stale' });
+    expect((await panel()).state).toEqual({ status: 'consent-stale' });
   });
 
   // A grant naming another deployment must read as NO grant — never as a stale
   // one offering to resume, which would send this machine's activity somewhere
   // the user never agreed to.
-  it('reads a grant for another deployment as no grant, not a stale one', () => {
+  it('reads a grant for another deployment as no grant, not a stale one', async () => {
     attach();
     grant({ endpoint: 'https://elsewhere.example.com' });
 
-    expect(panel().state).toEqual({ status: 'not-shared' });
+    expect((await panel()).state).toEqual({ status: 'not-shared' });
   });
 
-  it('says nothing is recorded rather than showing empty bars', () => {
+  it('says nothing is recorded rather than showing empty bars', async () => {
     attach();
     grant();
 
-    expect(panel().state).toEqual({ status: 'nothing-recorded' });
+    expect((await panel()).state).toEqual({ status: 'nothing-recorded' });
   });
 
   // ─── The bars ──────────────────────────────────────────────────────────────
@@ -329,7 +329,7 @@ describe('the settings route — the sync panel', () => {
   // kinds with the three that carry text. Those two lanes behave differently
   // and are gated differently, and a reader comparing across them is comparing
   // unlike things.
-  it('shows the structural kinds first, then the ones that carry text', () => {
+  it('shows the structural kinds first, then the ones that carry text', async () => {
     attach();
     grant();
     seedSession('s-1');
@@ -338,17 +338,17 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'ready') throw new Error('expected ready');
     expect(state.kinds.map((k) => k.kind)).toEqual(['session', 'llm_call', 'tool_call', 'prompt']);
   });
 
-  it('gives every recorded kind a row, under a name a reader would use', () => {
+  it('gives every recorded kind a row, under a name a reader would use', async () => {
     attach();
     grant();
     seedSession('s-1');
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'ready') throw new Error('expected ready');
     expect(state.kinds.map((k) => k.kind).sort()).toEqual(['llm_call', 'session', 'tool_call']);
     expect(state.kinds.map((k) => k.label)).not.toContain('llm_call');
@@ -359,12 +359,12 @@ describe('the settings route — the sync panel', () => {
   // recorded while nobody was forwarding was offered to nobody and is owed to
   // nobody. Counting it as queued would put most of a working machine's store
   // into a backlog nothing will ever send.
-  it('leaves an unowed capture out entirely, and counts one that is owed', () => {
+  it('leaves an unowed capture out entirely, and counts one that is owed', async () => {
     attach();
     grant();
     seedSession('s-1');
 
-    const before = panel().state;
+    const before = (await panel()).state;
     if (before.status !== 'ready') throw new Error('expected ready');
     expect(before.kinds.map((k) => k.kind)).not.toContain('prompt');
 
@@ -373,7 +373,7 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    const after = panel().state;
+    const after = (await panel()).state;
     if (after.status !== 'ready') throw new Error('expected ready');
     expect(after.kinds.find((k) => k.kind === 'prompt')).toMatchObject({
       label: 'Prompts',
@@ -383,7 +383,7 @@ describe('the settings route — the sync panel', () => {
     });
   });
 
-  it('counts a delivered row as sent and takes it out of the queue', () => {
+  it('counts a delivered row as sent and takes it out of the queue', async () => {
     attach();
     grant();
     seedSession('s-1');
@@ -392,7 +392,7 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'ready') throw new Error('expected ready');
     expect(state.kinds.find((k) => k.kind === 'llm_call')).toMatchObject({
       synced: 1,
@@ -405,7 +405,7 @@ describe('the settings route — the sync panel', () => {
   // A CLAIMED row is not a delivered one — something is working on it right
   // now. Counting it as sent would show a bar completing while the pass that
   // would complete it was still running, and then run backwards if it failed.
-  it('counts a claimed row as still queued, never as sent', () => {
+  it('counts a claimed row as still queued, never as sent', async () => {
     attach();
     grant();
     seedSession('s-1');
@@ -414,7 +414,7 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'ready') throw new Error('expected ready');
     expect(state.kinds.find((k) => k.kind === 'llm_call')).toMatchObject({
       synced: 0,
@@ -425,7 +425,7 @@ describe('the settings route — the sync panel', () => {
 
   // One number, because a reader deciding what to do next is served by "these
   // will not go" — the store's own surfaces carry the breakdown.
-  it('puts every terminal row in one not-sent figure', () => {
+  it('puts every terminal row in one not-sent figure', async () => {
     attach();
     grant();
     seedSession('s-1');
@@ -436,7 +436,7 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    const state = panel().state;
+    const state = (await panel()).state;
     if (state.status !== 'ready') throw new Error('expected ready');
     expect(state.kinds.find((k) => k.kind === 'llm_call')).toMatchObject({
       notSent: 2,
@@ -448,13 +448,13 @@ describe('the settings route — the sync panel', () => {
 
   // ─── Whether a pass is running ─────────────────────────────────────────────
 
-  it('reports no pass running on a store nothing has claimed', () => {
+  it('reports no pass running on a store nothing has claimed', async () => {
     attach();
     grant();
-    expect(panel().running).toBe(false);
+    expect((await panel()).running).toBe(false);
   });
 
-  it('reports a pass running while a live claim is held', () => {
+  it('reports a pass running while a live claim is held', async () => {
     attach();
     grant();
     withStore((db) => {
@@ -462,13 +462,13 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    expect(panel().running).toBe(true);
+    expect((await panel()).running).toBe(true);
   });
 
   // The claim of a process that died without releasing it. Anyone may take it,
   // so calling it running would show "Sending…" for ever on a machine where
   // nothing is.
-  it('reports no pass running for an abandoned claim', () => {
+  it('reports no pass running for an abandoned claim', async () => {
     attach();
     grant();
     withStore((db) => {
@@ -476,7 +476,7 @@ describe('the settings route — the sync panel', () => {
     });
     dropMemoisedDb();
 
-    expect(panel().running).toBe(false);
+    expect((await panel()).running).toBe(false);
   });
 
   // ─── Held off after repeated failures ──────────────────────────────────────
@@ -486,49 +486,49 @@ describe('the settings route — the sync panel', () => {
   // reaches nothing — the button appears to do nothing at all. The page can
   // only say so by reading the same file the pass would.
 
-  it('reports nothing paused on a machine that has not been failing', () => {
+  it('reports nothing paused on a machine that has not been failing', async () => {
     attach();
     grant();
-    expect(panel().paused).toBe(false);
+    expect((await panel()).paused).toBe(false);
   });
 
-  it('reports a machine held off while the breaker is still cooling', () => {
+  it('reports a machine held off while the breaker is still cooling', async () => {
     attach();
     grant();
     openBreaker(Date.now());
 
-    expect(panel().paused).toBe(true);
+    expect((await panel()).paused).toBe(true);
   });
 
   // The expensive direction. The stamp is never cleared by elapsing and the
   // half-open probe re-stamps it before every attempt, so reading any stamp as
   // open would show a machine as paused through the whole window in which the
   // live path has resumed probing.
-  it('reports nothing paused once the cooldown has elapsed, stamp and all', () => {
+  it('reports nothing paused once the cooldown has elapsed, stamp and all', async () => {
     attach();
     grant();
     openBreaker(Date.now() - BREAKER_COOLDOWN_MS - 1);
 
-    expect(panel().paused).toBe(false);
+    expect((await panel()).paused).toBe(false);
   });
 
   // The backlog is still accurate and still owed while a machine is held off,
   // and that is the moment a reader most wants to see what it is holding.
-  it('still reports the backlog while it is paused', () => {
+  it('still reports the backlog while it is paused', async () => {
     attach();
     grant();
     seedSession('s-1');
     openBreaker(Date.now());
     dropMemoisedDb();
 
-    const props = panel();
+    const props = await panel();
     expect(props.paused).toBe(true);
     expect(props.state.status).toBe('ready');
   });
 
   // ─── The last pass, and what is not sent as rows at all ────────────────────
 
-  it('carries the last pass’s outcome and instant through from the progress file', () => {
+  it('carries the last pass’s outcome and instant through from the progress file', async () => {
     attach();
     grant();
     writeHistorySyncState(dir, {
@@ -542,16 +542,16 @@ describe('the settings route — the sync panel', () => {
       completedAtMs: null,
     });
 
-    const props = panel();
+    const props = await panel();
     expect(props.lastOutcome).toBe('unreachable');
     expect(props.lastPassAt).toBe(AT);
   });
 
-  it('says nothing about a last pass when none has been recorded', () => {
+  it('says nothing about a last pass when none has been recorded', async () => {
     attach();
     grant();
 
-    const props = panel();
+    const props = await panel();
     expect(props.lastOutcome).toBeUndefined();
     expect(props.lastPassAt).toBeUndefined();
   });
@@ -559,11 +559,11 @@ describe('the settings route — the sync panel', () => {
   // These are the entities a reader asks about in the same breath as activity,
   // and none of them is a row this drain sends. Saying so beside the button is
   // what stops the button implying otherwise.
-  it('names what the deployment does not receive as rows, with no count to imply a backlog', () => {
+  it('names what the deployment does not receive as rows, with no count to imply a backlog', async () => {
     attach();
     grant();
 
-    const lines = panel().localOnly ?? [];
+    const lines = (await panel()).localOnly ?? [];
     expect(lines.map((line) => line.id)).toEqual(['findings', 'shares', 'inventory']);
     for (const line of lines) {
       expect(line.count).toBeUndefined();
@@ -576,12 +576,12 @@ describe('the settings route — the sync panel', () => {
   // falls between them and React discards the markup. That the instant is
   // captured per REQUEST rather than once per process is pinned separately, in
   // render-instant-wiring.
-  it('hands the panel the instant this render is measured against', () => {
+  it('hands the panel the instant this render is measured against', async () => {
     attach();
     grant();
 
     const before = Date.now();
-    const props = renderPanel();
+    const props = await renderPanel();
     if (props === null) throw new Error('the page rendered no sync panel');
     expect(props.renderedAt).toBeGreaterThanOrEqual(before);
     expect(props.renderedAt).toBeLessThanOrEqual(Date.now());

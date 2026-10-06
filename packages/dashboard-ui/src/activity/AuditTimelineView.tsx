@@ -20,11 +20,13 @@ function EventRow({
   first,
   last,
   linkHref,
+  locale,
 }: {
   event: AuditEvent;
   first: boolean;
   last: boolean;
   linkHref?: BuildActivityLinkHref;
+  locale: string;
 }) {
   const meta = EVENT_META[event.kind];
   const Icon =
@@ -37,7 +39,7 @@ function EventRow({
   return (
     <div className="grid grid-cols-[60px_24px_1fr] gap-x-3">
       <div className="whitespace-nowrap pt-1.5 text-right font-mono text-label text-text-3">
-        {eventTime(event.occurredAt)}
+        {eventTime(event.occurredAt, locale)}
       </div>
       <div className="relative flex justify-center">
         {!(first && last) && (
@@ -105,10 +107,18 @@ function EventRow({
 export function AuditTimelineView({
   events,
   linkHref,
+  locale,
 }: {
   events: AuditEvent[];
   /** Optional — see BuildActivityLinkHref; without it events render no deep links. */
   linkHref?: BuildActivityLinkHref;
+  /**
+   * The locale numbers and times on the timeline are formatted in: the one the host
+   * resolved for this request. Required for the reason `renderedAt` is — a view
+   * that falls back to the renderer's own locale renders one string on the
+   * server and another in the browser. See ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   return (
     <div>
@@ -118,6 +128,7 @@ export function AuditTimelineView({
           event={event}
           first={i === 0}
           last={i === events.length - 1}
+          locale={locale}
           {...(linkHref ? { linkHref } : {})}
         />
       ))}

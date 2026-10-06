@@ -81,8 +81,8 @@ beforeEach(() => {
 
 type ClientProps = ComponentProps<typeof SettingsClient>;
 
-function renderPage(): ClientProps {
-  const element = SettingsPage() as ReactElement;
+async function renderPage(): Promise<ClientProps> {
+  const element = (await SettingsPage()) as ReactElement;
   // Assert the shape alongside the props: a page that starts returning a
   // different wrapper would otherwise read every prop below as undefined.
   const head = element.props as { children: ReactElement[] };
@@ -94,8 +94,8 @@ function renderPage(): ClientProps {
 }
 
 describe('the settings route', () => {
-  it('hands the client both the settings and the managed context', () => {
-    const props = renderPage();
+  it('hands the client both the settings and the managed context', async () => {
+    const props = await renderPage();
     expect(props.settings).toBeDefined();
     // Not merely truthy — the managed half must be a real context, or the form
     // falls back to its unmanaged default and every control renders editable.
@@ -103,17 +103,17 @@ describe('the settings route', () => {
     expect(props.managed.lockedFields).toEqual([]);
   });
 
-  it('reports an ordinary machine as unmanaged', () => {
+  it('reports an ordinary machine as unmanaged', async () => {
     // No administrator has placed a file at the system locations on a test
     // runner, so this is the honest answer and the one the form needs.
-    expect(renderPage().managed.present).toBe(false);
+    expect((await renderPage()).managed.present).toBe(false);
   });
 
-  it('reads the EFFECTIVE settings, not the user file alone', () => {
+  it('reads the EFFECTIVE settings, not the user file alone', async () => {
     // The wiring assertion. A page reading readWorkspaceSettings and building
     // its own empty context passes every other case in this file, because an
     // unmanaged machine makes the two readers agree.
-    renderPage();
+    await renderPage();
     expect(managedSource.calls).toBe(1);
   });
 
@@ -125,14 +125,14 @@ describe('the settings route', () => {
   // the state `aka status` has always been able to name and this page could
   // not.
 
-  it('hands the client the credential state', () => {
-    const props = renderPage();
+  it('hands the client the credential state', async () => {
+    const props = await renderPage();
     // A fresh temp home has no credential file, which is the ordinary
     // standalone answer — the form ignores it while standalone.
     expect(props.credentialState).toEqual({ usable: false, reason: 'absent' });
   });
 
-  it('reports a missing credential on a machine whose settings say attached', () => {
+  it('reports a missing credential on a machine whose settings say attached', async () => {
     applyOnboarding(
       {
         runMode: 'attached',
@@ -140,7 +140,7 @@ describe('the settings route', () => {
       },
       akaHome(),
     );
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.settings.runMode).toBe('attached');
     expect(props.credentialState).toEqual({ usable: false, reason: 'absent' });
   });
@@ -150,7 +150,7 @@ describe('the settings route', () => {
   // minted for another deployment parses perfectly, so a page that read the
   // credential without the descriptor would report it usable and every other
   // case in this file would still pass.
-  it('detects a credential minted for a different deployment', () => {
+  it('detects a credential minted for a different deployment', async () => {
     applyOnboarding(
       {
         runMode: 'attached',
@@ -163,7 +163,7 @@ describe('the settings route', () => {
       endpoint: 'https://old.acme.internal',
       apiKey: 'a-key-for-the-old-deployment',
     });
-    expect(renderPage().credentialState).toEqual({
+    expect((await renderPage()).credentialState).toEqual({
       usable: false,
       reason: 'endpoint-mismatch',
       credentialEndpoint: 'https://old.acme.internal',
@@ -171,7 +171,7 @@ describe('the settings route', () => {
     });
   });
 
-  it('reports a matching credential as usable', () => {
+  it('reports a matching credential as usable', async () => {
     applyOnboarding(
       {
         runMode: 'attached',
@@ -184,7 +184,7 @@ describe('the settings route', () => {
       endpoint: 'https://aka.acme.internal',
       apiKey: 'a-key-for-this-deployment',
     });
-    const state = renderPage().credentialState;
+    const state = (await renderPage()).credentialState;
     expect(state.usable).toBe(true);
   });
 
@@ -198,7 +198,7 @@ describe('the settings route', () => {
   // Asserted over the SERIALISED prop rather than by naming the field, so it
   // stays red for any future shape that reintroduces the value under another
   // name or nested one level down.
-  it('hands the client no part of the key, on the branch that used to carry it', () => {
+  it('hands the client no part of the key, on the branch that used to carry it', async () => {
     const apiKey = 'zq7fvkxm2rjt9wbn4hdc6sylp3g8';
     applyOnboarding(
       {
@@ -212,7 +212,7 @@ describe('the settings route', () => {
       endpoint: 'https://aka.acme.internal',
       apiKey,
     });
-    const serialised = JSON.stringify(renderPage().credentialState);
+    const serialised = JSON.stringify((await renderPage()).credentialState);
     // A positive control first: `expectNoEchoOf` passes trivially over bytes
     // that came back empty, and an empty serialisation is the one way this
     // assertion could be green while proving nothing.
@@ -220,7 +220,7 @@ describe('the settings route', () => {
     expectNoEchoOf(serialised, apiKey);
   });
 
-  it('passes an administrator’s locks straight through to the form', () => {
+  it('passes an administrator’s locks straight through to the form', async () => {
     // And the consequence: on a managed machine the form must receive the real
     // locked set. A fabricated context renders every control editable, and the
     // writer then refuses the save the user was invited to make.
@@ -229,20 +229,20 @@ describe('the settings route', () => {
       organization: 'Acme',
       lockedFields: ['runMode', 'vaultConsent'],
     };
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.managed.present).toBe(true);
     expect(props.managed.organization).toBe('Acme');
     expect(props.managed.lockedFields).toEqual(['runMode', 'vaultConsent']);
   });
 
-  it('passes through what the user actually chose', () => {
+  it('passes through what the user actually chose', async () => {
     applyOnboarding({ historicalAccess: 'full', vaultInlineReveal: 'off' }, join(home, '.aka'));
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.settings.historicalAccess).toBe('full');
     expect(props.settings.vaultInlineReveal).toBe('off');
   });
 
-  it('carries the attached connection through to the form', () => {
+  it('carries the attached connection through to the form', async () => {
     // The connection section renders from these two fields together; a page
     // that dropped the descriptor would show the machine as standalone.
     applyOnboarding(
@@ -256,7 +256,7 @@ describe('the settings route', () => {
       },
       join(home, '.aka'),
     );
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.settings.runMode).toBe('attached');
     expect(props.settings.controlPlane?.label).toBe('Acme Prod');
   });

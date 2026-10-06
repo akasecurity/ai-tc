@@ -204,8 +204,8 @@ function CodeText({ text }: { text: string }) {
 
 /**
  * The masked lines around the match, numbered, with the matched code
- * highlighted. Every secret in them was redacted when the finding was
- * detected; this renders what it is given.
+ * highlighted. Masking happened when the finding was detected; this renders
+ * what it is given.
  */
 function MatchedContent({
   context,

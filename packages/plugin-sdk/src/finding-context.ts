@@ -17,10 +17,14 @@ import type {
 
 import { assertRawFree } from './raw-egress.ts';
 
-// Lines shown either side of a code finding's matched line. A value finding
-// (a secret, an email) gets its matched line only: some secret rules match
-// just the first line of a multi-line secret (a PGP block's header), so a
-// neighbouring line can be the secret itself, unmarked by any rule.
+// Lines shown either side of a code finding's matched line, cut short at the
+// first line holding a value (see stopAtValues). A value finding (a secret, an
+// email) gets its matched line only: some secret rules match just the first
+// line of a multi-line secret (a PGP block's header), so a neighbouring line can
+// be the secret itself, unmarked by any rule.
+//
+// Masking is as complete as the rules are: text that no rule recognises, and
+// that sits in a window with no recognised value beside it, is shown as written.
 export const CONTEXT_RADIUS = 2;
 // Characters kept per line, centred on the match's column.
 export const CONTEXT_LINE_MAX = 240;
@@ -182,10 +186,11 @@ function buildContext(
     rawValues.push(found.rawMatch);
   }
   const merged = mergeRegions(regions);
+  const shown = stopAtValues(segments, lineIndex, valueLinesOf(merged, starts));
 
   const lines: string[] = [];
   let match: FindingContext['match'] = null;
-  for (const segment of segments) {
+  for (const segment of shown) {
     const rendered = renderSegment(text, segment, merged);
     lines.push(rendered.text);
     if (isCode && segment.lineIndex === lineIndex) {
@@ -200,10 +205,44 @@ function buildContext(
   assertRawFree(lines.join('\n'), rawValues);
   return {
     basis: input.basis,
-    firstLine: (segments[0]?.lineIndex ?? lineIndex) + 1,
+    firstLine: (shown[0]?.lineIndex ?? lineIndex) + 1,
     lines,
     match,
   };
+}
+
+// Every line a redacted region touches.
+function valueLinesOf(regions: readonly Region[], starts: number[]): Set<number> {
+  const lines = new Set<number>();
+  for (const region of regions) {
+    const last = lineIndexAt(starts, Math.max(region.start, region.end - 1));
+    for (let index = lineIndexAt(starts, region.start); index <= last; index += 1) {
+      lines.add(index);
+    }
+  }
+  return lines;
+}
+
+// The window, cut so it never reaches past a line holding a value. Some secret
+// rules match only one line of a multi-line secret (a PGP block's header), and
+// the lines beyond it can be the secret itself with nothing marking them. So the
+// window grows outward from the matched line one line at a time and stops after
+// the first line that holds a value: that line is shown, redacted, and nothing
+// beyond it is. A value on the matched line itself keeps the window to that line.
+function stopAtValues(
+  segments: readonly Segment[],
+  lineIndex: number,
+  valueLines: ReadonlySet<number>,
+): Segment[] {
+  const at = segments.findIndex((segment) => segment.lineIndex === lineIndex);
+  if (at === -1) return [...segments];
+  let first = at;
+  while (first > 0 && !valueLines.has(segments[first]?.lineIndex ?? -1)) first -= 1;
+  let last = at;
+  while (last < segments.length - 1 && !valueLines.has(segments[last]?.lineIndex ?? -1)) {
+    last += 1;
+  }
+  return segments.slice(first, last + 1);
 }
 
 // Hits whose span overlaps [start, end), from a list sorted by span start.

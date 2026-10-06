@@ -84,6 +84,50 @@ describe('recordCapture — finding location', () => {
   });
 });
 
+describe('a re-detected at-rest finding — the excerpt follows the row to its new event', () => {
+  function detect(location: DetectedFindingWithKey['location']): string {
+    const event: IngestEvent = {
+      id: randomUUID(),
+      sourceTool: 'claude-code',
+      kind: 'code_change',
+      occurredAt: new Date().toISOString(),
+      contentHash: randomUUID(),
+      content: TEXT,
+      metadata: { filePath: '/repo/src/a.ts' },
+    };
+    const start = TEXT.indexOf('innerHTML');
+    db.recordCapture(event, [
+      {
+        id: randomUUID(),
+        eventId: event.id,
+        ruleId: 'code-flaws/xss-inner-html',
+        category: 'code_flaw',
+        severity: 'high',
+        span: { start, end: start + 'innerHTML ='.length },
+        maskedMatch: 'i*********=',
+        actionTaken: 'log',
+        confidence: 0.8,
+        findingKey: 'key-redetected',
+        ...(location === undefined ? {} : { location }),
+      },
+    ]);
+    const row = corpusConnection(db)
+      .prepare(`SELECT id FROM inspection_findings WHERE finding_key = 'key-redetected'`)
+      .get() as { id: string };
+    return row.id;
+  }
+
+  it('replaces the excerpt and line, and clears an excerpt the new detection did not build', () => {
+    const id = detect({ line: 4, col: 9, context: EXCERPT });
+    expect(JSON.parse(columnsOf(id).context ?? 'null')).toEqual(EXCERPT);
+    // Same finding, a later event, no excerpt built this time.
+    const again = detect({ line: 7, col: 9, context: null });
+    // Control: it really is the same row.
+    expect(again).toBe(id);
+    expect(columnsOf(id)).toEqual({ line: 7, col: 9, context: null });
+  });
+});
+
 describe('the findings list — position, never the excerpt', () => {
   it('carries the line and column on each row', async () => {
     const id = recordOne({ line: 4, col: 9, context: EXCERPT });

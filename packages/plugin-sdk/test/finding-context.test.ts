@@ -212,6 +212,38 @@ describe('createFindingLocator — a code finding', () => {
   });
 });
 
+describe('createFindingLocator — a code window next to a secret', () => {
+  it('stops at a PGP key header below the match, so the key body never shows', () => {
+    const text = ['a();', 'element.innerHTML = userInput;', PGP_HEADER, KEY_BODY, KEY_BODY].join(
+      '\n',
+    );
+    // Control: no bundled rule marks the body, so only the cut keeps it out.
+    expect(scan(KEY_BODY, rules())).toEqual([]);
+    const { hits, locate } = locateAll(text);
+    const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
+    expect(context.firstLine).toBe(1);
+    expect(context.lines).toEqual(['a();', 'element.innerHTML = userInput;', '[REDACTED:SECRET]']);
+    expect(context.lines.join('\n')).not.toContain(KEY_BODY);
+  });
+
+  it('stops at a value above the match too, and shows nothing beyond it', () => {
+    const text = [KEY_BODY, PGP_HEADER, 'element.innerHTML = userInput;', 'b();'].join('\n');
+    const { hits, locate } = locateAll(text);
+    const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
+    expect(context.firstLine).toBe(2);
+    expect(context.lines).toEqual(['[REDACTED:SECRET]', 'element.innerHTML = userInput;', 'b();']);
+  });
+
+  it('keeps the window to the matched line when the value sits on it', () => {
+    const text = ['a();', `element.innerHTML = "${AWS_KEY}";`, KEY_BODY].join('\n');
+    const { hits, locate } = locateAll(text);
+    const context = contextOf(locate(hitOf(hits, 'code-flaws/xss-inner-html')));
+    expect(context.firstLine).toBe(2);
+    expect(context.lines).toHaveLength(1);
+    expect(context.lines.join('\n')).not.toContain(KEY_BODY);
+  });
+});
+
 describe('createFindingLocator — a match its own action redacted at rest', () => {
   it('redacts the matched code, so the excerpt never shows what the stored copy strips', () => {
     const ruleset = rules();

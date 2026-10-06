@@ -201,10 +201,11 @@ export const FindingContextBasis = z.enum(['file', 'excerpt']).meta({ id: 'Findi
 export type FindingContextBasis = z.infer<typeof FindingContextBasis>;
 
 // The masked lines around a finding, built when the finding is detected. Every
-// secret and personal value in `lines` is already replaced by a
-// `[REDACTED:<CATEGORY>]` placeholder; only the matched text of a rule whose
-// evidence is code is left readable. `match` locates that text for
-// highlighting and is null when the finding's own match is redacted.
+// value a detection rule recognises in `lines` is replaced by a
+// `[REDACTED:<CATEGORY>]` placeholder, and the window never reaches past a line
+// holding one; only the matched text of a rule whose evidence is code is left
+// readable. Text no rule recognises is shown as written. `match` locates the
+// matched text for highlighting and is null when it is redacted.
 export const FindingContext = z
   .object({
     basis: FindingContextBasis,
@@ -225,7 +226,8 @@ export const FindingContext = z
 export type FindingContext = z.infer<typeof FindingContext>;
 
 // Where a finding sits in the text it was detected in: 1-based line and column
-// of the match start, plus the masked excerpt (null when none could be built
+// of the match start (the column in UTF-16 code units, so a BOM or a character
+// outside the BMP counts differently from an editor), plus the masked excerpt (null when none could be built
 // safely). Local-store only — never part of a forwarded payload.
 export const FindingLocation = z.object({
   line: z.number().int().positive(),
@@ -283,8 +285,9 @@ export const FindingInstance = z
     provider: FindingProvider,
     repo: z.string(),
     file: z.string(),
-    // 1-based line and column of the match start in the scanned text. Absent
-    // for findings that predate location capture or have no source text.
+    // 1-based line and column of the match start in the scanned text (the
+    // column in UTF-16 code units). Absent for findings that predate location
+    // capture or have no source text.
     line: z.number().int().positive().optional(),
     col: z.number().int().positive().optional(),
     // Who the capturing event is attributed to. Optional: a single-user store

@@ -51,7 +51,12 @@ import { withTransaction } from '../internal/transactions.ts';
 export interface BodyExpiryOutcome {
   /** Rows whose body was cleared. */
   readonly rowsExpired: number;
-  /** Bytes of body text those rows were holding, measured before the clear. */
+  /**
+   * Bytes of body text those rows were holding, measured before the clear.
+   * Finding excerpts the same pass clears are deliberately outside this and
+   * `rowsExpired`: each is capped at five short lines, and the rows they sit
+   * on (a `tool_call`, or a body an earlier pass expired) are not body rows.
+   */
   readonly bytesFreed: number;
   /**
    * Rows past the horizon that were NOT expired because the sync lane still
@@ -229,7 +234,10 @@ export class SqliteBodyRetentionRepository {
     );
   }
 
-  /** How many bytes a pass with these options would free, changing nothing. */
+  /**
+   * How many body bytes a pass with these options would free, changing
+   * nothing. Finding excerpts are not counted (see `bytesFreed`).
+   */
   preview(opts: Omit<BodyExpiryOptions, 'now'>): Omit<BodyExpiryOutcome, 'done'> {
     const lane = laneOf(opts.sweepSyncLane);
     const rows = this.candidates(lane, opts.cutoff, opts.maxRows ?? DEFAULT_MAX_ROWS);

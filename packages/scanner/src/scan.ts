@@ -347,7 +347,8 @@ async function scanDir(
   // among them can send it into a directory the manifest walk skips. The nested
   // roots are the union, whatever the host's patterns. A directory both walks
   // listed is collected twice and de-duplicated when its key is built. With no
-  // register there is nothing to collect for.
+  // register the source walk is given no callback at all and the manifest walk
+  // does not run, so a scan with Data Shares off walks exactly as it did before.
   const noteNestedRoot = (relativeDir: string): void => {
     egress?.nestedRoots.push(relativeDir);
   };
@@ -368,7 +369,7 @@ async function scanDir(
     ...opts,
     rootDir,
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
-    onRepositoryRoot: noteNestedRoot,
+    onRepositoryRoot: egress === null ? undefined : noteNestedRoot,
   })) {
     const hash = contentHashOf(file.content);
     const ledgerEntry: ScanLedgerEntry = {
@@ -551,7 +552,7 @@ function scanManifests(
 // so passing null keeps whatever link the CLI pipeline already stored.
 //
 // Beside the register goes the scope key of every repository nested below the
-// scan root that the walk passed through. A gateway that forwards by scope
+// scan root that either walk passed through. A gateway that forwards by scope
 // sends the register only when each of them may be sent too; the local store
 // ignores them. The keys are resolved only when a gateway reads them, so a
 // gateway that never asks costs no repository read.

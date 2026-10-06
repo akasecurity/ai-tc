@@ -53,7 +53,9 @@ export interface ScopeKeyLookup {
   /**
    * The key of the repository rooted exactly at this posix directory under the
    * root, or `undefined` when that directory has no `.git` that exists now, or
-   * has no forge remote. Never the key of a repository around it.
+   * has no forge remote. Never the key of a repository around it, with one
+   * residual: a `.git` removed and recreated during the call can be read as the
+   * directory's own (see the checks in `scopeKeysUnder`).
    */
   readonly ofRepositoryRoot: (relativeDir: string) => string | undefined;
 }
@@ -102,8 +104,8 @@ export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
   // that starts below a directory whose `.git` is not usable stores the
   // enclosing repository's key for that directory too, which is the answer this
   // lookup must never give. It does not use the resolver's own per-directory
-  // memory either (`cache: false`): that memory is keyed by the directory's
-  // NAME, so an answer given while the directory was an ordinary one inside the
+  // memory either (`cache: false`): that memory is keyed by the directory's path
+  // string, so an answer given while the directory was an ordinary one inside the
   // checkout is the checkout's, and would be handed back as this directory's own
   // once a repository is made there. The price is one read of each reported root
   // when a gateway asks for the keys, which happens at most once per scan.

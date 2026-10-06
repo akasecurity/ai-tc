@@ -125,14 +125,13 @@ const NO_ATTRIBUTION: RepoAttribution = Object.freeze({});
  * its string too; its slug depends on the process's working directory, which
  * a hook never changes.)
  *
- * The memo is also keyed by the name and not by the repository, so an answer
- * given while `cwd` was an ordinary directory inside a checkout is the
- * checkout's, and it stays the answer for that name if a repository is later
- * made there. `{ cache: false }` is for a caller that has just checked that
- * `cwd` is a repository root and must have that directory's own answer: it
- * neither reads nor writes the memo, so what it returns was read from disk
- * during the call and nothing it learns is left for another caller. The
- * default is unchanged.
+ * The memo is also keyed by the path string and not by the repository, so an
+ * answer given while `cwd` was an ordinary directory inside a checkout is the
+ * checkout's, and it stays the answer for that path if a repository is later
+ * made there. `{ cache: false }` is for a caller that must have the answer as
+ * of this call and keeps whatever memory it needs itself: it neither reads nor
+ * writes the memo, so what it returns was read from disk during the call and
+ * nothing it learns is left for another caller. The default is unchanged.
  *
  * Same pure, never-spawns-git, never-throws contract as `resolveRepo`. Outside
  * a git repo the answer is empty (no slug, no key). A failure answers empty too,

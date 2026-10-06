@@ -739,14 +739,18 @@ describe('scanWorktree — repositories nested in the scanned project', () => {
   it('keys a nested clone by its own remote though the resolver once answered for that directory when it was not a repository', async () => {
     // The resolver remembers each directory it has answered for, for the life of
     // the process. Asked about `tools/mine` while it was an ordinary directory
-    // of the checkout, it remembered the checkout's own answer under that name.
-    // The directory then became a clone with a different remote. Its key is the
-    // clone's, read now, never what the resolver remembered for the name.
+    // of the checkout, it remembered the checkout's own answer under that path
+    // string. The directory then became a clone with a different remote. Its key
+    // is the clone's, read now, never what the resolver remembered for the path.
     const dir = join(repo, 'tools', 'mine');
     mkdirSync(dir, { recursive: true });
     write(repo, 'src/pay.ts', STRIPE_CALL);
     expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/acme/payments-api');
     gitRepo(dir, PERSONAL_URL);
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this directory with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/acme/payments-api');
 
     await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
 

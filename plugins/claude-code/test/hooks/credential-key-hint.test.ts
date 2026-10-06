@@ -10,7 +10,6 @@ import {
 
 // Fake values only: random-looking, belonging to no real system.
 const HEX = 'a3f9c27d81b4e605d9f2a7c13e8b4056f1d7a29c8e3b60f4d5a1c97e2b8f3d60';
-const BASE64 = 'Zq81mVtR0aLp44XsYb2NcE7kWd9HfU3oQx5Tg';
 
 const bash = (command: string): unknown => ({ command });
 

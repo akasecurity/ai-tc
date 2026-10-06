@@ -387,7 +387,8 @@ describe('aka prune', () => {
       }
     }
 
-    const KEPT_ALL = '3 kept: not yet sent, and could still be owed to a deployment.';
+    const kept = (n: number): string =>
+      `${String(n)} kept: not yet sent, and could still be owed to a deployment.`;
 
     it('expires an out-of-scope and an unstamped body, and keeps the enrolled one', () => {
       reader.mode = 'scoped';
@@ -398,9 +399,7 @@ describe('aka prune', () => {
       runPrune(['--home', base, '--days', '30'], io, null);
 
       expect(io.output()).toContain('Expired 2 bodies older than 30 days, freeing 200 B.');
-      expect(io.output()).toContain(
-        '1 kept: not yet sent, and could still be owed to a deployment.',
-      );
+      expect(io.output()).toContain(kept(1));
       expect(bodyOf('enrolled')).toBe('w'.repeat(100));
       expect(bodyOf('personal')).toBeNull();
       expect(bodyOf('unstamped')).toBeNull();
@@ -414,12 +413,11 @@ describe('aka prune', () => {
       runPrune(['--home', base, '--days', '30'], io, null);
 
       expect(io.output()).toContain('Nothing to expire older than 30 days.');
-      expect(io.output()).toContain(KEPT_ALL);
+      expect(io.output()).toContain(kept(3));
       expect(bodyOf('personal')).toBe('p'.repeat(100));
     });
 
     it('keeps all three when the credential cannot be parsed', () => {
-      reader.mode = 'scoped';
       attach('malformed');
       seedLane();
 
@@ -427,7 +425,7 @@ describe('aka prune', () => {
       runPrune(['--home', base, '--days', '30'], io, null);
 
       expect(io.output()).toContain('Nothing to expire older than 30 days.');
-      expect(io.output()).toContain(KEPT_ALL);
+      expect(io.output()).toContain(kept(3));
     });
 
     it('keeps all three, and does not crash, when reading the credential throws', () => {
@@ -439,7 +437,7 @@ describe('aka prune', () => {
       runPrune(['--home', base, '--days', '30'], io, null);
 
       expect(io.output()).toContain('Nothing to expire older than 30 days.');
-      expect(io.output()).toContain(KEPT_ALL);
+      expect(io.output()).toContain(kept(3));
       expect(bodyOf('enrolled')).toBe('w'.repeat(100));
     });
   });

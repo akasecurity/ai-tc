@@ -132,6 +132,7 @@ describe('runContentRetentionPass', () => {
 
   describe('on an attachment, by the credential mode', () => {
     const ENDPOINT = 'https://plane.example.test';
+    const OTHER_ENDPOINT = 'https://elsewhere.example.test';
     const AT = '2026-08-01T00:00:00.000Z';
     const WORK = 'github.com/acme/work';
     const PERSONAL = 'github.com/someone/personal';
@@ -142,7 +143,9 @@ describe('runContentRetentionPass', () => {
       reader.mode = 'real';
     });
 
-    function attach(credential: 'v1' | 'malformed'): void {
+    // `other-endpoint` is a well-formed credential minted for a different
+    // deployment than the one the settings name.
+    function attach(credential: 'v1' | 'other-endpoint' | 'malformed'): void {
       applyOnboarding(
         {
           runMode: 'attached',
@@ -156,10 +159,10 @@ describe('runContentRetentionPass', () => {
         base,
         null,
       );
-      if (credential === 'v1') {
+      if (credential === 'v1' || credential === 'other-endpoint') {
         writeControlPlaneCredential(settingsDir(base), {
           specVersion: 1,
-          endpoint: ENDPOINT,
+          endpoint: credential === 'v1' ? ENDPOINT : OTHER_ENDPOINT,
           apiKey: API_KEY,
           mintedAt: AT,
         });
@@ -243,7 +246,6 @@ describe('runContentRetentionPass', () => {
     });
 
     it('holds every unsent body when the credential cannot be parsed', () => {
-      reader.mode = 'scoped';
       attach('malformed');
       seedLane();
 
@@ -256,9 +258,44 @@ describe('runContentRetentionPass', () => {
       expect(bodyOf('personal')).toBe('p'.repeat(100));
     });
 
+    it('holds every unsent body when the credential was minted for another deployment', () => {
+      // The scoped relabel only applies to a credential the reader accepts, so
+      // this case reaches a scoped answer exactly when the read is made without
+      // the settings' endpoint to check the credential against.
+      reader.mode = 'scoped';
+      attach('other-endpoint');
+      seedLane();
+
+      expect(runContentRetentionPass({ base })).toEqual({
+        ran: true,
+        rowsExpired: 0,
+        bytesFreed: 0,
+        done: true,
+      });
+      expect(bodyOf('enrolled')).toBe('w'.repeat(100));
+      expect(bodyOf('personal')).toBe('p'.repeat(100));
+    });
+
+    it('expires every unsent body on a standalone machine', () => {
+      // The control for the cases above: without it they pass on a seed the
+      // sweep would never have touched.
+      applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
+      seedLane();
+
+      expect(runContentRetentionPass({ base })).toEqual({
+        ran: true,
+        rowsExpired: 3,
+        bytesFreed: 300,
+        done: true,
+      });
+      expect(bodyOf('enrolled')).toBeNull();
+      expect(bodyOf('personal')).toBeNull();
+      expect(bodyOf('unstamped')).toBeNull();
+    });
+
     it('holds every unsent body, and still runs, when reading the credential throws', () => {
-      // `ran: true` is the point: the lane decision is total on its own, so a
-      // failed credential read costs the sync lane its sweep and nothing else.
+      // `ran: true` is the point: the lane decision is total on its own, so the
+      // pass still runs, and every body is held.
       reader.mode = 'throws';
       attach('v1');
       seedLane();

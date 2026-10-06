@@ -9,17 +9,22 @@
 // Pure: no I/O, so it unit-tests without a hook process.
 import { isHighEntropy } from '@akasecurity/plugin-sdk';
 
-// The credential vocabulary of secrets-infra/secret-config-value. A name
-// counts only when it ENDS in one of these words, so `max_tokens`,
-// `token_count` and `secret_name` are not credential names.
+// The credential vocabulary of secrets-infra/secret-config-value: the rule's
+// terminal words, in the same order. The rule's optional leading adjectives
+// (`access`, `refresh`, `session`, ...) need no entry: a name such as
+// `accessToken` or `X-Auth-Token` is matched by its ending word at a word
+// edge. A name counts only when it ENDS in one of these words, so
+// `max_tokens`, `token_count` and `secret_name` are not credential names.
+// Nothing in the rule's terminal list is left out. `pwd` and `pin` are kept for
+// parity even though the output gate (20+ characters) rarely lets a PIN or a
+// working-directory value through.
 const CREDENTIAL_WORD =
-  'secret(?:[_-]?key)?|token|passw(?:or)?d|credentials?|bearer|(?:api|private|access|auth|session|signing|encryption)[_-]?key';
+  'pass(?:word|wd|phrase|code)?|pwd|secret|token|pin(?:[_-]?code)?|pairing(?:[_-]?code)?|credentials?|bearer|auth|api[_-]?key|(?:private|secret|access|signing|encryption|master|auth|license)[_-]?key';
 
-// An identifier run in a command or path. A run is a credential NAME only when
+// A name (an identifier run) is a credential NAME only when
 // it ends in a credential word at a word edge: the whole run (`token`), after a
 // separator (`API_TOKEN`, `X-Auth-Token`) or at a camelCase hump (`accessToken`).
 // `jsonwebtoken` ends in "token" but is a package name, so it is not one.
-const RUN = /[A-Za-z0-9_-]+/g;
 const ENDS_IN_CREDENTIAL_WORD = new RegExp(`(?:${CREDENTIAL_WORD})$`, 'i');
 
 // Only a short input is searched: a long script names many things, and the
@@ -27,9 +32,7 @@ const ENDS_IN_CREDENTIAL_WORD = new RegExp(`(?:${CREDENTIAL_WORD})$`, 'i');
 const MAX_INPUT_CHARS = 4_000;
 
 // A command that prints a file's content, so the last component of its path
-// names what the output holds (`cat /run/secrets/api_token`). For any other
-// command a credential word inside a path (`cd src/token`) is a directory or a
-// package, not a field.
+// names what the output holds (`cat /run/secrets/api_token`).
 const FILE_READER = /^\s*(?:cat|head|tail|less|more|bat)\b/;
 
 function isCredentialName(run: string): boolean {
@@ -42,28 +45,61 @@ function isCredentialName(run: string): boolean {
   return /[a-z0-9]$/.test(before) && first !== first.toLowerCase();
 }
 
-// The credential name a command mentions as a field, variable or argument: the
-// first identifier run that is a credential name, is not part of a path (unless
-// the command reads a file) and is not followed by a `.suffix` (`token.id`,
-// `secret_key.txt`, `.token.value` name something other than the secret). Only
-// the run itself is returned, so `.models.local.server.secret_key` yields
-// `secret_key`.
+interface Candidate {
+  index: number;
+  name: string;
+}
+
+const clean = (run: string): string => run.replace(/^[_-]+/, '');
+
+// A credential word elsewhere in an argument (`--grep=secret_key`, `-m "add
+// token"`, `--label=api_key`, a package name, the `Bearer` scheme in an
+// Authorization header) says nothing about what the command prints, so it is
+// not read. A name is taken only from the shapes that name printed output:
+//   - a variable expansion: `$API_TOKEN`, `${API_TOKEN}`;
+//   - `printenv NAME`;
+//   - a lookup path (jq, yq, a JS property): the LAST component of
+//     `.auth.secret_key` or `.auth["secret_key"]`;
+//   - the pattern a grep looks for (`grep -i X-Auth-Token`);
+//   - for a file reader, the base name of a path argument.
+const EXPANSION = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g;
+const PRINTENV = /(?:^|[\s;&|(])printenv\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s|$|[;&|)])/g;
+// A chain of `.name` / `["name"]` steps that starts at a word edge (not inside
+// a path, a file name or a flag value).
+const LOOKUP_PATH =
+  /(?<![A-Za-z0-9_$/\\.=-])((?:\.[A-Za-z_][A-Za-z0-9_-]*|\[["'][A-Za-z0-9_-]+["']\])+)/g;
+const LOOKUP_STEP = /[A-Za-z0-9_-]+(?=["']?\]?$)/;
+const GREP_PATTERN =
+  /(?:^|[;&|]\s*)(?:grep|egrep|fgrep|rg)\s+(?:-\S+\s+)*(["']?)([A-Za-z0-9_-]+)\1(?=\s|$)/g;
+
+function pathBasename(arg: string): string | undefined {
+  const unquoted = arg.replace(/^["']|["']$/g, '');
+  const base = unquoted.slice(Math.max(unquoted.lastIndexOf('/'), unquoted.lastIndexOf('\\')) + 1);
+  // A `.suffix` (`secret_key.txt`) names a file of something else.
+  return /^[A-Za-z0-9_-]+$/.test(base) ? base : undefined;
+}
+
 function nameInCommand(command: string): string | undefined {
-  const readsFile = FILE_READER.test(command);
-  for (const match of command.matchAll(RUN)) {
-    const run = match[0];
-    if (!isCredentialName(run)) continue;
-    const before = command.charAt(match.index - 1);
-    const after = command.charAt(match.index + run.length);
-    const next = command.charAt(match.index + run.length + 1);
-    const inPath = before === '/' || before === '\\' || after === '/' || after === '\\';
-    if (inPath && !(readsFile && (before === '/' || before === '\\') && !/[/\\]/.test(after))) {
-      continue;
-    }
-    if (after === '.' && /[A-Za-z]/.test(next)) continue;
-    return run.replace(/^[_-]+/, '');
+  const found: Candidate[] = [];
+  const add = (index: number, run: string | undefined): void => {
+    if (run !== undefined && isCredentialName(run)) found.push({ index, name: clean(run) });
+  };
+  for (const m of command.matchAll(EXPANSION)) add(m.index, m[1]);
+  for (const m of command.matchAll(PRINTENV)) add(m.index, m[1]);
+  for (const m of command.matchAll(GREP_PATTERN)) add(m.index, m[2]);
+  for (const m of command.matchAll(LOOKUP_PATH)) {
+    add(m.index, LOOKUP_STEP.exec(m[1] ?? '')?.[0]);
   }
-  return undefined;
+  if (FILE_READER.test(command)) {
+    let at = 0;
+    for (const arg of command.split(/\s+/)) {
+      const index = command.indexOf(arg, at);
+      at = index + arg.length;
+      if (index > 0 && !arg.startsWith('-')) add(index, pathBasename(arg));
+    }
+  }
+  found.sort((a, b) => a.index - b.index);
+  return found[0]?.name;
 }
 
 // The tool inputs that name where the printed value came from. Bash: the

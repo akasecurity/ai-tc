@@ -26,6 +26,14 @@ describe('credentialKeyFromInput', () => {
     ['yq', 'yq .db.password config.yml', 'password'],
     ['camelCase', 'node -p "require(\'./c.json\').accessKey"', 'accessKey'],
     ['upper-case with a dash', 'cat conf | grep -i X-Auth-Token', 'X-Auth-Token'],
+    ['braced expansion', 'echo "${API_TOKEN}"', 'API_TOKEN'],
+    ['master_key path', 'cat /run/secrets/master_key', 'master_key'],
+    ['jq master_key', 'jq -r .master_key config.json', 'master_key'],
+    ['passphrase expansion', 'echo $PASSPHRASE', 'PASSPHRASE'],
+    ['license_key path', 'cat /run/secrets/license_key', 'license_key'],
+    ['passcode path', 'cat /run/secrets/passcode', 'passcode'],
+    ['pairing code lookup', 'jq -r .pairing_code c.json', 'pairing_code'],
+    ['pwd lookup', 'jq -r .db.pwd c.json', 'pwd'],
   ] as const)('reads the key from a Bash command: %s', (_label, command, key) => {
     expect(credentialKeyFromInput('Bash', bash(command))).toBe(key);
   });
@@ -35,6 +43,18 @@ describe('credentialKeyFromInput', () => {
       credentialKeyFromInput('Bash', bash('jq -r .models.local.auth_cfg.server.secret_key c.json')),
     ).toBe('secret_key');
     expect(credentialKeyFromInput('Bash', bash('jq -r .a.b.c.d.bearer c.json'))).toBe('bearer');
+  });
+
+  it('attributes a Bearer header to the variable, not the scheme', () => {
+    expect(
+      credentialKeyFromInput(
+        'Bash',
+        bash('curl -H "Authorization: Bearer $TOKEN" https://x.invalid'),
+      ),
+    ).toBe('TOKEN');
+    expect(
+      credentialKeyFromInput('Bash', bash('curl -H "Authorization: Bearer abc" https://x.invalid')),
+    ).toBeUndefined();
   });
 
   it('reads the last path component only for a command that prints a file', () => {
@@ -58,6 +78,11 @@ describe('credentialKeyFromInput', () => {
     'npm view jsonwebtoken dist.shasum',
     'cat notes.txt',
     'ls -la',
+    'git log --grep=secret_key --format=%H',
+    'git commit -m "add token"',
+    'npm view my-token dist.shasum',
+    'gh issue list --label=api_key',
+    'echo spin compass bypass',
   ])('names no key for %s', (command) => {
     expect(credentialKeyFromInput('Bash', bash(command))).toBeUndefined();
   });
@@ -239,11 +264,26 @@ describe('the issue case, end to end through the response scan', () => {
       'cd ~/src/token && git rev-parse HEAD',
       'git log -1 --format=%H -- src/auth/token',
       'npm view jsonwebtoken dist.shasum',
+      'git log --grep=secret_key --format=%H',
+      'git commit -m "add token"',
+      'npm view my-token dist.shasum',
+      'gh pr list --label=api_key',
     ]) {
       const outcome = await runBash(command, `${HEX}\n`, 'redact');
       expect(outcome.redactedFindings, command).toEqual([]);
       expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
     }
+  });
+
+  it.each([
+    'cat /run/secrets/master_key',
+    'jq -r .master_key config.json',
+    'echo $PASSPHRASE',
+    'cat /run/secrets/license_key',
+    'cat /run/secrets/passcode',
+  ])('masks a bare value printed by %s', async (command) => {
+    const outcome = await runBash(command, `${HEX}\n`, 'redact');
+    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
   });
 
   it('does not touch a bare count under a look-alike key', async () => {

@@ -1775,8 +1775,8 @@ describe('runHistorySync — a scoped attachment', () => {
     const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
-    // Owed only in scope: a personal marker is owed to nobody here, and counting
-    // it would keep the drain from ever reading done.
+    // Owed only in scope: the probe counts in-scope captures only, so a marker
+    // on a personal capture does not hold `capturesPending` true.
     expect(attempted(result).capturesPending).toBe(false);
     expect(delivery('cap-p-0')).toEqual({ syncedAt: null, owed: 1 });
   });
@@ -2009,8 +2009,8 @@ describe('runHistorySync — a scoped attachment', () => {
     expect(delivery('cap-p')).toEqual({ syncedAt: null, owed: null });
   });
 
-  // The second opinion. The scoped read already excludes a personal capture;
-  // this stands in a ledger whose read does not, and requires the drain's own
+  // The second look. The scoped read already excludes a personal capture; this
+  // stands in a ledger whose read does not, and requires the drain's own
   // in-memory check to refuse it without stamping it.
   it('re-checks each capture before sending, and leaves what it refuses unstamped', async () => {
     attachScoped([WORK]);

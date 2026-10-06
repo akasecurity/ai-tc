@@ -1055,8 +1055,8 @@ describe('existing-history consent', () => {
   });
 
   // This command writes a MACHINE credential, and a machine attachment's grant
-  // covers every capture: a stored scope (left by an earlier scoped attachment,
-  // or written by hand) does not narrow the backfill.
+  // covers every capture. A scope record can be present on disk whatever the
+  // credential's mode; this pins that a machine credential ignores it.
   it('backfills every pre-existing capture on a machine attachment, whatever scope is stored', async () => {
     seedCapture();
     applyOnboarding(

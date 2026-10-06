@@ -771,9 +771,12 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     sent,
     skipped,
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
-    // pay for a count over the capture grain on every pass. In scope only: a
-    // personal capture an older build marked is owed to nobody on a scoped
-    // attachment, and counting it would keep the drain from ever reading done.
+    // pay for a count over the capture grain on every pass. It asks only about
+    // in-scope captures, so a marker on a capture the scope excludes no longer
+    // holds `capturesPending` true. The structural `counts()` just below is NOT
+    // scoped: on a scoped attachment `phase` can stay `filling`, and
+    // `pendingTotal` includes rows the scope excludes. That is a display
+    // limitation; nothing is sent because of it.
     capturesPending: capturesOwed(),
     counts: d.ledger.counts(d.backlogBefore),
     atMs: d.now(),
@@ -790,10 +793,13 @@ interface ChunkResult {
 /**
  * The scope key a row was stamped with, or `undefined`.
  *
- * Read from the attributes bag rather than the `scope_key` column, on purpose:
- * this is the second opinion on the column's filter, so it must not be the
- * column again. Anything that is not a string (no bag, a bag that does not
- * parse, a key of another type) is no key, and no key is never in scope.
+ * Read from the attributes bag rather than the `scope_key` column, as a
+ * defensive second look at the same data: the column is generated from that
+ * bag, so this is not an independent source, only a check made in memory by the
+ * code that sends, on the value it is about to send, rather than by the
+ * statement that selected it. Anything that is not a string (no bag, a bag that
+ * does not parse, a key of another type) is no key, and no key is never in
+ * scope.
  */
 function scopeKeyOfRow(row: AuditEventRow): string | undefined {
   const raw: unknown = row.attributes;
@@ -873,10 +879,12 @@ async function drainCaptures(
     if (rows.length === 0) return { sent, skipped };
 
     // THE SEND-TIME RE-CHECK: the same scope, asked again of each row in memory,
-    // from its attributes rather than the column the read filtered on. It can
-    // disagree with the read only where the column and the bag say different
-    // things about the key, and a row it refuses is left exactly as it is (not
-    // sent, not claimed, not stamped), so it stays owed for the day they agree.
+    // from its attributes rather than the column the read filtered on. The
+    // column is generated from those attributes, so this is a defensive second
+    // look at the same data: it guards against a defect in the read's statement
+    // or in the column, not against a second source disagreeing. A row it
+    // refuses is left exactly as it is (not sent, not claimed, not stamped), so
+    // it stays owed for the day the two agree.
     // If it refuses the whole page the lane ends for this pass: the read has no
     // cursor, so the same page would come back, and spinning on it would hold
     // the lease for nothing. A machine attachment has no scope to check.

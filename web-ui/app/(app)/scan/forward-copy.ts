@@ -12,10 +12,12 @@ import { FORWARD_FAILURE_LINES, type SharesForwardOutcome } from '@akasecurity/l
 // The failure sentences are the shared ones every surface renders from, so a
 // person who ran into a refusal in the CLI and then tries this page is told the
 // same thing. What this module owns is the rest: the credential line, whose
-// remedy differs here (attach is one click away, and there is no terminal),
-// and the TONE of every line — decided in the same switch as the wording, so a
-// status added to the union cannot get a sentence in one place and a colour
-// from a second read of it somewhere else.
+// remedy differs here (attach is one click away, and there is no terminal);
+// the enrollment line, which names no remedy at all, because enrolling is a
+// terminal verb this page has no control for and a scoped machine keeping a
+// project local is not a fault; and the TONE of every line — decided in the
+// same switch as the wording, so a status added to the union cannot get a
+// sentence in one place and a colour from a second read of it somewhere else.
 
 /** A note reads like the counts it follows; a warning is a refusal the user must act on. */
 export type ForwardTone = 'note' | 'warning';
@@ -46,6 +48,11 @@ export function describeForward(outcome: SharesForwardOutcome): ForwardLine | nu
       return {
         text: `Not forwarded to ${outcome.endpoint}: no usable credential — re-attach from Settings.`,
         tone: 'warning',
+      };
+    case 'not-enrolled':
+      return {
+        text: `Not forwarded to ${outcome.endpoint}: project not enrolled — its scans stay on this machine.`,
+        tone: 'note',
       };
     case 'forwarded':
       return {

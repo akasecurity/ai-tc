@@ -147,6 +147,11 @@ export function renderForwardLine(outcome: ReportedForward): string {
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
         'no usable credential; re-attach with `aka attach`'
       );
+    case 'not-enrolled':
+      return (
+        `Data shares: not forwarded to ${outcome.endpoint} — ` +
+        'project not enrolled; enroll its repository with `aka enroll`'
+      );
     case 'forwarded':
       return (
         `Data shares: forwarded to ${outcome.endpoint} · ` +

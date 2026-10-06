@@ -206,6 +206,18 @@ describe('renderEgressLine', () => {
   });
 });
 
+describe('renderForwardLine', () => {
+  it('says an unenrolled project stayed on this machine, and names the verb that enrolls one', () => {
+    // A scoped attachment declining to send is not a failure, but the person
+    // who ran the scan still has to be told nothing left — and, since a
+    // repository is enrolled from this same terminal, how to change that.
+    expect(renderForwardLine({ status: 'not-enrolled', endpoint: 'Acme Security' })).toBe(
+      'Data shares: not forwarded to Acme Security — project not enrolled; ' +
+        'enroll its repository with `aka enroll`',
+    );
+  });
+});
+
 describe('runScan', () => {
   let home: string;
   let root: string;

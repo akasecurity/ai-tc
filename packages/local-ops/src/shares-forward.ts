@@ -1,15 +1,25 @@
 import {
   readControlPlaneCredential,
   readWorkspaceSettings,
+  scopeKeyOfProjectKey,
   settingsDir,
   toEgressIngestRequest,
 } from '@akasecurity/persistence';
 import type {
+  AttachedCredentialAny,
   EgressIngestRequest,
   RecordProjectEgressInput,
   RemoteFailureKind,
+  ScopeVerdict,
+  WorkspaceSettings,
 } from '@akasecurity/schema';
-import { controlPlaneName, isAttached } from '@akasecurity/schema';
+import {
+  attachmentModeOf,
+  controlPlaneName,
+  isAttached,
+  resolveScope,
+  scopeVerdict,
+} from '@akasecurity/schema';
 
 // Forwarding the Data Shares register a scan just recorded, for the surfaces
 // that record one: is this machine attached, does it hold a credential for the
@@ -59,11 +69,18 @@ export type SharesForwardSender = (
  * `disabled` says WHY nothing was sent: the caller opted this run out, or the
  * Data Shares switch is off — read live, because the record this input came
  * from and this send are two steps, and the switch can move between them.
+ *
+ * `not-enrolled` is a SCOPED attachment declining to send. The machine
+ * forwards only repositories enrolled for this deployment, and this project's
+ * is not one of them — or it has no remote to enroll by, which is true of
+ * every path-keyed project. Nothing was sent, by design rather than by fault,
+ * so it reads as information, not as a failure to fix.
  */
 export type SharesForwardOutcome =
   | { status: 'not-attached' }
   | { status: 'disabled'; endpoint: string; reason: 'opt-out' | 'data-shares-off' }
   | { status: 'no-credential'; endpoint: string }
+  | { status: 'not-enrolled'; endpoint: string }
   | { status: 'forwarded'; endpoint: string; callSites: number }
   | { status: 'failed'; endpoint: string; kind: RemoteFailureKind };
 
@@ -93,6 +110,48 @@ export interface SharesForwardDeps {
   send: SharesForwardSender;
   /** Default true. False is an explicit opt-out for this run, not a policy. */
   enabled?: boolean;
+}
+
+/**
+ * Whether this attachment lets `projectKey`'s register leave the machine.
+ *
+ * The verdict every forward path shares (`resolveScope`, then `scopeVerdict`),
+ * fed from the three things that decide it:
+ *   - the MODE, recorded on the credential. A machine-wide attachment forwards
+ *     everything, as it always has, and never derives the key, so nothing
+ *     about the key can change what it does.
+ *   - the SCOPE, from the settings this call already read, so an enroll that
+ *     landed a moment ago counts. It counts only for `endpoint`, the URL this
+ *     machine is attached to, never its display name.
+ *   - the project's KEY: the canonical `host/owner/repo` of a `git:` project
+ *     key. A `path:` key, and a `git:` key that fell back to a worktree path
+ *     because the repository has no remote, have none — a location on one
+ *     machine is not something a scope can name — so they never forward from
+ *     a scoped machine.
+ *
+ * FAIL-CLOSED. Anything that throws here reads as `local`: the register stays
+ * on the machine and the outcome says so, rather than the caller's catch
+ * reporting an outage for a send that was never going to happen.
+ */
+function projectVerdict(
+  settings: WorkspaceSettings,
+  endpoint: string,
+  credential: AttachedCredentialAny,
+  projectKey: string,
+): ScopeVerdict {
+  try {
+    const resolved = resolveScope({
+      mode: attachmentModeOf(credential),
+      scope: settings.attachmentScope,
+      endpoint,
+    });
+    return scopeVerdict(
+      resolved,
+      resolved.mode === 'scoped' ? scopeKeyOfProjectKey(projectKey) : undefined,
+    );
+  } catch {
+    return 'local';
+  }
 }
 
 /**
@@ -139,6 +198,15 @@ export async function forwardProjectEgress(
     // bearer token to an endpoint it was never issued for.
     const credential = readControlPlaneCredential(settingsDir(base), connection);
     if (credential === null) return { status: 'no-credential', endpoint };
+
+    // The scope, AFTER the credential and BEFORE the projection. After, because
+    // the attachment's mode is recorded on the credential and there is no mode
+    // to read without one — a missing credential stays `no-credential`, the
+    // state with something to do about it. Before, because a register this
+    // machine keeps local must not even be assembled into a request.
+    if (projectVerdict(settings, connection.endpoint, credential, input.projectKey) === 'local') {
+      return { status: 'not-enrolled', endpoint };
+    }
 
     // The projection is the privacy boundary: source snippets out, the project
     // key digested, the per-project cap applied. Sending `input` itself is the

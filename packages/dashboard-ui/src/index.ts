@@ -147,6 +147,8 @@ export {
   PolicyTag,
   PublisherTag,
   TonePill,
+  type UnassignedPolicy,
+  UnassignedPolicyTag,
   UpdateBadge,
 } from './detections/atoms.tsx';
 export { DetectionDetailView } from './detections/DetectionDetailView.tsx';

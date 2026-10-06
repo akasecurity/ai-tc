@@ -12,6 +12,8 @@
 //   - policyFloor     : what an attached machine's organization requires for THIS
 //     detection. Folded into the same restricted set, so the options offered are
 //     the options the store will accept.
+//   - unassignedPolicy : how this host names the policy an unassigned detection
+//     follows, when that is not Monitor. Absent ⇒ unassigned reads as Monitor.
 //   - policyError     : a write the store refused, in the user's words. Rendered
 //     at the control that produced it, because a refusal reported nowhere is
 //     indistinguishable from a picker that quietly ignores you.
@@ -44,8 +46,9 @@ import { type ReactNode, useId } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { SectionLabel } from '../shared/DetailFields.tsx';
-import { ChevronRightIcon, MoreVertIcon, PlusIcon } from '../shared/icons.tsx';
+import { ChevronRightIcon, MoreVertIcon, PlusIcon, PolicyIcon } from '../shared/icons.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
+import type { UnassignedPolicy } from './atoms.tsx';
 import {
   BUILTIN_POLICY_IDS,
   CATEGORY_LABEL,
@@ -114,6 +117,7 @@ export function DetectionDetailView({
   onChangePolicy,
   unavailablePolicies,
   policyFloor,
+  unassignedPolicy,
   policyError,
   enabledError,
   onOpenUpdate,
@@ -142,6 +146,14 @@ export function DetectionDetailView({
    * policy for is not re-assignable here at all.
    */
   policyFloor?: DetectionPolicyFloor | null | undefined;
+  /**
+   * How this host names the policy a detection with no assigned policy follows,
+   * for a host whose unassigned detections do not resolve to Monitor. When it
+   * applies, the picker shows no archetype as selected and the description card
+   * carries this label and description. A policyFloor still wins. Omit it and an
+   * unassigned detection renders as Monitor exactly as before.
+   */
+  unassignedPolicy?: UnassignedPolicy | undefined;
   /** A refused or failed policy write, already worded for the reader. */
   policyError?: string | null | undefined;
   /** The same, for a refused or failed enable/disable write. */
@@ -234,7 +246,11 @@ export function DetectionDetailView({
   // archetype the picker shows as selected, so the two must be the same one.
   const policyId = effectivePolicyId(d.policyId, policyFloor);
   const policy = policyMeta(policyId);
-  const PolicyMetaIcon = policy.icon;
+  // Set only for an unassigned detection no floor constrains: a floor names a
+  // concrete archetype, so it wins over the host's label.
+  const unassigned = d.policyId === undefined && !policyFloor ? unassignedPolicy : undefined;
+  const PolicyMetaIcon = unassigned === undefined ? policy.icon : PolicyIcon;
+  const policyTone = unassigned === undefined ? policy.tone : 'neutral';
   // Two sources of restriction, merged rather than chosen between: a host can
   // both be unable to deliver an archetype AND be under an organization's floor.
   // Undefined when neither restricts anything, so an unconstrained detection
@@ -473,7 +489,11 @@ export function DetectionDetailView({
             <SectionLabel>Enforcement policy</SectionLabel>
             <span className="text-xs text-text-3">applied to every matching request</span>
           </div>
-          <PolicyPicker value={policyId} onChange={onChangePolicy} unavailable={restricted} />
+          <PolicyPicker
+            value={unassigned === undefined ? policyId : undefined}
+            onChange={onChangePolicy}
+            unavailable={restricted}
+          />
           {policyError && (
             // At the control, not in a page-level banner: the user's next move is
             // to pick something else, and a message they have to go and find
@@ -487,9 +507,18 @@ export function DetectionDetailView({
               aria-hidden
               focusable={false}
               className="mt-px size-4 shrink-0"
-              style={{ color: toneColors(policy.tone)[0] }}
+              style={{ color: toneColors(policyTone)[0] }}
             />
-            <div className="text-xs leading-snug text-text-2">{policy.desc}</div>
+            <div className="text-xs leading-snug text-text-2">
+              {unassigned === undefined ? (
+                policy.desc
+              ) : (
+                <>
+                  <div className="font-semibold text-text">{unassigned.label}</div>
+                  {unassigned.description}
+                </>
+              )}
+            </div>
           </div>
         </div>
 

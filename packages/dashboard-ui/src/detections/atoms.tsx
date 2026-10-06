@@ -7,7 +7,7 @@ import { type Tone, toneColors } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
-import { ArrowUpIcon, BranchIcon, BuildingIcon } from '../shared/icons.tsx';
+import { ArrowUpIcon, BranchIcon, BuildingIcon, PolicyIcon } from '../shared/icons.tsx';
 import { ORIGIN_META, policyMeta, PUBLISHER_META } from './meta.ts';
 import {
   type DetectionPolicyFloor,
@@ -89,6 +89,30 @@ export function PolicyTag({
           <span className="sr-only">{reason}</span>
         </>
       )}
+    </span>
+  );
+}
+
+/**
+ * How a host names the policy a detection with no assigned policy follows, for a
+ * host where that is not Monitor. `label` is the short pill text; `description`
+ * is the sentence the detail pane shows in place of an archetype's.
+ */
+export interface UnassignedPolicy {
+  label: string;
+  description: string;
+}
+
+/** A neutral pill for a detection with no assigned policy, named by the host. */
+export function UnassignedPolicyTag({ label }: { label: string }) {
+  const [fg, bg] = toneColors('neutral');
+  return (
+    <span
+      className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-full px-2 text-xs font-semibold"
+      style={{ color: fg, background: bg }}
+    >
+      <PolicyIcon aria-hidden focusable={false} className="size-3" />
+      {label}
     </span>
   );
 }

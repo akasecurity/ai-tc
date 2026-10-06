@@ -1,7 +1,7 @@
 // The compact summary strip: one Card with inline stats separated by dividers.
 //
 // It lives in shared/ rather than under one feature folder because Activity,
-// Detections and Policies all head their master/detail with it. The strip is
+// Detections, Findings and Policies all head their pages with it. The strip is
 // chrome above a list, so its whole point is to cost as little vertical space as
 // a row of stats can: it measures 50px, and the height it does not spend is
 // height the list underneath gets instead.

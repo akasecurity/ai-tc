@@ -27,6 +27,7 @@ import type {
   FindingFacets,
   FindingInstanceDetail,
   FindingLocationSummary,
+  FindingsOverview,
   FindingTypeSummary,
   ListFindingInstancesResponse,
   ListFindingLocationsResponse,
@@ -153,6 +154,16 @@ function locations(items: FindingLocationSummary[]): ListFindingLocationsRespons
   };
 }
 
+// Every count distinct, so a cell reading the wrong field shows a number that
+// belongs to a different label.
+const OVERVIEW: FindingsOverview = {
+  findings: 1234,
+  open: 78,
+  handled: 321,
+  resolved: 9,
+  dismissed: 56,
+};
+
 const COMMON = {
   filters: EMPTY_FILTERS,
   query: '',
@@ -164,7 +175,20 @@ const COMMON = {
   file: '',
   renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
   deployment: null,
+  overview: OVERVIEW,
 };
+
+// The page's Cards other than the summary strip — the panels. The strip is a
+// Card of its own above every view, so a bare count of `data-slot="card"` mixes
+// it in with the panels the cases below are about. Its own count is asserted to
+// be exactly one, so subtracting it can never quietly absorb a stray panel.
+function panelCardCount(html: string): number {
+  const all = html.match(/data-slot="card"/g)?.length ?? 0;
+  const strip =
+    html.match(/<div data-slot="card"[^>]*><div data-slot="summary-stat"/g)?.length ?? 0;
+  expect(strip, 'expected exactly one summary strip').toBe(1);
+  return all - strip;
+}
 
 function render(props: Record<string, unknown>): string {
   return renderToStaticMarkup(
@@ -239,8 +263,7 @@ describe('findings client — the By-type view', () => {
     expect(html).toContain(AWS);
     // Two cards here means two borders and two radii where the header meets the
     // table — the panel wraps nothing, the table carries the header itself.
-    const cards = html.match(/data-slot="card"/g) ?? [];
-    expect(cards).toHaveLength(2); // the types list, and the findings panel
+    expect(panelCardCount(html)).toBe(2); // the types list, and the findings panel
   });
 
   it('says why the detail side is empty rather than showing a blank card', () => {
@@ -366,7 +389,7 @@ describe('findings client — the other views', () => {
     expect(html).toContain('MASK-f1');
     // Two cards, not a border inside a border: the panel's header is a slot in
     // the table's own card rather than a wrapper around it.
-    expect((html.match(/data-slot="card"/g) ?? []).length).toBe(2);
+    expect(panelCardCount(html)).toBe(2);
   });
 
   // Two different empties, and the panel has to tell them apart the way the list
@@ -448,5 +471,35 @@ describe('findings client — the Deployment controls', () => {
       deployment: { canRetry: true },
     });
     expect(html.match(/>Deployment</g) ?? []).toHaveLength(2);
+  });
+});
+
+describe('findings client — the summary strip', () => {
+  // Each cell's value and label as one string, read from the `title` the strip
+  // carries per cell, so a value is checked against its OWN label rather than
+  // merely being somewhere on the page.
+  function stripCells(html: string): string[] {
+    return [...html.matchAll(/data-slot="summary-stat".*?title="([^"]+)"/gs)].map(
+      (m) => m[1] ?? '',
+    );
+  }
+
+  // Built THROUGH toLocaleString, like the tally case above: the thousands
+  // separator is the runner's, so a literal `1,234` fails wherever LANG is not
+  // en-*. What this case pins is each value beside its own label, in order.
+  const EXPECTED = [
+    `${OVERVIEW.findings.toLocaleString()} Findings`,
+    `${OVERVIEW.open.toLocaleString()} Open`,
+    `${OVERVIEW.handled.toLocaleString()} Handled`,
+    `${OVERVIEW.resolved.toLocaleString()} Resolved`,
+    `${OVERVIEW.dismissed.toLocaleString()} Dismissed`,
+  ];
+
+  it.for<[string, () => string]>([
+    ['By type', () => grouped()],
+    ['flat', () => render({ view: 'flat', flat: instances([instance('f1')]) })],
+    ['By location', () => files()],
+  ])('heads the %s view with the five whole-store counts', ([, draw]) => {
+    expect(stripCells(draw())).toEqual(EXPECTED);
   });
 });

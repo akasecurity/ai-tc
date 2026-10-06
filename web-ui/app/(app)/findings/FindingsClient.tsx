@@ -48,10 +48,10 @@ import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
 import {
   AlertIcon,
-  AlertOctagonIcon,
   CheckCircleIcon,
   ListIcon,
   ShieldCheckIcon,
+  SlashCircleIcon,
   TerminalIcon,
   XIcon,
 } from '../../components/icons';
@@ -126,12 +126,6 @@ function overviewStatItems(overview: FindingsOverview): SummaryStatItem[] {
       tone: 'neutral',
     },
     {
-      icon: AlertOctagonIcon,
-      value: overview.openCritical.toLocaleString(),
-      label: 'Open critical',
-      tone: 'critical',
-    },
-    {
       icon: AlertIcon,
       value: overview.open.toLocaleString(),
       label: 'Open',
@@ -148,6 +142,12 @@ function overviewStatItems(overview: FindingsOverview): SummaryStatItem[] {
       value: overview.resolved.toLocaleString(),
       label: 'Resolved',
       tone: 'ok',
+    },
+    {
+      icon: SlashCircleIcon,
+      value: overview.dismissed.toLocaleString(),
+      label: 'Dismissed',
+      tone: 'violet',
     },
   ];
 }

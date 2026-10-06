@@ -14,6 +14,7 @@ export {
   LockIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SlashCircleIcon,
   TerminalIcon,
   XIcon,
 } from '@akasecurity/dashboard-ui';

@@ -205,7 +205,7 @@ function mount(over: Record<string, unknown> = {}): void {
           file: '',
           renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
           deployment: null,
-          overview: { findings: 0, openCritical: 0, open: 0, handled: 0, resolved: 0 },
+          overview: { findings: 0, open: 0, handled: 0, resolved: 0, dismissed: 0 },
           view: 'grouped',
           types: TYPES,
           instances: pageOf(['f1', 'f2'], 'cursor-1'),

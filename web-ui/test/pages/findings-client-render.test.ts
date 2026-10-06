@@ -158,10 +158,10 @@ function locations(items: FindingLocationSummary[]): ListFindingLocationsRespons
 // belongs to a different label.
 const OVERVIEW: FindingsOverview = {
   findings: 1234,
-  openCritical: 56,
   open: 78,
   handled: 321,
   resolved: 9,
+  dismissed: 56,
 };
 
 const COMMON = {
@@ -484,7 +484,16 @@ describe('findings client — the summary strip', () => {
     );
   }
 
-  const EXPECTED = ['1,234 Findings', '56 Open critical', '78 Open', '321 Handled', '9 Resolved'];
+  // Built THROUGH toLocaleString, like the tally case above: the thousands
+  // separator is the runner's, so a literal `1,234` fails wherever LANG is not
+  // en-*. What this case pins is each value beside its own label, in order.
+  const EXPECTED = [
+    `${OVERVIEW.findings.toLocaleString()} Findings`,
+    `${OVERVIEW.open.toLocaleString()} Open`,
+    `${OVERVIEW.handled.toLocaleString()} Handled`,
+    `${OVERVIEW.resolved.toLocaleString()} Resolved`,
+    `${OVERVIEW.dismissed.toLocaleString()} Dismissed`,
+  ];
 
   it.for<[string, () => string]>([
     ['By type', () => grouped()],

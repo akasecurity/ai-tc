@@ -132,6 +132,7 @@ export {
   LockIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SlashCircleIcon,
   TerminalIcon,
   XIcon,
 } from './shared/icons.tsx';

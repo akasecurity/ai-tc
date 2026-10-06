@@ -4,7 +4,7 @@ import type {
   DetectedFindingWithKey,
   EventKind,
   ListFindingInstancesQuery,
-  Severity,
+  ResolutionMethod,
 } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -20,9 +20,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 //
 // The fixture straddles every field: each count is a strict subset of the
 // total and differs from every other count, so a field reading the wrong
-// column, the wrong status or no predicate at all lands on a different number.
-// Open critical needs both halves: four findings are critical and three are
-// open, but only two are both, so dropping either condition moves it.
+// status or no predicate at all lands on a different number.
 
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
@@ -36,33 +34,41 @@ beforeEach(() => {
 // One finding on its own capture. The shared builders give every call a
 // distinct masked value, which is what keeps the store's session dedup from
 // collapsing two fixture rows into one.
-function record(opts: { severity: Severity; kind?: EventKind; findingKey?: string }): void {
-  const kind = opts.kind ?? 'prompt';
+function record(opts: { kind: EventKind; findingKey?: string }): void {
+  const { kind } = opts;
   const event = captureEvent({
     kind,
     ...(kind === 'code_change' ? { metadata: { filePath: `/tmp/${randomUUID()}.ts` } } : {}),
   });
   const finding: DetectedFindingWithKey = {
-    ...captureFinding(event.id, { severity: opts.severity }),
+    ...captureFinding(event.id),
     ...(opts.findingKey ? { findingKey: opts.findingKey } : {}),
   };
   db.recordCapture(event, [finding]);
 }
 
-function resolve(findingKey: string, status: 'resolved' | 'dismissed' | 'open'): void {
+type ResolutionStatus = 'resolved' | 'dismissed' | 'open';
+
+const METHOD_FOR: Record<ResolutionStatus, ResolutionMethod> = {
+  resolved: 'fixed-at-source',
+  dismissed: 'false-positive',
+  open: 'redetected',
+};
+
+function resolve(findingKey: string, status: ResolutionStatus): void {
   db.resolutions.insertResolution({
     findingKey,
     status,
-    method: status === 'open' ? 'redetected' : 'fixed-at-source',
+    method: METHOD_FOR[status],
     resolvedAt: NOW,
     evidence: '{}',
   });
 }
 
 // A transcript-reconciler finding: it sits in the same tables but on a
-// non-capture `tool_call` row, which the Findings list never shows. It is
-// critical, and the status classifier reads any kind but `code_change` as
-// handled, so counting it would move three fields at once.
+// non-capture `tool_call` row, which the Findings list never shows. The status
+// classifier reads any kind but `code_change` as handled, so counting it would
+// move two fields: `findings` and `handled`.
 function seedTranscriptFinding(): void {
   const raw = store.openRaw();
   raw
@@ -91,22 +97,25 @@ function seedTranscriptFinding(): void {
 function seedStraddlingFixture(): void {
   // In-flight, across every live capture kind: born handled. Four of them, so
   // the handled count collides with no other field.
-  record({ severity: 'critical', kind: 'prompt' });
-  record({ severity: 'low', kind: 'response' });
-  record({ severity: 'high', kind: 'tool_use' });
-  record({ severity: 'medium', kind: 'prompt' });
-  // At-rest, never resolved: open, and critical.
-  record({ severity: 'critical', kind: 'code_change', findingKey: 'k-open' });
+  record({ kind: 'prompt' });
+  record({ kind: 'response' });
+  record({ kind: 'tool_use' });
+  record({ kind: 'prompt' });
+  // At-rest, never resolved: open.
+  record({ kind: 'code_change', findingKey: 'k-open' });
   // At-rest, fixed at source: resolved.
-  record({ severity: 'critical', kind: 'code_change', findingKey: 'k-res' });
+  record({ kind: 'code_change', findingKey: 'k-res' });
   resolve('k-res', 'resolved');
-  // At-rest, dismissed: neither open, handled nor resolved.
-  record({ severity: 'medium', kind: 'code_change', findingKey: 'k-dis' });
-  resolve('k-dis', 'dismissed');
-  // At-rest, legacy row with no key: the list calls it open. Critical too.
-  record({ severity: 'critical', kind: 'code_change' });
+  // At-rest, dismissed. Two of them, so the dismissed count does not collide
+  // with the resolved one.
+  record({ kind: 'code_change', findingKey: 'k-dis-1' });
+  resolve('k-dis-1', 'dismissed');
+  record({ kind: 'code_change', findingKey: 'k-dis-2' });
+  resolve('k-dis-2', 'dismissed');
+  // At-rest, legacy row with no key: the list calls it open.
+  record({ kind: 'code_change' });
   // At-rest, resolved and then redetected: the latest row wins, so open again.
-  record({ severity: 'medium', kind: 'code_change', findingKey: 'k-redet' });
+  record({ kind: 'code_change', findingKey: 'k-redet' });
   resolve('k-redet', 'resolved');
   resolve('k-redet', 'open');
 
@@ -118,12 +127,22 @@ describe('SqliteFindingsRepository.findingsOverview', () => {
     seedStraddlingFixture();
 
     expect(await db.findings.findingsOverview()).toEqual({
-      findings: 9,
-      openCritical: 2,
+      findings: 10,
       open: 3,
       handled: 4,
       resolved: 1,
+      dismissed: 2,
     });
+  });
+
+  // Every finding has exactly one status, so the four status cells account for
+  // the whole Findings count and nothing on the strip is left unexplained.
+  it('adds the four statuses up to the findings count', async () => {
+    seedStraddlingFixture();
+
+    const { findings, open, handled, resolved, dismissed } = await db.findings.findingsOverview();
+    expect(findings).toBeGreaterThan(0);
+    expect(open + handled + resolved + dismissed).toBe(findings);
   });
 
   // The property the strip exists for: each number is what the flat list
@@ -137,10 +156,10 @@ describe('SqliteFindingsRepository.findingsOverview', () => {
     ]
   >([
     ['findings', {}],
-    ['openCritical', { severity: ['critical'], status: ['open'] }],
     ['open', { status: ['open'] }],
     ['handled', { status: ['handled'] }],
     ['resolved', { status: ['resolved'] }],
+    ['dismissed', { status: ['dismissed'] }],
   ])('%s equals the flat list total for that filter', async ([field, query]) => {
     seedStraddlingFixture();
 
@@ -173,10 +192,10 @@ describe('SqliteFindingsRepository.findingsOverview', () => {
   it('reads all zeros from an empty store', async () => {
     expect(await db.findings.findingsOverview()).toEqual({
       findings: 0,
-      openCritical: 0,
       open: 0,
       handled: 0,
       resolved: 0,
+      dismissed: 0,
     });
   });
 });

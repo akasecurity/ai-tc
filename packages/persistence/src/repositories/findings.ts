@@ -1073,28 +1073,29 @@ export class SqliteFindingsRepository
    * listFindingInstances totals for the same filters — see FindingsOverview.
    *
    * ONE grouped aggregate whose keys are the raw classifier inputs, not the
-   * answers: the statement groups by severity and the three inputs
-   * deriveFindingStatus reads, and each group is then classified here by that
-   * same function. So SQL never restates the status rule, and the strip cannot
-   * disagree with the list about which finding is open, handled or resolved.
-   * The group count is bounded by the vocabularies (severities × a handful of
-   * status inputs), not by the store, so only the scan grows with it — the same
-   * linear cost every other unscoped read on the page already pays.
+   * answers: the statement groups by the three inputs deriveFindingStatus
+   * reads, and each group is then classified here by that same function. So
+   * SQL never restates the status rule, and the strip cannot disagree with the
+   * list about which status a finding has. The group count is bounded by a
+   * handful of status inputs, not by the store, so only the scan grows with it
+   * — the same linear cost every other unscoped read on the page already pays.
+   *
+   * The definitions join selects nothing. It is there because the list's scan
+   * joins it too, so a finding whose definition row is missing is left out of
+   * both rather than counted here and absent there.
    *
    * The latest-resolution join is the derived-table form, which
    * resolution-sql.ts recommends for an aggregate over many findings.
    */
   findingsOverview(): Promise<FindingsOverview> {
     const rows = allRows<{
-      severity: string;
       kind: string;
       keyed: number;
       latest_status: string | null;
       c: number;
     }>(
       this.db.prepare(
-        `SELECT d.severity AS severity,
-                e.event_type AS kind, (f.finding_key IS NOT NULL) AS keyed,
+        `SELECT e.event_type AS kind, (f.finding_key IS NOT NULL) AS keyed,
                 latest.status AS latest_status, count(*) AS c
            FROM inspection_findings f
            JOIN audit_events e ON e.id = f.audit_event_id
@@ -1102,17 +1103,19 @@ export class SqliteFindingsRepository
            LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
              ON latest.finding_key = f.finding_key
           WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
-          GROUP BY d.severity, e.event_type, keyed, latest.status`,
+          GROUP BY e.event_type, keyed, latest.status`,
       ),
     );
 
-    const overview: FindingsOverview = {
-      findings: 0,
-      openCritical: 0,
+    // Keyed by every status, so a status added to the vocabulary is a compile
+    // error here rather than a finding the strip silently counts nowhere.
+    const byStatus: Record<FindingStatus, number> = {
       open: 0,
       handled: 0,
       resolved: 0,
+      dismissed: 0,
     };
+    let findings = 0;
     for (const row of rows) {
       const status = deriveFindingStatus({
         kind: row.kind,
@@ -1122,13 +1125,10 @@ export class SqliteFindingsRepository
         findingKey: row.keyed ? 'keyed' : null,
         latestResolutionStatus: row.latest_status,
       });
-      overview.findings += row.c;
-      if (status === 'open') overview.open += row.c;
-      if (status === 'open' && row.severity === 'critical') overview.openCritical += row.c;
-      if (status === 'handled') overview.handled += row.c;
-      if (status === 'resolved') overview.resolved += row.c;
+      findings += row.c;
+      byStatus[status] += row.c;
     }
-    return Promise.resolve(overview);
+    return Promise.resolve({ findings, ...byStatus });
   }
 
   healthSummary(): Promise<HealthSummary> {

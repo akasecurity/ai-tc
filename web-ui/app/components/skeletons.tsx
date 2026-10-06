@@ -71,7 +71,7 @@ export function TableSkeleton({ rows = 8 }: { rows?: number }) {
 
 /**
  * The compact single-Card summary strip (SummaryStripView), as Activity,
- * Detections and Policies head their master/detail with. `h-12.5` is that
+ * Detections, Findings and Policies head their pages with. `h-12.5` is that
  * Card's box exactly — 1px border + py-2.5 + a size-7 icon tile + py-2.5 + 1px
  * border = 50px — so nothing shifts on reveal. It carries the strip's own
  * default `mb-3` for the same reason: the gap under the two has to match, and a

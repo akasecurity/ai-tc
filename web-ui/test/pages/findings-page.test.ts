@@ -526,10 +526,8 @@ describe('findings page — the Deployment controls', () => {
 // view gets the same numbers, and a filter or window that empties the list
 // leaves them where they were.
 describe('findings page — the summary strip', () => {
-  // The straddling fixture is three in-flight findings, two of them critical,
-  // all born handled — so none is open, and neither critical one is an open
-  // critical.
-  const WHOLE_STORE = { findings: 3, openCritical: 0, open: 0, handled: 3, resolved: 0 };
+  // The straddling fixture is three in-flight findings, all born handled.
+  const WHOLE_STORE = { findings: 3, open: 0, handled: 3, resolved: 0, dismissed: 0 };
 
   it('hands every view the same whole-store counts', async () => {
     seedStraddlingFixture();
@@ -561,10 +559,10 @@ describe('findings page — the summary strip', () => {
   it('reads all zeros from an empty store', async () => {
     expect((await renderPage()).overview).toEqual({
       findings: 0,
-      openCritical: 0,
       open: 0,
       handled: 0,
       resolved: 0,
+      dismissed: 0,
     });
   });
 });

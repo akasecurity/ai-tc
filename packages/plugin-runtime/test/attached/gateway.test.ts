@@ -2709,6 +2709,30 @@ describe('recordProjectEgress holds a register to every repository nested in it'
     expect(await requestSent({ nestedScopeKeys: [OUT, undefined] })).toBe(plain);
     expect(await requestSent(unreadable)).toBe(plain);
   });
+
+  it.each([
+    ['a machine attachment', MACHINE],
+    ['a scoped attachment', SCOPED_WITH_SHARED],
+  ] as const)(
+    'writes the register to the local store alone, with %s: the context never reaches it',
+    async (_label, attachment) => {
+      // The local store's write takes the register and nothing else. Its
+      // argument list is recorded as the fake received it, so a context handed
+      // down along with the register shows up here as a second argument.
+      // Held in a local, as elsewhere in this file, for the unbound-method rule.
+      const recordProjectEgress = vi.fn<DataGateway['recordProjectEgress']>(() =>
+        Promise.resolve(LOCAL_SUMMARY),
+      );
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const { gateway } = build({ attachment, local: makeLocal(calls, { recordProjectEgress }) });
+
+      await gateway.recordProjectEgress(enrolledScan(), { nestedScopeKeys: [SHARED] });
+
+      expect(recordProjectEgress.mock.calls).toHaveLength(1);
+      const args: readonly unknown[] = recordProjectEgress.mock.calls[0] ?? [];
+      expect(args).toEqual([enrolledScan()]);
+    },
+  );
 });
 
 describe('getPolicyBundle merges the tenant bundle raise-only', () => {

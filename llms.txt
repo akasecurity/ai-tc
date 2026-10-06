@@ -33,7 +33,7 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 - [How it works](https://akasecurity.github.io/ai-tc-docs/getting-started/how-it-works/): The control point and the path an event takes through it.
 - [Architecture overview](https://akasecurity.github.io/ai-tc-docs/architecture/overview/): How the plugin, detection engine, and local SQLite store fit together.
 - [Writing rules](https://akasecurity.github.io/ai-tc-docs/rules/writing-rules/): Authoring a detection rule and its fixtures.
-- [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md): The store's threat model and private vulnerability reporting.
+- [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md): The store's threat model and how to report a vulnerability.
 - [CONTRIBUTING.md](https://github.com/akasecurity/ai-tc/blob/main/CONTRIBUTING.md): Branch-and-PR workflow, commit convention, and the test suite.
 
 ## Repository layout

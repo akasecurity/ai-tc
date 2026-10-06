@@ -10,8 +10,6 @@
 //
 // Kept free of I/O and hook wiring so it can be unit-tested (hook entry modules
 // run main() on import and hang vitest collection).
-import type { KeyAnnotation } from './credential-key-hint.ts';
-import { annotateBareValue, credentialKeyFromInput } from './credential-key-hint.ts';
 import type { PathSegment } from './paths.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
 
@@ -24,12 +22,6 @@ export interface ScannableResponseField {
    * longer string (see RESPONSE_CHUNK_CHARS). Absent means the whole string.
    */
   range?: { start: number; end: number };
-  /**
-   * Set when the text is one bare credential value that the tool's input
-   * named (see credential-key-hint.ts): the scan sees it wrapped as
-   * `key: "value"` and the rewrite is unwrapped again.
-   */
-  annotation?: KeyAnnotation;
 }
 
 // Which fields of each tool's structured response carry text the model will
@@ -179,28 +171,7 @@ function mcpResponseFields(response: unknown): ScannableResponseField[] {
 export function scannableResponseFields(
   toolName: string,
   response: unknown,
-  toolInput?: unknown,
 ): ScannableResponseField[] {
-  return annotateBareCredentials(toolName, toolInput, responseFields(toolName, response));
-}
-
-// Marks each unchunked field that holds a single bare credential value when the
-// tool's input names a credential key. Everything else passes through as is.
-function annotateBareCredentials(
-  toolName: string,
-  toolInput: unknown,
-  fields: ScannableResponseField[],
-): ScannableResponseField[] {
-  const key = credentialKeyFromInput(toolName, toolInput);
-  if (key === undefined) return fields;
-  return fields.map((field) => {
-    if (field.range !== undefined) return field;
-    const annotation = annotateBareValue(key, field.text);
-    return annotation === undefined ? field : { ...field, annotation };
-  });
-}
-
-function responseFields(toolName: string, response: unknown): ScannableResponseField[] {
   if (typeof response === 'string') {
     const bounded = new BoundedFields();
     if (response !== '') bounded.add([], response);

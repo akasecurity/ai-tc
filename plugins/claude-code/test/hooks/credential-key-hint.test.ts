@@ -1,4 +1,3 @@
-import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { scanText } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
@@ -8,9 +7,6 @@ import {
   credentialKeyFromInput,
   unannotatedText,
 } from '../../src/hooks/credential-key-hint.ts';
-import type { FieldTokenizer } from '../../src/hooks/pre-tool-use-decision.ts';
-import { scanResponseFields } from '../../src/hooks/scan-response.ts';
-import { scannableResponseFields } from '../../src/hooks/tool-response.ts';
 
 // Fake values only: random-looking, belonging to no real system.
 const HEX = 'a3f9c27d81b4e605d9f2a7c13e8b4056f1d7a29c8e3b60f4d5a1c97e2b8f3d60';
@@ -185,195 +181,11 @@ describe('annotateBareValue', () => {
   });
 });
 
-describe('scannableResponseFields with a tool input', () => {
-  it('annotates a stdout that is one bare value under a named key', () => {
-    const fields = scannableResponseFields(
-      'Bash',
-      { stdout: `${HEX}\n`, stderr: '' },
-      bash('jq -r .auth.secret_key settings.json'),
-    );
-    expect(fields).toHaveLength(1);
-    expect(fields[0]?.annotation?.prefix).toBe('secret_key: "');
-  });
-
-  it('leaves a field alone when the command names no key', () => {
-    const [field] = scannableResponseFields(
-      'Bash',
-      { stdout: `${HEX}\n`, stderr: '' },
-      bash('sha256sum build.tar'),
-    );
-    expect(field?.annotation).toBeUndefined();
-  });
-
-  it('leaves multi-line output alone', () => {
-    const [field] = scannableResponseFields(
-      'Bash',
-      { stdout: `${HEX}\n${HEX}\n`, stderr: '' },
-      bash('jq -r .auth.secret_key settings.json'),
-    );
-    expect(field?.annotation).toBeUndefined();
-  });
-});
-
-// The capture stand-in runs the real bundled packs: a Redact policy rewrites
-// every finding, a Warn policy reports them and rewrites nothing.
-function capture(policy: 'redact' | 'warn'): (text: string) => Promise<CaptureResult> {
-  return (text) => {
-    const { masked, findings } = scanText(text);
-    const matches: CaptureResult['findings'] = findings.map((f) => ({
-      ruleId: f.ruleId,
-      category: f.category,
-      severity: f.severity,
-      span: f.span,
-      rawMatch: text.slice(f.span.start, f.span.end),
-      confidence: f.confidence,
-    }));
-    if (matches.length === 0) return Promise.resolve({ action: 'log', text: null, findings: [] });
-    return Promise.resolve(
-      policy === 'redact'
-        ? { action: 'redact', text: masked, findings: matches, enforcedFindings: matches }
-        : { action: 'warn', text: null, findings: matches },
-    );
-  };
-}
-
-async function runBash(
-  command: string,
-  stdout: string,
-  policy: 'redact' | 'warn',
-): ReturnType<typeof scanResponseFields> {
-  const response = { stdout, stderr: '' };
-  const fields = scannableResponseFields('Bash', response, bash(command));
-  return scanResponseFields('Bash', response, fields, capture(policy));
-}
-
-describe('a tokenized annotated field', () => {
-  const POINTER = '[[aka:secret:abc.def]]';
-
-  it('puts the pointer where the bare value was and leaks no wrapper', async () => {
-    const seen: string[] = [];
-    // A tokenizer stand-in: replaces the union of the enforced spans in the text
-    // it is given (the annotated scan text) with a pointer.
-    const tokenizeField: FieldTokenizer = (text, findings) => {
-      seen.push(text);
-      const start = Math.min(...findings.map((f) => f.span.start));
-      const end = Math.max(...findings.map((f) => f.span.end));
-      return Promise.resolve({
-        text: `${text.slice(0, start)}${POINTER}${text.slice(end)}`,
-        pointers: [POINTER],
-        degraded: [],
-      });
-    };
-    const response = { stdout: `${HEX}\n`, stderr: '' };
-    const fields = scannableResponseFields(
-      'Bash',
-      response,
-      bash('jq -r .auth.secret_key settings.json'),
-    );
-    expect(fields[0]?.annotation).toBeDefined();
-    const outcome = await scanResponseFields(
-      'Bash',
-      response,
-      fields,
-      capture('redact'),
-      tokenizeField,
-    );
-    expect(seen).toEqual([`secret_key: "${HEX}"\n`]);
-    const { stdout } = outcome.updated as { stdout: string };
-    expect(stdout).toBe(`${POINTER}\n`);
-    expect(stdout).not.toContain('secret_key');
-    expect(stdout).not.toContain(HEX);
-    expect(outcome.realized?.pointers.map((p) => p.token)).toEqual([POINTER]);
-  });
-});
-
-describe('the issue case, end to end through the response scan', () => {
-  const json = `{\n  "auth": {\n    "secret_key": "${HEX}"\n  }\n}\n`;
-
-  it('masks the nested JSON value under Redact', async () => {
-    const outcome = await runBash('jq . settings.json', json, 'redact');
-    const { stdout } = outcome.updated as { stdout: string };
-    expect(stdout).not.toContain(HEX);
-    expect(stdout).toContain('"secret_key"');
-    expect(outcome.redactedFindings.length).toBeGreaterThan(0);
-  });
-
-  it('flags the nested JSON value under Warn', async () => {
-    const outcome = await runBash('jq . settings.json', json, 'warn');
-    expect(outcome.warnedFindings.map((f) => f.ruleId)).toContain(
-      'secrets-infra/secret-config-value',
-    );
-  });
-
-  it('masks the bare jq -r value under Redact, keeping the newline', async () => {
-    const outcome = await runBash('jq -r .auth.secret_key settings.json', `${HEX}\n`, 'redact');
-    const { stdout } = outcome.updated as { stdout: string };
-    expect(stdout).not.toContain(HEX);
-    expect(stdout).toBe('[REDACTED:SECRET]\n');
-  });
-
-  it('flags the bare jq -r value under Warn', async () => {
-    const outcome = await runBash('jq -r .auth.secret_key settings.json', `${HEX}\n`, 'warn');
-    expect(outcome.warnedFindings.map((f) => f.ruleId)).toContain(
-      'secrets-infra/secret-config-value',
-    );
-  });
-
-  it('masks a bare base64 value read from an environment variable', async () => {
-    const outcome = await runBash('echo "$SERVICE_API_KEY"', `${BASE64}\n`, 'redact');
-    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
-  });
-
-  it('does not touch the same bare value when the command names no key', async () => {
-    const outcome = await runBash('sha256sum release.tar', `${HEX}\n`, 'redact');
-    expect(outcome.redactedFindings).toEqual([]);
-    expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
-  });
-
-  it('masks a bare value read through a deep jq path, with the two rules that read it', async () => {
-    const outcome = await runBash(
-      'jq -r .models.local.auth_cfg.server.secret_key settings.json',
-      `${HEX}\n`,
-      'redact',
-    );
-    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
-    // Two rules read this value (coverage over de-duplication); redaction folds
-    // their identical spans into one, which the exact output above shows.
-    expect(outcome.redactedFindings.map((f) => f.ruleId).sort()).toEqual([
-      'secrets-infra/generic-high-entropy-secret',
-      'secrets-infra/secret-config-value',
-    ]);
-  });
-
-  it('does not mask a commit hash printed after a command that merely mentions a token path', async () => {
-    for (const command of [
-      'cd ~/src/token && git rev-parse HEAD',
-      'git log -1 --format=%H -- src/auth/token',
-      'npm view jsonwebtoken dist.shasum',
-      'git log --grep=secret_key --format=%H',
-      'git commit -m "add token"',
-      'npm view my-token dist.shasum',
-      'gh pr list --label=api_key',
-    ]) {
-      const outcome = await runBash(command, `${HEX}\n`, 'redact');
-      expect(outcome.redactedFindings, command).toEqual([]);
-      expect((outcome.updated as { stdout: string }).stdout).toBe(`${HEX}\n`);
-    }
-  });
-
-  it.each([
-    'cat /run/secrets/master_key',
-    'jq -r .master_key config.json',
-    'echo $PASSPHRASE',
-    'cat /run/secrets/license_key',
-    'cat /run/secrets/passcode',
-  ])('masks a bare value printed by %s', async (command) => {
-    const outcome = await runBash(command, `${HEX}\n`, 'redact');
-    expect((outcome.updated as { stdout: string }).stdout).toBe('[REDACTED:SECRET]\n');
-  });
-
-  it('does not touch a bare count under a look-alike key', async () => {
-    const outcome = await runBash('jq -r .max_tokens settings.json', '4096\n', 'redact');
-    expect(outcome.redactedFindings).toEqual([]);
+describe('the annotated text, scanned with the shipped rules', () => {
+  it('a bare value is not found, and the same value under its key name is', () => {
+    expect(scanText(`${HEX}\n`).findings).toHaveLength(0);
+    const annotation = annotateBareValue('secret_key', `${HEX}\n`);
+    if (!annotation) throw new Error('expected an annotation');
+    expect(scanText(annotatedText(`${HEX}\n`, annotation)).findings.length).toBeGreaterThan(0);
   });
 });

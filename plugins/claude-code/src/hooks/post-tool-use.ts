@@ -54,11 +54,10 @@ async function main(): Promise<void> {
   // matcher doesn't know), fall back to the other, which the old string-only
   // code scanned whenever tool_response wasn't a usable string.
   let response = input.tool_response ?? input.tool_output;
-  const toolInput = input.tool_input;
-  let fields = scannableResponseFields(toolName, response, toolInput);
+  let fields = scannableResponseFields(toolName, response);
   if (fields.length === 0 && input.tool_output !== undefined && response !== input.tool_output) {
     response = input.tool_output;
-    fields = scannableResponseFields(toolName, response, toolInput);
+    fields = scannableResponseFields(toolName, response);
   }
   if (fields.length === 0) return;
 

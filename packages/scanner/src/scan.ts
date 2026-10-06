@@ -330,10 +330,27 @@ async function scanDir(
     ? startEgress(rootDir)
     : null;
 
-  // The scope key lookup for this root's captures. One per call, so its memory
-  // belongs to this root alone, and it reads nothing until a file reaches
-  // capture (./scope-key.ts).
+  // The scope key lookups for this root (./scope-key.ts). One per call, so what
+  // it remembers belongs to this root alone, and it reads nothing until it is
+  // asked. It feeds two things: the key stamped on each file that reaches
+  // capture (called as `scopeKeyOf(path)`, which climbs to the repository
+  // holding the file), and the keys of the repositories nested in this root,
+  // which a gateway reads beside the register (`scopeKeyOf.ofRepositoryRoot`,
+  // see commitEgress).
   const scopeKeyOf = scopeKeysUnder(rootDir);
+
+  // Told every directory below the root, by either walk, that holds a `.git`
+  // entry: ONE collector, passed to the source walk below and to the manifest
+  // walk (scanManifests). The two can list different directories. The manifest
+  // walk takes none of the host's excludePatterns, so it lists directories
+  // those patterns narrow away; the source walk takes them, and a `!` negation
+  // among them can send it into a directory the manifest walk skips. The nested
+  // roots are the union, whatever the host's patterns. A directory both walks
+  // listed is collected twice and de-duplicated when its key is built. With no
+  // register there is nothing to collect for.
+  const noteNestedRoot = (relativeDir: string): void => {
+    egress?.nestedRoots.push(relativeDir);
+  };
 
   // Tier-1 skip, before the file is even read: same path + mtime as the ledger
   // means unchanged since the last scan under this ruleset. Composed with any
@@ -351,15 +368,7 @@ async function scanDir(
     ...opts,
     rootDir,
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
-    // The source walk reports the repositories it passes through too (the
-    // manifest walk does the same, see scanManifests), because the two can list
-    // different directories. With no register there is nobody to tell.
-    onRepositoryRoot:
-      egress === null
-        ? undefined
-        : (relativeDir) => {
-            egress.nestedRoots.push(relativeDir);
-          },
+    onRepositoryRoot: noteNestedRoot,
   })) {
     const hash = contentHashOf(file.content);
     const ledgerEntry: ScanLedgerEntry = {
@@ -454,7 +463,7 @@ async function scanDir(
   // Dependency manifests carry SDK evidence but no source extension, so the
   // source walk never yields them. They are ledgered exactly like walked files
   // and never go through capture — they are egress evidence, not code to scan.
-  if (egress) scanManifests(egress, ledger, updates, rootDir);
+  if (egress) scanManifests(egress, ledger, updates, rootDir, noteNestedRoot);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
   if (egress) {
@@ -501,20 +510,13 @@ function scanManifests(
   ledger: LedgerContext,
   updates: ScanLedgerEntry[],
   rootDir: string,
+  onRepositoryRoot: (relativeDir: string) => void,
 ): void {
-  // The manifest walk reports the repositories nested below the root, and so
-  // does the source walk (see scanDir): the nested roots are the union of the
-  // two. Neither is the wider one. This walk takes none of the host's
-  // excludePatterns, so it lists directories those patterns narrow away; the
-  // source walk takes them, and a `!` negation among them can send it into a
-  // directory this walk skips. Both list directories whether or not anything
-  // under them changed, so a nested repository is reported because the scan
-  // passed through it, not because this run happened to re-read one of its
-  // files.
-  const nestedRoot = (relativeDir: string): void => {
-    egress.nestedRoots.push(relativeDir);
-  };
-  for (const manifest of collectManifests(rootDir, undefined, nestedRoot)) {
+  // This walk lists directories whether or not anything under them changed, so a
+  // nested repository is reported because the scan passed through it, not
+  // because this run happened to re-read one of its files. `onRepositoryRoot` is
+  // the collector the source walk reports to as well (see scanDir).
+  for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot)) {
     const prev = ledger.previous.get(manifest.path);
     if (prev?.mtime === manifest.mtime) continue;
 

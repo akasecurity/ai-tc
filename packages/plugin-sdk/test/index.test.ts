@@ -157,7 +157,6 @@ const PUBLIC_VALUE_EXPORTS = [
   'hostVersionFromRecord',
   'hostVersionFromTranscript',
   'isCurrentKeyVersion',
-  'isHighEntropy',
   'isModelProhibited',
   'isVendoredPath',
   'loadConfig',

@@ -201,7 +201,7 @@ export type {
   CaptureInput,
   CaptureResult,
 } from './types.ts';
-export { isHighEntropy, maskMatch } from '@akasecurity/detections';
+export { maskMatch } from '@akasecurity/detections';
 // The read-time token cost/rollup logic moved to `@akasecurity/schema` (pure, no
 // Node-API deps) so the OSS Activity surfaces + CLI/TUI can price tokens without
 // importing the plugin SDK. Re-exported here so existing plugin/runtime callers

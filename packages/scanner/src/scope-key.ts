@@ -94,23 +94,23 @@ export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
   // Does not use `keyByDir`: an entry there can be an ANCESTOR's key. A climb
   // that starts below a directory whose `.git` is not usable stores the
   // enclosing repository's key for that directory too, which is the answer this
-  // lookup must never give. What it shares with the climbing lookup is the
-  // resolver's own per-directory memory, which both of them reach only after
-  // seeing the `.git` exist, so a nested repository that captures already
-  // resolved costs nothing more.
+  // lookup must never give. It does not use the resolver's own per-directory
+  // memory either (`cache: false`): that memory is keyed by the directory's
+  // NAME, so an answer given while the directory was an ordinary one inside the
+  // checkout is the checkout's, and would be handed back as this directory's own
+  // once a repository is made there. The price is one read of each reported root
+  // when a gateway asks for the keys, which happens at most once per scan.
   const ofRepositoryRoot = (relativeDir: string): string | undefined => {
     const root = join(base, relativeDir);
     const dotGit = join(root, '.git');
     if (!existsSync(dotGit)) return undefined;
-    const key = resolveRepoAttribution(root).scopeKey;
+    const key = resolveRepoAttribution(root, { cache: false }).scopeKey;
     // Checked again AFTER the read. The resolver climbs when `root` has no
     // `.git`, so a `.git` removed between the check above and the read would
-    // answer with the enclosing repository's key. The resolver does not say
-    // which root it answered for, so this is how a read that lost that race is
-    // told apart from one that did not: the key stands only if the `.git` it was
-    // read under is still there. (A read that did lose the race leaves the
-    // resolver's memory holding the enclosing answer for this directory; the
-    // window is the length of one config read.)
+    // answer with the enclosing repository's key, and the resolver does not say
+    // which root it answered for. The key stands only if the `.git` it was read
+    // under is still there. What this cannot see is a `.git` removed and
+    // recreated between the two checks.
     return existsSync(dotGit) ? key : undefined;
   };
 

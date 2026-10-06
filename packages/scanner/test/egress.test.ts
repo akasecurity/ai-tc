@@ -15,7 +15,13 @@ import type {
   ProjectEgressContext,
   RecordProjectEgressInput,
 } from '@akasecurity/plugin-sdk';
-import { loadConfig, manifestKindOf, resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
+import {
+  loadConfig,
+  manifestKindOf,
+  resolveNonGitProject,
+  resolveRepoAttribution,
+  toPosix,
+} from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scanWorktree } from '../src/scan.ts';
@@ -728,6 +734,23 @@ describe('scanWorktree — repositories nested in the scanned project', () => {
     rmSync(join(repo, 'tools', 'mine', '.git'), { recursive: true, force: true });
 
     expect(nestedKeysOfLastCall()).toEqual([undefined]);
+  });
+
+  it('keys a nested clone by its own remote though the resolver once answered for that directory when it was not a repository', async () => {
+    // The resolver remembers each directory it has answered for, for the life of
+    // the process. Asked about `tools/mine` while it was an ordinary directory
+    // of the checkout, it remembered the checkout's own answer under that name.
+    // The directory then became a clone with a different remote. Its key is the
+    // clone's, read now, never what the resolver remembered for the name.
+    const dir = join(repo, 'tools', 'mine');
+    mkdirSync(dir, { recursive: true });
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/acme/payments-api');
+    gitRepo(dir, PERSONAL_URL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
   });
 
   it('reports a repository only the source walk reaches, when the host re-includes a skipped directory', async () => {

@@ -581,11 +581,12 @@ async function commitEgress(
         // without climbing. A nested directory whose `.git` is a link to
         // nowhere, or is gone by the time a gateway asks, is `undefined` here
         // rather than the key of the repository around it; so is a nested
-        // repository with no forge remote. A root this scan's captures
-        // already resolved costs nothing more. Always a list, even an empty
-        // one: a scoped gateway reads a missing list as a register nobody
-        // vouched for. The repository lookups it makes do not throw on these
-        // inputs, and the gateway reads any throw in this read as local anyway.
+        // repository with no forge remote. Each root is read fresh, never from
+        // the resolver's memory of an earlier answer for that directory. Always
+        // a list, even an empty one: a scoped gateway reads a missing list as a
+        // register nobody vouched for. The repository lookups it makes do not
+        // throw on these inputs, and the gateway reads any throw in this read as
+        // local anyway.
         //
         // A getter, memoized: only a gateway that reads the list causes a
         // repository read. The standalone gateway ignores it, and a

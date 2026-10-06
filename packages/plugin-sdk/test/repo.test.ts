@@ -203,6 +203,28 @@ describe('resolveRepoAttribution', () => {
     expect(resolveRepoAttribution(root)).toEqual({});
   });
 
+  it('with { cache: false } answers from disk now, not from what it remembered', () => {
+    const dir = repoAt('uncached-read', ORIGIN('https://github.com/org/first.git'));
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/first');
+
+    writeFileSync(join(dir, '.git', 'config'), ORIGIN('https://github.com/org/second.git'));
+
+    expect(resolveRepoAttribution(dir, { cache: false }).scopeKey).toBe('github.com/org/second');
+    // The remembered answer is untouched: the opt-out did not write either.
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/first');
+  });
+
+  it('with { cache: false } leaves nothing remembered', () => {
+    const dir = repoAt('uncached-write', ORIGIN('https://github.com/org/first.git'));
+    expect(resolveRepoAttribution(dir, { cache: false }).scopeKey).toBe('github.com/org/first');
+
+    writeFileSync(join(dir, '.git', 'config'), ORIGIN('https://github.com/org/second.git'));
+
+    // The first call of the ordinary form for this directory. Had the opt-out
+    // remembered its answer, this would read that answer back.
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/second');
+  });
+
   it('gives the slug and the canonical key of the origin remote', () => {
     const dir = repoAt('scp', ORIGIN(`${gitUser}github.com:org/payments-api.git`));
     expect(resolveRepoAttribution(dir)).toEqual({

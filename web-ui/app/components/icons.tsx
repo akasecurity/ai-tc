@@ -4,9 +4,11 @@ import type { IconComponent } from '@akasecurity/dashboard-ui';
 // re-declared) so the AppShell keeps a single import site and the SVG paths live
 // in one place.
 export {
+  AlertIcon,
   AlertOctagonIcon,
   BoltIcon,
   BracesIcon,
+  CheckCircleIcon,
   ExternalShareIcon,
   LayersIcon,
   LockIcon,

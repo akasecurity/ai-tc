@@ -318,6 +318,32 @@ export const FindingStats = z
   .meta({ id: 'FindingStats' });
 export type FindingStats = z.infer<typeof FindingStats>;
 
+// FindingsOverview: the Findings page's summary strip — whole-store counts,
+// untouched by the page's filters, range and session scope.
+//
+// Every field counts FINDINGS, the unit the flat list counts, and each one is
+// exactly the `totals.findings` that list reports for the same filters:
+// `openCritical` is `?view=flat&severity=critical&status=open`, `open` is
+// `&status=open`, `handled` is `&status=handled`, `resolved` is
+// `&status=resolved`. That is what lets a number on the strip and the list it
+// heads be compared at all.
+//
+// `openCritical` is not `healthSummary`'s critical count, though both are
+// called open. That one counts every finding not resolved, which includes the
+// handled in-flight findings and the dismissed ones; this one counts only what
+// the list's Open status shows.
+export const FindingsOverview = z
+  .object({
+    findings: z.number().int().nonnegative(),
+    openCritical: z.number().int().nonnegative(),
+    open: z.number().int().nonnegative(),
+    handled: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+  })
+  .strict()
+  .meta({ id: 'FindingsOverview' });
+export type FindingsOverview = z.infer<typeof FindingsOverview>;
+
 export const FindingFacetItem = z
   .object({
     value: z.string(),

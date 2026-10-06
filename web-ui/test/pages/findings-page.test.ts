@@ -520,3 +520,51 @@ describe('findings page — the Deployment controls', () => {
     expect((await renderLocations()).deployment).toEqual({ canRetry: false });
   });
 });
+
+// The summary strip is whole-store on purpose: the tally in the page head
+// follows the filters, and the strip is the fixed reference beside it. So every
+// view gets the same numbers, and a filter or window that empties the list
+// leaves them where they were.
+describe('findings page — the summary strip', () => {
+  // The straddling fixture is three in-flight findings, two of them critical,
+  // all born handled — so none is open, and neither critical one is an open
+  // critical.
+  const WHOLE_STORE = { findings: 3, openCritical: 0, open: 0, handled: 3, resolved: 0 };
+
+  it('hands every view the same whole-store counts', async () => {
+    seedStraddlingFixture();
+
+    expect((await renderPage()).overview).toEqual(WHOLE_STORE);
+    expect((await renderView('flat', { view: 'flat' })).overview).toEqual(WHOLE_STORE);
+    expect((await renderLocations()).overview).toEqual(WHOLE_STORE);
+  });
+
+  it('is not narrowed by a filter, a window or a session', async () => {
+    seedStraddlingFixture();
+
+    // Each of these narrows the list itself, asserted first so the strip
+    // staying put is not simply the list staying put too.
+    const severity = await renderView('flat', { view: 'flat', severity: 'low' });
+    expect(severity.flat.totals.findings).toBe(1);
+    expect(severity.overview).toEqual(WHOLE_STORE);
+
+    // The fixture is dated January 2026, outside any recent window.
+    const windowed = await renderPage({ range: '7d' });
+    expect(windowed.types.totals.findings).toBe(0);
+    expect(windowed.overview).toEqual(WHOLE_STORE);
+
+    const session = await renderLocations({ session: 'no-such-session' });
+    expect(session.locations.totals.findings).toBe(0);
+    expect(session.overview).toEqual(WHOLE_STORE);
+  });
+
+  it('reads all zeros from an empty store', async () => {
+    expect((await renderPage()).overview).toEqual({
+      findings: 0,
+      openCritical: 0,
+      open: 0,
+      handled: 0,
+      resolved: 0,
+    });
+  });
+});

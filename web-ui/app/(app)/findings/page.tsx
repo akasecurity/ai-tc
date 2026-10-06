@@ -102,6 +102,9 @@ export default async function FindingsPage({
   // An absent/unknown range means all time — this list has never had a default
   // window, and applying one silently would hide findings.
   const from = range ? rangeToFromIso(range, renderedAt) : null;
+  // Whole-store, so it is read once here and handed to every view unchanged.
+  const overview = await db().findings.findingsOverview();
+
   const scope: FindingsScope = {
     ...(from ? { from } : {}),
     ...(tools.length ? { tools } : {}),
@@ -127,6 +130,7 @@ export default async function FindingsPage({
         file={file}
         renderedAt={renderedAt}
         deployment={deployment}
+        overview={overview}
       />
     );
   }
@@ -203,6 +207,7 @@ export default async function FindingsPage({
         file={file}
         renderedAt={renderedAt}
         deployment={deployment}
+        overview={overview}
       />
     );
   }
@@ -276,6 +281,7 @@ export default async function FindingsPage({
       file={file}
       renderedAt={renderedAt}
       deployment={deployment}
+      overview={overview}
     />
   );
 }

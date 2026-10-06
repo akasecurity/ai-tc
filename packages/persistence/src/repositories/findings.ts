@@ -6,6 +6,7 @@ import type {
   FindingGroupAggregate,
   FindingInstanceDetail,
   FindingLocationSummary,
+  FindingsOverview,
   FindingStatus,
   FindingTypeSummary,
   FindingView,
@@ -1064,6 +1065,70 @@ export class SqliteFindingsRepository
         },
       ]),
     );
+  }
+
+  /**
+   * The Findings page's summary strip: whole-store counts over exactly the rows
+   * the instance reads list (the four capture kinds), each equal to what
+   * listFindingInstances totals for the same filters — see FindingsOverview.
+   *
+   * ONE grouped aggregate whose keys are the raw classifier inputs, not the
+   * answers: the statement groups by severity and the three inputs
+   * deriveFindingStatus reads, and each group is then classified here by that
+   * same function. So SQL never restates the status rule, and the strip cannot
+   * disagree with the list about which finding is open, handled or resolved.
+   * The group count is bounded by the vocabularies (severities × a handful of
+   * status inputs), not by the store, so only the scan grows with it — the same
+   * linear cost every other unscoped read on the page already pays.
+   *
+   * The latest-resolution join is the derived-table form, which
+   * resolution-sql.ts recommends for an aggregate over many findings.
+   */
+  findingsOverview(): Promise<FindingsOverview> {
+    const rows = allRows<{
+      severity: string;
+      kind: string;
+      keyed: number;
+      latest_status: string | null;
+      c: number;
+    }>(
+      this.db.prepare(
+        `SELECT d.severity AS severity,
+                e.event_type AS kind, (f.finding_key IS NOT NULL) AS keyed,
+                latest.status AS latest_status, count(*) AS c
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+           LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+             ON latest.finding_key = f.finding_key
+          WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+          GROUP BY d.severity, e.event_type, keyed, latest.status`,
+      ),
+    );
+
+    const overview: FindingsOverview = {
+      findings: 0,
+      openCritical: 0,
+      open: 0,
+      handled: 0,
+      resolved: 0,
+    };
+    for (const row of rows) {
+      const status = deriveFindingStatus({
+        kind: row.kind,
+        // The classifier only asks whether a key exists, never what it is. The
+        // stand-in is non-empty so a truthiness test of the key reads it as
+        // present, exactly as it would a real one.
+        findingKey: row.keyed ? 'keyed' : null,
+        latestResolutionStatus: row.latest_status,
+      });
+      overview.findings += row.c;
+      if (status === 'open') overview.open += row.c;
+      if (status === 'open' && row.severity === 'critical') overview.openCritical += row.c;
+      if (status === 'handled') overview.handled += row.c;
+      if (status === 'resolved') overview.resolved += row.c;
+    }
+    return Promise.resolve(overview);
   }
 
   healthSummary(): Promise<HealthSummary> {

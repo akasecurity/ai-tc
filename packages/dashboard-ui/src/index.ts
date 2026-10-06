@@ -122,9 +122,11 @@ export { UserCell, UsersCell } from './findings/UserCell.tsx';
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).
 export {
+  AlertIcon,
   AlertOctagonIcon,
   BoltIcon,
   BracesIcon,
+  CheckCircleIcon,
   ExternalShareIcon,
   LayersIcon,
   LockIcon,

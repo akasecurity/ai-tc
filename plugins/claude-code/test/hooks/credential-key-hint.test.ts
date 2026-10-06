@@ -8,6 +8,7 @@ import {
   credentialKeyFromInput,
   unannotatedText,
 } from '../../src/hooks/credential-key-hint.ts';
+import type { FieldTokenizer } from '../../src/hooks/pre-tool-use-decision.ts';
 import { scanResponseFields } from '../../src/hooks/scan-response.ts';
 import { scannableResponseFields } from '../../src/hooks/tool-response.ts';
 
@@ -200,6 +201,46 @@ async function runBash(
   const fields = scannableResponseFields('Bash', response, bash(command));
   return scanResponseFields('Bash', response, fields, capture(policy));
 }
+
+describe('a tokenized annotated field', () => {
+  const POINTER = '[[aka:secret:abc.def]]';
+
+  it('puts the pointer where the bare value was and leaks no wrapper', async () => {
+    const seen: string[] = [];
+    // A tokenizer stand-in: replaces the union of the enforced spans in the text
+    // it is given (the annotated scan text) with a pointer.
+    const tokenizeField: FieldTokenizer = (text, findings) => {
+      seen.push(text);
+      const start = Math.min(...findings.map((f) => f.span.start));
+      const end = Math.max(...findings.map((f) => f.span.end));
+      return Promise.resolve({
+        text: `${text.slice(0, start)}${POINTER}${text.slice(end)}`,
+        pointers: [POINTER],
+        degraded: [],
+      });
+    };
+    const response = { stdout: `${HEX}\n`, stderr: '' };
+    const fields = scannableResponseFields(
+      'Bash',
+      response,
+      bash('jq -r .auth.secret_key settings.json'),
+    );
+    expect(fields[0]?.annotation).toBeDefined();
+    const outcome = await scanResponseFields(
+      'Bash',
+      response,
+      fields,
+      capture('redact'),
+      tokenizeField,
+    );
+    expect(seen).toEqual([`secret_key: "${HEX}"\n`]);
+    const { stdout } = outcome.updated as { stdout: string };
+    expect(stdout).toBe(`${POINTER}\n`);
+    expect(stdout).not.toContain('secret_key');
+    expect(stdout).not.toContain(HEX);
+    expect(outcome.realized?.pointers.map((p) => p.token)).toEqual([POINTER]);
+  });
+});
 
 describe('the issue case, end to end through the response scan', () => {
   const json = `{\n  "auth": {\n    "secret_key": "${HEX}"\n  }\n}\n`;

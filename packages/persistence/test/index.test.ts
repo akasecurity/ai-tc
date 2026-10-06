@@ -73,6 +73,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'canonicalRepoUrl',
   'capHits',
   'capWarnEraEnforcementOnce',
+  'captureBackfillScope',
   'captureId',
   'captureWireId',
   'classifiedDataId',

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  applyOnboarding,
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   openLocalDatabase,
@@ -1048,6 +1049,41 @@ describe('existing-history consent', () => {
     const db = openLocalDatabase(dataDirOf(base));
     try {
       expect(db.historySync.pendingCaptureRows(10, Date.now() + 1)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // This command writes a MACHINE credential, and a machine attachment's grant
+  // covers every capture: a stored scope (left by an earlier scoped attachment,
+  // or written by hand) does not narrow the backfill.
+  it('backfills every pre-existing capture on a machine attachment, whatever scope is stored', async () => {
+    seedCapture();
+    applyOnboarding(
+      {
+        attachmentScope: {
+          endpoint: ENDPOINT,
+          entries: [
+            {
+              kind: 'repo',
+              identity: 'github.com/acme/elsewhere',
+              enrolledAt: '2026-08-01T00:00:00.000Z',
+            },
+          ],
+        },
+      },
+      base,
+      // Unmanaged, stated rather than inherited, as `deps` does.
+      null,
+    );
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(db.historySync.pendingCaptureRows(10, Date.now() + 1).map((r) => r.id)).toEqual([
+        's-1-prompt',
+      ]);
     } finally {
       db.close();
     }

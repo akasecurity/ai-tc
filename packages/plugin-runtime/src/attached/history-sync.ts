@@ -10,18 +10,28 @@ import {
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type { RecordAuditEventRequest } from '@akasecurity/schema';
-import type { IngestEvent } from '@akasecurity/schema';
+import type {
+  AuditEventRow,
+  IngestEvent,
+  ResolvedAttachmentScope,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import {
+  attachmentModeOf,
   AUDIT_EVENT_BATCH_MAX,
   INGEST_BATCH_MAX,
   isAttached,
   isHistorySyncConsentValid,
+  resolveScope,
+  scopeFilterOf,
+  scopeVerdict,
 } from '@akasecurity/schema';
 
 import { rebuildCapture } from './capture-rebuild.ts';
 import { isForwardPaused, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
+import { withScopedRepo } from './scoped-repo.ts';
 
 /**
  * Longer than the transport's own 10s default, and longer than any hook budget.
@@ -308,6 +318,29 @@ export async function runHistorySync(
     const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
     if (!state.usable) return didNotRun('credential-unusable');
 
+    // WHAT THIS PASS MAY SEND, resolved from the settings read above and the
+    // credential just read. The mode lives on the credential (a machine
+    // credential is always 'machine'), the enrolled scope in settings, and the
+    // scope counts only for THIS connection's endpoint. Resolved, never trusted:
+    // an absent, garbled or foreign-endpoint scope resolves to no keys, and no
+    // keys is an empty filter that every scoped statement matches nothing with.
+    //
+    // A MACHINE ATTACHMENT IS UNTOUCHED. `scopeFilterOf` answers `undefined`
+    // there, which every ledger method reads as "run today's statement", so a
+    // machine pass issues the same SQL and sends the same bytes as before.
+    const mode = attachmentModeOf(state.credential);
+    const scopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>
+      resolveScope({ mode, scope: live.attachmentScope, endpoint: connection.endpoint });
+    const passScope = scopeOf(settings);
+    const passFilter = scopeFilterOf(passScope);
+    // The CAPTURE lane's scope, re-read from settings before every batch. A pass
+    // runs for up to two minutes, and an unenroll that lands inside it must take
+    // that repository out of the very next batch rather than the next pass: the
+    // user has just said those captures are not the deployment's. Machine mode
+    // has no scope to change, so it reads nothing.
+    const captureScope = (): ResolvedAttachmentScope =>
+      mode === 'machine' ? passScope : scopeOf(readWorkspaceSettings(deps.base));
+
     // READ-ONLY. A long-running child must never write the breaker: its view of
     // plane health would overwrite the hook path's, and the hook path is the one
     // a user is waiting on.
@@ -365,7 +398,9 @@ export async function runHistorySync(
       // Bounding the re-mark at the attach instant instead would silently
       // drop every live-path marker the machine wrote for B in that gap,
       // despite an explicit fresh grant covering it.
-      ledger.rearmFor(fingerprint, attachedAtMs, consentAcknowledgedAtMs);
+      // Scoped like the consent seed it repeats: on a scoped attachment the grant
+      // covers the enrolled repositories' backlog, not the machine's.
+      ledger.rearmFor(fingerprint, attachedAtMs, consentAcknowledgedAtMs, passFilter);
       backlogBefore = attachedAtMs;
     } else if (recorded.backlogBefore === undefined) {
       // The same deployment, with the boundary RELEASED — a detach happened and
@@ -468,6 +503,8 @@ export async function runHistorySync(
         budgetMs,
         pid,
         backlogBefore,
+        structuralFilter: passFilter,
+        captureScope,
       });
     } finally {
       ledger.release(pid);
@@ -522,6 +559,21 @@ interface DrainDeps {
   pid: number;
   /** Rows at or after this instant belong to the live path, not to this drain. */
   backlogBefore: number;
+  /**
+   * The STRUCTURAL lane's scope filter, resolved once at pass start: `undefined`
+   * on a machine attachment (today's statements), otherwise the enrolled keys,
+   * possibly none, which sends nothing. Once per pass, unlike the capture
+   * lane's: a structural row carries no prompt or reply text, and an unenroll
+   * that lands mid-pass reaches this lane at the next pass. Nothing out of scope
+   * is ever stamped, so nothing is lost by the wait.
+   */
+  structuralFilter: readonly string[] | undefined;
+  /**
+   * The CAPTURE lane's scope: re-resolved from live settings on every call on a
+   * scoped attachment, the pass-start scope on a machine one. Called before
+   * every batch and by both "is anything owed" probes.
+   */
+  captureScope: () => ResolvedAttachmentScope;
 }
 
 /**
@@ -585,13 +637,23 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     lastHeartbeat = at;
   };
 
+  /**
+   * Whether any capture is owed IN SCOPE, as one LIMIT 1 probe through the
+   * capture lane's own scope, so the probe and the lane agree about what is
+   * outstanding.
+   */
+  const capturesOwed = (): boolean => {
+    const filter = scopeFilterOf(d.captureScope());
+    return d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS, filter).length > 0;
+  };
+
   // The structural phase runs TWICE at most: once against its reserved slice, and
   // again against the full deadline if the capture lane finished early. See the
   // second call below for why.
   const drainStructural = async (until: number): Promise<HistorySyncOutcome> => {
     let stopped: HistorySyncOutcome = 'ok';
     outer: while (d.now() < until) {
-      const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
+      const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore, d.structuralFilter);
       if (sessions.length === 0) break;
 
       for (const sessionId of sessions) {
@@ -599,7 +661,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
         // self-referencing foreign keys and stubs no missing root, so a leaf that
         // overtakes its session is rejected — which is why this is sequential
         // rather than concurrent.
-        const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
+        const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore, d.structuralFilter);
         if (rows.length === 0) continue;
 
         // Rebuilt first, so a row that can never be expressed is counted and
@@ -688,11 +750,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   // that STOPPED — refused, unreachable, or out of time — has left work owed, and
   // spending the remainder on the other lane would be the starvation this whole
   // arrangement exists to prevent, inverted.
-  if (
-    outcome === 'ok' &&
-    d.now() < deadline &&
-    d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length === 0
-  ) {
+  if (outcome === 'ok' && d.now() < deadline && !capturesOwed()) {
     outcome = await drainStructural(deadline);
   }
 
@@ -705,8 +763,10 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     sent,
     skipped,
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
-    // pay for a count over the capture grain on every pass.
-    capturesPending: d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length > 0,
+    // pay for a count over the capture grain on every pass. In scope only: a
+    // personal capture an older build marked is owed to nobody on a scoped
+    // attachment, and counting it would keep the drain from ever reading done.
+    capturesPending: capturesOwed(),
     counts: d.ledger.counts(d.backlogBefore),
     atMs: d.now(),
   };
@@ -717,6 +777,27 @@ interface ChunkResult {
   skipped: number;
   /** Set when the pass must stop; everything else stays pending. */
   stopped?: HistorySyncOutcome;
+}
+
+/**
+ * The scope key a row was stamped with, or `undefined`.
+ *
+ * Read from the attributes bag rather than the `scope_key` column, on purpose:
+ * this is the second opinion on the column's filter, so it must not be the
+ * column again. Anything that is not a string (no bag, a bag that does not
+ * parse, a key of another type) is no key, and no key is never in scope.
+ */
+function scopeKeyOfRow(row: AuditEventRow): string | undefined {
+  const raw: unknown = row.attributes;
+  if (typeof raw !== 'string') return undefined;
+  try {
+    const bag: unknown = JSON.parse(raw);
+    if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return undefined;
+    const key = (bag as Record<string, unknown>).scope_key;
+    return typeof key === 'string' ? key : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -760,21 +841,58 @@ async function drainCaptures(
     // shrunk and the next page is simply the new head of it. An offset over a
     // set being mutated underneath would step past rows.
     // This lane has no boundary of its own: `pendingCaptureRows` reads
-    // whatever carries `outbox_owed = 1`, whichever of the two writers set it.
-    // The live forward path sets it only for a capture recorded FROM the
-    // attachment onwards, which it owed and did not deliver — that half is
-    // bounded by `backlogBefore` implicitly, because nothing before it was
-    // ever live-forwarded. The other writer, `markCaptureBacklogOwed`, sets it
-    // for whatever pre-attach backlog was on disk at the instant a human
-    // granted existing-history consent, WITH its text — that is the grant's
-    // own design, not a leak this lane needs to guard against. A row reaching
-    // here is owed for one of those two reasons; this loop enforces neither.
-    const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
+    // whatever carries `outbox_owed = 1`, whichever writer set it. The live
+    // forward path sets it only for a capture recorded FROM the attachment
+    // onwards, which it owed and did not deliver — that half is bounded by
+    // `backlogBefore` implicitly, because nothing before it was ever
+    // live-forwarded. `markCaptureBacklogOwed` sets it for whatever pre-attach
+    // backlog was on disk at the instant a human granted existing-history
+    // consent, WITH its text — that is the grant's own design, not a leak this
+    // lane needs to guard against — and `markScopeCapturesOwed` sets it for a
+    // repository's unsent captures when a human enrolls it. A row reaching here
+    // is owed for one of those reasons; this loop enforces none of them.
+    //
+    // WHAT IT DOES ENFORCE is the scope, re-read for every batch (see
+    // `captureScope`): on a scoped attachment the read returns only captures
+    // stamped with an enrolled key, so a repository unenrolled since the last
+    // batch is already out of this one.
+    const scope = d.captureScope();
+    const rows = d.ledger.pendingCaptureRows(
+      CAPTURE_BATCH_SIZE,
+      d.now() - CAPTURE_GRACE_MS,
+      scopeFilterOf(scope),
+    );
     if (rows.length === 0) return { sent, skipped };
+
+    // THE SEND-TIME RE-CHECK: the same scope, asked again of each row in memory,
+    // from its attributes rather than the column the read filtered on. It can
+    // disagree with the read only where the column and the bag say different
+    // things about the key, and a row it refuses is left exactly as it is (not
+    // sent, not claimed, not stamped), so it stays owed for the day they agree.
+    // If it refuses the whole page the lane ends for this pass: the read has no
+    // cursor, so the same page would come back, and spinning on it would hold
+    // the lease for nothing. A machine attachment has no scope to check.
+    //
+    // Each row it admits keeps the key it was admitted under, for the
+    // repository name the scoped copy below carries. Carried rather than read
+    // again, so that name can only ever be an admitted key's. A machine
+    // attachment's rows carry none.
+    const inScopeRows: { row: AuditEventRow; key?: string }[] = [];
+    for (const row of rows) {
+      if (scope.mode === 'machine') {
+        inScopeRows.push({ row });
+        continue;
+      }
+      const key = scopeKeyOfRow(row);
+      if (key !== undefined && scopeVerdict(scope, key) === 'forward') {
+        inScopeRows.push({ row, key });
+      }
+    }
+    if (inScopeRows.length === 0) return { sent, skipped };
 
     const ready: { id: string; event: IngestEvent }[] = [];
     const unbuildable: string[] = [];
-    for (const row of rows) {
+    for (const { row, key } of inScopeRows) {
       const event = rebuildCapture(row);
       if (event === undefined) {
         // A local defect, not an outage. Retrying for ever would stall the lane
@@ -783,7 +901,16 @@ async function drainCaptures(
         unbuildable.push(row.id);
         continue;
       }
-      ready.push({ id: row.id, event });
+      // ON A SCOPED ATTACHMENT, A COPY NAMING ITS OWN KEY'S REPOSITORY, the
+      // rewrite the live forward applies (`withScopedRepo`). The `repo` stored
+      // with the row is the producer's slug, resolved from the session's
+      // directory, while the key can name the repository of a file in another
+      // checkout, so sending the slug could label an enrolled repository's
+      // capture with a personal repository's name. Only the event changes: its
+      // id is reproduced from the row's session, content hash and file path,
+      // never the slug, and the stamps below go by the row id. `key` is absent
+      // exactly on a machine attachment, whose body stays what it was.
+      ready.push({ id: row.id, event: key === undefined ? event : withScopedRepo(event, key) });
     }
     // ONE write for the page rather than one per row: markSkipped takes a list,
     // and each call is its own IMMEDIATE transaction competing for the store's

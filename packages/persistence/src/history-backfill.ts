@@ -1,6 +1,10 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { WorkspaceSettings } from '@akasecurity/schema';
+import { attachmentModeOf, resolveScope, scopeFilterOf } from '@akasecurity/schema';
+
+import type { CredentialFileRead } from './control-plane-credential.ts';
 import { openLocalDatabase } from './database.ts';
 import { DB_FILENAME } from './paths.ts';
 
@@ -55,4 +59,37 @@ export function seedCaptureBacklogOwed(
     // See above: a ledger write that fails here does not undo the grant that
     // was just recorded, and the next one retries it.
   }
+}
+
+/**
+ * The key list the consent-time capture seed marks under: the same scope the
+ * drain reads with, so the seed and the read agree about what this machine
+ * forwards. Hand it to `seedCaptureBacklogOwed` as `scopeKeys`.
+ *
+ * `read` is the credential file's read result and `settings` the settings the
+ * caller holds; the caller does the reading, so this does no I/O. Pass
+ * `undefined` for `read` when there is no connection to read a credential for.
+ *
+ * `undefined` (every capture, as before) on a machine attachment, and whenever
+ * the credential cannot be read or there is no connection: the mode lives on the
+ * credential, so without it there is nothing to scope by. That is safe rather
+ * than merely permissive, because marking is not sending: the drain cannot run
+ * without a usable credential, and once it can, its capture read applies the
+ * scope in SQL whatever this marked. On a scoped attachment it is the keys
+ * enrolled for the connection's endpoint, possibly none, and an empty list marks
+ * nothing.
+ */
+export function captureBackfillScope(
+  read: CredentialFileRead | undefined,
+  settings: WorkspaceSettings,
+): readonly string[] | undefined {
+  const connection = settings.controlPlane;
+  if (connection === undefined || !read?.usable) return undefined;
+  return scopeFilterOf(
+    resolveScope({
+      mode: attachmentModeOf(read.credential),
+      scope: settings.attachmentScope,
+      endpoint: connection.endpoint,
+    }),
+  );
 }

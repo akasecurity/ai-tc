@@ -11,13 +11,17 @@
 // module's behalf, and this module cannot deliver it.
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { PluginConfig, SourceTool } from '@akasecurity/plugin-sdk';
+import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
 import type {
+  AttachedCredentialAny,
   DeviceCommand,
   DeviceCommandFailureReason,
   DeviceCommandKind,
+  ScopeVerdict,
+  WorkspaceSettings,
 } from '@akasecurity/schema';
-import { isAttached } from '@akasecurity/schema';
+import { attachmentModeOf, isAttached, resolveScope, scopeVerdict } from '@akasecurity/schema';
 
 import { classifyFailure } from './failure.ts';
 import { withTimeout } from './with-timeout.ts';
@@ -48,12 +52,23 @@ export const COMMAND_REQUEST_TIMEOUT_MS = 30_000;
  *                 what takes it off the roster's outstanding column.
  *   `unreachable` the poll itself did not answer. Nothing was scanned and
  *                 nothing was acked; the next sync tries again.
+ *   `out-of-scope` polled on a SCOPED attachment, from a session directory
+ *                 that is not enrolled. Nothing was scanned and NOTHING WAS
+ *                 ACKED — deliberately unlike `failed`. The command stays
+ *                 outstanding: the deployment re-serves it at the next sync,
+ *                 and a sync spawned from an enrolled checkout services it.
+ *                 An ack from here would itself be a report about a directory
+ *                 the user keeps local. If no enrolled session syncs before the
+ *                 deadline, the command expires on the deployment's side like
+ *                 any unanswered one, and a sync still handed it after the
+ *                 deadline declines it with `expired`, wherever it runs.
  */
 export type CommandSyncOutcome =
-  'none' | 'reported' | 'failed' | 'unauthorized' | 'forbidden' | 'unreachable';
+  'none' | 'reported' | 'failed' | 'out-of-scope' | 'unauthorized' | 'forbidden' | 'unreachable';
 
 /**
- * The scan this module is allowed to run.
+ * The scan this module is allowed to run, and the key of the directory it
+ * would scan.
  *
  * INJECTED, and that is a dependency-graph fact before it is a testing
  * convenience: `@akasecurity/scanner` already depends on this package, so
@@ -65,11 +80,27 @@ export type CommandSyncOutcome =
  * at all rather than polling and leaving a command it can never service sitting
  * outstanding until it expires.
  *
- * The signature takes NO scope. That is the point: the caller supplies the
- * ability to scan, and this module supplies the scope, which is fixed
- * device-side and cannot be influenced by anything on the wire.
+ * `run` takes NO scope. That is the point: the caller supplies the ability to
+ * scan, and this module supplies the scope, which is fixed device-side and
+ * cannot be influenced by anything on the wire.
+ *
+ * `rootScopeKey` NAMES that scope's directory, for the one question asked
+ * before it is scanned on a SCOPED attachment: may this directory be reported
+ * on at all? It returns the canonical `host/owner/repo` key of the repository
+ * the scan root sits in, or undefined when there is none (no repository, or one
+ * with no remote), which a scoped attachment never services. It is a function
+ * rather than a value so the repository files are read only once a command has
+ * actually arrived on a scoped attachment, never on the ordinary poll that
+ * finds nothing. A key source that throws gets the command skipped, never
+ * serviced.
+ *
+ * Property signatures rather than methods, so a test can hand either member to
+ * `expect` without detaching a method from its object.
  */
-export type CommandScan = () => Promise<{ projects: number }>;
+export interface CommandScan {
+  readonly rootScopeKey: () => string | undefined;
+  readonly run: () => Promise<{ projects: number }>;
+}
 
 export interface RunCommandSyncDeps {
   /** The ~/.aka root, for reading settings. */
@@ -131,6 +162,41 @@ function hasExpired(expiresAt: string, atMs: number): boolean {
 }
 
 /**
+ * May a command be serviced from this scan root?
+ *
+ * The verdict every forward path shares (`resolveScope`, then `scopeVerdict`),
+ * fed from what this pass already read LIVE — the settings and the wide
+ * credential at the top of `runCommandSync`, never the config a host captured
+ * when it spawned this child — so an enroll that landed between the spawn and
+ * the poll counts. The mode is the credential's; the scope is the settings',
+ * counted only for the deployment's URL; the key is the scan root's.
+ *
+ * A MACHINE-WIDE ATTACHMENT NEVER ASKS FOR THE KEY. It forwards everything, as
+ * it always has, so the root's repository files are not read on its behalf and
+ * a key source that fails cannot cost it a command.
+ *
+ * FAIL-CLOSED. A key source that throws, or anything else here, reads as
+ * `local`: the command is skipped and re-served, never serviced on a guess.
+ */
+function rootVerdict(
+  settings: WorkspaceSettings,
+  endpoint: string,
+  credential: AttachedCredentialAny,
+  scan: CommandScan,
+): ScopeVerdict {
+  try {
+    const resolved = resolveScope({
+      mode: attachmentModeOf(credential),
+      scope: settings.attachmentScope,
+      endpoint,
+    });
+    return scopeVerdict(resolved, resolved.mode === 'scoped' ? scan.rootScopeKey() : undefined);
+  } catch {
+    return 'local';
+  }
+}
+
+/**
  * What each verb does, keyed on the verb.
  *
  * A `Record<DeviceCommandKind, …>` rather than a bare call on the one thing a
@@ -141,7 +207,7 @@ function hasExpired(expiresAt: string, atMs: number): boolean {
  * a `shares_rescan`, the one outcome the closed enum was chosen to prevent.
  */
 const SERVICE: Record<DeviceCommandKind, (scan: CommandScan) => Promise<{ projects: number }>> = {
-  shares_rescan: (scan) => scan(),
+  shares_rescan: (scan) => scan.run(),
 };
 
 /**
@@ -157,6 +223,13 @@ const SERVICE: Record<DeviceCommandKind, (scan: CommandScan) => Promise<{ projec
  * and the operator waits 24 hours for a command to expire before learning
  * anything. Acking a failure is what turns "we never heard from it" into "it
  * tried and here is the closed reason".
+ *
+ * The one deliberate silence is a SCOPED attachment whose session directory is
+ * not enrolled (`out-of-scope`). There, "it tried" is itself the report the
+ * user kept local — that this directory exists and was in use — so nothing is
+ * scanned and nothing is acked, and the command waits for a sync that runs
+ * from an enrolled checkout. The roster shows the device as outstanding, which
+ * on a scoped machine is the honest answer.
  */
 export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandSyncOutcome | null> {
   // Nothing to service, and nothing to ask. A host with no scanner must not
@@ -214,6 +287,13 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
     // an operator's roster distinguishes "declined, and here is why" from a
     // machine that never answered.
     reason = COMMAND_EXPIRED;
+  } else if (rootVerdict(settings, connection.endpoint, state.credential, deps.scan) === 'local') {
+    // A scoped attachment, and this session's directory is not enrolled: the
+    // command is LEFT, not answered. No scan, so nothing about the directory
+    // is gathered; no ack, so nothing about it is said. The deployment
+    // re-serves the command at the next sync, and the expiry branch above
+    // still declines it with `expired` if it is handed over past its deadline.
+    return 'out-of-scope';
   } else {
     try {
       projects = (await SERVICE[command.kind](deps.scan)).projects;
@@ -305,22 +385,31 @@ export type WorktreeScan = (
  * reasoning above — three copies of a security-relevant default across three
  * plugin trees is three places for it to drift, and the one that drifts quietly
  * is the one that widens.
+ *
+ * The root is read ONCE, when the scan is built, and both members use that one
+ * value: the directory whose key `runCommandSync` checks is the directory `run`
+ * scans by construction, not because two reads of the process happened to
+ * agree. The key is `resolveRepoAttribution(root).scopeKey`, the same key a
+ * capture recorded in that directory carries, and undefined outside a
+ * repository or in one with no remote.
  */
 export function commandScanFor(
   config: PluginConfig,
   scanWorktree: WorktreeScan,
   sourceTool: SourceTool,
 ): CommandScan {
-  return async () => {
-    const summary = await scanWorktree(config, {
-      sourceTool,
-      // Never the home directory implicitly, and never anything the wire named.
-      rootDir: process.cwd(),
-    });
-    // 0 or 1: this mode scans exactly one worktree, so the count answers "was
-    // there anything here to scan", not "how many projects were found". A
-    // worktree with no scannable file is the `no_projects` outcome rather than
-    // a report of zero, which is a distinction an operator acts on.
-    return { projects: summary.scanned > 0 ? 1 : 0 };
+  // The session's own directory, inherited by this detached child, and never
+  // anything the wire named.
+  const rootDir = process.cwd();
+  return {
+    rootScopeKey: () => resolveRepoAttribution(rootDir).scopeKey,
+    run: async () => {
+      const summary = await scanWorktree(config, { sourceTool, rootDir });
+      // 0 or 1: this mode scans exactly one worktree, so the count answers "was
+      // there anything here to scan", not "how many projects were found". A
+      // worktree with no scannable file is the `no_projects` outcome rather
+      // than a report of zero, which is a distinction an operator acts on.
+      return { projects: summary.scanned > 0 ? 1 : 0 };
+    },
   };
 }

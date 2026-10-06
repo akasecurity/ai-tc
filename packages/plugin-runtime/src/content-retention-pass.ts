@@ -44,16 +44,19 @@ const DAY_MS = 86_400_000;
  * The mode is read off the credential, not the settings, because that is where
  * an attachment records it and no settings writer can remove it.
  * `syncLaneRetentionOf` owns the answer; this only gathers its two inputs.
- * `aka prune` has the same helper, written the same way: they are two copies,
- * so they must stay identical, and both suites pin the same four states
- * (scoped, machine, unparseable credential, read that throws).
+ *
+ * ONE HELPER, asked by both the background pass and `aka prune`. It decides
+ * which bodies are destroyed, so the two callers share this function rather
+ * than each keeping a copy that could drift, and they cannot disagree about
+ * which bodies a deployment is still owed.
  *
  * TOTAL, and every failure holds. An attachment whose credential cannot be read
  * resolves to no scope, which `syncLaneRetentionOf` reads as hold-all, and a
- * throw anywhere here is hold-all too. Holding a body costs disk; expiring one
- * an organization was owed cannot be undone.
+ * throw anywhere here is hold-all too, so neither caller needs a catch of its
+ * own around it. Holding a body costs disk; expiring one an organization was
+ * owed cannot be undone.
  */
-function syncLaneRetentionFor(settings: WorkspaceSettings, base: string): SyncLaneRetention {
+export function syncLaneRetentionFor(settings: WorkspaceSettings, base: string): SyncLaneRetention {
   try {
     const connection = settings.controlPlane;
     if (!isAttached(settings) || connection === undefined) {

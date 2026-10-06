@@ -328,6 +328,20 @@ export class SqliteAuditEventsRepository {
     return undefined;
   }
 
+  // The `scope_key` stored on a session root's attributes: the key the history
+  // drain decides that root by. It is NOT necessarily the key of the root event a
+  // caller just wrote, because roots are first-write-wins (see the session-root
+  // upsert above) and the root event that arrives second leaves the stored row as
+  // it was. Returns undefined when the id is not a session root, when the root is
+  // a stub or carries no key, and when the stored value is not a string, which is
+  // what the drain's scoped reads would not match either.
+  sessionScopeKey(sessionId: string): string | undefined {
+    const row = this.findById(sessionId);
+    if (row?.event_type !== 'session' || !row.attributes) return undefined;
+    const key = parseJsonObject(row.attributes)?.scope_key;
+    return typeof key === 'string' ? key : undefined;
+  }
+
   // Every `llm_call` leaf's session id + raw attribute bag, for the read-time token
   // rollups. The caller parses each bag and prices it via the
   // cost model — we stay a thin reader here (no business logic, no cost). `root_session_id`

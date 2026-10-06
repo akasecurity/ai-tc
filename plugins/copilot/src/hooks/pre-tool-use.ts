@@ -47,7 +47,14 @@ import {
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
-import { baseMetadata, parseJson, readStdin, runHookFailOpen, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callScopeKey,
+  parseJson,
+  readStdin,
+  runHookFailOpen,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -133,6 +140,10 @@ async function main(): Promise<HookOutput | undefined> {
   const kind = kindFor(dialect, call.name);
   const metadata = baseMetadata(dialect, input) ?? {};
   metadata.toolName = call.name;
+  // A VS Code single-file write by its own target, a patch or any other
+  // code_change by nothing, every other call by the payload cwd only; see
+  // callScopeKey. Resolved once, outside the field loop.
+  const scopeKey = callScopeKey(kind, dialect, input, call);
 
   const scanned: ScannedField[] = [];
   try {
@@ -141,7 +152,7 @@ async function main(): Promise<HookOutput | undefined> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because

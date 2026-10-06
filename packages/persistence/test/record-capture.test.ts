@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFindingWithKey, IngestEvent, LlmCallInput } from '@akasecurity/schema';
+import { toCaptureAttributes } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
@@ -307,6 +308,76 @@ describe('recordCapture — audit/inspection trio', () => {
       .get(withoutSessionId) as { parent_id: string | null; root_session_id: string | null };
     expect(b.parent_id).toBeNull();
     expect(b.root_session_id).toBeNull();
+    r.close();
+    db.close();
+  });
+});
+
+// The scope key is the one attribute the local writer adds on its own, after
+// the shared mapper: the caller hands it in beside the event, and a non-empty
+// one lands in the bag as `scope_key`, which the generated `scope_key` column
+// reads back.
+describe('recordCapture — the scope key', () => {
+  const KEY = 'github.com/acme/widgets';
+
+  function stored(
+    r: DatabaseSync,
+    id: string,
+  ): { attributes: Record<string, unknown>; scopeKey: string | null } {
+    const row = r
+      .prepare('SELECT attributes, scope_key FROM audit_events WHERE id = ?')
+      .get(id) as { attributes: string; scope_key: string | null };
+    return {
+      attributes: JSON.parse(row.attributes) as Record<string, unknown>,
+      scopeKey: row.scope_key,
+    };
+  }
+
+  it('stores a non-empty key as scope_key, read back through the scope_key column', () => {
+    const db = store.open();
+    db.recordCapture(event({ contentHash: 'hash-keyed' }), [], KEY);
+
+    const r = raw();
+    const row = stored(r, captureId(null, 'hash-keyed'));
+    expect(row.scopeKey).toBe(KEY);
+    expect(row.attributes.scope_key).toBe(KEY);
+    r.close();
+    db.close();
+  });
+
+  it('stores no key for an absent or a blank one: the column reads NULL, the bag has no scope_key', () => {
+    // A blank key names no repository. Storing it would give the row a value
+    // that matches nothing instead of the NULL every other unkeyed row reads.
+    const db = store.open();
+    db.recordCapture(event({ contentHash: 'hash-absent' }), []);
+    db.recordCapture(event({ contentHash: 'hash-blank' }), [], '');
+
+    const r = raw();
+    for (const hash of ['hash-absent', 'hash-blank']) {
+      const row = stored(r, captureId(null, hash));
+      expect(row.scopeKey).toBeNull();
+      expect('scope_key' in row.attributes).toBe(false);
+    }
+    r.close();
+    db.close();
+  });
+
+  it('adds the key AFTER the shared mapper: every mapped attribute is unchanged, scope_key is the only addition', () => {
+    const db = store.open();
+    const ev = event({
+      kind: 'tool_use',
+      contentHash: 'hash-merged',
+      metadata: { repo: 'widgets', filePath: 'src/index.ts', toolName: 'Bash', inspectionMs: 4 },
+    });
+    db.recordCapture(ev, [], KEY);
+
+    const r = raw();
+    const row = stored(r, captureId(null, 'hash-merged', 'src/index.ts'));
+    expect(row.attributes).toEqual({ ...toCaptureAttributes(ev), scope_key: KEY });
+    // The shared mapper, run on the same event, carries no key at all. It is
+    // this write that adds it, so nothing else that maps an event through
+    // `toCaptureAttributes` can store one.
+    expect('scope_key' in toCaptureAttributes(ev)).toBe(false);
     r.close();
     db.close();
   });

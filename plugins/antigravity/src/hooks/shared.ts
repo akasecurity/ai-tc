@@ -23,9 +23,10 @@
 //     `session_id`, `cwd`). `workspacePaths` is an ARRAY — there is no `cwd`.
 
 import { spawn } from 'node:child_process';
+import { isAbsolute, join, normalize, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveRepo } from '@akasecurity/plugin-sdk';
+import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 // The host kills a hook that outruns its `timeout` (SIGTERM) and aborts the
@@ -124,6 +125,11 @@ export function readToolCall(input: Record<string, unknown>): ToolCall | undefin
  * Code's `cwd`. The field is an array (a session can span several roots); repo
  * identity is resolved from the first entry, and the caller falls back to the
  * hook process's own cwd when it is absent.
+ *
+ * The SCOPE key does not follow this rule: `captureScopeKey` keys an event
+ * that names a target by the checkout holding that file (a relative target is
+ * read against the one root there is), and an event with no target only when
+ * every root agrees.
  */
 export function primaryWorkspacePath(input: Record<string, unknown>): string | undefined {
   const paths = input.workspacePaths;
@@ -296,11 +302,120 @@ export function spawnFailOpenCount(
 // undefined when nothing could be derived, so callers keep passing the optional
 // metadata through unchanged. Per-hook fields (filePath, toolName, …) are
 // layered on by the caller.
+//
+// The slug stays the FIRST root's even where `captureScopeKey` keys the same
+// event by another repository: `repo` rides the published event metadata, and
+// what a machine attachment sends must not change. It is read through
+// `resolveRepoAttribution`, the memoised walk the key shares, so the first root
+// is walked once however many times this hook asks about it. `repo` is exactly
+// what `resolveRepo` returned here before.
 export function baseMetadata(input: Record<string, unknown>): EventMetadata | undefined {
   const metadata: EventMetadata = {};
   const sessionId = getString(input, 'conversationId');
   if (sessionId) metadata.sessionId = sessionId;
-  const repo = resolveRepo(primaryWorkspacePath(input) ?? process.cwd());
+  const repo = resolveRepoAttribution(primaryWorkspacePath(input) ?? process.cwd()).repo;
   if (repo) metadata.repo = repo;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+/**
+ * Every workspace root the payload names, in order, each once. Entries that are
+ * not non-empty strings are skipped, the same leniency `primaryWorkspacePath`
+ * applies to the first.
+ */
+function workspaceRoots(input: Record<string, unknown>): string[] {
+  const paths = input.workspacePaths;
+  if (!Array.isArray(paths)) return [];
+  const roots: string[] = [];
+  for (const entry of paths) {
+    if (typeof entry === 'string' && entry !== '' && !roots.includes(entry)) roots.push(entry);
+  }
+  return roots;
+}
+
+/**
+ * The scope key for an event in this session: the canonical `host/owner/repo`
+ * of the remote of the checkout the event belongs to, or undefined.
+ *
+ * Antigravity hands every hook ALL of the session's roots, and one session can
+ * span a work repo and a personal one. Keying by the first root, as
+ * `baseMetadata`'s slug does, would key a write into the second root by the
+ * first. That would forward personal content from a work-first session, or
+ * hold back work content from a personal-first one. So:
+ *
+ *   - an ABSOLUTE `targetPath` keys by the checkout that holds that path,
+ *     found by walking up from the path itself. The roots are not consulted,
+ *     whether or not the path lies under one: a clone or submodule nested in
+ *     a root is its own checkout with its own key, a root that is a plain
+ *     folder of clones has no key while the path's clone does, and a path
+ *     outside every checkout, or in one with no remote, gets no key at all.
+ *     It never falls back to a root's key, or a write into a personal folder
+ *     from a session rooted in a work repo would leave under the work key;
+ *   - a NON-EMPTY RELATIVE `targetPath` also names a location, and is keyed by
+ *     where it lands. It is read against the one root there is: with exactly one
+ *     root, and that root absolute, the target is resolved against it and keyed
+ *     as an absolute one is, so a `..` that leaves the root lands in the
+ *     checkout it really reaches, or in none. With several roots the payload
+ *     does not say which one a relative target is relative to, and with a root
+ *     that is itself relative there is no known location, so either gives no
+ *     key, even when every root would agree on one;
+ *   - otherwise (no path, as on a `run_command`, or an empty path) the event is
+ *     keyed only when every root resolves to the SAME key. Roots that disagree,
+ *     or a mix of keyed and keyless roots, give no key. The contract is that a
+ *     scoped attachment's forward check is meant to keep a keyless event local.
+ *     A single root is therefore that root's key, as a Claude Code hook keys a
+ *     path-less event by its cwd.
+ *
+ * A relative target is never resolved against the hook's own cwd except where
+ * the payload names no root at all, and then the cwd stands in as the one root,
+ * as it does for the slug. Whether the host sends `TargetFile` absolute is
+ * unverified against a live host (see pre-tool-use-decision.ts).
+ *
+ * The walk starts at the target ITSELF, not at its parent. The resolver climbs
+ * by name and probes `<start>/.git` before it climbs, so one rule serves every
+ * shape a target can have. A file has no `.git` of its own, so the walk reaches
+ * the checkout its directory is in; a target that does not exist yet has none
+ * either, and lands the same way. A directory that is a checkout's top level,
+ * or a clone nested in a root, is found at the first probe, which starting at
+ * the parent would skip: the nested clone would be keyed by the checkout around
+ * it.
+ *
+ * The target is resolved first. Resolving an absolute path is lexical: it never
+ * reads `process.cwd()`, and it drops `..` segments, which the walk would
+ * otherwise climb back through into the checkout the path left.
+ *
+ * With no root in the payload, the hook process's own cwd stands in. That is
+ * the fallback `baseMetadata` takes and the one the session root
+ * (pre-invocation.ts) is resolved from, so a path-less event and its root agree.
+ *
+ * COST. Every lookup goes through `resolveRepoAttribution`, memoised per
+ * directory. A target is one walk (one existence check per level up to its
+ * `.git`, one config read). A path-less event shares the first root's
+ * walk with `baseMetadata`, and with several roots walks each further root once.
+ *
+ * TOTAL. Any throw (`process.cwd()` on a deleted directory included) answers no
+ * key rather than reaching `runHookFailOpen`'s catch, which would cost the
+ * capture as well as the key.
+ */
+export function captureScopeKey(
+  input: Record<string, unknown>,
+  targetPath?: string,
+): string | undefined {
+  try {
+    if (targetPath !== undefined && isAbsolute(targetPath)) {
+      return resolveRepoAttribution(resolvePath(targetPath)).scopeKey;
+    }
+    const named = workspaceRoots(input);
+    const roots = named.length > 0 ? named : [process.cwd()];
+    if (targetPath !== undefined && targetPath !== '') {
+      // A relative target: it names a location, read against the only root.
+      const [only] = roots;
+      if (roots.length !== 1 || only === undefined || !isAbsolute(only)) return undefined;
+      return resolveRepoAttribution(normalize(join(only, targetPath))).scopeKey;
+    }
+    const [first, ...rest] = roots.map((dir) => resolveRepoAttribution(dir).scopeKey);
+    return rest.every((key) => key === first) ? first : undefined;
+  } catch {
+    return undefined;
+  }
 }

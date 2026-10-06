@@ -94,6 +94,32 @@ describe('StandaloneDataGateway', () => {
     await gw.close();
   });
 
+  it('stores the record scope key on the capture row, and none when the record carries none', async () => {
+    // The key rides the record beside the event. This is the hop where a
+    // gateway could drop it on the way to the writer, and nothing else in
+    // standalone mode would notice.
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordCapture({
+      event: event({ contentHash: 'hash-keyed' }),
+      findings: [],
+      scopeKey: 'github.com/acme/widgets',
+    });
+    await gw.recordCapture({ event: event({ contentHash: 'hash-unkeyed' }), findings: [] });
+    await gw.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const rows = raw
+      .prepare(
+        "SELECT content_hash, scope_key FROM audit_events WHERE event_type = 'prompt' ORDER BY content_hash",
+      )
+      .all() as { content_hash: string; scope_key: string | null }[];
+    raw.close();
+    expect(rows).toEqual([
+      { content_hash: 'hash-keyed', scope_key: 'github.com/acme/widgets' },
+      { content_hash: 'hash-unkeyed', scope_key: null },
+    ]);
+  });
+
   it('synthesizes a local policy bundle from the seeded policies (empty store → bundled fallback)', async () => {
     const gw = new StandaloneDataGateway(dir);
     const bundle = await gw.getPolicyBundle();
@@ -865,6 +891,37 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
       expect(rawRow(check, 'session-that-never-started')?.event_type).toBe('session');
     } finally {
       check.close();
+    }
+  });
+});
+
+describe('readSessionScopeKey', () => {
+  const ENROLLED = 'github.com/org/api';
+  const PERSONAL = 'github.com/me/dotfiles';
+
+  // Roots are first-write-wins, so the attached gateway cannot read the key it
+  // just handed in and call it the stored one. This is the read that tells them
+  // apart.
+  it('reads back the key of the first root recorded, and nothing for a session it never saw', async () => {
+    const gateway = new StandaloneDataGateway(dir);
+    try {
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:30:00.000Z',
+        attributes: { scope_key: PERSONAL },
+      });
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:31:00.000Z',
+        attributes: { scope_key: ENROLLED },
+      });
+
+      expect(gateway.readSessionScopeKey('s-key')).toBe(PERSONAL);
+      expect(gateway.readSessionScopeKey('s-absent')).toBeUndefined();
+    } finally {
+      await gateway.close();
     }
   });
 });

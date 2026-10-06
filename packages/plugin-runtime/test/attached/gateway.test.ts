@@ -1,30 +1,44 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { toolCallId } from '@akasecurity/persistence';
+import { DB_FILENAME, llmCallId, toolCallId } from '@akasecurity/persistence';
 import type {
+  CaptureRecord,
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
 } from '@akasecurity/plugin-sdk';
-import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
+import { bundledDetections, hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
+  ConfigScanRecord,
   DetectionCategory,
+  IngestAck,
+  IngestBatch,
   IngestEvent,
+  InventoryContext,
   LlmCallInput,
   Policy,
   PolicyBundle,
   RecordProjectEgressInput,
+  ResolvedAttachmentScope,
   ToolCallInput,
 } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
+import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
+import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // ── the port, as data ───────────────────────────────────────────────────────
 // Every DataGateway method. The exhaustiveness check below turns a port that
@@ -107,7 +121,9 @@ interface Calls {
  */
 function makeLocal(
   calls: Calls,
-  overrides: Partial<DataGateway & LocalStoreMaintenance & CaptureStatusReader> = {},
+  overrides: Partial<
+    DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader
+  > = {},
 ) {
   const base: Record<string, unknown> = {};
   for (const name of PORT_METHODS) {
@@ -179,9 +195,23 @@ function makeLocal(
     calls.order.push('local.readCaptureStatuses');
     return Promise.resolve([]);
   });
+  // The session roots this store holds, FIRST-WRITE-WINS as the real store keeps
+  // them: the key a root was first recorded with is what the verdict reads back,
+  // whatever a later root event for the same id carries.
+  const storedRootKeys = new Map<string, string | undefined>();
+  const recordAuditEvent = base.recordAuditEvent as (event: AuditEventInput) => Promise<undefined>;
+  base.recordAuditEvent = vi.fn((event: AuditEventInput) => {
+    if (event.eventType === 'session' && !storedRootKeys.has(event.id)) {
+      const key = event.attributes?.scope_key;
+      storedRootKeys.set(event.id, typeof key === 'string' ? key : undefined);
+    }
+    return recordAuditEvent(event);
+  });
+  base.readSessionScopeKey = vi.fn((sessionId: string) => storedRootKeys.get(sessionId));
   return Object.assign(base, overrides) as unknown as DataGateway &
     LocalStoreMaintenance &
-    CaptureStatusReader;
+    CaptureStatusReader &
+    StoredRootKeyReader;
 }
 
 function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): AttachedClient {
@@ -272,6 +302,66 @@ const egressInput = (): RecordProjectEgressInput => ({
   hits: [],
 });
 
+// ── the scope verdict ───────────────────────────────────────────────────────
+// Built directly rather than through the factory, so every case names the exact
+// mode and key set it runs under. MACHINE is what build() passes by default.
+const IN = 'github.com/org/api';
+const OUT = 'github.com/me/personal';
+const MACHINE: ResolvedAttachmentScope = { mode: 'machine', keys: new Set<string>() };
+const SCOPED: ResolvedAttachmentScope = { mode: 'scoped', keys: new Set<string>([IN]) };
+/** Freshly attached: scoped, a valid scope, and nothing enrolled in it yet. */
+const SCOPED_EMPTY: ResolvedAttachmentScope = { mode: 'scoped', keys: new Set<string>() };
+
+/** A bag carrying `key` as the local scope key, or no bag at all for no key. */
+const keyed = (key: string | undefined): Pick<AuditEventInput, 'attributes'> =>
+  key === undefined ? {} : { attributes: { scope_key: key } };
+
+const rootRow = (id: string, key: string | undefined): AuditEventInput =>
+  auditEvent({ id, ...keyed(key) });
+
+const llmLeaf = (messageId: string, rootId: string, key: string | undefined): LlmCallInput => ({
+  sessionId: rootId,
+  messageId,
+  parentId: rootId,
+  rootSessionId: rootId,
+  startedAt: '2026-08-19T10:00:01.000Z',
+  attributes: { model: 'claude-opus-5', ...(key === undefined ? {} : { scope_key: key }) },
+});
+
+const toolLeaf = (toolUseId: string, rootId: string, key: string | undefined): ToolCallInput => ({
+  sessionId: rootId,
+  toolUseId,
+  parentId: rootId,
+  rootSessionId: rootId,
+  startedAt: '2026-08-19T10:00:02.000Z',
+  attributes: {
+    tool_name: 'Bash',
+    tool_use_id: toolUseId,
+    ...(key === undefined ? {} : { scope_key: key }),
+  },
+  inspections: [],
+});
+
+/**
+ * An inventory context as the resolver builds it: the harness the session runs
+ * under, and its project when its directory sits in a repository. The harness
+ * identity is the tool, which is what the verdict reads to tell a web chat
+ * session from a coding one.
+ */
+const projectCtx = (
+  url: string | undefined,
+  tool: string = SOURCE_TOOL.ClaudeCode,
+): InventoryContext => ({
+  harness: { objectType: 'harness', identityKey: tool, title: tool, attributes: {} },
+  ...(url === undefined ? {} : { project: { url, name: 'repo', attributes: {} } }),
+});
+
+const capture = (id: string, key: string | undefined): CaptureRecord => ({
+  event: event(id),
+  findings: [],
+  ...(key === undefined ? {} : { scopeKey: key }),
+});
+
 /**
  * A real directory per test, because the gateway now WRITES here: the batch
  * budget records what it discarded, and a shared or absent dir would let one
@@ -282,7 +372,7 @@ beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'aka-gateway-'));
 });
 afterEach(() => {
-  rmSync(dataDir, { recursive: true, force: true });
+  removeTree(dataDir);
 });
 
 function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
@@ -295,6 +385,7 @@ function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
     client,
     readCachedBundle: overrides.readCachedBundle ?? (() => Promise.resolve(null)),
     forward: overrides.forward ?? passthroughForward(calls),
+    attachment: overrides.attachment ?? MACHINE,
     ...(overrides.posture ? { posture: overrides.posture } : {}),
   });
   return { gateway, local, client, calls, dataDir };
@@ -554,6 +645,65 @@ describe('writes are local-FIRST, then forwarded', () => {
       droppedFiles: [],
     });
     expect(calls.order).toContain('forward.run');
+  });
+});
+
+// ── the scope key stays on this machine ─────────────────────────────────────
+
+describe('the scope key is a local-only carrier', () => {
+  const KEY = 'github.com/acme/widgets';
+  const ack = (): Promise<IngestAck> => Promise.resolve({ accepted: 1, duplicates: 0 });
+
+  it('reaches the local write with the record, and is absent from the ingestEvents body', async () => {
+    // A GUARD rather than a red test: the gateway already hands `record` to the
+    // local write whole and sends only `record.event`. What it pins is that both
+    // stay true now that the record carries something the event must not.
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordCapture = vi.fn<(record: CaptureRecord) => Promise<void>>(() => Promise.resolve());
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({
+      local: makeLocal(calls, { recordCapture }),
+      client: makeClient(calls, { ingestEvents }),
+    });
+
+    await gateway.recordCapture({ event: event('e1'), findings: [], scopeKey: KEY });
+
+    expect(recordCapture.mock.calls[0]?.[0].scopeKey).toBe(KEY);
+    // The absence first, so a body that gained the key fails on the line that
+    // names it; the whole-body comparison then pins that nothing else changed.
+    expect(JSON.stringify(ingestEvents.mock.calls[0]?.[0])).not.toContain(KEY);
+    expect(ingestEvents.mock.calls[0]?.[0]).toEqual({ events: [event('e1')] });
+  });
+
+  it('lands on the real row while the forwarded body is byte-identical to a keyless capture', async () => {
+    migratedStore.seed(dataDir);
+    const local = new StandaloneDataGateway(dataDir);
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
+    const { gateway } = build({ local, client: makeClient(calls, { ingestEvents }) });
+
+    await gateway.recordCapture({ event: event('keyed'), findings: [], scopeKey: KEY });
+    await gateway.recordCapture({ event: event('keyless'), findings: [] });
+    await local.close();
+
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    const rows = raw
+      .prepare(
+        "SELECT content_hash, scope_key FROM audit_events WHERE event_type = 'prompt' ORDER BY content_hash",
+      )
+      .all() as { content_hash: string; scope_key: string | null }[];
+    raw.close();
+    expect(rows).toEqual([
+      { content_hash: 'hash-keyed', scope_key: KEY },
+      { content_hash: 'hash-keyless', scope_key: null },
+    ]);
+
+    // The keyed capture's body is exactly the body of the same event captured
+    // with no key at all: the key changed what this machine stored and nothing
+    // about what it sent.
+    const keyedBody = JSON.stringify(ingestEvents.mock.calls[0]?.[0]);
+    expect(keyedBody).toBe(JSON.stringify({ events: [event('keyed')] }));
+    expect(keyedBody).not.toContain(KEY);
   });
 });
 
@@ -1377,6 +1527,1067 @@ describe('the live forward stamps what it delivered', () => {
     // rests on. `reKeyForForward` rewrites inventory ids, not `event.id`, so
     // `seen`'s own ids are still comparable to what got stamped.
     expect(calls.delivered).toEqual(seen.map((e) => (e as AuditEventInput).id));
+  });
+});
+
+// ── the local scope key ─────────────────────────────────────────────────────
+
+describe('the local scope key never reaches the client', () => {
+  /**
+   * `scope_key` is this machine's own routing fact, and every audit-event
+   * request's attributes member is an open record that the outbound parse
+   * passes straight through. So the strip is the only thing between a stamped
+   * row and the receiving side's storage. It has to hold on every route, and on
+   * both of reKeyForForward's branches: before the inventory resolved (ids
+   * dropped) and after it (ids substituted).
+   */
+  it('is absent from every body, on every route and both re-key branches', async () => {
+    const KEY = 'github.com/org/api';
+    const sent: string[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = makeClient(calls, {
+      ingestEvents: (batch) => {
+        sent.push(JSON.stringify(batch));
+        return Promise.resolve({ accepted: 1, duplicates: 0 });
+      },
+      ingestInventory: (context) => {
+        sent.push(JSON.stringify(context));
+        return Promise.resolve({ hostId: 'tenant-host' });
+      },
+      recordAuditEvent: (body) => {
+        sent.push(JSON.stringify(body));
+        return Promise.resolve();
+      },
+      recordAuditEvents: (bodies) => {
+        sent.push(JSON.stringify(bodies));
+        return Promise.resolve({ accepted: bodies.length });
+      },
+    });
+    const { gateway } = build({ client, local: makeLocal(calls) });
+
+    // Before any inventory resolved: reKeyForForward's null branch.
+    await gateway.recordAuditEvent(
+      auditEvent({ id: 'root-a', attributes: { cwd: '/w', scope_key: KEY } }),
+    );
+    await gateway.recordLlmCall({
+      ...llmCallInput('m-a'),
+      attributes: { model: 'claude-opus-5', scope_key: KEY },
+    });
+    await gateway.recordConfigScan({
+      items: [],
+      scanEvent: {
+        id: 'scan-a',
+        eventType: 'config_scan',
+        startedAt: '2026-08-19T10:00:00.000Z',
+        attributes: { skills: 1, scope_key: KEY },
+      },
+    });
+    // After it resolved: the substitution branch.
+    await gateway.ensureInventory({});
+    await gateway.recordAuditEvent(auditEvent({ id: 'root-b', attributes: { scope_key: KEY } }));
+    await gateway.recordLlmCalls([
+      { ...llmCallInput('m-b'), attributes: { model: 'claude-opus-5', scope_key: KEY } },
+    ]);
+    await gateway.recordToolCalls([
+      { ...toolCallInput('t-b'), attributes: { tool_name: 'Bash', scope_key: KEY } },
+    ]);
+    // A capture carries its key BESIDE the event, so its body never had one.
+    await gateway.recordCapture({ event: event('e1'), findings: [], scopeKey: KEY });
+
+    // Positive control: all eight forwards reached the client, so the absence
+    // below is the strip's doing and not a forward that never ran.
+    expect(sent).toHaveLength(8);
+    for (const body of sent) {
+      expect(body).not.toContain('scope_key');
+      expect(body).not.toContain(KEY);
+    }
+  });
+});
+
+// ── the scope verdict, method by method ─────────────────────────────────────
+
+const REFUSED_KEYS = [OUT, undefined, ''] as const;
+
+describe('the scope verdict, method by method', () => {
+  // Every `… forwards …` case here is a GUARD rather than a red test: a gateway
+  // with no verdict forwards everything, so they pass before one exists. They
+  // pin the verdict's other half, that an in-scope row still forwards, so a
+  // verdict that refused everything on a scoped attachment fails here.
+  it('recordCapture forwards a capture whose key is in scope', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordCapture(capture('e1', IN));
+    expect(calls.order).toContain('client.ingestEvents');
+    expect(calls.order).toContain('local.markCaptureDelivered');
+  });
+
+  // The owed branch marks every NON-DELIVERY owed, and an owed capture is sent
+  // later, text included, by the drain. A refusal is not a non-delivery, so it
+  // must return before that branch, and before the forward.
+  it.each(REFUSED_KEYS)(
+    'recordCapture keeps a capture keyed %s local and never owed',
+    async (key) => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordCapture(capture('e1', key));
+      expect(calls.order).toContain('local.recordCapture');
+      expect(calls.order).not.toContain('forward.run');
+      expect(calls.order).not.toContain('local.markCaptureOwed');
+      expect(calls.order).not.toContain('local.markCaptureDelivered');
+    },
+  );
+
+  it('recordAuditEvent forwards a root whose key is in scope', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    expect(calls.order).toContain('client.recordAuditEvent');
+    expect(calls.delivered).toEqual(['s1']);
+  });
+
+  it.each(REFUSED_KEYS)(
+    'recordAuditEvent keeps a root keyed %s local and unstamped',
+    async (key) => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', key));
+      expect(calls.order).toContain('local.recordAuditEvent');
+      expect(calls.order).not.toContain('forward.run');
+      expect(calls.delivered).toEqual([]);
+    },
+  );
+
+  it('recordLlmCall forwards an in-scope leaf under an in-scope root', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCall(llmLeaf('m1', 's1', IN));
+    expect(calls.delivered).toEqual(['s1', llmCallId('s1', 'm1')]);
+  });
+
+  it.each(REFUSED_KEYS)(
+    'recordLlmCall keeps a leaf keyed %s local under an in-scope root',
+    async (key) => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', IN));
+      await gateway.recordLlmCall(llmLeaf('m1', 's1', key));
+      expect(calls.order).toContain('local.recordLlmCall');
+      // One forward, the root's; the leaf is never offered and never stamped.
+      expect(calls.order.filter((step) => step === 'forward.run')).toHaveLength(1);
+      expect(calls.delivered).toEqual(['s1']);
+    },
+  );
+
+  it('recordLlmCalls and recordToolCalls forward in-scope leaves under an in-scope root', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    expect(calls.batchSizes).toEqual([1, 1]);
+    expect(calls.delivered).toEqual(['s1', llmCallId('s1', 'm1'), toolCallId('s1', 't1')]);
+  });
+
+  it.each(REFUSED_KEYS)(
+    'recordLlmCalls and recordToolCalls keep leaves keyed %s out of the batch',
+    async (key) => {
+      const { gateway, calls, dataDir: dir } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', IN));
+      await gateway.recordLlmCalls([llmLeaf('m1', 's1', key)]);
+      await gateway.recordToolCalls([toolLeaf('t1', 's1', key)]);
+      expect(calls.order).toContain('local.recordLlmCalls');
+      expect(calls.order).toContain('local.recordToolCalls');
+      expect(calls.batchSizes).toEqual([]);
+      expect(calls.delivered).toEqual(['s1']);
+      // Filtered BEFORE the batch, so not one refusal is tallied as a lost forward.
+      expect(readForwardDrops(dir)).toBeNull();
+    },
+  );
+
+  it('recordConfigScan stays local on a scoped attachment, even when stamped in scope', async () => {
+    const scan: ConfigScanRecord = {
+      items: [],
+      scanEvent: {
+        id: 'scan-1',
+        eventType: 'config_scan',
+        startedAt: '2026-08-19T10:00:00.000Z',
+        attributes: { scope_key: IN },
+      },
+    };
+    const scoped = build({ attachment: SCOPED });
+    await scoped.gateway.recordConfigScan(scan);
+    expect(scoped.calls.order).toContain('local.recordConfigScan');
+    expect(scoped.calls.order).not.toContain('forward.run');
+    expect(scoped.calls.delivered).toEqual([]);
+    // The contrast: a machine attachment forwards the same scan.
+    const machine = build();
+    await machine.gateway.recordConfigScan(scan);
+    expect(machine.calls.delivered).toEqual(['scan-1']);
+  });
+
+  it('recordProjectEgress forwards a scan of an enrolled remote, keyed before hashing', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    const summary = await gateway.recordProjectEgress({
+      ...egressInput(),
+      projectKey: 'git:https://github.com/org/api.git',
+    });
+    expect(calls.order).toContain('client.recordProjectEgress');
+    expect(summary.destinations).toBe(1);
+  });
+
+  it.each(['git:https://github.com/me/personal.git', 'path:/home/me/scratch'])(
+    'recordProjectEgress keeps %s local and still returns the local summary',
+    async (projectKey) => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      const summary = await gateway.recordProjectEgress({ ...egressInput(), projectKey });
+      expect(calls.order).toContain('local.recordProjectEgress');
+      expect(calls.order).not.toContain('forward.run');
+      expect(summary).toEqual({
+        destinations: 1,
+        endpoints: 2,
+        callSites: 3,
+        truncated: false,
+        droppedFiles: [],
+      });
+    },
+  );
+
+  it('ensureInventory sends the inventory for an enrolled repository', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
+    expect(calls.order).toContain('client.ingestInventory');
+  });
+
+  // The session root's key is withheld for a web chat session, and the
+  // inventory is held to the same rule: the browser host gives such a session
+  // its home directory as a stand-in working directory, and a home directory
+  // kept under version control resolves a project. Here that project IS enrolled.
+  it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
+    'ensureInventory sends no inventory for a %s session, though its project is enrolled',
+    async (tool) => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const posture = {
+        prepare: vi.fn(() => {
+          calls.order.push('posture.prepare');
+          return Promise.resolve({ deviceId: 'd' } as never);
+        }),
+        send: vi.fn(() => {
+          calls.order.push('posture.send');
+          return Promise.resolve();
+        }),
+      };
+      const { gateway } = build({
+        attachment: SCOPED,
+        posture,
+        local: makeLocal(calls),
+        client: makeClient(calls),
+      });
+      await gateway.ensureInventory(projectCtx('https://github.com/org/api.git', tool));
+      expect(calls.order).toContain('local.ensureInventory');
+      expect(calls.order).not.toContain('client.ingestInventory');
+      // Posture stays unconditional.
+      expect(calls.order).toContain('posture.prepare');
+      expect(calls.order).toContain('posture.send');
+
+      // The control: the same project under a coding harness is sent, so the
+      // refusal above is the harness's doing and not the project's.
+      await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
+      expect(calls.order).toContain('client.ingestInventory');
+    },
+  );
+
+  // A context that names no harness cannot be shown not to be a web chat
+  // session, so it is held back with the rest of what the verdict cannot place.
+  it('ensureInventory sends no inventory for a context that names no harness', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.ensureInventory({
+      project: { url: 'https://github.com/org/api.git', name: 'repo', attributes: {} },
+    });
+    expect(calls.order).toContain('local.ensureInventory');
+    expect(calls.order).not.toContain('client.ingestInventory');
+  });
+
+  // Posture is the liveness channel: a scoped machine whose sessions are all
+  // personal must still report, or it grades silent.
+  it.each(['https://github.com/me/personal.git', '/home/me/scratch', undefined])(
+    'ensureInventory sends no inventory for project %s, and still reports posture',
+    async (url) => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const posture = {
+        prepare: vi.fn(() => {
+          calls.order.push('posture.prepare');
+          return Promise.resolve({ deviceId: 'd' } as never);
+        }),
+        send: vi.fn(() => {
+          calls.order.push('posture.send');
+          return Promise.resolve();
+        }),
+      };
+      const { gateway } = build({
+        attachment: SCOPED,
+        posture,
+        local: makeLocal(calls),
+        client: makeClient(calls),
+      });
+      await expect(gateway.ensureInventory(projectCtx(url))).resolves.toEqual({});
+      expect(calls.order).toContain('local.ensureInventory');
+      expect(calls.order).not.toContain('client.ingestInventory');
+      expect(calls.order).toContain('posture.prepare');
+      expect(calls.order).toContain('posture.send');
+    },
+  );
+
+  it("a refused inventory CLEARS the previous session's resolution, as a failed one does", async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
+    const client = makeClient(calls, {
+      ingestInventory: vi.fn(() =>
+        Promise.resolve({ hostId: 'tenant-host-A', sourceProjectId: 'tenant-project-A' }),
+      ),
+      recordAuditEvent,
+    });
+    const { gateway } = build({ attachment: SCOPED, client });
+    await gateway.ensureInventory(projectCtx('https://github.com/org/api.git')); // A: enrolled, resolves
+    await gateway.ensureInventory(projectCtx('https://github.com/me/personal.git')); // B: refused
+    await gateway.recordAuditEvent(rootRow('c-root', IN));
+
+    const forwarded = recordAuditEvent.mock.calls[0]?.[0];
+    expect(forwarded).toBeDefined();
+    expect(JSON.stringify(forwarded)).not.toContain('tenant-host-A');
+    expect(JSON.stringify(forwarded)).not.toContain('tenant-project-A');
+  });
+});
+
+// ── freshly attached, nothing enrolled ──────────────────────────────────────
+
+describe('a scoped attachment with nothing enrolled', () => {
+  // The state every scoped machine starts in: attached, and no repository
+  // enrolled yet. Every row is written exactly as standalone writes it and none
+  // is sent, while the posture report, the device's liveness channel, still
+  // goes out.
+  it('writes every row locally, sends none of them, and still reports posture', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const posture = {
+      prepare: vi.fn(() => {
+        calls.order.push('posture.prepare');
+        return Promise.resolve({ deviceId: 'd' } as never);
+      }),
+      send: vi.fn(() => {
+        calls.order.push('posture.send');
+        return Promise.resolve();
+      }),
+    };
+    const { gateway } = build({
+      attachment: SCOPED_EMPTY,
+      posture,
+      local: makeLocal(calls),
+      client: makeClient(calls),
+      // One `calls` for every fake, so the forward policy's steps land beside
+      // the local and client steps this case reads.
+      forward: passthroughForward(calls),
+    });
+    // Every input carries the key an enrolled repository's would, so nothing
+    // here is refused for a missing or a foreign key: only for the empty scope.
+    await gateway.recordCapture(capture('e1', IN));
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCall(llmLeaf('m1', 's1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m2', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordConfigScan({
+      items: [],
+      scanEvent: { id: 'scan-1', eventType: 'config_scan', startedAt: '2026-08-19T10:00:00.000Z' },
+    });
+    await gateway.recordProjectEgress({
+      ...egressInput(),
+      projectKey: 'git:https://github.com/org/api.git',
+    });
+    await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
+
+    for (const step of [
+      'local.recordCapture',
+      'local.recordAuditEvent',
+      'local.recordLlmCall',
+      'local.recordLlmCalls',
+      'local.recordToolCalls',
+      'local.recordConfigScan',
+      'local.recordProjectEgress',
+      'local.ensureInventory',
+    ]) {
+      expect(calls.order).toContain(step);
+    }
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.order.filter((step) => step.startsWith('client.'))).toEqual([]);
+    expect(calls.order).not.toContain('local.markCaptureOwed');
+    expect(calls.order).not.toContain('local.markCaptureDelivered');
+    expect(calls.delivered).toEqual([]);
+    expect(calls.order).toContain('posture.prepare');
+    expect(calls.order).toContain('posture.send');
+  });
+});
+
+// ── a child row needs its session root in scope ─────────────────────────────
+
+describe('a child row forwards only beside an in-scope root', () => {
+  it('a keyless root with keyed leaves sends nothing', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', undefined));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordLlmCall(llmLeaf('m2', 's1', IN));
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  it('a keyed root with a keyless leaf sends the root only', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', undefined)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', undefined)]);
+    expect(calls.batchSizes).toEqual([]);
+    expect(calls.delivered).toEqual(['s1']);
+  });
+
+  // A leaf and its session root can be keyed differently: the root from where
+  // the session began, a leaf from the path or directory it names. A leaf
+  // forwards only when its own key AND its root's are enrolled, so a personal
+  // leaf never forwards beside an enrolled root, and neither does an enrolled
+  // leaf beside a personal one. Which root a leaf is held to is the one the
+  // store keeps, which the real-store cases further down pin.
+  it('a personal leaf never forwards under an enrolled root', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', OUT)]);
+    expect(calls.delivered).toEqual(['s1']);
+  });
+
+  it('an enrolled leaf never forwards under a personal root', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', OUT));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  it('a leaf whose root this instance never saw stays local', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordLlmCall(llmLeaf('m1', 'unseen', IN));
+    await gateway.recordAuditEvent(
+      auditEvent({
+        id: 'refusal-1',
+        eventType: 'model_refusal',
+        rootSessionId: 'unseen',
+        ...keyed(IN),
+      }),
+    );
+    expect(calls.order).not.toContain('forward.run');
+  });
+
+  // The root's verdict comes from the row the store keeps for it, read back once
+  // after the local write, and never from the key on the event just written.
+  it('judges a root by the key the store holds, not by the key on the event', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { readSessionScopeKey: () => OUT });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    // The event says enrolled; the store says personal.
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordLlmCall(llmLeaf('m2', 's1', IN));
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  // A root event is sent only when its OWN key is in scope as well. Its
+  // attributes (cwd, project, repo) describe where it was recorded from, so a
+  // root event keyed to a personal directory must not leave under an enrolled
+  // stored root. The leaves are held to the stored root alone, so the enrolled
+  // ones still forward: the instance that wrote the stored root forwarded it.
+  it.each([OUT, undefined])(
+    'does not send a root event keyed %s under an enrolled stored root, and still forwards its enrolled leaves',
+    async (eventKey) => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const local = makeLocal(calls, { readSessionScopeKey: () => IN });
+      const { gateway } = build({
+        attachment: SCOPED,
+        local,
+        client: makeClient(calls),
+        forward: passthroughForward(calls),
+      });
+      await gateway.recordAuditEvent(rootRow('s1', eventKey));
+      await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+      expect(calls.order).not.toContain('client.recordAuditEvent');
+      expect(calls.delivered).not.toContain('s1');
+      // The leaf did forward, so the root event's absence is the root event's
+      // own key and not a gateway that refused the session.
+      expect(calls.batchSizes).toEqual([1]);
+      expect(calls.delivered).toContain(llmCallId('s1', 'm1'));
+    },
+  );
+
+  it('keeps a root and its leaves local when the store holds no key for it', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { readSessionScopeKey: () => undefined });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  it('reads the stored root once per root per instance', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
+    const local = makeLocal(calls, { readSessionScopeKey: read });
+    const { gateway } = build({
+      attachment: SCOPED,
+      local,
+      client: makeClient(calls),
+      forward: passthroughForward(calls),
+    });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+    await gateway.recordLlmCall(llmLeaf('m2', 's1', IN));
+    expect(read).toHaveBeenCalledTimes(1);
+    await gateway.recordAuditEvent(rootRow('s2', IN));
+    expect(read).toHaveBeenCalledTimes(2);
+    // Positive control: the root and its leaves did forward, so the single read
+    // above is not a count taken of a gateway that refused everything.
+    expect(calls.delivered).toContain('s1');
+    expect(calls.batchSizes).toEqual([1, 1]);
+  });
+
+  // The read costs a store hit, and machine mode owes none: it answers before
+  // any root is looked at.
+  it('never reads the store in machine mode', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
+    const local = makeLocal(calls, { readSessionScopeKey: read });
+    const { gateway } = build({ attachment: MACHINE, local, forward: passthroughForward(calls) });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+    expect(read).not.toHaveBeenCalled();
+    expect(calls.delivered).toContain('s1');
+  });
+
+  // The verdict is total: a store that cannot answer is an answer of local.
+  it('keeps a root and its leaves local, and rejects nothing, when the read throws', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      readSessionScopeKey: () => {
+        throw new Error('store unreadable');
+      },
+    });
+    const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
+    await expect(gateway.recordAuditEvent(rootRow('s1', IN))).resolves.toBeUndefined();
+    await expect(gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)])).resolves.toBeUndefined();
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.delivered).toEqual([]);
+  });
+
+  // A GUARD: a gateway with no verdict forwards this row too. It pins that the
+  // root rule never reaches a row with no root to be held to.
+  it('a row with no root reference is decided by its own key alone', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(
+      auditEvent({ id: 'refusal-1', eventType: 'model_refusal', ...keyed(IN) }),
+    );
+    expect(calls.delivered).toEqual(['refusal-1']);
+  });
+
+  it('a mixed batch forwards only its in-scope leaves, and tallies no drops', async () => {
+    const { gateway, calls, dataDir: dir } = build({ attachment: SCOPED });
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordToolCalls([
+      toolLeaf('t-in-1', 's1', IN),
+      toolLeaf('t-out', 's1', OUT),
+      toolLeaf('t-none', 's1', undefined),
+      toolLeaf('t-in-2', 's1', IN),
+    ]);
+    expect(calls.batchSizes).toEqual([2]);
+    expect(calls.delivered).toEqual(['s1', toolCallId('s1', 't-in-1'), toolCallId('s1', 't-in-2')]);
+    expect(readForwardDrops(dir)).toBeNull();
+  });
+
+  // A batch leaf is held to its root by the reference a single row is held by:
+  // its `rootSessionId`, else its `parentId`. Both input shapes require both
+  // today, so the leaves here are cast past the type to carry only a parent.
+  describe('a batch leaf that names only a parent', () => {
+    const parentOnly = <T extends { rootSessionId: string }>(leaf: T): T => {
+      const copy = { ...leaf };
+      Reflect.deleteProperty(copy, 'rootSessionId');
+      return copy;
+    };
+
+    it('is held back under a personal root, though its own key is enrolled', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', OUT));
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 's1', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 's1', IN))]);
+      expect(calls.batchSizes).toEqual([]);
+      expect(calls.delivered).toEqual([]);
+    });
+
+    it('is held back when its parent was never recorded by this instance', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 'unseen', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 'unseen', IN))]);
+      expect(calls.batchSizes).toEqual([]);
+    });
+
+    // The control: under an enrolled root the same leaves forward, so the two
+    // refusals above are the root rule's and not the cast's.
+    it('forwards under an enrolled root', async () => {
+      const { gateway, calls } = build({ attachment: SCOPED });
+      await gateway.recordAuditEvent(rootRow('s1', IN));
+      await gateway.recordLlmCalls([parentOnly(llmLeaf('m1', 's1', IN))]);
+      await gateway.recordToolCalls([parentOnly(toolLeaf('t1', 's1', IN))]);
+      expect(calls.batchSizes).toEqual([1, 1]);
+    });
+  });
+
+  // A GUARD: a gateway with no verdict forwards these rows too. It pins that
+  // machine mode answers before the root rule, on the single-row path and the
+  // batch path alike, so a machine attachment never loses a leaf to it.
+  it('machine mode keeps no root rule: a leaf whose root it never saw still forwards', async () => {
+    const { gateway, calls } = build({ attachment: MACHINE });
+    await gateway.recordLlmCall(llmLeaf('m1', 'unseen', undefined));
+    await gateway.recordLlmCalls([llmLeaf('m2', 'unseen', undefined)]);
+    await gateway.recordToolCalls([toolLeaf('t1', 'unseen', undefined)]);
+    expect(calls.batchSizes).toEqual([1, 1]);
+    expect(calls.delivered).toEqual([
+      llmCallId('unseen', 'm1'),
+      llmCallId('unseen', 'm2'),
+      toolCallId('unseen', 't1'),
+    ]);
+  });
+});
+
+// ── totality ────────────────────────────────────────────────────────────────
+
+describe('the verdict is total: a throw means local, never a rejection', () => {
+  const unreadableMode = (): ResolvedAttachmentScope => {
+    // Built well-typed, then its `mode` redefined as a throwing getter: a cast
+    // from a literal without `mode` is a compile error, not a fixture.
+    const attachment: ResolvedAttachmentScope = { mode: 'scoped', keys: new Set<string>([IN]) };
+    Object.defineProperty(attachment, 'mode', {
+      get: () => {
+        throw new Error('mode unreadable');
+      },
+    });
+    return attachment;
+  };
+  const throwingLookup: ResolvedAttachmentScope = {
+    mode: 'scoped',
+    keys: {
+      has: () => {
+        throw new Error('key set unreadable');
+      },
+    } as unknown as ReadonlySet<string>,
+  };
+  const CASES: readonly (readonly [string, ResolvedAttachmentScope])[] = [
+    ['an attachment whose mode cannot be read', unreadableMode()],
+    ['a key set that throws on lookup', throwingLookup],
+  ];
+
+  it.each(CASES)(
+    'with %s, every method writes locally and forwards nothing',
+    async (_label, attachment) => {
+      const { gateway, calls } = build({ attachment });
+      await gateway.recordCapture(capture('e1', IN));
+      await gateway.recordAuditEvent(rootRow('s1', IN));
+      await gateway.recordLlmCall(llmLeaf('m1', 's1', IN));
+      await gateway.recordLlmCalls([llmLeaf('m2', 's1', IN)]);
+      await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+      await gateway.recordProjectEgress({
+        ...egressInput(),
+        projectKey: 'git:https://github.com/org/api.git',
+      });
+      await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
+      for (const step of [
+        'local.recordCapture',
+        'local.recordAuditEvent',
+        'local.recordLlmCall',
+        'local.recordLlmCalls',
+        'local.recordToolCalls',
+        'local.recordProjectEgress',
+        'local.ensureInventory',
+      ]) {
+        expect(calls.order).toContain(step);
+      }
+      expect(calls.order).not.toContain('forward.run');
+      expect(calls.order).not.toContain('local.markCaptureOwed');
+      expect(calls.delivered).toEqual([]);
+    },
+  );
+
+  it('a capture whose key cannot be read is kept local', async () => {
+    const { gateway, calls } = build({ attachment: SCOPED });
+    const record = capture('e1', IN);
+    Object.defineProperty(record, 'scopeKey', {
+      get: () => {
+        throw new Error('key unreadable');
+      },
+    });
+    await expect(gateway.recordCapture(record)).resolves.toBeUndefined();
+    expect(calls.order).toContain('local.recordCapture');
+    expect(calls.order).not.toContain('forward.run');
+    expect(calls.order).not.toContain('local.markCaptureOwed');
+  });
+});
+
+// ── what a refusal never touches ────────────────────────────────────────────
+
+describe('a refusal never reaches the forward policy', () => {
+  it('leaves no breaker state after repeated refusals, against a plane that is down', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const down = (): Promise<never> => Promise.reject(new Error('backend down'));
+    const client = makeClient(calls, {
+      ingestEvents: down,
+      recordAuditEvent: down,
+      recordProjectEgress: down,
+    });
+    const { gateway, dataDir: dir } = build({
+      attachment: SCOPED,
+      client,
+      local: makeLocal(calls),
+      forward: createForwardPolicy({ dir: dataDir }),
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await gateway.recordCapture(capture(`out-${String(i)}`, OUT));
+      await gateway.recordAuditEvent(rootRow(`personal-${String(i)}`, OUT));
+      await gateway.recordProjectEgress({ ...egressInput(), projectKey: 'path:/home/me/scratch' });
+    }
+    expect(existsSync(join(dir, FORWARD_STATE_FILENAME))).toBe(false);
+    expect(readForwardDrops(dir)).toBeNull();
+
+    // Positive control: one in-scope forward against the same dead plane DOES
+    // write the breaker's file, so the absence above is the verdict's doing.
+    await gateway.recordCapture(capture('in-1', IN));
+    expect(existsSync(join(dir, FORWARD_STATE_FILENAME))).toBe(true);
+  });
+});
+
+describe('a refused capture is never marked owed, on a real store', () => {
+  it('leaves outbox_owed NULL on the refused row, and sets it on the undelivered in-scope one', async () => {
+    migratedStore.seed(dataDir);
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const gateway = new AttachedDataGateway({
+      dataDir,
+      local: new StandaloneDataGateway(dataDir, bundledDetections()),
+      client: makeClient(calls, {
+        ingestEvents: () => Promise.reject(new Error('backend down')),
+      }),
+      readCachedBundle: () => Promise.resolve(null),
+      forward: passthroughForward(calls),
+      attachment: SCOPED,
+    });
+    try {
+      await gateway.recordCapture({
+        event: { ...event('personal'), id: randomUUID() },
+        findings: [],
+        scopeKey: OUT,
+      });
+      await gateway.recordCapture({
+        event: { ...event('enrolled'), id: randomUUID() },
+        findings: [],
+        scopeKey: IN,
+      });
+    } finally {
+      await gateway.close();
+    }
+
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    try {
+      const rows = raw
+        .prepare(
+          `SELECT content_hash, scope_key, outbox_owed, synced_at FROM audit_events
+            WHERE event_type = 'prompt' ORDER BY content_hash`,
+        )
+        .all();
+      expect(rows).toEqual([
+        { content_hash: 'hash-enrolled', scope_key: IN, outbox_owed: 1, synced_at: null },
+        { content_hash: 'hash-personal', scope_key: OUT, outbox_owed: null, synced_at: null },
+      ]);
+    } finally {
+      raw.close();
+    }
+  });
+});
+
+// ── a leaf is held to the stored session root ───────────────────────────────
+
+describe('a leaf is held to the stored session root, on a real store', () => {
+  /**
+   * Two gateway instances over ONE store, the way the producers meet: the hook
+   * that opened the session records its root, and a later reconcile pass, in a
+   * process of its own, records a root event for the same session before its
+   * leaves. Roots are first-write-wins in the store, so the second root event
+   * leaves the stored row as it was, and the history drain decides that row by
+   * the key it holds.
+   */
+  function twoInstances(): {
+    first: { gateway: AttachedDataGateway; calls: Calls };
+    later: { gateway: AttachedDataGateway; calls: Calls };
+  } {
+    migratedStore.seed(dataDir);
+    const instance = () => {
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const gateway = new AttachedDataGateway({
+        dataDir,
+        local: new StandaloneDataGateway(dataDir, bundledDetections()),
+        client: makeClient(calls),
+        readCachedBundle: () => Promise.resolve(null),
+        forward: passthroughForward(calls),
+        attachment: SCOPED,
+      });
+      return { gateway, calls };
+    };
+    return { first: instance(), later: instance() };
+  }
+
+  const sent = (calls: Calls): string[] => calls.order.filter((step) => step.startsWith('client.'));
+
+  /** `synced_at` of each named row, read raw: the real store stamps delivery itself. */
+  function syncedAt(ids: readonly string[]): Record<string, number | null> {
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    try {
+      const stmt = raw.prepare('SELECT synced_at FROM audit_events WHERE id = :id');
+      return Object.fromEntries(
+        ids.map((id) => [id, (stmt.get({ id }) as { synced_at: number | null }).synced_at]),
+      );
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('forwards nothing when the stored root is personal and a later root event is enrolled', async () => {
+    const { first, later } = twoInstances();
+    try {
+      await first.gateway.recordAuditEvent(rootRow('s-split', OUT));
+      await later.gateway.recordAuditEvent(rootRow('s-split', IN));
+      await later.gateway.recordLlmCalls([llmLeaf('m1', 's-split', IN)]);
+      await later.gateway.recordToolCalls([toolLeaf('t1', 's-split', IN)]);
+      await later.gateway.recordLlmCall(llmLeaf('m2', 's-split', IN));
+    } finally {
+      await first.gateway.close();
+      await later.gateway.close();
+    }
+
+    // Neither instance sent a thing, and nothing was stamped delivered.
+    expect(sent(first.calls)).toEqual([]);
+    expect(sent(later.calls)).toEqual([]);
+    expect(syncedAt(['s-split', llmCallId('s-split', 'm1'), toolCallId('s-split', 't1')])).toEqual({
+      's-split': null,
+      [llmCallId('s-split', 'm1')]: null,
+      [toolCallId('s-split', 't1')]: null,
+    });
+    // The stored root is still the personal one, which is the row the drain reads.
+    const raw = new DatabaseSync(join(dataDir, DB_FILENAME));
+    try {
+      const root = raw.prepare(`SELECT scope_key FROM audit_events WHERE id = 's-split'`).get();
+      expect(root).toEqual({ scope_key: OUT });
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('forwards the enrolled leaves, but not the personal root event, when the stored root is enrolled', async () => {
+    const { first, later } = twoInstances();
+    try {
+      await first.gateway.recordAuditEvent(rootRow('s-mirror', IN));
+      await later.gateway.recordAuditEvent(rootRow('s-mirror', OUT));
+      await later.gateway.recordLlmCalls([llmLeaf('m1', 's-mirror', IN)]);
+      await later.gateway.recordToolCalls([toolLeaf('t1', 's-mirror', IN)]);
+      // A personal leaf beside the same root still never forwards.
+      await later.gateway.recordToolCalls([toolLeaf('t2', 's-mirror', OUT)]);
+    } finally {
+      await first.gateway.close();
+      await later.gateway.close();
+    }
+
+    // The first instance forwarded the stored root, so the leaves have a root to
+    // hang off on the plane.
+    expect(sent(first.calls)).toEqual(['client.recordAuditEvent']);
+    // The later instance did NOT send its personal-keyed root event: its
+    // attributes describe a personal checkout. It forwarded one enrolled
+    // llm_call and one enrolled tool_call, in a batch each, and stamped exactly
+    // those two. The personal tool_call went nowhere.
+    expect(sent(later.calls)).toEqual(['client.recordAuditEvents', 'client.recordAuditEvents']);
+    expect(later.calls.batchSizes).toEqual([1, 1]);
+    const stamps = syncedAt([
+      llmCallId('s-mirror', 'm1'),
+      toolCallId('s-mirror', 't1'),
+      toolCallId('s-mirror', 't2'),
+    ]);
+    expect(stamps[llmCallId('s-mirror', 'm1')]).not.toBeNull();
+    expect(stamps[toolCallId('s-mirror', 't1')]).not.toBeNull();
+    expect(stamps[toolCallId('s-mirror', 't2')]).toBeNull();
+  });
+});
+
+describe('the verdict decides whether a row is sent, never what is sent', () => {
+  // A GUARD: a gateway with no verdict sends the same bodies in both modes. It
+  // pins that the verdict, and the scoped slug rewrite, change nothing in what
+  // an in-scope row sends.
+  it('an in-scope row reaches the client byte-identical to machine mode, with no scope key', async () => {
+    const sentBy = async (attachment: ResolvedAttachmentScope): Promise<string[]> => {
+      const sent: string[] = [];
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+      const client = makeClient(calls, {
+        ingestEvents: (batch) => {
+          sent.push(JSON.stringify(batch));
+          return Promise.resolve({ accepted: 1, duplicates: 0 });
+        },
+        recordAuditEvent: (body) => {
+          sent.push(JSON.stringify(body));
+          return Promise.resolve();
+        },
+        recordAuditEvents: (bodies) => {
+          sent.push(JSON.stringify(bodies));
+          return Promise.resolve({ accepted: bodies.length });
+        },
+        recordProjectEgress: (request) => {
+          sent.push(JSON.stringify(request));
+          return Promise.resolve({});
+        },
+      });
+      const { gateway } = build({ attachment, client, local: makeLocal(calls) });
+      // The common case the scoped slug rewrite must leave byte for byte alone:
+      // the session's checkout IS the keyed repository, so the producer's slug
+      // already equals the key's last segment ('api'). The slug is listed FIRST,
+      // so a rewrite that moved it to the end of the metadata would show here.
+      await gateway.recordCapture({
+        event: { ...event('e1'), metadata: { repo: 'api', sessionId: 's1' } },
+        findings: [],
+        scopeKey: IN,
+      });
+      await gateway.recordAuditEvent(
+        auditEvent({ id: 's1', attributes: { cwd: '/work/api', scope_key: IN } }),
+      );
+      await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+      await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
+      await gateway.recordProjectEgress({
+        ...egressInput(),
+        projectKey: 'git:https://github.com/org/api.git',
+      });
+      return sent;
+    };
+    const scoped = await sentBy(SCOPED);
+    expect(scoped).toHaveLength(5);
+    expect(scoped).toEqual(await sentBy(MACHINE));
+    for (const body of scoped) expect(body).not.toContain('scope_key');
+  });
+});
+
+// ── a scoped capture carries its own key's repository name ──────────────────
+
+describe("a scoped capture forwards its key's repository name", () => {
+  const WORK = 'github.com/org/work-repo';
+  const SCOPED_WORK: ResolvedAttachmentScope = { mode: 'scoped', keys: new Set<string>([WORK]) };
+
+  /**
+   * A file in the enrolled checkout, captured from a session whose working
+   * directory is a personal checkout. The producer's slug names the session's
+   * directory; the key names the file's repository.
+   */
+  const crossRepo = (): CaptureRecord => ({
+    event: {
+      ...event('e1'),
+      metadata: { sessionId: 's1', repo: 'personal-repo', filePath: '/work/work-repo/src/app.ts' },
+    },
+    findings: [],
+    scopeKey: WORK,
+  });
+
+  /**
+   * A gateway whose client records every event `ingestEvents` is handed, and
+   * whose local store records the event each delivery stamp is handed.
+   * `ingest` settles the forward: a delivery by default, a dead plane to reach
+   * the owed stamp.
+   */
+  const recordingGateway = (
+    attachment: ResolvedAttachmentScope,
+    ingest: () => ReturnType<AttachedClient['ingestEvents']> = () =>
+      Promise.resolve({ accepted: 1, duplicates: 0 }),
+  ) => {
+    const sent: IngestEvent[] = [];
+    const stamped: IngestEvent[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = makeClient(calls, {
+      ingestEvents: (batch) => {
+        sent.push(...batch.events);
+        return ingest();
+      },
+    });
+    const local = makeLocal(calls, {
+      markCaptureDelivered: (stampedEvent) => {
+        stamped.push(stampedEvent);
+      },
+      markCaptureOwed: (stampedEvent) => {
+        stamped.push(stampedEvent);
+      },
+    });
+    const { gateway } = build({ attachment, client, local });
+    return { gateway, sent, stamped };
+  };
+
+  it("scoped: a capture keyed to an enrolled repository forwards that repository's name", async () => {
+    const { gateway, sent } = recordingGateway(SCOPED_WORK);
+    const record = crossRepo();
+    await gateway.recordCapture(record);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.metadata?.repo).toBe('work-repo');
+    // Only the slug changes: the id, the content and every other metadata field
+    // are the producer's.
+    expect(sent[0]).toEqual({
+      ...record.event,
+      metadata: { ...record.event.metadata, repo: 'work-repo' },
+    });
+  });
+
+  // A GUARD: a gateway with no rewrite sends the producer's slug already. It
+  // pins that the rewrite never reaches a machine attachment.
+  it("machine: the same capture forwards the producer's slug, byte-identical", async () => {
+    const { gateway, sent } = recordingGateway(MACHINE);
+    const record = crossRepo();
+    await gateway.recordCapture(record);
+    expect(sent[0]?.metadata?.repo).toBe('personal-repo');
+    expect(JSON.stringify(sent)).toBe(JSON.stringify([record.event]));
+  });
+
+  it("scoped: a capture with no slug (a scanned file's shape) gains its key's; machine adds none", async () => {
+    const scoped = recordingGateway(SCOPED_WORK);
+    await scoped.gateway.recordCapture({ event: event('scan-1'), findings: [], scopeKey: WORK });
+    expect(scoped.sent[0]?.metadata).toEqual({ repo: 'work-repo' });
+
+    const machine = recordingGateway(MACHINE);
+    await machine.gateway.recordCapture({ event: event('scan-1'), findings: [], scopeKey: WORK });
+    expect(machine.sent[0]).not.toHaveProperty('metadata');
+  });
+
+  // The stamps find the row by an id derived from the session id, content hash
+  // and file path, never the slug. They are handed the producer's own event all
+  // the same, so nothing that reads `record.event` ever sees the copy.
+  it("never rewrites the record: the delivery stamp is handed the producer's event", async () => {
+    const { gateway, sent, stamped } = recordingGateway(SCOPED_WORK);
+    const record = crossRepo();
+    await gateway.recordCapture(record);
+    expect(sent[0]?.metadata?.repo).toBe('work-repo');
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0]).toBe(record.event);
+    expect(record.event.metadata?.repo).toBe('personal-repo');
+  });
+
+  // A GUARD, like the machine case: with no rewrite the owed stamp is handed
+  // the producer's event already.
+  it("never rewrites the record: the owed stamp is handed the producer's event", async () => {
+    const { gateway, stamped } = recordingGateway(SCOPED_WORK, () =>
+      Promise.reject(new Error('backend down')),
+    );
+    const record = crossRepo();
+    await gateway.recordCapture(record);
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0]).toBe(record.event);
+    expect(record.event.metadata?.repo).toBe('personal-repo');
   });
 });
 

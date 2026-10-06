@@ -30,7 +30,16 @@ import {
   responseEmitPayload,
   scanResponseFields,
 } from './scan-response.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+  searchRootScopeKey,
+} from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
 
@@ -61,11 +70,31 @@ async function main(): Promise<void> {
   const metadata = baseMetadata(input) ?? {};
   if (rawToolName) metadata.toolName = rawToolName;
   const rawToolInput = input.tool_input;
-  const filePath =
+  const toolInput =
     typeof rawToolInput === 'object' && rawToolInput !== null
-      ? getString(rawToolInput as Record<string, unknown>, 'file_path')
+      ? (rawToolInput as Record<string, unknown>)
       : undefined;
+  const filePath = toolInput === undefined ? undefined : getString(toolInput, 'file_path');
   if (filePath) metadata.filePath = filePath;
+  // Keyed by the file the call names (a relative path is read against the cwd),
+  // else by the session's cwd when it names none: see captureScopeKey. The file
+  // is `file_path`, else `notebook_path`, as at PreToolUse (inputFilePath), so an
+  // MCP tool that names a notebook is keyed where the notebook is. Only
+  // `file_path` is stamped on the event: the metadata is a wire shape and this
+  // hook has only ever carried that one. A Grep names no file but the root it
+  // searched (`tool_input.path`, a directory or one file), and its output is what
+  // is recorded, so it is keyed by that root the same way: see
+  // searchRootScopeKey. Beside the metadata rather than in it: the key is local,
+  // the metadata is wire.
+  const keyedPath =
+    filePath ?? (toolInput === undefined ? undefined : getString(toolInput, 'notebook_path'));
+  const scopeKey =
+    rawToolName === 'Grep'
+      ? searchRootScopeKey(
+          input,
+          toolInput === undefined ? undefined : getString(toolInput, 'path'),
+        )
+      : captureScopeKey(input, keyedPath);
 
   // One runtime held across the field loop, like pre-tool-use: a per-field
   // handleCapture would re-open the store, re-parse the policy bundle, and
@@ -95,7 +124,7 @@ async function main(): Promise<void> {
       fields,
       (text) =>
         runtime.capture(
-          { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
+          { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
           { persist: 'with-findings' },
         ),
       vaultGlue

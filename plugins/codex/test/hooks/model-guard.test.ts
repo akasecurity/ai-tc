@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,6 +63,7 @@ describe('handleProhibitedTurn', () => {
       dir,
       's1',
       undefined,
+      dir,
       (o) => {
         emitted.push(o);
         return Promise.resolve();
@@ -78,10 +79,17 @@ describe('handleProhibitedTurn', () => {
     // own `finally`; closing here would pull it out from under the scan.
     const close = vi.fn(() => Promise.resolve());
     const emitted: unknown[] = [];
-    const stop = await handleProhibitedTurn(gatewayWith([], close), dir, 's1', undefined, (o) => {
-      emitted.push(o);
-      return Promise.resolve();
-    });
+    const stop = await handleProhibitedTurn(
+      gatewayWith([], close),
+      dir,
+      's1',
+      undefined,
+      dir,
+      (o) => {
+        emitted.push(o);
+        return Promise.resolve();
+      },
+    );
     expect(stop).toBe(false);
     expect(close).not.toHaveBeenCalled();
     expect(emitted).toHaveLength(0);
@@ -93,18 +101,77 @@ describe('handleProhibitedTurn', () => {
       getPolicyBundle: () => Promise.reject(new Error('store gone')),
       close: vi.fn(),
     } as unknown as Parameters<typeof handleProhibitedTurn>[0];
-    expect(await handleProhibitedTurn(broken, dir, 's1', undefined, () => Promise.resolve())).toBe(
-      false,
-    );
+    expect(
+      await handleProhibitedTurn(broken, dir, 's1', undefined, dir, () => Promise.resolve()),
+    ).toBe(false);
   });
 
   it('never resolves the model when the bundle prohibits nothing', async () => {
     // Ordering that keeps an unenforced tenant off the transcript entirely.
     recordSessionModel(dir, 's1', 'o3');
     expect(
-      await handleProhibitedTurn(gatewayWith(undefined), dir, 's1', undefined, () =>
+      await handleProhibitedTurn(gatewayWith(undefined), dir, 's1', undefined, dir, () =>
         Promise.resolve(),
       ),
     ).toBe(false);
+  });
+});
+
+describe('handleProhibitedTurn keys the refusal row', () => {
+  /** A gateway that keeps what it is handed, so the row itself is asserted. */
+  function recordingGateway(recorded: { attributes: Record<string, unknown> }[]) {
+    return {
+      getPolicyBundle: () => Promise.resolve({ prohibitedModels: ['o3'] }),
+      recordAuditEvent: (event: { attributes: Record<string, unknown> }) => {
+        recorded.push(event);
+        return Promise.resolve();
+      },
+      close: vi.fn(() => Promise.resolve()),
+    } as unknown as Parameters<typeof handleProhibitedTurn>[0];
+  }
+
+  /** A checkout under this test's directory whose origin is `remote`, or none. */
+  function checkout(name: string, remote: string | undefined): string {
+    const repo = join(dir, name);
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      remote === undefined ? '[core]\n\tbare = false\n' : `[remote "origin"]\n\turl = ${remote}\n`,
+    );
+    return repo;
+  }
+
+  it('stamps scope_key from the checkout the refused turn ran in', async () => {
+    recordSessionModel(dir, 's1', 'o3');
+    const recorded: { attributes: Record<string, unknown> }[] = [];
+    const stop = await handleProhibitedTurn(
+      recordingGateway(recorded),
+      dir,
+      's1',
+      undefined,
+      checkout('work', 'git@github.com:acme/work-repo.git'),
+      () => Promise.resolve(),
+    );
+    expect(stop).toBe(true);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.attributes).toMatchObject({
+      refusal_seam: 'turn',
+      scope_key: 'github.com/acme/work-repo',
+    });
+  });
+
+  it('records the refusal with no key for a checkout with no remote', async () => {
+    recordSessionModel(dir, 's1', 'o3');
+    const recorded: { attributes: Record<string, unknown> }[] = [];
+    await handleProhibitedTurn(
+      recordingGateway(recorded),
+      dir,
+      's1',
+      undefined,
+      checkout('scratch', undefined),
+      () => Promise.resolve(),
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.attributes).not.toHaveProperty('scope_key');
   });
 });

@@ -38,6 +38,11 @@ export interface ScannedMessage {
   text: string;
   occurredAt: string;
   filePath: string;
+  // The working directory the message was written in, when the file names
+  // one: the running session_meta/turn_context cwd at that line. The backfill
+  // keys this message's capture by the repository it sits in. A message
+  // without one gets no key.
+  cwd?: string | undefined;
 }
 
 // Where Codex CLI writes its rollout files. Codex itself honors a CODEX_HOME
@@ -91,6 +96,12 @@ export function parseTranscript(
   filePath = '',
 ): ScannedMessage[] {
   const out: ScannedMessage[] = [];
+  // The running working directory, threaded exactly as parseTranscriptUsage
+  // threads it: session_meta opens the file with one, and a turn_context that
+  // names one moves it. It is tracked before the window and cutoff checks
+  // below, so a message keeps the cwd of a header line that is itself out of
+  // the window.
+  let cwd: string | undefined;
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
     if (trimmed === '') continue;
@@ -101,6 +112,15 @@ export function parseTranscript(
       continue;
     }
     if (!isRecord(rec)) continue;
+    if (rec.type === 'session_meta' || rec.type === 'turn_context') {
+      const header = rec.payload;
+      if (isRecord(header)) {
+        const named = optString(header.cwd);
+        if (rec.type === 'session_meta') cwd = named;
+        else if (named) cwd = named;
+      }
+      continue;
+    }
     if (rec.type !== 'response_item') continue;
     const occurredAt = optString(rec.timestamp) ?? '';
     if (occurredAt === '') continue;
@@ -118,7 +138,13 @@ export function parseTranscript(
     if (role !== 'user' && role !== 'assistant') continue;
     const text = extractContentText(payload.content);
     if (text.trim() === '') continue;
-    out.push({ kind: role === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
+    out.push({
+      kind: role === 'user' ? 'prompt' : 'response',
+      text,
+      occurredAt,
+      filePath,
+      ...(cwd !== undefined && cwd !== '' ? { cwd } : {}),
+    });
   }
   return out;
 }
@@ -364,6 +390,18 @@ export interface ToolCallRecord {
   toolUseId: string; // call_id
   toolName: string; // 'shell' | 'apply_patch'
   runKey: string | undefined; // turn_id
+  // The directory the call ran in, which the reconciler keys this leaf's scope
+  // by: a shell call's own working directory when its exec events name one,
+  // else the running session_meta/turn_context cwd when the call began.
+  // undefined on a tail chunk that names no directory. The leaf then carries
+  // no key, never its session root's.
+  cwd: string | undefined;
+  // The paths a patch changed: the `changes` keys of its begin event and of its
+  // end event, each file once. undefined for a shell call. A patch always names
+  // files, so an apply_patch whose events name none carries an EMPTY list, which
+  // keys nothing, never undefined, which would key it by its cwd. The reconciler
+  // keys a patch by these files' repository.
+  filePaths: readonly string[] | undefined;
   occurredAt: string;
   inputSize: number | undefined;
   isError: boolean | undefined;
@@ -394,9 +432,19 @@ export function parseTranscriptToolCalls(
   // usage parser: exec/patch events carry no turn_id of their own on current
   // rollouts, so without this fallback tool calls would never group by turn.
   let runKey: string | undefined;
+  // The running cwd, threaded exactly as parseTranscriptUsage threads it:
+  // session_meta sets it, and a turn_context that names one moves it.
+  let cwd: string | undefined;
   const begins = new Map<
     string,
-    { toolName: string; runKey: string | undefined; occurredAt: string; target: string | undefined }
+    {
+      toolName: string;
+      runKey: string | undefined;
+      cwd: string | undefined;
+      filePaths: readonly string[] | undefined;
+      occurredAt: string;
+      target: string | undefined;
+    }
   >();
   const out: ToolCallRecord[] = [];
 
@@ -415,12 +463,15 @@ export function parseTranscriptToolCalls(
 
     if (rec.type === 'session_meta') {
       sessionIdBySessionMeta.current = optString(payload.session_id) ?? optString(payload.id);
+      cwd = optString(payload.cwd);
       continue;
     }
     if (rec.type === 'turn_context') {
       // Same reset-per-turn rule (and timestamp fallback) as the usage parser.
       const turnTs = optString(rec.timestamp);
       runKey = optString(payload.turn_id) ?? (turnTs !== undefined ? `turn-${turnTs}` : undefined);
+      const turnCwd = optString(payload.cwd);
+      if (turnCwd) cwd = turnCwd;
       continue;
     }
     if (rec.type !== 'event_msg') continue;
@@ -438,6 +489,10 @@ export function parseTranscriptToolCalls(
       begins.set(callId, {
         toolName: 'shell',
         runKey: optString(payload.turn_id) ?? runKey,
+        // The command's own working directory (a shell call can run in another
+        // directory than its turn's), else the directory its turn ran in.
+        cwd: optString(payload.cwd) ?? cwd,
+        filePaths: undefined,
         occurredAt,
         target: command,
       });
@@ -453,6 +508,9 @@ export function parseTranscriptToolCalls(
         toolUseId: callId,
         toolName: 'shell',
         runKey: begin?.runKey ?? optString(payload.turn_id) ?? runKey,
+        // The end event's own cwd, else the begin's (its own, or its turn's).
+        cwd: optString(payload.cwd) ?? begin?.cwd ?? cwd,
+        filePaths: undefined,
         occurredAt: begin?.occurredAt ?? occurredAt,
         inputSize: begin?.target !== undefined ? begin.target.length : undefined,
         isError: typeof exitCode === 'number' ? exitCode !== 0 : undefined,
@@ -468,6 +526,8 @@ export function parseTranscriptToolCalls(
       begins.set(callId, {
         toolName: 'apply_patch',
         runKey: optString(payload.turn_id) ?? runKey,
+        cwd,
+        filePaths: changes,
         occurredAt,
         target: changes.length > 0 ? changes.join(', ') : undefined,
       });
@@ -477,11 +537,18 @@ export function parseTranscriptToolCalls(
       const callId = optString(payload.call_id);
       if (callId === undefined || sessionIdBySessionMeta.current === undefined) continue;
       const begin = begins.get(callId);
+      // The files come from both events: a begin that carries none, or no begin
+      // at all (a tail chunk that starts mid-patch), still has the end event's
+      // own list. A file either event names counts, so a patch whose two events
+      // disagree is covered by no single repository.
+      const endChanges = isRecord(payload.changes) ? Object.keys(payload.changes) : [];
       out.push({
         sessionId: sessionIdBySessionMeta.current,
         toolUseId: callId,
         toolName: 'apply_patch',
         runKey: begin?.runKey ?? optString(payload.turn_id) ?? runKey,
+        cwd: begin?.cwd ?? cwd,
+        filePaths: [...new Set([...(begin?.filePaths ?? []), ...endChanges])],
         occurredAt: begin?.occurredAt ?? occurredAt,
         inputSize: begin?.target !== undefined ? begin.target.length : undefined,
         isError: typeof payload.success === 'boolean' ? !payload.success : undefined,

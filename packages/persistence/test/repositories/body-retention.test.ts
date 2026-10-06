@@ -9,9 +9,18 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 
+import type { SyncLaneRetention } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { SqliteBodyRetentionRepository } from '../../src/repositories/body-retention.ts';
 import { corpusConnection } from '../helpers/corpus.ts';
+import type { RecordedQuery } from '../helpers/query-plans.ts';
+import {
+  classifyPlanRow,
+  explain,
+  indexOwners,
+  recordingConnection,
+} from '../helpers/query-plans.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -26,12 +35,17 @@ interface Seed {
   readonly content: string | null;
   /** null = never delivered; -1 = permanent skip; number = delivered at. */
   readonly syncedAt?: number | null;
+  /** The key the row was stamped with at capture; absent = never stamped. */
+  readonly scopeKey?: string;
+  /** Marked owed by a live forward that did not deliver it (`outbox_owed = 1`). */
+  readonly owed?: boolean;
 }
 
 function seed(raw: DatabaseSync, rows: readonly Seed[]): void {
   const event = raw.prepare(
-    `INSERT INTO audit_events (id, event_type, started_at, content, content_hash, attributes, synced_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO audit_events
+       (id, event_type, started_at, content, content_hash, attributes, synced_at, outbox_owed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const def = raw.prepare(
     `INSERT INTO inspection_definitions (id, rule_id, name, category, severity, definition, version)
@@ -51,8 +65,13 @@ function seed(raw: DatabaseSync, rows: readonly Seed[]): void {
       NOW - r.ageDays * DAY,
       r.content,
       `hash-${r.id}`,
-      '{"repo":"acme/app"}',
+      JSON.stringify(
+        r.scopeKey === undefined
+          ? { repo: 'acme/app' }
+          : { repo: 'acme/app', scope_key: r.scopeKey },
+      ),
       r.syncedAt ?? null,
+      r.owed === true ? 1 : null,
     );
     finding.run(`find-${r.id}`, r.id, `key-${r.id}`);
   }
@@ -182,6 +201,274 @@ describe('body expiry', () => {
       expect(bodyOf(raw, 'undelivered').content).toBeNull();
       expect(out.rowsExpired).toBe(4);
       expect(out.rowsHeldBySync).toBe(0);
+    });
+
+    describe('on a scoped attachment', () => {
+      const WORK = 'github.com/acme/work';
+      const PERSONAL = 'github.com/someone/personal';
+      const scopedSeed: readonly Seed[] = [
+        {
+          id: 'enrolled-unsent',
+          kind: 'prompt',
+          ageDays: 60,
+          content: 'w'.repeat(50),
+          syncedAt: null,
+          scopeKey: WORK,
+        },
+        {
+          id: 'personal-unsent',
+          kind: 'response',
+          ageDays: 60,
+          content: 'p'.repeat(50),
+          syncedAt: null,
+          scopeKey: PERSONAL,
+        },
+        { id: 'unstamped-unsent', kind: 'tool_use', ageDays: 60, content: 'u'.repeat(50) },
+        {
+          id: 'enrolled-delivered',
+          kind: 'prompt',
+          ageDays: 60,
+          content: 'd'.repeat(50),
+          syncedAt: NOW - DAY,
+          scopeKey: WORK,
+        },
+        {
+          id: 'enrolled-code',
+          kind: 'code_change',
+          ageDays: 60,
+          content: 'c'.repeat(50),
+          scopeKey: WORK,
+        },
+      ];
+      const holdWork: SyncLaneRetention = { kind: 'hold-keys', keys: [WORK] };
+
+      it('holds only an unsent body stamped with an enrolled key', () => {
+        seed(raw, scopedSeed);
+        const out = store
+          .open()
+          .bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: holdWork, now: NOW });
+
+        // The one body a scoped machine can still owe.
+        expect(bodyOf(raw, 'enrolled-unsent').content).toBe('w'.repeat(50));
+        expect(out.rowsHeldBySync).toBe(1);
+        // A personal key and no key at all are both bodies nothing can ever send
+        // from this machine, so they age out like a standalone machine's.
+        expect(bodyOf(raw, 'personal-unsent').content).toBeNull();
+        expect(bodyOf(raw, 'unstamped-unsent').content).toBeNull();
+        expect(bodyOf(raw, 'enrolled-delivered').content).toBeNull();
+        expect(bodyOf(raw, 'enrolled-code').content).toBeNull();
+        expect(out.rowsExpired).toBe(4);
+      });
+
+      // A capture a live forward could not deliver is marked owed, and a machine
+      // attachment's undelivered forward leaves that marker on a row of any key.
+      // A later re-attach to the same endpoint as a scoped one does not clear it.
+      // Once the row's repository is enrolled the scoped drain returns it, so its
+      // body has to still be there to be sent: a body swept first would make it a
+      // permanent skip.
+      describe('a capture still marked owed', () => {
+        const owedSeed: readonly Seed[] = [
+          {
+            id: 'personal-owed',
+            kind: 'prompt',
+            ageDays: 60,
+            content: 'o'.repeat(50),
+            syncedAt: null,
+            scopeKey: PERSONAL,
+            owed: true,
+          },
+          // The same repository, not marked owed: nothing can reach it.
+          {
+            id: 'personal-unowed',
+            kind: 'prompt',
+            ageDays: 60,
+            content: 'n'.repeat(50),
+            syncedAt: null,
+            scopeKey: PERSONAL,
+          },
+          {
+            id: 'unstamped-owed',
+            kind: 'response',
+            ageDays: 60,
+            content: 'u'.repeat(50),
+            syncedAt: null,
+            owed: true,
+          },
+          // An owed marker on a delivered row ends no obligation to keep a body.
+          {
+            id: 'personal-owed-delivered',
+            kind: 'prompt',
+            ageDays: 60,
+            content: 'd'.repeat(50),
+            syncedAt: NOW - DAY,
+            scopeKey: PERSONAL,
+            owed: true,
+          },
+        ];
+
+        it('keeps its body though its key is not enrolled, and sweeps its unmarked twin', () => {
+          seed(raw, owedSeed);
+          const out = store
+            .open()
+            .bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: holdWork, now: NOW });
+
+          expect(bodyOf(raw, 'personal-owed').content).toBe('o'.repeat(50));
+          expect(bodyOf(raw, 'personal-unowed').content).toBeNull();
+          // A row that was never stamped can never be enrolled, but a machine
+          // attachment could still send it, so holding is the direction to err.
+          expect(bodyOf(raw, 'unstamped-owed').content).toBe('u'.repeat(50));
+          expect(bodyOf(raw, 'personal-owed-delivered').content).toBeNull();
+          expect(out.rowsHeldBySync).toBe(2);
+          expect(out.rowsExpired).toBe(2);
+        });
+
+        it('previews exactly what the pass then does', () => {
+          seed(raw, [...scopedSeed, ...owedSeed]);
+          const db = store.open();
+          const preview = db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: holdWork });
+          // Held: the enrolled unsent row and the two owed rows. Swept: the rest.
+          expect(preview.rowsHeldBySync).toBe(3);
+          const out = db.bodyRetention.expire({
+            cutoff: CUTOFF,
+            sweepSyncLane: holdWork,
+            now: NOW,
+          });
+          expect({
+            rowsExpired: out.rowsExpired,
+            bytesFreed: out.bytesFreed,
+            rowsHeldBySync: out.rowsHeldBySync,
+          }).toEqual(preview);
+          expect(bodyOf(raw, 'personal-owed').content).toBe('o'.repeat(50));
+          expect(bodyOf(raw, 'enrolled-unsent').content).toBe('w'.repeat(50));
+        });
+
+        it('is held once its repository is enrolled, and is then still a body to send', () => {
+          seed(raw, owedSeed);
+          const db = store.open();
+          db.bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: holdWork, now: NOW });
+          // Enrolling the repository afterwards: the row is held under the new
+          // scope as well, with its body intact.
+          const enrolled: SyncLaneRetention = { kind: 'hold-keys', keys: [WORK, PERSONAL] };
+          const later = db.bodyRetention.expire({
+            cutoff: CUTOFF,
+            sweepSyncLane: enrolled,
+            now: NOW,
+          });
+          expect(later.rowsExpired).toBe(0);
+          expect(bodyOf(raw, 'personal-owed').content).toBe('o'.repeat(50));
+        });
+      });
+
+      it('compares keys byte for byte, as the forwarding verdict does', () => {
+        seed(raw, scopedSeed);
+        const out = store.open().bodyRetention.expire({
+          cutoff: CUTOFF,
+          sweepSyncLane: { kind: 'hold-keys', keys: ['github.com/Acme/Work'] },
+          now: NOW,
+        });
+        expect(out.rowsHeldBySync).toBe(0);
+        expect(bodyOf(raw, 'enrolled-unsent').content).toBeNull();
+      });
+
+      it('holds nothing on the lane when nothing is enrolled', () => {
+        seed(raw, scopedSeed);
+        const out = store.open().bodyRetention.expire({
+          cutoff: CUTOFF,
+          sweepSyncLane: { kind: 'hold-keys', keys: [] },
+          now: NOW,
+        });
+        expect(out.rowsHeldBySync).toBe(0);
+        expect(out.rowsExpired).toBe(5);
+      });
+
+      it('reads hold-all and sweep exactly as false and true', () => {
+        seed(raw, scopedSeed);
+        const db = store.open();
+        const asFalse = db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: false });
+        expect(
+          db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: { kind: 'hold-all' } }),
+        ).toEqual(asFalse);
+        // Every unsent sync-lane body, whatever its key.
+        expect(asFalse.rowsHeldBySync).toBe(3);
+        const asTrue = db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: true });
+        expect(
+          db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: { kind: 'sweep' } }),
+        ).toEqual(asTrue);
+        expect(asTrue.rowsExpired).toBe(5);
+      });
+
+      it('holds as hold-all does when handed a kind it does not know', () => {
+        // The type admits no fourth kind; this pins where an unforeseen value
+        // falls, because the decision is what gets destroyed.
+        seed(raw, scopedSeed);
+        const out = store.open().bodyRetention.expire({
+          cutoff: CUTOFF,
+          sweepSyncLane: { kind: 'bogus' } as unknown as SyncLaneRetention,
+          now: NOW,
+        });
+        expect(out.rowsHeldBySync).toBe(3);
+        expect(bodyOf(raw, 'enrolled-unsent').content).toBe('w'.repeat(50));
+        expect(bodyOf(raw, 'personal-unsent').content).toBe('p'.repeat(50));
+      });
+
+      it('previews exactly what the scoped pass then does', () => {
+        seed(raw, scopedSeed);
+        const db = store.open();
+        const preview = db.bodyRetention.preview({ cutoff: CUTOFF, sweepSyncLane: holdWork });
+        expect(preview).toEqual({ rowsExpired: 4, bytesFreed: 200, rowsHeldBySync: 1 });
+        const out = db.bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: holdWork, now: NOW });
+        expect({ rowsExpired: out.rowsExpired, bytesFreed: out.bytesFreed }).toEqual({
+          rowsExpired: preview.rowsExpired,
+          bytesFreed: preview.bytesFreed,
+        });
+      });
+
+      // The scoped statements' plans, taken from the statements the pass really
+      // executes — never a restatement of their SQL — on a store with no ANALYZE.
+      it('seeks the same audit_events indexes as hold-all, and never scans a table or an index', () => {
+        const planOf = (lane: boolean | SyncLaneRetention) => {
+          const recorded: RecordedQuery[] = [];
+          new SqliteBodyRetentionRepository(recordingConnection(raw, recorded)).expire({
+            cutoff: CUTOFF,
+            sweepSyncLane: lane,
+            now: NOW,
+          });
+          // Without this a pass that stopped issuing SQL would satisfy every
+          // assertion below vacuously.
+          expect(recorded.length, 'the pass issued no statement').toBeGreaterThan(0);
+          const owners = indexOwners(raw);
+          const details = recorded.flatMap((q) => explain(raw, q).map((row) => row.detail));
+          const indexes = new Set<string>();
+          for (const detail of details) {
+            const words = detail.split(' ');
+            const at = words.indexOf('INDEX');
+            const name = at === -1 ? undefined : words[at + 1];
+            if (name !== undefined && owners.get(name) === 'audit_events') indexes.add(name);
+          }
+          // A full pass over an index is refused as well as one over the table:
+          // a statement that stopped seeking and started walking would still
+          // name the same index as its unscoped twin.
+          const fullScans = details.filter((d) => {
+            const { kind } = classifyPlanRow(d, owners);
+            return kind === 'full-table' || kind === 'full-index';
+          });
+          return { sql: recorded.map((q) => q.sql).join(' | '), indexes, fullScans };
+        };
+
+        const unscoped = planOf(false);
+        const scoped = planOf({ kind: 'hold-keys', keys: [WORK] });
+
+        // The scoped pass really ran the scoped statements, and the unscoped one
+        // did not — otherwise the comparison below compares a plan with itself.
+        expect(scoped.sql).toContain('json_each');
+        expect(unscoped.sql).not.toContain('json_each');
+        // The key filter is a residual on rows the unscoped statements already
+        // fetch: it may add a json_each step, never a different access path.
+        expect(unscoped.indexes.size).toBeGreaterThan(0);
+        expect(scoped.indexes).toEqual(unscoped.indexes);
+        expect(unscoped.fullScans).toEqual([]);
+        expect(scoped.fullScans).toEqual([]);
+      });
     });
   });
 

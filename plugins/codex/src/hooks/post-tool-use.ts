@@ -28,7 +28,15 @@ import {
   responseEmitPayload,
   scanResponseFields,
 } from './scan-response.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+} from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
 
@@ -52,6 +60,12 @@ async function main(): Promise<void> {
       ? getString(rawToolInput as Record<string, unknown>, 'file_path')
       : undefined;
   if (filePath) metadata.filePath = filePath;
+  // Keyed by the file this response names (a relative path is read against the
+  // cwd), else by the session's cwd when it names none; beside the metadata,
+  // never inside it. See captureScopeKey.
+  // An apply_patch result gets NO key, like the patch at PreToolUse: it reports
+  // the paths the patch body names, which this hook does not parse.
+  const scopeKey = rawToolName === 'apply_patch' ? undefined : captureScopeKey(input, filePath);
 
   const config = loadConfig();
   // A symlinked store path redirects the corpus without failing anything;
@@ -67,7 +81,7 @@ async function main(): Promise<void> {
       fields,
       (text) =>
         runtime.capture(
-          { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
+          { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata, scopeKey },
           { persist: 'with-findings' },
         ),
       { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },

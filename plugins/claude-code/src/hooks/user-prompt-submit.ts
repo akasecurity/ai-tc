@@ -45,7 +45,15 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 import { writeClipboard } from './clipboard.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
-import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import {
+  baseMetadata,
+  captureScopeKey,
+  countFailOpen,
+  emit,
+  getString,
+  parseJson,
+  readStdin,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -67,6 +75,11 @@ async function main(): Promise<void> {
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, sessionId);
   const metadata = input ? baseMetadata(input) : undefined;
+  // The scope key rides BESIDE the metadata, never inside it: EventMetadata is a
+  // published wire shape, and the key is a local attribute only the local writer
+  // stores. A prompt names no file, so this is the cwd key, and free: baseMetadata
+  // has just walked this directory and the resolver is memoised per directory.
+  const scopeKey = input ? captureScopeKey(input) : undefined;
 
   // The gateway is opened HERE (not behind a catch-all) so a store-open
   // failure is observable: still allow — fail-open — but tell the user once
@@ -92,6 +105,7 @@ async function main(): Promise<void> {
       config.dataDir,
       sessionId,
       input === null ? undefined : getString(input, 'transcript_path'),
+      input === null ? undefined : getString(input, 'cwd'),
       emit,
     )
   ) {
@@ -106,6 +120,7 @@ async function main(): Promise<void> {
       sourceTool: SOURCE_TOOL.ClaudeCode,
       text: prompt,
       metadata,
+      scopeKey,
     });
   } finally {
     await runtime.close();

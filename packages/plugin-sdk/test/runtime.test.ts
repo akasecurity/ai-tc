@@ -818,6 +818,60 @@ describe('capture — dedupe threading', () => {
   });
 });
 
+// The scope key is a LOCAL attribute. It reaches the gateway on the record,
+// beside the event, so the local writer can store it, and never on the event
+// itself, which is the wire shape a forwarding gateway sends as it is handed.
+describe('capture — scope key threading', () => {
+  const KEY = 'github.com/acme/widgets';
+  // A replayed timestamp keeps the runtime from stamping `inspectionMs`, and a
+  // finding-free text stamps no exception ids, so the event's metadata below is
+  // the caller's plus the `correlationId` the event builder adds to every event.
+  const OCCURRED_AT = '2026-10-01T00:00:00.000Z';
+
+  it('hands the scope key to the gateway on the record, beside the event and never inside it', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'nothing to see here',
+      occurredAt: OCCURRED_AT,
+      metadata: { sessionId: 'sess-1' },
+      scopeKey: KEY,
+    });
+    await rt.close();
+
+    expect(gw.records).toHaveLength(1);
+    expect(gw.records[0]?.scopeKey).toBe(KEY);
+    // The event is untouched: its metadata is the caller's plus the builder's
+    // correlation id, and the key appears nowhere in what a forwarding gateway
+    // would serialise.
+    expect(gw.records[0]?.event.metadata).toEqual({
+      sessionId: 'sess-1',
+      correlationId: expect.any(String) as string,
+    });
+    expect(JSON.stringify(gw.records[0]?.event)).not.toContain(KEY);
+  });
+
+  it('leaves the record without a scope key when the input carries none', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'nothing to see here',
+      occurredAt: OCCURRED_AT,
+    });
+    await rt.close();
+
+    // Absent, not `scopeKey: undefined`: a keyless capture builds the record
+    // every caller built before the key existed.
+    const record = gw.records[0];
+    expect(record).toBeDefined();
+    expect(Object.keys(record ?? {})).not.toContain('scopeKey');
+  });
+});
+
 describe('capture — appliesTo file-context threading', () => {
   // A Python-only rule delivered via the pulled bundle, so this test does not
   // pollute the global bundled packs shared by other tests.

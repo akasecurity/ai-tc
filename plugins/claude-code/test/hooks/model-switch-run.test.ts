@@ -89,7 +89,7 @@ describe('runPreModelSwitch', () => {
     // A refused switch never happened, so recording its target would make the
     // next turn enforce against a model the session is not running.
     const emit = vi.fn(() => Promise.resolve());
-    return runPreModelSwitch('claude-opus-5', 's1', {
+    return runPreModelSwitch('claude-opus-5', 's1', dir, {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5']),
       emit,
@@ -103,7 +103,7 @@ describe('runPreModelSwitch', () => {
 
   it('allows an approved switch, emits nothing, and records the new model', async () => {
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch('claude-sonnet-4-5', 's1', {
+    const refused = await runPreModelSwitch('claude-sonnet-4-5', 's1', dir, {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5']),
       emit,
@@ -118,7 +118,7 @@ describe('runPreModelSwitch', () => {
     // Fail-open: no store means no bundle means no prohibition to enforce, and
     // this hook deliberately does not explain store health.
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch('claude-opus-5', 's1', {
+    const refused = await runPreModelSwitch('claude-opus-5', 's1', dir, {
       config: config(),
       openGateway: () => null,
       emit,
@@ -134,7 +134,7 @@ describe('runPreModelSwitch', () => {
       ['claude-sonnet-4-5', 'allow'],
     ] as const) {
       const close = vi.fn(() => Promise.resolve());
-      await runPreModelSwitch(target, 's1', {
+      await runPreModelSwitch(target, 's1', dir, {
         config: config(),
         openGateway: () => gatewayWith(['claude-opus-5'], close),
         emit: vi.fn(() => Promise.resolve()),
@@ -146,7 +146,7 @@ describe('runPreModelSwitch', () => {
 
   it('surfaces a redirected home before deciding', async () => {
     const warn = vi.fn();
-    await runPreModelSwitch('claude-opus-5', 's1', {
+    await runPreModelSwitch('claude-opus-5', 's1', dir, {
       config: config(),
       openGateway: () => gatewayWith([]),
       emit: vi.fn(() => Promise.resolve()),
@@ -159,7 +159,7 @@ describe('runPreModelSwitch', () => {
 describe('runPreModelSwitch records the refusal', () => {
   it('writes a model_refusal naming the model and the switch seam', async () => {
     const rec = recorder();
-    await runPreModelSwitch('claude-opus-5', 's1', {
+    await runPreModelSwitch('claude-opus-5', 's1', dir, {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
       emit: vi.fn(() => Promise.resolve()),
@@ -175,7 +175,7 @@ describe('runPreModelSwitch records the refusal', () => {
 
   it('records nothing when the switch is ALLOWED', async () => {
     const rec = recorder();
-    await runPreModelSwitch('claude-sonnet-4-5', 's1', {
+    await runPreModelSwitch('claude-sonnet-4-5', 's1', dir, {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
       emit: vi.fn(() => Promise.resolve()),
@@ -189,7 +189,7 @@ describe('runPreModelSwitch records the refusal', () => {
     // outer catch would turn a deny into a fail-open allow, leaving the session
     // LESS governed than before the audit trail existed.
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch('claude-opus-5', 's1', {
+    const refused = await runPreModelSwitch('claude-opus-5', 's1', dir, {
       config: config(),
       openGateway: () =>
         gatewayWith(
@@ -279,6 +279,7 @@ describe('handleProhibitedTurn', () => {
       dir,
       's1',
       undefined,
+      dir,
       emit,
     );
     expect(stop).toBe(true);
@@ -293,7 +294,14 @@ describe('handleProhibitedTurn', () => {
     // its own `finally`; closing here would pull it out from under the scan.
     const close = vi.fn(() => Promise.resolve());
     const emit = vi.fn(() => Promise.resolve());
-    const stop = await handleProhibitedTurn(gatewayWith([], close), dir, 's1', undefined, emit);
+    const stop = await handleProhibitedTurn(
+      gatewayWith([], close),
+      dir,
+      's1',
+      undefined,
+      dir,
+      emit,
+    );
     expect(stop).toBe(false);
     expect(close).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
@@ -309,6 +317,7 @@ describe('handleProhibitedTurn records the refusal', () => {
       dir,
       's1',
       undefined,
+      dir,
       () => Promise.resolve(),
     );
     const event = onlyEvent(rec.events);
@@ -329,6 +338,7 @@ describe('handleProhibitedTurn records the refusal', () => {
       dir,
       's1',
       undefined,
+      dir,
       (output) => {
         emitted.push(output);
         return Promise.resolve();
@@ -340,9 +350,65 @@ describe('handleProhibitedTurn records the refusal', () => {
 
   it('records nothing when the turn is allowed', async () => {
     const rec = recorder();
-    await handleProhibitedTurn(gatewayWith([], vi.fn(), rec.fn), dir, 's1', undefined, () =>
+    await handleProhibitedTurn(gatewayWith([], vi.fn(), rec.fn), dir, 's1', undefined, dir, () =>
       Promise.resolve(),
     );
     expect(rec.events).toHaveLength(0);
+  });
+});
+
+describe('the refusal row carries the scope key of the checkout it happened in', () => {
+  /** A checkout under this test's directory whose origin is `remote`, or none. */
+  function checkout(name: string, remote: string | undefined): string {
+    const repo = join(dir, name);
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      remote === undefined ? '[core]\n\tbare = false\n' : `[remote "origin"]\n\turl = ${remote}\n`,
+    );
+    return repo;
+  }
+
+  it('stamps the switch refusal', async () => {
+    const rec = recorder();
+    await runPreModelSwitch(
+      'claude-opus-5',
+      's1',
+      checkout('work', 'git@GitHub.com:acme/work-repo.git'),
+      {
+        config: config(),
+        openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+        emit: vi.fn(() => Promise.resolve()),
+        warnIfStoreRedirected: vi.fn(),
+      },
+    );
+    expect(onlyEvent(rec.events).attributes.scope_key).toBe('github.com/acme/work-repo');
+  });
+
+  it('stamps the turn refusal', async () => {
+    recordSessionModel(dir, 's1', 'claude-opus-5');
+    const rec = recorder();
+    await handleProhibitedTurn(
+      gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+      dir,
+      's1',
+      undefined,
+      checkout('work', 'https://github.com/acme/work-repo.git'),
+      () => Promise.resolve(),
+    );
+    expect(onlyEvent(rec.events).attributes.scope_key).toBe('github.com/acme/work-repo');
+  });
+
+  it('records the refusal with no key for a checkout with no remote', async () => {
+    const rec = recorder();
+    await runPreModelSwitch('claude-opus-5', 's1', checkout('scratch', undefined), {
+      config: config(),
+      openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+      emit: vi.fn(() => Promise.resolve()),
+      warnIfStoreRedirected: vi.fn(),
+    });
+    const event = onlyEvent(rec.events);
+    expect(event.attributes.refusal_seam).toBe('switch');
+    expect(event.attributes).not.toHaveProperty('scope_key');
   });
 });

@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type {
   AuditEventInput,
+  CaptureAttributes,
   ConfigInventoryReport,
   ConfigScanRecord,
   DetectedFindingWithKey,
@@ -196,7 +197,14 @@ export interface LocalDatabase {
   // inspection_definitions row from its ruleId. Fail-open: a locked/corrupt DB
   // or a bad row rolls back and is swallowed — dropping telemetry never breaks
   // a session.
-  recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
+  //
+  // `scopeKey`, when non-empty, lands in the row's attribute bag as
+  // `scope_key`, and so in its `scope_key` column, added AFTER the shared
+  // `toCaptureAttributes` mapper has run. It is an argument rather than an
+  // event field because the event is the wire shape, and the mapper is a
+  // shared, published function whose every key is stored by whoever calls it:
+  // this write is the one place the key may reach a row.
+  recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[], scopeKey?: string): void;
   // Close every open at-rest finding of one rule with a `dismissed`
   // disposition, and return how many finding keys that wrote. The keys are
   // selected and their rows inserted under one `BEGIN IMMEDIATE`, which takes
@@ -282,6 +290,19 @@ export interface LocalDatabase {
 // intra-inventory edge (a harness/user runs on a host).
 function linkHost(input: InventoryInput, hostId: string | undefined): InventoryInput {
   return hostId ? { ...input, hostId } : input;
+}
+
+// The capture row's attribute bag: exactly what the shared mapper emits, plus
+// `scope_key` when the caller handed in a non-empty key. The key is merged HERE,
+// after `toCaptureAttributes`, and never taught to that mapper: the mapper is a
+// shared, published function, so a key it learned would be stored by every
+// caller that maps an event through it, not just by this local write. A blank
+// key is no key. `''` names no repository, and storing it would give the row a
+// value instead of the NULL every other unkeyed row reads.
+function captureAttributesOf(event: IngestEvent, scopeKey: string | undefined): CaptureAttributes {
+  const attributes = toCaptureAttributes(event);
+  if (scopeKey === undefined || scopeKey === '') return attributes;
+  return { ...attributes, scope_key: scopeKey };
 }
 
 // Closing is cleanup: a failure here (already closed, or the close itself
@@ -678,7 +699,11 @@ export function openLocalDatabase(
     return dismissed;
   }
 
-  function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
+  function recordCapture(
+    event: IngestEvent,
+    detected: DetectedFindingWithKey[],
+    scopeKey?: string,
+  ): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
     failOpenTransaction(db, () => {
@@ -707,7 +732,7 @@ export function openLocalDatabase(
         rootSessionId: sessionId,
         content: event.content,
         contentHash: event.contentHash,
-        attributes: toCaptureAttributes(event),
+        attributes: captureAttributesOf(event, scopeKey),
       });
 
       // Definitions first, keyed by (ruleId, version) — mirrors

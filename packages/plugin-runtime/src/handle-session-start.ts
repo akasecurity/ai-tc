@@ -14,6 +14,7 @@ import {
   resolveProjectFiles,
   resolveRepoNwo,
   resolveWorktreeRoot,
+  sessionRootScopeKey,
 } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -30,6 +31,7 @@ import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { triggerContentRetention } from './content-retention-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
+import { sessionToolIsKeyed } from './session-root-key.ts';
 
 // How long TERMINAL exception rows (revoked / expired / use-budget exhausted)
 // are retained before the SessionStart sweep purges them — 90 days, aligned
@@ -319,6 +321,29 @@ function buildSessionRoot(
   const nwo = resolveRepoNwo(input.cwd);
   if (nwo !== undefined) attributes.repo = nwo;
   if (branch !== undefined) attributes.branches = [branch];
+  // The session's scope key: the canonical `host/owner/repo` of the repository
+  // the session's own cwd sits in (sessionRootScopeKey). A local-only attribute
+  // that every forward path strips. A scoped attachment is meant to forward a
+  // structural leaf only when its own key AND its root's are both enrolled; that
+  // check is not part of this change.
+  // A relative or empty cwd gets no key, however the project resolved: the
+  // project is found by walking from the cwd by name, so a relative one is read
+  // against this hook's own process directory and would borrow whatever
+  // repository that is. A repository with no remote, or a remote that names a
+  // path on this machine, yields no key rather than a machine-local one. A
+  // path-less capture in the same cwd carries the same key, because both read
+  // it from resolveRepoAttribution; a capture keyed by a file or search root it
+  // names may differ from its root's. The config_scan row (buildConfigScanEvent)
+  // is deliberately never keyed: it describes the machine, not a repository.
+  //
+  // A web chat session's root is never keyed (sessionToolIsKeyed). It has no
+  // working directory: the browser host passes the home directory as a stand-in
+  // so that no project resolves. A home directory that is itself a checkout does
+  // resolve one, and the root would then carry that repository's key though the
+  // session is not in it. Only the key is withheld; every other attribute
+  // resolves as before.
+  const scopeKey = sessionToolIsKeyed(input.tool) ? sessionRootScopeKey(input.cwd) : undefined;
+  if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {
     id: sessionId,

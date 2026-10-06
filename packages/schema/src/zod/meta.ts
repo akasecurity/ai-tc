@@ -347,6 +347,22 @@ export const CaptureAttributes = z
     // here too. The full statement is on EventMetadata.redactDegradedTo; it is
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
+    // The scope key this capture was stamped with: the canonical repository
+    // (`host/owner/repo`) of the path the capture names (a relative path is read
+    // against its working directory), else of its own working directory, or a
+    // chat account's identity. The store's local `scope_key` column reads it, so
+    // a scoped attachment has a per-row key to work from. Absent when no key
+    // could be derived.
+    //
+    // LOCAL ONLY. That is the contract for every path that sends a row. Producers
+    // stamp it in every attachment mode, and the two structural choke points strip
+    // it: the attached gateway's `reKeyForForward` on the live path, and the
+    // history drain's `rebuildAuditEvent`, which drops it through `withoutScopeKey`.
+    // A capture row's bag reaches the wire through `rebuildCapture`, which builds
+    // the metadata from named keys and never names this one; `toCaptureAttributes`,
+    // which builds the bag from a wire event, never emits it. What a scoped
+    // attachment does with the key is not part of this shape's contract.
+    scope_key: z.string().optional(),
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;

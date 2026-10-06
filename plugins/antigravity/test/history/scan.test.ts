@@ -4,6 +4,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
@@ -374,5 +375,51 @@ describe('scanHistory — onHit sink', () => {
     // The throw is contained — the sweep still records the finding normally.
     expect(summary.findings).toBe(1);
     expect(summary.scanned).toBe(2);
+  });
+});
+
+describe('scanHistory — backfilled captures carry no scope key', () => {
+  // This host's transcript records name no working directory (source, type,
+  // created_at, content… — see transcripts.ts), so a backfilled capture has
+  // nothing to key by. It stays keyless, which is what a scoped attachment is
+  // meant to keep local; that check is not part of this change.
+  let dataDir: string;
+  let root: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-scan-nokey-data-'));
+    root = mkdtempSync(join(tmpdir(), 'aka-scan-nokey-brain-'));
+  });
+  afterEach(() => {
+    for (const d of [dataDir, root]) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('records the leak with a NULL scope_key', async () => {
+    const dir = join(root, 'conv-scope');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'transcript_full.jsonl'),
+      JSON.stringify({
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        created_at: '2026-06-20T12:00:00.000Z',
+        status: 'DONE',
+        step_index: 0,
+        content: `antigravity note ${BACKFILL_SECRET}`,
+      }),
+    );
+    const cfg = config(dataDir, 'full');
+
+    await scanHistory(cfg, { dir: root, now: NOW });
+
+    const db = new DatabaseSync(cfg.dbPath);
+    try {
+      const rows = db
+        .prepare("SELECT scope_key AS key FROM audit_events WHERE event_type = 'prompt'")
+        .all() as { key: string | null }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.key).toBeNull();
+    } finally {
+      db.close();
+    }
   });
 });

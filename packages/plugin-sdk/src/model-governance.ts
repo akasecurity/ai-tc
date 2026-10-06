@@ -510,6 +510,17 @@ export function buildModelRefusalEvent(input: {
    * so the two stay reconcilable rather than the row silently rewriting history.
    */
   requestedModel?: string;
+  /**
+   * The canonical repo key (`host/owner/repo`) of the checkout the refusal
+   * happened in, when the hook resolved one.
+   *
+   * A LOCAL attribute. It is written into the bag so a scoped attachment can
+   * tell which repository this row belongs to, and the attached gateway strips
+   * it from every forwarded audit row (`withoutScopeKey`), so no wire shape
+   * changes. Omitted rather than written blank when unknown: an empty string
+   * would read as an identity, and a missing key is the safe answer.
+   */
+  scopeKey?: string | undefined;
 }): {
   id: string;
   eventType: 'model_refusal';
@@ -537,6 +548,9 @@ export function buildModelRefusalEvent(input: {
       ...(input.requestedModel === undefined || input.requestedModel === input.model
         ? {}
         : { requested_model: input.requestedModel }),
+      ...(input.scopeKey === undefined || input.scopeKey === ''
+        ? {}
+        : { scope_key: input.scopeKey }),
     },
   };
 }

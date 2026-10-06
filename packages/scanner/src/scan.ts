@@ -44,6 +44,7 @@ import type { DiscoverOptions } from './discover.ts';
 import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
+import { scopeKeysUnder } from './scope-key.ts';
 import { type WalkOptions, walkSourceFiles } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
@@ -319,6 +320,11 @@ async function scanDir(
     ? startEgress(rootDir)
     : null;
 
+  // The scope key lookup for this root's captures. One per call, so its memory
+  // belongs to this root alone, and it reads nothing until a file reaches
+  // capture (./scope-key.ts).
+  const scopeKeyOf = scopeKeysUnder(rootDir);
+
   // Tier-1 skip, before the file is even read: same path + mtime as the ledger
   // means unchanged since the last scan under this ruleset. Composed with any
   // caller-supplied shouldRead (which filters silently, without counting).
@@ -377,6 +383,10 @@ async function scanDir(
     seen.add(hash);
     scanned++;
 
+    // The file's nearest repository decides its key, not this scan root: a
+    // nested clone or submodule keys by its own remote, and a nested repository
+    // with no remote gets none.
+    const scopeKey = scopeKeyOf(file.relativePath);
     const result = await runtime.capture(
       {
         kind: 'code_change',
@@ -395,6 +405,9 @@ async function scanDir(
           wholeFile: true,
           ...(file.gitignored ? { gitignored: true } : {}),
         },
+        // Beside the event, never in its metadata: EventMetadata is a published
+        // wire shape, and only the local writer stores the key.
+        ...(scopeKey !== undefined ? { scopeKey } : {}),
       },
       // 'content-hash': a re-run mints fresh event ids for identical content;
       // the store uses the hash to drop what it already recorded.

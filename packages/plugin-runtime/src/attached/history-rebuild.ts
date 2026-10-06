@@ -6,6 +6,8 @@ import {
   ToolCallInspection,
 } from '@akasecurity/schema';
 
+import { withoutScopeKey } from './scope-strip.ts';
+
 /**
  * The rule-version namespace the receiving side mints for itself.
  *
@@ -24,7 +26,7 @@ const CAPTURE_VERSION_PREFIX = 'capture/';
  * many writers, and a row one of them left half-shaped must become a counted,
  * permanent skip rather than a request that is refused for ever.
  *
- * Three things are deliberately dropped:
+ * Four things are deliberately dropped:
  *
  *   content       Never sent by this lane. The field exists on the wire shape
  *                 and a stored row may carry one, so this is the one place the
@@ -41,6 +43,13 @@ const CAPTURE_VERSION_PREFIX = 'capture/';
  *   contentHash   Not sent by the live path either, so it stays off this one:
  *                 the two lanes have to produce the same shape or the receiving
  *                 side's idempotency stops being a single behaviour.
+ *
+ *   scope_key     The local scope key a producer stamped into the attributes
+ *                 bag. It is local to this machine, and the request's
+ *                 attributes member is an open record that would carry it to
+ *                 the receiving side's storage, so it is stripped here exactly
+ *                 as the live path strips it (`withoutScopeKey`). Only that
+ *                 member goes: the rest of the bag travels as before.
  */
 export function rebuildAuditEvent(
   row: AuditEventRow,
@@ -122,19 +131,27 @@ function isoOrUndefined(ms: number | null | undefined): string | undefined {
 }
 
 /**
- * The stored attributes bag, or nothing.
+ * The stored attributes bag, or nothing, without the local scope key.
  *
  * Stored as a JSON string, so a damaged one is a real possibility. An
  * unparseable bag costs the attributes rather than the event: the event's
  * structure is what this lane is for, and the bag is what decorates it.
  * A non-object parse (a bare string, an array, null) is treated the same way.
+ *
+ * The scope key comes off HERE rather than at a call site, so no reader of
+ * this projection can forget it. A bag that held nothing else is dropped
+ * whole, as the live path drops it, and a bag without the key, an empty one
+ * included, is returned exactly as stored.
  */
 function attributesOf(raw: string | null | undefined): { attributes?: Record<string, unknown> } {
   if (raw === null || raw === undefined || raw === '') return {};
   try {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-    return { attributes: parsed as Record<string, unknown> };
+    const bag: { attributes?: Record<string, unknown> } = {
+      attributes: parsed as Record<string, unknown>,
+    };
+    return withoutScopeKey(bag);
   } catch {
     return {};
   }

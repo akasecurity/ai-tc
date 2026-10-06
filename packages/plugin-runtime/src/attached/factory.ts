@@ -4,7 +4,7 @@ import { readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
-import { isAttached } from '@akasecurity/schema';
+import { attachmentModeOf, isAttached, resolveScope } from '@akasecurity/schema';
 
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
@@ -72,6 +72,22 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     const credential = readControlPlaneCredential(config.settingsDir, connection);
     if (credential === null) return local;
 
+    // WHAT THIS GATEWAY MAY FORWARD, resolved once, here, from the two halves of
+    // the attachment this function already holds. The MODE comes from the
+    // credential: a machine credential carries none, and means machine. The
+    // enrolled keys come from the settings this config was loaded with, and are
+    // valid only for the endpoint the connection names. Resolved per gateway
+    // and never cached, so an enrollment change reaches the next resolve.
+    //
+    // Inside the `try` on purpose: a throw while resolving lands in the catch
+    // below and returns the LOCAL gateway, which forwards nothing. That is the
+    // safe direction for a scoping fault, and no client has been built yet.
+    const attachment = resolveScope({
+      mode: attachmentModeOf(credential),
+      scope: config.settings.attachmentScope,
+      endpoint: connection.endpoint,
+    });
+
     const client = createRemoteClient({
       endpoint: connection.endpoint,
       apiKey: credential.apiKey,
@@ -93,6 +109,7 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       dataDir: config.dataDir,
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
+      attachment,
       posture: createPostureReporter({
         // THROUGH THE BREAKER, and wrapped HERE rather than around
         // `PostureReporter.send`. The reporter swallows every error by

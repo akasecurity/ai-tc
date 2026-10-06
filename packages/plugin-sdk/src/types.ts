@@ -25,6 +25,17 @@ export interface CaptureInput {
   // timestamp so a recorded finding lands on the timeline when it really leaked.
   occurredAt?: string | undefined;
   metadata?: EventMetadata | undefined;
+  // The event's scope key: the canonical `host/owner/repo` of the repository
+  // the text came from (see resolveRepoAttribution). It is absent when there is
+  // none: a scratch directory, a repo with no forge remote, or a producer that
+  // knows no working directory. `''` counts as absent.
+  //
+  // It sits HERE and not on `metadata` because `EventMetadata` is part of the
+  // published wire shape: a forwarding gateway sends the event it is handed, so
+  // anything on the metadata leaves the machine. The runtime passes this to the
+  // gateway beside the event (CaptureRecord.scopeKey), and only the local
+  // writer turns it into a stored attribute.
+  scopeKey?: string | undefined;
 }
 
 // One blocked-detections ledger row reference, as surfaced to adapters: the

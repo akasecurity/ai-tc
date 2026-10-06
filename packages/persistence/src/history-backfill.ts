@@ -16,6 +16,10 @@ import { DB_FILENAME } from './paths.ts';
  * `SqliteHistorySyncRepository.markCaptureBacklogOwed` for why a marker
  * rather than a time window is what the drain reads at all.
  *
+ * SCOPED on a scoped attachment: `scopeKeys` is the caller's `scopeFilterOf(...)`
+ * answer. `undefined` marks every capture as before, a list marks only captures
+ * stamped with one of its keys, and an empty list marks nothing.
+ *
  * BEST-EFFORT and deliberately silent, for the reason
  * `clearAttachmentDerivedState` gives for its own callers: the grant has
  * already been recorded by the time anything reaches this, and a store that
@@ -34,12 +38,16 @@ import { DB_FILENAME } from './paths.ts';
  * to mark zero rows. Skip before that call ever runs, exactly as the preview
  * does with `existsSync`.
  */
-export function seedCaptureBacklogOwed(dataDir: string, beforeMs: number): void {
+export function seedCaptureBacklogOwed(
+  dataDir: string,
+  beforeMs: number,
+  scopeKeys?: readonly string[],
+): void {
   if (!existsSync(join(dataDir, DB_FILENAME))) return;
   try {
     const db = openLocalDatabase(dataDir);
     try {
-      db.historySync.markCaptureBacklogOwed(beforeMs);
+      db.historySync.markCaptureBacklogOwed(beforeMs, scopeKeys);
     } finally {
       db.close();
     }

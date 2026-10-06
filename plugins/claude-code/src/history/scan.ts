@@ -12,6 +12,7 @@ import {
   maskContextSlice,
   RawEgressError,
   safeMaskedMatch,
+  scopeKeyMemo,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
@@ -156,6 +157,12 @@ export async function scanHistory(
     // Hashes already in the store (and we add each one we record, so duplicate
     // messages within this same run dedup too).
     const seen = await gateway.knownContentHashes();
+    // One scope-key memo for the whole pass: a directory several messages share
+    // is walked once and keyed the same wherever it recurs. The memo keys only an
+    // absolute directory, because the resolver it asks refuses a relative one,
+    // and it outlives the resolver's own bounded memo, which can start over
+    // mid-pass.
+    const scopeKeyOf = scopeKeyMemo();
     for (const message of iterateHistory(opts)) {
       visited.add(message.filePath);
       const hash = contentHashOf(message.text);
@@ -165,12 +172,23 @@ export async function scanHistory(
       }
       seen.add(hash);
       scanned++;
+      // The capture's scope key comes from the directory this transcript record
+      // was written in: the canonical `host/owner/repo` of that directory's
+      // repository, or none. A scratch directory, a remoteless repository, a
+      // relative cwd and a record that names no cwd all stay keyless; a scoped
+      // attachment is meant to keep a keyless capture local, and that check is
+      // not part of this change. The key rides on the capture input, never in
+      // the event's metadata (a published wire shape). No sessionId is added to
+      // the metadata either: it would change the capture's content-addressed
+      // id, and with it the dedup a re-run relies on.
+      const scopeKey = scopeKeyOf(message.cwd);
       const result = await runtime.capture(
         {
           kind: message.kind,
           sourceTool: SOURCE_TOOL.ClaudeCode,
           text: message.text,
           occurredAt: message.occurredAt,
+          ...(scopeKey !== undefined ? { scopeKey } : {}),
         },
         // 'content-hash': a backfill re-run would otherwise re-record identical
         // messages under fresh event ids — the gateway uses the hash to drop

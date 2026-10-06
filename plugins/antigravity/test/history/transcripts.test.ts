@@ -411,6 +411,7 @@ describe('parseTranscriptToolCalls — exec_command and patch_apply pairs', () =
         toolUseId: 'call-1',
         toolName: 'shell',
         runKey: 'turn-1',
+        cwd: '/home/me/proj',
         occurredAt: '2026-07-14T10:00:05.000Z',
         inputSize: 'ls -la'.length,
         isError: false,
@@ -496,6 +497,8 @@ describe('parseTranscriptToolCalls — exec_command and patch_apply pairs', () =
         toolUseId: 'call-3',
         toolName: 'apply_patch',
         runKey: 'turn-2',
+        cwd: '/home/me/proj',
+        filePaths: ['/home/me/proj/notes.txt'],
         occurredAt: '2026-07-14T10:00:07.000Z',
         inputSize: '/home/me/proj/notes.txt'.length,
         isError: false,
@@ -503,6 +506,111 @@ describe('parseTranscriptToolCalls — exec_command and patch_apply pairs', () =
         target: '/home/me/proj/notes.txt',
       },
     ]);
+  });
+
+  describe('an apply_patch names its files', () => {
+    const begin = (changes?: Record<string, unknown>): string =>
+      line({
+        timestamp: '2026-07-14T10:00:07.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'patch_apply_begin',
+          call_id: 'call-p',
+          turn_id: 'turn-2',
+          auto_approved: true,
+          ...(changes === undefined ? {} : { changes }),
+        },
+      });
+    const end = (changes?: Record<string, unknown>): string =>
+      line({
+        timestamp: '2026-07-14T10:00:08.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'patch_apply_end',
+          call_id: 'call-p',
+          turn_id: 'turn-2',
+          stdout: 'applied',
+          stderr: '',
+          success: true,
+          ...(changes === undefined ? {} : { changes }),
+        },
+      });
+    const update = { type: 'update' };
+
+    it('lists no file for a patch whose events carry no changes, rather than none at all', () => {
+      // `undefined` would read as "names nothing" and key the leaf by the cwd; a
+      // patch always names files, so unknown files must key nothing.
+      for (const jsonl of [
+        [SESSION_META, begin(), end()],
+        [SESSION_META, begin({}), end({})],
+      ]) {
+        const [call] = parseTranscriptToolCalls(jsonl.join('\n'));
+        expect(call?.toolName).toBe('apply_patch');
+        expect(call?.filePaths).toEqual([]);
+        expect(call?.target).toBeUndefined();
+      }
+    });
+
+    it('lists no file for an end event with no changes and no begin to read them from', () => {
+      const [call] = parseTranscriptToolCalls([SESSION_META, end()].join('\n'));
+      expect(call?.toolName).toBe('apply_patch');
+      expect(call?.filePaths).toEqual([]);
+    });
+
+    it("reads the files from the end event's own changes when there is no begin", () => {
+      const [call] = parseTranscriptToolCalls(
+        [SESSION_META, end({ '/home/me/proj/a.txt': update })].join('\n'),
+      );
+      expect(call?.filePaths).toEqual(['/home/me/proj/a.txt']);
+      // The recorded target still follows the begin event alone.
+      expect(call?.target).toBeUndefined();
+    });
+
+    it("reads the end event's changes when its begin named none", () => {
+      const [call] = parseTranscriptToolCalls(
+        [SESSION_META, begin(), end({ '/home/me/proj/a.txt': update })].join('\n'),
+      );
+      expect(call?.filePaths).toEqual(['/home/me/proj/a.txt']);
+      expect(call?.target).toBeUndefined();
+    });
+
+    it('lists every file either event names, begin first, each once', () => {
+      const [call] = parseTranscriptToolCalls(
+        [
+          SESSION_META,
+          begin({ '/home/me/proj/a.txt': update, '/home/me/proj/b.txt': update }),
+          end({ '/home/me/proj/b.txt': update, '/home/me/other/c.txt': update }),
+        ].join('\n'),
+      );
+      expect(call?.filePaths).toEqual([
+        '/home/me/proj/a.txt',
+        '/home/me/proj/b.txt',
+        '/home/me/other/c.txt',
+      ]);
+      expect(call?.target).toBe('/home/me/proj/a.txt, /home/me/proj/b.txt');
+    });
+
+    it('leaves a shell call with no file list', () => {
+      const [call] = parseTranscriptToolCalls(
+        [
+          SESSION_META,
+          line({
+            timestamp: '2026-07-14T10:00:05.000Z',
+            type: 'event_msg',
+            payload: {
+              type: 'exec_command_end',
+              call_id: 'call-s',
+              command: ['ls'],
+              parsed_cmd: [],
+              aggregated_output: '',
+              exit_code: 0,
+            },
+          }),
+        ].join('\n'),
+      );
+      expect(call?.toolName).toBe('shell');
+      expect(call?.filePaths).toBeUndefined();
+    });
   });
 
   it('drops calls before session_meta has been seen (unattributable)', () => {
@@ -526,6 +634,156 @@ describe('parseTranscriptToolCalls — exec_command and patch_apply pairs', () =
       },
     });
     expect(parseTranscriptToolCalls(jsonl)).toEqual([]);
+  });
+
+  it('carries the running session_meta/turn_context cwd onto a call whose events name none', () => {
+    const shell = (callId: string, beginTs: string, endTs: string): string[] => [
+      line({
+        timestamp: beginTs,
+        type: 'event_msg',
+        payload: { type: 'exec_command_begin', call_id: callId, command: ['ls'], parsed_cmd: [] },
+      }),
+      line({
+        timestamp: endTs,
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: callId,
+          command: ['ls'],
+          parsed_cmd: [],
+          aggregated_output: '',
+          exit_code: 0,
+        },
+      }),
+    ];
+    const jsonl = [
+      SESSION_META, // cwd /home/me/proj
+      ...shell('call-a', '2026-07-14T10:00:01.000Z', '2026-07-14T10:00:02.000Z'),
+      line({
+        timestamp: '2026-07-14T10:00:03.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 'turn-2', cwd: '/home/me/other' },
+      }),
+      ...shell('call-b', '2026-07-14T10:00:04.000Z', '2026-07-14T10:00:05.000Z'),
+      // A turn_context that names no cwd keeps the last one, as the usage parser does.
+      line({
+        timestamp: '2026-07-14T10:00:06.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 'turn-3' },
+      }),
+      ...shell('call-c', '2026-07-14T10:00:07.000Z', '2026-07-14T10:00:08.000Z'),
+    ].join('\n');
+
+    const cwdOf = new Map(parseTranscriptToolCalls(jsonl).map((c) => [c.toolUseId, c.cwd]));
+    expect(cwdOf.get('call-a')).toBe('/home/me/proj');
+    expect(cwdOf.get('call-b')).toBe('/home/me/other');
+    expect(cwdOf.get('call-c')).toBe('/home/me/other');
+  });
+
+  it("carries an exec event's own cwd over its turn's", () => {
+    const jsonl = [
+      SESSION_META, // cwd /home/me/proj
+      // The command ran in another directory than its turn, on both events.
+      line({
+        timestamp: '2026-07-14T10:00:01.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_begin',
+          call_id: 'call-own',
+          command: ['ls'],
+          cwd: '/home/me/personal',
+          parsed_cmd: [],
+        },
+      }),
+      line({
+        timestamp: '2026-07-14T10:00:02.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: 'call-own',
+          command: ['ls'],
+          cwd: '/home/me/personal',
+          parsed_cmd: [],
+          aggregated_output: '',
+          exit_code: 0,
+        },
+      }),
+      // A begin that names no cwd, and an end that does: the end's own wins.
+      line({
+        timestamp: '2026-07-14T10:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_begin',
+          call_id: 'call-end',
+          command: ['ls'],
+          parsed_cmd: [],
+        },
+      }),
+      line({
+        timestamp: '2026-07-14T10:00:04.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: 'call-end',
+          command: ['ls'],
+          cwd: '/home/me/other',
+          parsed_cmd: [],
+          aggregated_output: '',
+          exit_code: 0,
+        },
+      }),
+      // A begin that names a cwd, and an end that names none: the begin's wins
+      // over the turn's.
+      line({
+        timestamp: '2026-07-14T10:00:05.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_begin',
+          call_id: 'call-begin',
+          command: ['ls'],
+          cwd: '/home/me/begun',
+          parsed_cmd: [],
+        },
+      }),
+      line({
+        timestamp: '2026-07-14T10:00:06.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: 'call-begin',
+          command: ['ls'],
+          parsed_cmd: [],
+          aggregated_output: '',
+          exit_code: 0,
+        },
+      }),
+    ].join('\n');
+
+    const cwdOf = new Map(parseTranscriptToolCalls(jsonl).map((c) => [c.toolUseId, c.cwd]));
+    expect(cwdOf.get('call-own')).toBe('/home/me/personal');
+    expect(cwdOf.get('call-end')).toBe('/home/me/other');
+    expect(cwdOf.get('call-begin')).toBe('/home/me/begun');
+  });
+
+  it('leaves cwd undefined on a tail chunk that names no directory', () => {
+    // A chunk past the one-time header. The caller seeds the session id, but
+    // nothing in the chunk names a directory.
+    const jsonl = [
+      line({
+        timestamp: '2026-07-14T10:00:05.000Z',
+        type: 'event_msg',
+        payload: { type: 'exec_command_begin', call_id: 'call-t', command: ['ls'], parsed_cmd: [] },
+      }),
+      line({
+        timestamp: '2026-07-14T10:00:06.000Z',
+        type: 'event_msg',
+        payload: { type: 'exec_command_end', call_id: 'call-t', command: ['ls'], exit_code: 0 },
+      }),
+    ].join('\n');
+
+    const [call] = parseTranscriptToolCalls(jsonl, 0, 'sess-1');
+    expect(call?.toolUseId).toBe('call-t');
+    expect(call?.cwd).toBeUndefined();
   });
 });
 

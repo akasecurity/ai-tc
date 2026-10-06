@@ -839,7 +839,18 @@ export function createPluginRuntime(
           ...(findingKey ? { findingKey } : {}),
         };
       });
-      await gateway.recordCapture({ event, findings, dedupe: opts.dedupe });
+      // The scope key rides BESIDE the event, never inside it. `event` is the
+      // wire shape (`IngestEvent` is what POST /v1/events carries, and a
+      // forwarding gateway sends it as built), so a key on its metadata would
+      // leave the machine with every capture. On the record, only a gateway
+      // that reads it sees it. Spread only when present, so a keyless record
+      // is the record every caller built before the key existed.
+      await gateway.recordCapture({
+        event,
+        findings,
+        dedupe: opts.dedupe,
+        ...(input.scopeKey !== undefined ? { scopeKey: input.scopeKey } : {}),
+      });
       // Thread the produced at-rest finding_keys back onto the decision (the
       // scanner's re-scan resolver diffs these against a path's previously-open
       // keys). Only meaningful for at-rest captures — an in-flight capture's

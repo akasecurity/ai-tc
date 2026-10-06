@@ -352,4 +352,27 @@ describe('handleSubagentSpawn', () => {
     expect(stop).toBe(true);
     expect(emitted).toHaveLength(1);
   });
+
+  it('stamps the refusal with the scope key of the checkout the spawn ran in', async () => {
+    // Keyed from the payload cwd, and only on this refusal path, so the tool
+    // calls this seam waves through pay no `.git` walk for it.
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(
+      join(dir, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/work-repo.git\n',
+    );
+    const g = gatewayWith(['claude-opus-5']);
+    const stop = await handleSubagentSpawn(
+      () => g.gateway as never,
+      'Agent',
+      { model: 'opus' },
+      's1',
+      dir,
+      () => Promise.resolve(),
+    );
+    expect(stop).toBe(true);
+    expect((g.recorded[0] as { attributes: Record<string, unknown> }).attributes.scope_key).toBe(
+      'github.com/acme/work-repo',
+    );
+  });
 });

@@ -24,6 +24,9 @@ import {
   antigravityProviderFromModelId,
   resolveInventoryContext,
   scanText,
+  scopeKeyMemo,
+  sessionRootScopeKey,
+  toolCallScopeKey,
 } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -82,6 +85,10 @@ export interface SessionReconcileResult {
 
 export interface ReconcileSessionOptions {
   seedPromptId?: string | undefined;
+  // The pass's scope-key memo (plugin-sdk's scopeKeyMemo). Every call one pass
+  // makes shares it, so a directory is walked once and keyed identically. When
+  // omitted, the call builds its own.
+  scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
 }
 
 // Reconcile ONE session's usage records into `llm_call` leaves. `records` are
@@ -123,6 +130,8 @@ export async function reconcileSession(
 
   const provider = (await gateway.readSessionProvider(sessionId)) ?? heuristicProvider;
 
+  // Each leaf is keyed by its own record's running cwd, never by the root's.
+  const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
   const inputs: LlmCallInput[] = records.map((rec) => ({
     sessionId,
     // No stable message id in Antigravity's usage event — key on the record's own
@@ -140,6 +149,7 @@ export async function reconcileSession(
         ? { ...rec, runKey: opts.seedPromptId }
         : rec,
       provider,
+      scopeKeyOf(rec.cwd),
     ),
   }));
 
@@ -159,9 +169,10 @@ export async function reconcileSessionToolCalls(
   gateway: DataGateway,
   sessionId: string,
   toolCalls: readonly ToolCallRecord[],
-  opts: { seedPromptId?: string | undefined } = {},
+  opts: ReconcileSessionOptions = {},
 ): Promise<number> {
   if (toolCalls.length === 0) return 0;
+  const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
 
   const inputs: ToolCallInput[] = toolCalls.map((tc) => {
     const attributes: ToolCallAttributes = { tool_name: tc.toolName, tool_use_id: tc.toolUseId };
@@ -189,6 +200,10 @@ export async function reconcileSessionToolCalls(
     // Same chunk-boundary seed fallback as reconcileSession's llm_call pass.
     const runKey = tc.runKey ?? opts.seedPromptId;
     if (runKey !== undefined) attributes.run_key = runKey;
+    // See toolCallScopeKey: a patch by its files' repository (and by nothing when
+    // its events name no file), a shell call by its own cwd.
+    const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
+    if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {
       sessionId,
       toolUseId: tc.toolUseId,
@@ -248,15 +263,18 @@ export async function reconcileHistory(
       toolCallRecords.push(...file.toolCalls);
     }
     const toolCallsBySession = groupToolCallsBySession(toolCallRecords);
+    // One scope-key memo for the whole sweep.
+    const scopeKeyOf = scopeKeyMemo();
     for (const [sessionId, records] of groupBySession(usageRecords)) {
       sessions++;
-      const result = await reconcileSession(gateway, sessionId, records);
+      const result = await reconcileSession(gateway, sessionId, records, { scopeKeyOf });
       llmCalls += result.llmCalls;
       skipped += result.skipped;
       toolCalls += await reconcileSessionToolCalls(
         gateway,
         sessionId,
         toolCallsBySession.get(sessionId) ?? [],
+        { scopeKeyOf },
       );
     }
   } finally {
@@ -294,12 +312,16 @@ export async function reconcileSessionTail(
   const toolCallRecords = parseTranscriptToolCalls(chunk, 0, sessionId);
 
   const gateway = reconcileGateway(config);
+  // One scope-key memo for this tail pass, shared by both leaf kinds.
+  const scopeKeyOf = scopeKeyMemo();
   try {
     const result = await reconcileSession(gateway, sessionId, records, {
       seedPromptId: checkpoint.lastPromptId,
+      scopeKeyOf,
     });
     const toolCalls = await reconcileSessionToolCalls(gateway, sessionId, toolCallRecords, {
       seedPromptId: checkpoint.lastPromptId,
+      scopeKeyOf,
     });
     // Advance the offset only when nothing was dropped: a contended
     // (SQLITE_BUSY) batch reports `skipped` (usage) or writes fewer tool
@@ -350,6 +372,12 @@ function buildSessionRoot(
   const hostName = ctx.host?.attributes.host_name;
   if (typeof hostName === 'string') attributes.host = hostName;
   if (ctx.project) attributes.project = ctx.project.name;
+  // The session's scope key, from the transcript's own cwd (sessionRootScopeKey):
+  // the twin of the root key plugin-runtime's handleSessionStart stamps, and
+  // absent for a relative or empty cwd, a remoteless repository and a record that
+  // names no cwd.
+  const scopeKey = sessionRootScopeKey(anchor.cwd);
+  if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {
     id: sessionId,
@@ -363,7 +391,11 @@ function buildSessionRoot(
   return event;
 }
 
-function buildAttributes(rec: UsageRecord, provider: string): LlmCallAttributes {
+function buildAttributes(
+  rec: UsageRecord,
+  provider: string,
+  scopeKey: string | undefined,
+): LlmCallAttributes {
   const usage = rec.usage;
   const attrs: LlmCallAttributes = {
     model: rec.model ?? 'unknown',
@@ -378,6 +410,8 @@ function buildAttributes(rec: UsageRecord, provider: string): LlmCallAttributes 
   if (typeof usage.reasoning_output_tokens === 'number') {
     attrs.reasoning_output_tokens = usage.reasoning_output_tokens;
   }
+  // Local-only, and every forward strips it. See scopeKeyMemo (plugin-sdk).
+  if (scopeKey !== undefined) attrs.scope_key = scopeKey;
   return attrs;
 }
 

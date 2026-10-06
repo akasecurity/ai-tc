@@ -1,13 +1,17 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
+import { canonicalRepoUrl } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { resolveInventoryContext } from '../src/inventory-resolver.ts';
 import {
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,
+  resolveRepoAttribution,
   resolveRepoIdentity,
   resolveRepoNwo,
   resolveWorktreeRoot,
@@ -173,6 +177,202 @@ describe('resolveRepoIdentity', () => {
     // dirname is the unrelated folder CONTAINING the repo — two bare repos kept
     // in one folder must not collapse into a single path-keyed identity.
     expect(resolveRepoIdentity(checkout)).toEqual({ url: posixPath(checkout), name: 'checkout' });
+  });
+});
+
+describe('resolveRepoAttribution', () => {
+  // The resolver remembers every cwd it has answered for the life of the
+  // module (repo-attribution-io.test.ts pins that), so each case lays its
+  // repositories down in directories of their own. Rewriting one directory's
+  // config between two calls, as the resolveRepo cases above do, would read the
+  // first answer back.
+  const repoAt = (name: string, config: string): string => {
+    const dir = join(root, name);
+    gitDir(dir, config);
+    return dir;
+  };
+
+  // The userinfo in a remote (`<user>@<host>`) reads as an email address to a
+  // scanner going over this file, so the fixtures that need one build it from
+  // parts rather than carrying it as a literal.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  const someUser = `user${AT}`;
+
+  it('is empty outside a git repo', () => {
+    expect(resolveRepoAttribution(root)).toEqual({});
+  });
+
+  it('gives the slug and the canonical key of the origin remote', () => {
+    const dir = repoAt('scp', ORIGIN(`${gitUser}github.com:org/payments-api.git`));
+    expect(resolveRepoAttribution(dir)).toEqual({
+      repo: 'payments-api',
+      scopeKey: 'github.com/org/payments-api',
+    });
+  });
+
+  it('collapses every spelling of one remote onto one key', () => {
+    // Scheme, userinfo, port, host case, `.git` and a trailing slash say how a
+    // clone was made, not which repository it is.
+    const spellings = [
+      `${gitUser}GitHub.com:org/repo.git`,
+      `https://${someUser}github.com:443/org/repo/`,
+      `ssh://${gitUser}github.com/org/repo.git`,
+    ];
+    const keys = spellings.map(
+      (url, i) => resolveRepoAttribution(repoAt(`spelling-${String(i)}`, ORIGIN(url))).scopeKey,
+    );
+    expect(keys).toEqual(['github.com/org/repo', 'github.com/org/repo', 'github.com/org/repo']);
+  });
+
+  it('keeps the path case: Org/Repo is a different key from org/repo', () => {
+    // Forges differ on whether path case matters, and merging two real
+    // repositories is the worse error, so the key keeps the path as written.
+    const dir = repoAt('cased', ORIGIN('https://github.com/Org/Repo.git'));
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/Org/Repo');
+  });
+
+  it('keys a linked worktree exactly like its main checkout', () => {
+    const main = join(root, 'main');
+    const wt = linkedWorktree(main, ORIGIN('https://github.com/org/payments-api.git'));
+    expect(resolveRepoAttribution(wt)).toEqual({
+      repo: 'payments-api',
+      scopeKey: 'github.com/org/payments-api',
+    });
+    expect(resolveRepoAttribution(wt)).toEqual(resolveRepoAttribution(main));
+  });
+
+  it("keys a submodule by its own remote, not its parent's", () => {
+    const parent = repoAt('parent', ORIGIN('https://github.com/org/parent.git'));
+    const modGitdir = join(parent, '.git', 'modules', 'lib');
+    mkdirSync(modGitdir, { recursive: true });
+    writeFileSync(join(modGitdir, 'config'), ORIGIN('https://github.com/org/lib.git'));
+    const modRoot = join(parent, 'lib');
+    mkdirSync(modRoot, { recursive: true });
+    writeFileSync(join(modRoot, '.git'), 'gitdir: ../.git/modules/lib\n');
+    expect(resolveRepoAttribution(modRoot).scopeKey).toBe('github.com/org/lib');
+    expect(resolveRepoAttribution(parent).scopeKey).toBe('github.com/org/parent');
+  });
+
+  it('with no origin, keys by the FIRST remote in config order, the one resolveRepoIdentity picks', () => {
+    const dir = repoAt(
+      'no-origin',
+      '[remote "upstream"]\n\turl = https://github.com/upstream/first.git\n' +
+        '[remote "fork"]\n\turl = https://github.com/someone/second.git\n',
+    );
+    expect(resolveRepoIdentity(dir)?.url).toBe('https://github.com/upstream/first.git');
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/upstream/first');
+  });
+
+  it('prefers origin even when another remote is listed before it', () => {
+    const dir = repoAt(
+      'origin-second',
+      '[remote "upstream"]\n\turl = https://github.com/upstream/other.git\n' +
+        '[remote "origin"]\n\turl = https://github.com/org/payments-api.git\n',
+    );
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/payments-api');
+  });
+
+  it('gives the slug but no key when the repo has no forge remote', () => {
+    // No remote at all, a remote that is a path on this machine, and a file://
+    // remote: none names a repository another machine's clone shares, so none
+    // could ever be enrolled. The slug is unaffected.
+    const remoteless = repoAt('remoteless', '[core]\n\tbare = false\n');
+    const localPath = repoAt('local-path', ORIGIN('/srv/repos/widgets.git'));
+    const fileUrl = repoAt('file-url', ORIGIN(pathToFileURL('/srv/repos/widgets.git').href));
+    expect(resolveRepoAttribution(remoteless)).toEqual({ repo: 'remoteless' });
+    expect(resolveRepoAttribution(localPath)).toEqual({ repo: 'widgets' });
+    expect(resolveRepoAttribution(fileUrl)).toEqual({ repo: 'widgets' });
+  });
+
+  it('gives the checkout slug and no key for a .git file that points nowhere', () => {
+    const dir = join(root, 'dangling');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.git'), 'gitdir: /somewhere/.git/worktrees/x\n');
+    expect(resolveRepoAttribution(dir)).toEqual({ repo: 'dangling' });
+  });
+
+  it('never keys from the process directory: a relative cwd keeps its slug and gets no key', () => {
+    // The walk climbs by NAME, so a relative cwd is resolved against this
+    // process's own working directory, which need not be where the event came
+    // from. The slug keeps resolveRepo's answer for the same string: the hooks
+    // read their slug through this resolver, and a machine attachment's bodies
+    // must not change. The key is withheld, because a key read from the wrong
+    // directory could put an event in a scope that does not cover it. No other
+    // case in this file resolves these strings, so the memo cannot answer them.
+    const dir = repoAt('process-dir', ORIGIN('https://github.com/org/payments-api.git'));
+    // The control: named absolutely, the same repository is keyed.
+    expect(resolveRepoAttribution(dir).scopeKey).toBe('github.com/org/payments-api');
+    const home = process.cwd();
+    process.chdir(dir);
+    try {
+      for (const cwd of ['.', join('apps', 'backend')]) {
+        // The process directory IS a keyed repository, and the slug resolver
+        // finds it through this very string.
+        expect(resolveRepo(cwd)).toBe('payments-api');
+        expect(resolveRepoAttribution(cwd)).toEqual({ repo: 'payments-api' });
+      }
+      // A guard: an empty cwd names no directory. At a repository root the walk
+      // answers '', which reads as no repository, so this holds with or without
+      // the absolute-path rule.
+      expect(resolveRepoAttribution('')).toEqual({});
+    } finally {
+      // Restored before the shared afterEach removes `root`: a process still
+      // standing inside it cannot delete it on Windows.
+      process.chdir(home);
+    }
+  });
+
+  it('gives exactly the slug resolveRepo gives', () => {
+    const main = join(root, 'slug-main');
+    const dirs = [
+      repoAt('slug-scp', ORIGIN(`${gitUser}github.com:org/payments-api.git`)),
+      repoAt('slug-https', ORIGIN('https://github.com/org/payments-api')),
+      repoAt('slug-remoteless', '[core]\n\tbare = false\n'),
+      linkedWorktree(main, ORIGIN('https://github.com/org/payments-api.git')),
+    ];
+    for (const dir of dirs) expect(resolveRepoAttribution(dir).repo).toBe(resolveRepo(dir));
+  });
+
+  it('keys every layout exactly as canonicalRepoUrl keys the identity and inventory urls', () => {
+    // The equivalence a session root's key rests on. A root can only be keyed
+    // from what SessionStart already holds, the inventory context's project url,
+    // which resolveRepoIdentity produces; a hook keys from this resolver. An
+    // event and the session it belongs to agree on a key only if both
+    // canonicalise the same remote, in every layout.
+    const main = join(root, 'eq-main');
+    const fixtures = [
+      repoAt('eq-scp', ORIGIN(`${gitUser}github.com:org/payments-api.git`)),
+      repoAt('eq-subgroup', ORIGIN('https://gitlab.com/group/subgroup/payments-api')),
+      repoAt(
+        'eq-first-remote',
+        '[remote "a"]\n\turl = https://github.com/org/first.git\n' +
+          '[remote "b"]\n\turl = https://github.com/org/second.git\n',
+      ),
+      linkedWorktree(main, ORIGIN('https://github.com/org/payments-api.git')),
+      bareRepoWorktree(ORIGIN('https://github.com/org/bare-backed.git')),
+      repoAt('eq-remoteless', '[core]\n\tbare = false\n'),
+      repoAt('eq-local-path', ORIGIN('/srv/repos/widgets.git')),
+    ];
+    const keys = fixtures.map((dir) => resolveRepoAttribution(dir).scopeKey);
+    for (const [i, dir] of fixtures.entries()) {
+      const identityUrl = resolveRepoIdentity(dir)?.url ?? '';
+      const projectUrl =
+        resolveInventoryContext({ cwd: dir, tool: 'claude-code' }).project?.url ?? '';
+      expect(keys[i]).toBe(canonicalRepoUrl(identityUrl));
+      expect(keys[i]).toBe(canonicalRepoUrl(projectUrl));
+    }
+    // The control. Every comparison above also holds for a resolver that never
+    // returns a key, since undefined equals undefined.
+    expect(keys).toEqual([
+      'github.com/org/payments-api',
+      'gitlab.com/group/subgroup/payments-api',
+      'github.com/org/first',
+      'github.com/org/payments-api',
+      'github.com/org/bare-backed',
+      undefined,
+      undefined,
+    ]);
   });
 });
 

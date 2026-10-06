@@ -54,14 +54,13 @@ export const COMMAND_REQUEST_TIMEOUT_MS = 30_000;
  *                 nothing was acked; the next sync tries again.
  *   `out-of-scope` polled on a SCOPED attachment, from a session directory
  *                 that is not enrolled. Nothing was scanned and NOTHING WAS
- *                 ACKED — deliberately unlike `failed`. The command stays
- *                 outstanding: the deployment re-serves it at the next sync,
- *                 and a sync spawned from an enrolled checkout services it.
- *                 An ack from here would itself be a report about a directory
- *                 the user keeps local. If no enrolled session syncs before the
- *                 deadline, the command expires on the deployment's side like
- *                 any unanswered one, and a sync still handed it after the
- *                 deadline declines it with `expired`, wherever it runs.
+ *                 ACKED — deliberately unlike `failed`. The command is left
+ *                 outstanding so that a sync spawned from an enrolled
+ *                 checkout can service it. If no enrolled session syncs
+ *                 before the deadline, the command expires on the
+ *                 deployment's side like any unanswered one, and a sync still
+ *                 handed it after the deadline declines it with `expired`,
+ *                 wherever it runs.
  */
 export type CommandSyncOutcome =
   'none' | 'reported' | 'failed' | 'out-of-scope' | 'unauthorized' | 'forbidden' | 'unreachable';
@@ -166,11 +165,12 @@ function hasExpired(expiresAt: string, atMs: number): boolean {
  * May a command be serviced from this scan root?
  *
  * The verdict every forward path shares (`resolveScope`, then `scopeVerdict`),
- * fed from what this pass already read LIVE — the settings and the wide
- * credential at the top of `runCommandSync`, never the config a host captured
- * when it spawned this child — so an enroll that landed between the spawn and
- * the poll counts. The mode is the credential's; the scope is the settings',
- * counted only for the deployment's URL; the key is the scan root's.
+ * fed from the settings and the wide credential this pass reads at the top of
+ * `runCommandSync`, at poll time, rather than from any config a host captured
+ * when it spawned this child. That is all it covers: whether a command is
+ * serviced from this root. It says nothing about how the scan's own results are
+ * forwarded afterwards. The mode is the credential's; the scope is the
+ * settings', counted only for the deployment's URL; the key is the scan root's.
  *
  * A MACHINE-WIDE ATTACHMENT NEVER ASKS FOR THE KEY. It forwards everything, as
  * it always has, so the root's repository files are not read on its behalf and
@@ -226,11 +226,9 @@ const SERVICE: Record<DeviceCommandKind, (scan: CommandScan) => Promise<{ projec
  * tried and here is the closed reason".
  *
  * The one deliberate silence is a SCOPED attachment whose session directory is
- * not enrolled (`out-of-scope`). There, "it tried" is itself the report the
- * user kept local — that this directory exists and was in use — so nothing is
- * scanned and nothing is acked, and the command waits for a sync that runs
- * from an enrolled checkout. The roster shows the device as outstanding, which
- * on a scoped machine is the honest answer.
+ * not enrolled (`out-of-scope`). There nothing is scanned and nothing is
+ * acked: the command is left outstanding so that a sync that runs from an
+ * enrolled checkout can service it.
  */
 export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandSyncOutcome | null> {
   // Nothing to service, and nothing to ask. A host with no scanner must not
@@ -290,10 +288,10 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
     reason = COMMAND_EXPIRED;
   } else if (rootVerdict(settings, connection.endpoint, state.credential, deps.scan) === 'local') {
     // A scoped attachment, and this session's directory is not enrolled: the
-    // command is LEFT, not answered. No scan, so nothing about the directory
-    // is gathered; no ack, so nothing about it is said. The deployment
-    // re-serves the command at the next sync, and the expiry branch above
-    // still declines it with `expired` if it is handed over past its deadline.
+    // command is LEFT, not answered. No scan and no ack, so it stays
+    // outstanding for a sync from an enrolled checkout, and the expiry branch
+    // above still declines it with `expired` if it is handed over past its
+    // deadline.
     return 'out-of-scope';
   } else {
     try {

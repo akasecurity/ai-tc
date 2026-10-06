@@ -222,6 +222,25 @@ describe('runCommandSync — a scoped attachment', () => {
   });
 });
 
+describe('runCommandSync — a poll that finds nothing', () => {
+  it('never asks a scoped attachment for the root key', async () => {
+    // The key is read from repository files, so it is asked for only once a
+    // command has arrived. The ordinary poll — the one almost every sync makes —
+    // finds nothing and must cost no file read.
+    attach(enrolled(WORK_REPO));
+    pollCommand.mockResolvedValue(null);
+    const { scan, run, keyOf } = scanAt(() => WORK_REPO);
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan))).resolves.toBe('none');
+
+    expect(pollCommand).toHaveBeenCalledTimes(1);
+    expect(keyOf).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(ackCommand).not.toHaveBeenCalled();
+  });
+});
+
 describe('commandScanFor — a session directory that cannot be read', () => {
   // A working directory that was removed under a running session makes
   // `process.cwd()` throw. The scan is built while the sync entry evaluates its

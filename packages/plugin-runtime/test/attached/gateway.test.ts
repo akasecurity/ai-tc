@@ -1735,7 +1735,12 @@ describe('the scope verdict, method by method', () => {
     'recordProjectEgress keeps %s local and still returns the local summary',
     async (projectKey) => {
       const { gateway, calls } = build({ attachment: SCOPED });
-      const summary = await gateway.recordProjectEgress({ ...egressInput(), projectKey });
+      // The scan walked no nested repository, and says so: what refuses the
+      // register here is the project's own key, not a list nobody supplied.
+      const summary = await gateway.recordProjectEgress(
+        { ...egressInput(), projectKey },
+        { nestedScopeKeys: [] },
+      );
       expect(calls.order).toContain('local.recordProjectEgress');
       expect(calls.order).not.toContain('forward.run');
       expect(summary).toEqual({
@@ -1895,10 +1900,11 @@ describe('a scoped attachment with nothing enrolled', () => {
       items: [],
       scanEvent: { id: 'scan-1', eventType: 'config_scan', startedAt: '2026-08-19T10:00:00.000Z' },
     });
-    await gateway.recordProjectEgress({
-      ...egressInput(),
-      projectKey: 'git:https://github.com/org/api.git',
-    });
+    await gateway.recordProjectEgress(
+      { ...egressInput(), projectKey: 'git:https://github.com/org/api.git' },
+      // Nothing nested, so only the empty scope can keep the register local.
+      { nestedScopeKeys: [] },
+    );
     await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
 
     for (const step of [
@@ -2199,10 +2205,10 @@ describe('the verdict is total: a throw means local, never a rejection', () => {
       await gateway.recordLlmCall(llmLeaf('m1', 's1', IN));
       await gateway.recordLlmCalls([llmLeaf('m2', 's1', IN)]);
       await gateway.recordToolCalls([toolLeaf('t1', 's1', IN)]);
-      await gateway.recordProjectEgress({
-        ...egressInput(),
-        projectKey: 'git:https://github.com/org/api.git',
-      });
+      await gateway.recordProjectEgress(
+        { ...egressInput(), projectKey: 'git:https://github.com/org/api.git' },
+        { nestedScopeKeys: [] },
+      );
       await gateway.ensureInventory(projectCtx('https://github.com/org/api.git'));
       for (const step of [
         'local.recordCapture',
@@ -2256,7 +2262,10 @@ describe('a refusal never reaches the forward policy', () => {
     for (let i = 0; i < 5; i += 1) {
       await gateway.recordCapture(capture(`out-${String(i)}`, OUT));
       await gateway.recordAuditEvent(rootRow(`personal-${String(i)}`, OUT));
-      await gateway.recordProjectEgress({ ...egressInput(), projectKey: 'path:/home/me/scratch' });
+      await gateway.recordProjectEgress(
+        { ...egressInput(), projectKey: 'path:/home/me/scratch' },
+        { nestedScopeKeys: [] },
+      );
     }
     expect(existsSync(join(dir, FORWARD_STATE_FILENAME))).toBe(false);
     expect(readForwardDrops(dir)).toBeNull();

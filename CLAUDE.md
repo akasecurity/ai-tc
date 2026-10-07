@@ -1058,7 +1058,10 @@ where the one site this sweep did not find by hand was living
 reached through an imported helper goes unseen; the required argument is what
 covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
 one sanctioned reader, and its exemption is written in that package's
-`eslint.config.mjs` through `reactSyntaxBans({ allowAmbientClock: true })`.
+`eslint.config.mjs` through `presentationalSyntaxBans({ allowAmbientClock: true })`
+— the presentational form, because a per-file entry re-states the whole rule and
+one written through bare `reactSyntaxBans` would also drop the locale ban's
+`src/**` widening for that file.
 
 **A locale-formatted string is the same class, and it is closed the same way.**
 `toLocaleString()` and its siblings, called with no locale, format in the

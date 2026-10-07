@@ -563,6 +563,26 @@ export function reactSyntaxBans(opts = {}) {
   ]);
 }
 
+/**
+ * `reactSyntaxBans` for a PRESENTATIONAL package (`dashboard-ui`, `ui-kit`): the
+ * ambient-clock and ambient-locale widenings are ON unless an option turns them
+ * off. Every `src/**` value those packages get goes through here — the
+ * package-wide entry and any per-file opt-out alike — because a per-file entry
+ * re-states the WHOLE rule, so one written through bare `reactSyntaxBans` to
+ * lift one ban silently narrows the other widening back to the directive-scoped
+ * floor for that file.
+ *
+ * @param {Parameters<typeof reactSyntaxBans>[0]} [opts]
+ * @returns {import('eslint').Linter.RuleEntry}
+ */
+export function presentationalSyntaxBans(opts = {}) {
+  return reactSyntaxBans({
+    ambientClockEveryModule: true,
+    ambientLocaleEveryModule: true,
+    ...opts,
+  });
+}
+
 /** @type {import('eslint').Linter.Config[]} */
 export const tonalInkTokens = [
   {
@@ -584,10 +604,7 @@ export const tonalInkTokens = [
 export const tonalInkTokensPresentational = [
   {
     rules: {
-      'no-restricted-syntax': reactSyntaxBans({
-        ambientClockEveryModule: true,
-        ambientLocaleEveryModule: true,
-      }),
+      'no-restricted-syntax': presentationalSyntaxBans(),
     },
   },
 ];

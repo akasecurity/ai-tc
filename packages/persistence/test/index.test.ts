@@ -148,6 +148,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'rotateFingerprintKey',
   'scopeKeyOfProjectKey',
   'seedCaptureBacklogOwed',
+  'seedEnrolledCapturesOwed',
   'settingsDir',
   'shareCallSiteId',
   'shareDestinationId',

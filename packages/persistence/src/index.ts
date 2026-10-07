@@ -16,6 +16,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,

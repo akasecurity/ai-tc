@@ -126,6 +126,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'policyAssignmentRefusal',
   'promptId',
   'readCachedPolicyBundle',
+  'readControlPlaneAttachmentMode',
   'readControlPlaneCredential',
   // The WIDE read. Exported deliberately and named so it cannot be reached by
   // accident: it returns a bearer credential, unlike the state reader beside

@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { COMMAND_SPECS } from '../../src/command-manifest.ts';
-import { defaultLabel, runEnroll, runUnenroll } from '../../src/commands/enroll.ts';
+import { defaultLabel, quotedForShell, runEnroll, runUnenroll } from '../../src/commands/enroll.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
@@ -398,6 +398,39 @@ describe('aka enroll — who may enroll', () => {
   });
 });
 
+// The organization's name is whatever the administrator wrote; the schema does
+// not keep control characters out of it, so every refusal that names it strips it.
+describe('aka enroll — the organization named in a refusal', () => {
+  const ORGANIZATION = `Acme${ESC}[2J IT`;
+  const pinned = { controlPlane: { endpoint: ENDPOINT } };
+
+  it.each<[string, () => void, Record<string, unknown>]>([
+    ['a governed machine that is not attached', () => undefined, { values: pinned }],
+    ['a machine held standalone', () => undefined, { values: { runMode: 'standalone' } }],
+    [
+      'a governed machine whose credential is unusable',
+      () => {
+        attach({ scope: fresh(), credentialEndpoint: OTHER_ENDPOINT });
+      },
+      { lockedFields: ['runMode'] },
+    ],
+    [
+      'a governed machine attached machine-wide',
+      () => {
+        attach({ mode: 'machine' });
+      },
+      { values: pinned },
+    ],
+  ])('strips it on %s', async (_name, setup, managed) => {
+    setup();
+    const io = recorder();
+    const governed = ManagedSettings.parse({ organization: ORGANIZATION, ...managed });
+    expect(await runEnroll(['--list'], deps(io, { managedSettings: governed }))).toBe(1);
+    expect(io.errors()).toContain('Acme[2J IT manages this machine');
+    expect(io.errors()).not.toContain(ESC);
+  });
+});
+
 describe('aka enroll [path]', () => {
   it('enrolls the repository the working directory is in, echoing it before the write', async () => {
     attach({ scope: fresh() });
@@ -506,17 +539,19 @@ describe('aka enroll --repo', () => {
     expect(identities()).toEqual(['github.com/Acme/Payments-API']);
   });
 
-  it.each([['GitHub.com/acme/payments-api'], [`${WORK_REPO}/`], [`${WORK_REPO}.git`]])(
-    'refuses the typed key %s and names its canonical spelling',
-    async (typed) => {
-      attach({ scope: fresh() });
-      const io = recorder();
-      expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
-      expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
-      expect(io.output()).not.toContain('Enrolled.');
-      expect(storedScope()).toEqual(fresh());
-    },
-  );
+  it.each([
+    ['GitHub.com/acme/payments-api'],
+    [' GitHub.com/acme/payments-api '],
+    [`${WORK_REPO}/`],
+    [`${WORK_REPO}.git`],
+  ])('refuses the typed key %s and names its canonical spelling', async (typed) => {
+    attach({ scope: fresh() });
+    const io = recorder();
+    expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
+    expect(io.errors()).toContain(`its key is ${WORK_REPO}`);
+    expect(io.output()).not.toContain('Enrolled.');
+    expect(storedScope()).toEqual(fresh());
+  });
 
   // The first two re-spell to `github.com/acme`, which differs from what was
   // typed and is itself not enrollable (one path segment): the cases that hold
@@ -566,14 +601,73 @@ describe('aka enroll --repo', () => {
       expect(storedScope()).toEqual(fresh());
     });
 
-    it('quotes a directory name that holds a space in the command it suggests', async () => {
+    it.each(['my projects/payments-api', 'src/acme/pay(v2)&ments', 'src/$HOME/payments-api'])(
+      'quotes the shell metacharacters in %s in the command it suggests',
+      async (typed) => {
+        attach({ scope: fresh() });
+        mkdirSync(join(work, typed), { recursive: true });
+        const io = recorder();
+        expect(await runEnroll(['--repo', typed], deps(io, { cwd: work }))).toBe(1);
+        const escaped = typed.replace(/[$()&/]/g, (character) => `\\${character}`);
+        expect(io.errors()).toMatch(new RegExp(`\`aka enroll ["']${escaped}["']\``));
+      },
+    );
+
+    // The suggested command is built from the whole text. A name past the width
+    // an echo is cut to must not be cut in the command, or pasting it would name
+    // another directory.
+    it.skipIf(process.platform === 'win32')(
+      'suggests the whole path, not the cut one it echoes',
+      async () => {
+        attach({ scope: fresh() });
+        const long = ['a', 'b', 'c'].map((letter) => letter.repeat(70)).join('/');
+        mkdirSync(join(work, long), { recursive: true });
+        const io = recorder();
+        expect(await runEnroll(['--repo', long], deps(io, { cwd: work }))).toBe(1);
+        expect(io.errors()).toContain(`\`aka enroll ${long}\``);
+        expect(io.errors()).toContain('…');
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'names no command for a directory whose name holds a control character',
+      async () => {
+        attach({ scope: fresh() });
+        mkdirSync(join(work, 'src', `pay${ESC}[2Jments`), { recursive: true });
+        const io = recorder();
+        expect(await runEnroll(['--repo', `src/pay${ESC}[2Jments`], deps(io, { cwd: work }))).toBe(
+          1,
+        );
+        expect(io.errors()).toContain('is a directory on this machine');
+        expect(io.errors()).toContain('pass the directory as a path instead of --repo');
+        expect(io.errors()).not.toContain('`aka enroll src');
+        expect(io.errors()).not.toContain(ESC);
+      },
+    );
+
+    // A tree laid out by host, owner and repository (the way Go and ghq keep
+    // clones) has the checkout at the very path the key spells.
+    it('accepts a directory that is the checkout of the repository the text spells', async () => {
       attach({ scope: fresh() });
-      mkdirSync(join(work, 'my projects', 'payments-api'), { recursive: true });
+      gitRepo(join(work, 'github.com', 'acme', 'payments-api'), WORK_REMOTE);
       const io = recorder();
-      expect(await runEnroll(['--repo', 'my projects/payments-api'], deps(io, { cwd: work }))).toBe(
-        1,
-      );
-      expect(io.errors()).toContain('`aka enroll "my projects/payments-api"`');
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io, { cwd: work }))).toBe(0);
+      expect(storedScope()).toEqual(fresh([enrolled()]));
+      expect(io.errors()).toBe('');
+    });
+
+    it.each<[string, string | undefined]>([
+      ['a plain directory', undefined],
+      ['the checkout of another repository', 'https://github.com/acme/billing-worker.git'],
+    ])('refuses %s that merely shares the text', async (_name, remote) => {
+      attach({ scope: fresh() });
+      const dir = join(work, 'github.com', 'acme', 'payments-api');
+      if (remote === undefined) mkdirSync(dir, { recursive: true });
+      else gitRepo(dir, remote);
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io, { cwd: work }))).toBe(1);
+      expect(io.errors()).toContain('is a directory on this machine');
+      expect(storedScope()).toEqual(fresh());
     });
 
     it('keeps a key whose host has no dot when no such directory exists', async () => {
@@ -671,6 +765,40 @@ describe('aka enroll — the stored record', () => {
     // would make this later write throw (or wait out its timeout).
     expect(() => applyOnboarding({}, base, null)).not.toThrow();
   });
+
+  // The endpoint is not the only thing a concurrent attach can change: the same
+  // deployment attached machine-wide leaves the endpoint as it was.
+  it.each<[string, Parameters<typeof writeControlPlaneCredential>[1]]>([
+    [
+      'attached machine-wide',
+      { specVersion: ATTACHED_CREDENTIAL_SPEC_VERSION, endpoint: ENDPOINT, apiKey: TEST_KEY },
+    ],
+    [
+      'given a credential for another deployment',
+      {
+        specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+        mode: 'scoped',
+        endpoint: OTHER_ENDPOINT,
+        apiKey: TEST_KEY,
+      },
+    ],
+  ])(
+    'writes nothing when the deployment is %s between the check and the write',
+    async (_name, credential) => {
+      attach({ scope: fresh() });
+      settingsWrite.before = () => {
+        writeControlPlaneCredential(settingsDirOf(base), credential);
+      };
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+      expect(exits).toEqual([1]);
+      expect(io.errors()).toContain('changed while that was being saved, so nothing was enrolled');
+      expect(io.output()).not.toContain('Enrolled.');
+      expect(storedScope()).toEqual(fresh());
+      expect(seed.calls).toEqual([]);
+      expect(() => applyOnboarding({}, base, null)).not.toThrow();
+    },
+  );
 
   it('exits non-zero with no success line when the write fails', async () => {
     attach({ scope: fresh(), extra: consent() });
@@ -865,6 +993,22 @@ describe('aka unenroll', () => {
     expect(identities()).toEqual([]);
   });
 
+  it('writes nothing when the deployment is attached machine-wide before the write', async () => {
+    attach({ scope: fresh([enrolled()]) });
+    settingsWrite.before = () => {
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: ATTACHED_CREDENTIAL_SPEC_VERSION,
+        endpoint: ENDPOINT,
+        apiKey: TEST_KEY,
+      });
+    };
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+    expect(io.errors()).toContain('changed while that was being saved, so nothing was unenrolled');
+    expect(io.output()).not.toContain('Unenrolled');
+    expect(identities()).toEqual([WORK_REPO]);
+  });
+
   it('says so and changes nothing when the repository is not enrolled', async () => {
     attach({ scope: fresh([enrolled(SECOND_REPO, null)]) });
     const io = recorder();
@@ -908,7 +1052,7 @@ describe('aka enroll --list', () => {
     expect(settingsWrite.calls).toBe(0);
   });
 
-  it('strips control characters from every name it echoes', async () => {
+  it('strips control characters from the deployment name it echoes', async () => {
     attach({ scope: fresh(), label: `Acme${ESC}[2J` });
     const list = recorder();
     expect(await runEnroll(['--list'], deps(list))).toBe(0);
@@ -917,6 +1061,55 @@ describe('aka enroll --list', () => {
     expect(await runEnroll(['--repo', WORK_REPO], deps(add))).toBe(0);
     expect(add.output()).toContain(`Enrolling ${WORK_REPO} (payments-api) with Acme[2J.`);
     expect(`${list.output()}${add.output()}`).not.toContain(ESC);
+  });
+
+  // Everything else a refusal or a result puts on the terminal that a person,
+  // a remote or a file can write: the text typed after --repo, a path, the key
+  // a remote spells, and a stored key the command removes.
+  describe('and from everything else it echoes', () => {
+    const TYPED = `github.com/acme/evil${ESC}[2J`;
+
+    it('strips the text typed after --repo, to enroll and to unenroll', async () => {
+      attach({ scope: fresh() });
+      const enroll = recorder();
+      expect(await runEnroll(['--repo', TYPED], deps(enroll))).toBe(1);
+      expect(enroll.errors()).toContain('github.com/acme/evil[2J does not name a repository');
+      const unenroll = recorder();
+      expect(await runUnenroll(['--repo', TYPED], deps(unenroll))).toBe(0);
+      expect(unenroll.output()).toContain('github.com/acme/evil[2J is not enrolled with Acme');
+      expect(`${enroll.errors()}${unenroll.output()}`).not.toContain(ESC);
+    });
+
+    it('strips a path in a refusal', async () => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      const cwd = join(base, 'no-such-directory', `dir${ESC}[2J`);
+      expect(await runEnroll([], deps(io, { cwd }))).toBe(1);
+      expect(io.errors()).toContain('dir[2J is not inside a git repository');
+      expect(io.errors()).not.toContain(ESC);
+    });
+
+    it('never stores or echoes a key or name a remote spells with a control character', async () => {
+      attach({ scope: fresh() });
+      const repo = gitRepo(join(work, 'odd'), `https://github.com/acme/pay${ESC}[2Jments.git`);
+      const io = recorder();
+      expect(await runEnroll([repo], deps(io))).toBe(1);
+      expect(io.errors()).toContain('has no remote on a code host');
+      expect(`${io.errors()}${io.output()}`).not.toContain(ESC);
+      expect(storedScope()).toEqual(fresh());
+    });
+
+    it('strips a stored key it removes', async () => {
+      // A key a newer build, or a hand edit, wrote: not one this build would store.
+      attach({
+        scope: fresh([{ kind: 'repo', identity: TYPED, enrolledAt: NOW }, enrolled()]),
+      });
+      const io = recorder();
+      expect(await runUnenroll(['--repo', TYPED], deps(io))).toBe(0);
+      expect(io.output()).toContain('Unenrolled github.com/acme/evil[2J.');
+      expect(io.output()).not.toContain(ESC);
+      expect(identities()).toEqual([WORK_REPO]);
+    });
   });
 });
 
@@ -982,11 +1175,72 @@ describe('registration', () => {
 describe('enroll.ts', () => {
   // The verbs are local: they change settings and contact nothing. The CLI's
   // privacy footnote counts the paths that reach a network, and these are not
-  // among them, so nothing in this file may open one.
+  // among them, so nothing in this file may open one. A module is named with or
+  // without the `node:` prefix, so both are matched.
+  const TRANSPORT_IMPORT = /(?:from |import\()'(?:node:)?(?:http|https|http2|net|tls|dgram)'/;
+
+  it.each([
+    "import http from 'http';",
+    "import { request } from 'node:https';",
+    "import { connect } from 'net';",
+    "import { connect } from 'node:tls';",
+    "const dgram = await import('dgram');",
+    "import { connect } from 'node:http2';",
+  ])('the transport check recognises %s', (line) => {
+    expect(line).toMatch(TRANSPORT_IMPORT);
+  });
+
+  it.each([
+    "import { join } from 'node:path';",
+    "import { runEnroll } from './http.ts';",
+    "import { network } from 'netmask';",
+  ])('the transport check leaves %s alone', (line) => {
+    expect(line).not.toMatch(TRANSPORT_IMPORT);
+  });
+
   it('imports no transport and calls no fetch', () => {
     const source = readFileSync(new URL('../../src/commands/enroll.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/from '@akasecurity\/remote'/);
-    expect(source).not.toMatch(/from 'node:(?:http|https|net|tls|dgram)'/);
+    expect(source).not.toMatch(TRANSPORT_IMPORT);
     expect(source).not.toMatch(/\bfetch\(/);
+  });
+});
+
+describe('quotedForShell', () => {
+  it.each(['src/acme/payments-api', 'a_b-c.d:e=f,g+h@i%j', '/tmp/x/y'])(
+    'leaves the plain word %s as it is',
+    (word) => {
+      expect(quotedForShell(word, 'linux')).toBe(word);
+    },
+  );
+
+  it.each([
+    'my projects/x',
+    'a(b)',
+    'a&b',
+    'a;b',
+    'a|b',
+    'a<b>c',
+    '$HOME/x',
+    '$(rm -rf x)',
+    'a`b`',
+    'a*b',
+    'a?b',
+    '~/x',
+    'a#b',
+    'a!b',
+    'a\\b',
+    'a"b',
+  ])('single-quotes %s for a POSIX shell', (word) => {
+    expect(quotedForShell(word, 'linux')).toBe(`'${word}'`);
+  });
+
+  it('closes, escapes and reopens a single quote inside the word', () => {
+    expect(quotedForShell("it's here", 'darwin')).toBe(`'it'\\''s here'`);
+  });
+
+  it('double-quotes for a Windows shell', () => {
+    expect(quotedForShell('my projects\\x', 'win32')).toBe('"my projects\\x"');
+    expect(quotedForShell('plain/word', 'win32')).toBe('plain/word');
   });
 });

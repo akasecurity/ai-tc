@@ -22,7 +22,7 @@ import {
   KNOWN_BUILTIN_IDS,
 } from '@akasecurity/schema';
 
-import { PLACEHOLDER_POLICY, policyMeta } from './meta.ts';
+import { PLACEHOLDER_POLICY, policyMeta, type UnassignedPolicy } from './meta.ts';
 
 /**
  * The constraint one detection is under, or the absence of one.
@@ -133,6 +133,25 @@ export function isPolicyGoverned(
 ): boolean {
   if (!floor) return false;
   return floor.locked || effectivePolicyId(assigned, floor) !== (assigned ?? PLACEHOLDER_POLICY);
+}
+
+/**
+ * The host's unassigned policy, when it is what describes this detection, or
+ * undefined when the detection renders as an archetype.
+ *
+ * It applies to an unassigned detection — `null` included, as `??` treats it
+ * everywhere else — unless a LOCKED floor governs it: a lock names the policy
+ * outright. An unlocked floor does not, because it is a minimum the host's
+ * policy is raised to, and what that policy resolves to is the host's to know.
+ * Both views read this one answer, so the list and the pane cannot disagree.
+ */
+export function unassignedPolicyFor(
+  assigned: string | null | undefined,
+  floor: DetectionPolicyFloor | null | undefined,
+  unassignedPolicy: UnassignedPolicy | undefined,
+): UnassignedPolicy | undefined {
+  if (assigned != null || floor?.locked) return undefined;
+  return unassignedPolicy;
 }
 
 /**

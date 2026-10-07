@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SCANNABLE_FIELDS } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
-  scannableResponseFields,
+  collectResponseFields,
   SCANNED_RESPONSE_TOOL_NAMES,
 } from '../../src/hooks/tool-response.ts';
 
@@ -58,7 +58,7 @@ describe('hooks.json tool matchers', () => {
 
   it('PostToolUse selects the mcp__* family, which the mapping matches by prefix', () => {
     const mcp = { content: [{ type: 'text', text: 'x' }] };
-    expect(scannableResponseFields('mcp__everything__echo', mcp)).not.toEqual([]);
+    expect(collectResponseFields('mcp__everything__echo', mcp).fields).not.toEqual([]);
     expect(selects('PostToolUse', 'mcp__everything__echo')).toBe(true);
   });
 

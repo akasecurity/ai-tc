@@ -18,7 +18,7 @@
 // join used to build the hash input.
 import { z } from 'zod';
 
-import { ActionTaken, DetectionCategory, Severity, Span } from './finding.ts';
+import { ActionTaken, DetectionCategory, FindingContext, Severity, Span } from './finding.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -414,6 +414,22 @@ export const ToolCallInspection = z.object({
 });
 export type ToolCallInspection = z.infer<typeof ToolCallInspection>;
 
+// The fields that place a finding in the text it was detected in (see
+// FindingLocation). Optional on every input so a writer that has no source
+// text — or predates location capture — stays valid.
+const findingLocationFields = {
+  line: z.number().int().positive().optional(),
+  col: z.number().int().positive().optional(),
+  context: FindingContext.nullable().optional(),
+};
+
+// ToolCallInspection plus where the hit sits in the scanned target. The LOCAL
+// write input only: the wire keeps `ToolCallInspection`, and the attached
+// gateway projects each inspection onto it field by field, so the masked
+// excerpt never leaves the machine.
+export const ToolCallInspectionInput = ToolCallInspection.extend(findingLocationFields);
+export type ToolCallInspectionInput = z.infer<typeof ToolCallInspectionInput>;
+
 // The reconciler → gateway → persistence input for one `tool_call` leaf. Carries
 // the NATURAL key (`sessionId` + `toolUseId`); the content-addressed
 // `toolCallId(sessionId, toolUseId)` is minted inside `@akasecurity/persistence` (same
@@ -429,7 +445,7 @@ export const ToolCallInput = z.object({
   attributes: ToolCallAttributes,
   // Secrets detected in the tool's (masked) target — written as linked
   // `inspection_findings`. Empty for a clean tool call.
-  inspections: z.array(ToolCallInspection).default([]),
+  inspections: z.array(ToolCallInspectionInput).default([]),
 });
 export type ToolCallInput = z.infer<typeof ToolCallInput>;
 
@@ -538,6 +554,7 @@ export const InspectionFindingInput = z.object({
   // Optional: when omitted, the writer derives it from the referenced audit
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
+  ...findingLocationFields,
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 

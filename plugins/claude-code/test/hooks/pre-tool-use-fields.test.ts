@@ -15,6 +15,7 @@ import type { ScannableField } from '../../src/hooks/pre-tool-use-fields.ts';
 import {
   inputEventKind,
   inputFilePath,
+  inputLineBasis,
   isSyntheticField,
   MCP_KEY_JOIN,
   scannableInputFields,
@@ -546,5 +547,14 @@ describe('inputFilePath', () => {
     expect(inputFilePath({ file_path: '/a.ts' })).toBe('/a.ts');
     expect(inputFilePath({ notebook_path: '/n.ipynb' })).toBe('/n.ipynb');
     expect(inputFilePath({ command: 'ls' })).toBeUndefined();
+  });
+});
+
+describe('inputLineBasis', () => {
+  it("counts a Write's lines in the file and every other tool's in its fragment", () => {
+    expect(inputLineBasis('Write')).toBe('file');
+    expect(inputLineBasis('Edit')).toBe('excerpt');
+    expect(inputLineBasis('MultiEdit')).toBe('excerpt');
+    expect(inputLineBasis('Bash')).toBe('excerpt');
   });
 });

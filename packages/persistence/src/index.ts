@@ -128,6 +128,8 @@ export type {
   DashboardViews,
   DetectionsReadPort,
   EventsReadPort,
+  FindingContextSource,
+  FindingContextView,
   FindingsReadPort,
   InstalledPacksReadPort,
   InventoryReadPort,

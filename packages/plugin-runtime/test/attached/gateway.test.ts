@@ -1608,6 +1608,66 @@ describe('the local scope key never reaches the client', () => {
 
 const REFUSED_KEYS = [OUT, undefined, ''] as const;
 
+describe("a finding's location never reaches the client", () => {
+  it('forwards each inspection without its line, column or excerpt, and stores them locally', async () => {
+    const seen: unknown[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls);
+    const localCalls: ToolCallInput[][] = [];
+    const recordLocally = local.recordToolCalls.bind(local);
+    local.recordToolCalls = (inputs) => {
+      localCalls.push([...inputs]);
+      return recordLocally(inputs);
+    };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn((events: readonly unknown[]) => {
+        seen.push(...events);
+        return Promise.resolve({ accepted: events.length });
+      }),
+    } as unknown as AttachedClient;
+    const { gateway } = build({ client, local });
+
+    const inspection = {
+      ruleId: 'code-flaws/xss-inner-html',
+      ruleName: 'innerHTML assignment',
+      ruleVersion: '1',
+      category: 'code_flaw' as const,
+      severity: 'high' as const,
+      span: { start: 4, end: 15 },
+      maskedMatch: 'i*********=',
+      actionTaken: 'log' as const,
+      confidence: 0.8,
+    };
+    await gateway.recordToolCalls([
+      {
+        ...toolCallInput('located'),
+        inspections: [
+          {
+            ...inspection,
+            line: 2,
+            col: 5,
+            context: {
+              basis: 'excerpt',
+              firstLine: 2,
+              lines: ['x = innerHTML = y'],
+              match: { line: 2, start: 4, end: 15 },
+            },
+          },
+        ],
+      },
+    ]);
+
+    // Positive control: the local write kept the location.
+    expect(localCalls[0]?.[0]?.inspections[0]?.line).toBe(2);
+    expect(localCalls[0]?.[0]?.inspections[0]?.context).not.toBeNull();
+    // The wire carries the inspection as the wire shape names it, and nothing more.
+    expect(seen).toHaveLength(1);
+    const sent = (seen[0] as { inspections?: unknown[] }).inspections ?? [];
+    expect(sent).toEqual([inspection]);
+  });
+});
+
 describe('the scope verdict, method by method', () => {
   // Every `… forwards …` case here is a GUARD rather than a red test: a gateway
   // with no verdict forwards everything, so they pass before one exists. They

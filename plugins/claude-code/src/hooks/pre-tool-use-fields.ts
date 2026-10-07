@@ -13,7 +13,7 @@
 // so in-place redaction is correct there and only there.
 //
 // Kept free of I/O and hook wiring so it unit-tests without a hook process.
-import type { EventKind } from '@akasecurity/schema';
+import type { EventKind, FindingContextBasis } from '@akasecurity/schema';
 
 import type { PathSegment } from './paths.ts';
 import { stringAtPath } from './paths.ts';
@@ -406,6 +406,13 @@ export function scannableInputFields(
 /** The event kind a tool's scanned text is recorded under. */
 export function inputEventKind(toolName: string): EventKind {
   return CODE_CHANGE_TOOLS.has(toolName) ? 'code_change' : 'tool_use';
+}
+
+/** What a finding's line counts in for this tool's scanned field: a Write's
+ * `content` is the whole file, so its lines are the file's own; every other
+ * field (an edit's replacement text, a command) is a fragment. */
+export function inputLineBasis(toolName: string): FindingContextBasis {
+  return toolName === 'Write' ? 'file' : 'excerpt';
 }
 
 /** The file a tool's input targets, for metadata attribution. NotebookEdit

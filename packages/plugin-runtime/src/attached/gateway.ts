@@ -46,6 +46,7 @@ import type {
   StorePostureSnapshot,
   ToolCallInput,
   ToolCallInspection,
+  ToolCallInspectionInput,
 } from '@akasecurity/schema';
 import {
   AUDIT_EVENT_BATCH_MAX,
@@ -1416,6 +1417,24 @@ function toolAuditEvent(
     parentId: input.parentId,
     rootSessionId: input.rootSessionId,
     attributes: input.attributes,
-    inspections: input.inspections,
+    inspections: input.inspections.map(toWireInspection),
+  };
+}
+
+// The wire inspection, named field by field. A local inspection also carries
+// where the hit sits and its masked excerpt (ToolCallInspectionInput); those
+// stay on this machine, so they are left out here rather than relying on the
+// client's schema to strip them.
+export function toWireInspection(insp: ToolCallInspectionInput): ToolCallInspection {
+  return {
+    ruleId: insp.ruleId,
+    ruleName: insp.ruleName,
+    ruleVersion: insp.ruleVersion,
+    category: insp.category,
+    severity: insp.severity,
+    span: insp.span,
+    maskedMatch: insp.maskedMatch,
+    actionTaken: insp.actionTaken,
+    confidence: insp.confidence,
   };
 }

@@ -99,6 +99,35 @@ describe('AttachmentScope — the binding', () => {
     expect(scopeVerdict(resolved, REPO)).toBe('forward');
     expect(isAttachmentScopeValid(unbound(), ENDPOINT)).toBe(true);
   });
+
+  it('a well-formed binding takes no part in the verdict: bound and unbound resolve alike', () => {
+    const entries = [entry(REPO), entry('github.com/acme/ledger'), entry('gitlab.com/acme/web')];
+    const withBinding = resolveScope({
+      mode: 'scoped',
+      scope: bound({ entries }),
+      endpoint: ENDPOINT,
+    });
+    const withoutBinding = resolveScope({
+      mode: 'scoped',
+      scope: { endpoint: ENDPOINT, entries },
+      endpoint: ENDPOINT,
+    });
+
+    expect(withBinding.mode).toBe('scoped');
+    expect([...withBinding.keys].sort()).toEqual(entries.map((e) => e.identity).sort());
+    expect([...withBinding.keys].sort()).toEqual([...withoutBinding.keys].sort());
+  });
+
+  it('answers forward for a capture in an enrolled repository, bound or not, and local elsewhere', () => {
+    const resolve = (scope: unknown) => resolveScope({ mode: 'scoped', scope, endpoint: ENDPOINT });
+    const withBinding = resolve(bound());
+    const withoutBinding = resolve(unbound());
+
+    expect(scopeVerdict(withBinding, REPO)).toBe('forward');
+    expect(scopeVerdict(withBinding, REPO)).toBe(scopeVerdict(withoutBinding, REPO));
+    expect(scopeVerdict(withBinding, 'github.com/acme/elsewhere')).toBe('local');
+    expect(scopeVerdict(withBinding, undefined)).toBe('local');
+  });
 });
 
 describe('isAttachmentScopeBoundTo', () => {

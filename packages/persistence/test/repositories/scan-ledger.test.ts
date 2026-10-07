@@ -152,6 +152,81 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
     });
   });
 
+  describe('the directory of the repository a file was read in', () => {
+    const WORK = 'github.com/acme/work';
+    const WORK_ROOT = '/repo';
+    const CLONE_ROOT = '/repo/clone';
+
+    it("returns the recorded root with a ruleset's state, beside the key", () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([
+        entry('/repo/a.ts', { scopeKey: WORK, scopeRoot: WORK_ROOT }),
+        // A repository with no forge remote has a root and no key.
+        entry('/repo/clone/b.ts', { scopeRoot: CLONE_ROOT }),
+        entry('/repo/c.ts', { rulesetHash: 'ruleset-v2', scopeKey: WORK, scopeRoot: WORK_ROOT }),
+      ]);
+
+      const state = db.scanLedger.entriesForRuleset('ruleset-v1');
+      expect(state.get('/repo/a.ts')).toEqual({
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'hash-of-/repo/a.ts',
+        scopeKey: WORK,
+        scopeRoot: WORK_ROOT,
+      });
+      expect(state.get('/repo/clone/b.ts')).toEqual({
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'hash-of-/repo/clone/b.ts',
+        scopeRoot: CLONE_ROOT,
+      });
+      expect(state.has('/repo/c.ts')).toBe(false);
+      db.close();
+    });
+
+    it('writes NULL for an entry with no root, and a re-read replaces the root it had', () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([entry('/repo/a.ts', { scopeKey: WORK, scopeRoot: WORK_ROOT })]);
+      db.scanLedger.upsertEntries([entry('/repo/a.ts', { mtime: '2026-07-02T11:00:00.000Z' })]);
+
+      // Written exactly as the key is: what the entry says is what the row holds.
+      expect(db.scanLedger.entriesForRuleset('ruleset-v1').get('/repo/a.ts')?.scopeRoot).toBe(
+        undefined,
+      );
+      const raw = store.openRaw();
+      expect(raw.prepare('SELECT scope_key, scope_root FROM scan_ledger').all()).toEqual([
+        { scope_key: null, scope_root: null },
+      ]);
+      db.close();
+    });
+
+    it('carries a root across reopen', () => {
+      const db1 = store.open();
+      db1.scanLedger.upsertEntries([entry('/repo/a.ts', { scopeRoot: WORK_ROOT })]);
+      db1.close();
+
+      const db2 = store.open();
+      expect(db2.scanLedger.entriesForRuleset('ruleset-v1').get('/repo/a.ts')?.scopeRoot).toBe(
+        WORK_ROOT,
+      );
+      db2.close();
+    });
+
+    it('leaves what pathKeys lists as it was: the key alone', () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([
+        entry('/repo/a.ts', { scopeKey: WORK, scopeRoot: WORK_ROOT }),
+        entry('/repo/clone/b.ts', { scopeRoot: CLONE_ROOT }),
+      ]);
+
+      expect(db.scanLedger.pathKeys()).toEqual(
+        new Map<string, string | undefined>([
+          ['/repo/a.ts', WORK],
+          ['/repo/clone/b.ts', undefined],
+        ]),
+      );
+      db.close();
+    });
+  });
+
   it('treats an empty upsert as a no-op', () => {
     const db = store.open();
     db.scanLedger.upsertEntries([]);

@@ -15,6 +15,10 @@ export interface ScanLedgerEntry {
   // was read. Absent for a file in no repository with a remote, which is stored
   // as NULL: an entry without one REPLACES the key an earlier read recorded.
   scopeKey?: string | undefined;
+  // The absolute directory of that repository, the one holding its `.git`.
+  // Absent for a file in no repository, which is stored as NULL like the key
+  // and replaces the root an earlier read recorded.
+  scopeRoot?: string | undefined;
 }
 
 // What the scanner needs to decide "unchanged, skip": the previous mtime (skip
@@ -25,6 +29,9 @@ export interface ScanLedgerState {
   // The repository the file was in when it was last read, for a scan to compare
   // with the one an unchanged file is in now. Absent for a row that recorded none.
   scopeKey?: string | undefined;
+  // The directory of that repository. Absent for a file that was in none, and
+  // for a row written before roots were kept.
+  scopeRoot?: string | undefined;
 }
 
 /**
@@ -44,17 +51,20 @@ export class SqliteScanLedgerRepository {
 
   constructor(private readonly db: DatabaseSync) {
     this.upsertStmt = db.prepare(
-      `INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scope_key, scanned_at)
-       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scopeKey, :scannedAt)
+      `INSERT INTO scan_ledger
+         (path, mtime, content_hash, ruleset_hash, scope_key, scope_root, scanned_at)
+       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scopeKey, :scopeRoot, :scannedAt)
        ON CONFLICT (path) DO UPDATE SET
          mtime = excluded.mtime,
          content_hash = excluded.content_hash,
          ruleset_hash = excluded.ruleset_hash,
          scope_key = excluded.scope_key,
+         scope_root = excluded.scope_root,
          scanned_at = excluded.scanned_at`,
     );
     this.readStmt = db.prepare(
-      `SELECT path, mtime, content_hash AS contentHash, scope_key AS scopeKey
+      `SELECT path, mtime, content_hash AS contentHash, scope_key AS scopeKey,
+              scope_root AS scopeRoot
        FROM scan_ledger WHERE ruleset_hash = :rulesetHash`,
     );
     this.pathsStmt = db.prepare(`SELECT path FROM scan_ledger`);
@@ -69,6 +79,7 @@ export class SqliteScanLedgerRepository {
       mtime: string;
       contentHash: string;
       scopeKey: string | null;
+      scopeRoot: string | null;
     }>(this.readStmt, { rulesetHash });
     return new Map(
       rows.map((r) => [
@@ -77,6 +88,7 @@ export class SqliteScanLedgerRepository {
           mtime: r.mtime,
           contentHash: r.contentHash,
           ...(r.scopeKey !== null ? { scopeKey: r.scopeKey } : {}),
+          ...(r.scopeRoot !== null ? { scopeRoot: r.scopeRoot } : {}),
         },
       ]),
     );
@@ -112,6 +124,7 @@ export class SqliteScanLedgerRepository {
           contentHash: entry.contentHash,
           rulesetHash: entry.rulesetHash,
           scopeKey: entry.scopeKey ?? null,
+          scopeRoot: entry.scopeRoot ?? null,
           scannedAt,
         });
       }

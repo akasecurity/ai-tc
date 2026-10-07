@@ -59,6 +59,10 @@ export interface ScanLedgerEntry {
   // was read, absent for a file in none with a remote. A record without one
   // REPLACES the key an earlier read stored.
   scopeKey?: string | undefined;
+  // The absolute directory of that repository, the one holding its `.git`,
+  // absent for a file in none. A record without one REPLACES the root an
+  // earlier read stored.
+  scopeRoot?: string | undefined;
 }
 
 // The previous scan state the scanner skips against: same mtime → skip without
@@ -71,6 +75,9 @@ export interface ScanLedgerState {
   // Absent for a row that recorded none: a file in no repository with a remote,
   // or one last read before keys were kept.
   scopeKey?: string | undefined;
+  // The directory of that repository. Absent for a file that was in none, and
+  // for a row written before roots were kept.
+  scopeRoot?: string | undefined;
 }
 
 // One rule's cached ReDoS timing verdict. Structurally identical to

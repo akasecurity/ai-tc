@@ -14,12 +14,14 @@ import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
 import {
   applyMigrations,
   ensureScanLedgerScopeKeyColumn,
+  ensureScanLedgerScopeRootColumn,
   ensureScopeKeyColumn,
   LEGACY_BACKFILL_BATCH_SIZE,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
   runLegacyHistoryBackfill,
   SCAN_LEDGER_SCOPE_KEY_DDL,
+  SCAN_LEDGER_SCOPE_ROOT_DDL,
   SCOPE_KEY_COLUMN_DDL,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
@@ -1025,6 +1027,166 @@ describe('the scan ledger scope_key column', () => {
     try {
       expect(() => {
         ensureScanLedgerScopeKeyColumn(db);
+      }).not.toThrow();
+      expect(columnNames(db, 'scan_ledger')).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ─── The scan ledger's scope_root column ─────────────────────────────────────
+
+describe('the scan ledger scope_root column', () => {
+  // The table as every build before either column created it, and as a build
+  // that kept the key but not the root did.
+  const OLD_SCAN_LEDGER = `CREATE TABLE scan_ledger (
+    path TEXT PRIMARY KEY,
+    mtime TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    ruleset_hash TEXT NOT NULL,
+    scanned_at INTEGER NOT NULL
+  )`;
+  const KEYED_SCAN_LEDGER = `CREATE TABLE scan_ledger (
+    path TEXT PRIMARY KEY,
+    mtime TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    ruleset_hash TEXT NOT NULL,
+    scanned_at INTEGER NOT NULL,
+    scope_key TEXT
+  )`;
+  const scopeRootColumns = (db: DatabaseSync): string[] =>
+    columnNames(db, 'scan_ledger').filter((n) => n === 'scope_root');
+  const WORK = 'github.com/acme/work';
+
+  it('is a nullable TEXT column on a fresh store', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const column = (
+        db.prepare('PRAGMA table_info(scan_ledger)').all() as {
+          name: string;
+          type: string;
+          notnull: number;
+        }[]
+      ).find((c) => c.name === 'scope_root');
+      expect(column).toMatchObject({ type: 'TEXT', notnull: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reaches a table that predates both columns, and keeps every row with a NULL root', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(OLD_SCAN_LEDGER);
+      db.prepare(
+        'INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scanned_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('/repo/old.ts', '2026-07-02T10:00:00.000Z', 'hash-old', 'ruleset-v1', 1);
+
+      applyMigrations(db);
+
+      expect(scopeRootColumns(db)).toEqual(['scope_root']);
+      expect(columnNames(db, 'scan_ledger')).toContain('scope_key');
+      expect(
+        new SqliteScanLedgerRepository(db).entriesForRuleset('ruleset-v1').get('/repo/old.ts'),
+      ).toEqual({ mtime: '2026-07-02T10:00:00.000Z', contentHash: 'hash-old' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reaches a table that has the key but not the root, and keeps every row and key', () => {
+    // A store made by a build that recorded the key before it recorded the root.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(KEYED_SCAN_LEDGER);
+      db.prepare(
+        'INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scanned_at, scope_key) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run('/repo/keyed.ts', '2026-07-02T10:00:00.000Z', 'hash-keyed', 'ruleset-v1', 1, WORK);
+      expect(scopeRootColumns(db)).toEqual([]);
+
+      applyMigrations(db);
+
+      expect(scopeRootColumns(db)).toEqual(['scope_root']);
+      expect(columnNames(db, 'scan_ledger').filter((n) => n === 'scope_key')).toEqual([
+        'scope_key',
+      ]);
+      expect(
+        new SqliteScanLedgerRepository(db).entriesForRuleset('ruleset-v1').get('/repo/keyed.ts'),
+      ).toEqual({
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'hash-keyed',
+        scopeKey: WORK,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is installed once: a second open neither throws nor adds it again', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(KEYED_SCAN_LEDGER);
+      applyMigrations(db);
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(scopeRootColumns(db)).toEqual(['scope_root']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds nothing when another opener added it between the probe and the lock', () => {
+    // As for the key's column: the first probe answers from a table without the
+    // column, and the other opener's ALTER lands right after that answer.
+    type HostMethod = (...args: unknown[]) => unknown;
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(KEYED_SCAN_LEDGER);
+      const realPrepare = db.prepare.bind(db);
+      let raced = false;
+      Object.defineProperty(db, 'prepare', {
+        configurable: true,
+        value: (sql: string) => {
+          const stmt = realPrepare(sql);
+          if (raced || !sql.startsWith('PRAGMA table_info(scan_ledger')) return stmt;
+          return new Proxy(stmt, {
+            get(target, prop) {
+              const value: unknown = Reflect.get(target, prop, target);
+              if (typeof value !== 'function') return value;
+              if (prop !== 'all') return (value as HostMethod).bind(target);
+              return (...args: unknown[]): unknown => {
+                const rows = (value as HostMethod).apply(target, args);
+                raced = true;
+                db.exec(SCAN_LEDGER_SCOPE_ROOT_DDL);
+                return rows;
+              };
+            },
+          });
+        },
+      });
+      try {
+        expect(() => {
+          ensureScanLedgerScopeRootColumn(db);
+        }).not.toThrow();
+      } finally {
+        Object.defineProperty(db, 'prepare', { configurable: true, value: realPrepare });
+      }
+      // Without this the case passes on an implementation that never probed.
+      expect(raced).toBe(true);
+      expect(scopeRootColumns(db)).toEqual(['scope_root']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves a store with no scan ledger alone', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      expect(() => {
+        ensureScanLedgerScopeRootColumn(db);
       }).not.toThrow();
       expect(columnNames(db, 'scan_ledger')).toEqual([]);
     } finally {

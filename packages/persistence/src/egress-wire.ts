@@ -356,6 +356,65 @@ export function canonicalRepoUrl(url: string): string | undefined {
   return SCOPE_KEY.safeParse(key).success ? key : undefined;
 }
 
+// One label of a host name an enrollable key may carry: a letter, digit or
+// underscore at each end, hyphens allowed between. `canonicalRepoUrl` has
+// already lowercased the host, so lowercase is all that can arrive.
+const ENROLLABLE_HOST_LABEL = /^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$/;
+
+/**
+ * Whether a key `canonicalRepoUrl` produced names a repository a user could mean
+ * to enroll: a host made of real labels, then at least two path segments, none
+ * of them empty, `.` or `..`.
+ */
+function isEnrollableKey(key: string): boolean {
+  const [host = '', ...path] = key.split('/');
+  if (!host.split('.').every((label) => ENROLLABLE_HOST_LABEL.test(label))) return false;
+  if (path.length < 2) return false;
+  return path.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/**
+ * The scope key to store for a repository a user names by hand — a clone URL, or
+ * a canonical key typed as it is stored — or `undefined` when what they typed is
+ * neither, or names no repository.
+ *
+ * A clone URL (https, ssh://, scp-style, with or without `.git`) goes through
+ * `canonicalRepoUrl`, the rule every producer of a key uses, so the key stored
+ * is the one a checkout of that repository stamps on its events.
+ *
+ * A typed key is accepted only when it is ALREADY canonical:
+ * `canonicalRepoUrl('https://' + key)` must give back exactly the key. Keys are
+ * compared byte for byte, so a key that is almost canonical — a capitalised
+ * host, a trailing slash, a `.git` suffix — would be stored, echoed back as
+ * enrolled, and match nothing a checkout stamps. It is refused rather than
+ * repaired, so the user sees the difference instead of a silent rewrite. Path
+ * case is kept: `github.com/Acme/Payments` is accepted, and is not
+ * `github.com/acme/payments`.
+ *
+ * Either way, a key that names no repository is refused:
+ *   - a host not made of real labels: `.`, `..` or `-` (which is how a typed
+ *     relative path such as `./payments-api` reads), an empty label (a
+ *     trailing-dot host such as `github.com.` names the same host as
+ *     `github.com` and would be a second key for it), or a label that begins or
+ *     ends with a hyphen;
+ *   - fewer than two path segments: `github.com/acme` names an owner, not a
+ *     repository, and enrolling it would enroll nothing;
+ *   - an empty, `.` or `..` path segment.
+ *
+ * A local path, a `file://` URL, a query or fragment, a control character or an
+ * over-long key is refused by `canonicalRepoUrl` itself. Surrounding whitespace
+ * is ignored.
+ *
+ * For a repository named by hand only. A key a checkout resolved for itself is
+ * already a producer's key and is not re-judged by this. Pure; no I/O.
+ */
+export function enrollableRepoKey(input: string): string | undefined {
+  const value = input.trim();
+  const typed = canonicalRepoUrl(`https://${value}`) === value ? value : undefined;
+  const key = canonicalRepoUrl(value) ?? typed;
+  return key !== undefined && isEnrollableKey(key) ? key : undefined;
+}
+
 /**
  * The scope key of a scan's pre-hash `projectKey`: the canonical repository of a
  * `git:` key's remote, and `undefined` for anything else.

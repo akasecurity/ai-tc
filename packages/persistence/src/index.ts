@@ -32,6 +32,7 @@ export type { InventoryContext, LocalDatabase, ResolvedInventory } from './datab
 export { openLocalDatabase } from './database.ts';
 export {
   canonicalRepoUrl,
+  enrollableRepoKey,
   hashProjectKey,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,

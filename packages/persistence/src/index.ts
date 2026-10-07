@@ -95,6 +95,7 @@ export {
   managedAttachRefusal,
   managedConnectionHold,
   managedDetachRefusal,
+  managedScopedRefusal,
 } from './managed-connection.ts';
 export {
   lockedAmong,

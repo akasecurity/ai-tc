@@ -180,6 +180,31 @@ export function managedDetachRefusal(
 }
 
 /**
+ * Why this machine may not be attached in SCOPED mode, or null when it may.
+ *
+ * Refused exactly when an administrator governs the connection at all: `runMode`
+ * locked, or `runMode` or `controlPlane` pinned. Such a machine attaches
+ * machine-wide only, because a scoped attach would narrow a device the
+ * organization manages to the repositories its user enrolls. That is wider than
+ * the mode hold the detach refusal reads, on purpose: a pin on the deployment
+ * alone, the shape a fleet overlay ships, leaves `runMode` the user's and holds
+ * neither verb, and it still marks the device as the organization's.
+ *
+ * The overlay is all it reads, so a device that became managed after a scoped
+ * attach meets this on its next attach. RUN BEFORE ANY NETWORK CALL OR WRITE,
+ * beside `managedAttachRefusal`, for the reason that one gives. A managed file
+ * that cannot be read is UNMANAGED here too, as `readGovernedConnection` decides
+ * for every connection decision.
+ */
+export function managedScopedRefusal(
+  base: string = defaultDataDir(),
+  managedOverride?: ManagedSettings | null,
+): ConnectionRefusal | null {
+  const governed = readGovernedConnection(base, managedOverride);
+  return governed === null ? null : { reason: 'scoped-managed', ...governed.who };
+}
+
+/**
  * What a surface may OFFER: the refusal an attach or a detach from this
  * machine's current state would meet whatever is typed, or null.
  *

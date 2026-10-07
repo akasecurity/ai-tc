@@ -52,6 +52,10 @@ export default async function SettingsPage() {
     // its route tests read.
     <div className="box-content max-w-3xl p-6">
       <PageHead title="Settings" sub="Workspace configuration for this machine." />
+      {/* `settings` reaches the browser whole, its scope record included: the
+          repositories this machine enrolled, and the organization and account
+          name that record is bound to. They belong to this machine's own user,
+          on their own dashboard, and no credential is among them. */}
       <SettingsClient
         settings={settings}
         managed={managed}

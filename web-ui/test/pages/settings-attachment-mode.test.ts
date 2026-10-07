@@ -122,6 +122,44 @@ describe('the settings route and the attachment mode', () => {
     expect(props.connectionHeld).toBe(false);
   });
 
+  it('hands the settings to the client whole, the scope record and its binding included', async () => {
+    // What the page's comment above the client says: the repositories this
+    // machine enrolled and the organization and account the record is bound to
+    // reach the browser. No credential is among them.
+    const record = {
+      endpoint: ENDPOINT,
+      tenantName: 'Example Org',
+      userEmail: 'operator',
+      entries: [
+        {
+          kind: 'repo',
+          identity: 'github.com/acme/payments-api',
+          enrolledAt: '2026-10-01T00:00:00.000Z',
+        },
+      ],
+    };
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: ATTACHED_AT },
+        attachmentScope: record,
+      },
+      akaHome(),
+      null,
+    );
+    writeControlPlaneCredential(settingsDir(akaHome()), {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: KEY,
+    });
+
+    const props = await renderPage();
+
+    expect(props.settings.attachmentScope).toEqual(record);
+    expectNoEchoOf(JSON.stringify(props), KEY);
+  });
+
   it('never hands the key to the client component', async () => {
     attachWith({ specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: KEY });
     expectNoEchoOf(JSON.stringify(await renderPage()), KEY);

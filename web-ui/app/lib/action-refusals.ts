@@ -155,12 +155,16 @@ export const ATTACH_LABEL_INVALID =
  * That credential is either a file this build cannot read, which may be a scoped
  * credential a newer build wrote, or a scoped credential for another deployment.
  * Attaching machine-wide over either because nobody named a mode would widen
- * what the machine sends without anyone deciding to. The form always sends a
- * mode, so only a client that predates the choice meets this; it says what to do
- * on the page.
+ * what the machine sends without anyone deciding to.
+ *
+ * Two callers meet it. A client that predates the choice sends no mode. And the
+ * form sends none on a machine an administrator governs, where it offers no
+ * choice: if that hold lifted before the form was submitted, the page still on
+ * screen has no choice to make and cannot follow the refusal until it is
+ * reloaded, so the copy says to reload.
  */
 export const ATTACH_MODE_REQUIRED =
-  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Choose whether this is a personal or an organization device, then attach again.';
+  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
 
 /**
  * The four refusals `syncNow` adds.

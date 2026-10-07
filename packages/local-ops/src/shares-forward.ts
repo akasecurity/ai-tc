@@ -226,15 +226,24 @@ function nestedVerdict(
  *
  * `dir` must still hold its `.git`. Without one, the identity resolver climbs
  * to the repository AROUND it, and a nested directory whose `.git` vanished
- * since the walk would be judged by the enclosing project's key.
+ * since the walk would be judged by the enclosing project's key. It is checked
+ * before the read, and again after it, because the resolver does not say which
+ * directory it answered for: a `.git` removed during the read is otherwise
+ * indistinguishable from one that was never missing. The scanner's own
+ * repository-root lookup makes the same two checks.
+ *
+ * The residual is a `.git` removed and recreated between the two checks: it
+ * reads as the directory's own, and so it does in the scanner's lookup.
  *
  * It reads the repository afresh on every call rather than through the
  * plugin's per-directory memo. This runs in the dashboard's long-lived server,
  * where a remembered remote could outlive an edit to it.
  */
 function nestedRepositoryKey(dir: string): string | undefined {
-  if (!existsSync(join(dir, '.git'))) return undefined;
+  const dotGit = join(dir, '.git');
+  if (!existsSync(dotGit)) return undefined;
   const identity = resolveRepoIdentity(dir);
+  if (!existsSync(dotGit)) return undefined;
   return identity === undefined ? undefined : canonicalRepoUrl(identity.url);
 }
 

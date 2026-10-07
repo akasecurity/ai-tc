@@ -256,6 +256,27 @@ describe('forwardProjectEgress — a scoped attachment and the repositories nest
     expect(sent).toHaveLength(0);
   });
 
+  it("never judges a nested directory by the enclosing project's key when its .git goes during the read", async () => {
+    // The directory had a `.git` when the forward first looked, and lost it
+    // while the identity resolver was reading. The resolver then climbs to the
+    // checkout around it and answers with the work project's own, enrolled, key,
+    // without saying which directory it answered for. The key stands only if the
+    // `.git` it was read under is still there afterwards.
+    const racy = nested('tools/mine', { origin: PERSONAL_URL });
+    attach(enrolled(WORK));
+    const { resolveRepoIdentity: real } =
+      await vi.importActual<typeof PluginSdk>('@akasecurity/plugin-sdk');
+    vi.mocked(resolveRepoIdentity).mockImplementationOnce((cwd) => {
+      rmSync(join(racy, '.git'), { recursive: true, force: true });
+      return real(cwd);
+    });
+
+    const { outcome, sent } = await forward({ nestedRepositories: [racy] });
+
+    expect(outcome).toEqual(NOT_ENROLLED);
+    expect(sent).toHaveLength(0);
+  });
+
   it("reads a nested repository's remote afresh on every forward", async () => {
     // The dashboard server is long-lived. A remembered remote would let a clone
     // repointed at a personal fork go on forwarding under its old key.

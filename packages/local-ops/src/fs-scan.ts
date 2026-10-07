@@ -643,6 +643,9 @@ export async function scanPathIntoStore(
     return fingerprintKey;
   }
 
+  // Every nested repository the walk lists, for the Data Shares forward.
+  const nestedRepositories: string[] = [];
+
   // Absolutize the walk root before any path reaches computeFindingKey /
   // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
   // path, but the plugin's worktree scanner keys on ABSOLUTE paths and
@@ -651,7 +654,6 @@ export async function scanPathIntoStore(
   // (ON CONFLICT (finding_key)) across the two tools. resolve() is relative to
   // process.cwd() — the same base the callers' statSync(target) already uses —
   // and is a no-op on the already-absolute paths the web-ui folder picker passes.
-  const nestedRepositories: string[] = [];
   for (const { path: file, gitignored } of collectFiles(resolve(target), {
     akaHome: opts.akaHome,
     onNestedRepository: (dir) => {

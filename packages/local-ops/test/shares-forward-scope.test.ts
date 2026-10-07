@@ -33,7 +33,11 @@ import { forwardProjectEgress } from '../src/shares-forward.ts';
 // refusal case that left it out would read `not-enrolled` whatever the project
 // verdict said, and could not fail. The empty list says the walk found nothing
 // nested, which leaves the project's key as the only thing that can refuse.
-const reader = vi.hoisted(() => ({ scoped: false }));
+//
+// `reader.keyThrows` makes the project's key derivation throw, so the verdict's
+// own catch is reached by a stated fault rather than by an input that happens to
+// break the real function.
+const reader = vi.hoisted(() => ({ scoped: false, keyThrows: false }));
 
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
@@ -42,6 +46,10 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     readControlPlaneCredential: (...args: Parameters<typeof actual.readControlPlaneCredential>) => {
       const real = actual.readControlPlaneCredential(...args);
       return real === null || !reader.scoped ? real : { ...real, specVersion: 2, mode: 'scoped' };
+    },
+    scopeKeyOfProjectKey: (...args: Parameters<typeof actual.scopeKeyOfProjectKey>) => {
+      if (reader.keyThrows) throw new Error('the project key could not be derived');
+      return actual.scopeKeyOfProjectKey(...args);
     },
   };
 });
@@ -87,11 +95,15 @@ const unreadableKey = (): RecordProjectEgressInput =>
 
 let home: string;
 
-function attach(scope?: unknown): void {
+function attach(scope?: unknown, label?: string): void {
   applyOnboarding(
     {
       runMode: 'attached',
-      controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-09-01T10:00:00.000Z' },
+      controlPlane: {
+        endpoint: ENDPOINT,
+        attachedAt: '2026-09-01T10:00:00.000Z',
+        ...(label === undefined ? {} : { label }),
+      },
     },
     home,
     // No managed overlay: an administrator's file on the machine running this
@@ -109,10 +121,14 @@ function attach(scope?: unknown): void {
 // Written into settings.json as raw JSON rather than through a settings writer:
 // the verdict reads the record, whoever wrote it — including a malformed one
 // no writer would produce.
-function writeScope(scope: unknown): void {
+function writeSettings(patch: Record<string, unknown>): void {
   const file = join(settingsDir(home), 'settings.json');
   const settings = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
-  writeFileSync(file, JSON.stringify({ ...settings, attachmentScope: scope }));
+  writeFileSync(file, JSON.stringify({ ...settings, ...patch }));
+}
+
+function writeScope(scope: unknown): void {
+  writeSettings({ attachmentScope: scope });
 }
 
 const enrolled = (identity: string, endpoint = ENDPOINT) => ({
@@ -123,6 +139,7 @@ const enrolled = (identity: string, endpoint = ENDPOINT) => ({
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-shares-scope-'));
   reader.scoped = false;
+  reader.keyThrows = false;
 });
 
 afterEach(() => {
@@ -251,17 +268,68 @@ describe('forwardProjectEgress — a scoped attachment', () => {
   it('fails closed: a key it cannot read reports not-enrolled, never an outage', async () => {
     // The verdict's own catch, not the outer one. A fault while deciding
     // whether to send must not be reported as a send that failed, and must
-    // not send.
+    // not send. The fault is the key derivation throwing, stood in for above, on
+    // a project key that is otherwise enrolled.
     reader.scoped = true;
+    reader.keyThrows = true;
     attach(enrolled(WORK_REPO));
     const transport = recorder();
 
-    const outcome = await forwardProjectEgress(home, unreadableKey(), {
-      send: transport.send,
-      nestedRepositories: [],
-    });
+    const outcome = await forwardProjectEgress(
+      home,
+      input('git:https://github.com/acme/payments-api.git'),
+      { send: transport.send, nestedRepositories: [] },
+    );
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('binds the scope to the endpoint URL, never to the label the deployment is shown under', async () => {
+    // The outcome names the deployment by its label, which the administrator
+    // chose and the machine holder can read. The scope record names the URL the
+    // machine is attached to. A record built for the label is for no deployment.
+    reader.scoped = true;
+    attach(enrolled(WORK_REPO, ENDPOINT), 'Acme Security');
+    const byUrl = recorder();
+
+    const forwarded = await forwardProjectEgress(
+      home,
+      input('git:https://github.com/acme/payments-api.git'),
+      { send: byUrl.send, nestedRepositories: [] },
+    );
+
+    expect(forwarded).toEqual({ status: 'forwarded', endpoint: 'Acme Security', callSites: 0 });
+    expect(byUrl.sent).toHaveLength(1);
+
+    writeScope(enrolled(WORK_REPO, 'Acme Security'));
+    const byLabel = recorder();
+
+    const refused = await forwardProjectEgress(
+      home,
+      input('git:https://github.com/acme/payments-api.git'),
+      { send: byLabel.send, nestedRepositories: [] },
+    );
+
+    expect(refused).toEqual({ status: 'not-enrolled', endpoint: 'Acme Security' });
+    expect(byLabel.sent).toHaveLength(0);
+  });
+
+  it('answers the Data Shares switch before the scope, so a run with the switch off is told so', async () => {
+    // Read live from settings, ahead of the credential and the scope: a project
+    // that is out of scope still reads as the switch being off.
+    reader.scoped = true;
+    attach(enrolled(WORK_REPO));
+    writeSettings({ dataSharesInPlace: false });
+    const transport = recorder();
+
+    const outcome = await forwardProjectEgress(
+      home,
+      input('git:https://github.com/someone/side-project.git'),
+      { send: transport.send, nestedRepositories: [] },
+    );
+
+    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT, reason: 'data-shares-off' });
     expect(transport.sent).toHaveLength(0);
   });
 
@@ -324,8 +392,8 @@ describe('forwardProjectEgress — a machine-wide attachment ignores the scope',
   });
 
   it('never reads the project key, so an unreadable one still fails exactly as before', async () => {
-    // Machine-wide behaviour is the build-before-scopes behaviour: an
-    // unreadable key reaches the projection and fails there, as an outage the
+    // Machine-wide behaviour is what it was before scoped attachments existed:
+    // an unreadable key reaches the projection and fails there, as an outage the
     // next scan retries — never as a scope refusal.
     attach();
     const transport = recorder();

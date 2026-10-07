@@ -183,11 +183,11 @@ function projectVerdict(
  * under the project's key. On a scoped attachment it is sent only when each of
  * those repositories is enrolled as well. One with no remote never is.
  *
- * Absent, the list is `'local'`: nobody has said what the register carries. A
- * walk that found nothing passes an empty list.
+ * On a SCOPED attachment an absent list is `'local'`: nobody has said what the
+ * register carries. A walk that found nothing passes an empty list.
  *
- * Machine-wide, it answers before reading the list, so a machine attachment
- * looks at no repository and sends what it always has.
+ * Machine-wide, it answers `'forward'` before reading the list, absent or not,
+ * so a machine attachment looks at no repository and sends what it always has.
  */
 function nestedVerdict(
   settings: WorkspaceSettings,

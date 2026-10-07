@@ -115,6 +115,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'managedConnectionHold',
   'managedContextOf',
   'managedDetachRefusal',
+  'managedScopedRefusal',
   'managedSettingsPaths',
   'migrateLegacyLayout',
   'normalizeHost',

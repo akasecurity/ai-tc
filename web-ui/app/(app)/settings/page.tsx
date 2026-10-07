@@ -1,6 +1,8 @@
 import { PageHead } from '@akasecurity/dashboard-ui';
 import {
   managedConnectionHold,
+  managedScopedRefusal,
+  readControlPlaneAttachmentMode,
   readControlPlaneCredentialState,
   readEffectiveSettings,
   settingsDir,
@@ -20,10 +22,17 @@ export const metadata = { title: 'Settings' };
 export default async function SettingsPage() {
   const { settings, managed } = readEffectiveSettings();
   const credentialState = readControlPlaneCredentialState(settingsDir(), settings.controlPlane);
+  // The MODE of the credential, alone: the key stays on the server. Undefined
+  // unless a usable credential is held for the connection the settings name.
+  const attachmentMode = readControlPlaneAttachmentMode(settingsDir(), settings.controlPlane);
   // Through the decision the attach and detach actions refuse on, not off the
   // managed context: a mode an administrator PINNED without locking it leaves
   // `lockedFields` empty, and the row would offer a detach the action refuses.
   const connectionHeld = managedConnectionHold() !== null;
+  // Through the decision the attach action refuses a scoped attach on, for the
+  // same reason: a connection pinned with nothing locked governs the machine
+  // all the same, and the form must not offer a choice the action refuses.
+  const machineOnly = managedScopedRefusal() !== null;
   // NULL ON A STANDALONE MACHINE, and then nothing is rendered at all. The
   // panel describes a relationship with a deployment: a machine without one has
   // no lanes, no backlog and no button, and a card of zeros saying so is a
@@ -48,6 +57,8 @@ export default async function SettingsPage() {
         managed={managed}
         credentialState={credentialState}
         connectionHeld={connectionHeld}
+        attachmentMode={attachmentMode}
+        machineOnly={machineOnly}
       />
       {/* BELOW the form, and the panel's own copy depends on it: a stale grant
           reads "Review it above to resume", which names the control in the

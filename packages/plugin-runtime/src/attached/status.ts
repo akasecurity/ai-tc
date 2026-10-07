@@ -107,7 +107,11 @@ const MODE_LINES: Record<AttachmentMode, string> = {
   scoped: 'scoped (enrolled repositories only)',
 };
 
-/** What to do about a scope that sends nothing, under each of those lines. */
+/**
+ * What to do about a scope that sends nothing: printed under the "nothing
+ * enrolled" line (no record) and the "nothing enrolled yet" line (a record with
+ * no entries).
+ */
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
 
 function ageLine(fromMs: number, nowMs: number): string {
@@ -257,6 +261,9 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   const listed = new Set<string>();
   const rows: string[] = [];
   for (const entry of record.entries) {
+    // The filter is redundant while resolveScope keeps every parsed entry. It stays
+    // as the literal form of "listed only when the verdict's key set holds the
+    // identity", so this block stays honest if resolveScope ever filters.
     if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
     listed.add(entry.identity);
     rows.push(`             ${entryLine(entry)}`);
@@ -592,9 +599,8 @@ function failOpenLines(dataDir: string, nowMs: number): string[] {
  * overlay, a policy version from a control plane, a repository read back from
  * settings.json: none of them was authored by the code printing it.
  *
- * Exported so every command that echoes such a string strips it with this one
- * function. `aka status` and any command that echoes a stored identity or label
- * follow the same rule, and a second copy would let the two drift.
+ * Exported so a command that echoes such a string can strip it with this one
+ * function rather than a copy that could drift.
  */
 export function printableForTerminal(value: string, max = 80): string {
   const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');

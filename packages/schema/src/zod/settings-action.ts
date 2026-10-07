@@ -167,8 +167,8 @@ export const AttachInput = z.object({
   // this shape. This member validates the VALUE rather than leaving that to the
   // call site, a deliberate exception to this module's shape-only rule: a shape
   // rejection names the field, so a value that is not a mode is refused as a bad
-  // `mode` rather than stripped or passed on. The attach action does not read
-  // this member yet.
+  // `mode` rather than stripped or passed on. The dashboard's attach action reads
+  // it as the mode to attach in.
   mode: AttachmentMode.optional(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

@@ -5,13 +5,17 @@ import {
   applyOnboarding,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  type CredentialFileRead,
   dataDir,
+  decideAttachMode,
   defaultDataDir,
+  freshAttachmentScope,
   isForwardPaused,
   isSafeEndpoint,
   managedAttachRefusal,
   managedDetachRefusal,
   ManagedFieldError,
+  managedScopedRefusal,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
@@ -24,16 +28,24 @@ import {
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type {
+  AttachedCredentialAny,
+  AttachmentMode,
+  ConnectionRefusal,
   HistorySyncConsent,
   HistorySyncConsentChoice,
+  PluginWhoami,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
+  ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  ATTACHED_CREDENTIAL_SPEC_VERSION,
   AttachInput,
+  attachmentModeOf,
   BodyRetention,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
+  isAttachmentScopeBoundTo,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
@@ -57,6 +69,7 @@ import {
   ATTACH_ENDPOINT_UNPARSEABLE,
   ATTACH_KEY_MISSING,
   ATTACH_LABEL_INVALID,
+  ATTACH_MODE_REQUIRED,
   ATTACH_VERIFY_FAILED,
   connectionRefusal,
   DETACH_CREDENTIAL_STUCK,
@@ -385,6 +398,29 @@ function nextWebChatCapture(
  *   claiming an attachment it has no credential for if the second write fails —
  *   which is precisely the state this change exists to stop producing.
  *
+ * THE MODE IS DECIDED BEFORE THE KEY IS SENT, TOO. A machine attaches
+ * machine-wide or scoped (`AttachInput.mode`), by `decideAttachMode` asked as a
+ * run with no terminal to ask on: a connection an administrator governs is
+ * machine-wide, and a scoped request on one is refused; a mode the caller names
+ * is used; with none, a usable credential for this same endpoint keeps its
+ * mode, a credential file this build cannot read — or a scoped credential for
+ * another endpoint — is refused (it may be a scoped one from a newer build, and
+ * a machine-wide write over it would widen the machine with nobody deciding),
+ * and anything else is machine-wide. Each input is local, so each refusal is
+ * made before the round trip.
+ *
+ * A SCOPED ATTACH WRITES ITS SCOPE RECORD IN THE SAME SETTINGS WRITE. The record
+ * on file is kept when the machine was already a scoped attachment to this
+ * endpoint and the record is bound to it and to the organization and account
+ * the key just verified as — which is how a key rotation keeps every
+ * enrollment — and replaced by an empty one otherwise, so a key for someone else
+ * starts with nothing enrolled. Whether the machine is governed is asked again
+ * after the round trip, so a scoped write never lands on a machine that became
+ * managed while the key was being verified. A machine-wide attach clears the
+ * record, so a dormant one cannot come back under a later scoped attach. A
+ * machine-wide credential is the v1 file this action has always written, byte
+ * for byte.
+ *
  * The key reaches `writeControlPlaneCredential` and nothing else. It is not
  * logged, not returned, and never enters settings.json, which keeps carrying the
  * public half alone (see ControlPlaneConnection). No refusal below interpolates
@@ -449,11 +485,34 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   });
   if (refusal !== null) return { ok: false, error: connectionRefusal(refusal) };
 
+  // What the machine holds now, read for the mode decision and before the key
+  // goes on the wire, so a refusal sends nothing. The rollback below still takes
+  // its own snapshot right before the write. A read that throws — a FILE where
+  // ~/.aka/settings should be a directory — is the state the credential write
+  // would fail on, and it is answered the way that write's failure is.
+  const dir = settingsDir();
+  let prior: CredentialFileRead;
+  try {
+    prior = readControlPlaneCredentialFile(dir);
+  } catch {
+    return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
+  }
+  // Asked only now that managedAttachRefusal has answered null: a governed
+  // connection is machine-wide, and a scoped request on one is refused here,
+  // beside the refusal above and for its reason, because no key the caller could
+  // supply changes the answer. A user's own pick must not narrow what a machine
+  // their organization manages reports.
+  const governed = managedScopedRefusal();
+  const decided = modeForAttach(parsed.data.mode, governed, prior, endpoint);
+  if (!decided.ok) return { ok: false, error: decided.error };
+  const mode = decided.mode;
+
   const accessKey = parsed.data.accessKey.trim();
   if (accessKey === '') return { ok: false, error: ATTACH_KEY_MISSING };
 
+  let identity: PluginWhoami;
   try {
-    await createRemoteClient({ endpoint, apiKey: accessKey }).whoami();
+    identity = await createRemoteClient({ endpoint, apiKey: accessKey }).whoami();
   } catch {
     // The cause is deliberately not forwarded. It can carry the endpoint, a
     // response body, or a redacted header set, and this string is rendered
@@ -461,12 +520,36 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     return { ok: false, error: ATTACH_VERIFY_FAILED };
   }
 
+  // A SCOPED WRITE IS RE-CHECKED against the administrator's overlay now, with
+  // nothing written yet: the check above ran before the round trip, and an
+  // overlay that arrived meanwhile makes this machine machine-only. It is also
+  // what keeps the scope record below bound to the endpoint every read sees.
+  if (mode === 'scoped') {
+    const late = managedScopedRefusal();
+    if (late !== null) return { ok: false, error: connectionRefusal(late) };
+  }
+
+  // Who the key belongs to, for a SCOPED attach only: the scope record is bound
+  // to these two fields, so a key for another organization or account starts
+  // with nothing enrolled. Nothing else from the answer is kept.
+  const who: Pick<PluginWhoami, 'tenantName' | 'userEmail'> | undefined =
+    mode === 'scoped'
+      ? { tenantName: identity.tenantName, userEmail: identity.userEmail }
+      : undefined;
+  // The stored record can be kept only on a scoped → scoped re-attach: the
+  // machine already held a usable SCOPED credential for this exact endpoint. A
+  // record beside a machine-wide credential, or beside none, was left by a
+  // writer that did not clear it (an older build's re-attach or detach).
+  const keepScope =
+    prior.usable &&
+    prior.credential.endpoint === endpoint &&
+    attachmentModeOf(prior.credential) === 'scoped';
+
   // What was there before, so a failed write can be put back. Re-attaching is
   // how a key is ROTATED, so this routinely runs on a machine that is already
   // attached and working; an unconditional rollback would take that machine from
   // attached-and-forwarding to attached-and-broken.
-  const dir = settingsDir();
-
+  //
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
   // its own account — ensureDataDirSync failing, EACCES on ~/.aka/settings, a
@@ -491,18 +574,15 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     // bytes that were there. A Server Action runs only on the server, so
     // nothing here crosses to a browser.
     previous = readControlPlaneCredentialFile(dir);
-    writeControlPlaneCredential(dir, {
-      specVersion: 1,
-      endpoint,
-      apiKey: accessKey,
-      mintedAt: new Date().toISOString(),
-    });
+    writeControlPlaneCredential(dir, credentialFor(mode, endpoint, accessKey));
   } catch {
     return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
   }
 
   try {
-    applyOnboarding({
+    // The updater form, so the scope decision reads the record this write is
+    // about to merge over, inside the settings lock.
+    applyOnboarding((current) => ({
       runMode: 'attached',
       controlPlane: {
         endpoint,
@@ -510,7 +590,8 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
         // Stamped server-side like every other timestamp on this page.
         attachedAt: new Date().toISOString(),
       },
-    });
+      attachmentScope: scopeRecordFor(current.attachmentScope, endpoint, who, keepScope),
+    }));
   } catch (error) {
     try {
       // Restore only if the file still holds what WE wrote. None of the
@@ -577,11 +658,14 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
     // The history grant goes with the attachment it named, spelled rather than
     // omitted: this writer MERGES, so leaving the key out preserves a grant for
     // the deployment the machine is leaving — and a re-attach to that same
-    // deployment would pick it straight back up without asking.
+    // deployment would pick it straight back up without asking. The scope record
+    // goes for the same reason: a later scoped attach to that deployment would
+    // otherwise revive enrollments made under this attachment.
     applyOnboarding({
       runMode: 'standalone',
       controlPlane: undefined,
       historySyncConsent: undefined,
+      attachmentScope: undefined,
     });
   } catch (error) {
     if (error instanceof ManagedFieldError)
@@ -733,4 +817,105 @@ function closeHistoryWindow(attachedAt: string | undefined): void {
   } catch {
     // See above: a ledger that cannot be updated is not a failed detach.
   }
+}
+
+/**
+ * The mode an attach writes, or the refusal to answer with when it cannot be
+ * chosen for the caller.
+ *
+ * The decision is `decideAttachMode`'s, asked as a run with no terminal to ask
+ * on and with the caller's `mode` as the flag. Its answers map to this surface
+ * as follows. `use` writes that mode: a governed connection is machine-wide, a
+ * named mode wins (including `machine` over a scoped attachment, which widens
+ * it — on this surface the explicit choice is the confirmation), a usable
+ * credential for this same endpoint keeps its mode (the key-rotation path), and
+ * anything else is machine-wide. `scoped-managed` is a scoped request on a
+ * governed connection and is answered with the managed refusal. `needs-flag`
+ * is a credential file that cannot be used, or a scoped credential for another
+ * endpoint, with no mode named: either may be a scoped attachment, so the
+ * caller has to say which kind of device this is. `ask` cannot be answered
+ * without a terminal and is treated the same way.
+ */
+function modeForAttach(
+  requested: AttachmentMode | undefined,
+  governed: ConnectionRefusal | null,
+  prior: CredentialFileRead,
+  endpoint: string,
+): { ok: true; mode: AttachmentMode } | { ok: false; error: string } {
+  const decision = decideAttachMode({
+    flag: requested,
+    managed: governed,
+    previous: prior,
+    endpoint,
+    interactive: false,
+  });
+  switch (decision.kind) {
+    case 'use':
+      return { ok: true, mode: decision.mode };
+    case 'refuse':
+      // The decision refuses `scoped-managed` only when `governed` is non-null.
+      return {
+        ok: false,
+        error:
+          decision.why === 'scoped-managed' && governed !== null
+            ? connectionRefusal(governed)
+            : ATTACH_MODE_REQUIRED,
+      };
+    case 'ask':
+      return { ok: false, error: ATTACH_MODE_REQUIRED };
+  }
+}
+
+/**
+ * The credential an attach writes. Machine-wide is the v1 literal this action
+ * has always written, the same keys in the same order, so a machine attachment
+ * stays byte-identical; scoped is v2 with its mode last, the order the schema's
+ * own parse gives.
+ */
+function credentialFor(
+  mode: AttachmentMode,
+  endpoint: string,
+  apiKey: string,
+): AttachedCredentialAny {
+  const mintedAt = new Date().toISOString();
+  return mode === 'scoped'
+    ? {
+        specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+        endpoint,
+        apiKey,
+        mintedAt,
+        mode: 'scoped',
+      }
+    : { specVersion: ATTACHED_CREDENTIAL_SPEC_VERSION, endpoint, apiKey, mintedAt };
+}
+
+/**
+ * The `attachmentScope` an attach writes, given the one on file.
+ *
+ * Machine-wide (`who` undefined): none, spelled, so the merge drops the key. A
+ * machine attachment never holds a scope record, so a later scoped attach
+ * cannot revive one.
+ *
+ * Scoped: the stored record, RAW, when `keep` (the machine was already a scoped
+ * attachment to this exact endpoint) and it is bound to this endpoint and to the
+ * verified organization and account — a key rotation keeps every enrollment, and
+ * an entry or envelope key a newer build added survives because nothing here
+ * rebuilds the record. Otherwise a fresh empty record bound to them: a record for
+ * another endpoint, for someone else, or with no binding at all cannot be
+ * checked, and one left beside a machine-wide credential (or none) belongs to an
+ * attachment that ended, so it does not carry over.
+ *
+ * `endpoint` is the effective one: a scoped attach happens only where no
+ * administrator governs the connection, so nothing overlays it.
+ */
+function scopeRecordFor(
+  raw: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'> | undefined,
+  keep: boolean,
+): unknown {
+  if (who === undefined) return undefined;
+  return keep && isAttachmentScopeBoundTo(raw, endpoint, who)
+    ? raw
+    : freshAttachmentScope(endpoint, who);
 }

@@ -28,8 +28,10 @@ import {
 
 // Forwarding the Data Shares register a scan just recorded, for the surfaces
 // that record one: is this machine attached, does it hold a credential for the
-// deployment its settings name, and did the send land — with an answer specific
-// enough that whoever ran the scan can act on it.
+// deployment its settings name, may THIS register leave the machine (a scoped
+// attachment forwards only a project that is enrolled for that deployment, along
+// with every repository nested in it), and did the send land — with an answer
+// specific enough that whoever ran the scan can act on it.
 //
 // THE TRANSPORT IS A PARAMETER. This package opens no socket and imports no
 // client; the sender's shape is declared here structurally so the decision

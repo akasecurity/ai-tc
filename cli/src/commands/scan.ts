@@ -52,8 +52,15 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // destination hosts, endpoints and file/line call sites, with no source text and
 // the project key replaced by a digest — and it can only ever reach the
 // deployment this home's own settings name. `--no-forward` skips it for one
-// invocation; an unattached machine sends nothing and prints no line. The
-// forward can fail every way a network call can and none of them change the
+// invocation; an unattached machine sends nothing and prints no line.
+//
+// A SCOPED attachment forwards a register only when the project's repository
+// is enrolled for that deployment AND so is every repository the walk found
+// nested in the target, because their call sites are folded into the project's
+// register. Otherwise nothing is sent and the outcome is `not-enrolled`, which
+// is a by-design refusal reported as information, never a failure.
+//
+// The forward can fail every way a network call can and none of them change the
 // exit code, the findings, or the egress counts: it runs after the work that
 // matters is already on disk.
 //

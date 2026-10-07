@@ -737,9 +737,11 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass, and the shares-forward outcome state
                      machine — forwardProjectEgress is what a scan surface calls to
                      forward the register it just recorded (attached? opted out?
-                     switch on? credential? then send), with the transport injected by
-                     the caller, plus the one copy of the failure sentences both
-                     surfaces render; network ONLY via package-manager shell-outs — no fetch)
+                     switch on? credential? and, on a scoped attachment, is the project
+                     enrolled along with every repository nested in it? then send),
+                     with the transport injected by the caller, plus the one copy of
+                     the failure sentences both surfaces render; network ONLY via
+                     package-manager shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
                      Consumed by @akasecurity/detections' tabular suite as a
@@ -2075,9 +2077,19 @@ the row, its timestamps and severity, and every finding derived from it are unto
 measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
 row — so this is the difference between a store that settles and one that grows at
 ~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:
-a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` is never expired while an
-attach or a history-sync grant could still claim it retroactively, which `canSweepSyncLane`
-is the single place that decides. **It deletes no row**, and `retention-surface.test.ts`
+a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` expires only when nothing
+could still make it owed. `canSweepSyncLane` is the yes-or-no (a standalone machine with no
+half attachment and no history-sync grant lets the lane age out like any other body), and
+`syncLaneRetentionFor` in plugin-runtime refines it through `syncLaneRetentionOf` once an
+attachment can be scoped. It is the one helper the background pass and `aka prune` both
+call, each handing it the settings it read, so the same settings give the same answer. A
+machine attachment, half an attachment, and a history-sync grant with no scoped attachment
+hold every unsynced body, and so does every failure: an unreadable credential, a scope
+record that is absent, for another deployment or partly invalid, or a throw. A scoped
+attachment holds the bodies of its enrolled repositories and any body still marked owed (an
+earlier machine attachment's undelivered forward leaves that mark, and enrolling its
+repository later makes it reachable), and lets every other body age out, since nothing can
+forward those from a scoped machine. **It deletes no row**, and `retention-surface.test.ts`
 now runs it in the same pass as the other two so that membership is a live assertion
 rather than a claim. **It frees no disk by itself**: SQLite returns the pages to its
 freelist, so new captures reuse them and the file stops growing, but the file does not

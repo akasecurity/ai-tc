@@ -22,6 +22,7 @@ import {
 import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type {
+  ConnectionRefusal,
   ControlPlaneConnection,
   CredentialUnusableReason,
   ManagedSettings,
@@ -92,6 +93,8 @@ machine from then on.
 
 Unenrolling changes this machine's settings and contacts nothing.`;
 
+const USAGE: Record<Verb, string> = { enroll: ENROLL_USAGE, unenroll: UNENROLL_USAGE };
+
 /** What the enrollment verbs read from outside, injectable so tests drive them. */
 export interface EnrollDeps {
   /** The AKA home. Defaults to `--home`, else ~/.aka. */
@@ -140,32 +143,16 @@ export function runUnenroll(
 }
 
 function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
-  const io = deps.prompter ?? terminalPrompter();
-  const fail = failingWith(deps.exit);
-  const args = parseEnrollArgs('enroll', argv);
-  if ('error' in args) {
-    io.err(`${args.error}\n\n${ENROLL_USAGE}\n`);
-    return fail(2);
-  }
-  const base = deps.base ?? homeBase(args.home);
-  const managed = deps.managedSettings === undefined ? readManagedSettings() : deps.managedSettings;
-  const target = scopedAttachment('enroll', base, managed);
-  if (target.kind === 'refused') {
-    io.err(`${target.line}\n`);
-    return fail(1);
-  }
-  const { connection } = target;
-  const name = printableForTerminal(controlPlaneName(connection));
-  if (args.list) {
-    const lines = attachmentScopeLines(target.settings.attachmentScope, connection.endpoint);
+  const ready = preflight('enroll', argv, deps);
+  if (typeof ready === 'number') return ready;
+  const { io, fail, base, managed, connection, name } = ready;
+  if (ready.args.list) {
+    const lines = attachmentScopeLines(ready.settings.attachmentScope, connection.endpoint);
     io.out(`Enrolled with ${name}:\n${lines.join('\n')}\n`);
     return 0;
   }
-  const identity = identityOf('enroll', args, (deps.cwd ?? (() => process.cwd()))());
-  if (identity.kind === 'refused') {
-    io.err(`${identity.line}\n`);
-    return fail(1);
-  }
+  const identity = namedRepository('enroll', ready);
+  if (typeof identity === 'number') return identity;
   // Checked here, before the settings lock is taken: the raw edit throws for an
   // entry the store would not read back, and a throw from inside the lock would
   // be reported as a failed write rather than as what was wrong with the entry.
@@ -205,27 +192,11 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
 }
 
 function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
-  const io = deps.prompter ?? terminalPrompter();
-  const fail = failingWith(deps.exit);
-  const args = parseEnrollArgs('unenroll', argv);
-  if ('error' in args) {
-    io.err(`${args.error}\n\n${UNENROLL_USAGE}\n`);
-    return fail(2);
-  }
-  const base = deps.base ?? homeBase(args.home);
-  const managed = deps.managedSettings === undefined ? readManagedSettings() : deps.managedSettings;
-  const target = scopedAttachment('unenroll', base, managed);
-  if (target.kind === 'refused') {
-    io.err(`${target.line}\n`);
-    return fail(1);
-  }
-  const { connection } = target;
-  const name = printableForTerminal(controlPlaneName(connection));
-  const identity = identityOf('unenroll', args, (deps.cwd ?? (() => process.cwd()))());
-  if (identity.kind === 'refused') {
-    io.err(`${identity.line}\n`);
-    return fail(1);
-  }
+  const ready = preflight('unenroll', argv, deps);
+  if (typeof ready === 'number') return ready;
+  const { io, fail, base, managed, connection, name } = ready;
+  const identity = namedRepository('unenroll', ready);
+  if (typeof identity === 'number') return identity;
   const edit = editScope(base, managed, connection.endpoint, (raw) => {
     const { next, removed } = removeAttachmentScopeEntries(
       raw,
@@ -257,6 +228,70 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
       'Anything from it that was waiting to be sent is held on this machine, unsent, until you detach.\n',
   );
   return 0;
+}
+
+/** What both verbs establish before they touch the scope record. */
+interface Prepared {
+  io: Prompter;
+  fail: (code: number) => number;
+  args: EnrollArgs;
+  base: string;
+  managed: ManagedSettings | null;
+  connection: ControlPlaneConnection;
+  settings: WorkspaceSettings;
+  /** The deployment's name, stripped for the terminal. */
+  name: string;
+  /** What a relative path is resolved against; read only when a path is named. */
+  cwd: () => string;
+}
+
+/**
+ * The steps the two verbs share, in one place so they cannot drift: read the
+ * arguments, find the home and the administrator's overlay once, and require a
+ * usable scoped attachment. Resolves to the exit code when it has already said
+ * why the command cannot go on (a usage error, or a machine that cannot enroll).
+ */
+function preflight(
+  verb: Verb,
+  argv: readonly string[],
+  deps: Partial<EnrollDeps>,
+): Prepared | number {
+  const io = deps.prompter ?? terminalPrompter();
+  const fail = failingWith(deps.exit);
+  const args = parseEnrollArgs(verb, argv);
+  if ('error' in args) {
+    io.err(`${args.error}\n\n${USAGE[verb]}\n`);
+    return fail(2);
+  }
+  const base = deps.base ?? homeBase(args.home);
+  const managed = deps.managedSettings === undefined ? readManagedSettings() : deps.managedSettings;
+  const target = scopedAttachment(verb, base, managed);
+  if (target.kind === 'refused') {
+    io.err(`${target.line}\n`);
+    return fail(1);
+  }
+  const { connection, settings } = target;
+  return {
+    io,
+    fail,
+    args,
+    base,
+    managed,
+    connection,
+    settings,
+    name: printableForTerminal(controlPlaneName(connection)),
+    cwd: deps.cwd ?? (() => process.cwd()),
+  };
+}
+
+/** The repository the command names, or the exit code after saying why it names none. */
+function namedRepository(verb: Verb, ready: Prepared): RepoIdentity | number {
+  const identity = identityOf(verb, ready.args, ready.cwd());
+  if (identity.kind === 'refused') {
+    ready.io.err(`${identity.line}\n`);
+    return ready.fail(1);
+  }
+  return identity;
 }
 
 /** A non-zero exit, recorded and returned. The default records it on the process. */
@@ -322,6 +357,19 @@ const CREDENTIAL_REASONS: Record<CredentialUnusableReason, string> = {
   'endpoint-mismatch': 'it is for another deployment',
 };
 
+/**
+ * A refusal's sentence, with the organization's name stripped for the terminal:
+ * it comes from an administrator's file, and nothing in the schema keeps control
+ * characters out of it.
+ */
+function refusalLine(refusal: ConnectionRefusal): string {
+  return connectionRefusalMessage(
+    refusal.organization === undefined
+      ? refusal
+      : { ...refusal, organization: printableForTerminal(refusal.organization) },
+  );
+}
+
 type Target =
   | { kind: 'scoped'; connection: ControlPlaneConnection; settings: WorkspaceSettings }
   | { kind: 'refused'; line: string };
@@ -353,7 +401,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `aka ${verb}: this machine is not attached to a deployment, so nothing is enrolled.\n` +
         (governed === null
           ? 'Attach it first: `aka attach --url <url> --scoped`.'
-          : connectionRefusalMessage(hold?.reason === 'held-standalone' ? hold : governed)),
+          : refusalLine(hold?.reason === 'held-standalone' ? hold : governed)),
     };
   }
   const connection = settings.controlPlane;
@@ -368,7 +416,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `(${CREDENTIAL_REASONS[read.reason]}).\n` +
         (governed === null
           ? `Re-attach with \`aka attach --url ${url} --scoped\`, then ${verb} again.`
-          : connectionRefusalMessage(governed)),
+          : refusalLine(governed)),
     };
   }
   if (attachmentModeOf(read.credential) !== 'scoped') {
@@ -379,7 +427,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         'activity is sent and nothing is enrolled. ' +
         (governed === null
           ? `To send only the repositories you enroll, re-attach with\n\`aka attach --url ${url} --scoped\`.`
-          : connectionRefusalMessage(governed)),
+          : refusalLine(governed)),
     };
   }
   return { kind: 'scoped', connection, settings };
@@ -390,9 +438,13 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
  * stored identity it stands for, compared byte for byte (one key, except for
  * `aka unenroll --repo`).
  */
-type Identity =
-  | { kind: 'repo'; key: string; label: string | undefined; matches: readonly string[] }
-  | { kind: 'refused'; line: string };
+interface RepoIdentity {
+  kind: 'repo';
+  key: string;
+  label: string | undefined;
+  matches: readonly string[];
+}
+type Identity = RepoIdentity | { kind: 'refused'; line: string };
 
 function identityOf(verb: Verb, args: EnrollArgs, cwd: string): Identity {
   if (args.repo === undefined) return identityFromPath(verb, args.path, cwd);
@@ -465,14 +517,47 @@ function isDirectory(path: string): boolean {
   }
 }
 
+/** Characters that need no quoting in a shell word. */
+const SHELL_SAFE = /^[\w@%+=:,./-]+$/;
+
+/**
+ * `text` as one shell word, quoted unless every character in it is plain. POSIX
+ * shells take single quotes (a quote inside is closed, escaped and reopened);
+ * Windows shells take double quotes, which a Windows path cannot itself contain.
+ */
+export function quotedForShell(text: string, platform: NodeJS.Platform = process.platform): string {
+  if (SHELL_SAFE.test(text)) return text;
+  return platform === 'win32' ? `"${text}"` : `'${text.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * The refusal for `--repo` text that names a directory which is not the
+ * checkout of the repository it spells.
+ *
+ * The command it suggests is built from the whole text, quoted for a shell, so
+ * it can be pasted as it stands. A name with control characters cannot be typed
+ * back as it would have to be shown, so it gets no command, only the form.
+ */
+function directoryRefusal(typed: string): string {
+  const where = printableForTerminal(typed, 200);
+  const typable = printableForTerminal(typed, Infinity) === typed;
+  return (
+    `aka enroll: ${where} is a directory on this machine, not a repository key.\n` +
+    (typable
+      ? `To enroll the repository it is in, pass it as a path: \`aka enroll ${quotedForShell(typed)}\`.`
+      : 'To enroll the repository it is in, pass the directory as a path instead of --repo.')
+  );
+}
+
 /**
  * The key a typed clone URL or key names, for `aka enroll --repo`.
  *
- * Text that names a directory here is refused first. A relative path such as
- * `src/acme/payments-api` reads as a key whose host has no dot, and
- * enrollableRepoKey cannot tell the two apart, so it would be stored as a
- * repository that matches nothing. The directory is the repository to enroll,
- * and `[path]` is the form that reads one.
+ * Text that names a directory here is refused unless that directory is the
+ * checkout of the very repository the text spells (a tree laid out by host,
+ * owner and repository). A relative path such as `src/acme/payments-api` reads
+ * as a key whose host has no dot, and enrollableRepoKey cannot tell the two
+ * apart, so it would be stored as a repository that matches nothing. The
+ * directory is the repository to enroll, and `[path]` is the form that reads one.
  *
  * A refused input that has no `:` was typed as a key. Keys are compared byte for
  * byte, so a near miss is not corrected silently; when the input re-spelled as
@@ -480,17 +565,15 @@ function isDirectory(path: string): boolean {
  */
 function identityFromInput(input: string, cwd: string): Identity {
   const typed = input.trim();
-  if (isDirectory(resolve(cwd, typed))) {
-    const where = printableForTerminal(typed, 200);
-    const asPath = /\s/.test(where) ? `"${where}"` : where;
-    return {
-      kind: 'refused',
-      line:
-        `aka enroll: ${where} is a directory on this machine, not a repository key.\n` +
-        `To enroll the repository it is in, pass it as a path: \`aka enroll ${asPath}\`.`,
-    };
+  const directory = resolve(cwd, typed);
+  const accepted = enrollableRepoKey(typed);
+  if (
+    isDirectory(directory) &&
+    (accepted === undefined ||
+      resolveRepoAttribution(directory, { cache: false }).scopeKey !== accepted)
+  ) {
+    return { kind: 'refused', line: directoryRefusal(typed) };
   }
-  const accepted = enrollableRepoKey(input);
   if (accepted !== undefined) {
     return {
       kind: 'repo',
@@ -499,11 +582,11 @@ function identityFromInput(input: string, cwd: string): Identity {
       matches: [accepted],
     };
   }
-  const shownInput = printableForTerminal(input, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
-  const respelled = input.includes(':') ? undefined : canonicalRepoUrl(`https://${input}`);
+  const shownInput = printableForTerminal(typed, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  const respelled = typed.includes(':') ? undefined : canonicalRepoUrl(`https://${typed}`);
   if (
     respelled !== undefined &&
-    respelled !== input &&
+    respelled !== typed &&
     enrollableRepoKey(respelled) === respelled
   ) {
     const canonical = printableForTerminal(respelled, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
@@ -601,6 +684,10 @@ const EDIT_FAILURES: Record<'moved' | 'failed', (done: string) => string> = {
  * nothing is written: the record must not be rebound to a deployment the
  * credential check never saw.
  *
+ * The credential is read again there too, and must still be usable and scoped:
+ * a machine-wide re-attach to the same endpoint changes nothing the endpoint
+ * check can see.
+ *
  * Returns the identities the edit changed and the settings as written, overlay
  * applied, or why nothing was written. Never throws.
  */
@@ -614,7 +701,12 @@ function editScope(
   try {
     const written = applyOnboarding(
       (current) => {
-        if (overlayManagedSettings(current, managed).controlPlane?.endpoint !== endpoint) {
+        const inForce = overlayManagedSettings(current, managed).controlPlane;
+        if (inForce?.endpoint !== endpoint) throw new AttachmentMoved();
+        // The same endpoint can have been re-attached machine-wide since the
+        // check, and a scope record must never be written onto that credential.
+        const read = readControlPlaneCredentialFile(settingsDirOf(base), inForce);
+        if (!read.usable || attachmentModeOf(read.credential) !== 'scoped') {
           throw new AttachmentMoved();
         }
         const result = change(current.attachmentScope);

@@ -1320,8 +1320,8 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
 // Older builds are unaffected by the column. They INSERT by named column, so
 // theirs stay NULL, and they never read it. What one cannot do is clear it: an
 // older build that re-reads a path leaves the key a newer build recorded for it.
-// That only arises on a machine that runs both, and the newer build rewrites the
-// key at the next read of the file.
+// That only arises on a machine that runs both, and the newer build corrects it
+// on its next scan, which compares every unchanged file's key with its row's.
 function ensureScanLedgerTable(db: DatabaseSync): void {
   db.exec(`CREATE TABLE IF NOT EXISTS scan_ledger (
     path TEXT PRIMARY KEY,

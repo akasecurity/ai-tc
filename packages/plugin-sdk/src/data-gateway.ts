@@ -62,10 +62,15 @@ export interface ScanLedgerEntry {
 }
 
 // The previous scan state the scanner skips against: same mtime → skip without
-// reading; same content hash after an mtime-only bump → skip detection.
+// reading; same content hash after an mtime-only bump → skip detection. It also
+// carries the repository the file was in when it was last read, so a scan can
+// compare that with the repository an unchanged file is in now.
 export interface ScanLedgerState {
   mtime: string;
   contentHash: string;
+  // Absent for a row that recorded none: a file in no repository with a remote,
+  // or one last read before keys were kept.
+  scopeKey?: string | undefined;
 }
 
 // One rule's cached ReDoS timing verdict. Structurally identical to
@@ -105,7 +110,8 @@ export interface RuleProbeVerdictEntry {
  * `undefined`: a file read before keys were kept, one in a repository with no
  * forge remote, or any path when the gateway cannot list the keys. A gateway that
  * forwards by scope does not send such a path, so after an upgrade the paths
- * deleted before their files were next read are held back once.
+ * deleted before the next scan has filled the keys of the unchanged files are
+ * held back once.
  *
  * The earlier limits of keying from the disk are gone: the last file of a
  * directory, or a whole project directory, that is deleted still carries the

@@ -836,22 +836,35 @@ describe('scope key of each captured file', () => {
     expect(reads()).toEqual([tmp, join(tmp, 'tools', 'mine')].sort());
   });
 
-  it('reads no repository on a re-run that skips every file unread', async () => {
+  it('reads each repository once on a re-run that skips every file unread, and rewrites no row', async () => {
+    // A skipped file is not read, but the key it has now is compared with the one
+    // its row recorded, so the repository around it is read once per scan,
+    // however many files are skipped. The key is the same, so no row is rewritten.
     gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
     write('src/work-a.ts', 'const work = 1;');
+    write('src/work-b.ts', 'const work = 2;');
     await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
     scanLedger.mockResolvedValue(
       new Map(
-        recordedEntries().map((e) => [e.path, { mtime: e.mtime, contentHash: e.contentHash }]),
+        recordedEntries().map((e) => [
+          e.path,
+          {
+            mtime: e.mtime,
+            contentHash: e.contentHash,
+            ...(e.scopeKey !== undefined ? { scopeKey: e.scopeKey } : {}),
+          },
+        ]),
       ),
     );
     capture.mockClear();
+    recordScanned.mockClear();
     vi.mocked(resolveRepoAttribution).mockClear();
 
     const summary = await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
 
-    expect(summary.skipped).toBe(1);
+    expect(summary.skipped).toBe(2);
     expect(capture).not.toHaveBeenCalled();
-    expect(resolveRepoAttribution).not.toHaveBeenCalled();
+    expect(reads()).toEqual([tmp]);
+    expect(recordedEntries()).toEqual([]);
   });
 });

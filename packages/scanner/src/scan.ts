@@ -45,7 +45,7 @@ import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
 import { type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
-import { type WalkOptions, walkSourceFiles } from './walk.ts';
+import { type WalkedFileMeta, type WalkOptions, walkSourceFiles } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
 // findings originate from (required!).
@@ -369,10 +369,30 @@ async function scanDir(
   // Tier-1 skip, before the file is even read: same path + mtime as the ledger
   // means unchanged since the last scan under this ruleset. Composed with any
   // caller-supplied shouldRead (which filters silently, without counting).
-  const shouldRead = (meta: { path: string; mtime: string; size: number }): boolean => {
+  //
+  // The file is not read, but the repository it is in can have changed without
+  // touching it: its directory made into a repository in place, or a row left
+  // with no key by a ledger that predates keys. The row was read to decide the
+  // skip, so its recorded key is at hand, and the key the file has now is the
+  // capture lookup's (memoized per directory, so each repository is read once per
+  // scan). When they differ, the row is rewritten with the new key and nothing
+  // else of it changed.
+  const shouldRead = (meta: WalkedFileMeta): boolean => {
     const prev = ledger.previous.get(meta.path);
     if (prev?.mtime === meta.mtime) {
       skipped++;
+      if (egress !== null) {
+        const keyNow = scopeKeyOf(meta.relativePath);
+        if (keyNow !== prev.scopeKey) {
+          updates.push({
+            path: meta.path,
+            mtime: prev.mtime,
+            contentHash: prev.contentHash,
+            rulesetHash: ledger.rulesetHash,
+            ...(keyNow !== undefined ? { scopeKey: keyNow } : {}),
+          });
+        }
+      }
       return false;
     }
     return true;
@@ -391,7 +411,8 @@ async function scanDir(
     // same climbing lookup that keys captures, so a clone's file is keyed by the
     // clone and a file in a repository with no remote has none. Only a scan with
     // a register has any use for it. A file skipped unread at the first tier
-    // never reaches here, and its row keeps the key it was last read under.
+    // never reaches here: its row's key is compared with the key it has now and
+    // refreshed when they differ (see shouldRead).
     const fileKey = egress === null ? undefined : scopeKeyOf(file.relativePath);
     const ledgerEntry: ScanLedgerEntry = {
       path: file.path,
@@ -546,7 +567,23 @@ function scanManifests(
   // the collector the source walk reports to as well (see scanDir).
   for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot)) {
     const prev = ledger.previous.get(manifest.path);
-    if (prev?.mtime === manifest.mtime) continue;
+    // Keyed like a walked file, as it is now: by the repository the manifest is
+    // in, so a manifest in a nested clone is the clone's. A manifest skipped
+    // unchanged has its row's key refreshed the same way a skipped source file's
+    // is (see scanDir).
+    const manifestKey = scopeKeyOf(toPosix(relative(rootDir, manifest.path)));
+    if (prev?.mtime === manifest.mtime) {
+      if (manifestKey !== prev.scopeKey) {
+        updates.push({
+          path: manifest.path,
+          mtime: prev.mtime,
+          contentHash: prev.contentHash,
+          rulesetHash: ledger.rulesetHash,
+          ...(manifestKey !== undefined ? { scopeKey: manifestKey } : {}),
+        });
+      }
+      continue;
+    }
 
     let content: string;
     try {
@@ -556,9 +593,6 @@ function scanManifests(
     }
 
     const hash = contentHashOf(content);
-    // Keyed like a walked file: by the repository the manifest is in as it is
-    // read, so a manifest in a nested clone is the clone's.
-    const manifestKey = scopeKeyOf(toPosix(relative(rootDir, manifest.path)));
     updates.push({
       path: manifest.path,
       mtime: manifest.mtime,
@@ -668,13 +702,15 @@ async function commitEgress(
 // there now vouch for a file it never held. A path whose row recorded no key has
 // none: a file read before keys were kept, one in a repository with no remote,
 // or any path when the gateway cannot list the keys. A scoped attachment does
-// not send such a path. After an upgrade that is a one-time gap, closed as each
-// file is read again.
+// not send such a path. After an upgrade that is a gap of one scan: the next scan
+// fills the key of every unchanged file whose row has none (see shouldRead), so
+// only a path deleted before that scan is left without.
 //
-// A file the ledger skipped unread keeps the key it was last read under, so a
-// directory that is swapped for another repository's, with the same names and
-// the same modification times, can leave a stale key until a file in it is
-// next read. That needs the replacement to preserve every timestamp.
+// Every scan compares the key of each file it skips unread with the key its row
+// recorded, so a directory made into a repository in place, or swapped for
+// another repository's with the same names and modification times, is corrected
+// by the next scan. What no scan can undo is a file replaced AND deleted between
+// two scans, which is attributed by the key it was last recorded under.
 //
 // The gateway's method is optional, and a read that throws gives no keys: a
 // missing answer sends fewer paths, never more.

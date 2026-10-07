@@ -124,6 +124,27 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
       db2.close();
     });
 
+    it("returns the recorded key with a ruleset's state, and none for a row without one", () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([
+        entry('/repo/a.ts', { scopeKey: WORK }),
+        entry('/repo/b.ts'),
+        entry('/repo/c.ts', { rulesetHash: 'ruleset-v2', scopeKey: WORK }),
+      ]);
+
+      const state = db.scanLedger.entriesForRuleset('ruleset-v1');
+      // The change-detection read the scan already makes carries the key, so a
+      // scan can compare it with the key an unchanged file has now.
+      expect(state.get('/repo/a.ts')).toEqual({
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'hash-of-/repo/a.ts',
+        scopeKey: WORK,
+      });
+      expect(state.get('/repo/b.ts')?.scopeKey).toBeUndefined();
+      expect(state.has('/repo/c.ts')).toBe(false);
+      db.close();
+    });
+
     it('lists nothing for an empty ledger', () => {
       const db = store.open();
       expect(db.scanLedger.pathKeys().size).toBe(0);

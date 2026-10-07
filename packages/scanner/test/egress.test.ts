@@ -184,7 +184,14 @@ beforeEach(() => {
       new Map(
         [...ledgerRows]
           .filter(([, row]) => row.rulesetHash === rulesetHash)
-          .map(([path, row]) => [path, { mtime: row.mtime, contentHash: row.contentHash }]),
+          .map(([path, row]) => [
+            path,
+            {
+              mtime: row.mtime,
+              contentHash: row.contentHash,
+              ...(row.scopeKey !== undefined ? { scopeKey: row.scopeKey } : {}),
+            },
+          ]),
       ),
     ),
   );
@@ -1123,10 +1130,11 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       rmSync(join(repo, 'personal-clone', 'top.ts'));
       await scan(config);
 
-      // `keep.ts` is unchanged, so the scan skips it unread and its record stands;
-      // `top.ts` is gone, and is still the clone's.
+      // `top.ts` is gone, and is still the clone's: that is what it was when it was
+      // read. `keep.ts` is unchanged and skipped unread, but it is in the project
+      // now that its directory is no longer a repository, and its row says so.
       expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/top.ts', key: PERSONAL_KEY }]);
-      expect(recordedKey('personal-clone/keep.ts')).toBe(PERSONAL_KEY);
+      expect(recordedKey('personal-clone/keep.ts')).toBe(PROJECT_KEY);
     });
 
     it('keys a clone emptied in place, whose `.git` is still there, by the clone', async () => {
@@ -1184,5 +1192,109 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       expect(scanLedgerPathKeys).not.toHaveBeenCalled();
       expect(deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
     });
+  });
+});
+
+describe('scanWorktree — a file the ledger skips as unchanged', () => {
+  // Every row was written under the key its file had when it was last READ.
+  // A file the scan skips has not been read since, but the directory it is in
+  // can have changed hands without touching the file: made into a repository in
+  // place, or left with no key by a ledger that predates keys. The scan already
+  // reads the row to decide the skip, and compares the key the file has now.
+  const PERSONAL_URL = 'https://github.com/me/personal.git';
+  const PROJECT_KEY = 'github.com/acme/payments-api';
+  const PERSONAL_KEY = 'github.com/me/personal';
+
+  function recordedKey(rel: string): string | undefined {
+    const row = ledgerRows.get(join(repo, ...rel.split('/')));
+    if (row === undefined) throw new Error(`${rel} is not in the ledger`);
+    return row.scopeKey;
+  }
+
+  function lastDeleted(): { file: string; key: string | undefined }[] {
+    const [input, context] = recordProjectEgress.mock.calls.at(-1) as [
+      RecordProjectEgressInput,
+      ProjectEgressContext | undefined,
+    ];
+    if (input.reconcile.mode !== 'ledger') throw new Error('expected ledger mode');
+    const keys = context?.deletedFileKeys?.();
+    if (keys === undefined) throw new Error('the scan supplied no keys for its deleted paths');
+    return input.reconcile.deletedFiles
+      .map((file, at) => ({ file, key: keys[at] }))
+      .sort((a, b) => a.file.localeCompare(b.file));
+  }
+
+  async function scan(config: PluginConfig): Promise<void> {
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+  }
+
+  it('takes the key of a repository its directory was made into in place', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'tools/a.ts', `${STRIPE_CALL}// a\n`);
+    write(repo, 'tools/package.json', STRIPE_MANIFEST);
+    const config = configWith(true);
+    await scan(config);
+    expect(recordedKey('tools/a.ts')).toBe(PROJECT_KEY);
+
+    // `git init` and a remote inside the project: no file changes.
+    gitRepo(join(repo, 'tools'), PERSONAL_URL);
+    await scan(config);
+
+    expect(recordedKey('tools/a.ts')).toBe(PERSONAL_KEY);
+    expect(recordedKey('tools/package.json')).toBe(PERSONAL_KEY);
+    expect(recordedKey('src/pay.ts')).toBe(PROJECT_KEY);
+
+    // The directory is later removed: its files were the personal repository's.
+    rmSync(join(repo, 'tools'), { recursive: true, force: true });
+    await scan(config);
+    expect(lastDeleted()).toEqual([
+      { file: 'tools/a.ts', key: PERSONAL_KEY },
+      { file: 'tools/package.json', key: PERSONAL_KEY },
+    ]);
+  });
+
+  it('fills a row that recorded no key from the key its file has now', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+    const config = configWith(true);
+    await scan(config);
+    // Rows written before keys were kept.
+    for (const row of ledgerRows.values()) row.scopeKey = undefined;
+
+    await scan(config);
+    expect(recordedKey('src/old.ts')).toBe(PROJECT_KEY);
+    expect(recordedKey('src/pay.ts')).toBe(PROJECT_KEY);
+
+    rmSync(join(repo, 'src', 'old.ts'));
+    await scan(config);
+    expect(lastDeleted()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
+  });
+
+  it('changes only the key of the row: its mtime, hash and ruleset stand', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    const config = configWith(true);
+    await scan(config);
+    const path = join(repo, 'src', 'pay.ts');
+    const row = ledgerRows.get(path);
+    if (row === undefined) throw new Error('src/pay.ts is not in the ledger');
+    const before = { ...row };
+    row.scopeKey = undefined;
+
+    await scan(config);
+
+    const after = ledgerRows.get(path);
+    expect(after).toEqual({ ...before, scopeKey: PROJECT_KEY });
+  });
+
+  it('rewrites no row whose key is unchanged', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'pkg/package.json', STRIPE_MANIFEST);
+    const config = configWith(true);
+    await scan(config);
+    recordScanned.mockClear();
+
+    await scan(config);
+
+    expect(recordScanned.mock.calls.flatMap(([entries]) => entries as unknown[])).toEqual([]);
   });
 });

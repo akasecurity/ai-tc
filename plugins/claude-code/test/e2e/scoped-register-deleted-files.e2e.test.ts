@@ -155,6 +155,15 @@ function seedProjectWithClone(): void {
   write(`${CLONE}/src/keep.ts`, callFor('clone-keep'));
 }
 
+// The clone's working tree emptied the way `git submodule deinit` empties one:
+// the `.git` and every file are gone and the directory itself stays.
+function emptyClone(): void {
+  rmSync(join(repo, CLONE, '.git'), { recursive: true, force: true });
+  rmSync(join(repo, CLONE, 'top.ts'));
+  rmSync(join(repo, CLONE, 'src'), { recursive: true, force: true });
+  expect(existsSync(join(repo, CLONE))).toBe(true);
+}
+
 // An attachment: the credential file on disk, and the settings that name the
 // connection and enrol the work repository. The SAME settings in both modes, so
 // what differs is the credential alone.
@@ -268,6 +277,25 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     expect(deletedOf(registers.at(-1))).toEqual(['src/old.ts']);
   });
 
+  it('sends nothing of a nested repository whose working tree was emptied but whose directory stays', async () => {
+    // What `git submodule deinit` leaves: the `.git` and every file go, the empty
+    // directory stays. Its top-level file's directory exists, and with no `.git`
+    // left the path would read as the enrolled project's own.
+    seedProjectWithClone();
+    const config = attach('scoped');
+    await scan(config);
+    expect(registers).toEqual([]);
+
+    emptyClone();
+    write('src/new.ts', callFor('new'));
+    await scan(config);
+
+    expect(registers).toHaveLength(1);
+    expect(scannedOf(registers[0])).toContain('src/new.ts');
+    expect(deletedOf(registers[0])).toEqual([]);
+    expect(JSON.stringify(registers)).not.toContain(CLONE);
+  });
+
   it('sends the enrolled file and not the clone when both are deleted in one scan', async () => {
     seedProjectWithClone();
     const config = attach('scoped');
@@ -295,6 +323,24 @@ describe('a machine-wide attachment (version 1 credential) sends what it always 
     expect(scannedOf(registers[0])).toContain(`${CLONE}/top.ts`);
 
     rmSync(join(repo, CLONE), { recursive: true, force: true });
+    write('src/new.ts', callFor('new'));
+    await scan(config);
+
+    expect(registers).toHaveLength(2);
+    expect([...deletedOf(registers[1])].sort()).toEqual([
+      `${CLONE}/src/keep.ts`,
+      `${CLONE}/src/notify.ts`,
+      `${CLONE}/top.ts`,
+    ]);
+  });
+
+  it('names the files of an emptied nested repository too, as it always did', async () => {
+    seedProjectWithClone();
+    const config = attach('machine');
+    await scan(config);
+    expect(registers).toHaveLength(1);
+
+    emptyClone();
     write('src/new.ts', callFor('new'));
     await scan(config);
 

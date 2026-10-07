@@ -89,15 +89,22 @@ export interface RuleProbeVerdictEntry {
  * scan, or one an ignore file now hides, never appears in the walk, yet its
  * ledgered paths come back as deleted. It returns one entry per deleted path, in
  * the register's order: the scope key of the repository that path was in, or
- * `undefined` when that cannot be proven. A path whose parent directory is gone
- * has no repository left to ask, so it is `undefined`, and one whose directory
- * still exists is keyed by the repository that directory is in, a clone's own
- * key included. It is a function so that nothing is read for a gateway that
- * never asks.
+ * `undefined` when that cannot be proven. It is a function so that nothing is
+ * read for a gateway that never asks.
  *
- * A project directory that was removed whole therefore leaves the stored rows of
- * its files in place on the server, because their paths cannot be keyed: an
- * accuracy gap, never a disclosure.
+ * A path is keyed only from a directory that still holds at least one file the
+ * scan's source walk reached, and that still exists when the key is read; the
+ * key is then that of the nearest repository above it, a clone's own key
+ * included. Any other path is `undefined`: a directory the walk reached no file
+ * in cannot say which repository the path was in. It may be a nested repository
+ * emptied while its directory stayed (what `git submodule deinit` leaves), where
+ * the enclosing project's key would be wrong. The same holds for a removed
+ * clone, one an ignore file or a skipped directory now hides, a clone emptied in
+ * place, and a directory left holding only files the walk never takes.
+ *
+ * Accepted: deleting the last walked file of a project directory, or removing a
+ * project directory whole, leaves that file's stored row on the deployment,
+ * because its path cannot be keyed. An accuracy gap, never a disclosure.
  *
  * Local only, and read only by a gateway that forwards by scope: the keys
  * decide whether the register, and each deleted path in it, may be forwarded,

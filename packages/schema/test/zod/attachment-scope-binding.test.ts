@@ -15,8 +15,9 @@ import {
 // it was built for: the organization and account a whoami answer names. Every
 // organization on a shared deployment has the same endpoint, so the endpoint
 // alone cannot tell one tenant's record from another's. isAttachmentScopeBoundTo
-// compares the binding with an organization and account; the binding is never
-// part of the forwarding verdict.
+// compares the binding with an organization and account. A well-formed binding
+// takes no part in the forwarding verdict; one that is not valid voids the
+// record, which then reads as no scope and forwards nothing.
 
 const ENDPOINT = 'https://plane.example.test';
 const ISO = '2026-10-07T09:00:00.000Z';
@@ -44,7 +45,7 @@ const bound = (over: Record<string, unknown> = {}) => ({
 const unbound = () => ({ endpoint: ENDPOINT, entries: [entry(REPO)] });
 
 describe('AttachmentScope — the binding', () => {
-  it('keeps the organization and account a scoped attach recorded', () => {
+  it('reads the organization and account a record carries', () => {
     expect(parseAttachmentScope(bound())).toEqual(bound());
   });
 
@@ -90,9 +91,10 @@ describe('AttachmentScope — the binding', () => {
     expect(WorkspaceSettings.parse({ attachmentScope: bound() }).attachmentScope).toEqual(bound());
   });
 
-  it('takes no part in the forwarding verdict: an unbound record forwards its entries', () => {
+  it('an absent binding takes no part in the verdict: an unbound record forwards its entries', () => {
     // A record with no binding still counts for its endpoint, so its entries
-    // forward; the binding is only what isAttachmentScopeBoundTo compares.
+    // forward; a well-formed binding is only what isAttachmentScopeBoundTo
+    // compares.
     const resolved = resolveScope({ mode: 'scoped', scope: unbound(), endpoint: ENDPOINT });
     expect(scopeVerdict(resolved, REPO)).toBe('forward');
     expect(isAttachmentScopeValid(unbound(), ENDPOINT)).toBe(true);
@@ -133,9 +135,9 @@ describe('isAttachmentScopeBoundTo', () => {
     ['another account', { ...WHO, userEmail: 'member-18' }],
     ['the organization in another case', { ...WHO, tenantName: 'acme payments' }],
     ['the account with a trailing space', { ...WHO, userEmail: `${USER} ` }],
-  ])('is false when the deployment verifies %s', (_label, who) => {
-    // Byte for byte: a renamed organization reads as someone else, and the
-    // answer is false. That keeps less, never more.
+  ])('is false when the answer names %s', (_label, who) => {
+    // Byte for byte: a renamed organization reads as someone else, so the answer
+    // is false.
     expect(isAttachmentScopeBoundTo(bound(), ENDPOINT, who)).toBe(false);
   });
 

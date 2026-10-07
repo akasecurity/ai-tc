@@ -74,9 +74,9 @@ const REFUSED: [string, string][] = [
   ['a host label that begins with a hyphen', '-github.com/acme/payments-api'],
   ['an empty path segment', 'github.com/acme//payments-api'],
   ['a dot-dot path segment', 'github.com/acme/../payments-api'],
-  // Paths and local URLs: a repository with no shared identity is never accepted.
-  // A bare relative path of three or more segments is not among them: it reads as
-  // a key whose host has no dot, and is accepted.
+  // Absolute paths and local URLs are refused. A bare relative path such as
+  // `src/acme/payments-api` is not listed: it can read as a key whose host has no
+  // dot, and be accepted.
   ['an absolute POSIX path', '/home/dev/payments-api'],
   ['a Windows path', ['C:', 'Users', 'dev', 'payments-api'].join(BACKSLASH)],
   ['a file URL', pathToFileURL('/srv/git/payments-api.git').href],

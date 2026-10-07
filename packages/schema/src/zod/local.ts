@@ -288,8 +288,11 @@ export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
  * answers with (the same schemas, not copies). Every organization on a shared
  * deployment has the same endpoint, so the endpoint alone cannot tell one
  * tenant's record from another's. Both are optional: a record written without
- * them carries neither. The binding takes NO part in the forwarding verdict:
- * resolveScope and scopeVerdict read the endpoint and the entries alone.
+ * them carries neither. A well-formed binding takes NO part in the forwarding
+ * verdict: resolveScope and scopeVerdict never compare it with anything, so a
+ * record with no binding forwards its entries exactly as one with a binding
+ * does. The binding's values affect the verdict in one way only, set out below:
+ * a value that is not valid makes the record read as no scope at all.
  * isAttachmentScopeBoundTo is what compares the binding with an organization
  * and account.
  *
@@ -369,21 +372,25 @@ export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefine
 }
 
 /**
- * Whether a stored scope may be KEPT across a re-attach that verified as `who`:
- * it counts for `endpoint` (the rule isAttachmentScopeValid applies) and carries
- * both binding fields, each non-empty and equal to `who`'s, byte for byte.
+ * Whether a stored scope belongs to the deployment `endpoint` and to the
+ * organization and account `who` names: it counts for `endpoint` (the rule
+ * isAttachmentScopeValid applies) and carries both binding fields, each
+ * non-empty and equal to `who`'s, byte for byte.
  *
  * Every organization on a shared deployment has the same endpoint, so a record
  * that merely names the endpoint may be another tenant's, or another account's
  * on the same machine. A record with no binding cannot be checked, so it answers
  * false: it might be someone else's. An empty field on either side binds
- * nothing and answers false too. A renamed organization reads as someone else
- * and answers false, the direction that keeps less.
+ * nothing and answers false too. A renamed organization reads as someone else,
+ * so a record bound to the old name answers false. So does any record that is
+ * unbound, mismatched, damaged or for another endpoint: only an exact match
+ * answers true.
  *
  * Only the two binding fields of `who` are read, so a full whoami answer may be
- * passed. NOT part of the forwarding verdict: scopeVerdict does not read the
- * binding, so an unbound record that counts for the endpoint still forwards its
- * entries. Pure; no I/O; never throws.
+ * passed. NOT part of the forwarding verdict: scopeVerdict and resolveScope
+ * never compare a well-formed binding with anything, so a record that counts for
+ * the endpoint forwards its entries whatever this answers. Pure; no I/O; never
+ * throws.
  */
 export function isAttachmentScopeBoundTo(
   raw: unknown,

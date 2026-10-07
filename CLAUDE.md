@@ -1002,7 +1002,11 @@ assembled from a non-literal.
 ambient locale) because a later entry replaces the rule's options rather than
 merging them. A per-file opt-out is therefore written as `reactSyntaxBans({ … })`
 with one group switched off, never as a hand-listed subset — the other four come
-along by construction, so lifting one ban cannot silently lift five.
+along by construction, so lifting one ban cannot silently lift five. A widening is
+an option too, so it does NOT come along: in `dashboard-ui`/`ui-kit` `src/**` the
+per-file form is `presentationalSyntaxBans({ … })`, which keeps both widenings on,
+and in web-ui's `app/**` an entry has to pass `ambientLocaleEveryModule: true`
+itself (see the clock exemption below, and `web-ui/eslint.config.mjs`).
 
 ### A time label is a function of two instants, and a client component is given both
 

@@ -514,11 +514,16 @@ function ambientLocaleSelectors(opts = {}) {
  * That is exactly what a per-file opt-out has to do, which is why the only
  * supported way to write one is to call this with the group turned off:
  *
- *   { files: ['src/lib/useRenderClock.ts'],
- *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowAmbientClock: true }) } }
+ *   { files: ['test/helpers/loopback.ts'],
+ *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowNetwork: ['node:http'] }) } }
  *
  * The other groups come along by construction, so an opt-out for one ban
- * cannot become an opt-out for all five by omission.
+ * cannot become an opt-out for all five by omission. A WIDENING does not: it is
+ * an option too, so an entry that does not name it narrows that file back to
+ * the directive-scoped floor. In `dashboard-ui`/`ui-kit` `src/**` that is what
+ * `presentationalSyntaxBans` is for — its own doc has the exemption written
+ * through it — and in web-ui's `app/**` an entry has to pass
+ * `ambientLocaleEveryModule: true` itself.
  *
  * `allowNetwork` is the same idea for the network group, and takes module names
  * rather than a boolean: a file that legitimately binds a loopback socket needs

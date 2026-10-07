@@ -5,14 +5,14 @@ import { describe, expect, it } from 'vitest';
 
 import { enrollableRepoKey } from '../src/egress-wire.ts';
 
-// What is stored for a repository a user types in by hand. Keys are compared
-// byte for byte against what a checkout stamps on its events, so a key that is
-// almost right is worse than none: it is stored, echoed back as enrolled, and
-// matches nothing. Every spelling below is one a user can plausibly type.
+// The key for a repository named by hand. Keys are compared byte for byte
+// against what a checkout stamps on its events, so a key that is almost right is
+// worse than none: it looks like a key and matches nothing. Every spelling below
+// is one a person can plausibly type.
 
 const ESC = String.fromCharCode(27);
-// Built from a char code: a Windows path written as a literal would be read for
-// escape sequences by the tooling that writes this file.
+// Built from a char code, so spelling the Windows path below involves no escape
+// sequence.
 const BACKSLASH = String.fromCharCode(92);
 const KEY = 'github.com/acme/payments-api';
 
@@ -53,8 +53,8 @@ const ACCEPTED: [string, string, string][] = [
 ];
 
 const REFUSED: [string, string][] = [
-  // Almost canonical, typed: refused rather than repaired, so the user sees the
-  // difference instead of a silent rewrite.
+  // Almost canonical, typed: refused rather than repaired, so the difference is
+  // visible instead of silently rewritten.
   ['a typed key with a capitalised host', 'GitHub.com/Org/Repo'],
   ['a typed key with a trailing slash', `${KEY}/`],
   ['a typed key with a .git suffix', `${KEY}.git`],
@@ -74,7 +74,9 @@ const REFUSED: [string, string][] = [
   ['a host label that begins with a hyphen', '-github.com/acme/payments-api'],
   ['an empty path segment', 'github.com/acme//payments-api'],
   ['a dot-dot path segment', 'github.com/acme/../payments-api'],
-  // Paths and local URLs: a repository with no shared identity is never enrolled.
+  // Paths and local URLs: a repository with no shared identity is never accepted.
+  // A bare relative path of three or more segments is not among them: it reads as
+  // a key whose host has no dot, and is accepted.
   ['an absolute POSIX path', '/home/dev/payments-api'],
   ['a Windows path', ['C:', 'Users', 'dev', 'payments-api'].join(BACKSLASH)],
   ['a file URL', pathToFileURL('/srv/git/payments-api.git').href],

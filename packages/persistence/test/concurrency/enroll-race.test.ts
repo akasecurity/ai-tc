@@ -78,8 +78,8 @@ describe('scope enrollment among concurrent settings writers', () => {
   });
 
   it('loses no enrollment and no other setting when every writer is released at once', async () => {
-    // What a scoped attach leaves: a bound record. A newer build has since added
-    // an entry this one cannot read and a key on the envelope it does not know.
+    // A bound record, to which a newer build has since added an entry this one
+    // cannot read and a key on the envelope it does not know.
     applyOnboarding(
       {
         runMode: 'attached',

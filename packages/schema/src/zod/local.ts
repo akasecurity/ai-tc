@@ -275,7 +275,8 @@ export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
 
 /**
  * The identities a SCOPED attachment forwards, the deployment they were
- * enrolled for, and the account they were enrolled by.
+ * enrolled for, and, optionally, the organization and account the record
+ * belongs to.
  *
  * Bound by VALUE, HistorySyncConsent's rule: the record names its endpoint, and
  * a record for any other endpoint does not count (isAttachmentScopeValid).
@@ -283,14 +284,14 @@ export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
  * and that holds without any writer having to remember to clear the record.
  *
  * `tenantName` and `userEmail` say WHO the record was built for: the
- * organization and account the deployment verified when a scoped attach wrote
- * it, held to the bounds whoami answers with (the same schemas, not copies).
- * Every organization on a shared deployment has the same endpoint, so the
- * endpoint alone cannot tell one tenant's record from another's. Both are
- * optional: a record an older writer stripped and an enroll re-created has
- * neither. The binding takes NO part in the forwarding verdict. It is read when
- * the machine re-attaches, and a record that is not bound to the account the
- * deployment verifies then is not kept (isAttachmentScopeBoundTo).
+ * organization and account a whoami answer names, held to the bounds whoami
+ * answers with (the same schemas, not copies). Every organization on a shared
+ * deployment has the same endpoint, so the endpoint alone cannot tell one
+ * tenant's record from another's. Both are optional: a record written without
+ * them carries neither. The binding takes NO part in the forwarding verdict:
+ * resolveScope and scopeVerdict read the endpoint and the entries alone.
+ * isAttachmentScopeBoundTo is what compares the binding with an organization
+ * and account.
  *
  * NOT STRICT, so a field added to the envelope later is stripped by this reader
  * rather than failing it. A binding field that is present must be valid,
@@ -375,13 +376,14 @@ export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefine
  * Every organization on a shared deployment has the same endpoint, so a record
  * that merely names the endpoint may be another tenant's, or another account's
  * on the same machine. A record with no binding cannot be checked, so it answers
- * false: kept, it might be someone else's. An empty field on either side binds
+ * false: it might be someone else's. An empty field on either side binds
  * nothing and answers false too. A renamed organization reads as someone else
- * and its record is not kept, the direction that forwards less.
+ * and answers false, the direction that keeps less.
  *
  * Only the two binding fields of `who` are read, so a full whoami answer may be
- * passed. NOT part of the forwarding verdict: an unbound record still forwards
- * its entries until a re-attach replaces it. Pure; no I/O; never throws.
+ * passed. NOT part of the forwarding verdict: scopeVerdict does not read the
+ * binding, so an unbound record that counts for the endpoint still forwards its
+ * entries. Pure; no I/O; never throws.
  */
 export function isAttachmentScopeBoundTo(
   raw: unknown,

@@ -206,9 +206,8 @@ const enroll = job.enroll;
 const unenroll = job.unenroll;
 try {
   if (unenroll !== undefined) {
-    // The updater form, as a command that removes a repository writes it: the
-    // removal is computed from the file the merge lands on, inside the settings
-    // lock.
+    // The updater form: the removal is computed from the file the merge lands
+    // on, inside the settings lock.
     applyOnboarding(
       (current) => ({
         attachmentScope: removeAttachmentScopeEntries(current.attachmentScope, unenroll.endpoint, [
@@ -220,9 +219,8 @@ try {
   } else if (enroll === undefined) {
     applyOnboarding(answers, base);
   } else {
-    // The updater form, as a command that enrolls a repository writes it: the
-    // append is computed from the file the merge lands on, inside the settings
-    // lock, never from a read taken before it.
+    // The updater form: the append is computed from the file the merge lands
+    // on, inside the settings lock, never from a read taken before it.
     applyOnboarding(
       (current) => ({
         attachmentScope: addAttachmentScopeEntries(current.attachmentScope, enroll.endpoint, [

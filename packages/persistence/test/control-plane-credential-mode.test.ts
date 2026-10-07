@@ -13,11 +13,11 @@ import { DATA_FILE_MODE } from '../src/paths.ts';
 import { expectNoEchoOf } from './helpers/no-echo.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
-// The credential file a scoped attach writes and the one a machine attach has
-// always written. Three properties: the writer never emits a file its own reader
-// calls malformed; a machine credential's bytes are the ones the writer produced
-// before scoped attachments existed; and a surface can learn the mode without
-// holding the key.
+// The credential file in its two shapes: the scoped one (version 2) and the
+// machine-wide one (version 1) the writer has always emitted. Three properties:
+// the writer never emits a file its own reader calls malformed; a machine
+// credential's bytes are the ones the writer produced before scoped attachments
+// existed; and the mode can be read without holding the key.
 
 const store = useTempStore('aka-cpc-mode-');
 
@@ -214,8 +214,8 @@ describe('readControlPlaneAttachmentMode', () => {
 
   it('is undefined, and does not throw, where a regular file stands in for the settings directory', () => {
     // The file read can throw rather than answer: looking inside a path whose
-    // directory is really a file raises ENOTDIR. A page renders this answer, so
-    // a throw would take the page down instead of showing no attachment.
+    // directory is really a file raises ENOTDIR. The answer must be total: a
+    // throw would reach the caller instead of reading as no known mode.
     rmSync(store.settingsDir, { recursive: true, force: true });
     writeFileSync(store.settingsDir, 'this is a file, not a directory');
 

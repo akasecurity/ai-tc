@@ -36,9 +36,9 @@ function withEntries(raw: unknown, entries: readonly unknown[]): Record<string, 
 
 /**
  * A fresh, BOUND scope record for `endpoint`: nothing enrolled yet, and the
- * organization and account the deployment verified recorded beside it, so a
- * later re-attach can tell whether the record is this account's to keep
- * (isAttachmentScopeBoundTo).
+ * organization and account `who` names recorded beside it, so
+ * isAttachmentScopeBoundTo can tell whether the record belongs to a given
+ * organization and account.
  *
  * Only the two binding fields of `who` are copied, so a full whoami answer may
  * be passed without its role, key kind or server time reaching settings.json.
@@ -59,17 +59,17 @@ export function freshAttachmentScope(
  * the envelope, and every stored entry, one this build cannot read included.
  * "Already enrolled" means a stored entry that reads as one carries the same
  * identity, byte for byte. A stored entry this build cannot read does not
- * count: it enrolls nothing here, so treating it as present would turn the
- * user's enroll into a silent no-op. An identity repeated within `entries` is
- * appended once, the first time.
+ * count: it enrolls nothing here, so treating it as present would make this call
+ * a silent no-op for an identity it was asked to add. An identity repeated
+ * within `entries` is appended once, the first time.
  *
  * With no record that counts for `endpoint` — none at all, as an older settings
  * writer leaves it, a damaged one, or one for another deployment — the result is
  * a NEW record holding just these entries, and UNBOUND: it names no
- * organization or account. It forwards what it lists, since those entries were
- * enrolled under the credential now in force, but the next re-attach cannot
- * confirm whose it is and does not keep it. Another deployment's record is not
- * carried along; it counted for nothing here.
+ * organization or account, so isAttachmentScopeBoundTo answers false for it. It
+ * forwards what it lists, as any record that counts for its endpoint does: the
+ * binding takes no part in the forwarding verdict. Another deployment's record
+ * is not carried along; it counted for nothing here.
  *
  * `added` lists the identities appended, in order. When it is empty, `next` is
  * `raw` itself, so a caller can skip a write that would change nothing.
@@ -113,13 +113,13 @@ export function addAttachmentScopeEntries(
  * record.
  *
  * Every stored entry whose `identity` is one of them, byte for byte, is removed,
- * one this build cannot otherwise read included: unenrolling means "stop
+ * one this build cannot otherwise read included: removing an entry means "stop
  * forwarding this", and an entry a newer build would read must not be left
  * behind to keep forwarding it there. Everything else the record carries is
  * copied as found.
  *
  * With no record that counts for `endpoint`, nothing is removed: another
- * deployment's record is not this command's to edit. `removed` lists each
+ * deployment's record is not this function's to edit. `removed` lists each
  * identity that matched at least one stored entry, once, in the order asked.
  * When it is empty, `next` is `raw` itself. Never mutates `raw`.
  */

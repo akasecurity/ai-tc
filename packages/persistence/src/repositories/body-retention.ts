@@ -12,8 +12,12 @@ import { withTransaction } from '../internal/transactions.ts';
  *
  * It expires the BODY, never the ROW. The event, its timestamps, severity,
  * action_taken and repo, and every `inspection_findings` row derived from it are
- * left untouched — which is why `audit_events` stays an unbounded table rather
- * than joining the two swept ones. Deleting rows would cascade into the findings
+ * kept — which is why `audit_events` stays an unbounded table rather than
+ * joining the two swept ones. The one thing a finding loses is its masked
+ * excerpt (`context`): it is a copy of the body's lines, so it goes when the
+ * body does. Its line and column stay, as position metadata. A `tool_call`
+ * finding's excerpt has no body to follow, so it goes once its event is past
+ * the same horizon. Deleting rows would cascade into the findings
  * and erase the security history this product exists to keep; the bodies are
  * where the bytes are, and almost none of the bytes are where the meaning is.
  *
@@ -47,7 +51,12 @@ import { withTransaction } from '../internal/transactions.ts';
 export interface BodyExpiryOutcome {
   /** Rows whose body was cleared. */
   readonly rowsExpired: number;
-  /** Bytes of body text those rows were holding, measured before the clear. */
+  /**
+   * Bytes of body text those rows were holding, measured before the clear.
+   * Finding excerpts the same pass clears are deliberately outside this and
+   * `rowsExpired`: each is capped at five short lines, and the rows they sit
+   * on (a `tool_call`, or a body an earlier pass expired) are not body rows.
+   */
   readonly bytesFreed: number;
   /**
    * Rows past the horizon that were NOT expired because the sync lane still
@@ -123,6 +132,7 @@ export class SqliteBodyRetentionRepository {
   private readonly heldBySyncStmt: StatementSync;
   private readonly heldByScopeStmt: StatementSync;
   private readonly expireStmt: StatementSync;
+  private readonly expireContextsStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     // LENGTH over the CAST, never over the TEXT: LENGTH() on a TEXT value stops
@@ -204,9 +214,30 @@ export class SqliteBodyRetentionRepository {
     this.expireStmt = this.db.prepare(
       `UPDATE audit_events SET content = NULL, content_expired_at = :now WHERE id = :id`,
     );
+    // Excerpts on findings whose event is past the horizon and holds no body:
+    // a body this pass (or an earlier one) cleared, or an event that never had
+    // one. A body the sync lane still holds keeps its findings' excerpts too.
+    // Seeks the partial index over excerpt-holding findings by first
+    // detection — which can only precede the event's start, so the range never
+    // misses a candidate — and checks the event's own time as a residual.
+    this.expireContextsStmt = this.db.prepare(
+      `UPDATE inspection_findings SET context = NULL
+        WHERE id IN (
+          SELECT f.id
+            FROM inspection_findings f INDEXED BY idx_inspection_findings_context
+            JOIN audit_events e ON e.id = f.audit_event_id
+           WHERE f.context IS NOT NULL
+             AND f.first_detected_at < :cutoff
+             AND e.content IS NULL
+             AND e.started_at < :cutoff
+           LIMIT :limit)`,
+    );
   }
 
-  /** How many bytes a pass with these options would free, changing nothing. */
+  /**
+   * How many body bytes a pass with these options would free, changing
+   * nothing. Finding excerpts are not counted (see `bytesFreed`).
+   */
   preview(opts: Omit<BodyExpiryOptions, 'now'>): Omit<BodyExpiryOutcome, 'done'> {
     const lane = laneOf(opts.sweepSyncLane);
     const rows = this.candidates(lane, opts.cutoff, opts.maxRows ?? DEFAULT_MAX_ROWS);
@@ -258,12 +289,34 @@ export class SqliteBodyRetentionRepository {
       }
     }
 
+    this.expireContexts(opts.cutoff, batchSize, maxRows);
+
     return {
       rowsExpired,
       bytesFreed,
       rowsHeldBySync: this.countHeldBySync(lane, opts.cutoff),
       done,
     };
+  }
+
+  // Clear the excerpts that outlived their body, one bounded transaction per
+  // batch for the same reason the body sweep batches, and at most `maxRows` of
+  // them per pass under the same cap: the next pass picks up the rest.
+  private expireContexts(cutoff: number, batchSize: number, maxRows: number): void {
+    let total = 0;
+    while (total < maxRows) {
+      const limit = Math.min(batchSize, maxRows - total);
+      let cleared = 0;
+      withTransaction(
+        this.db,
+        () => {
+          cleared = Number(this.expireContextsStmt.run({ cutoff, limit }).changes);
+        },
+        'IMMEDIATE',
+      );
+      total += cleared;
+      if (cleared < limit) return;
+    }
   }
 
   /**

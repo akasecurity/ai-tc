@@ -204,6 +204,9 @@ export class StandaloneDataGateway
         maskedMatch: insp.maskedMatch,
         actionTaken: insp.actionTaken,
         confidence: insp.confidence,
+        ...(insp.line === undefined ? {} : { line: insp.line }),
+        ...(insp.col === undefined ? {} : { col: insp.col }),
+        ...(insp.context === undefined ? {} : { context: insp.context }),
       });
     }
   }

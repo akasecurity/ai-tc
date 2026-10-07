@@ -362,7 +362,7 @@ export async function handleRequest(
             ruleVersions = undefined;
           }
           const tools = toToolCallInputs(exchange, request.sessionId, (text) =>
-            scanText(text, ruleVersions),
+            scanText(text, ruleVersions, { locate: true }),
           );
           if (tools.length > 0) {
             await gateway.recordToolCalls(tools);

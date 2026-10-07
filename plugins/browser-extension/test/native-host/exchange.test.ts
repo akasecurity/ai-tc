@@ -438,7 +438,7 @@ describe('toToolCallInputs', () => {
     // requires immediately before the secret would never be there.
     const prefix = `${'x'.repeat(489)} `;
     const target = `${prefix}${SECRET_EXAMPLE}`;
-    const scanner: TargetScanner = (text) => scanText(text);
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
     const exchange = baseExchange({
       toolCalls: [{ toolUseId: 't1', toolName: 'search', target }],
     });
@@ -463,7 +463,7 @@ describe('toToolCallInputs', () => {
   });
 
   it('writes one inspection per finding with actionTaken log', () => {
-    const scanner: TargetScanner = (text) => scanText(text);
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
     const exchange = baseExchange({
       toolCalls: [{ toolUseId: 't1', toolName: 'x', target: SECRET_EXAMPLE }],
     });

@@ -150,6 +150,11 @@ export const COL = {
   // recently-resolved feed measure from when a finding was FIRST seen rather
   // than the latest re-scan's event (whose occurred_at the upsert overwrites).
   firstDetectedAt: 'first_detected_at',
+  // Where a finding sits in the text it was detected in: 1-based column of the
+  // match start (the line reuses `line`), and the masked excerpt around it as a
+  // FindingContext JSON document.
+  col: 'col',
+  context: 'context',
   resolvedAt: 'resolved_at',
   evidence: 'evidence',
   // Secret vault — the one reversible store. `occurrence_count` on secret_vault

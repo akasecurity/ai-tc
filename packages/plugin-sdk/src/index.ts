@@ -29,6 +29,8 @@ export {
 } from './data-gateway.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
+export type { FindingContextHit, FindingLocator, FindingLocatorInput } from './finding-context.ts';
+export { createFindingLocator, evidenceLookup } from './finding-context.ts';
 export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';
@@ -93,8 +95,8 @@ export {
   ISOLATED_SCAN_BUDGET_MS,
   ISOLATED_START_BUDGET_MS,
 } from './isolated-scan.ts';
-export type { ScanFinding } from './mask.ts';
-export { maskText, scanText } from './mask.ts';
+export type { LocatedScanFinding, ScanFinding } from './mask.ts';
+export { bundledMaskingRules, maskText, scanText } from './mask.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
   buildModelRefusalEvent,

@@ -785,6 +785,13 @@ export function openLocalDatabase(
           actionTaken: finding.actionTaken,
           confidence: finding.confidence,
           findingKey: finding.findingKey ?? undefined,
+          ...(finding.location === undefined
+            ? {}
+            : {
+                line: finding.location.line,
+                col: finding.location.col,
+                context: finding.location.context,
+              }),
         });
       }
     });

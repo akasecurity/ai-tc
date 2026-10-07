@@ -20,6 +20,7 @@ import {
   type TimeRange,
 } from '@akasecurity/dashboard-ui';
 import type {
+  FindingContext,
   FindingGroup,
   FindingInstanceDetail,
   FindingLocationSummary,
@@ -58,6 +59,7 @@ import {
 import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import {
+  loadFindingContextAction,
   loadMoreFindingInstances,
   loadMoreFindingLocations,
   loadMoreFindingTypes,
@@ -853,6 +855,8 @@ function InstancesPanel({
     paged.items.find((i) => i.id === selectedInstanceId) ??
     null;
 
+  const excerpt = useFindingExcerpt(selected?.id ?? '');
+
   // Paging closes the drawer rather than leaving it pointing at a row the new
   // page no longer contains.
   const step = (move: () => void) => {
@@ -906,7 +910,11 @@ function InstancesPanel({
               // stays there — there is no group to step back to. Closing runs
               // through the Sheet's own onOpenChange above, which every route
               // reaches: the ×, Escape, and a pointer down outside.
-              selection={{ finding: instanceAsGroup(selected), instance: selected }}
+              selection={{
+                finding: withExcerpt(instanceAsGroup(selected), excerpt.context),
+                instance: selected,
+              }}
+              contextLoading={excerpt.loading}
               {...(renderDrawerFooter ? { footer: renderDrawerFooter(selected) } : {})}
             />
           )}
@@ -914,6 +922,41 @@ function InstancesPanel({
       </Sheet>
     </>
   );
+}
+
+/**
+ * The open finding's masked excerpt. List rows do not carry it — it is up to
+ * five lines of text per finding — so it is fetched for the one finding the
+ * drawer shows, and dropped when the drawer moves to another.
+ */
+function useFindingExcerpt(id: string): { context: FindingContext | null; loading: boolean } {
+  const [state, setState] = useState<{ id: string; context: FindingContext | null }>({
+    id: '',
+    context: null,
+  });
+  useEffect(() => {
+    if (id === '') return;
+    let current = true;
+    void loadFindingContextAction({ id }).then(
+      (context) => {
+        if (current) setState({ id, context });
+      },
+      () => {
+        if (current) setState({ id, context: null });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [id]);
+  return state.id === id
+    ? { context: state.context, loading: false }
+    : { context: null, loading: id !== '' };
+}
+
+/** The finding group with the fetched excerpt on its match, when there is one. */
+function withExcerpt(group: FindingGroup, context: FindingContext | null): FindingGroup {
+  return context === null ? group : { ...group, match: { ...group.match, context } };
 }
 
 /** The drawer footer on a session-scoped list: the firing tally + a way back. */

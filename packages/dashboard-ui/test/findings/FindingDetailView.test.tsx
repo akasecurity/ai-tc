@@ -16,7 +16,7 @@
 // server-renders to the empty string — a `toContain` against that passes for
 // every input and fails for none. Queries go through `document`, never the host
 // div, for the same reason: the content is portalled out of it.
-import type { FindingGroup, FindingInstance } from '@akasecurity/schema';
+import type { FindingContext, FindingGroup, FindingInstance } from '@akasecurity/schema';
 import { HARNESS } from '@akasecurity/schema';
 import { Sheet, SheetContent } from '@akasecurity/ui-kit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -139,5 +139,121 @@ describe('FindingDetailView', () => {
     const buttons = [...(dialog?.querySelectorAll('button') ?? [])];
     expect(buttons).toHaveLength(1);
     expect(buttons[0]?.textContent).toContain('Close');
+  });
+});
+
+describe('FindingDetailView — the matched content', () => {
+  const CODE: FindingContext = {
+    basis: 'file',
+    firstLine: 3,
+    lines: [
+      'export function show(userInput: string) {',
+      '  const element = document.getElementById("out");',
+      '  element.innerHTML = userInput;',
+      '  return element;',
+      '}',
+    ],
+    match: { line: 5, start: 10, end: 21 },
+  };
+
+  function renderWith(
+    match: { maskedValue: string; context?: FindingContext; contextPrefix?: string },
+    contextLoading = false,
+    line?: number,
+  ): void {
+    const group = { ...finding, match: { contextPrefix: '', ...match } } as FindingGroup;
+    const shown = line === undefined ? instance : { ...instance, line };
+    renderRoot(
+      mounted.root,
+      <Sheet open>
+        <SheetContent>
+          <FindingDetailView
+            selection={{ finding: group, instance: shown }}
+            renderedAt={RENDERED_AT}
+            contextLoading={contextLoading}
+          />
+        </SheetContent>
+      </Sheet>,
+    );
+  }
+
+  const lineRows = () => [...document.querySelectorAll('[data-line]')];
+  const marks = () => [...document.querySelectorAll('mark')].map((m) => m.textContent);
+
+  it('numbers each excerpt line and highlights the matched code on its line', () => {
+    renderWith({ maskedValue: 'i*********=', context: CODE });
+    expect(lineRows().map((row) => row.getAttribute('data-line'))).toEqual([
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+    ]);
+    expect(marks()).toEqual(['innerHTML =']);
+    expect(lineRows()[2]?.textContent).toContain('  element.innerHTML = userInput;');
+    expect(lineRows()[2]?.textContent).toContain('▶');
+  });
+
+  it('names the file and line, in the header and the Location field', () => {
+    renderWith({ maskedValue: 'i*********=', context: CODE });
+    const text = document.body.textContent;
+    expect(text).toContain('// src/config.ts:5');
+    const location = [...document.querySelectorAll('div.text-label')].find(
+      (el) => el.textContent.trim() === 'Location',
+    );
+    expect(location?.parentElement?.textContent).toContain('src/config.ts:5');
+  });
+
+  it('says a fragment line counts in the captured text, not the file', () => {
+    renderWith({ maskedValue: 'i*********=', context: { ...CODE, basis: 'excerpt' } });
+    expect(document.body.textContent).toContain('src/config.ts (line 5 of the captured text)');
+    expect(document.body.textContent).not.toContain('src/config.ts:5');
+  });
+
+  it('shows a redacted value with its masked preview, and marks the placeholder as redacted', () => {
+    renderWith({
+      maskedValue: 'AKIA****KEY',
+      context: {
+        basis: 'file',
+        firstLine: 12,
+        lines: ['const key = "[REDACTED:SECRET]";'],
+        match: null,
+      },
+    });
+    expect(marks()).toEqual([]);
+    expect(document.body.textContent).toContain('Matched value: AKIA****KEY');
+    const placeholder = [...document.querySelectorAll('span.text-code-muted')].find(
+      (el) => el.textContent === '[REDACTED:SECRET]',
+    );
+    expect(placeholder).toBeDefined();
+  });
+
+  it('says the code was not kept, and never shows a bare "***"', () => {
+    renderWith({ maskedValue: '***' });
+    const text = document.body.textContent;
+    // Control: the block rendered.
+    expect(text).toContain('Matched content');
+    expect(text).toContain('The code around this match wasn\u2019t kept.');
+    expect(text).not.toContain('***');
+  });
+
+  it('says the excerpt is loading while the host fetches it', () => {
+    renderWith({ maskedValue: '***' }, true);
+    expect(document.body.textContent).toContain('Loading the code around this match');
+    expect(document.body.textContent).not.toContain('wasn\u2019t kept');
+  });
+
+  it("marks and names the finding's stored line when the excerpt has no match to point at", () => {
+    renderWith({ maskedValue: 'i*********=', context: { ...CODE, match: null } }, false, 5);
+    expect(document.body.textContent).toContain('// src/config.ts:5');
+    const marked = lineRows().find((row) => row.textContent.includes('▶'));
+    expect(marked?.getAttribute('data-line')).toBe('5');
+  });
+
+  it("still shows a host's line prefix before the masked value when there is no excerpt", () => {
+    renderWith({ maskedValue: 'AKIA****KEY', contextPrefix: 'const key = ' });
+    const text = document.body.textContent;
+    expect(text).toContain('const key = "AKIA****KEY";');
+    expect(text).not.toContain('wasn\u2019t kept');
   });
 });

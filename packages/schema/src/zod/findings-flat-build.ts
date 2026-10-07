@@ -10,6 +10,7 @@
 // restated.
 
 import type {
+  FindingContext,
   FindingDelivery,
   FindingDeliveryState,
   FindingFacetItem,
@@ -68,6 +69,11 @@ export interface FlatFindingRow extends GroupableFindingRow {
   // The delivery state of that event (see deriveFindingDelivery). Optional, like
   // `status`: a producer that does not read the sync columns omits it.
   delivery?: FindingDelivery;
+  // Where the match sits in the scanned text, and the masked lines around it.
+  // Each is absent when the finding predates location capture or has none.
+  line?: number;
+  col?: number;
+  context?: FindingContext;
 }
 
 export interface InstanceFilterOptions {
@@ -409,6 +415,8 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
     provider: toApiProvider(row.sourceTool),
     repo: row.repo,
     file: row.file,
+    ...(row.line === undefined ? {} : { line: row.line }),
+    ...(row.col === undefined ? {} : { col: row.col }),
     ...(row.toolName === undefined ? {} : { toolName: row.toolName }),
     eventId: row.eventId,
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
@@ -422,7 +430,11 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
     category,
     subtype: row.ruleId,
     severity: row.severity as FindingInstanceDetail['severity'],
-    match: { maskedValue: row.maskedMatch, contextPrefix: '' },
+    match: {
+      maskedValue: row.maskedMatch,
+      contextPrefix: '',
+      ...(row.context === undefined ? {} : { context: row.context }),
+    },
     detection: { id: row.ruleId, name: null },
     policy: { id: `category:${category}`, name: category },
   };

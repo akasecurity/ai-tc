@@ -429,3 +429,15 @@ describe('RuleProbeVerdict', () => {
     expect(RuleProbeVerdict.safeParse('').success).toBe(false);
   });
 });
+
+describe('Rule.evidence', () => {
+  it('accepts code or value, and is optional', () => {
+    expect(Rule.safeParse(validRule()).success).toBe(true);
+    expect(Rule.safeParse(validRule({ evidence: 'code' })).success).toBe(true);
+    expect(Rule.safeParse(validRule({ evidence: 'value' })).success).toBe(true);
+  });
+
+  it('refuses any other evidence', () => {
+    expect(Rule.safeParse(validRule({ evidence: 'snippet' })).success).toBe(false);
+  });
+});

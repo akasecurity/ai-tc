@@ -16,6 +16,7 @@ import type {
 } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
+import { formatDateTime } from '../lib/dateFormat.ts';
 import type { IconName } from './icons.ts';
 
 type Tone = NonNullable<BadgeProps['variant']>;
@@ -228,18 +229,22 @@ export const assetTile = (type: AssetType): { icon: IconName; fg: string; bg: st
 };
 
 // ─── Date formatting ──────────────────────────────────────────────────────────
+const DATE_TIME: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+};
+
 /**
  * Compact local datetime for inventory captions (file drawer "Last activity",
  * blocked-strip "blocked …"). The API returns ISO timestamps, not relative
- * strings, so both call sites format them the same way through here.
+ * strings, so both call sites format them the same way through here. `locale`
+ * is required for the reason lib/numberFormat.ts gives: both callers are client
+ * components.
  */
-export function fmtDateTime(iso: string): string {
-  return new Date(iso).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+export function fmtDateTime(iso: string, locale: string): string {
+  return formatDateTime(Date.parse(iso), locale, DATE_TIME);
 }
 
 // ─── Harness enforcement-event kinds ──────────────────────────────────────────

@@ -660,6 +660,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/helpers/perf.ts',
   'test/helpers/remove-tree.ts',
+  'test/helpers/runtime-locale.ts',
   'test/helpers/store-template.ts',
   'test/helpers/turbo-inputs.ts',
   'test/setup/no-managed-settings.ts',

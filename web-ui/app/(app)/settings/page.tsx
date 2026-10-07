@@ -6,6 +6,7 @@ import {
   settingsDir,
 } from '@akasecurity/persistence';
 
+import { renderLocale } from '../../lib/render-locale.ts';
 import { renderInstant } from '../../lib/rendered-at.ts';
 import { SettingsClient } from './SettingsClient';
 import { readSyncPanel } from './sync-panel-data.ts';
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Settings' };
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const { settings, managed } = readEffectiveSettings();
   const credentialState = readControlPlaneCredentialState(settingsDir(), settings.controlPlane);
   // Through the decision the attach and detach actions refuse on, not off the
@@ -29,6 +30,7 @@ export default function SettingsPage() {
   // different claim from silence.
   const renderedAt = renderInstant();
   const sync = readSyncPanel(settings, credentialState, renderedAt);
+  const locale = await renderLocale();
   return (
     // ONE width for the page: the heading, the form and the panel below it all
     // sit in this container rather than each naming a width. A second copy is
@@ -52,7 +54,7 @@ export default function SettingsPage() {
           section this sits under. */}
       {sync !== null && (
         <div className="mt-7">
-          <SyncPanel sync={sync} renderedAt={renderedAt} />
+          <SyncPanel sync={sync} renderedAt={renderedAt} locale={locale} />
         </div>
       )}
     </div>

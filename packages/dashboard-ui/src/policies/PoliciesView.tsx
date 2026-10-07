@@ -10,16 +10,18 @@ import type { PolicyDetail, PolicyListItem, PolicyStatsResponse } from '@akasecu
 import { Card, cn, Tag, toneColors } from '@akasecurity/ui-kit';
 
 import { policyMeta } from '../detections/meta.ts';
+import { formatNumber } from '../lib/numberFormat.ts';
 import { ListIcon, LockIcon, PolicyIcon, ShieldCheckIcon, TerminalIcon } from '../shared/icons.tsx';
 import { type SummaryStatItem, SummaryStripView } from '../shared/SummaryStripView.tsx';
 
 /**
  * Stat value once settled: the number, or an em dash when still unknown.
- * Locale-grouped like Activity's and Detections' values, so the three strips
- * the same band of chrome is shared by do not format one quantity three ways.
+ * Grouped in the request's locale like Activity's and Detections' values, so the
+ * three strips the same band of chrome is shared by do not format one quantity
+ * three ways.
  */
-function statValue(n: number | undefined): string {
-  return n === undefined ? '—' : n.toLocaleString();
+function statValue(n: number | undefined, locale: string): string {
+  return n === undefined ? '—' : formatNumber(n, locale);
 }
 
 /**
@@ -35,34 +37,42 @@ export function PolicyStatsView({
   stats,
   loading = false,
   className,
+  locale,
 }: {
   stats: PolicyStatsResponse | null | undefined;
   loading?: boolean;
   /** Caller-owned spacing, forwarded to the strip, which carries no margin. */
   className?: string | undefined;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. Required — this is a client component, and the renderer's own
+   * locale differs between the server render and hydration. See
+   * ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const items: SummaryStatItem[] = [
     {
       icon: PolicyIcon,
-      value: statValue(stats?.policies),
+      value: statValue(stats?.policies, locale),
       label: 'Policies',
       tone: 'primary',
     },
     {
       icon: ShieldCheckIcon,
-      value: statValue(stats?.builtin),
+      value: statValue(stats?.builtin, locale),
       label: 'Built-in',
       tone: 'neutral',
     },
     {
       icon: TerminalIcon,
-      value: statValue(stats?.custom),
+      value: statValue(stats?.custom, locale),
       label: 'Custom scripts',
       tone: 'violet',
     },
     {
       icon: ListIcon,
-      value: statValue(stats?.detectionsGoverned),
+      value: statValue(stats?.detectionsGoverned, locale),
       label: 'Detections governed',
       tone: 'ok',
     },

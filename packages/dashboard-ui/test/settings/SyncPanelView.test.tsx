@@ -25,6 +25,7 @@ const render = (over: Partial<SyncPanelViewProps> = {}): string =>
       state={{ status: 'ready', kinds: [row()] }}
       deployment="plane.example"
       renderedAt={NOW}
+      locale="en-US"
       running={false}
       {...over}
     />,

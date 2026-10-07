@@ -13,6 +13,7 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { COLORS } from '../lib/colors.ts';
+import { formatNumber } from '../lib/numberFormat.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 
 /** One counted lane, as the store reports it. */
@@ -87,6 +88,12 @@ export interface SyncPanelViewProps {
    * call site that forgot to pass one.
    */
   renderedAt: number;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. REQUIRED for the reason `renderedAt` is — the renderer's own locale
+   * differs between the server render and hydration. See ../lib/locale.ts.
+   */
+  locale: string;
   /** A pass currently holds the lease. */
   running: boolean;
   /**
@@ -122,11 +129,8 @@ const OUTCOME_LINE: Record<SyncLastOutcome, string> = {
   refused: 'Your deployment refused this machine’s key. Re-attach to resume.',
 };
 
-function count(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
-function KindRow({ row }: { row: SyncKindRow }) {
+function KindRow({ row, locale }: { row: SyncKindRow; locale: string }) {
+  const count = (n: number): string => formatNumber(n, locale);
   // Green only when everything known has gone. Anything else is in progress,
   // not a warning — a machine mid-drain is working correctly.
   const color = row.queued === 0 && row.notSent === 0 ? COLORS.ok : COLORS.primary;
@@ -164,6 +168,7 @@ export function SyncPanelView({
   lastOutcome,
   lastPassAt,
   renderedAt,
+  locale,
   running,
   paused,
   onSyncNow,
@@ -207,7 +212,8 @@ export function SyncPanelView({
           <p className="text-ui text-text-2">Nothing recorded yet.</p>
         )}
 
-        {state.status === 'ready' && state.kinds.map((row) => <KindRow key={row.kind} row={row} />)}
+        {state.status === 'ready' &&
+          state.kinds.map((row) => <KindRow key={row.kind} row={row} locale={locale} />)}
 
         {lastOutcome !== undefined && (
           <p className={cn('text-label', lastOutcome === 'ok' ? 'text-text-3' : 'text-text-2')}>
@@ -253,7 +259,8 @@ export function SyncPanelView({
             {localOnly.map((line) => (
               <p key={line.id} className="text-label text-text-3">
                 <span className="text-text-2">{line.label}</span>
-                {line.count !== undefined && <> · {count(line.count)} here</>} — {line.detail}
+                {line.count !== undefined && <> · {formatNumber(line.count, locale)} here</>} —{' '}
+                {line.detail}
               </p>
             ))}
           </div>

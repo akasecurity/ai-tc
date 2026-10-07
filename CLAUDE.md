@@ -998,11 +998,11 @@ assembled from a non-literal.
 
 `tonalInkTokens` is no longer only the tonal ban: it is the WHOLE
 `no-restricted-syntax` value those three packages get, assembled by
-`reactSyntaxBans()` from four groups (network, drizzle, tonal, ambient clock)
-because a later entry replaces the rule's options rather than merging them. A
-per-file opt-out is therefore written as `reactSyntaxBans({ … })` with one group
-switched off, never as a hand-listed subset — the other three come along by
-construction, so lifting one ban cannot silently lift four.
+`reactSyntaxBans()` from five groups (network, drizzle, tonal, ambient clock,
+ambient locale) because a later entry replaces the rule's options rather than
+merging them. A per-file opt-out is therefore written as `reactSyntaxBans({ … })`
+with one group switched off, never as a hand-listed subset — the other four come
+along by construction, so lifting one ban cannot silently lift five.
 
 ### A time label is a function of two instants, and a client component is given both
 
@@ -1058,16 +1058,60 @@ where the one site this sweep did not find by hand was living
 reached through an imported helper goes unseen; the required argument is what
 covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
 one sanctioned reader, and its exemption is written in that package's
-`eslint.config.mjs` through `reactSyntaxBans({ allowAmbientClock: true })`.
+`eslint.config.mjs` through `presentationalSyntaxBans({ allowAmbientClock: true })`
+— the presentational form, because a per-file entry re-states the whole rule and
+one written through bare `reactSyntaxBans` would also drop the locale ban's
+`src/**` widening for that file.
 
-**What none of this reaches is a LOCALE-formatted string.** `toLocaleString` and
-its siblings render in the renderer's own locale and time zone, and the server's
-need not be the browser's, so passing one instant does not reconcile them. Two
-sites carry that honestly rather than pretending otherwise: `SessionListView`'s
-`title` keeps its `suppressHydrationWarning` for the locale half alone (the clock
-half is pinned now), and `HarnessOverview`'s `formatEvent` says so in its own
-doc comment. `suppressHydrationWarning` silences a warning without reconciling
-anything, so it is never a substitute for passing an instant.
+**A locale-formatted string is the same class, and it is closed the same way.**
+`toLocaleString()` and its siblings, called with no locale, format in the
+RENDERER's own locale, and the server's need not be the browser's: a Node host on
+en-US emits `6,456` where a de-DE browser hydrates `6.456`, and passing one
+instant does nothing for that. A server component has the mirror-image defect — it
+renders once, but in the Node process's locale rather than the reader's. So the
+locale is a second value a route captures per request and passes down:
+
+- **`renderLocale()`** (`web-ui/app/lib/render-locale.ts`) reads the request's
+  `Accept-Language` header and resolves it through `resolveLocale`
+  (`packages/dashboard-ui/src/lib/locale.ts`) to the highest-weighted tag this
+  runtime can format, else `en-US`. It is the sibling of `renderInstant()`, and
+  for the same reason a function rather than a constant.
+- Every shared formatter takes the locale as a **required** argument —
+  `formatNumber` (`lib/numberFormat.ts`), `formatDateTime` (`lib/dateFormat.ts`),
+  `startLabel`, `eventTime`, `fmtDateTime` — and every view that formats a count
+  or a time takes a required `locale: string` prop, beside `renderedAt`. A
+  default would hide every call site that forgot one, exactly as it would for the
+  instant.
+- The **ambient-locale** selectors are the ban that stops a call site formatting
+  around those helpers: an argument-less `toLocale*String()`, its `[]` and
+  `undefined` spellings, and the `Intl` formatter constructors in the same three
+  forms. Unlike the clock ban, nothing in a UI package legitimately reads the
+  runtime's locale, so it is widened to every module in `dashboard-ui` and
+  `ui-kit` (`src/**`) and in `web-ui`'s `app/**` and `middleware.ts` — server
+  components included, which is where the server-locale form lived. That
+  widening is held against each package's REAL resolved config by
+  `packages/eslint-config/test/package-walls.test.js`; `ambient-locale.test.js`
+  tests the selectors and cannot see a config that stopped applying them. A NAMED locale passes, which is
+  what lets the deliberate pins stay: compact notation (`compactCount`,
+  `compactNumber`) is pinned to `en-US` because K/M/B/T is a product-wide
+  convention shared with the CLI and the plugins, and `relativeTime` is pinned to
+  `en` because its words are the dashboard's English copy rather than a format.
+
+Two things this does not reach. The time ZONE is still each renderer's own; the
+dashboard answers only loopback requests (`web-ui/middleware.ts`), so the browser
+and the server share a machine and a zone, and a request carries no zone to pass.
+And the same locale can still format differently under two ICU builds — Node's and
+the browser's — so a CLDR change between them is a residual mismatch no prop
+closes. Two suites hold the rest, one per layer.
+`web-ui/test/pages/locale-hydration.test.ts` server-renders the route CLIENT
+components and the dashboard views — never a `page.tsx` — under one runtime
+default and hydrates them under another (`test/helpers/runtime-locale.ts` moves
+the default); its first cases are the control that a bare `toLocaleString()` is
+reported through the same harness. `web-ui/test/pages/render-instant-wiring.test.ts`
+calls the pages themselves, and is what proves a route reads the request's
+`Accept-Language` and hands that locale to every consumer.
+`suppressHydrationWarning` silences a warning without reconciling anything, so it
+is never a substitute for passing an instant or a locale.
 
 ## Detection rules
 

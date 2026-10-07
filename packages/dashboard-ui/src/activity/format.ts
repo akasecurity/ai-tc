@@ -6,6 +6,8 @@
 import type { ActivitySessionSummary, SessionStatus, TokenRollup } from '@akasecurity/schema';
 import { formatTokenCount } from '@akasecurity/schema';
 
+import { formatDateTime } from '../lib/dateFormat.ts';
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_MS = 86_400_000;
@@ -44,29 +46,37 @@ export function dayLabel(iso: string, now: Date): string {
   return `${WEEKDAYS[d.getDay()] ?? ''}, ${MONTHS[d.getMonth()] ?? ''} ${String(d.getDate())}`;
 }
 
-const TIME_OF_DAY = new Intl.DateTimeFormat('en-US', {
+const TIME_OF_DAY: Intl.DateTimeFormatOptions = {
   hour: 'numeric',
   minute: '2-digit',
-  hour12: true,
-});
+};
 
-/** Session start time, viewer-local: `9:14 AM`. */
-export function startLabel(iso: string): string {
+/**
+ * Session start time, viewer-local, in the reader's clock convention: `9:14 AM`
+ * (en-US) · `09:14` (de-DE). `locale` is required for the reason
+ * lib/numberFormat.ts gives — the session list is a client component.
+ */
+export function startLabel(iso: string, locale: string): string {
   const t = Date.parse(iso);
-  return Number.isNaN(t) ? '' : TIME_OF_DAY.format(t);
+  return Number.isNaN(t) ? '' : formatDateTime(t, locale, TIME_OF_DAY);
 }
 
-const EVENT_TIME = new Intl.DateTimeFormat('en-US', {
+/**
+ * Pinned to a 24-hour clock with seconds whatever the locale: a timeline is
+ * read by comparing adjacent rows, and a fixed width keeps them aligned. The
+ * locale still decides the separators.
+ */
+const EVENT_TIME: Intl.DateTimeFormatOptions = {
   hour: '2-digit',
   minute: '2-digit',
   second: '2-digit',
   hourCycle: 'h23',
-});
+};
 
 /** Timeline event wall-clock time, viewer-local: `09:14:02`. */
-export function eventTime(iso: string): string {
+export function eventTime(iso: string, locale: string): string {
   const t = Date.parse(iso);
-  return Number.isNaN(t) ? '' : EVENT_TIME.format(t);
+  return Number.isNaN(t) ? '' : formatDateTime(t, locale, EVENT_TIME);
 }
 
 /**

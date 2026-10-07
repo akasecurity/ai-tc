@@ -3,7 +3,10 @@
 // same views). Built on @akasecurity/ui-kit primitives; bundler-agnostic (no
 // svgr/asset imports). Data-fetching stays in the apps — these take data via props.
 export { COLORS } from './lib/colors.ts';
+export { formatDateTime } from './lib/dateFormat.ts';
 export type { IconComponent } from './lib/icons.ts';
+export { DEFAULT_LOCALE, resolveLocale } from './lib/locale.ts';
+export { compactCount, formatNumber } from './lib/numberFormat.ts';
 export { relativeTime, relativeTimeShort } from './lib/relativeTime.ts';
 export {
   BLOCKED_WINDOW_MS,

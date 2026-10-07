@@ -32,7 +32,7 @@ import { db } from '../../lib/db.ts';
  */
 export type SyncPanelData = Omit<
   SyncPanelViewProps,
-  'onSyncNow' | 'busy' | 'startError' | 'renderedAt'
+  'onSyncNow' | 'busy' | 'startError' | 'renderedAt' | 'locale'
 >;
 
 /**

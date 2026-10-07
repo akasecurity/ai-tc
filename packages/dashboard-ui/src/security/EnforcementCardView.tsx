@@ -3,7 +3,7 @@ import { Card, CardContent, cn, Skeleton } from '@akasecurity/ui-kit';
 
 import { ArrowDownIcon, ArrowUpIcon } from '../shared/icons.tsx';
 import { ENFORCEMENT_META } from './meta.ts';
-import { numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
+import { formatNumber, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // `actions` is expected pre-normalized to display order (zero-filled).
 export interface EnforcementActionsView {
@@ -17,6 +17,12 @@ export interface EnforcementActionsView {
    * text — the tile never becomes a link target it cannot navigate to.
    */
   actionHrefs?: Partial<Record<EnforcementActionKind, string>> | undefined;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. Required — a renderer's own locale is the server's, not the
+   * reader's, and differs again in a browser that hydrates. See ../lib/locale.ts.
+   */
+  locale: string;
 }
 
 export function EnforcementCardView({
@@ -26,6 +32,7 @@ export function EnforcementCardView({
   error,
   rangeLabel,
   actionHrefs,
+  locale,
 }: EnforcementActionsView & { rangeLabel: string }) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -40,7 +47,7 @@ export function EnforcementCardView({
               <Skeleton className="ml-auto h-5 w-12" />
             ) : (
               <div className="font-display text-xl font-semibold leading-none text-text">
-                {error ? '—' : numberFormat.format(total)}
+                {error ? '—' : formatNumber(total, locale)}
               </div>
             )}
             <div className="mt-0.5 text-label text-text-3">total intercepted</div>
@@ -85,7 +92,7 @@ export function EnforcementCardView({
                     <span className="text-xs font-semibold text-text-2">{meta.label}</span>
                   </div>
                   <div className="mt-2 font-display text-3xl font-semibold leading-none text-text">
-                    {numberFormat.format(a.count)}
+                    {formatNumber(a.count, locale)}
                   </div>
                   {a.delta !== 0 && (
                     // Direction (arrow + sign) conveys the change; color stays neutral
@@ -100,7 +107,7 @@ export function EnforcementCardView({
                         <ArrowDownIcon aria-hidden focusable={false} className="size-3" />
                       )}
                       {up ? '+' : '−'}
-                      {numberFormat.format(Math.abs(a.delta))} vs. prior
+                      {formatNumber(Math.abs(a.delta), locale)} vs. prior
                     </div>
                   )}
                 </Tile>

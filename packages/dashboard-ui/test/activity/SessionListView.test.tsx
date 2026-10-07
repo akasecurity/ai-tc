@@ -52,6 +52,7 @@ function render(props: Partial<Parameters<typeof SessionListView>[0]> = {}) {
       isLoading={false}
       error={null}
       renderedAt={Date.parse('2026-07-05T09:00:00.000Z')}
+      locale="en-US"
       {...props}
     />,
   );

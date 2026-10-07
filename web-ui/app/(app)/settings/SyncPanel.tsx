@@ -50,7 +50,16 @@ export const SYNC_START_GRACE_MS = 20_000;
  * them would put one `busy` flag across both, so asking for a pass would
  * disable the settings form.
  */
-export function SyncPanel({ sync, renderedAt }: { sync: SyncPanelData; renderedAt: number }) {
+export function SyncPanel({
+  sync,
+  renderedAt,
+  locale,
+}: {
+  sync: SyncPanelData;
+  renderedAt: number;
+  /** The locale the server resolved for the request; see app/lib/render-locale.ts. */
+  locale: string;
+}) {
   const router = useRouter();
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
@@ -94,6 +103,7 @@ export function SyncPanel({ sync, renderedAt }: { sync: SyncPanelData; renderedA
     <SyncPanelView
       {...sync}
       renderedAt={now}
+      locale={locale}
       busy={busy}
       startError={startError ?? undefined}
       onSyncNow={() => {

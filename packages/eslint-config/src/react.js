@@ -2,7 +2,7 @@
 import pluginReact from 'eslint-plugin-react';
 import pluginReactHooks from 'eslint-plugin-react-hooks';
 
-import { base, noDrizzleImports, reactSyntaxBans, tonalInkTokens } from './index.js';
+import { base, noDrizzleImports, presentationalSyntaxBans, tonalInkTokens } from './index.js';
 
 // A plain flat-config array, for the reason spelled out over `base` in
 // index.js: the `tseslint.config()` wrapper this used to carry returned the
@@ -73,7 +73,7 @@ export const presentationalUiPackage = [
   ...reactUiPackage,
   {
     files: ['src/**'],
-    rules: { 'no-restricted-syntax': reactSyntaxBans({ ambientClockEveryModule: true }) },
+    rules: { 'no-restricted-syntax': presentationalSyntaxBans() },
   },
 ];
 

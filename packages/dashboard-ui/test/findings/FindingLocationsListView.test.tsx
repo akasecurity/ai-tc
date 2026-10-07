@@ -29,6 +29,7 @@ function render(props: Partial<Parameters<typeof FindingLocationsListView>[0]> =
       activeId=""
       onSelect={vi.fn()}
       renderedAt={NOW}
+      locale="en-US"
       {...props}
     />,
   );

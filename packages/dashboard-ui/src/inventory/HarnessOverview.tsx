@@ -15,12 +15,15 @@ import type {
 import { Badge, cn } from '@akasecurity/ui-kit';
 
 import { dayLabel } from '../activity/format.ts';
+import { formatDateTime } from '../lib/dateFormat.ts';
 import { Provider } from '../shared/Provider.tsx';
 import { AccessBar, EmptyState, FlagChips, TrustPill, VisBadge } from './chips.tsx';
 import { ASSET_META, assetTile, EVENT_KIND, langColor } from './data.ts';
 import { Ico } from './Ico.tsx';
 
 const EVENT_KINDS: HarnessEventKind[] = ['block', 'redact', 'warn'];
+
+const EVENT_TIME: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
 
 /**
  * Format an ISO timestamp into the "Today · 09:19" day/time the row shows.
@@ -30,14 +33,12 @@ const EVENT_KINDS: HarnessEventKind[] = ['block', 'redact', 'warn'];
  * the kind of divergence a rounding or DST fix to one copy and not the other
  * would produce silently. `now` is required for the reason `dayLabel`'s own is:
  * a server render and a hydration that straddle local midnight would label the
- * same event "Today" and "Yesterday". The clock half is closed by passing one
- * instant; the LOCALE half is not closeable here — toLocaleTimeString renders
- * in the renderer's own locale and time zone, and the server's need not be the
- * browser's.
+ * same event "Today" and "Yesterday". `locale` is required for the same reason
+ * on the time half: the renderer's own locale is not the same on the server and
+ * in the browser, so the host passes the one it resolved for the request.
  */
-function formatEvent(iso: string, now: number): { day: string; time: string } {
-  const d = new Date(iso);
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function formatEvent(iso: string, now: number, locale: string): { day: string; time: string } {
+  const time = formatDateTime(Date.parse(iso), locale, EVENT_TIME);
   return { day: dayLabel(iso, new Date(now)), time };
 }
 
@@ -47,6 +48,7 @@ export function HarnessOverview({
   onSelect,
   onSelectProject,
   renderedAt,
+  locale,
 }: {
   harness: HarnessSummary;
   events: HarnessEventsResponse | null;
@@ -59,6 +61,12 @@ export function HarnessOverview({
    * "Yesterday" in the browser.
    */
   renderedAt: number;
+  /**
+   * The locale the event rows' times are formatted in: the one the host
+   * resolved for this request. Required for the reason `renderedAt` is. See
+   * ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const mcpItems = harness.categories.find((c) => c.type === 'mcp')?.assets ?? [];
   const unapproved = mcpItems.filter((it) => it.trust === 'unapproved').length;
@@ -111,7 +119,7 @@ export function HarnessOverview({
             <div className="flex flex-col gap-1.5">
               {items.map((x) => {
                 const m = EVENT_KIND[x.kind];
-                const { day, time } = formatEvent(x.occurredAt, renderedAt);
+                const { day, time } = formatEvent(x.occurredAt, renderedAt, locale);
                 return (
                   <div
                     key={`${x.occurredAt}·${x.title}`}

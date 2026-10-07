@@ -56,7 +56,7 @@ function values(html: string, text: string): number {
 
 describe('PolicyStatsView', () => {
   it('renders every stat against its label once settled', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={STATS} />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} />);
 
     // The positive control: without it the absence assertions below would hold
     // just as well on markup that rendered nothing at all.
@@ -70,7 +70,7 @@ describe('PolicyStatsView', () => {
   });
 
   it('renders a dash per stat the store could not answer', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={null} />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={null} />);
 
     expect(count(html, STAT)).toBe(4);
     expect(values(html, '—')).toBe(4);
@@ -80,7 +80,7 @@ describe('PolicyStatsView', () => {
   });
 
   it('withholds only the values while loading, keeping every label', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={undefined} loading />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={undefined} loading />);
 
     // A dash here would be the regression: it claims a settled answer of
     // nothing for a read that has not come back.
@@ -103,9 +103,11 @@ describe('PolicyStatsView', () => {
     // Asserting the default by PASSING it would hold whether or not the prop is
     // wired at all — so the seam is shown by an override that must win.
     const card = (html: string) => tagWithAttr(html, 'data-slot="card"');
-    expect(card(renderToStaticMarkup(<PolicyStatsView stats={STATS} />))).toContain('mb-3');
+    expect(card(renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} />))).toContain(
+      'mb-3',
+    );
     const overridden = card(
-      renderToStaticMarkup(<PolicyStatsView stats={STATS} className="mb-0" />),
+      renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} className="mb-0" />),
     );
     expect(overridden).toContain('mb-0');
     expect(overridden).not.toContain('mb-3');

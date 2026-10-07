@@ -18,11 +18,12 @@
 // their counts) never reaches the markup, because a static render never opens
 // one.
 //
-// The tally's locale behaviour is out of reach for a different reason: the
-// separator in `6,456` is the RUNNER's, so the assertion below goes through
-// toLocaleString rather than a literal. That the mismatch is ACKNOWLEDGED — a
-// doc line on `Tally`, the form HarnessOverview's formatEvent uses — is a
-// property of the source, and this suite reads markup. Nothing here pins it.
+// The counts are formatted in the `locale` the route hands down, so the
+// separator in `6,456` is the PROP's rather than the runner's, and the
+// assertions below are literals. The de-DE case runs under a runtime whose
+// default locale is moved to en-US, so a count formatted in the runtime's own
+// locale instead of the prop's cannot pass it on any runner. That the server
+// render and the hydration then agree is locale-hydration.test.ts's.
 import type {
   FindingFacets,
   FindingInstanceDetail,
@@ -37,6 +38,8 @@ import type React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+
+import { withRuntimeLocale } from '../../../test/helpers/runtime-locale.ts';
 
 // FindingsClient reaches the router through the shared navigation hook, which
 // throws outside a real Next app. Nothing calls it under a static render.
@@ -174,6 +177,7 @@ const COMMON = {
   repo: '',
   file: '',
   renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+  locale: 'en-US',
   deployment: null,
   overview: OVERVIEW,
 };
@@ -295,12 +299,16 @@ describe('findings client — the By-type view', () => {
     // The findings total spans every listed type; the type count is the list's
     // own length. Both describe the whole scope, which is why they sit here and
     // not beside a filter that cannot move them.
-    //
-    // Asserted THROUGH toLocaleString rather than against a literal `6,456`:
-    // the thousands separator is the RUNNER's, so a hardcoded one fails
-    // wherever LANG is not en-*.
-    expect(html).toContain((6456).toLocaleString());
+    expect(html).toContain('6,456');
     expect(html).toContain('types');
+  });
+
+  it('formats the tally in the locale the route resolved, not the runtime’s', () => {
+    // The runtime default is pinned to en-US for the render, so a tally built
+    // with a bare toLocaleString() would read `6,456` here on every runner.
+    const html = withRuntimeLocale('en-US', () => grouped({ locale: 'de-DE' }));
+    expect(html).toContain('>6.456<');
+    expect(html).not.toContain('6,456');
   });
 });
 
@@ -421,7 +429,7 @@ describe('findings client — the other views', () => {
     // had changed.
     const sub = /<p[^>]*>((?:(?!<\/p>).)*findings(?:(?!<\/p>).)*)<\/p>/.exec(html)?.[1] ?? '';
     expect(sub, 'no subtitle found to read the tally from').not.toBe('');
-    expect(sub).toContain((6456).toLocaleString());
+    expect(sub).toContain('6,456');
     expect(sub).toContain('locations');
     expect(sub).not.toContain('types');
   });
@@ -484,16 +492,9 @@ describe('findings client — the summary strip', () => {
     );
   }
 
-  // Built THROUGH toLocaleString, like the tally case above: the thousands
-  // separator is the runner's, so a literal `1,234` fails wherever LANG is not
-  // en-*. What this case pins is each value beside its own label, in order.
-  const EXPECTED = [
-    `${OVERVIEW.findings.toLocaleString()} Findings`,
-    `${OVERVIEW.open.toLocaleString()} Open`,
-    `${OVERVIEW.handled.toLocaleString()} Handled`,
-    `${OVERVIEW.resolved.toLocaleString()} Resolved`,
-    `${OVERVIEW.dismissed.toLocaleString()} Dismissed`,
-  ];
+  // What this case pins is each value beside its own label, in order, in the
+  // en-US locale COMMON hands the route.
+  const EXPECTED = ['1,234 Findings', '78 Open', '321 Handled', '9 Resolved', '56 Dismissed'];
 
   it.for<[string, () => string]>([
     ['By type', () => grouped()],
@@ -501,5 +502,13 @@ describe('findings client — the summary strip', () => {
     ['By location', () => files()],
   ])('heads the %s view with the five whole-store counts', ([, draw]) => {
     expect(stripCells(draw())).toEqual(EXPECTED);
+  });
+
+  it('formats the strip in the same locale as the tally beside it', () => {
+    // One reader, one separator: the strip and the tally both read the route's
+    // locale, under a runtime whose own default is something else.
+    const html = withRuntimeLocale('en-US', () => grouped({ locale: 'de-DE' }));
+    expect(stripCells(html)[0]).toBe('1.234 Findings');
+    expect(html).toContain('>6.456<');
   });
 });

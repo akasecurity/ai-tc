@@ -3,6 +3,7 @@ import {
   EnforcementCardView,
   type FindingsChartPoint,
   FindingsOverTimeCardView,
+  formatDateTime,
   type MttrChartPoint,
   MttrTrendCardView,
   PageHead,
@@ -24,6 +25,7 @@ import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/sch
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { renderInstant } from '../../lib/rendered-at';
 import {
   enforcementHref,
@@ -44,13 +46,13 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Security' };
 
-// Resolve the ISO date bucket to a short axis label, exactly as the dashboard's
-// useFindingsTimeseries hook does (UTC so the label matches the bucket).
-const bucketLabel = new Intl.DateTimeFormat('en-US', {
+// The ISO date bucket as a short axis label in the request's locale (`Jun 8` ·
+// `8. Juni`). UTC, so the label names the day the bucket is keyed on.
+const BUCKET_LABEL: Intl.DateTimeFormatOptions = {
   month: 'short',
   day: 'numeric',
   timeZone: 'UTC',
-});
+};
 
 /**
  * The DRIFTING web-chat capture sites, as the card renders them — empty
@@ -100,6 +102,8 @@ export default async function SecurityPage({
 }) {
   const range = parseTimeRange((await searchParams).range);
   const label = rangeLabel(range);
+  // The one locale every count and date label on the page is formatted in.
+  const locale = await renderLocale();
   const security = db().security;
 
   const [
@@ -142,12 +146,12 @@ export default async function SecurityPage({
     // plots it as a series — resolve the absent case here rather than leaving the
     // chart to read a hole as a gap in the data.
     low: p.low ?? 0,
-    label: bucketLabel.format(new Date(p.timestamp)),
+    label: formatDateTime(Date.parse(p.timestamp), locale, BUCKET_LABEL),
   }));
 
   const mttrPoints: MttrChartPoint[] = mttrTrend.points.map((p) => ({
     ...p.bySeverity,
-    label: bucketLabel.format(new Date(p.timestamp)),
+    label: formatDateTime(Date.parse(p.timestamp), locale, BUCKET_LABEL),
   }));
 
   // One instant for the whole route. The feed below is a SERVER component, so
@@ -229,6 +233,7 @@ export default async function SecurityPage({
             error={null}
             rangeLabel={label}
             actionHrefs={actionHrefs}
+            locale={locale}
           />
           <SeverityCardView
             {...severity}
@@ -236,6 +241,7 @@ export default async function SecurityPage({
             error={null}
             severityHrefs={severityHrefs}
             statusHrefs={statusHrefs}
+            locale={locale}
           />
           {/* Scan coverage is deliberately unlinked: its number is a curated
               capability constant, not a measurement of anything in the store, so no
@@ -260,6 +266,7 @@ export default async function SecurityPage({
             isLoading={false}
             error={null}
             sourceHrefs={sourceHrefs}
+            locale={locale}
           />
         </div>
 

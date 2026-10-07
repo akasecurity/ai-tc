@@ -186,7 +186,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-code-context',
     name: 'Code Context',
-    version: '0.2.0',
+    version: '0.2.1',
     rawRules: [
       coreCodeContextInternalIp,
       coreCodeContextLocalhostRef,
@@ -232,7 +232,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-pii',
     name: 'Core PII',
-    version: '0.2.1',
+    version: '0.2.2',
     rawRules: [
       corePiiEmail,
       corePiiSsn,

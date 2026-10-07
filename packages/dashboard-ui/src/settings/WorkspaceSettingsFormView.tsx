@@ -1,5 +1,6 @@
 'use client';
 import type {
+  AttachmentMode,
   CredentialState,
   HistorySyncConsentChoice,
   ManagedContext,
@@ -608,7 +609,12 @@ export interface WorkspaceSettingsFormViewProps {
   // Register this machine against an organization's deployment, and undo that.
   // Both optional: a build with no transport plugged in renders the connection
   // state read-only rather than offering an action that cannot complete.
-  onAttach?: (endpoint: string, label: string, accessKey: string) => void;
+  //
+  // `mode` is the device kind the form carries — `scoped` for a personal device,
+  // `machine` for an organization's — and is passed only when it carries one. On
+  // a machine held to machine-wide (`machineOnly`) the form offers no choice and
+  // passes none: the host decides that case from its own server-side read.
+  onAttach?: (endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void;
   onDetach?: () => void;
   // Whether the credential half of the attachment is usable, read locally by
   // the host (`readControlPlaneCredentialState`). OPTIONAL, and its absence
@@ -625,6 +631,19 @@ export interface WorkspaceSettingsFormViewProps {
   // and the row withholds those controls exactly as it does under a lock.
   // Absent reads as not held, and a lock on `runMode` withholds them either way.
   connectionHeld?: boolean;
+  // The mode of the attachment's credential when that credential is usable for
+  // the connection the settings name, read by the host
+  // (`readControlPlaneAttachmentMode`) and passed ALONE: the credential itself
+  // never reaches this view. Absent means "not reported", and an attached row
+  // then describes the machine-wide case, the one that claims MORE is sent,
+  // never less. The attach form also uses it as its only default: the endpoint
+  // typed must be the one the settings name.
+  attachmentMode?: AttachmentMode | undefined;
+  // Whether this machine may attach machine-wide only: an administrator locks
+  // or pins its connection, so a scoped attach is refused. Decided by the host
+  // on the rule its attach action refuses on; the form then offers no choice.
+  // Absent reads as not held, and the action refuses a scoped attach either way.
+  machineOnly?: boolean | undefined;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -650,6 +669,8 @@ export function WorkspaceSettingsFormView({
   onDetach,
   credentialState,
   connectionHeld,
+  attachmentMode,
+  machineOnly,
   detectionsHref = '/detections',
   busy,
   error,
@@ -809,6 +830,8 @@ export function WorkspaceSettingsFormView({
           managedLabel={
             lockOn('runMode') ?? (connectionHeld === true ? managedByLabel(managed) : undefined)
           }
+          attachmentMode={attachmentMode}
+          machineOnly={machineOnly}
           onAttach={onAttach}
           onDetach={onDetach}
           busy={busy}
@@ -1109,6 +1132,63 @@ export const CONNECTION_FORWARDING_NOTICE =
   'Shares register it records — destinations and call sites, never source text. This page reads ' +
   'only your local store, so it cannot report what the deployment received. Detach to stop sending.';
 
+// The same notice for a SCOPED attachment, where the machine-wide one would
+// claim more than is sent. Every clause is a sender a scoped machine still has
+// or a line it does not cross:
+//
+//   - the plugin forwards activity only from enrolled repositories (the
+//     forward paths decide by the enrolled scope before they send);
+//   - the policy pull and the report on the install (host name, versions,
+//     packs, finding counts) send without a scope verdict, by design, so they
+//     are named rather than hidden behind "only";
+//   - the Scan page sends the register only for an enrolled repository;
+//   - a build that predates scoped attachments, re-attaching, writes a
+//     machine-wide credential, and a user reading this is the one who would run
+//     it.
+export const CONNECTION_FORWARDING_NOTICE_SCOPED =
+  'While this machine is attached as a personal device, the plugin forwards activity only ' +
+  'from repositories enrolled with `aka enroll`; activity anywhere else stays on this machine. ' +
+  'It still pulls the policy that deployment sets and sends a short report on this install: ' +
+  'its host name, versions, detection packs and finding counts. A scan you run from the Scan ' +
+  'page sends the Data Shares register only for an enrolled repository — destinations and call ' +
+  'sites, never source text. Re-attaching with a version of AKA older than this one would make ' +
+  'the attachment machine-wide. This page reads only your local store, so it cannot report ' +
+  'what the deployment received. Detach to stop sending.';
+
+// The mode line under an attached connection's name.
+export const CONNECTION_MODE_SCOPED =
+  'Scoped — a personal device. Only activity from repositories enrolled with `aka enroll` is sent.';
+export const CONNECTION_MODE_MACHINE =
+  'Machine-wide — an organization device. Activity from every project on this machine is sent.';
+
+export const ATTACH_MODE_LABEL = 'What kind of device is this?';
+
+// The attach form's one question beyond the endpoint and key, in the vocabulary
+// the credential records. Asked as a device kind rather than a mode name,
+// because that is the fact the user knows; the description says what each
+// answer sends.
+export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
+  {
+    value: 'scoped',
+    label: 'Personal device',
+    description:
+      'Only activity from repositories you enroll with `aka enroll` is sent. Activity anywhere ' +
+      'else stays on this machine.',
+  },
+  {
+    value: 'machine',
+    label: 'Organization device',
+    description: 'Activity from every project on this machine is sent to the deployment.',
+  },
+];
+
+// In place of the choice, on a machine whose connection an administrator
+// governs: the attach is machine-wide whatever is picked, so offering a pick
+// would be a control with no effect.
+export const ATTACH_MODE_MANAGED_NOTICE =
+  'Your organization manages this machine’s connection, so it attaches as an organization ' +
+  'device: activity from every project on it is sent.';
+
 // Shown where attaching is offered but the surface supplies no attach handler.
 //
 // Reworded away from "this build has no control-plane transport": that stopped
@@ -1223,15 +1303,42 @@ export function canAttach(endpoint: string, accessKey: string): boolean {
  *
  * `clearKey` rather than a setter, so the caller owns the state and this stays a
  * plain function the suite can drive with two spies.
+ *
+ * The mode is passed only when the form carries one, as a fourth argument. A
+ * form with nothing to choose (`machineOnly`) passes three, and the host's own
+ * server-side read decides.
  */
 export function submitAttach(
-  values: { endpoint: string; label: string; accessKey: string },
+  values: { endpoint: string; label: string; accessKey: string; mode?: AttachmentMode | undefined },
   clearKey: () => void,
-  onAttach: (endpoint: string, label: string, accessKey: string) => void,
+  onAttach: (endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void,
 ): void {
   const key = values.accessKey.trim();
   clearKey();
-  onAttach(values.endpoint.trim(), values.label.trim(), key);
+  if (values.mode === undefined) onAttach(values.endpoint.trim(), values.label.trim(), key);
+  else onAttach(values.endpoint.trim(), values.label.trim(), key, values.mode);
+}
+
+/**
+ * The mode an attach from the form would carry, or null while the user still
+ * has a choice to make.
+ *
+ * The user's pick wins. With none, the only default is the mode a usable
+ * credential already has (`attachmentMode`), and only when the endpoint typed is
+ * the one the settings name (`settingsEndpoint`), compared as the action
+ * compares it, exactly, after the trim the action applies. Anything else has no
+ * default: a first attach to a deployment is a decision about the device, and a
+ * pre-ticked answer would make it for the user.
+ */
+export function attachFormMode(
+  chosen: AttachmentMode | null,
+  typedEndpoint: string,
+  settingsEndpoint: string | undefined,
+  attachmentMode: AttachmentMode | undefined,
+): AttachmentMode | null {
+  if (chosen !== null) return chosen;
+  if (attachmentMode === undefined || settingsEndpoint === undefined) return null;
+  return typedEndpoint.trim() === settingsEndpoint ? attachmentMode : null;
 }
 
 /**
@@ -1252,6 +1359,8 @@ function ConnectionRow({
   settings,
   credentialState,
   managedLabel,
+  attachmentMode,
+  machineOnly,
   onAttach,
   onDetach,
   busy,
@@ -1259,7 +1368,11 @@ function ConnectionRow({
   settings: WorkspaceSettings;
   credentialState?: CredentialState | undefined;
   managedLabel?: string | undefined;
-  onAttach?: ((endpoint: string, label: string, accessKey: string) => void) | undefined;
+  attachmentMode?: AttachmentMode | undefined;
+  machineOnly?: boolean | undefined;
+  onAttach?:
+    | ((endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void)
+    | undefined;
   onDetach?: (() => void) | undefined;
   busy?: boolean | undefined;
 }) {
@@ -1268,8 +1381,13 @@ function ConnectionRow({
   // Held in component state like the other two, and cleared the moment the
   // attach is handed off below.
   const [accessKey, setAccessKey] = useState('');
+  // The device kind the user picked, or null until they pick one.
+  const [mode, setMode] = useState<AttachmentMode | null>(null);
   const attached = isAttached(settings);
   const locked = managedLabel !== undefined;
+  const holdsMachineWide = machineOnly === true;
+  // What an attach from the form would carry; null while there is a choice left.
+  const selected = attachFormMode(mode, endpoint, settings.controlPlane?.endpoint, attachmentMode);
   // Only meaningful for an attached machine: a standalone one is not missing a
   // credential, it is not supposed to have one, and reporting absence there
   // would turn the ordinary state into a fault.
@@ -1286,6 +1404,13 @@ function ConnectionRow({
           {attached && settings.controlPlane && (
             <span className="mt-1 block text-xs text-text-2" data-slot="control-plane-name">
               {controlPlaneName(settings.controlPlane)}
+            </span>
+          )}
+          {/* Only when the host reported a mode: an unreported one is not a
+              machine-wide one, and the row says nothing rather than guess. */}
+          {attached && attachmentMode !== undefined && (
+            <span className="mt-1 block text-xs text-text-2" data-slot="connection-mode">
+              {attachmentMode === 'scoped' ? CONNECTION_MODE_SCOPED : CONNECTION_MODE_MACHINE}
             </span>
           )}
         </span>
@@ -1315,9 +1440,13 @@ function ConnectionRow({
         </p>
       )}
 
+      {/* The scoped notice only for a reported scoped mode; otherwise the
+          machine-wide one, which never claims less is sent than is. */}
       {attached && (
         <p className="mt-3 text-xs text-text-3" data-slot="connection-forwarding">
-          {CONNECTION_FORWARDING_NOTICE}
+          {attachmentMode === 'scoped'
+            ? CONNECTION_FORWARDING_NOTICE_SCOPED
+            : CONNECTION_FORWARDING_NOTICE}
         </p>
       )}
 
@@ -1343,9 +1472,12 @@ function ConnectionRow({
               // a concurrent `aka attach` flipped this view to attached under
               // them — would otherwise sit in component state across the whole
               // detached period and reappear pre-filled afterwards.
+              //
+              // The device kind goes too: the next attach is a new decision.
               setEndpoint('');
               setLabel('');
               setAccessKey('');
+              setMode(null);
               onDetach();
             }}
             data-slot="detach-button"
@@ -1406,6 +1538,27 @@ function ConnectionRow({
               setAccessKey(e.target.value);
             }}
           />
+          {holdsMachineWide ? (
+            <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-mode-managed">
+              {ATTACH_MODE_MANAGED_NOTICE}
+            </p>
+          ) : (
+            <div className="sm:col-span-2" data-slot="attach-mode">
+              <span id="attach-mode-label" className="mb-2 block text-xs font-medium text-text">
+                {ATTACH_MODE_LABEL}
+              </span>
+              <ChoiceGroup
+                name="attach-mode"
+                labelledBy="attach-mode-label"
+                choices={ATTACH_MODE_CHOICES}
+                value={selected}
+                onChange={(value) => {
+                  setMode(value);
+                }}
+                disabled={busy === true}
+              />
+            </div>
+          )}
           <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-key-hint">
             {ATTACH_KEY_HINT}
           </p>
@@ -1414,10 +1567,19 @@ function ConnectionRow({
               variant="solid"
               tone="primary"
               size="sm"
-              disabled={busy === true || !canAttach(endpoint, accessKey)}
+              disabled={
+                busy === true ||
+                !canAttach(endpoint, accessKey) ||
+                (!holdsMachineWide && selected === null)
+              }
               onClick={() => {
                 submitAttach(
-                  { endpoint, label, accessKey },
+                  {
+                    endpoint,
+                    label,
+                    accessKey,
+                    mode: holdsMachineWide ? undefined : (selected ?? undefined),
+                  },
                   () => {
                     setAccessKey('');
                   },

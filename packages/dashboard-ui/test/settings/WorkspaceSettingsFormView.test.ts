@@ -758,7 +758,7 @@ describe('the connection section', () => {
     // the form stays on screen with the key still in it.
     const order: string[] = [];
     const clearKey = () => order.push('cleared');
-    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+    const onAttach = (...args: (string | undefined)[]) => order.push(`sent:${args.join('|')}`);
 
     submitAttach(
       { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },

@@ -11,8 +11,8 @@ import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../src/managed-setting
 import { applyOnboarding } from '../src/settings.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
-// A machine whose administrator governs the connection attaches machine-wide
-// only. Governed means exactly what every other connection decision in this
+// managedScopedRefusal refuses exactly when the administrator governs the
+// connection. Governed means exactly what every other connection decision in this
 // package reads: `runMode` locked, or `runMode` or `controlPlane` pinned. A
 // scoped attach there would narrow a device the organization manages to the
 // repositories its user enrolls.
@@ -103,8 +103,8 @@ describe('managedScopedRefusal', () => {
   });
 
   it('refuses on a device that became managed after a scoped attach', () => {
-    // Attached scoped while unmanaged; the overlay arrived afterwards. The next
-    // attach meets the refusal, because the decision reads the overlay alone.
+    // A scoped attachment is already on disk; the overlay arrived afterwards. The
+    // decision reads the overlay alone, so the attachment does not change it.
     applyOnboarding(
       {
         runMode: 'attached',

@@ -6,10 +6,9 @@ import type { LocalDatabase } from '../src/database.ts';
 import { seedEnrolledCapturesOwed } from '../src/history-backfill.ts';
 import { useTempStore, withTempStore } from './helpers/temp-store.ts';
 
-// The re-seed an enrollment runs: every unsent capture of a newly enrolled
-// repository is marked owed, so the history drain can send it. Best-effort: the
-// enrollment has already been written when this runs, so it reports a failure
-// as "nothing queued" and never throws.
+// Every unsent capture stamped with one of the given scope keys is marked owed,
+// so the history drain can send it. Best-effort: it reports a failed or missing
+// store as `undefined` and never throws.
 
 // Seeded from the migrated template: nothing here is about opening a store. The
 // case that needs NO store takes a bare one of its own.
@@ -47,7 +46,7 @@ const owedIds = (db: LocalDatabase): string[] =>
   db.historySync.pendingCaptureRows(10, ALL).map((row) => row.id);
 
 describe('seedEnrolledCapturesOwed', () => {
-  it('marks the unsent captures of the newly enrolled keys owed, and returns how many', () => {
+  it('marks the unsent captures of the given keys owed, and returns how many', () => {
     const db = store.open();
     seedCapture(db, 'cap-1', MINUTE, ENROLLED);
     seedCapture(db, 'cap-2', 2 * MINUTE, ENROLLED);
@@ -64,6 +63,8 @@ describe('seedEnrolledCapturesOwed', () => {
 
     expect(seedEnrolledCapturesOwed(store.dataDir, [ENROLLED])).toBe(1);
     expect(seedEnrolledCapturesOwed(store.dataDir, [ENROLLED])).toBe(0);
+    // The repeat's 0 does not mean nothing is waiting: the row it did not count
+    // is still owed, and the drain still reads it.
     expect(owedIds(db)).toEqual(['cap-1']);
   });
 

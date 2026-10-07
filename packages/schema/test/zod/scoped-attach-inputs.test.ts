@@ -4,9 +4,9 @@ import type { ConnectionRefusal } from '../../src/zod/managed.ts';
 import { connectionRefusalMessage } from '../../src/zod/managed.ts';
 import { AttachInput } from '../../src/zod/settings-action.ts';
 
-// Two pieces of the contract a scoped attach is written through: the refusal a
-// managed machine answers a scoped attach with, worded once for the terminal and
-// the page, and the mode the dashboard's attach form posts.
+// Two pieces of the contract a scoped attach is described by: the refusal for a
+// scoped attach on a managed machine, worded once so the same sentence reads in a
+// terminal and on a page, and the optional `mode` member of the attach input.
 
 describe('the scoped-managed refusal', () => {
   it('names the administrator and says why the attach cannot be scoped', () => {
@@ -33,7 +33,7 @@ describe('AttachInput.mode', () => {
   const BASE = { endpoint: 'https://plane.example.test', accessKey: 'placeholder' };
 
   it('is optional, and an input without it parses with no mode key', () => {
-    // A page built before the choice existed must still post a valid input.
+    // An input without a mode still parses.
     expect(AttachInput.parse(BASE)).toStrictEqual(BASE);
   });
 
@@ -44,8 +44,8 @@ describe('AttachInput.mode', () => {
   it.each([['everything'], ['Scoped'], [''], [1], [null], [true]])(
     'refuses %j rather than stripping it',
     (mode) => {
-      // Refused, not stripped: a mode this build does not know must not arrive
-      // at the action as "no mode", which the action reads as its own default.
+      // Refused, not stripped: a mode this build does not know must not parse as
+      // an input with no mode.
       expect(AttachInput.safeParse({ ...BASE, mode }).success).toBe(false);
     },
   );

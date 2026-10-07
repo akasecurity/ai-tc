@@ -161,12 +161,14 @@ export const AttachInput = z.object({
   // renders a longer one usefully.
   label: printable(200).optional(),
   accessKey: z.string(),
-  // How much of this machine the attachment forwards: everything, or only the
-  // repositories its user enrolls. Optional, so a page built before the choice
-  // existed still posts a valid input. What an absent mode means is the action's
-  // rule, decided where the credential is read, not this shape's. A value that
-  // is not a mode is refused rather than stripped, so it can never arrive at the
-  // action looking like no choice at all.
+  // How much of this machine the attachment is for: everything, or only the
+  // repositories its user enrolls. Optional, so an input without it still
+  // parses; what an absent mode means is for whatever reads it to decide, not
+  // this shape. This member validates the VALUE rather than leaving that to the
+  // call site, a deliberate exception to this module's shape-only rule: a shape
+  // rejection names the field, so a value that is not a mode is refused as a bad
+  // `mode` rather than stripped or passed on. The attach action does not read
+  // this member yet.
   mode: AttachmentMode.optional(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

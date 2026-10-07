@@ -244,11 +244,11 @@ export type ConnectionRefusal =
   /** The mode is locked or pinned, and the machine reads as attached. */
   | { reason: 'held-attached'; organization?: string; endpoint: string }
   /**
-   * A SCOPED attach, on a machine whose administrator locks `runMode` or pins
-   * `runMode` or `controlPlane`. Such a machine attaches machine-wide only: a
-   * scoped attach would narrow a device the organization manages to the
-   * repositories its user enrolls. Worded without a flag or a control; the
-   * surface says how to attach machine-wide instead.
+   * A SCOPED attach was asked for, on a machine whose administrator locks
+   * `runMode` or pins `runMode` or `controlPlane`. A scoped attach would narrow a
+   * device the organization manages to the repositories its user enrolls, so it
+   * is refused. Worded without a flag or a control, so one sentence reads the
+   * same in a terminal and on a page.
    */
   | { reason: 'scoped-managed'; organization?: string };
 

@@ -38,7 +38,7 @@ const repo = (
 /** An entry a newer build wrote, with a kind this build does not know. */
 const NEWER = { kind: 'org', identity: 'acme', enrolledAt: ISO };
 
-/** A bound record as a scoped attach writes it, since touched by a newer build. */
+/** A bound record, since touched by a newer build. */
 const stored = () => ({
   endpoint: ENDPOINT,
   tenantName: WHO.tenantName,
@@ -55,7 +55,7 @@ function entriesOf(raw: unknown): readonly unknown[] {
 }
 
 describe('freshAttachmentScope', () => {
-  it('is an empty record for the endpoint, bound to the verified organization and account', () => {
+  it('is an empty record for the endpoint, bound to the organization and account given', () => {
     expect(freshAttachmentScope(ENDPOINT, WHO)).toStrictEqual({
       endpoint: ENDPOINT,
       tenantName: 'Acme Payments',
@@ -71,7 +71,7 @@ describe('freshAttachmentScope', () => {
     );
   });
 
-  it('is kept by a re-attach as the same account, and not by one as another', () => {
+  it('is bound to the organization and account it was built for, and to no other account', () => {
     const fresh = freshAttachmentScope(ENDPOINT, WHO);
     expect(isAttachmentScopeBoundTo(fresh, ENDPOINT, WHO)).toBe(true);
     expect(isAttachmentScopeBoundTo(fresh, ENDPOINT, { ...WHO, userEmail: 'member-18' })).toBe(
@@ -124,8 +124,8 @@ describe('addAttachmentScopeEntries', () => {
   });
 
   it('does not count a stored entry it cannot read as enrolled', () => {
-    // That entry enrolls nothing on this build, so the user's enroll must still
-    // take effect. Both are kept: a newer build may read the first.
+    // That entry enrolls nothing on this build, so the identity must still be
+    // appended. Both are kept: a newer build may read the first.
     const unreadable = { kind: 'org', identity: LEDGER, enrolledAt: ISO };
     const raw = { ...stored(), entries: [unreadable] };
     const { next, added } = addAttachmentScopeEntries(raw, ENDPOINT, [repo(LEDGER)]);
@@ -145,7 +145,7 @@ describe('addAttachmentScopeEntries', () => {
 
     expect(added).toEqual([LEDGER]);
     expect(next).toStrictEqual({ endpoint: ENDPOINT, entries: [repo(LEDGER)] });
-    // Unbound: the next re-attach cannot confirm whose it is, and starts over.
+    // Unbound: it names no organization or account, so it is bound to none.
     expect(isAttachmentScopeBoundTo(next, ENDPOINT, WHO)).toBe(false);
   });
 
@@ -190,8 +190,8 @@ describe('removeAttachmentScopeEntries', () => {
   });
 
   it('removes every stored entry with the identity, one it cannot read included', () => {
-    // Unenrolling means "stop forwarding this". An entry a newer build would
-    // read must not be left behind to keep forwarding it there.
+    // Removing an entry means "stop forwarding this". An entry a newer build
+    // would read must not be left behind to keep forwarding it there.
     const unreadable = { kind: 'org', identity: PAYMENTS, enrolledAt: ISO };
     const raw = { ...stored(), entries: [repo(PAYMENTS), unreadable, repo(LEDGER)] };
     const { next, removed } = removeAttachmentScopeEntries(raw, ENDPOINT, [PAYMENTS]);
@@ -225,7 +225,7 @@ describe('removeAttachmentScopeEntries', () => {
     ['a damaged record', { endpoint: ENDPOINT, entries: 'x' }],
     ['a record for another deployment', { ...stored(), endpoint: OTHER_ENDPOINT }],
   ])('edits nothing for %s', (_label, raw) => {
-    // Another deployment's record is not this command's to edit.
+    // Another deployment's record is not this function's to edit.
     const result = removeAttachmentScopeEntries(raw, ENDPOINT, [PAYMENTS]);
 
     expect(result.removed).toEqual([]);

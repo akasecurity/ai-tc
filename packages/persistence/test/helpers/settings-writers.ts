@@ -94,10 +94,10 @@ export interface WriterJob {
    */
   clear?: string[];
   /**
-   * One enrollment, written the way a command that edits the scope record
-   * writes it: through the updater form, appending `entry` to the scope record
-   * for `endpoint` as found in the file the merge is about to land on. A writer
-   * given this applies only the enrollment; `set` and `clear` are ignored.
+   * One enrollment, written through the updater form: appending `entry` to the
+   * scope record for `endpoint` as found in the file the merge is about to land
+   * on. A writer given this applies only the enrollment; `set` and `clear` are
+   * ignored.
    */
   enroll?: { endpoint: string; entry: AttachmentScopeEntry };
   /**

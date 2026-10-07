@@ -305,7 +305,7 @@ export function readControlPlaneCredential(
  * credential bound to another endpoint.
  *
  * The mode is not secret; the key is. This takes the wide read and returns the
- * mode alone, so a surface that shows "machine-wide" or "scoped" is handed a
+ * mode alone, so a caller that needs only "machine" or "scoped" is handed a
  * word, never the credential, and `CredentialState` keeps carrying no payload. A
  * credential bound to another endpoint answers `undefined` rather than its own
  * mode, because it is not the attachment `connection` describes. Never throws:
@@ -314,8 +314,8 @@ export function readControlPlaneCredential(
  * THE TRY/CATCH IS LOAD-BEARING. The wide read describes every failure it
  * expects as a state, but its file checks can still throw: looking inside a path
  * whose settings directory is really a regular file raises ENOTDIR from the
- * stat. A page renders this answer, so an error here would take the page down
- * rather than show an attachment with no known mode.
+ * stat. Without the catch that error would reach every caller as a throw rather
+ * than as an attachment with no known mode.
  */
 export function readControlPlaneAttachmentMode(
   settingsDir: string,

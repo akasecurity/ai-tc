@@ -385,11 +385,10 @@ function isEnrollableKey(key: string): boolean {
  * A typed key is accepted only when it is ALREADY canonical:
  * `canonicalRepoUrl('https://' + key)` must give back exactly the key. Keys are
  * compared byte for byte, so a key that is almost canonical — a capitalised
- * host, a trailing slash, a `.git` suffix — would be stored, echoed back as
- * enrolled, and match nothing a checkout stamps. It is refused rather than
- * repaired, so the user sees the difference instead of a silent rewrite. Path
- * case is kept: `github.com/Acme/Payments` is accepted, and is not
- * `github.com/acme/payments`.
+ * host, a trailing slash, a `.git` suffix — would look like a key and match
+ * nothing a checkout stamps. It is refused rather than repaired, so the
+ * difference is visible instead of silently rewritten. Path case is kept:
+ * `github.com/Acme/Payments` is accepted, and is not `github.com/acme/payments`.
  *
  * Either way, a key that names no repository is refused:
  *   - a host not made of real labels: `.`, `..` or `-` (which is how a typed
@@ -401,9 +400,15 @@ function isEnrollableKey(key: string): boolean {
  *     repository, and enrolling it would enroll nothing;
  *   - an empty, `.` or `..` path segment.
  *
- * A local path, a `file://` URL, a query or fragment, a control character or an
- * over-long key is refused by `canonicalRepoUrl` itself. Surrounding whitespace
- * is ignored.
+ * An absolute path, a Windows path, a `file://` URL, a query or fragment, a
+ * control character and an over-long key are refused too: `canonicalRepoUrl`
+ * gives no key for them. Surrounding whitespace is ignored.
+ *
+ * THIS DOES NOT REFUSE EVERY LOCAL PATH. A relative path that begins with `./`,
+ * `../` or `-` is refused by the host rule above, but a bare relative path of
+ * three or more segments, such as `src/acme/payments-api`, is indistinguishable
+ * from a key whose host has no dot, and it IS accepted. A caller must refuse
+ * text that names an existing local directory before calling this.
  *
  * For a repository named by hand only. A key a checkout resolved for itself is
  * already a producer's key and is not re-judged by this. Pure; no I/O.

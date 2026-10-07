@@ -154,10 +154,12 @@ export function renderForwardLine(outcome: ReportedForward): string {
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
         'no usable credential; re-attach with `aka attach`'
       );
+    // By design rather than a fault, so it names no remedy, as the Scan page's
+    // line does not: no command in this build enrolls a repository.
     case 'not-enrolled':
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
-        'project not enrolled; enroll its repository with `aka enroll`'
+        'project not enrolled; its scans stay on this machine'
       );
     case 'forwarded':
       return (

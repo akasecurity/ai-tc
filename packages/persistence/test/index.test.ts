@@ -88,6 +88,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'dataDir',
   'dbPath',
   'dbSidecars',
+  'decideAttachMode',
   'defaultDataDir',
   'deriveSubkeys',
   'describeStoreSkew',

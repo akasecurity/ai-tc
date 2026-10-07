@@ -1,11 +1,21 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import { readHookFailOpens } from '@akasecurity/plugin-sdk';
-import type { WorkspaceSettings } from '@akasecurity/schema';
+import type {
+  AttachmentMode,
+  AttachmentScope,
+  AttachmentScopeEntry,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
+  attachmentModeOf,
   controlPlaneName,
   isAttached,
+  isAttachmentScopeValid,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
+  parseAttachmentScope,
+  resolveScope,
 } from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
@@ -86,6 +96,20 @@ const OUTCOME_LINES: Record<PolicySyncOutcome, string> = {
   'invalid-bundle': 'control plane sent a policy bundle this build cannot read',
 };
 
+/**
+ * How each attachment mode reads on the `mode` line: which repositories the
+ * attachment covers, not a claim about everything the machine sends. An
+ * exhaustive Record, so a mode added later fails typecheck here instead of
+ * rendering a line with a hole in it.
+ */
+const MODE_LINES: Record<AttachmentMode, string> = {
+  machine: 'machine (every repository)',
+  scoped: 'scoped (enrolled repositories only)',
+};
+
+/** What to do about a scope that sends nothing, under each of those lines. */
+const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
+
 function ageLine(fromMs: number, nowMs: number): string {
   const deltaMs = Math.max(0, nowMs - fromMs);
   const minutes = Math.floor(deltaMs / 60_000);
@@ -121,6 +145,13 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     // deliberately does not carry. It is a TERMINAL surface — `aka status` — so
     // nothing here crosses to a browser.
     const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
+    // The mode is read off the credential, the half of an attachment no settings
+    // writer rewrites, and only off one this machine can use. An unusable
+    // credential forwards nothing in either mode, so naming a mode for it would
+    // describe forwarding that does not happen.
+    const mode: AttachmentMode | undefined = state.usable
+      ? attachmentModeOf(state.credential)
+      : undefined;
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -136,40 +167,138 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       // ALLOW-LISTED, field by field. The credential itself is deliberately
       // absent and must stay that way; `keyPrefix` is the non-secret half.
       //
-      // And every one of them goes through `printable`, which is about the
-      // field's CONTENT rather than which fields appear. The allow-list above
-      // decides what is rendered; it says nothing about what those strings
-      // hold. None of these is authored by this machine — `label` comes from
-      // `aka attach --label` or from a `settings.json` an administrator can pin
-      // fleet-wide, and the endpoint and `keyPrefix` come off the credential
-      // file — and all of them land in a status block a user reads to decide
-      // whether their machine is managed. An ANSI escape in any of them can
-      // repaint that block or hide a line, which is the same argument
-      // `printable` was written for one field over.
-      `  plane      ${printable(controlPlaneName(connection))}`,
-      `  attached   ${printable(connection.attachedAt, 40)}`,
+      // And every one of them goes through `printableForTerminal`, which is
+      // about the field's CONTENT rather than which fields appear. The
+      // allow-list above decides what is rendered; it says nothing about what
+      // those strings hold. None of these is authored by this machine — `label`
+      // comes from `aka attach --label` or from a `settings.json` an
+      // administrator can pin fleet-wide, and the endpoint and `keyPrefix` come
+      // off the credential file — and all of them land in a status block a user
+      // reads to decide whether their machine is managed. An ANSI escape in any
+      // of them can repaint that block or hide a line.
+      `  plane      ${printableForTerminal(controlPlaneName(connection))}`,
+      `  attached   ${printableForTerminal(connection.attachedAt, 40)}`,
     ];
     if (state.usable && state.credential.keyPrefix !== undefined) {
       // `max` matches the schema's own bound, so a conforming prefix is never
       // truncated and a longer one cannot outrun it.
-      lines.push(`  key        ${printable(state.credential.keyPrefix, 16)}…`);
+      lines.push(`  key        ${printableForTerminal(state.credential.keyPrefix, 16)}…`);
     }
     if (!state.usable && state.reason === 'endpoint-mismatch') {
-      lines.push(`  credential ${printable(state.credentialEndpoint, 200)}`);
+      lines.push(`  credential ${printableForTerminal(state.credentialEndpoint, 200)}`);
+    }
+    if (mode !== undefined) lines.push(`  mode       ${MODE_LINES[mode]}`);
+    // With a label, `plane` names the label. The scope record is bound to the
+    // endpoint by exact string, so the endpoint gets its own line and a user can
+    // compare it with the one a record names. Without a label, `plane` is it.
+    if (mode !== undefined && connection.label !== undefined) {
+      lines.push(`  endpoint   ${printableForTerminal(connection.endpoint, 200)}`);
     }
 
     return [
       ...lines,
+      // Only a scoped attachment is filtered by its scope. A machine-wide one
+      // never reads the record, so listing it there would describe a filter
+      // that is not applied.
+      ...(mode === 'scoped'
+        ? attachmentScopeLines(settings.attachmentScope, connection.endpoint)
+        : []),
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
-      ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs),
+      ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs, mode === 'scoped'),
       ...failOpenLines(deps.dataDir, nowMs),
     ].join('\n');
   } catch {
     // A status renderer that throws is worse than one that says little.
     return 'AKA: status unavailable';
   }
+}
+
+/**
+ * The enrolled scope of a SCOPED attachment, as `aka status` prints it.
+ *
+ * Exported so any command that lists the enrolled scope prints these same lines
+ * rather than a second rendering of the same states, which could disagree with
+ * this one.
+ *
+ * THE FORWARD VERDICT'S OWN READ. The record is read with parseAttachmentScope
+ * and bound with isAttachmentScopeValid, the two halves resolveScope is built
+ * from, and an entry is listed only when the key set resolveScope returns holds
+ * its identity. So the block lists what a forward path forwards, once per
+ * identity however often it is stored.
+ *
+ * Each state that sends nothing has its own line, because each has its own
+ * cause: no record (never enrolled, an older settings writer dropped it, or the
+ * record is damaged and reads as none), a record for another deployment, or a
+ * record with nothing in it yet. Entries this version cannot read are counted and
+ * never printed: one written by a newer build is not this build's to describe. A
+ * record that names no account is said to be one, because the next scoped attach
+ * cannot tell whose it is and starts it empty.
+ *
+ * Every stored string goes through printableForTerminal. The schema already
+ * refuses control characters in an identity or a label; the strip is the layer
+ * that holds whatever a settings file actually carries.
+ *
+ * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
+ */
+export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
+  const record = parseAttachmentScope(raw);
+  if (record === undefined) {
+    return ["  scope      nothing enrolled — no repository's activity is sent", ENROLL_HINT];
+  }
+  if (!isAttachmentScopeValid(raw, endpoint)) {
+    return [
+      `  scope      recorded for another deployment (${printableForTerminal(record.endpoint, 200)})`,
+      '             — nothing is sent here (run `aka enroll` to enroll for this one)',
+    ];
+  }
+  const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;
+  const listed = new Set<string>();
+  const rows: string[] = [];
+  for (const entry of record.entries) {
+    if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
+    listed.add(entry.identity);
+    rows.push(`             ${entryLine(entry)}`);
+  }
+  const lines =
+    rows.length === 0
+      ? ["  scope      nothing enrolled yet — no repository's activity is sent", ENROLL_HINT]
+      : [
+          `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
+          ...rows,
+        ];
+  const unread = unreadEntries(raw, record);
+  if (unread > 0) {
+    const noun = unread === 1 ? 'entry' : 'entries';
+    lines.push(`             ${count(unread)} ${noun} this version cannot read — not sent`);
+  }
+  if (!named(record.tenantName) || !named(record.userEmail)) {
+    lines.push('             not tied to an account — the next `aka attach` starts it empty');
+  }
+  return lines;
+}
+
+/** One enrolled identity: its key, its label when it has one, and the day it was enrolled. */
+function entryLine(entry: AttachmentScopeEntry): string {
+  // `max` is the schema's own bound on an identity, so a conforming key is never cut.
+  const identity = printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  const label = entry.label === undefined ? '' : ` (${printableForTerminal(entry.label)})`;
+  return `${identity}${label}, enrolled ${printableForTerminal(entry.enrolledAt.slice(0, 10))}`;
+}
+
+/** How many stored entries validation dropped from a record that itself parsed. */
+function unreadEntries(raw: unknown, read: AttachmentScope): number {
+  const stored =
+    typeof raw === 'object' && raw !== null && 'entries' in raw && Array.isArray(raw.entries)
+      ? raw.entries.length
+      : read.entries.length;
+  return stored - read.entries.length;
+}
+
+/** A binding field that names someone: present and not empty. */
+function named(value: string | undefined): boolean {
+  return value !== undefined && value !== '';
 }
 
 /**
@@ -268,12 +397,18 @@ function dropLines(dataDir: string, nowMs: number): string[] {
  * NO ETA and no progress bar, deliberately. The schedule is coupled to how often
  * the user opens a session, so any projection would be a guess dressed as a
  * measurement.
+ *
+ * On a SCOPED attachment every line with numbers carries a note that they cover
+ * every repository. The drain's state file counts the whole machine's backlog,
+ * enrolled or not, so read bare those numbers would describe a queue far larger
+ * than the one a scoped drain sends, and one that never completes.
  */
 function historyLines(
   dataDir: string,
   settings: WorkspaceSettings,
   endpoint: string,
   nowMs: number,
+  scoped: boolean,
 ): string[] {
   // A grant PAUSED by a widening is not the same news as no grant, and the third
   // surface to say so. After a payload bump every machine that opted in holds a
@@ -301,6 +436,9 @@ function historyLines(
   const sent = count(state.sentTotal);
   const total = count(state.sentTotal + state.pendingTotal);
   const skipped = state.skippedTotal > 0 ? `, ${count(state.skippedTotal)} could not be sent` : '';
+  const caveat = scoped
+    ? ['             (counts cover every repository on this machine, enrolled or not)']
+    : [];
 
   if (state.lastOutcome === 'refused') {
     return [
@@ -312,12 +450,13 @@ function historyLines(
     return [
       `  history    paused — deployment unreachable, last tried ${ageLine(state.lastPassAtMs, nowMs)}`,
       `             ${sent} of ${total} records sent${skipped}`,
+      ...caveat,
     ];
   }
   if (state.phase === 'complete' && state.pendingTotal === 0) {
-    return [`  history    complete — ${sent} records sent${skipped}`];
+    return [`  history    complete — ${sent} records sent${skipped}`, ...caveat];
   }
-  return [`  history    sending — ${sent} of ${total} records sent${skipped}`];
+  return [`  history    sending — ${sent} of ${total} records sent${skipped}`, ...caveat];
 }
 
 /** Thousands separators, so a six-figure backlog is readable at a glance. */
@@ -445,32 +584,40 @@ function failOpenLines(dataDir: string, nowMs: number): string[] {
 }
 
 /**
+ * A string from outside this process, made safe to print in a terminal.
+ *
+ * Control and format characters are stripped and the result is bounded, so an
+ * ANSI escape cannot repaint the block around it or hide a line, and the worst a
+ * hostile value can do is occupy its own field. A label from an administrator's
+ * overlay, a policy version from a control plane, a repository read back from
+ * settings.json: none of them was authored by the code printing it.
+ *
+ * Exported so every command that echoes such a string strips it with this one
+ * function. `aka status` and any command that echoes a stored identity or label
+ * follow the same rule, and a second copy would let the two drift.
+ */
+export function printableForTerminal(value: string, max = 80): string {
+  const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/**
  * The policy cache half, async because the store is.
  *
  * Kept OUT of `renderAttachedStatus` so that function can stay synchronous and
  * total: a slash-command entry can render the connection block with no awaits at
  * all, and only pay for the cache read when it wants the version line.
- */
-/**
- * A control-plane-supplied string, made safe to print.
  *
- * `PolicyBundle.version` is a bare `z.string()` shared with the local
- * standalone bundle, so it cannot be tightened here the way `PluginWhoami`'s
- * members are — but it is rendered into a terminal all the same, and a hostile
- * or compromised plane supplying an ANSI escape could repaint the status block
- * or hide a line. Control characters are stripped and the result bounded, so
- * the worst a plane can do to this surface is occupy its own field.
+ * `PolicyBundle.version` is a bare `z.string()` shared with the local standalone
+ * bundle, so it cannot be tightened the way `PluginWhoami`'s members are, and a
+ * hostile or compromised plane could put an escape in it. It is printed through
+ * printableForTerminal.
  */
-function printable(value: string, max = 80): string {
-  const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');
-  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
-}
-
 export async function renderPolicyLine(dataDir: string, nowMs = Date.now()): Promise<string> {
   try {
     const cached = await createPolicyStore(dataDir).read();
     if (!cached) return '  policy     none cached';
-    return `  policy     ${printable(cached.bundle.version)} (fetched ${ageLine(cached.fetchedAtMs, nowMs)})`;
+    return `  policy     ${printableForTerminal(cached.bundle.version)} (fetched ${ageLine(cached.fetchedAtMs, nowMs)})`;
   } catch {
     return '  policy     unreadable';
   }

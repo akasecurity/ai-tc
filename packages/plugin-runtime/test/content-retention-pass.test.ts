@@ -130,12 +130,77 @@ describe('runContentRetentionPass', () => {
     expect(runContentRetentionPass({ base })).toEqual({ ran: false, reason: 'unreadable' });
   });
 
+  // The scope keys a sync-lane body can carry, and the attachment instant, shared
+  // by the standalone control and the attachment cases.
+  const AT = '2026-08-01T00:00:00.000Z';
+  const WORK = 'github.com/acme/work';
+  const PERSONAL = 'github.com/someone/personal';
+
+  // Three unsent sync-lane bodies past the horizon, written straight to the
+  // store so each carries exactly the key the case needs: one enrolled, one
+  // personal, one stamped with nothing.
+  function seedLane(): void {
+    openLocalDatabase(dataDir(base)).close();
+    const raw = new DatabaseSync(dbPath(base));
+    try {
+      const old = Date.now() - 60 * DAY;
+      const insert = raw.prepare(
+        `INSERT INTO audit_events (id, event_type, started_at, content, content_hash, attributes)
+         VALUES (?, 'prompt', ?, ?, ?, ?)`,
+      );
+      insert.run(
+        'enrolled',
+        old,
+        'w'.repeat(100),
+        'hash-enrolled',
+        JSON.stringify({ scope_key: WORK }),
+      );
+      insert.run(
+        'personal',
+        old,
+        'p'.repeat(100),
+        'hash-personal',
+        JSON.stringify({ scope_key: PERSONAL }),
+      );
+      insert.run('unstamped', old, 'u'.repeat(100), 'hash-unstamped', JSON.stringify({}));
+    } finally {
+      raw.close();
+    }
+  }
+
+  function bodyOf(id: string): string | null {
+    const raw = new DatabaseSync(dbPath(base));
+    try {
+      return (
+        raw.prepare('SELECT content FROM audit_events WHERE id = ?').get(id) as {
+          content: string | null;
+        }
+      ).content;
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('expires every unsent body on a standalone machine', () => {
+    // The control for the attachment cases below: without it they pass on a
+    // seed the sweep would never have touched.
+    applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
+    seedLane();
+
+    expect(runContentRetentionPass({ base })).toEqual({
+      ran: true,
+      rowsExpired: 3,
+      bytesFreed: 300,
+      done: true,
+    });
+    expect(bodyOf('enrolled')).toBeNull();
+    expect(bodyOf('personal')).toBeNull();
+    expect(bodyOf('unstamped')).toBeNull();
+  });
+
   describe('on an attachment, by the credential mode', () => {
     const ENDPOINT = 'https://plane.example.test';
     const OTHER_ENDPOINT = 'https://elsewhere.example.test';
-    const AT = '2026-08-01T00:00:00.000Z';
-    const WORK = 'github.com/acme/work';
-    const PERSONAL = 'github.com/someone/personal';
     // Built from parts so nothing in this file reads as a real credential.
     const API_KEY = ['test', 'only', 'credential'].join('-');
 
@@ -168,51 +233,6 @@ describe('runContentRetentionPass', () => {
         });
       } else {
         writeFileSync(controlPlaneCredentialPath(settingsDir(base)), '{ not json');
-      }
-    }
-
-    // Three unsent sync-lane bodies past the horizon, written straight to the
-    // store so each carries exactly the key the case needs: one enrolled, one
-    // personal, one stamped with nothing.
-    function seedLane(): void {
-      openLocalDatabase(dataDir(base)).close();
-      const raw = new DatabaseSync(dbPath(base));
-      try {
-        const old = Date.now() - 60 * DAY;
-        const insert = raw.prepare(
-          `INSERT INTO audit_events (id, event_type, started_at, content, content_hash, attributes)
-           VALUES (?, 'prompt', ?, ?, ?, ?)`,
-        );
-        insert.run(
-          'enrolled',
-          old,
-          'w'.repeat(100),
-          'hash-enrolled',
-          JSON.stringify({ scope_key: WORK }),
-        );
-        insert.run(
-          'personal',
-          old,
-          'p'.repeat(100),
-          'hash-personal',
-          JSON.stringify({ scope_key: PERSONAL }),
-        );
-        insert.run('unstamped', old, 'u'.repeat(100), 'hash-unstamped', JSON.stringify({}));
-      } finally {
-        raw.close();
-      }
-    }
-
-    function bodyOf(id: string): string | null {
-      const raw = new DatabaseSync(dbPath(base));
-      try {
-        return (
-          raw.prepare('SELECT content FROM audit_events WHERE id = ?').get(id) as {
-            content: string | null;
-          }
-        ).content;
-      } finally {
-        raw.close();
       }
     }
 
@@ -274,23 +294,6 @@ describe('runContentRetentionPass', () => {
       });
       expect(bodyOf('enrolled')).toBe('w'.repeat(100));
       expect(bodyOf('personal')).toBe('p'.repeat(100));
-    });
-
-    it('expires every unsent body on a standalone machine', () => {
-      // The control for the cases above: without it they pass on a seed the
-      // sweep would never have touched.
-      applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
-      seedLane();
-
-      expect(runContentRetentionPass({ base })).toEqual({
-        ran: true,
-        rowsExpired: 3,
-        bytesFreed: 300,
-        done: true,
-      });
-      expect(bodyOf('enrolled')).toBeNull();
-      expect(bodyOf('personal')).toBeNull();
-      expect(bodyOf('unstamped')).toBeNull();
     });
 
     it('holds every unsent body, and still runs, when reading the credential throws', () => {

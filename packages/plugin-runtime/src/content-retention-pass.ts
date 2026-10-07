@@ -47,8 +47,9 @@ const DAY_MS = 86_400_000;
  *
  * ONE HELPER, asked by both the background pass and `aka prune`. It decides
  * which bodies are destroyed, so the two callers share this function rather
- * than each keeping a copy that could drift, and they cannot disagree about
- * which bodies a deployment is still owed.
+ * than each keeping a copy that could drift: given the same settings they give
+ * the same answer. Each caller reads its own settings and passes them in, so
+ * the helper cannot make two callers read the same ones.
  *
  * TOTAL, and every failure holds. An attachment whose credential cannot be read
  * resolves to no scope, which `syncLaneRetentionOf` reads as hold-all, and a

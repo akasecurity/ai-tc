@@ -241,6 +241,11 @@ describe('aka prune', () => {
     expect(atCeiling.output()).toContain(`Nothing to expire older than ${String(maxValue)} days`);
   });
 
+  // The one sentence the held-back count is spelled in, so no case keeps its
+  // own copy of it.
+  const kept = (n: number): string =>
+    `${String(n)} kept: not yet sent, and could still be owed to a deployment.`;
+
   describe('bodies a deployment could still claim', () => {
     const ENDPOINT = 'https://aka.example-org.internal';
     const DESCRIPTOR = { endpoint: ENDPOINT, attachedAt: '2026-08-01T00:00:00.000Z' };
@@ -249,7 +254,6 @@ describe('aka prune', () => {
       payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
       endpoint: ENDPOINT,
     };
-    const HELD = '1 kept: not yet sent, and could still be owed to a deployment.\n';
 
     // A prompt is on the sync lane; a body there with no `synced_at` is what
     // the held-back count reports.
@@ -289,7 +293,7 @@ describe('aka prune', () => {
         const io = recorder();
         runPrune(['--home', base, '--days', '30'], io, null);
         expect(io.output()).toContain('Nothing to expire older than 30 days.');
-        expect(io.output()).toContain(HELD);
+        expect(io.output()).toContain(kept(1));
         expect(io.output()).not.toContain('attached to');
       },
     );
@@ -386,9 +390,6 @@ describe('aka prune', () => {
         raw.close();
       }
     }
-
-    const kept = (n: number): string =>
-      `${String(n)} kept: not yet sent, and could still be owed to a deployment.`;
 
     it('expires an out-of-scope and an unstamped body, and keeps the enrolled one', () => {
       reader.mode = 'scoped';

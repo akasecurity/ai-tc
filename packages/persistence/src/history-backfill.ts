@@ -28,10 +28,14 @@ import { DB_FILENAME } from './paths.ts';
  * takes a read to work out (the credential file's) should pass one. It is
  * evaluated here, after the store check and inside this helper's best-effort
  * envelope, so a throw while working it out cannot turn a recorded grant into a
- * reported failure. A throw means `undefined`, every capture, never no seed:
- * marking is not sending, and the drain's own capture read applies the scope in
- * SQL whatever was marked. On a machine with no store the function is never
- * called, so no credential is read for a backlog that does not exist.
+ * reported failure. A throw means `undefined`, every capture, never no seed.
+ * That is safe for SENDING, because marking is not sending and the drain's own
+ * capture read applies the scope in SQL whatever was marked. It is not free for
+ * RETENTION: a scoped attachment's retention holds every body still marked owed
+ * whatever its key, so a fallback to every capture makes it hold the bodies of
+ * repositories it will never forward, for as long as the mark stands. On a
+ * machine with no store the function is never called, so no credential is read
+ * for a backlog that does not exist.
  *
  * BEST-EFFORT and deliberately silent, for the reason
  * `clearAttachmentDerivedState` gives for its own callers: the grant has
@@ -89,12 +93,15 @@ export function seedCaptureBacklogOwed(
  *
  * `undefined` (every capture, as before) on a machine attachment, and whenever
  * the credential cannot be read or there is no connection: the mode lives on the
- * credential, so without it there is nothing to scope by. That is safe rather
- * than merely permissive, because marking is not sending: the drain cannot run
- * without a usable credential, and once it can, its capture read applies the
- * scope in SQL whatever this marked. On a scoped attachment it is the keys
- * enrolled for the connection's endpoint, possibly none, and an empty list marks
- * nothing.
+ * credential, so without it there is nothing to scope by. That is safe for
+ * SENDING rather than merely permissive, because marking is not sending: the
+ * drain cannot run without a usable credential, and once it can, its capture
+ * read applies the scope in SQL whatever this marked. It is not free for
+ * RETENTION: a scoped attachment's retention holds every body still marked owed
+ * whatever its key, so marking every capture before the credential can be read
+ * leaves the bodies of repositories that machine will never forward held. On a
+ * scoped attachment the answer is the keys enrolled for the connection's
+ * endpoint, possibly none, and an empty list marks nothing.
  */
 export function captureBackfillScope(
   read: CredentialFileRead | undefined,

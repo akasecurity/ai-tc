@@ -1308,14 +1308,59 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
 // Plugin-local, so like `synced_at` it stays out of the canonical schema and is
 // created here, idempotently. Tenant-free like the rest of the local store —
 // one row per absolute path.
+//
+// `scope_key` is the repository the file was in when it was last READ: its
+// canonical `host/owner/repo`, or NULL for a file in no repository with a remote
+// and for every row written before the column existed. It is what lets a file
+// that has since been deleted still be attributed to the repository it was in,
+// which the disk can no longer say once a directory has been replaced or reused.
+// A fresh store gets it from the CREATE; a store whose table predates it gains it
+// from the guarded ALTER below.
+//
+// Older builds are unaffected by the column. They INSERT by named column, so
+// theirs stay NULL, and they never read it. What one cannot do is clear it: an
+// older build that re-reads a path leaves the key a newer build recorded for it.
+// That only arises on a machine that runs both, and the newer build rewrites the
+// key at the next read of the file.
 function ensureScanLedgerTable(db: DatabaseSync): void {
   db.exec(`CREATE TABLE IF NOT EXISTS scan_ledger (
     path TEXT PRIMARY KEY,
     mtime TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     ruleset_hash TEXT NOT NULL,
-    scanned_at INTEGER NOT NULL
+    scanned_at INTEGER NOT NULL,
+    scope_key TEXT
   )`);
+  ensureScanLedgerScopeKeyColumn(db);
+}
+
+export const SCAN_LEDGER_SCOPE_KEY_DDL = 'ALTER TABLE scan_ledger ADD COLUMN scope_key TEXT';
+
+/**
+ * Install `scan_ledger.scope_key` if this store's table lacks it.
+ *
+ * Guarded by table_info, which lists an ordinary column, and by the table
+ * itself first, for the reason `ensureSyncedAtColumn` gives. CHECKED TWICE, the
+ * second time under an IMMEDIATE transaction, for the reason
+ * `ensureScopeKeyColumn` gives: every store that predates the column gains it on
+ * its first open after an upgrade, and several hook processes open the store at
+ * once. Two that both saw it absent would both ALTER, and the loser's
+ * `duplicate column name` would fail that hook's whole open.
+ */
+export function ensureScanLedgerScopeKeyColumn(db: DatabaseSync): void {
+  if (!schemaObjectExists(db, 'table', 'scan_ledger')) return;
+  if (hasScanLedgerScopeKey(db)) return;
+  withTransaction(
+    db,
+    () => {
+      if (!hasScanLedgerScopeKey(db)) db.exec(SCAN_LEDGER_SCOPE_KEY_DDL);
+    },
+    'IMMEDIATE',
+  );
+}
+
+function hasScanLedgerScopeKey(db: DatabaseSync): boolean {
+  return columnNames(db, 'scan_ledger').includes('scope_key');
 }
 
 // Bookkeeping for the background drain of already-recorded activity: which

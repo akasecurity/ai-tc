@@ -4,12 +4,17 @@ import { allRows } from '../internal/rows.ts';
 import { failOpenTransaction } from '../internal/transactions.ts';
 
 // One recorded scan of one file: its identity on disk (path), the cheap change
-// signals (mtime, content hash), and the ruleset it was scanned under.
+// signals (mtime, content hash), the ruleset it was scanned under, and the
+// repository it was in when it was read.
 export interface ScanLedgerEntry {
   path: string; // absolute path
   mtime: string; // ISO timestamp at scan time
   contentHash: string;
   rulesetHash: string;
+  // The canonical `host/owner/repo` of the repository the file was in when it
+  // was read. Absent for a file in no repository with a remote, which is stored
+  // as NULL: an entry without one REPLACES the key an earlier read recorded.
+  scopeKey?: string | undefined;
 }
 
 // What the scanner needs to decide "unchanged, skip": the previous mtime (skip
@@ -32,15 +37,17 @@ export class SqliteScanLedgerRepository {
   private readonly upsertStmt: StatementSync;
   private readonly readStmt: StatementSync;
   private readonly pathsStmt: StatementSync;
+  private readonly pathKeysStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.upsertStmt = db.prepare(
-      `INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scanned_at)
-       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scannedAt)
+      `INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scope_key, scanned_at)
+       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scopeKey, :scannedAt)
        ON CONFLICT (path) DO UPDATE SET
          mtime = excluded.mtime,
          content_hash = excluded.content_hash,
          ruleset_hash = excluded.ruleset_hash,
+         scope_key = excluded.scope_key,
          scanned_at = excluded.scanned_at`,
     );
     this.readStmt = db.prepare(
@@ -48,6 +55,7 @@ export class SqliteScanLedgerRepository {
        FROM scan_ledger WHERE ruleset_hash = :rulesetHash`,
     );
     this.pathsStmt = db.prepare(`SELECT path FROM scan_ledger`);
+    this.pathKeysStmt = db.prepare(`SELECT path, scope_key AS scopeKey FROM scan_ledger`);
   }
 
   // Previously scanned files under THIS ruleset, keyed by path. Rows from an
@@ -67,6 +75,15 @@ export class SqliteScanLedgerRepository {
     return allRows<{ path: string }>(this.pathsStmt).map((r) => r.path);
   }
 
+  // Every ledgered path with the repository it was in when it was last read,
+  // whatever ruleset it was scanned under: what a deletion sweep needs to say
+  // which repository a vanished file belonged to. `undefined` for a row with no
+  // key, which is every row written before the column existed.
+  pathKeys(): Map<string, string | undefined> {
+    const rows = allRows<{ path: string; scopeKey: string | null }>(this.pathKeysStmt);
+    return new Map(rows.map((r) => [r.path, r.scopeKey ?? undefined]));
+  }
+
   upsertEntries(entries: ScanLedgerEntry[]): void {
     if (entries.length === 0) return;
     const scannedAt = Date.now();
@@ -79,6 +96,7 @@ export class SqliteScanLedgerRepository {
           mtime: entry.mtime,
           contentHash: entry.contentHash,
           rulesetHash: entry.rulesetHash,
+          scopeKey: entry.scopeKey ?? null,
           scannedAt,
         });
       }

@@ -79,6 +79,58 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
     db2.close();
   });
 
+  describe('the repository a file was in when it was read', () => {
+    const WORK = 'github.com/acme/work';
+
+    it('round-trips the key beside every ledgered path, and leaves allPaths as it was', () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([
+        entry('/repo/a.ts', { scopeKey: WORK }),
+        entry('/repo/b.ts', { rulesetHash: 'ruleset-v2' }),
+      ]);
+
+      // Whatever ruleset the row was written under: the sweep that reads this
+      // looks at every ledgered path.
+      expect(db.scanLedger.pathKeys()).toEqual(
+        new Map<string, string | undefined>([
+          ['/repo/a.ts', WORK],
+          ['/repo/b.ts', undefined],
+        ]),
+      );
+      expect(db.scanLedger.allPaths().sort()).toEqual(['/repo/a.ts', '/repo/b.ts']);
+      db.close();
+    });
+
+    it('writes NULL for an entry with no key, and a re-read replaces the key it had', () => {
+      const db = store.open();
+      db.scanLedger.upsertEntries([entry('/repo/a.ts', { scopeKey: WORK })]);
+      db.scanLedger.upsertEntries([entry('/repo/a.ts', { mtime: '2026-07-02T11:00:00.000Z' })]);
+
+      // The row now describes the file as it was last read: in no repository
+      // with a remote. Keeping the older key would vouch for what is no longer so.
+      expect(db.scanLedger.pathKeys().get('/repo/a.ts')).toBeUndefined();
+      const raw = store.openRaw();
+      expect(raw.prepare('SELECT scope_key FROM scan_ledger').all()).toEqual([{ scope_key: null }]);
+      db.close();
+    });
+
+    it('carries a key across reopen', () => {
+      const db1 = store.open();
+      db1.scanLedger.upsertEntries([entry('/repo/a.ts', { scopeKey: WORK })]);
+      db1.close();
+
+      const db2 = store.open();
+      expect(db2.scanLedger.pathKeys().get('/repo/a.ts')).toBe(WORK);
+      db2.close();
+    });
+
+    it('lists nothing for an empty ledger', () => {
+      const db = store.open();
+      expect(db.scanLedger.pathKeys().size).toBe(0);
+      db.close();
+    });
+  });
+
   it('treats an empty upsert as a no-op', () => {
     const db = store.open();
     db.scanLedger.upsertEntries([]);

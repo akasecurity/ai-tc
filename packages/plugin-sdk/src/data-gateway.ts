@@ -83,11 +83,30 @@ export interface RuleProbeVerdictEntry {
  * `host/owner/repo`, or `undefined` for one with no forge remote. It is empty
  * when the walk passed through none.
  *
- * Local only: the keys decide whether the register may be forwarded, and are
- * never part of what is sent.
+ * `deletedFileKeys` answers the same question for the paths the register lists
+ * as deleted (`reconcile.deletedFiles`), which the scan's deletion sweep takes
+ * from its ledger, not from the walk: a clone that was removed since the last
+ * scan, or one an ignore file now hides, never appears in the walk, yet its
+ * ledgered paths come back as deleted. It returns one entry per deleted path, in
+ * the register's order: the scope key of the repository that path was in, or
+ * `undefined` when that cannot be proven. A path whose parent directory is gone
+ * has no repository left to ask, so it is `undefined`, and one whose directory
+ * still exists is keyed by the repository that directory is in, a clone's own
+ * key included. It is a function so that nothing is read for a gateway that
+ * never asks.
+ *
+ * A project directory that was removed whole therefore leaves the stored rows of
+ * its files in place on the server, because their paths cannot be keyed: an
+ * accuracy gap, never a disclosure.
+ *
+ * Local only, and read only by a gateway that forwards by scope: the keys
+ * decide whether the register, and each deleted path in it, may be forwarded,
+ * and are never part of what is sent. A machine-wide attachment and the
+ * standalone gateway never read either.
  */
 export interface ProjectEgressContext {
   readonly nestedScopeKeys?: readonly (string | undefined)[] | undefined;
+  readonly deletedFileKeys?: (() => readonly (string | undefined)[]) | undefined;
 }
 
 /**
@@ -233,7 +252,8 @@ export interface DataGateway {
   //
   // `context` carries what the scanning code knows and the register does not
   // say: the scope key of every repository nested below the scan root that the
-  // walk passed through (see ProjectEgressContext). Optional, so an
+  // walk passed through, and of the repository each deleted path was in (see
+  // ProjectEgressContext). Optional, so an
   // implementation with no forward to gate may take the register alone and
   // ignore it. A caller that walks a tree passes it every time, empty when
   // nothing is nested, because a gateway that forwards by scope reads its

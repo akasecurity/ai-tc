@@ -776,3 +776,242 @@ describe('scanWorktree — repositories nested in the scanned project', () => {
     expect(nestedKeysOfLastCall()).toEqual(['github.com/me/personal']);
   });
 });
+
+describe('scanWorktree — the scope key of each deleted path', () => {
+  // The sweep lists every ledgered path under the root that is gone from disk,
+  // whichever repository it was in. A removed clone's paths, or those of a clone
+  // an exclude pattern now hides, are not part of this project, and what decides
+  // whether a scoped gateway may send them travels beside the register: one key
+  // per `reconcile.deletedFiles` entry, in the same order.
+  const PERSONAL_URL = 'https://github.com/me/personal.git';
+  const PROJECT_KEY = 'github.com/acme/payments-api';
+  const PERSONAL_KEY = 'github.com/me/personal';
+  const NOTIFY_CALL = "await fetch('https://api.github.com/repos/me/personal/dispatches');\n";
+
+  // A repository whose config names no remote.
+  function remotelessRepo(dir: string): void {
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+  }
+
+  function lastCall(): [RecordProjectEgressInput, ProjectEgressContext | undefined] {
+    const call = recordProjectEgress.mock.calls.at(-1) as
+      [RecordProjectEgressInput, ProjectEgressContext | undefined] | undefined;
+    if (call === undefined) throw new Error('recordProjectEgress was never called');
+    return call;
+  }
+
+  // Each deleted path of the last register with the key the scan supplied for
+  // it. Built by position, so a list out of step with the register fails here.
+  function deletedWithKeys(): { file: string; key: string | undefined }[] {
+    const [input, context] = lastCall();
+    if (input.reconcile.mode !== 'ledger') throw new Error('expected ledger mode');
+    const { deletedFiles } = input.reconcile;
+    const keys = context?.deletedFileKeys?.();
+    if (keys === undefined) throw new Error('the scan supplied no keys for its deleted paths');
+    expect(keys).toHaveLength(deletedFiles.length);
+    return deletedFiles
+      .map((file, at) => ({ file, key: keys[at] }))
+      .sort((a, b) => a.file.localeCompare(b.file));
+  }
+
+  async function scan(config: PluginConfig, excludePatterns?: string[]): Promise<void> {
+    await scanWorktree(config, {
+      rootDir: repo,
+      sourceTool: 'claude-code',
+      ...(excludePatterns === undefined ? {} : { excludePatterns }),
+    });
+  }
+
+  it('gives a removed clone no key: its directory is gone, so nothing can say which repository it was', async () => {
+    gitRepo(join(repo, 'personal-clone'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'personal-clone/top.ts', `${NOTIFY_CALL}// top\n`);
+    write(repo, 'personal-clone/src/notify.ts', `${NOTIFY_CALL}// nested\n`);
+    const config = configWith(true);
+    await scan(config);
+    // The precondition: the clone's files are in the ledger, so the sweep lists
+    // them once the clone is gone.
+    expect(ledgerKeys()).toEqual(
+      expect.arrayContaining(['personal-clone/top.ts', 'personal-clone/src/notify.ts']),
+    );
+
+    rmSync(join(repo, 'personal-clone'), { recursive: true, force: true });
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([
+      { file: 'personal-clone/src/notify.ts', key: undefined },
+      { file: 'personal-clone/top.ts', key: undefined },
+    ]);
+  });
+
+  it("keys a deleted file of a clone that an ignore file now hides by the clone's own remote", async () => {
+    // The clone is still on disk and the walk no longer enters it, so the nested
+    // list is empty and cannot vouch for it. The deleted path is keyed by the
+    // repository it is in.
+    gitRepo(join(repo, 'personal-clone'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'personal-clone/src/a.ts', `${NOTIFY_CALL}// a\n`);
+    write(repo, 'personal-clone/src/b.ts', `${NOTIFY_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+
+    write(repo, '.akaignore', 'personal-clone/\n');
+    rmSync(join(repo, 'personal-clone', 'src', 'a.ts'));
+    await scan(config);
+
+    expect(lastCall()[1]?.nestedScopeKeys).toEqual([]);
+    expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/src/a.ts', key: PERSONAL_KEY }]);
+  });
+
+  it("keys a deleted file of a clone under a directory the walk skips by the clone's own remote", async () => {
+    gitRepo(join(repo, 'vendor', 'lib'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'vendor/lib/x.ts', `${NOTIFY_CALL}// x\n`);
+    write(repo, 'vendor/lib/y.ts', `${NOTIFY_CALL}// y\n`);
+    const config = configWith(true);
+    // Read once with the skipped directory re-included, so the clone's files are
+    // in the ledger; the second run skips it as it does by default.
+    await scan(config, ['!vendor/']);
+    expect(ledgerKeys()).toContain('vendor/lib/x.ts');
+
+    rmSync(join(repo, 'vendor', 'lib', 'x.ts'));
+    await scan(config);
+
+    expect(lastCall()[1]?.nestedScopeKeys).toEqual([]);
+    expect(deletedWithKeys()).toEqual([{ file: 'vendor/lib/x.ts', key: PERSONAL_KEY }]);
+  });
+
+  it("gives a deleted file of a hidden clone with no remote no key, never the project's", async () => {
+    remotelessRepo(join(repo, 'scratch'));
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'scratch/a.ts', `${NOTIFY_CALL}// a\n`);
+    write(repo, 'scratch/b.ts', `${NOTIFY_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+
+    write(repo, '.akaignore', 'scratch/\n');
+    rmSync(join(repo, 'scratch', 'a.ts'));
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([{ file: 'scratch/a.ts', key: undefined }]);
+  });
+
+  it("keys a project file deleted from a directory that still exists by the project's remote", async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+    write(repo, 'top.ts', `${STRIPE_CALL}// top\n`);
+    const config = configWith(true);
+    await scan(config);
+
+    rmSync(join(repo, 'src', 'old.ts'));
+    rmSync(join(repo, 'top.ts'));
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([
+      { file: 'src/old.ts', key: PROJECT_KEY },
+      { file: 'top.ts', key: PROJECT_KEY },
+    ]);
+  });
+
+  it('gives a file of a project directory removed whole no key', async () => {
+    // The accepted cost of keying only what can be proven: the directory is gone,
+    // so its files are not forwarded as deleted. Their stored rows stay until a
+    // later scan of the project reconciles them. Never a key the scan cannot prove.
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/legacy/a.ts', `${STRIPE_CALL}// a\n`);
+    write(repo, 'src/legacy/deep/b.ts', `${STRIPE_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+
+    rmSync(join(repo, 'src', 'legacy'), { recursive: true, force: true });
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([
+      { file: 'src/legacy/a.ts', key: undefined },
+      { file: 'src/legacy/deep/b.ts', key: undefined },
+    ]);
+  });
+
+  it('supplies one key per deleted path, in the order of the register, whichever repository each was in', async () => {
+    gitRepo(join(repo, 'personal-clone'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+    write(repo, 'src/legacy/a.ts', `${STRIPE_CALL}// a\n`);
+    write(repo, 'personal-clone/src/a.ts', `${NOTIFY_CALL}// a\n`);
+    write(repo, 'personal-clone/src/b.ts', `${NOTIFY_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+
+    write(repo, '.akaignore', 'personal-clone/\n');
+    rmSync(join(repo, 'src', 'old.ts'));
+    rmSync(join(repo, 'src', 'legacy'), { recursive: true, force: true });
+    rmSync(join(repo, 'personal-clone', 'src', 'a.ts'));
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([
+      { file: 'personal-clone/src/a.ts', key: PERSONAL_KEY },
+      { file: 'src/legacy/a.ts', key: undefined },
+      { file: 'src/old.ts', key: PROJECT_KEY },
+    ]);
+  });
+
+  it('reads nothing until the gateway asks, and answers from the disk as it is then', async () => {
+    // The standalone gateway and a machine-wide attachment never ask, so a scan
+    // must not read a repository on their behalf. The clone is removed AFTER the
+    // scan returns, and the key read afterwards is the one for a directory that
+    // is gone: nothing was resolved before it was asked for.
+    gitRepo(join(repo, 'personal-clone'), PERSONAL_URL);
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'personal-clone/src/a.ts', `${NOTIFY_CALL}// a\n`);
+    write(repo, 'personal-clone/src/b.ts', `${NOTIFY_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+    write(repo, '.akaignore', 'personal-clone/\n');
+    rmSync(join(repo, 'personal-clone', 'src', 'a.ts'));
+    await scan(config);
+
+    rmSync(join(repo, 'personal-clone'), { recursive: true, force: true });
+
+    expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/src/a.ts', key: undefined }]);
+  });
+
+  it('answers one list, however often it is read', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+    const config = configWith(true);
+    await scan(config);
+    rmSync(join(repo, 'src', 'old.ts'));
+    await scan(config);
+
+    const context = lastCall()[1];
+    const first = context?.deletedFileKeys?.();
+    expect(first).toEqual([PROJECT_KEY]);
+    expect(context?.deletedFileKeys?.()).toBe(first);
+  });
+
+  it("keys a deleted path by the clone's own remote though the resolver once answered for its directory as an ordinary one", async () => {
+    // The resolver remembers each directory it has answered for, for the life of
+    // the process. `personal-clone/src` was asked about while an ordinary
+    // directory of the checkout, so the resolver holds the checkout's key under
+    // that path. The directory then became a clone; a deleted path in it is keyed
+    // by the clone, read now, never by what the resolver remembered.
+    const dir = join(repo, 'personal-clone');
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'personal-clone/src/a.ts', `${NOTIFY_CALL}// a\n`);
+    write(repo, 'personal-clone/src/b.ts', `${NOTIFY_CALL}// b\n`);
+    const config = configWith(true);
+    await scan(config);
+    expect(resolveRepoAttribution(join(dir, 'src')).scopeKey).toBe(PROJECT_KEY);
+    gitRepo(dir, PERSONAL_URL);
+    // The precondition, checked as late as it can be: the resolver still answers
+    // with the checkout's key though the directory now holds a clone. Without it
+    // the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(join(dir, 'src')).scopeKey).toBe(PROJECT_KEY);
+
+    rmSync(join(dir, 'src', 'a.ts'));
+    await scan(config);
+
+    expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/src/a.ts', key: PERSONAL_KEY }]);
+  });
+});

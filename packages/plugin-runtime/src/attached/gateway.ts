@@ -415,6 +415,56 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   }
 
   /**
+   * The register a scoped attachment sends, once the project and the repositories
+   * nested in it are in scope: the register itself, with `reconcile.deletedFiles`
+   * cut to the deleted paths whose own repository is in scope. `undefined` sends
+   * nothing. TOTAL, like `verdictFor`, and for its reasons.
+   *
+   * The deletion sweep takes its paths from the scan ledger, not from the walk,
+   * and the ledger holds every file the scanner ever read under the root, nested
+   * clones' included. So a clone that was removed, or one an ignore file now
+   * hides, is in no walk and never reaches `nestedVerdict`, yet its ledgered
+   * paths come back as deleted. The scan names the repository of each deleted
+   * path (`context.deletedFileKeys`, one entry per path in the register's order)
+   * and each is held to the same verdict as any other key. A path whose key is
+   * absent, or out of scope, is not sent.
+   *
+   * Anything the scan did not vouch for sends no deleted path, and the register
+   * itself still goes: no list, a list that throws, or a list whose length is not
+   * the register's. Deleting is the only thing a dropped path could have done on
+   * the server, so the cost of a refusal is a stored row that stays, never a path
+   * that leaves.
+   *
+   * Machine mode returns `input` itself, the same object and unread, so a machine
+   * attachment's request is exactly what it was. A register that lists no deleted
+   * path, or that is not a ledger register, has nothing to cut and is returned
+   * as it came, with the list unread.
+   */
+  private registerForWire(
+    input: RecordProjectEgressInput,
+    context: ProjectEgressContext | undefined,
+  ): RecordProjectEgressInput | undefined {
+    try {
+      if (this.deps.attachment.mode === 'machine') return input;
+      const { reconcile } = input;
+      if (reconcile.mode !== 'ledger' || reconcile.deletedFiles.length === 0) return input;
+      const deleted = reconcile.deletedFiles;
+      let kept: string[] = [];
+      try {
+        const keys = context?.deletedFileKeys?.();
+        if (keys?.length === deleted.length) {
+          kept = deleted.filter((_path, at) => this.verdictFor(() => keys[at]) === 'forward');
+        }
+      } catch {
+        kept = [];
+      }
+      return { ...input, reconcile: { ...reconcile, deletedFiles: kept } };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * The event `recordCapture` sends for a capture the verdict let through, or
    * `undefined` to send nothing. TOTAL, like `verdictFor`, and for its reasons.
    *
@@ -1012,8 +1062,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * not say: the key of every repository nested below the scan root, whose
    * files the walk folded into this register. On a scoped attachment the
    * register is forwarded only when the project's own key AND every one of
-   * those is in scope (see `nestedVerdict`). Machine mode never reads it, and
-   * the local write never receives it.
+   * those is in scope (see `nestedVerdict`), and its deleted paths are cut to the
+   * ones whose own repository is in scope (`context.deletedFileKeys`, see
+   * `registerForWire`). Machine mode never reads either, and the local write
+   * never receives the context and gets the register whole.
    */
   async recordProjectEgress(
     input: RecordProjectEgressInput,
@@ -1029,8 +1081,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // Then every repository nested in it. Decided after the project's own key,
     // so a project already out of scope is refused without reading the list.
     if (this.nestedVerdict(context) === 'local') return summary;
+    // Last, once the register is known to be sendable at all: which of its
+    // deleted paths are.
+    const register = this.registerForWire(input, context);
+    if (register === undefined) return summary;
     await this.deps.forward.run(() =>
-      this.deps.client.recordProjectEgress(toEgressIngestRequest(input)),
+      this.deps.client.recordProjectEgress(toEgressIngestRequest(register)),
     );
     return summary;
   }

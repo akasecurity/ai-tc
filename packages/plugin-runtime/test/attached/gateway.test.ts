@@ -2735,6 +2735,215 @@ describe('recordProjectEgress holds a register to every repository nested in it'
   );
 });
 
+// ── deleted paths of a register ─────────────────────────────────────────────
+
+describe('recordProjectEgress sends a deleted path only when its repository is in scope', () => {
+  // The scan's deletion sweep lists every ledgered path under its root that is
+  // gone, whichever repository it was in, and the register carries them under
+  // the scanned project's key. The scan says which repository each was in
+  // (`deletedFileKeys`); a scoped attachment sends the ones in scope.
+  const SHARED = 'github.com/org/shared-lib';
+  const SCOPED_WITH_SHARED: ResolvedAttachmentScope = {
+    mode: 'scoped',
+    keys: new Set<string>([IN, SHARED]),
+  };
+  const ENROLLED = 'git:https://github.com/org/api.git';
+  const DELETED = ['src/old.ts', 'personal-clone/a.ts', 'personal-clone/src/b.ts', 'lib/gone.ts'];
+  const ledgerRegister = (deletedFiles: readonly string[] = DELETED): RecordProjectEgressInput => ({
+    ...egressInput(),
+    projectKey: ENROLLED,
+    reconcile: { mode: 'ledger', scannedFiles: ['src/new.ts'], deletedFiles: [...deletedFiles] },
+  });
+  const LOCAL_SUMMARY = {
+    destinations: 1,
+    endpoints: 2,
+    callSites: 3,
+    truncated: false,
+    droppedFiles: [],
+  };
+
+  // The request the client was handed, if any, and what every fake saw.
+  const run = async (
+    attachment: ResolvedAttachmentScope,
+    input: RecordProjectEgressInput,
+    context?: ProjectEgressContext,
+  ) => {
+    const recordProjectEgress = vi.fn<AttachedClient['recordProjectEgress']>(() =>
+      Promise.resolve({}),
+    );
+    const localWrite = vi.fn<DataGateway['recordProjectEgress']>(() =>
+      Promise.resolve(LOCAL_SUMMARY),
+    );
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const { gateway } = build({
+      attachment,
+      client: makeClient(calls, { recordProjectEgress }),
+      local: makeLocal(calls, { recordProjectEgress: localWrite }),
+    });
+    const summary = await gateway.recordProjectEgress(input, context);
+    const request = recordProjectEgress.mock.calls[0]?.[0];
+    return { summary, request, forwards: recordProjectEgress.mock.calls.length, localWrite };
+  };
+  type Request = Parameters<AttachedClient['recordProjectEgress']>[0];
+  const deletedOf = (request: Request | undefined): readonly string[] => {
+    const reconcile = request?.reconcile;
+    if (reconcile?.mode !== 'ledger') throw new Error('expected a ledger-mode request');
+    return reconcile.deletedFiles;
+  };
+
+  it('forwards only the deleted paths whose key is in scope, in the register order', async () => {
+    const keys = [IN, OUT, undefined, SHARED];
+    const { request, summary } = await run(SCOPED_WITH_SHARED, ledgerRegister(), {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => keys,
+    });
+    expect(deletedOf(request)).toEqual(['src/old.ts', 'lib/gone.ts']);
+    expect(summary).toEqual(LOCAL_SUMMARY);
+  });
+
+  it('keeps everything else of the register as it was: the scanned files, the hits, the key', async () => {
+    const withKeys = await run(SCOPED, ledgerRegister(), {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => [IN, IN, IN, IN],
+    });
+    // Every path in scope: the request is the one a register with no filtering
+    // would send, so only the deleted list can differ when some are held back.
+    const held = await run(SCOPED, ledgerRegister(), {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => [IN, OUT, OUT, IN],
+    });
+    expect(deletedOf(withKeys.request)).toEqual(DELETED);
+    expect(deletedOf(held.request)).toEqual(['src/old.ts', 'lib/gone.ts']);
+    expect({ ...held.request, reconcile: undefined }).toEqual({
+      ...withKeys.request,
+      reconcile: undefined,
+    });
+    expect(held.request).toMatchObject({
+      reconcile: { mode: 'ledger', scannedFiles: ['src/new.ts'] },
+    });
+  });
+
+  it.each([
+    ['a remote that is not enrolled', OUT],
+    ['no remote at all', undefined],
+    ['an empty key', ''],
+  ] as const)('holds back a deleted path with %s', async (_label, key) => {
+    const { request } = await run(SCOPED, ledgerRegister(['gone.ts']), {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => [key],
+    });
+    expect(deletedOf(request)).toEqual([]);
+  });
+
+  it('forwards the register itself when every deleted path is held back', async () => {
+    const { forwards, request } = await run(SCOPED, ledgerRegister(), {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => [OUT, OUT, undefined, OUT],
+    });
+    expect(forwards).toBe(1);
+    expect(deletedOf(request)).toEqual([]);
+  });
+
+  it.each([
+    ['no list of keys', undefined],
+    [
+      'a list that cannot be read',
+      () => {
+        throw new Error('deleted keys unreadable');
+      },
+    ],
+    ['a list shorter than the deleted paths', () => [IN, IN, IN]],
+    ['a list longer than the deleted paths', () => [IN, IN, IN, IN, IN]],
+  ] as const)('forwards no deleted path, but the register, with %s', async (_label, getter) => {
+    const { forwards, request, summary } = await run(SCOPED, ledgerRegister(), {
+      nestedScopeKeys: [],
+      deletedFileKeys: getter,
+    });
+    expect(forwards).toBe(1);
+    expect(deletedOf(request)).toEqual([]);
+    expect(request).toMatchObject({ reconcile: { scannedFiles: ['src/new.ts'] } });
+    expect(summary).toEqual(LOCAL_SUMMARY);
+  });
+
+  it('never reads the deleted keys when no path was deleted, or for a register that lists none', async () => {
+    let reads = 0;
+    const counted: ProjectEgressContext = {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => {
+        reads += 1;
+        return [];
+      },
+    };
+    const none = await run(SCOPED, ledgerRegister([]), counted);
+    expect(none.forwards).toBe(1);
+    expect(deletedOf(none.request)).toEqual([]);
+    const walk = await run(SCOPED, { ...egressInput(), projectKey: ENROLLED }, counted);
+    expect(walk.forwards).toBe(1);
+    expect(walk.request).toMatchObject({ reconcile: { mode: 'walk', walkedPrefix: '/repo' } });
+    expect(reads).toBe(0);
+  });
+
+  it('never reads the deleted keys of a register it keeps local', async () => {
+    let reads = 0;
+    const counted = (nestedScopeKeys: readonly (string | undefined)[]): ProjectEgressContext => ({
+      nestedScopeKeys,
+      deletedFileKeys: () => {
+        reads += 1;
+        return [IN, IN, IN, IN];
+      },
+    });
+    // The project's own key is out of scope.
+    const personal = await run(
+      SCOPED,
+      { ...ledgerRegister(), projectKey: 'git:https://github.com/me/personal.git' },
+      counted([]),
+    );
+    // A repository nested in the project is out of scope.
+    const nested = await run(SCOPED, ledgerRegister(), counted([OUT]));
+    expect(personal.forwards).toBe(0);
+    expect(nested.forwards).toBe(0);
+    expect(reads).toBe(0);
+  });
+
+  it('writes every deleted path to the local store, and leaves the scan its own register untouched', async () => {
+    const input = ledgerRegister();
+    const before = structuredClone(input);
+    const { localWrite } = await run(SCOPED, input, {
+      nestedScopeKeys: [],
+      deletedFileKeys: () => [IN, OUT, undefined, IN],
+    });
+    expect(localWrite.mock.calls).toHaveLength(1);
+    const args: readonly unknown[] = localWrite.mock.calls[0] ?? [];
+    expect(args).toEqual([before]);
+    // The scanner goes on to read the register it handed over.
+    expect(input).toEqual(before);
+  });
+
+  it('forwards a machine attachment its register unchanged, and never reads the deleted keys', async () => {
+    let reads = 0;
+    const counted: ProjectEgressContext = {
+      nestedScopeKeys: [OUT, undefined],
+      deletedFileKeys: () => {
+        reads += 1;
+        return [OUT, OUT, OUT, OUT];
+      },
+    };
+    const unreadable: ProjectEgressContext = {
+      get deletedFileKeys(): () => readonly string[] {
+        throw new Error('a machine attachment must not read this');
+      },
+    };
+    const plain = await run(MACHINE, ledgerRegister());
+    const withCounted = await run(MACHINE, ledgerRegister(), counted);
+    const withUnreadable = await run(MACHINE, ledgerRegister(), unreadable);
+
+    expect(deletedOf(plain.request)).toEqual(DELETED);
+    expect(JSON.stringify(withCounted.request)).toBe(JSON.stringify(plain.request));
+    expect(JSON.stringify(withUnreadable.request)).toBe(JSON.stringify(plain.request));
+    expect(reads).toBe(0);
+  });
+});
+
 describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('returns the local bundle untouched when the tenant cache is cold', async () => {
     const { gateway } = build({ readCachedBundle: () => Promise.resolve(null) });

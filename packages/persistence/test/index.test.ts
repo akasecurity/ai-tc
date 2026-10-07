@@ -91,6 +91,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'defaultDataDir',
   'deriveSubkeys',
   'describeStoreSkew',
+  'enrollableRepoKey',
   'ensureDataDir',
   'ensureDataDirSync',
   'ensureLayoutDirSync',

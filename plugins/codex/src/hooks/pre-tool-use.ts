@@ -99,8 +99,8 @@ async function main(): Promise<void> {
   // apply_patch gets NO key. It is recorded whole (persist 'always') and names
   // its files inside the patch body (`tool_input.command`), which this hook does
   // not parse, so the cwd's key could name a checkout the patch never wrote. A
-  // scoped attachment is meant to keep a keyless capture local, so no key is a
-  // coverage gap and never a leak; that check is not part of this change.
+  // scoped attachment keeps a keyless capture local (the gateway's verdict), so
+  // no key is a coverage gap and never a leak.
   // Same rule as Copilot's apply_patch. Beside the metadata, never inside it.
   const scopeKey = toolName === 'apply_patch' ? undefined : captureScopeKey(input);
 

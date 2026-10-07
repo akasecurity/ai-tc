@@ -1321,7 +1321,8 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
 // what lets a scan tell a file that has moved to a repository inside the recorded
 // one from a file whose recorded repository has lost its `.git` and now climbs to
 // one around it: the first moves the row, the second does not. The scanner's
-// `scanDir` states the rule and lists the rows a scan never refreshes.
+// `repositoryToRecord` (in its `scan.ts`) states the rule and lists the rows a
+// scan never refreshes.
 //
 // A fresh store gets both from the CREATE; a store whose table predates either
 // gains it from its own guarded ALTER below. Each column is checked on its own,

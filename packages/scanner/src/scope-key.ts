@@ -37,7 +37,10 @@
 // For a nested repository that is the directory holding its `.git`. For a file
 // that climbs to the scan root it is the directory holding the nearest `.git` at
 // or above the scan root, found once per scan with the same existence test, or
-// none when there is no `.git` on the way up to the filesystem root.
+// none when there is no `.git` on the way up to the filesystem root. The key of
+// either is read from that directory, and the answer is kept only if its `.git` is
+// still there after the read: with it gone the resolver would have climbed, and
+// the answer is neither a root nor a key (see `confirmed`).
 //
 // That per-scan memory is the only one this file trusts. Every call to
 // resolveRepoAttribution here passes `{ cache: false }`, so nothing in this file
@@ -120,6 +123,22 @@ export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
     return aboveBase.root;
   };
 
+  // A key read from `root`, kept only if the `.git` it was read under is still
+  // there. The check that a directory holds a `.git` and the resolver's read of
+  // its key are two reads of the disk, and the resolver climbs when `root` has no
+  // `.git`: one removed between them (the last rmdir of a removal) would pair the
+  // key of the repository AROUND `root` with `root` itself, and a row recorded
+  // that way would take the enclosing repository's key under the clone's own
+  // directory. So the answer stands only if the `.git` is still there afterwards,
+  // and is neither a root nor a key when it is not: a row that has a recorded
+  // repository then keeps it, and one that has none records nothing, to be filled
+  // by a later scan. What this cannot see is a `.git` removed AND recreated
+  // between the two checks, where the read in between has climbed past the missing
+  // `.git` and the recreated one passes the second check. The same residual
+  // `ofRepositoryRoot` has.
+  const confirmed = (root: string, key: string | undefined): FileRepository =>
+    existsSync(join(root, '.git')) ? { root, key } : { root: undefined, key: undefined };
+
   // Posix directory relative to the root ('.' is the root itself) to the
   // repository of its nearest repository root. An entry exists once the
   // directory has been climbed through, so a keyless directory is not probed
@@ -138,20 +157,24 @@ export function scopeKeysUnder(rootDir: string): ScopeKeyLookup {
       climbed.push(dir);
       const parent = posix.dirname(dir);
       // A walked file's relative path climbs to '.', the scan root, which is
-      // its own parent. The root's `.git`, and any above it, are the
-      // resolver's to find: it walks up from the root itself.
+      // its own parent. The root's `.git`, and any above it, are found by
+      // climbing from the root itself (`rootAtOrAboveBase`).
       if (parent === dir) {
-        found = {
-          root: rootAtOrAboveBase(),
-          key: resolveRepoAttribution(base, { cache: false }).scopeKey,
-        };
+        const root = rootAtOrAboveBase();
+        // The key is read from the root the climb found, which is the repository
+        // the resolver's own climb from `base` reaches, so the two cannot name
+        // different repositories. With no root there is none to read.
+        found =
+          root === undefined
+            ? { root, key: resolveRepoAttribution(base, { cache: false }).scopeKey }
+            : confirmed(root, resolveRepoAttribution(root, { cache: false }).scopeKey);
         break;
       }
       // A nested repository root. The climb starts at the file, so the first
       // one met is the deepest.
       if (existsSync(join(base, dir, '.git'))) {
         const root = join(base, dir);
-        found = { root, key: resolveRepoAttribution(root, { cache: false }).scopeKey };
+        found = confirmed(root, resolveRepoAttribution(root, { cache: false }).scopeKey);
         break;
       }
       dir = parent;

@@ -354,17 +354,25 @@ async function sweepDeletedFiles(
 //     only for a file the walks reach. A row for a file under a skipped
 //     directory, behind an ignore file, inside a hidden clone or over the size
 //     cap is never refreshed, whatever its repository does.
-//   (a) A file whose repository lost its `.git` keeps that repository's key for
-//       good, so on a scoped attachment its deletion is never sent, even after the
-//       enclosing project adopts the file. That is the safe direction.
+//   (a) A file whose repository lost its `.git` keeps that repository's key until
+//       a scan records its row from the disk again (see (c)). Until then, on a
+//       scoped attachment its deletion is never sent, even after the enclosing
+//       project adopts the file. That is the safe direction.
 //   (b) A file READ while its repository's `.git` is missing is captured, and its
 //       Data Shares entries are registered, under the repository around it, in
 //       that scan: the capture lookup and the register read the disk as it is,
 //       though the ledger row keeps the earlier repository.
-//   (c) The one scan that fills a row trusts the disk as it is then. That is a
-//       row written before roots were kept, and also every row under a ruleset
-//       the ledger has not scanned yet (a rule pack changed, or Data Shares
-//       switched on or off), because `prev` holds only the current ruleset's rows.
+//   (c) Case 1 applies, and the scan trusts the disk as it is then, whenever the
+//       path's row has no root. That is a row written before roots were kept,
+//       which is filled without reading the file. It is also every path whose row
+//       was last written under a DIFFERENT ruleset hash, because `prev` holds only
+//       the current ruleset's rows: a rule pack change; Data Shares turned off
+//       and on again (a scan without a register writes the row with no key or
+//       root); a ruleset that could not be resolved, whose one-off hash costs two
+//       such scans; and two builds that share one store. A scan under a different
+//       ruleset READS every one of those files, so they are in that scan's
+//       register anyway (see (b)), and the ledger record adds no exposure beyond
+//       what that register already carries.
 //   (d) A file replaced AND deleted between two scans is attributed by the
 //       repository it was last recorded under: no scan saw the replacement.
 function repositoryToRecord(

@@ -1,3 +1,4 @@
+import type * as NodeFs from 'node:fs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,6 +6,25 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scopeKeysUnder } from '../src/scope-key.ts';
+
+// A removal that lands between two reads. While `armed` names a path, the first
+// `existsSync` that finds it removes it from disk straight after answering true,
+// as the last rmdir of a removal does between a lookup's check and its read.
+const race = vi.hoisted(() => ({ armed: undefined as string | undefined, fired: 0 }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  const existsSync = (path: NodeFs.PathLike): boolean => {
+    const exists = actual.existsSync(path);
+    if (exists && race.armed !== undefined && String(path) === race.armed) {
+      race.armed = undefined;
+      race.fired++;
+      actual.rmSync(String(path), { recursive: true, force: true });
+    }
+    return exists;
+  };
+  return { ...actual, default: { ...actual, existsSync }, existsSync };
+});
 
 // The userinfo in an scp-form remote reads as an email address to a scanner,
 // so the fixture builds it from parts.
@@ -17,6 +37,8 @@ const gitUser = `git${AT}`;
 describe('scopeKeysUnder', () => {
   let tmp: string;
   beforeEach(() => {
+    race.armed = undefined;
+    race.fired = 0;
     tmp = mkdtempSync(join(tmpdir(), 'aka-scope-key-'));
   });
   afterEach(() => {
@@ -115,6 +137,68 @@ describe('scopeKeysUnder', () => {
       expect(scopeKeysUnder(tmp).repositoryOf('clone/src/a.ts')).toEqual({
         root: tmp,
         key: 'github.com/acme/work',
+      });
+    });
+  });
+
+  describe('a `.git` removed after the lookup checked it, before the resolver read it', () => {
+    // The check that a directory is a repository and the read of its key are two
+    // reads of the disk. With the `.git` gone between them the resolver climbs, and
+    // would answer with the key of the repository AROUND the directory while the
+    // lookup still reported the directory as the root. The answer for such a
+    // directory is neither root nor key.
+    const gitRepo = (dir: string, remote: string): void => {
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        `[remote "origin"]\n\turl = ${gitUser}github.com:${remote}.git\n`,
+      );
+    };
+
+    it('answers a nested repository with neither a root nor a key, never the clone with the project key', () => {
+      gitRepo(tmp, 'acme/work');
+      gitRepo(join(tmp, 'clone'), 'me/personal');
+      mkdirSync(join(tmp, 'clone', 'src'), { recursive: true });
+      const lookup = scopeKeysUnder(tmp);
+      race.armed = join(tmp, 'clone', '.git');
+
+      expect(lookup.repositoryOf('clone/src/a.ts')).toEqual({ root: undefined, key: undefined });
+      // Without this the case passes on a lookup that never checked.
+      expect(race.fired).toBe(1);
+      // The answer is kept for the directories it climbed through.
+      expect(lookup.repositoryOf('clone/src/b.ts')).toEqual({ root: undefined, key: undefined });
+      expect(lookup('clone/src/b.ts')).toBeUndefined();
+    });
+
+    it("answers a scan rooted at a clone inside a project with neither, never the clone's directory with the project's key", () => {
+      gitRepo(tmp, 'acme/work');
+      gitRepo(join(tmp, 'clone'), 'me/personal');
+      mkdirSync(join(tmp, 'clone', 'src'), { recursive: true });
+      const lookup = scopeKeysUnder(join(tmp, 'clone'));
+      race.armed = join(tmp, 'clone', '.git');
+
+      expect(lookup.repositoryOf('src/a.ts')).toEqual({ root: undefined, key: undefined });
+      expect(race.fired).toBe(1);
+    });
+
+    it('answers a scan root that is itself a repository with neither', () => {
+      gitRepo(tmp, 'acme/work');
+      mkdirSync(join(tmp, 'src'), { recursive: true });
+      const lookup = scopeKeysUnder(tmp);
+      race.armed = join(tmp, '.git');
+
+      expect(lookup.repositoryOf('src/a.ts')).toEqual({ root: undefined, key: undefined });
+      expect(race.fired).toBe(1);
+    });
+
+    it('still answers a repository whose `.git` stays', () => {
+      gitRepo(tmp, 'acme/work');
+      gitRepo(join(tmp, 'clone'), 'me/personal');
+      mkdirSync(join(tmp, 'clone', 'src'), { recursive: true });
+
+      expect(scopeKeysUnder(tmp).repositoryOf('clone/src/a.ts')).toEqual({
+        root: join(tmp, 'clone'),
+        key: 'github.com/me/personal',
       });
     });
   });

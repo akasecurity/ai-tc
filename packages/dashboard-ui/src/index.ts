@@ -150,6 +150,7 @@ export {
   PolicyTag,
   PublisherTag,
   TonePill,
+  UnassignedPolicyTag,
   UpdateBadge,
 } from './detections/atoms.tsx';
 export { DetectionDetailView } from './detections/DetectionDetailView.tsx';
@@ -168,6 +169,8 @@ export {
   type ProvenanceState,
   provenanceState,
   PUBLISHER_META,
+  type UnassignedPolicy,
+  unassignedPolicyMeta,
 } from './detections/meta.ts';
 export {
   DETECTION_STAYS_ON_REASON,
@@ -176,9 +179,10 @@ export {
   isDisableRefused,
   isPolicyGoverned,
   policyFloorReason,
+  unassignedPolicyFor,
   unavailableUnderFloor,
 } from './detections/policy-floor.ts';
-export { PolicyPicker } from './detections/PolicyPicker.tsx';
+export { PolicyPicker, type UnassignedPolicyOption } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
 export { MatcherModal, type RuleFixtures, RuleInspectorBody } from './detections/RuleInspector.tsx';
 export { UpdateModal } from './detections/UpdateModal.tsx';

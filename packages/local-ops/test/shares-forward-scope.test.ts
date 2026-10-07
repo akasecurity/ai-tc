@@ -27,6 +27,12 @@ import { forwardProjectEgress } from '../src/shares-forward.ts';
 // differs from its machine-wide twin in the mode alone, and a red here is the
 // verdict's rather than the file reader's. How the reader treats a v2 file on
 // disk is pinned in @akasecurity/persistence's credential suite.
+//
+// EVERY CASE ABOUT THE PROJECT'S OWN VERDICT PASSES `nestedRepositories: []`.
+// On a scoped attachment an absent list already keeps the register local, so a
+// refusal case that left it out would read `not-enrolled` whatever the project
+// verdict said, and could not fail. The empty list says the walk found nothing
+// nested, which leaves the project's key as the only thing that can refuse.
 const reader = vi.hoisted(() => ({ scoped: false }));
 
 vi.mock('@akasecurity/persistence', async (importActual) => {
@@ -167,7 +173,7 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     const outcome = await forwardProjectEgress(
       home,
       input('git:https://github.com/someone/side-project.git'),
-      { send: transport.send },
+      { send: transport.send, nestedRepositories: [] },
     );
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
@@ -184,7 +190,10 @@ describe('forwardProjectEgress — a scoped attachment', () => {
       attach(enrolled(WORK_REPO));
       const transport = recorder();
 
-      const outcome = await forwardProjectEgress(home, input(projectKey), { send: transport.send });
+      const outcome = await forwardProjectEgress(home, input(projectKey), {
+        send: transport.send,
+        nestedRepositories: [],
+      });
 
       expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
       expect(transport.sent).toHaveLength(0);
@@ -200,7 +209,7 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     const outcome = await forwardProjectEgress(
       home,
       input('git:https://github.com/acme/payments-api.git'),
-      { send: transport.send },
+      { send: transport.send, nestedRepositories: [] },
     );
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
@@ -217,7 +226,7 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     const outcome = await forwardProjectEgress(
       home,
       input('git:https://github.com/acme/payments-api.git'),
-      { send: transport.send },
+      { send: transport.send, nestedRepositories: [] },
     );
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
@@ -232,7 +241,7 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     const outcome = await forwardProjectEgress(
       home,
       input('git:https://github.com/acme/payments-api.git'),
-      { send: transport.send },
+      { send: transport.send, nestedRepositories: [] },
     );
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
@@ -247,7 +256,10 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     attach(enrolled(WORK_REPO));
     const transport = recorder();
 
-    const outcome = await forwardProjectEgress(home, unreadableKey(), { send: transport.send });
+    const outcome = await forwardProjectEgress(home, unreadableKey(), {
+      send: transport.send,
+      nestedRepositories: [],
+    });
 
     expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
     expect(transport.sent).toHaveLength(0);

@@ -429,9 +429,13 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * and each is held to the same verdict as any other key. A path whose key is
    * absent, or out of scope, is not sent.
    *
+   * The list is asked for here, and only here: it is an async read of the scan
+   * ledger that the scan makes on being called, so a machine attachment, which
+   * returns before this, and a register already kept local never cause it.
+   *
    * Anything the scan did not vouch for sends no deleted path, and the register
-   * itself still goes: no list, a list that throws, or a list whose length is not
-   * the register's. Deleting is the only thing a dropped path could have done on
+   * itself still goes: no list, a list that throws or whose read is rejected, or a
+   * list whose length is not the register's. Deleting is the only thing a dropped path could have done on
    * the server, so the cost of a refusal is a stored row that stays, never a path
    * that leaves.
    *
@@ -440,10 +444,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * path, or that is not a ledger register, has nothing to cut and is returned
    * as it came, with the list unread.
    */
-  private registerForWire(
+  private async registerForWire(
     input: RecordProjectEgressInput,
     context: ProjectEgressContext | undefined,
-  ): RecordProjectEgressInput | undefined {
+  ): Promise<RecordProjectEgressInput | undefined> {
     try {
       if (this.deps.attachment.mode === 'machine') return input;
       const { reconcile } = input;
@@ -451,7 +455,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       const deleted = reconcile.deletedFiles;
       let kept: string[] = [];
       try {
-        const keys = context?.deletedFileKeys?.();
+        const keys = await context?.deletedFileKeys?.();
         if (keys?.length === deleted.length) {
           kept = deleted.filter((_path, at) => this.verdictFor(() => keys[at]) === 'forward');
         }
@@ -1083,7 +1087,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     if (this.nestedVerdict(context) === 'local') return summary;
     // Last, once the register is known to be sendable at all: which of its
     // deleted paths are.
-    const register = this.registerForWire(input, context);
+    const register = await this.registerForWire(input, context);
     if (register === undefined) return summary;
     await this.deps.forward.run(() =>
       this.deps.client.recordProjectEgress(toEgressIngestRequest(register)),

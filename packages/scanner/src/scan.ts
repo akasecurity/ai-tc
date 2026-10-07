@@ -510,7 +510,6 @@ async function scanDir(
   if (egress) scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
-  let recordedKeys: ReadonlyMap<string, string | undefined> = NO_RECORDED_KEYS;
   if (egress) {
     for (const path of deleted) {
       const key = egressKey(egress.project.root, path);
@@ -518,14 +517,13 @@ async function scanDir(
       egress.deletedFiles.push(key);
       egress.deletedPaths.push(path);
     }
-    if (egress.deletedPaths.length > 0) recordedKeys = await readRecordedKeys(gateway);
   }
 
   // Egress commits BEFORE the ledger. If the write fails the ledger batch is
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
-  const committed = await commitEgress(gateway, egress, scopeKeyOf, recordedKeys);
+  const committed = await commitEgress(gateway, egress, scopeKeyOf);
   if (committed === null) {
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
@@ -632,7 +630,6 @@ async function commitEgress(
   gateway: DataGateway,
   egress: EgressAccumulator | null,
   scopeKeyOf: ScopeKeyLookup,
-  recordedKeys: ReadonlyMap<string, string | undefined>,
 ): Promise<ReadonlySet<string> | null> {
   if (!egress) return EMPTY_DROPPED;
   const { project, files, scannedFiles, deletedFiles, deletedPaths, nestedRoots } = egress;
@@ -643,7 +640,7 @@ async function commitEgress(
   // Filled on the first read of `nestedScopeKeys` / `deletedFileKeys` below, and
   // only then.
   let nestedKeys: readonly (string | undefined)[] | undefined;
-  let deletedKeys: readonly (string | undefined)[] | undefined;
+  let deletedKeys: Promise<readonly (string | undefined)[]> | undefined;
   try {
     const summary = await gateway.recordProjectEgress(
       {
@@ -676,9 +673,14 @@ async function commitEgress(
         },
         // One key per entry of `reconcile.deletedFiles`, in its order: what the
         // ledger recorded when the path was last read, and none for a row that
-        // recorded none. Memoized like the list above.
+        // recorded none. ASYNC and lazy, because the read of every row's key is a
+        // read of the whole ledger: only a gateway that forwards by scope asks, and
+        // only once it has found the register sendable at all, so the standalone
+        // gateway and a machine-wide attachment never cause it. Memoized, so a
+        // gateway that asks twice reads once. A scan that deleted nothing has no
+        // keys to look up and reads nothing.
         deletedFileKeys: () => {
-          deletedKeys ??= deletedPaths.map((path) => recordedKeys.get(path));
+          deletedKeys ??= keysOfDeleted(gateway, deletedPaths);
           return deletedKeys;
         },
       },
@@ -691,7 +693,8 @@ async function commitEgress(
 
 // The key of the repository each ledgered path was in when it was last READ,
 // which is how a deleted path is attributed: the ledger recorded it then (see
-// scanDir), and it is read back here once per scan that has a deleted path.
+// scanDir), and it is read back through `keysOfDeleted`, once, when a gateway
+// asks for the keys of the paths a register deletes (see commitEgress).
 //
 // It is the record, never the disk as it is now, that says. The ledger never
 // forgets a path, so a path deleted long ago is listed again by every later
@@ -714,6 +717,15 @@ async function commitEgress(
 //
 // The gateway's method is optional, and a read that throws gives no keys: a
 // missing answer sends fewer paths, never more.
+async function keysOfDeleted(
+  gateway: DataGateway,
+  deletedPaths: readonly string[],
+): Promise<readonly (string | undefined)[]> {
+  if (deletedPaths.length === 0) return [];
+  const recorded = await readRecordedKeys(gateway);
+  return deletedPaths.map((path) => recorded.get(path));
+}
+
 async function readRecordedKeys(
   gateway: DataGateway,
 ): Promise<ReadonlyMap<string, string | undefined>> {

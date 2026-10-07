@@ -99,8 +99,12 @@ export interface RuleProbeVerdictEntry {
  * scan, or one an ignore file now hides, never appears in the walk, yet its
  * ledgered paths come back as deleted. It returns one entry per deleted path, in
  * the register's order: the scope key of the repository that path was in, or
- * `undefined` when that cannot be said. It is a function so that the register
- * and the keys travel as one value, and a gateway that never asks reads nothing.
+ * `undefined` when that cannot be said. It is an async function, because the
+ * keys come from a read of the scan ledger, and that read is made only when it is
+ * called: a gateway that forwards by scope asks once the register is sendable at
+ * all, and a gateway that never asks, the standalone one or a machine-wide
+ * attachment, causes no read. The answer is the same list however often it is
+ * asked for.
  *
  * A deleted path is keyed by the repository it was in when it was LAST READ,
  * which the scan ledger recorded then (`DataGateway.scanLedgerPathKeys`). The
@@ -124,7 +128,7 @@ export interface RuleProbeVerdictEntry {
  */
 export interface ProjectEgressContext {
   readonly nestedScopeKeys?: readonly (string | undefined)[] | undefined;
-  readonly deletedFileKeys?: (() => readonly (string | undefined)[]) | undefined;
+  readonly deletedFileKeys?: (() => Promise<readonly (string | undefined)[]>) | undefined;
 }
 
 /**

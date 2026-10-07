@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { DB_FILENAME } from '@akasecurity/persistence';
+import type { DataGateway } from '@akasecurity/plugin-sdk';
 import type { RecordProjectEgressInput, ResolvedEgressHit } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -61,6 +62,29 @@ function input(hits: ResolvedEgressHit[]): RecordProjectEgressInput {
 }
 
 describe('StandaloneDataGateway.recordProjectEgress', () => {
+  it('ignores what the scan knows beside the register: the deleted keys are never read', async () => {
+    // Held as the port, which takes a second argument the class does not name.
+    const gw: DataGateway = new StandaloneDataGateway(dir);
+    let reads = 0;
+
+    await gw.recordProjectEgress(
+      {
+        ...input([hit()]),
+        reconcile: { mode: 'ledger', scannedFiles: ['src/pay.ts'], deletedFiles: ['src/old.ts'] },
+      },
+      {
+        nestedScopeKeys: [],
+        deletedFileKeys: () => {
+          reads += 1;
+          return Promise.resolve([undefined]);
+        },
+      },
+    );
+    await gw.close();
+
+    expect(reads).toBe(0);
+  });
+
   it('writes destinations, endpoints and call sites for one hit', async () => {
     const gw = new StandaloneDataGateway(dir);
     await gw.recordProjectEgress(input([hit()]));

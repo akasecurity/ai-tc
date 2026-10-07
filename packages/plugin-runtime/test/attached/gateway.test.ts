@@ -2830,7 +2830,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
     const keys = [IN, OUT, undefined, SHARED];
     const { request, summary } = await run(SCOPED_WITH_SHARED, ledgerRegister(), {
       nestedScopeKeys: [],
-      deletedFileKeys: () => keys,
+      deletedFileKeys: () => Promise.resolve(keys),
     });
     expect(deletedOf(request)).toEqual(['src/old.ts', 'lib/gone.ts']);
     expect(summary).toEqual(LOCAL_SUMMARY);
@@ -2839,13 +2839,13 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
   it('keeps everything else of the register as it was: the scanned files, the hits, the key', async () => {
     const withKeys = await run(SCOPED, ledgerRegister(), {
       nestedScopeKeys: [],
-      deletedFileKeys: () => [IN, IN, IN, IN],
+      deletedFileKeys: () => Promise.resolve([IN, IN, IN, IN]),
     });
     // Every path in scope: the request is the one a register with no filtering
     // would send, so only the deleted list can differ when some are held back.
     const held = await run(SCOPED, ledgerRegister(), {
       nestedScopeKeys: [],
-      deletedFileKeys: () => [IN, OUT, OUT, IN],
+      deletedFileKeys: () => Promise.resolve([IN, OUT, OUT, IN]),
     });
     expect(deletedOf(withKeys.request)).toEqual(DELETED);
     expect(deletedOf(held.request)).toEqual(['src/old.ts', 'lib/gone.ts']);
@@ -2865,7 +2865,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
   ] as const)('holds back a deleted path with %s', async (_label, key) => {
     const { request } = await run(SCOPED, ledgerRegister(['gone.ts']), {
       nestedScopeKeys: [],
-      deletedFileKeys: () => [key],
+      deletedFileKeys: () => Promise.resolve([key]),
     });
     expect(deletedOf(request)).toEqual([]);
   });
@@ -2873,7 +2873,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
   it('forwards the register itself when every deleted path is held back', async () => {
     const { forwards, request } = await run(SCOPED, ledgerRegister(), {
       nestedScopeKeys: [],
-      deletedFileKeys: () => [OUT, OUT, undefined, OUT],
+      deletedFileKeys: () => Promise.resolve([OUT, OUT, undefined, OUT]),
     });
     expect(forwards).toBe(1);
     expect(deletedOf(request)).toEqual([]);
@@ -2887,8 +2887,9 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
         throw new Error('deleted keys unreadable');
       },
     ],
-    ['a list shorter than the deleted paths', () => [IN, IN, IN]],
-    ['a list longer than the deleted paths', () => [IN, IN, IN, IN, IN]],
+    ['a list whose read is rejected', () => Promise.reject(new Error('deleted keys unreadable'))],
+    ['a list shorter than the deleted paths', () => Promise.resolve([IN, IN, IN])],
+    ['a list longer than the deleted paths', () => Promise.resolve([IN, IN, IN, IN, IN])],
   ] as const)('forwards no deleted path, but the register, with %s', async (_label, getter) => {
     const { forwards, request, summary } = await run(SCOPED, ledgerRegister(), {
       nestedScopeKeys: [],
@@ -2906,7 +2907,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
       nestedScopeKeys: [],
       deletedFileKeys: () => {
         reads += 1;
-        return [];
+        return Promise.resolve([]);
       },
     };
     const none = await run(SCOPED, ledgerRegister([]), counted);
@@ -2924,7 +2925,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
       nestedScopeKeys,
       deletedFileKeys: () => {
         reads += 1;
-        return [IN, IN, IN, IN];
+        return Promise.resolve([IN, IN, IN, IN]);
       },
     });
     // The project's own key is out of scope.
@@ -2945,7 +2946,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
     const before = structuredClone(input);
     const { localWrite } = await run(SCOPED, input, {
       nestedScopeKeys: [],
-      deletedFileKeys: () => [IN, OUT, undefined, IN],
+      deletedFileKeys: () => Promise.resolve([IN, OUT, undefined, IN]),
     });
     expect(localWrite.mock.calls).toHaveLength(1);
     const args: readonly unknown[] = localWrite.mock.calls[0] ?? [];
@@ -2960,11 +2961,11 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
       nestedScopeKeys: [OUT, undefined],
       deletedFileKeys: () => {
         reads += 1;
-        return [OUT, OUT, OUT, OUT];
+        return Promise.resolve([OUT, OUT, OUT, OUT]);
       },
     };
     const unreadable: ProjectEgressContext = {
-      get deletedFileKeys(): () => readonly string[] {
+      get deletedFileKeys(): () => Promise<readonly string[]> {
         throw new Error('a machine attachment must not read this');
       },
     };

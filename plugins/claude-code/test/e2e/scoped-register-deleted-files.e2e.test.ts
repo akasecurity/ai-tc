@@ -52,7 +52,8 @@ import { bundledDetections, toPosix } from '@akasecurity/plugin-sdk';
 import { scanWorktree } from '@akasecurity/scanner';
 import type { EgressIngestRequest, WorkspaceSettings } from '@akasecurity/schema';
 import { attachmentModeOf, defaultWorkspaceSettings, resolveScope } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { MockInstance } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
@@ -72,6 +73,10 @@ let home: string;
 // Every project register the gateway handed the client, in order.
 let registers: EgressIngestRequest[];
 let restoreFactory: () => void;
+// The local gateway's read of the recorded keys, one spy per gateway the factory
+// built, so a case can say how often the ledger's keys were read.
+let keyReadSpies: MockInstance[];
+const keyReads = (): number => keyReadSpies.reduce((n, spy) => n + spy.mock.calls.length, 0);
 
 // A client that records the registers it is given and sends nothing. The other
 // members are never reached by a scan of files that hold no finding, and
@@ -97,8 +102,10 @@ const attachedGateway: DataGatewayFactory = (config, meta) => {
   if (connection === undefined) throw new Error('the settings name no control plane');
   const credential = readControlPlaneCredential(config.settingsDir, connection);
   if (credential === null) throw new Error('the credential file is not usable');
+  const local = new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
+  keyReadSpies.push(vi.spyOn(local, 'scanLedgerPathKeys'));
   return new AttachedDataGateway({
-    local: new StandaloneDataGateway(config.dataDir, bundledDetections(), meta),
+    local,
     client: recordingClient(),
     dataDir: config.dataDir,
     readCachedBundle: () => Promise.resolve(null),
@@ -120,6 +127,7 @@ beforeEach(() => {
   // Schema by file copy rather than a migration per test.
   migratedStore.seed(dataDirOf(home));
   registers = [];
+  keyReadSpies = [];
   restoreFactory = setDefaultGatewayFactory(attachedGateway);
 });
 
@@ -228,9 +236,11 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     const config = attach('scoped');
 
     // The first scan walks the clone, so its files are ledgered; the register
-    // holds a repository that is not enrolled, so none is sent.
+    // holds a repository that is not enrolled, so none is sent. The gateway
+    // never reached the deleted paths, so the recorded keys were not read.
     await scan(config);
     expect(registers).toEqual([]);
+    expect(keyReads()).toBe(0);
     expect(await ledgeredFiles()).toEqual(
       expect.arrayContaining([`${CLONE}/top.ts`, `${CLONE}/src/notify.ts`, `${CLONE}/src/keep.ts`]),
     );
@@ -245,6 +255,8 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     expect(scannedOf(registers[0])).toContain('src/new.ts');
     expect(deletedOf(registers[0])).toEqual([]);
     expect(JSON.stringify(registers)).not.toContain(CLONE);
+    // Asked once, by the scoped gateway, for the one register that had deleted paths.
+    expect(keyReads()).toBe(1);
   });
 
   it('sends nothing of a clone that an ignore file now hides, though it is still on disk', async () => {
@@ -373,6 +385,9 @@ describe('a machine-wide attachment (version 1 credential) sends what it always 
       `${CLONE}/src/notify.ts`,
       `${CLONE}/top.ts`,
     ]);
+    // A machine-wide attachment sends the register as it is and never asks for
+    // the recorded keys, so the ledger's rows are not read on its behalf.
+    expect(keyReads()).toBe(0);
   });
 
   it('names the files of an emptied nested repository too, as it always did', async () => {

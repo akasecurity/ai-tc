@@ -834,11 +834,11 @@ describe('scanWorktree — the scope key of each deleted path', () => {
 
   // Each deleted path of the last register with the key the scan supplied for
   // it. Built by position, so a list out of step with the register fails here.
-  function deletedWithKeys(): { file: string; key: string | undefined }[] {
+  async function deletedWithKeys(): Promise<{ file: string; key: string | undefined }[]> {
     const [input, context] = lastCall();
     if (input.reconcile.mode !== 'ledger') throw new Error('expected ledger mode');
     const { deletedFiles } = input.reconcile;
-    const keys = context?.deletedFileKeys?.();
+    const keys = await context?.deletedFileKeys?.();
     if (keys === undefined) throw new Error('the scan supplied no keys for its deleted paths');
     expect(keys).toHaveLength(deletedFiles.length);
     return deletedFiles
@@ -893,7 +893,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     rmSync(join(repo, 'personal-clone'), { recursive: true, force: true });
     await scan(config);
 
-    expect(deletedWithKeys()).toEqual([
+    expect(await deletedWithKeys()).toEqual([
       { file: 'personal-clone/package.json', key: PERSONAL_KEY },
       { file: 'personal-clone/src/notify.ts', key: PERSONAL_KEY },
       { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
@@ -915,7 +915,9 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     await scan(config);
 
     expect(lastCall()[1]?.nestedScopeKeys).toEqual([]);
-    expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/src/a.ts', key: PERSONAL_KEY }]);
+    expect(await deletedWithKeys()).toEqual([
+      { file: 'personal-clone/src/a.ts', key: PERSONAL_KEY },
+    ]);
   });
 
   it('keys a deleted file of a clone under a directory the walk skips by the clone', async () => {
@@ -933,7 +935,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     await scan(config);
 
     expect(lastCall()[1]?.nestedScopeKeys).toEqual([]);
-    expect(deletedWithKeys()).toEqual([{ file: 'vendor/lib/x.ts', key: PERSONAL_KEY }]);
+    expect(await deletedWithKeys()).toEqual([{ file: 'vendor/lib/x.ts', key: PERSONAL_KEY }]);
   });
 
   it("gives a deleted file of a hidden clone with no remote no key, never the project's", async () => {
@@ -949,7 +951,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     rmSync(join(repo, 'scratch', 'a.ts'));
     await scan(config);
 
-    expect(deletedWithKeys()).toEqual([{ file: 'scratch/a.ts', key: undefined }]);
+    expect(await deletedWithKeys()).toEqual([{ file: 'scratch/a.ts', key: undefined }]);
   });
 
   it("keys a project file deleted from a directory that still exists by the project's remote", async () => {
@@ -963,7 +965,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     rmSync(join(repo, 'top.ts'));
     await scan(config);
 
-    expect(deletedWithKeys()).toEqual([
+    expect(await deletedWithKeys()).toEqual([
       { file: 'src/old.ts', key: PROJECT_KEY },
       { file: 'top.ts', key: PROJECT_KEY },
     ]);
@@ -981,7 +983,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     rmSync(join(repo, 'src', 'legacy'), { recursive: true, force: true });
     await scan(config);
 
-    expect(deletedWithKeys()).toEqual([
+    expect(await deletedWithKeys()).toEqual([
       { file: 'src/legacy/a.ts', key: PROJECT_KEY },
       { file: 'src/legacy/deep/b.ts', key: PROJECT_KEY },
     ]);
@@ -1003,7 +1005,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     rmSync(join(repo, 'personal-clone', 'src', 'a.ts'));
     await scan(config);
 
-    expect(deletedWithKeys()).toEqual([
+    expect(await deletedWithKeys()).toEqual([
       { file: 'personal-clone/src/a.ts', key: PERSONAL_KEY },
       { file: 'src/legacy/a.ts', key: PROJECT_KEY },
       { file: 'src/old.ts', key: PROJECT_KEY },
@@ -1022,7 +1024,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     gitRepo(repo, PERSONAL_URL);
     rmSync(join(repo, 'src'), { recursive: true, force: true });
 
-    expect(deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
+    expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
   });
 
   it('answers one list, however often it is read', async () => {
@@ -1034,9 +1036,38 @@ describe('scanWorktree — the scope key of each deleted path', () => {
     await scan(config);
 
     const context = lastCall()[1];
-    const first = context?.deletedFileKeys?.();
+    const first = await context?.deletedFileKeys?.();
     expect(first).toEqual([PROJECT_KEY]);
-    expect(context?.deletedFileKeys?.()).toBe(first);
+    expect(await context?.deletedFileKeys?.()).toBe(first);
+  });
+
+  describe('the recorded keys are read only when a gateway asks', () => {
+    // The standalone gateway and a machine-wide attachment never ask, so a scan
+    // must not read every ledger row's key on their behalf.
+    it('reads nothing during the scan, and once however often the gateway asks', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+      const config = configWith(true);
+      await scan(config);
+      rmSync(join(repo, 'src', 'old.ts'));
+      await scan(config);
+
+      expect(scanLedgerPathKeys).not.toHaveBeenCalled();
+      const context = lastCall()[1];
+      await context?.deletedFileKeys?.();
+      await context?.deletedFileKeys?.();
+      expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
+      expect(scanLedgerPathKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads nothing for a scan that deleted nothing, though asked', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      const config = configWith(true);
+      await scan(config);
+
+      expect(await lastCall()[1]?.deletedFileKeys?.()).toEqual([]);
+      expect(scanLedgerPathKeys).not.toHaveBeenCalled();
+    });
   });
 
   describe('a directory that is reused after the files in it were read', () => {
@@ -1055,7 +1086,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       // The directory exists again, holds a file the walk reaches, and is the
       // project's now. The names the clone had are still the clone's.
       expect(recordedKey('personal-clone/new.ts')).toBe(PROJECT_KEY);
-      expect(deletedWithKeys()).toEqual([
+      expect(await deletedWithKeys()).toEqual([
         { file: 'personal-clone/src/notify.ts', key: PERSONAL_KEY },
         { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
       ]);
@@ -1074,7 +1105,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       write(repo, 'tools/same.ts', `${STRIPE_CALL}// same, now the other repository's\n`);
       await scan(config);
 
-      expect(deletedWithKeys()).toEqual([{ file: 'tools/old.ts', key: PERSONAL_KEY }]);
+      expect(await deletedWithKeys()).toEqual([{ file: 'tools/old.ts', key: PERSONAL_KEY }]);
       // A name read again belongs to the repository it was read in this time.
       expect(recordedKey('tools/same.ts')).toBe(OTHER_KEY);
     });
@@ -1096,7 +1127,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       write(repo, 'personal-clone/new.ts', `${STRIPE_CALL}// new\n`);
       await scan(config);
 
-      expect(deletedWithKeys()).toEqual([
+      expect(await deletedWithKeys()).toEqual([
         { file: 'personal-clone/src/notify.ts', key: PERSONAL_KEY },
         { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
       ]);
@@ -1115,7 +1146,9 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       write(repo, 'personal-clone/.DS_Store', 'noise');
       await scan(config);
 
-      expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/top.ts', key: PERSONAL_KEY }]);
+      expect(await deletedWithKeys()).toEqual([
+        { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
+      ]);
     });
 
     it('keeps the deleted siblings of a clone that lost its `.git` but kept some files under the clone', async () => {
@@ -1133,7 +1166,9 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       // `top.ts` is gone, and is still the clone's: that is what it was when it was
       // read. `keep.ts` is unchanged and skipped unread, but it is in the project
       // now that its directory is no longer a repository, and its row says so.
-      expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/top.ts', key: PERSONAL_KEY }]);
+      expect(await deletedWithKeys()).toEqual([
+        { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
+      ]);
       expect(recordedKey('personal-clone/keep.ts')).toBe(PROJECT_KEY);
     });
 
@@ -1147,7 +1182,9 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       rmSync(join(repo, 'personal-clone', 'top.ts'));
       await scan(config);
 
-      expect(deletedWithKeys()).toEqual([{ file: 'personal-clone/top.ts', key: PERSONAL_KEY }]);
+      expect(await deletedWithKeys()).toEqual([
+        { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
+      ]);
     });
   });
 
@@ -1162,7 +1199,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       rmSync(join(repo, 'src', 'old.ts'));
       await scan(config);
 
-      expect(deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
+      expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
     });
 
     it('has no key when the read of the keys fails, and the scan still completes', async () => {
@@ -1175,8 +1212,8 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       scanLedgerPathKeys.mockRejectedValueOnce(new Error('the ledger could not be read'));
       await scan(config);
 
+      expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
       expect(scanLedgerPathKeys).toHaveBeenCalledTimes(1);
-      expect(deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
     });
 
     it('has no key from a gateway that cannot list the keys', async () => {
@@ -1190,7 +1227,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       await scan(config);
 
       expect(scanLedgerPathKeys).not.toHaveBeenCalled();
-      expect(deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
+      expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
     });
   });
 });
@@ -1211,13 +1248,13 @@ describe('scanWorktree — a file the ledger skips as unchanged', () => {
     return row.scopeKey;
   }
 
-  function lastDeleted(): { file: string; key: string | undefined }[] {
+  async function lastDeleted(): Promise<{ file: string; key: string | undefined }[]> {
     const [input, context] = recordProjectEgress.mock.calls.at(-1) as [
       RecordProjectEgressInput,
       ProjectEgressContext | undefined,
     ];
     if (input.reconcile.mode !== 'ledger') throw new Error('expected ledger mode');
-    const keys = context?.deletedFileKeys?.();
+    const keys = await context?.deletedFileKeys?.();
     if (keys === undefined) throw new Error('the scan supplied no keys for its deleted paths');
     return input.reconcile.deletedFiles
       .map((file, at) => ({ file, key: keys[at] }))
@@ -1247,7 +1284,7 @@ describe('scanWorktree — a file the ledger skips as unchanged', () => {
     // The directory is later removed: its files were the personal repository's.
     rmSync(join(repo, 'tools'), { recursive: true, force: true });
     await scan(config);
-    expect(lastDeleted()).toEqual([
+    expect(await lastDeleted()).toEqual([
       { file: 'tools/a.ts', key: PERSONAL_KEY },
       { file: 'tools/package.json', key: PERSONAL_KEY },
     ]);
@@ -1267,7 +1304,7 @@ describe('scanWorktree — a file the ledger skips as unchanged', () => {
 
     rmSync(join(repo, 'src', 'old.ts'));
     await scan(config);
-    expect(lastDeleted()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
+    expect(await lastDeleted()).toEqual([{ file: 'src/old.ts', key: PROJECT_KEY }]);
   });
 
   it('changes only the key of the row: its mtime, hash and ruleset stand', async () => {

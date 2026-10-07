@@ -18,5 +18,35 @@
     "label": "incomplete",
     "text": "just 192.168",
     "shouldMatch": false
+  },
+  {
+    "label": "IP at the end of a sentence",
+    "text": "Connect to 10.0.0.7.",
+    "shouldMatch": true
+  },
+  {
+    "label": "IP with a port",
+    "text": "listening on 172.16.4.20:8080",
+    "shouldMatch": true
+  },
+  {
+    "label": "ASN.1 object identifier (Sigstore Fulcio extension OID)",
+    "text": "issuer extension OID 1.3.6.1.4.1.57264.1.8",
+    "shouldMatch": false
+  },
+  {
+    "label": "six-part version string",
+    "text": "firmware 2.4.1.0.9.3 is current",
+    "shouldMatch": false
+  },
+  {
+    "label": "address.port socket as printed by netstat -an / tcpdump",
+    "text": "tcp4  0  0  10.0.0.7.62345  93.184.216.34.443  ESTABLISHED",
+    "shouldMatch": true
+  },
+  {
+    "label": "IP embedded in a wildcard-DNS hostname",
+    "text": "curl http://app.203.0.113.7.nip.io/",
+    "shouldMatch": true
   }
 ]

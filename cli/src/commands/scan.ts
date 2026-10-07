@@ -154,12 +154,15 @@ export function renderForwardLine(outcome: ReportedForward): string {
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
         'no usable credential; re-attach with `aka attach`'
       );
-    // By design rather than a fault, so it names no remedy, as the Scan page's
-    // line does not: no command in this build enrolls a repository.
+    // Not a fault: a scoped attachment keeps a project local unless its
+    // repository, and every repository nested in it, is enrolled. A project
+    // with no code-host remote never is.
     case 'not-enrolled':
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
-        'project not enrolled; its scans stay on this machine'
+        'project not enrolled; its scans stay on this machine ' +
+        '(`aka enroll --list` shows what is sent; ' +
+        '`aka enroll` adds a repository with a code-host remote)'
       );
     case 'forwarded':
       return (

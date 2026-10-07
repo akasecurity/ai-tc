@@ -2082,7 +2082,7 @@ could still make it owed. `canSweepSyncLane` is the yes-or-no (a standalone mach
 half attachment and no history-sync grant lets the lane age out like any other body), and
 `syncLaneRetentionFor` in plugin-runtime refines it through `syncLaneRetentionOf` once an
 attachment can be scoped. It is the one helper the background pass and `aka prune` both
-call, each handing it the settings it read, so the same settings give the same answer. A
+call, each handing it the settings it read, so the same settings and credential give the same answer. A
 machine attachment, half an attachment, and a history-sync grant with no scoped attachment
 hold every unsynced body, and so does every failure: an unreadable credential, a scope
 record that is absent, for another deployment or partly invalid, or a throw. A scoped

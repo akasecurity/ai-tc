@@ -126,8 +126,8 @@ export function runPrune(
   const cutoff = now - days * DAY_MS;
 
   // Asked of the one helper the background sweep asks too, rather than
-  // re-derived here, so the two cannot disagree about which bodies are still
-  // owed to a deployment.
+  // re-derived here, so the two apply the same rule to which bodies are still
+  // owed to a deployment; each reads its own settings and credential.
   const sweepSyncLane = syncLaneRetentionFor(settings, base);
 
   const db = openLocalDatabase(dataDir(base));

@@ -85,8 +85,8 @@ const input = (projectKey: string): RecordProjectEgressInput => ({
   hits: [],
 });
 
-// A project key the verdict cannot read. Never produced by a scan; it is how a
-// case reaches the verdict's own catch.
+// A project key nothing can canonicalize. A machine-wide attachment never
+// derives it, so it reaches the projection and fails there.
 const unreadableKey = (): RecordProjectEgressInput =>
   ({
     ...input('git:https://github.com/acme/payments-api.git'),

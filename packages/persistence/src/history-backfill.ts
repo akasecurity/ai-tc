@@ -33,9 +33,10 @@ import { DB_FILENAME } from './paths.ts';
  * capture read applies the scope in SQL whatever was marked. It is not free for
  * RETENTION: a scoped attachment's retention holds every body still marked owed
  * whatever its key, so a fallback to every capture makes it hold the bodies of
- * repositories it will never forward, for as long as the mark stands. On a
- * machine with no store the function is never called, so no credential is read
- * for a backlog that does not exist.
+ * repositories it does not cover now, which stay held for as long as the mark
+ * stands and become reachable if one is enrolled. On a machine with no store the
+ * function is never called, so no credential is read for a backlog that does not
+ * exist.
  *
  * BEST-EFFORT and deliberately silent, for the reason
  * `clearAttachmentDerivedState` gives for its own callers: the grant has
@@ -99,9 +100,10 @@ export function seedCaptureBacklogOwed(
  * read applies the scope in SQL whatever this marked. It is not free for
  * RETENTION: a scoped attachment's retention holds every body still marked owed
  * whatever its key, so marking every capture before the credential can be read
- * leaves the bodies of repositories that machine will never forward held. On a
- * scoped attachment the answer is the keys enrolled for the connection's
- * endpoint, possibly none, and an empty list marks nothing.
+ * leaves the bodies of repositories the machine does not cover now held: they
+ * stay held for as long as the mark stands and become reachable if one is
+ * enrolled. On a scoped attachment the answer is the keys enrolled for the
+ * connection's endpoint, possibly none, and an empty list marks nothing.
  */
 export function captureBackfillScope(
   read: CredentialFileRead | undefined,

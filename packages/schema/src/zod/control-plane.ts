@@ -127,17 +127,17 @@ export type AttachedCredentialV1 = AttachedCredential;
 // Built with `.extend`, so v2's endpoint, key, prefix and mint-time rules ARE
 // v1's; changing one changes both.
 //
-// READ since the change that taught every forwarding path what it means:
-// `readControlPlaneCredentialFile` in @akasecurity/persistence parses
-// `AttachedCredentialAny`, and the attached gateway, the history drain, the
-// Data Shares forward and the device-command channel's scan each decide from
-// the mode and the enrolled scope before they send what this machine recorded.
-// (The policy pull, the posture report and the command poll and ack send
-// without a verdict, by design.) A reader may accept this version only
-// together with that enforcement; one that accepted it alone would forward
-// everything a scoped machine captures. A build from before that change parses
-// v1 alone and reads this file as `malformed` — @akasecurity/plugin-sdk's
-// frozen-reader suite holds a copy of that reader to the bytes the writer emits.
+// READ by `readControlPlaneCredentialFile` in @akasecurity/persistence, which
+// parses `AttachedCredentialAny`. Every path that forwards what this machine
+// recorded — the attached gateway, the history drain, the Data Shares forward
+// and the device-command channel's scan — decides from the credential's mode
+// and the enrolled scope before it sends. (The policy pull, the posture report
+// and the command poll and ack send without a verdict, by design.) A reader may
+// accept this version only together with that enforcement; one that accepted it
+// alone would forward everything a scoped machine captures. A build that
+// predates scoped attachments parses v1 alone and reads this file as
+// `malformed` — @akasecurity/plugin-sdk's frozen-reader suite holds a copy of
+// that reader to the bytes the writer emits.
 //
 // NO `.meta({ id })` on this shape or the union below. EVER. Same bearer
 // credential, same rule as `AttachedCredential`.

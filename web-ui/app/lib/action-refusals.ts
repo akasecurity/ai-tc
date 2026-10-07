@@ -149,6 +149,20 @@ export const ATTACH_LABEL_INVALID =
   'That name cannot be used: it must be under 200 characters and contain no control characters. It is shown in `aka status`, where an escape sequence could hide part of what that reports.';
 
 /**
+ * An attach that names no mode, on a machine holding a credential this build
+ * cannot settle the mode from.
+ *
+ * That credential is either a file this build cannot read, which may be a scoped
+ * credential a newer build wrote, or a scoped credential for another deployment.
+ * Attaching machine-wide over either because nobody named a mode would widen
+ * what the machine sends without anyone deciding to. The form always sends a
+ * mode, so only a client that predates the choice meets this; it says what to do
+ * on the page.
+ */
+export const ATTACH_MODE_REQUIRED =
+  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Choose whether this is a personal or an organization device, then attach again.';
+
+/**
  * The four refusals `syncNow` adds.
  *
  * The first three re-state a gate the panel has already applied, and they exist

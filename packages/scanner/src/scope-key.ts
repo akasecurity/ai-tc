@@ -14,18 +14,21 @@
 // resolveRepoAttribution's own upward walk applies, so the two agree on where a
 // repository starts. Every root is keyed by resolveRepoAttribution, so a nested
 // repository with no forge remote gets no key, never the enclosing one's; a
-// scoped attachment is meant to keep a keyless capture local, and that check is
-// not part of this change. A file in no nested repository takes the scan root's
-// answer, from the same resolver walking up from the root: a root inside a
-// repository (a package directory of a monorepo, a session's working directory)
-// keys by the repository around it.
+// scoped attachment keeps a keyless capture local, and the attached gateway's
+// verdict does that, not this file. A file in no nested repository takes the
+// scan root's answer, from the same resolver walking up from the root: a root
+// inside a repository (a package directory of a monorepo, a session's working
+// directory) keys by the repository around it.
 //
 // Lazy and scan-local. scanDir asks only for a file that reaches capture, so a
-// re-run that skips every file at the ledger reads no repository. The answer
-// for every directory the climbing lookup climbs through is remembered, so it
-// probes no directory for `.git` twice and reads each repository root once per
-// scan. The memory belongs to the one scan that made it: it grows with the tree
-// rather than up to a fixed count, and is dropped when the scan ends.
+// re-run that skips every file at the ledger reads no repository. (A gateway
+// that forwards by scope can ask for more, later: the keys of the nested roots,
+// and, through this same climbing lookup, the key of a path the scan lists as
+// deleted whose directory still exists.) The answer for every directory the
+// climbing lookup climbs through is remembered, so it probes no directory for
+// `.git` twice and reads each repository root once per scan. The memory belongs
+// to the one scan that made it: it grows with the tree rather than up to a
+// fixed count, and is dropped when the scan ends.
 //
 // That per-scan memory is the only one this file trusts. Every call to
 // resolveRepoAttribution here passes `{ cache: false }`, so nothing in this file
@@ -41,7 +44,7 @@
 // wrong for a directory a walk named as a root, because there climbing past an
 // unusable `.git` answers with the enclosing repository's key, as if the
 // nested directory were that repository. `ofRepositoryRoot` answers for the
-// directory itself or not at all.
+// directory itself or not at all, with the one residual its own doc names.
 import { existsSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
 
@@ -54,8 +57,10 @@ export interface ScopeKeyLookup {
    * The key of the repository rooted exactly at this posix directory under the
    * root, or `undefined` when that directory has no `.git` that exists now, or
    * has no forge remote. Never the key of a repository around it, with one
-   * residual: a `.git` removed and recreated during the call can be read as the
-   * directory's own (see the checks in `scopeKeysUnder`).
+   * residual, and in that case it IS the enclosing repository's key: a `.git`
+   * removed and then recreated during the call. The read in between climbs past
+   * the missing `.git` and answers for the repository around it, and the
+   * recreated `.git` then passes the second check (see `scopeKeysUnder`).
    */
   readonly ofRepositoryRoot: (relativeDir: string) => string | undefined;
 }

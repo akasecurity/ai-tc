@@ -323,9 +323,9 @@ function buildSessionRoot(
   if (branch !== undefined) attributes.branches = [branch];
   // The session's scope key: the canonical `host/owner/repo` of the repository
   // the session's own cwd sits in (sessionRootScopeKey). A local-only attribute
-  // that every forward path strips. A scoped attachment is meant to forward a
-  // structural leaf only when its own key AND its root's are both enrolled; that
-  // check is not part of this change.
+  // that every forward path strips. A scoped attachment forwards a structural
+  // leaf only when its own key AND its root's are both enrolled; the attached
+  // gateway's verdict makes that check, not this hook.
   // A relative or empty cwd gets no key, however the project resolved: the
   // project is found by walking from the cwd by name, so a relative one is read
   // against this hook's own process directory and would borrow whatever

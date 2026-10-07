@@ -811,6 +811,9 @@ describe('scope key of each captured file', () => {
     expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
     gitRepo(pkg, origin('https://github.com/me/personal.git'));
     write('packages/api/src/api-a.ts', 'const api = 1;');
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this scan root with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
     expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
 
     await scanWorktree(config, { rootDir: pkg, sourceTool: 'claude-code' });

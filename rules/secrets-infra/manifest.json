@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "secrets-infra",
   "name": "Infrastructure Secrets",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "rules": [
     "ssh-private-key",
     "db-connection-string",
@@ -13,6 +13,7 @@
     "bearer-token",
     "env-key-value",
     "password-field",
+    "secret-config-value",
     "docker-config-auth",
     "kubeconfig-token",
     "api-key-header",

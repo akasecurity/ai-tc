@@ -15,6 +15,7 @@
 // Kept free of I/O and hook wiring so it unit-tests without a hook process.
 import type { EventKind, FindingContextBasis } from '@akasecurity/schema';
 
+import { mayNameCredentialFile } from './credential-name-hints.ts';
 import type { PathSegment } from './paths.ts';
 import { stringAtPath } from './paths.ts';
 
@@ -82,6 +83,22 @@ const STATIC_FIELDS: Record<string, readonly ScannableField[]> = {
   Task: [{ path: ['prompt'], executable: false }],
   Agent: [{ path: ['prompt'], executable: false }],
 };
+
+// Tools whose input names a file the tool will read, addressed by the field
+// holding the path. The path is checked against the credential-file rules
+// before the read happens; the content is PostToolUse's to scan. Executable:
+// a masked path reads a different file, so a redact on it degrades to the
+// workspace's redactFallback like any other executable field.
+const PATH_FIELDS: Record<string, readonly ScannableField[]> = {
+  Read: [{ path: ['file_path'], executable: true }],
+  Grep: [{ path: ['path'], executable: true }],
+};
+
+// A Read or Grep path is captured only when it may name a credential file
+// (credential-name-hints.ts), which keeps the common Read (source files, docs,
+// logs) from paying a capture, and from recording a path finding, for a path no
+// credential rule is about. The manifest's path gate filters on the same hints
+// before node starts.
 
 // Bounds on the MCP walk. A tool payload can be arbitrarily large and the hook
 // has a 10s budget: past these limits it scans what fits and lets the rest
@@ -353,7 +370,7 @@ function multiEditFields(toolInput: Record<string, unknown>): ScannableField[] {
 }
 
 /**
- * The tools whose scannable fields come from the STATIC table above.
+ * The tools whose scannable fields come from the STATIC and PATH tables above.
  *
  * Not every tool this hook covers: `MultiEdit` and the `mcp__*` family are
  * handled by the dynamic branches below and appear here in neither case. So a
@@ -365,7 +382,10 @@ function multiEditFields(toolInput: Record<string, unknown>): ScannableField[] {
  * is a tool the hook is never spawned for, which looks exactly like a tool with
  * nothing to scan.
  */
-export const SCANNED_TOOL_NAMES: readonly string[] = Object.keys(STATIC_FIELDS);
+export const SCANNED_TOOL_NAMES: readonly string[] = [
+  ...Object.keys(STATIC_FIELDS),
+  ...Object.keys(PATH_FIELDS),
+];
 
 /**
  * The scannable fields of a tool's input, each addressing a non-empty string.
@@ -387,6 +407,12 @@ export function scannableInputFields(
   toolName: string,
   toolInput: Record<string, unknown>,
 ): ScannableField[] {
+  if (Object.hasOwn(PATH_FIELDS, toolName)) {
+    return (PATH_FIELDS[toolName] ?? []).filter((field) => {
+      const text = fieldText(field, toolInput);
+      return text !== undefined && mayNameCredentialFile(text);
+    });
+  }
   const candidates = toolName.startsWith('mcp__')
     ? mcpFields(toolInput)
     : toolName === 'MultiEdit'

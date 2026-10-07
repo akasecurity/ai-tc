@@ -921,6 +921,23 @@ vault consent is on file. Whichever path applies, the
 recorded finding carries the action that actually happened, never a "redact"
 that did not.
 
+**A `Read` or `Grep` is checked by its PATH before it runs, and only for
+credential files.** A path naming one — `.env` and its variants (not
+`.env.example` and other templates), a private key under `~/.ssh` (`id_*`,
+`*_rsa`, `*_ed25519`, `*.pem`, `*.key`; not `*.pub`, `config` or `known_hosts`),
+`.netrc`, `.pgpass`, `.git-credentials`, `.npmrc`, `.aws/credentials`,
+`.aws/config`, `credentials*`, `*auth.json`, and the shell files `.zshenv`,
+`.zshrc`, `.zprofile`, `.bashrc`, `.bash_profile` (the same list `cat` is
+checked against) — matches `command-risk/credential-file-access`, which follows
+the `command-risk` pack's policy (Warn on a first install). Paths under a
+`fixtures/`, `__fixtures__/` or `testdata/` directory are left alone unless the
+path climbs out of it with `..`. Any other file — a config under `~/.config`
+holding a secret under an unfamiliar key, for instance — is not checked before
+it is read; its content is scanned afterwards like any tool output. `Glob`,
+`Grep`'s `glob` and `type` filters, and a `Grep` over a directory are never
+checked before they run. A redact on a path follows the redact fallback above,
+because a masked path reads a different file.
+
 **Tool OUTPUT is scanned for `Bash`, `Read`, `WebFetch`, `Grep` and every
 `mcp__*` tool, and for no other tool.** `Glob`'s file list, for example, reaches
 the model unscanned. On `Grep` the matching lines (and the per-file counts of

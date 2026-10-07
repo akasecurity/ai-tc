@@ -1,5 +1,6 @@
 import type { EventKind, PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
+import { decodeEncodedSegments, sourceSpanOf } from './encoded.ts';
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
 import { mapSpanToNormalized, mapSpanToOriginal, normalizeFormatChars } from './format-chars.ts';
@@ -511,6 +512,41 @@ function ruleApplies(
 
 export function scan(text: string, rules?: Rule[], context?: ScanContext): MatchResult[] {
   const ruleset = rules ?? getLoadedRules();
+  const findings = scanText(text, ruleset, context);
+  return [...findings, ...scanEncoded(text, ruleset, context)];
+}
+
+// Secrets inside base64 runs and hex dumps (see encoded.ts). Each decoded
+// segment is scanned with the SECRET rules only — a decoded run is opaque data
+// the user never sees as text, so a name, a path or a date inside it is not a
+// disclosure the way a credential is — and every finding is mapped onto the
+// encoded characters that produced it, so a redaction masks the encoding.
+// Free for a ruleset with no secret rule and for text with no decodable run.
+function scanEncoded(
+  text: string,
+  ruleset: Rule[],
+  context: ScanContext | undefined,
+): MatchResult[] {
+  const secretRules = ruleset.filter((rule) => rule.category === 'secret');
+  if (secretRules.length === 0) return [];
+  const encoded: MatchResult[] = [];
+  for (const segment of decodeEncodedSegments(text)) {
+    for (const finding of scanText(segment.text, secretRules, context)) {
+      const span = sourceSpanOf(segment, finding.span.start, finding.span.end);
+      // `span` covers the encoded characters, so a redaction masks the
+      // encoding; `rawMatch` stays the DECODED value the rule matched. Every
+      // consumer that reads rawMatch as "the secret" — the masked preview, the
+      // fingerprint behind exceptions and the blocked-detections ledger, the
+      // raw-egress checks — therefore sees the same value as for the plain
+      // secret, and never the dump text around it. The vault tokenizer, which
+      // requires the span to slice to rawMatch, redacts such a span one-way.
+      encoded.push({ ...finding, span });
+    }
+  }
+  return encoded;
+}
+
+function scanText(text: string, ruleset: Rule[], context: ScanContext | undefined): MatchResult[] {
   const extension = context?.filePath ? extensionOf(context.filePath) : undefined;
 
   // An invisible Unicode format character (ZERO WIDTH SPACE, a bidi control,

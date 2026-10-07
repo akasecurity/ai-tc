@@ -12,13 +12,14 @@
  * never produce. Callers who want valid input build it themselves, e.g.
  * `runHook('session-start', JSON.stringify({ session_id: 'x' }))`.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { shimmedPath } from './path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/helpers -> plugins/claude-code
@@ -91,6 +92,65 @@ export function runHook(name: string, stdin: string, options: RunHookOptions = {
   // A killed or timed-out child reports status null with a signal; treat that as
   // a failure rather than as a silent 0, which is what `?? 1` is doing here.
   return { status: status ?? 1, stdout: stdout ?? '', stderr: stderr ?? '' };
+}
+
+// The asynchronous twin of runHook, for a suite that drives many hook calls
+// and runs them side by side (each in its own temp home). Same contract: raw
+// stdin in, exit code + stdout/stderr out, never a rejection.
+export function runHookAsync(
+  name: string,
+  stdin: string,
+  options: RunHookOptions = {},
+): Promise<HookResult> {
+  return spawnScript(process.execPath, join(SCRIPTS_DIR, `${name}.js`), stdin, options);
+}
+
+// The host env with a shim dir first on PATH, for a suite that fakes a command
+// a script under test shells out to (see path-shim.ts on why a shim that does
+// not land fails open, and why the separator must be path.delimiter).
+export function hostEnvWithShim(binDir: string): NodeJS.ProcessEnv {
+  return { ...HOST_ENV, PATH: shimmedPath(binDir, HOST_ENV.PATH) };
+}
+
+// The built Read/Grep path gate (scripts/path-gate.sh), run the way the
+// manifest runs it: under sh, starting pre-tool-use.js beside it only when the
+// input may name a credential file.
+export function runGateAsync(stdin: string, options: RunHookOptions = {}): Promise<HookResult> {
+  return spawnScript('sh', join(SCRIPTS_DIR, 'path-gate.sh'), stdin, options);
+}
+
+function spawnScript(
+  command: string,
+  scriptPath: string,
+  stdin: string,
+  options: RunHookOptions,
+): Promise<HookResult> {
+  if (!existsSync(scriptPath)) {
+    return Promise.resolve({ status: 1, stdout: '', stderr: `${scriptPath} does not exist` });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(command, [scriptPath, ...(options.args ?? [])], {
+      env: { ...HOST_ENV, ...options.env },
+      timeout: options.timeoutMs ?? 15_000,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', (error) => {
+      resolve({ status: 1, stdout, stderr: stderr || error.message });
+    });
+    child.on('close', (status) => {
+      resolve({ status: status ?? 1, stdout, stderr });
+    });
+    child.stdin.end(stdin);
+  });
 }
 
 // An isolated ~/.aka + ~/.claude for one runHook() call: os.homedir() — which

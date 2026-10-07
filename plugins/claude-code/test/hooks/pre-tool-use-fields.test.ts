@@ -44,6 +44,59 @@ describe('scannableInputFields — the tools that execute their text', () => {
   });
 });
 
+describe('scannableInputFields — Read and Grep paths', () => {
+  it('scans a Read path that names a credential file, as executable text', () => {
+    for (const filePath of [
+      '/home/agent/proj/.env',
+      '/home/agent/proj/.env.production',
+      '/home/agent/.ssh/id_ed25519',
+      '/home/agent/.netrc',
+      '/home/agent/.pgpass',
+      '/home/agent/.git-credentials',
+      '/home/agent/.aws/credentials',
+      '/home/agent/.config/somecli/credentials.json',
+      '/home/agent/.cli/auth.json',
+      'C:\\Users\\agent\\repo\\.env',
+      '/home/agent/.ssh/github_ed25519',
+      '/home/agent/.ssh/server.pem',
+      '/home/agent/.ssh/work.key',
+      '/home/agent/.zshrc',
+      '/home/agent/.bash_profile',
+      '/home/agent/.npmrc',
+      '/home/agent/.aws/config',
+    ]) {
+      expect(scannableInputFields('Read', { file_path: filePath }), filePath).toEqual([
+        { path: ['file_path'], executable: true },
+      ]);
+    }
+  });
+
+  it('scans a Grep path that names a credential file', () => {
+    expect(scannableInputFields('Grep', { pattern: 'TOKEN', path: '/srv/app/.env' })).toEqual([
+      { path: ['path'], executable: true },
+    ]);
+  });
+
+  it('leaves an ordinary path unscanned, so a Read costs no capture', () => {
+    for (const filePath of [
+      '/home/agent/proj/src/index.ts',
+      '/home/agent/.config/editor/settings.json',
+      '/home/agent/proj/README.md',
+    ]) {
+      expect(scannableInputFields('Read', { file_path: filePath }), filePath).toEqual([]);
+    }
+    expect(scannableInputFields('Grep', { pattern: 'x', path: '/home/agent/proj' })).toEqual([]);
+    expect(scannableInputFields('Grep', { pattern: 'x' })).toEqual([]);
+  });
+
+  it('names no Read or Grep field the PostToolUse scan already covers', () => {
+    // The guard reads the PATH only; the content is PostToolUse's.
+    expect(scannableInputFields('Read', { file_path: '/a/.env', offset: 1, limit: 5 })).toEqual([
+      { path: ['file_path'], executable: true },
+    ]);
+  });
+});
+
 describe('scannableInputFields — MultiEdit', () => {
   const INPUT = {
     file_path: '/app/config.ts',

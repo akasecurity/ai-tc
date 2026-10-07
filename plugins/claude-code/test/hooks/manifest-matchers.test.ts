@@ -21,7 +21,7 @@ import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
 import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
 interface HooksManifest {
-  hooks: Record<string, { matcher?: string }[]>;
+  hooks: Record<string, { matcher?: string; hooks?: { command?: string }[] }[]>;
 }
 
 const manifest = JSON.parse(
@@ -31,13 +31,32 @@ const manifest = JSON.parse(
   ),
 ) as HooksManifest;
 
-/** The matcher a hook event declares, as the regex the harness applies. */
-function matcherFor(event: string): RegExp {
-  const entry = manifest.hooks[event]?.[0];
+/** One manifest entry's matcher, as the regex the harness applies. */
+function entryMatcher(entry: { matcher?: string } | undefined, event: string): RegExp {
   expect(entry, `${event} is registered`).toBeDefined();
   const matcher = entry?.matcher;
   expect(matcher, `${event} declares a matcher`).toBeTypeOf('string');
   return new RegExp(`^(?:${matcher ?? ''})$`);
+}
+
+/**
+ * What a hook event selects across ALL its entries: a tool is covered when any
+ * entry's matcher takes it. PreToolUse has two (the node hook, and the Read/Grep
+ * path gate that starts it only when needed); reading only the first entry
+ * would call Read and Grep unguarded.
+ */
+function matcherFor(event: string): { test: (tool: string) => boolean } {
+  const entries = manifest.hooks[event] ?? [];
+  expect(entries.length, `${event} is registered`).toBeGreaterThan(0);
+  const matchers = entries.map((entry) => entryMatcher(entry, event));
+  return { test: (tool) => matchers.some((m) => m.test(tool)) };
+}
+
+/** The PreToolUse entry whose command names `script`. */
+function preToolUseEntryRunning(script: string): { matcher?: string } | undefined {
+  return manifest.hooks.PreToolUse?.find((entry) =>
+    entry.hooks?.some((hook) => hook.command?.includes(`/scripts/${script}`)),
+  );
 }
 
 describe('the PreToolUse matcher selects every tool the hook can act on', () => {
@@ -63,6 +82,21 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     expect(SUBAGENT_TOOLS.has('Agent'), 'the current spelling is in the set').toBe(true);
   });
 
+  it('sends Read and Grep through the path gate, never straight to node', () => {
+    // The gate is the cost argument: node takes 70-120 ms to start, and Read
+    // is the most frequent tool call there is. A Read matched by the node entry
+    // would pay that on every call (or, matched by both, run the check twice).
+    const gate = entryMatcher(preToolUseEntryRunning('path-gate.sh'), 'PreToolUse');
+    const node = entryMatcher(preToolUseEntryRunning('pre-tool-use.js'), 'PreToolUse');
+    for (const tool of ['Read', 'Grep']) {
+      expect(gate.test(tool), `${tool} reaches the gate`).toBe(true);
+      expect(node.test(tool), `${tool} skips the direct node entry`).toBe(false);
+    }
+    // And the gate takes nothing else: every other tool's check lives in node.
+    expect(gate.test('Bash')).toBe(false);
+    expect(gate.test('Write')).toBe(false);
+  });
+
   it('matches the dynamic handlers the static table cannot speak for', () => {
     // MultiEdit and mcp__* reach fields through their own branches, so they are
     // absent from SCANNED_TOOL_NAMES and the derivation above says nothing
@@ -76,8 +110,8 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     // The control: a matcher rewritten to `.*` would pass every assertion above
     // while removing the bound the hook's own cost argument rests on.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('Read')).toBe(false);
     expect(matcher.test('Glob')).toBe(false);
+    expect(matcher.test('TodoWrite')).toBe(false);
   });
 });
 

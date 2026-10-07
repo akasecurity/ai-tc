@@ -58,15 +58,81 @@
     "expectedSpans": [{ "start": 0, "end": 27 }]
   },
   {
-    "label": "END marker with a different qualifier does not close the block",
+    "label": "END marker with a different qualifier does not close the block: the body is covered as an END-less key",
     "text": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END EC PRIVATE KEY-----",
     "shouldMatch": true,
-    "expectedSpans": [{ "start": 0, "end": 27 }]
+    "expectedSpans": [{ "start": 0, "end": 76 }]
   },
   {
     "label": "legacy encrypted PEM headers stay inside the span",
     "text": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
     "shouldMatch": true,
     "expectedSpans": [{ "start": 0, "end": 157 }]
+  },
+  {
+    "label": "head -3 of a key file: no END line, the body lines are still covered",
+    "text": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBzeW50aGV0aWMtZml4dHVyZS1ub3QtYS1yZWFsLWtleS0wMDAwMDAwMA\n",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 175
+      }
+    ]
+  },
+  {
+    "label": "JSON-escaped key cut before its END line: the escaped body lines are covered",
+    "text": "\"key\": \"-----BEGIN PRIVATE KEY-----\\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAc3ludGhldGljZml4\\ndHVyZW5vdGFyZWFsa2V5MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw\\n",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 8,
+        "end": 167
+      }
+    ]
+  },
+  {
+    "label": "legacy encrypted PEM cut before its END line: headers and body are covered",
+    "text": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAc3ludGhldGljZml4\ndHVyZW5vdGFyZWFsa2V5MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 240
+      }
+    ]
+  },
+  {
+    "label": "no END line and no full body line after the header: the span stays on the header",
+    "text": "-----BEGIN PRIVATE KEY-----\nAAAA\nsee the attached file",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 27
+      }
+    ]
+  },
+  {
+    "label": "no END line and a prose line after the header: the span stays on the header",
+    "text": "-----BEGIN PRIVATE KEY-----\nPlaceholderValueForTheDocs is described below.\n",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 27
+      }
+    ]
+  },
+  {
+    "label": "no END line: the body stops at the first line that is not base64",
+    "text": "-----BEGIN EC PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAc3ludGhldGljZml4\n\nThe output above was cut.",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 95
+      }
+    ]
   }
 ]

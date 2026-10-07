@@ -1,13 +1,9 @@
 import { parseArgs } from 'node:util';
 
 import { dataDir, openLocalDatabase, readEffectiveSettings } from '@akasecurity/persistence';
+import { syncLaneRetentionFor } from '@akasecurity/plugin-runtime';
 import type { ManagedSettings } from '@akasecurity/schema';
-import {
-  BodyRetention,
-  canSweepSyncLane,
-  isFieldManaged,
-  managedByLabel,
-} from '@akasecurity/schema';
+import { BodyRetention, isFieldManaged, managedByLabel } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
@@ -129,10 +125,10 @@ export function runPrune(
   const now = Date.now();
   const cutoff = now - days * DAY_MS;
 
-  // Asked of the shared predicate rather than re-derived here: this command and
-  // the background sweep must never disagree about which bodies are still owed
-  // to a deployment, and two copies of that rule would be two answers.
-  const sweepSyncLane = canSweepSyncLane(settings);
+  // Asked of the one helper the background sweep asks too, rather than
+  // re-derived here, so the two apply the same rule to which bodies are still
+  // owed to a deployment; each reads its own settings and credential.
+  const sweepSyncLane = syncLaneRetentionFor(settings, base);
 
   const db = openLocalDatabase(dataDir(base));
   const plan = db.bodyRetention.preview({ cutoff, sweepSyncLane });

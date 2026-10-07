@@ -1,6 +1,6 @@
 export * from './attached/index.ts';
 export type { ContentRetentionReport } from './content-retention-pass.ts';
-export { runContentRetentionPass } from './content-retention-pass.ts';
+export { runContentRetentionPass, syncLaneRetentionFor } from './content-retention-pass.ts';
 export {
   CONTENT_RETENTION_MARKER_NAME,
   CONTENT_RETENTION_SCRIPT_NAME,

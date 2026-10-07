@@ -126,10 +126,14 @@ describe('runAttachedSync', () => {
  * block left the workspace green.
  */
 describe('runAttachedSync — the device-command pass', () => {
-  const scanning = (): (() => Promise<{ projects: number }>) => () => {
-    order.push('scan');
-    return Promise.resolve({ projects: 1 });
-  };
+  // A machine-wide attachment never asks for the root key, so it is none.
+  const scanning = () => ({
+    rootScopeKey: () => undefined,
+    run: () => {
+      order.push('scan');
+      return Promise.resolve({ projects: 1 });
+    },
+  });
 
   it('services a command, so the block is reached at all', async () => {
     attach();
@@ -228,6 +232,10 @@ describe('runAttachedSync — the device-command pass', () => {
 describe('runAttachedSync — what a refused credential does to the command pass', () => {
   const refusal = (status: number): Error & { status: number } =>
     Object.assign(new Error('refused'), { status });
+  const idle = () => ({
+    rootScopeKey: () => undefined,
+    run: () => Promise.resolve({ projects: 1 }),
+  });
 
   it('does not poll after the policy pull learned the key is REVOKED', async () => {
     // A 401 is the credential itself no longer being accepted, which is not a
@@ -239,7 +247,7 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).not.toHaveBeenCalled();
     // The skip must not cost the verdict a human acts on.
@@ -259,7 +267,7 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).toHaveBeenCalledTimes(1);
   });
@@ -272,7 +280,7 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).toHaveBeenCalledTimes(1);
   });

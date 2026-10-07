@@ -38,14 +38,19 @@ export interface ManifestCandidate {
  * returns null for lockfiles and for anything this pass does not parse —
  * those are never returned. Best-effort: an unreadable directory or entry is
  * skipped rather than aborting the walk.
+ *
+ * `onRepositoryRoot` is handed to the walk (see walkTree's option): it is told
+ * every directory below `rootDir` that this walk lists and that holds a `.git`
+ * entry.
  */
 export function collectManifests(
   rootDir: string,
   maxFileSizeBytes: number = MAX_MANIFEST_BYTES,
+  onRepositoryRoot?: (relativeDir: string) => void,
 ): ManifestCandidate[] {
   const found: ManifestCandidate[] = [];
 
-  for (const file of walkTree(rootDir)) {
+  for (const file of walkTree(rootDir, { onRepositoryRoot })) {
     const kind = manifestKindOf(file.name);
     if (kind === null) continue;
 

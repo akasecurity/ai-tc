@@ -103,6 +103,11 @@ export interface WalkOptions {
   // This is where scan-ledger mtime skips save the actual I/O — on an unchanged
   // tree the walk degrades to stat calls only.
   shouldRead?: (meta: WalkedFileMeta) => boolean;
+  // Told every directory below rootDir that this walk lists and that holds a
+  // `.git` entry, as walkTree's option of the same name does (posix path
+  // relative to rootDir; rootDir itself is never reported). Additive: a caller
+  // that does not pass it walks exactly as before.
+  onRepositoryRoot?: ((relativeDir: string) => void) | undefined;
 }
 
 // The layer representation, the deepest-first lookup and the walk-relative path
@@ -136,6 +141,14 @@ export interface TreeWalkOptions {
   // gitignored status. Off by default: only walkSourceFiles needs the mark,
   // so a caller that doesn't ask for it never pays for reading .gitignore.
   trackGitignore?: boolean;
+  // Told every directory BELOW rootDir that this walk lists and that holds a
+  // `.git` entry: a nested clone (a directory), a submodule or a linked
+  // worktree (a file). It receives the directory's posix path relative to
+  // rootDir, the form every layer is addressed through. Read off the listing
+  // the walk has already made, so it costs no I/O, and only what the walk
+  // enters is reported: a SKIP_DIRS or .akaignore'd directory is never listed.
+  // rootDir itself is never reported, because its repository is the walk's own.
+  onRepositoryRoot?: ((relativeDir: string) => void) | undefined;
 }
 
 // Lazily discover every file under rootDir that survives the SKIP_DIRS floor
@@ -145,6 +158,7 @@ export interface TreeWalkOptions {
 // error never aborts the whole walk.
 export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generator<TreeFile> {
   const trackGitignore = opts.trackGitignore ?? false;
+  const onRepositoryRoot = opts.onRepositoryRoot;
 
   // Host-supplied excludePatterns form the OUTERMOST skip layer: on-disk
   // .akaignore files are appended after it, so their negations win. Anchored at
@@ -173,6 +187,16 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
       dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
     } catch {
       return;
+    }
+
+    // A repository nested below the root, told by the `.git` entry this listing
+    // already holds. `dirRel` is '' only at the root.
+    if (
+      onRepositoryRoot !== undefined &&
+      dirRel !== '' &&
+      dirents.some((entry) => entry.name === '.git')
+    ) {
+      onRepositoryRoot(dirRel);
     }
 
     const dirMarkLayers = withLayer(
@@ -238,6 +262,7 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
   for (const file of walkTree(rootDir, {
     excludePatterns: opts.excludePatterns,
     trackGitignore: true,
+    onRepositoryRoot: opts.onRepositoryRoot,
   })) {
     // extname handles dotfiles (.eslintrc → '') and extension-less names
     // (Makefile → '') — both fall out at the allowlist check.

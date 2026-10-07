@@ -52,8 +52,15 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // destination hosts, endpoints and file/line call sites, with no source text and
 // the project key replaced by a digest — and it can only ever reach the
 // deployment this home's own settings name. `--no-forward` skips it for one
-// invocation; an unattached machine sends nothing and prints no line. The
-// forward can fail every way a network call can and none of them change the
+// invocation; an unattached machine sends nothing and prints no line.
+//
+// A SCOPED attachment forwards a register only when the project's repository
+// is enrolled for that deployment AND so is every repository the walk found
+// nested in the target, because their call sites are folded into the project's
+// register. Otherwise nothing is sent and the outcome is `not-enrolled`, which
+// is a by-design refusal reported as information, never a failure.
+//
+// The forward can fail every way a network call can and none of them change the
 // exit code, the findings, or the egress counts: it runs after the work that
 // matters is already on disk.
 //
@@ -146,6 +153,13 @@ export function renderForwardLine(outcome: ReportedForward): string {
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
         'no usable credential; re-attach with `aka attach`'
+      );
+    // By design rather than a fault, so it names no remedy, as the Scan page's
+    // line does not: no command in this build enrolls a repository.
+    case 'not-enrolled':
+      return (
+        `Data shares: not forwarded to ${outcome.endpoint} — ` +
+        'project not enrolled; its scans stay on this machine'
       );
     case 'forwarded':
       return (
@@ -262,12 +276,16 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   // or unreachable deployment delays the forward line and never the summary
   // the command was run for. JSON mode is one object and must wait for both.
   const recorded = egress;
+  // Every repository the walk passed through below the target. Their call
+  // sites are in the register, so a scoped attachment holds it to each of them.
+  const nestedRepositories = result.nestedRepositories;
   const runForward = async (): Promise<SharesForwardOutcome | null> => {
     if (recorded === null) return null;
     try {
       return await forwardProjectEgress(home, recorded.input, {
         send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
+        nestedRepositories,
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit

@@ -3,10 +3,10 @@
  *
  * A structural producer stamps `attributes.scope_key` on what it records: the
  * canonical repository key (`host/owner/repo`) of the directory the row was
- * recorded in. It exists for a scoped attachment, which is meant to compare it
- * against the repositories it covers before a row leaves the machine; that
- * comparison is not part of this change. It is a fact for THIS machine and for
- * nothing on the far side of the wire.
+ * recorded in. It exists for a scoped attachment, which compares it against the
+ * repositories it covers before a row leaves the machine; the attached gateway's
+ * verdict makes that comparison, not this file. It is a fact for THIS machine
+ * and for nothing on the far side of the wire.
  *
  * Nothing in the request shapes keeps it local. The attributes member of an
  * audit-event request is an open record (`AttributeBag`; the llm/tool bags carry

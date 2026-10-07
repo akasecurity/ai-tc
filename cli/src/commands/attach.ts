@@ -1,6 +1,7 @@
 import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
+  captureBackfillScope,
   clearAttachmentDerivedState,
   dataDir as dataDirOf,
   managedAttachRefusal,
@@ -24,9 +25,11 @@ import {
 import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
+  AttachedCredential,
   HistorySyncConsent,
   ManagedSettings,
   UnsafeEndpointReason,
+  WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
   connectionRefusalMessage,
@@ -369,27 +372,35 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // owed a set the consent prompt's own preview did not describe.
   const attachedAt = new Date();
 
+  // The credential this attach writes, held as a value so the capture backfill
+  // below reads its MODE from the same object the file will contain: what is
+  // marked owed follows the attachment being made, not the one it replaces.
+  // NO `keyPrefix` DERIVED FROM THE KEY. The field exists so a deployment
+  // can hand back a non-secret label for its own key list, and a prefix taken
+  // from the secret here is not that: it is a contiguous run of the
+  // credential, written to a file and then printed by `aka status` into
+  // terminals, scrollback and CI logs. The suite catches it — the run-based
+  // no-echo check fails on exactly this — and the fix is to stop producing it
+  // rather than to shorten it under whatever window the check uses. What
+  // identifies an attachment on screen is the deployment and when it
+  // happened, neither of which is secret.
+  const credential: AttachedCredential = {
+    specVersion: 1,
+    endpoint,
+    apiKey,
+    mintedAt: new Date().toISOString(),
+  };
+  // What the attach committed, for the backfill's scope. Assigned in the try
+  // below; its catch returns, so the backfill only ever reads a committed file.
+  let committed: WorkspaceSettings | undefined;
+
   try {
     // The credential FIRST, then the descriptor. In the other order a machine
     // that fails on the second write is left claiming an attachment it has no
     // credential for — which reads to every later surface as a broken
     // attachment rather than as one that never happened.
-    // NO `keyPrefix` DERIVED FROM THE KEY. The field exists so a deployment
-    // can hand back a non-secret label for its own key list, and a prefix taken
-    // from the secret here is not that: it is a contiguous run of the
-    // credential, written to a file and then printed by `aka status` into
-    // terminals, scrollback and CI logs. The suite catches it — the run-based
-    // no-echo check fails on exactly this — and the fix is to stop producing it
-    // rather than to shorten it under whatever window the check uses. What
-    // identifies an attachment on screen is the deployment and when it
-    // happened, neither of which is secret.
-    writeControlPlaneCredential(settingsDirOf(base), {
-      specVersion: 1,
-      endpoint,
-      apiKey,
-      mintedAt: new Date().toISOString(),
-    });
-    applyOnboarding(
+    writeControlPlaneCredential(settingsDirOf(base), credential);
+    committed = applyOnboarding(
       {
         runMode: 'attached',
         controlPlane: {
@@ -437,8 +448,18 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // call: it re-derives its own backlog from `backlogBefore` on the drain's
   // next pass. A capture is reachable only through `outbox_owed`, and this is
   // the one moment anything sets it for a row recorded before now.
+  //
+  // SCOPED like the drain's own read (see captureBackfillScope), by the
+  // credential this attach wrote: a machine credential means every capture, as
+  // before, and on a scoped attachment it is the keys enrolled for this
+  // endpoint. That is none on a first attach, so such a machine's backlog waits
+  // for its repositories to be enrolled and re-seeded. Passed as a function,
+  // like the other seed callers, so working it out stays inside the seed's own
+  // best-effort guard.
   if (historyConsent !== undefined) {
-    seedCaptureBacklogOwed(dataDirOf(base), attachedAt.getTime());
+    seedCaptureBacklogOwed(dataDirOf(base), attachedAt.getTime(), () =>
+      captureBackfillScope({ usable: true, credential }, committed),
+    );
   }
 
   // Best-effort, macOS only today: closes the gap where this host never

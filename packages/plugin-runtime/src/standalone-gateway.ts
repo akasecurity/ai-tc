@@ -561,6 +561,10 @@ export class StandaloneDataGateway
     return Promise.resolve(this.db.scanLedger.allPaths());
   }
 
+  scanLedgerPathKeys(): Promise<Map<string, string | undefined>> {
+    return Promise.resolve(this.db.scanLedger.pathKeys());
+  }
+
   recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
     this.db.scanLedger.upsertEntries(entries);
     return Promise.resolve();

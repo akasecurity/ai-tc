@@ -2,9 +2,12 @@ import { parseArgs } from 'node:util';
 
 import {
   applyOnboarding,
+  captureBackfillScope,
   dataDir as dataDirOf,
+  readControlPlaneCredentialFile,
   readWorkspaceSettings,
   seedCaptureBacklogOwed,
+  settingsDir as settingsDirOf,
 } from '@akasecurity/persistence';
 import type { HistorySyncPassReport } from '@akasecurity/plugin-runtime';
 import { runHistorySyncPass } from '@akasecurity/plugin-runtime';
@@ -184,8 +187,16 @@ function grant(
   }
   // The capture half of the grant — see seedCaptureBacklogOwed. `aka attach`
   // does the same thing at its own grant site; this is the other place a
-  // fresh grant is recorded.
-  seedCaptureBacklogOwed(dataDirOf(base), grantedAt);
+  // fresh grant is recorded. Marked under the scope the drain will read with
+  // (see captureBackfillScope), taken from `settings`: the file as it stood
+  // before this grant, which is the one that matters, because a grant changes
+  // no scope. Passed as a function so the credential read behind it runs inside
+  // the seed's own best-effort guard: the grant is already recorded, and a
+  // throw there must not turn it into a failure.
+  const connection = settings.controlPlane;
+  seedCaptureBacklogOwed(dataDirOf(base), grantedAt, () =>
+    captureBackfillScope(readControlPlaneCredentialFile(settingsDirOf(base), connection), settings),
+  );
   io.out(
     `Sending this machine's unsent activity to ${controlPlaneName(settings.controlPlane)}.\n` +
       'That is the activity recorded before it attached and anything a live send could not\n' +

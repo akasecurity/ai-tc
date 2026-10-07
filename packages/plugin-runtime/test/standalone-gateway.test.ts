@@ -567,6 +567,36 @@ describe('StandaloneDataGateway — scan ledger', () => {
   });
 });
 
+describe('StandaloneDataGateway — the repository a ledgered file was in', () => {
+  it('records the key a scan read the file under, and lists it beside every path', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordScanned([
+      {
+        path: '/repo/a.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h1',
+        rulesetHash: 'rs1',
+        scopeKey: 'github.com/acme/work',
+      },
+      {
+        path: '/repo/b.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h2',
+        rulesetHash: 'rs2',
+      },
+    ]);
+
+    // Whatever ruleset a row was written under, like the path list.
+    expect(await gw.scanLedgerPathKeys()).toEqual(
+      new Map<string, string | undefined>([
+        ['/repo/a.ts', 'github.com/acme/work'],
+        ['/repo/b.ts', undefined],
+      ]),
+    );
+    await gw.close();
+  });
+});
+
 describe('rule probe verdict', () => {
   it('returns undefined for an unseen rule key', async () => {
     const gw = new StandaloneDataGateway(dir);

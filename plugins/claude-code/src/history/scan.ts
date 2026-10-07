@@ -175,12 +175,12 @@ export async function scanHistory(
       // The capture's scope key comes from the directory this transcript record
       // was written in: the canonical `host/owner/repo` of that directory's
       // repository, or none. A scratch directory, a remoteless repository, a
-      // relative cwd and a record that names no cwd all stay keyless; a scoped
-      // attachment is meant to keep a keyless capture local, and that check is
-      // not part of this change. The key rides on the capture input, never in
-      // the event's metadata (a published wire shape). No sessionId is added to
-      // the metadata either: it would change the capture's content-addressed
-      // id, and with it the dedup a re-run relies on.
+      // relative cwd and a record that names no cwd all stay keyless, and a
+      // scoped attachment keeps a keyless capture local (the gateway's verdict).
+      // The key rides on the capture input, never in the event's metadata (a
+      // published wire shape). No sessionId is added to the metadata either: it
+      // would change the capture's content-addressed id, and with it the dedup a
+      // re-run relies on.
       const scopeKey = scopeKeyOf(message.cwd);
       const result = await runtime.capture(
         {

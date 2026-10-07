@@ -1,22 +1,27 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
+import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
+  captureWireId,
   dataDir as dataDirOf,
+  dbPath as dbPathOf,
   openLocalDatabase,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type {
+  AttachedCredentialV2,
   IngestEvent,
   ManagedSettingsValues,
   RecordAuditEventRequest,
 } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION, MANAGED_SETTINGS_FILENAME } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
@@ -38,6 +43,34 @@ function attempted(result: Awaited<ReturnType<typeof runHistorySync>>): HistoryS
   }
   return result;
 }
+
+// THE CREDENTIAL READER, WRAPPED, for the scoped cases at the end of this file.
+// They arm `credentialRead` with a usable scoped read rather than writing a
+// scoped credential file, so they exercise the drain's scope handling
+// independently of what the reader accepts. Unarmed, every call reaches the
+// real reader, so every other case here is unaffected.
+const credentialRead = vi.hoisted<{ value: unknown }>(() => ({ value: undefined }));
+// How many times the pass read settings through the package entry, for the case
+// that pins a machine attachment to its single read at pass start.
+const settingsReads = vi.hoisted<{ count: number }>(() => ({ count: 0 }));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    readWorkspaceSettings: (
+      ...args: Parameters<typeof actual.readWorkspaceSettings>
+    ): ReturnType<typeof actual.readWorkspaceSettings> => {
+      settingsReads.count += 1;
+      return actual.readWorkspaceSettings(...args);
+    },
+    readControlPlaneCredentialFile: (
+      ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
+    ): ReturnType<typeof actual.readControlPlaneCredentialFile> =>
+      (credentialRead.value as
+        ReturnType<typeof actual.readControlPlaneCredentialFile> | undefined) ??
+      actual.readControlPlaneCredentialFile(...args),
+  };
+});
 
 const ENDPOINT = 'https://plane.example.test';
 const OTHER_ENDPOINT = 'https://other.example.test';
@@ -79,7 +112,19 @@ const seedRows = (sessions = 1): void => {
  * bound.
  */
 const seedCaptures = (
-  rows: readonly { id: string; content?: string | undefined; sourceTool?: string; atMs?: number }[],
+  rows: readonly {
+    id: string;
+    content?: string | undefined;
+    sourceTool?: string;
+    atMs?: number;
+    // The scope key the capture was stamped with; omitted, it carries none.
+    scopeKey?: string;
+    // The producer's display slug, stored as the `repo` attribute; omitted,
+    // the row carries none.
+    repo?: string;
+    // `false` leaves the row unmarked: a capture no forward ever attempted.
+    owed?: false;
+  }[],
 ): void => {
   const db = openLocalDatabase(dataDirOf(home));
   try {
@@ -101,13 +146,17 @@ const seedCaptures = (
         // An OBJECT, not a JSON string: AuditEventInput takes an AttributeBag
         // and the mapper stringifies it. Passing a pre-encoded string
         // double-encodes, and every row then rebuilds with no source_tool.
-        attributes: { source_tool: row.sourceTool ?? 'claude-code' },
+        attributes: {
+          source_tool: row.sourceTool ?? 'claude-code',
+          ...(row.scopeKey === undefined ? {} : { scope_key: row.scopeKey }),
+          ...(row.repo === undefined ? {} : { repo: row.repo }),
+        },
       });
       // What makes a capture OWED, and the drain's whole eligibility test. The
       // attached gateway writes this when a live forward does not confirm
       // delivery; a row without it is one no forward ever attempted — a machine
       // that was detached, or never attached — and the drain must not offer it.
-      db.historySync.markCaptureOwed(row.id);
+      if (row.owed !== false) db.historySync.markCaptureOwed(row.id);
     }
   } finally {
     db.close();
@@ -1579,5 +1628,458 @@ describe('runHistorySync — the capture lane', () => {
 
     expect(l.captures).toEqual([]);
     expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(1);
+  });
+});
+
+// A SCOPED attachment: the drain sends only rows stamped with an enrolled
+// repository key. See `credentialRead` at the top of the file for how these
+// cases reach scoped mode.
+describe('runHistorySync — a scoped attachment', () => {
+  const WORK = 'github.com/acme/work';
+  const OTHER_WORK = 'github.com/acme/other';
+  const PERSONAL = 'github.com/someone/dotfiles';
+
+  const SCOPED_CREDENTIAL = {
+    specVersion: 2,
+    mode: 'scoped',
+    endpoint: ENDPOINT,
+    apiKey: FIXTURE,
+    mintedAt: AT,
+  } satisfies AttachedCredentialV2;
+
+  afterEach(() => {
+    credentialRead.value = undefined;
+  });
+
+  /** Rewrite the enrolled set, the way an enroll or an unenroll will. */
+  const enroll = (keys: readonly string[]): void => {
+    applyOnboarding(
+      {
+        attachmentScope: {
+          endpoint: ENDPOINT,
+          entries: keys.map((identity) => ({ kind: 'repo', identity, enrolledAt: AT })),
+        },
+      },
+      home,
+    );
+  };
+
+  /** Attached with a history grant, in SCOPED mode, with `keys` enrolled. */
+  const attachScoped = (keys: readonly string[]): void => {
+    attach({ grantFor: ENDPOINT });
+    enroll(keys);
+    credentialRead.value = { usable: true, credential: SCOPED_CREDENTIAL };
+  };
+
+  /**
+   * A root and an llm_call leaf, each stamped with the key its producer
+   * derived, or with none. Recorded before the attachment (AT), inside the
+   * structural lane's backlog.
+   */
+  const seedKeyedSession = (
+    id: string,
+    offsetMs: number,
+    keys: { root?: string; leaf?: string },
+  ): void => {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      const startedAt = T0 - 86_400_000 + offsetMs;
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType: 'session',
+        startedAt: new Date(startedAt).toISOString(),
+        ...(keys.root === undefined ? {} : { attributes: { scope_key: keys.root } }),
+      });
+      db.auditEvents.insertAuditEvent({
+        id: `${id}-llm`,
+        eventType: 'llm_call',
+        rootSessionId: id,
+        parentId: id,
+        startedAt: new Date(startedAt + 1_000).toISOString(),
+        ...(keys.leaf === undefined ? {} : { attributes: { scope_key: keys.leaf } }),
+      });
+    } finally {
+      db.close();
+    }
+  };
+
+  /**
+   * A row's delivery columns, read straight off the table: through a ledger
+   * read, which filters, an unsent personal row and an absent one look alike.
+   */
+  const delivery = (id: string): { syncedAt: number | null; owed: number | null } | undefined => {
+    const raw = new DatabaseSync(dbPathOf(home));
+    try {
+      const row = raw
+        .prepare('SELECT synced_at, outbox_owed FROM audit_events WHERE id = ?')
+        .get(id) as { synced_at: number | null; outbox_owed: number | null } | undefined;
+      return row === undefined ? undefined : { syncedAt: row.synced_at, owed: row.outbox_owed };
+    } finally {
+      raw.close();
+    }
+  };
+
+  const lanes = () => {
+    const structural: RecordAuditEventRequest[] = [];
+    const captures: IngestEvent[] = [];
+    return {
+      structural,
+      captures,
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        structural.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        captures.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    };
+  };
+
+  // THE STALL, at the drain. Thirty older personal sessions head every page of
+  // twenty-five, and none is ever stamped (they stay eligible for the day their
+  // repository is enrolled), so a drain filtering pages in memory would re-read
+  // them for ever and never reach the enrolled session.
+  it('sends an enrolled session from behind thirty older personal ones', async () => {
+    attachScoped([WORK]);
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`p-${String(i)}`, i * 60_000, { root: PERSONAL, leaf: PERSONAL });
+    }
+    seedKeyedSession('w-1', 31 * 60_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+
+    const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(attempted(result).outcome).toBe('ok');
+    expect(l.structural.map((e) => e.id)).toEqual(['w-1', 'w-1-llm']);
+    // Not stamped with any sentinel either: delivered, skipped and refused are
+    // all terminal on this lane, and these rows must stay eligible.
+    expect(delivery('p-0')).toEqual({ syncedAt: null, owed: null });
+    expect(delivery('p-29-llm')).toEqual({ syncedAt: null, owed: null });
+    // The local scope key never leaves the machine.
+    expect(JSON.stringify(l.structural)).not.toContain('scope_key');
+  });
+
+  it('sends an enrolled capture from behind a full batch of older personal ones', async () => {
+    attachScoped([WORK]);
+    seedCaptures([
+      ...Array.from({ length: 101 }, (_, i) => ({
+        id: `cap-p-${String(i)}`,
+        scopeKey: PERSONAL,
+        atMs: T0 - 3_600_000 + i,
+      })),
+      { id: 'cap-w', scopeKey: WORK, atMs: T0 - 3_000_000 },
+    ]);
+    const l = lanes();
+
+    const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
+    // Owed only in scope: the probe counts in-scope captures only, so a marker
+    // on a personal capture does not hold `capturesPending` true.
+    expect(attempted(result).capturesPending).toBe(false);
+    expect(delivery('cap-p-0')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // A structural row goes only when its own key AND its root's key are enrolled:
+  // the receiver's foreign keys are real and it stubs no root. Roots and leaves
+  // are stamped from different places (the directory a session started in, each
+  // record's own cwd), possibly by different builds, so every pairing turns up
+  // in a real store.
+  it('sends a structural row only when it and its root are both enrolled', async () => {
+    attachScoped([WORK]);
+    seedKeyedSession('keyless-root', 0, { leaf: WORK });
+    seedKeyedSession('personal-root', 60_000, { root: PERSONAL, leaf: WORK });
+    seedKeyedSession('keyless-leaf', 120_000, { root: WORK });
+    seedKeyedSession('personal-leaf', 180_000, { root: WORK, leaf: PERSONAL });
+    seedKeyedSession('both', 240_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.structural.map((e) => e.id)).toEqual([
+      'keyless-leaf',
+      'personal-leaf',
+      'both',
+      'both-llm',
+    ]);
+
+    // And the lane does not stall on what it left: the next pass finds nothing
+    // in scope and offers nothing.
+    let offered = 0;
+    await run({
+      sendBatch: (events) => {
+        offered += events.length;
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: l.sendCaptures,
+    });
+    expect(offered).toBe(0);
+  });
+
+  // Rows written before stamping carry no key, and no key is never in scope,
+  // whatever repository they came from.
+  it('never sends a row recorded without a scope key', async () => {
+    attachScoped([WORK]);
+    seedRows(2);
+    seedCaptures([{ id: 'cap-legacy' }]);
+    const l = lanes();
+
+    const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.structural).toEqual([]);
+    expect(l.captures).toEqual([]);
+    expect(attempted(result).capturesPending).toBe(false);
+    expect(delivery('cap-legacy')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // An older build's consent seed marks the whole backlog, scope or no scope:
+  // the CLI and every plugin bundle their own copy, and the oldest one on the
+  // machine may be the one that runs. The marker is not the guarantee; the
+  // drain's scoped read is.
+  it('sends nothing out of scope after an older build seeds the whole backlog', async () => {
+    attachScoped([WORK]);
+    seedCaptures([
+      { id: 'cap-p', scopeKey: PERSONAL, owed: false },
+      { id: 'cap-w', scopeKey: WORK, owed: false },
+    ]);
+    // FROZEN: the consent-time seed as builds before scoped attachment run it,
+    // copied here on purpose so an edit to the live statement cannot change
+    // what this replays.
+    const raw = new DatabaseSync(dbPathOf(home));
+    try {
+      raw
+        .prepare(
+          `UPDATE audit_events SET outbox_owed = 1
+            WHERE synced_at IS NULL
+              AND event_type IN ('prompt', 'response', 'tool_use')
+              AND started_at < :before`,
+        )
+        .run({ before: ALL });
+    } finally {
+      raw.close();
+    }
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
+    expect(delivery('cap-p')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // An unenroll that lands mid-pass takes that repository out of the very next
+  // capture batch, not the next pass: settings are re-read before every batch.
+  it('stops sending a repository unenrolled between two capture batches', async () => {
+    attachScoped([WORK]);
+    seedCaptures(
+      Array.from({ length: 150 }, (_, i) => ({
+        id: `cap-w-${String(i)}`,
+        scopeKey: WORK,
+        atMs: T0 - 3_600_000 + i,
+      })),
+    );
+    const batches: number[] = [];
+
+    await run({
+      sendBatch: sendBatchOk,
+      sendCaptures: (events) => {
+        batches.push(events.length);
+        // The unenroll, written while the first batch is in flight.
+        enroll([]);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(batches).toEqual([100]);
+    expect(delivery('cap-w-149')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // The structural lane's twin of the case above: the scope is re-read before
+  // every page of sessions and every page of rows, so an unenroll that lands
+  // mid-pass takes that repository out of the very next read rather than the
+  // next pass. The first session is enrolled work, then thirty sessions of a
+  // repository that is unenrolled while the first batch is in flight, then one
+  // more of the repository that stays.
+  it('stops sending a repository unenrolled between two structural pages', async () => {
+    attachScoped([WORK, OTHER_WORK]);
+    seedKeyedSession('w-first', 0, { root: WORK, leaf: WORK });
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`o-${String(i)}`, (i + 1) * 60_000, { root: OTHER_WORK, leaf: OTHER_WORK });
+    }
+    seedKeyedSession('w-last', 31 * 60_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+    let unenrolled = false;
+
+    await run({
+      sendBatch: (events) => {
+        l.structural.push(...events);
+        // The unenroll, written while the first session's batch is in flight.
+        if (!unenrolled) {
+          unenrolled = true;
+          enroll([WORK]);
+        }
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: l.sendCaptures,
+    });
+
+    // The rest of the unenrolled repository's first page of sessions, and every
+    // session after it, are held back; the repository that stayed still goes.
+    expect(l.structural.map((e) => e.id)).toEqual([
+      'w-first',
+      'w-first-llm',
+      'w-last',
+      'w-last-llm',
+    ]);
+    expect(delivery('o-0')).toEqual({ syncedAt: null, owed: null });
+    expect(delivery('o-29-llm')).toEqual({ syncedAt: null, owed: null });
+  });
+
+  // A MACHINE attachment has no scope to re-read: it reads settings once, at the
+  // start of the pass, and a scope changing underneath it changes nothing.
+  it('reads settings once on a machine attachment, whatever happens to the stored scope', async () => {
+    attach({ grantFor: ENDPOINT });
+    enroll([WORK]);
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`p-${String(i)}`, i * 60_000, { root: PERSONAL, leaf: PERSONAL });
+    }
+    seedKeyedSession('w-1', 31 * 60_000, { root: WORK, leaf: WORK });
+    const l = lanes();
+    let rewritten = false;
+    settingsReads.count = 0;
+
+    await run({
+      sendBatch: (events) => {
+        l.structural.push(...events);
+        if (!rewritten) {
+          rewritten = true;
+          enroll([]);
+        }
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: l.sendCaptures,
+    });
+
+    // Thirty-one sessions of a root and a leaf each, across two session pages.
+    expect(l.structural).toHaveLength(62);
+    expect(settingsReads.count).toBe(1);
+  });
+
+  // The enroll re-seed and the drain together: captures the live path refused
+  // while their repository was out of scope become reachable once it is
+  // enrolled and re-seeded, and only that repository's.
+  it("sends a repository's capture backlog once the enroll re-seed marks it", async () => {
+    attachScoped([]);
+    seedCaptures([
+      { id: 'cap-w', scopeKey: WORK, owed: false },
+      { id: 'cap-p', scopeKey: PERSONAL, owed: false },
+      // A marker an older build left on a personal capture.
+      { id: 'cap-p-marked', scopeKey: PERSONAL },
+    ]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+    expect(l.captures).toEqual([]);
+
+    enroll([WORK]);
+    ledger((db) => db.historySync.markScopeCapturesOwed([WORK]));
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
+    expect(delivery('cap-p')).toEqual({ syncedAt: null, owed: null });
+    expect(delivery('cap-p-marked')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // The fourth seed path: arming a deployment re-marks the consented backlog in
+  // the same transaction as the wipe, scoped like the consent seed it repeats.
+  it('re-marks only enrolled captures when it arms the deployment', async () => {
+    attachScoped([WORK]);
+    // Recorded before the grant and never marked, so only the re-mark can reach
+    // them.
+    const beforeGrant = Date.parse(AT) - 60_000;
+    seedCaptures([
+      { id: 'cap-w', scopeKey: WORK, owed: false, atMs: beforeGrant },
+      { id: 'cap-p', scopeKey: PERSONAL, owed: false, atMs: beforeGrant },
+    ]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
+    expect(delivery('cap-p')).toEqual({ syncedAt: null, owed: null });
+  });
+
+  // The second look. The scoped read already excludes a personal capture; this
+  // stands in a ledger whose read does not, and requires the drain's own
+  // in-memory check to refuse it without stamping it.
+  it('re-checks each capture before sending, and leaves what it refuses unstamped', async () => {
+    attachScoped([WORK]);
+    seedCaptures([
+      { id: 'cap-p', scopeKey: PERSONAL, atMs: T0 - 3_600_000 },
+      { id: 'cap-w', scopeKey: WORK, atMs: T0 - 3_000_000 },
+    ]);
+    const l = lanes();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      openStore: (dir) => {
+        const db = openLocalDatabase(dir);
+        const unscoped = db.historySync.pendingCaptureRows.bind(db.historySync);
+        db.historySync.pendingCaptureRows = (limit: number, before: number) =>
+          unscoped(limit, before);
+        return db;
+      },
+    });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-w']);
+    expect(delivery('cap-p')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // THE REPOSITORY NAME A DRAINED CAPTURE CARRIES. The slug stored with a row is
+  // the producer's, resolved from the session's directory, while its key can
+  // name the repository of a file in another checkout. A capture whose live
+  // forward failed, or that a seed marked, is rebuilt from that row, so the
+  // drain applies the live forward's rewrite: the name sent is its own key's.
+  it("sends a drained capture under its own key's repository name, keeping its id", async () => {
+    attachScoped([WORK]);
+    // A session in a personal checkout that wrote a file in the enrolled one.
+    seedCaptures([{ id: 'cap-w', scopeKey: WORK, repo: 'dotfiles' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures).toHaveLength(1);
+    // The slug is replaced where it stands, and nothing else in the metadata
+    // moves.
+    expect(JSON.stringify(l.captures[0]?.metadata)).toBe(
+      '{"sessionId":"cap-session","repo":"work"}',
+    );
+    // The id is reproduced from the row's session, content hash and file path,
+    // never the slug, so the receiver's id-dedup still recognises a redelivery.
+    expect(l.captures[0]?.id).toBe(captureWireId('cap-session', 'b'.repeat(64), null));
+    // And the stamp goes by the row id: delivered, not left owed or skipped.
+    expect(delivery('cap-w')?.syncedAt).toBeGreaterThanOrEqual(T0);
+  });
+
+  // A MACHINE attachment forwards everything, and a stored scope (left by an
+  // earlier scoped attachment, or written by hand) changes nothing about it.
+  it('ignores a stored scope on a machine attachment', async () => {
+    attach({ grantFor: ENDPOINT });
+    enroll([OTHER_WORK]);
+    seedKeyedSession('w-1', 60_000, { root: WORK, leaf: WORK });
+    // A stored slug that is not its key's last segment, so a rewrite would show.
+    seedCaptures([{ id: 'cap-p', scopeKey: PERSONAL, repo: 'scratch' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.structural.map((e) => e.id).sort()).toEqual(['cap-session', 'w-1', 'w-1-llm']);
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-p']);
+    // The rebuilt body as it always was: the stored slug, byte for byte, not
+    // the name of the repository its key points at.
+    expect(JSON.stringify(l.captures[0]?.metadata)).toBe(
+      '{"sessionId":"cap-session","repo":"scratch"}',
+    );
   });
 });

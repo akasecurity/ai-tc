@@ -7,7 +7,7 @@
  * never finish; and every terminal path acks, so an operator's roster never has
  * to distinguish "failed" from "switched off" by waiting a day.
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -73,10 +73,14 @@ const AFTER_DEADLINE = () => Date.parse('2026-09-04T12:00:01.000Z');
 // in the code under test rather than as a stale fixture. A test that wants the
 // far side of the deadline says so with AFTER_DEADLINE, so the two directions
 // are both explicit and neither depends on when the suite runs.
+//
+// The scan root's key is none. Every case in this file runs on a machine-wide
+// attachment, which never asks for it; the scoped cases live in
+// command-sync-scope.test.ts.
 const deps = (scan?: () => Promise<{ projects: number }>, now: () => number = BEFORE_DEADLINE) => ({
   base,
   settingsDir: settingsDirOf(base),
-  ...(scan === undefined ? {} : { scan }),
+  ...(scan === undefined ? {} : { scan: { rootScopeKey: () => undefined, run: scan } }),
   now,
 });
 
@@ -284,7 +288,7 @@ describe('commandScanFor', () => {
       scanWorktree,
       SOURCE_TOOL.ClaudeCode,
     );
-    await expect(scan()).resolves.toEqual({ projects: 1 });
+    await expect(scan.run()).resolves.toEqual({ projects: 1 });
 
     // EXACT: a `searchRoots` or a `maxDepth` appearing here is the sweep coming
     // back, and `toEqual` is what fails on it.
@@ -301,10 +305,10 @@ describe('commandScanFor', () => {
     const found: WorktreeScan = () => Promise.resolve({ scanned: 1 });
     const empty: WorktreeScan = () => Promise.resolve({ scanned: 0 });
 
-    await expect(commandScanFor(config, found, SOURCE_TOOL.ClaudeCode)()).resolves.toEqual({
+    await expect(commandScanFor(config, found, SOURCE_TOOL.ClaudeCode).run()).resolves.toEqual({
       projects: 1,
     });
-    await expect(commandScanFor(config, empty, SOURCE_TOOL.ClaudeCode)()).resolves.toEqual({
+    await expect(commandScanFor(config, empty, SOURCE_TOOL.ClaudeCode).run()).resolves.toEqual({
       projects: 0,
     });
   });
@@ -330,11 +334,74 @@ describe('commandScanFor', () => {
         { dataDir: dataDirOf(base) } as never,
         scanWorktree,
         SOURCE_TOOL.ClaudeCode,
-      )();
+      ).run();
 
       expect(seen).toEqual({ sourceTool: SOURCE_TOOL.ClaudeCode, rootDir: homedir() });
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('names the scan root by its repository key, read from the directory it scans', async () => {
+    // A scoped attachment decides whether to service a command on this key, so
+    // it has to be the key of the directory `run` scans — captured once, when
+    // the scan is built. Restoring the cwd BEFORE either half runs is what
+    // proves it: a second read of the process would see the runner's own
+    // directory instead.
+    const repo = join(base, 'payments-api');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/payments-api.git\n',
+    );
+    let seen: unknown = null;
+    const scanWorktree: WorktreeScan = (_config, opts) => {
+      seen = opts;
+      return Promise.resolve({ scanned: 1 });
+    };
+    const { commandScanFor } = await import('../../src/attached/command-sync.ts');
+
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    const scan = (() => {
+      try {
+        return commandScanFor(
+          { dataDir: dataDirOf(base) } as never,
+          scanWorktree,
+          SOURCE_TOOL.ClaudeCode,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    })();
+
+    expect(scan.rootScopeKey()).toBe('github.com/acme/payments-api');
+    await scan.run();
+    expect(seen).toEqual({ sourceTool: SOURCE_TOOL.ClaudeCode, rootDir: repo });
+  });
+
+  it('names no key for a repository without a remote, or a directory outside any', async () => {
+    // Neither has an identity another machine shares, so neither can ever be
+    // enrolled — and a scoped attachment skips a command from either.
+    const remoteless = join(base, 'scratch-repo');
+    mkdirSync(join(remoteless, '.git'), { recursive: true });
+    writeFileSync(join(remoteless, '.git', 'config'), '[core]\n\tbare = false\n');
+    const outside = join(base, 'not-a-repo');
+    mkdirSync(outside, { recursive: true });
+    const scanWorktree: WorktreeScan = () => Promise.resolve({ scanned: 0 });
+    const { commandScanFor } = await import('../../src/attached/command-sync.ts');
+
+    for (const dir of [remoteless, outside]) {
+      const spy = vi.spyOn(process, 'cwd').mockReturnValue(dir);
+      try {
+        const scan = commandScanFor(
+          { dataDir: dataDirOf(base) } as never,
+          scanWorktree,
+          SOURCE_TOOL.ClaudeCode,
+        );
+        expect(scan.rootScopeKey(), dir).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
     }
   });
 });

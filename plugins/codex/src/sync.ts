@@ -16,9 +16,12 @@
  * host that ships no scanner passes nothing and does not poll, rather than
  * accepting a command it could never run.
  *
- * The scan SCOPE is not chosen here. `commandScanFor` owns it, so the rule
- * ("never the home directory implicitly") is written once rather than three
- * times across three plugin trees.
+ * The scan SCOPE is not chosen here. `commandScanFor` owns it — one worktree,
+ * the session's own — so the rule is written once rather than three times
+ * across three plugin trees. It owns the scan root's scope key too: on a scoped
+ * attachment the command channel reads that key before it scans, and a root
+ * that is not enrolled is left unscanned and unacknowledged, so the command
+ * waits for a session that is in an enrolled checkout.
  *
  * Fully fail-open, and it never throws: `runAttachedSync` records an outcome
  * for `/aka:status` to render and swallows everything else. Always exits 0.

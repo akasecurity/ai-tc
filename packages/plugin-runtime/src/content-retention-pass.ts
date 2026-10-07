@@ -1,6 +1,18 @@
-import { dataDir, defaultDataDir, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  dataDir,
+  defaultDataDir,
+  openLocalDatabase,
+  readControlPlaneCredentialFile,
+  settingsDir,
+} from '@akasecurity/persistence';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
-import { canSweepSyncLane } from '@akasecurity/schema';
+import type { SyncLaneRetention, WorkspaceSettings } from '@akasecurity/schema';
+import {
+  attachmentModeOf,
+  isAttached,
+  resolveScope,
+  syncLaneRetentionOf,
+} from '@akasecurity/schema';
 
 /**
  * How many bodies one pass may clear.
@@ -24,6 +36,47 @@ export type ContentRetentionReport =
   | { readonly ran: false; readonly reason: 'disabled' | 'unreadable' };
 
 const DAY_MS = 86_400_000;
+
+/**
+ * What the sync lane may lose on this machine, from the settings in force and
+ * the attachment mode its credential records.
+ *
+ * The mode is read off the credential, not the settings, because that is where
+ * an attachment records it and no settings writer can remove it.
+ * `syncLaneRetentionOf` owns the answer; this only gathers its two inputs.
+ *
+ * ONE HELPER, asked by both the background pass and `aka prune`. It decides
+ * which bodies are destroyed, so the two callers share this function rather
+ * than each keeping a copy that could drift: given the same settings they give
+ * the same answer. Each caller reads its own settings and passes them in, so
+ * the helper cannot make two callers read the same ones.
+ *
+ * TOTAL, and every failure holds. An attachment whose credential cannot be read
+ * resolves to no scope, which `syncLaneRetentionOf` reads as hold-all, and a
+ * throw anywhere here is hold-all too, so neither caller needs a catch of its
+ * own around it. Holding a body costs disk; expiring one an organization was
+ * owed cannot be undone.
+ */
+export function syncLaneRetentionFor(settings: WorkspaceSettings, base: string): SyncLaneRetention {
+  try {
+    const connection = settings.controlPlane;
+    if (!isAttached(settings) || connection === undefined) {
+      return syncLaneRetentionOf(settings, undefined);
+    }
+    const read = readControlPlaneCredentialFile(settingsDir(base), connection);
+    if (!read.usable) return syncLaneRetentionOf(settings, undefined);
+    return syncLaneRetentionOf(
+      settings,
+      resolveScope({
+        mode: attachmentModeOf(read.credential),
+        scope: settings.attachmentScope,
+        endpoint: connection.endpoint,
+      }),
+    );
+  } catch {
+    return { kind: 'hold-all' };
+  }
+}
 
 export interface ContentRetentionPassSeams {
   readonly base?: string;
@@ -56,10 +109,11 @@ export function runContentRetentionPass(
     const retention = settings.bodyRetention;
     if (!retention.enabled) return { ran: false, reason: 'disabled' };
 
+    const syncLane = syncLaneRetentionFor(settings, base);
     const db = openLocalDatabase(dataDir(base));
     const out = db.bodyRetention.expire({
       cutoff: now - retention.retainDays * DAY_MS,
-      sweepSyncLane: canSweepSyncLane(settings),
+      sweepSyncLane: syncLane,
       now,
       maxRows: MAX_ROWS_PER_SWEEP,
     });

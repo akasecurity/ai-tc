@@ -2,13 +2,45 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence';
+import type * as Persistence from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  dataDir as dataDirOf,
+  openLocalDatabase,
+  readWorkspaceSettings,
+  settingsDir as settingsDirOf,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
+import type { AttachedCredentialV2 } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runSyncHistory } from '../../src/commands/sync-history.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+
+// The credential reader, wrapped for the scoped cases at the end of this file.
+// They arm `credentialRead` with a usable scoped read rather than writing a
+// scoped credential file, so they exercise the backfill's scope independently
+// of what the reader accepts; armed with an Error, the reader throws it.
+// Unarmed, every call reaches the real reader.
+const credentialRead = vi.hoisted<{ value: unknown }>(() => ({ value: undefined }));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    readControlPlaneCredentialFile: (
+      ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
+    ): ReturnType<typeof actual.readControlPlaneCredentialFile> => {
+      if (credentialRead.value instanceof Error) throw credentialRead.value;
+      return (
+        (credentialRead.value as
+          ReturnType<typeof actual.readControlPlaneCredentialFile> | undefined) ??
+        actual.readControlPlaneCredentialFile(...args)
+      );
+    },
+  };
+});
 
 const ENDPOINT = 'https://aka.example-org.internal';
 
@@ -252,5 +284,118 @@ describe('aka sync-history', () => {
     // The unconditional promise this replaced. Without this the case passes on
     // any wording that happens to mention a policy.
     expect(shown).not.toContain('with detected secrets masked');
+  });
+});
+
+// The consent-time backfill on a SCOPED attachment marks only the enrolled
+// repositories' captures: the same scope the drain reads with.
+describe('aka sync-history --on — the capture backfill and the attachment scope', () => {
+  const WORK = 'github.com/acme/work';
+  const PERSONAL = 'github.com/someone/dotfiles';
+  const RECORDED = '2026-08-01T00:01:00.000Z';
+
+  afterEach(() => {
+    credentialRead.value = undefined;
+  });
+
+  const enroll = (keys: readonly string[]): void => {
+    applyOnboarding(
+      {
+        attachmentScope: {
+          endpoint: ENDPOINT,
+          entries: keys.map((identity) => ({ kind: 'repo', identity, enrolledAt: RECORDED })),
+        },
+      },
+      base,
+    );
+  };
+
+  /** One prompt per id, stamped with its key, recorded before the grant, never marked. */
+  const seedCaptures = (byId: Record<string, string>): void => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+      for (const [id, scopeKey] of Object.entries(byId)) {
+        db.auditEvents.insertAuditEvent({
+          id,
+          eventType: 'prompt',
+          rootSessionId: 's-1',
+          parentId: 's-1',
+          startedAt: RECORDED,
+          content: `text of ${id}`,
+          attributes: { scope_key: scopeKey },
+        });
+      }
+    } finally {
+      db.close();
+    }
+  };
+
+  const owedIds = (): string[] => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      return db.historySync
+        .pendingCaptureRows(10, Date.now() + 1)
+        .map((r) => r.id)
+        .sort();
+    } finally {
+      db.close();
+    }
+  };
+
+  it("marks only the enrolled repository's captures on a scoped attachment", async () => {
+    attach();
+    enroll([WORK]);
+    seedCaptures({ 'work-prompt': WORK, 'personal-prompt': PERSONAL });
+    credentialRead.value = {
+      usable: true,
+      credential: {
+        specVersion: 2,
+        mode: 'scoped',
+        endpoint: ENDPOINT,
+        apiKey: 'placeholder',
+        mintedAt: RECORDED,
+      } satisfies AttachedCredentialV2,
+    };
+
+    await runSyncHistory(['--on'], deps(recorder()));
+
+    expect(exits).toEqual([]);
+    expect(owedIds()).toEqual(['work-prompt']);
+  });
+
+  // A machine attachment's grant covers every capture; a stored scope does not
+  // narrow it.
+  it('marks every capture on a machine attachment, whatever scope is stored', async () => {
+    attach();
+    enroll([WORK]);
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: 'placeholder',
+      mintedAt: RECORDED,
+    });
+    seedCaptures({ 'work-prompt': WORK, 'personal-prompt': PERSONAL });
+
+    await runSyncHistory(['--on'], deps(recorder()));
+
+    expect(owedIds()).toEqual(['personal-prompt', 'work-prompt']);
+  });
+
+  // The grant is already recorded when the seed runs, so a credential read that
+  // throws while the seed works out its scope must not turn it into a failure:
+  // the seed falls back to marking every capture, which is safe because marking
+  // is not sending.
+  it('still records the grant, and marks every capture, when the credential read throws', async () => {
+    attach();
+    enroll([WORK]);
+    seedCaptures({ 'work-prompt': WORK, 'personal-prompt': PERSONAL });
+    credentialRead.value = new Error('the credential file could not be inspected');
+
+    await runSyncHistory(['--on'], deps(recorder()));
+
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+    expect(owedIds()).toEqual(['personal-prompt', 'work-prompt']);
   });
 });

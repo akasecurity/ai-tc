@@ -206,6 +206,21 @@ describe('renderEgressLine', () => {
   });
 });
 
+describe('renderForwardLine', () => {
+  it('says an unenrolled project stayed on this machine, and names no command', () => {
+    // A scoped attachment declining to send is not a failure, but the person
+    // who ran the scan still has to be told nothing left. The line names no
+    // remedy: this build has no command that enrolls a repository, and a line
+    // that named one would send the reader looking for it.
+    const line = renderForwardLine({ status: 'not-enrolled', endpoint: 'Acme Security' });
+    expect(line).toBe(
+      'Data shares: not forwarded to Acme Security — project not enrolled; ' +
+        'its scans stay on this machine',
+    );
+    expect(line).not.toContain('aka enroll');
+  });
+});
+
 describe('runScan', () => {
   let home: string;
   let root: string;

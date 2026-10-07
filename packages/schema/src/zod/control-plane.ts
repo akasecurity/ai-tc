@@ -127,13 +127,17 @@ export type AttachedCredentialV1 = AttachedCredential;
 // Built with `.extend`, so v2's endpoint, key, prefix and mint-time rules ARE
 // v1's; changing one changes both.
 //
-// NOT YET READ ANYWHERE. `readControlPlaneCredentialFile` in
-// @akasecurity/persistence still parses `AttachedCredential`, v1 only, so this
-// build too reads a v2 file as `malformed`. Moving that reader to
-// `AttachedCredentialAny` is what makes a scoped attachment usable, and it
-// belongs with the change that makes every forward path consult the mode: a
-// reader that accepts v2 before that forwards everything a scoped machine
-// captures.
+// READ by `readControlPlaneCredentialFile` in @akasecurity/persistence, which
+// parses `AttachedCredentialAny`. Every path that forwards what this machine
+// recorded — the attached gateway, the history drain, the Data Shares forward
+// and the device-command channel's scan — decides from the credential's mode
+// and the enrolled scope before it sends. (The policy pull, the posture report
+// and the command poll and ack send without a verdict, by design.) A reader may
+// accept this version only together with that enforcement; one that accepted it
+// alone would forward everything a scoped machine captures. A build that
+// predates scoped attachments parses v1 alone and reads this file as
+// `malformed` — @akasecurity/plugin-sdk's frozen-reader suite holds a copy of
+// that reader to the bytes the writer emits.
 //
 // NO `.meta({ id })` on this shape or the union below. EVER. Same bearer
 // credential, same rule as `AttachedCredential`.
@@ -285,8 +289,9 @@ export function originOnly(endpoint: string): string {
  *                      mode could not be tightened. A planted credential rather
  *                      than a permissions accident.
  *   `unreadable`     — present but could not be read.
- *   `malformed`      — not JSON, or not an `AttachedCredential` (which includes
- *                      an unknown `specVersion`, a `z.literal`).
+ *   `malformed`      — not JSON, or not a credential this build reads
+ *                      (`AttachedCredentialAny`, keyed on `specVersion`), so an
+ *                      unknown version is refused rather than half-read.
  *   `unsafe-endpoint`— minted against an endpoint this build will not send a
  *                      credential to.
  *   `endpoint-mismatch` — a valid credential for a DIFFERENT deployment than the

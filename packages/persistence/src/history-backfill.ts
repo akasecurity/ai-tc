@@ -84,6 +84,42 @@ export function seedCaptureBacklogOwed(
 }
 
 /**
+ * Mark owed every unsent capture of the repositories an enrollment just added —
+ * the re-seed that follows an enrollment, so a repository's history becomes
+ * reachable when it is enrolled. Returns how many captures it newly marked.
+ *
+ * THE CALLER CHECKS CONSENT. Marking is the first step of sending, and
+ * `markScopeCapturesOwed` cannot tell whether the history grant is in force for
+ * this deployment: call this only when `isHistorySyncConsentValid` holds for the
+ * effective endpoint. Pass only the keys the enrollment newly added; a key
+ * already enrolled was re-seeded when it was enrolled.
+ *
+ * `undefined` when there is no store, or when the store fails. NO STORE IS NOT A
+ * STORE THAT FAILED TO OPEN, for the reason `seedCaptureBacklogOwed` gives: a
+ * machine that never ran `aka init` has nothing to mark, and opening the store
+ * would create it and run every migration to mark nothing. A store that fails is
+ * swallowed: the enrollment this follows has already been written, so a failed
+ * re-seed must read as "nothing queued", never as a failed enrollment. Never
+ * throws.
+ */
+export function seedEnrolledCapturesOwed(
+  dataDir: string,
+  scopeKeys: readonly string[],
+): number | undefined {
+  if (!existsSync(join(dataDir, DB_FILENAME))) return undefined;
+  try {
+    const db = openLocalDatabase(dataDir);
+    try {
+      return db.historySync.markScopeCapturesOwed(scopeKeys);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The key list the consent-time capture seed marks under: the same scope the
  * drain reads with, so the seed and the read agree about what this machine
  * forwards. Hand it to `seedCaptureBacklogOwed` as `scopeKeys`.

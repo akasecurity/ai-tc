@@ -1138,9 +1138,12 @@ export const CONNECTION_FORWARDING_NOTICE =
 //
 //   - the plugin forwards activity only from enrolled repositories (the
 //     forward paths decide by the enrolled scope before they send);
-//   - the policy pull and the report on the install (host name, versions,
-//     packs, finding counts) send without a scope verdict, by design, so they
-//     are named rather than hidden behind "only";
+//   - the policy pull, the check for commands the deployment has issued to this
+//     device, and the report on the install send without a scope verdict, by
+//     design, so they are named rather than hidden behind "only". The report is
+//     described as one that INCLUDES its members, not as consisting of them: it
+//     also carries a device identifier, policy counts and the dates of the first
+//     and latest finding (see StorePostureSnapshot);
 //   - the Scan page sends the register only for an enrolled repository;
 //   - a build that predates scoped attachments, re-attaching, writes a
 //     machine-wide credential, and a user reading this is the one who would run
@@ -1148,8 +1151,10 @@ export const CONNECTION_FORWARDING_NOTICE =
 export const CONNECTION_FORWARDING_NOTICE_SCOPED =
   'While this machine is attached as a personal device, the plugin forwards activity only ' +
   'from repositories enrolled with `aka enroll`; activity anywhere else stays on this machine. ' +
-  'It still pulls the policy that deployment sets and sends a short report on this install: ' +
-  'its host name, versions, detection packs and finding counts. A scan you run from the Scan ' +
+  'It still pulls the policy that deployment sets and checks for commands it has issued to this ' +
+  'device (a rescan runs only in an enrolled repository). It also sends a report on this install ' +
+  'that includes a device identifier, the host name, versions, detection packs, policy counts, ' +
+  'finding counts and the dates of the first and latest finding. A scan you run from the Scan ' +
   'page sends the Data Shares register only for an enrolled repository — destinations and call ' +
   'sites, never source text. Re-attaching with a version of AKA older than this one would make ' +
   'the attachment machine-wide. This page reads only your local store, so it cannot report ' +
@@ -1157,7 +1162,7 @@ export const CONNECTION_FORWARDING_NOTICE_SCOPED =
 
 // The mode line under an attached connection's name.
 export const CONNECTION_MODE_SCOPED =
-  'Scoped — a personal device. Only activity from repositories enrolled with `aka enroll` is sent.';
+  'Scoped — a personal device. Activity is sent only from repositories enrolled with `aka enroll`.';
 export const CONNECTION_MODE_MACHINE =
   'Machine-wide — an organization device. Activity from every project on this machine is sent.';
 
@@ -1172,7 +1177,7 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
     value: 'scoped',
     label: 'Personal device',
     description:
-      'Only activity from repositories you enroll with `aka enroll` is sent. Activity anywhere ' +
+      'Activity is sent only from repositories you enroll with `aka enroll`. Activity anywhere ' +
       'else stays on this machine.',
   },
   {
@@ -1183,11 +1188,11 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
 ];
 
 // In place of the choice, on a machine whose connection an administrator
-// governs: the attach is machine-wide whatever is picked, so offering a pick
-// would be a control with no effect.
+// governs: a scoped pick is refused and any other attach is machine-wide, so
+// offering a pick would be a control with no effect.
 export const ATTACH_MODE_MANAGED_NOTICE =
   'Your organization manages this machine’s connection, so it attaches as an organization ' +
-  'device: activity from every project on it is sent.';
+  'device: activity from every project on it is sent. A personal-device attach is refused here.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 //
@@ -1384,6 +1389,17 @@ function ConnectionRow({
   // The device kind the user picked, or null until they pick one.
   const [mode, setMode] = useState<AttachmentMode | null>(null);
   const attached = isAttached(settings);
+  // A pick belongs to one decision to attach. The in-page Detach clears it, but a
+  // machine detached from outside this page re-renders it standalone in place,
+  // and the old pick would come back pre-ticked: the form's only default is a
+  // mode kept for the endpoint the settings name. So it goes whenever the
+  // machine stops being attached, by whichever route. Adjusted during render
+  // rather than in an effect, so the stale pick is never painted.
+  const [wasAttached, setWasAttached] = useState(attached);
+  if (attached !== wasAttached) {
+    setWasAttached(attached);
+    if (!attached) setMode(null);
+  }
   const locked = managedLabel !== undefined;
   const holdsMachineWide = machineOnly === true;
   // What an attach from the form would carry; null while there is a choice left.

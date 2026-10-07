@@ -30,6 +30,12 @@ const standalone: WorkspaceSettings = {
   bodyRetention: { enabled: false, retainDays: 30 },
 };
 
+const attached: WorkspaceSettings = {
+  ...standalone,
+  runMode: 'attached',
+  controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-10-01T00:00:00.000Z' },
+};
+
 let mounted: MountedRoot;
 /** Every attach the view handed to the host, as the argument list it passed. */
 let sent: unknown[][];
@@ -158,5 +164,22 @@ describe('the attach form and its mode', () => {
     click(attachButton());
 
     expect(sent).toEqual([[ENDPOINT, '', 'test-key', 'scoped']]);
+  });
+
+  it('forgets a pick when the machine is attached and then detached outside this page', () => {
+    render();
+    click(radio('Personal device'));
+    expect(radio('Personal device').checked).toBe(true);
+
+    // The machine attaches and detaches elsewhere while this page stays open,
+    // so the page re-renders in place without the in-page Detach ever running.
+    render({ settings: attached });
+    render();
+
+    expect(radio('Personal device').checked).toBe(false);
+    expect(radio('Organization device').checked).toBe(false);
+    typeInto('Deployment endpoint', ENDPOINT);
+    typeInto('Access key', 'test-key');
+    expect(attachButton().disabled).toBe(true);
   });
 });

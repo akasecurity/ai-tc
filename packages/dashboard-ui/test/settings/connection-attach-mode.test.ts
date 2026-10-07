@@ -97,6 +97,26 @@ describe('attach-mode copy', () => {
     expect(scoped?.description).toMatch(/stays on this machine/i);
   });
 
+  it('words the personal-device choice and mode line so they cannot read as "nothing else is sent"', () => {
+    // The install report goes in both modes, so "only activity ... is sent"
+    // would claim less than is sent. The activity is what is limited.
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped');
+    expect(scoped?.description).toMatch(/Activity is sent only from repositories you enroll/);
+    expect(CONNECTION_MODE_SCOPED).toMatch(
+      /Activity is sent only from repositories enrolled with `aka enroll`/,
+    );
+    expect(scoped?.description).not.toMatch(/Only activity/);
+    expect(CONNECTION_MODE_SCOPED).not.toMatch(/Only activity/);
+  });
+
+  it('says on a governed machine that a personal-device attach is refused', () => {
+    // There is no pick to offer: a scoped request is refused, and any other
+    // attach is machine-wide.
+    expect(ATTACH_MODE_MANAGED_NOTICE).toMatch(/personal-device attach is refused/i);
+    expect(ATTACH_MODE_MANAGED_NOTICE).toMatch(/organization device/i);
+    expect(ATTACH_MODE_MANAGED_NOTICE).not.toMatch(/whatever is picked/i);
+  });
+
   it('says on a scoped machine what still goes, and what does not', () => {
     // A scoped machine still pulls policy and sends a report on the install —
     // both send without a scope verdict, by design — so a notice that said
@@ -107,6 +127,14 @@ describe('attach-mode copy', () => {
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/policy/i);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/host name/i);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/finding counts/i);
+    // The report is introduced as including these, not as consisting of them:
+    // it also carries a device identifier, policy counts and the dates of the
+    // first and latest finding, and the machine checks for device commands.
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/report on this install that includes/i);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/device identifier/i);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/policy counts/i);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/first and latest finding/i);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/checks for commands/i);
     // The Scan page's register goes only for an enrolled repository, and the
     // notice must not read as if every scan sends one.
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(

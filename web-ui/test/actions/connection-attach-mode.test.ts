@@ -15,7 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../packages/persistence/src/managed-settings.ts';
 import { attachToControlPlane, detachFromControlPlane } from '../../app/(app)/settings/actions.ts';
-import { ATTACH_MODE_REQUIRED } from '../../app/lib/action-refusals.ts';
+import {
+  ATTACH_CREDENTIAL_UNWRITABLE,
+  ATTACH_MODE_REQUIRED,
+} from '../../app/lib/action-refusals.ts';
 import { type LoopbackServer, startLoopbackServer } from '../helpers/loopback.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -510,6 +513,39 @@ describe('a credential file this build cannot read', () => {
     ).toEqual({ ok: true });
 
     expect(storedCredential()).toMatchObject({ specVersion: 1, endpoint: deployment.origin });
+  });
+});
+
+describe('a settings directory the earlier credential cannot be read from', () => {
+  // A regular FILE where ~/.aka/settings should be a directory: the read of the
+  // credential on file raises rather than answering, and the write that would
+  // follow fails on the same fault.
+  it.each([undefined, 'machine', 'scoped'] as const)(
+    'refuses before the key is sent, with the mode %s',
+    async (mode) => {
+      mkdirSync(akaHome(), { recursive: true });
+      writeFileSync(settingsDir(akaHome()), 'not a directory');
+
+      const res = await attachToControlPlane({
+        endpoint: deployment.origin,
+        accessKey: KEY,
+        ...(mode === undefined ? {} : { mode }),
+      });
+
+      expect(res).toEqual({ ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE });
+      expectNoEchoOf(res.error, KEY);
+      expect(deployment.received).toEqual([]);
+    },
+  );
+});
+
+describe('the refusal that asks for a mode', () => {
+  it('tells a stale page what to do: reload, then choose the kind of device', () => {
+    // The form sends no mode while the machine is managed, so a page rendered
+    // then and submitted after the administrator's hold lifted meets this
+    // refusal too, and has no choice on screen until it is reloaded.
+    expect(ATTACH_MODE_REQUIRED).toMatch(/reload the page/i);
+    expect(ATTACH_MODE_REQUIRED).toMatch(/personal or an organization device/i);
   });
 });
 

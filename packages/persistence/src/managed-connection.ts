@@ -192,9 +192,10 @@ export function managedDetachRefusal(
  * device as the organization's.
  *
  * A caller consults this only AFTER `managedAttachRefusal` has returned null.
- * Where that refuses (held standalone, pinned to another deployment, a label
- * required) the machine attaches in no mode at all, and that refusal's own
- * reason is the one to report; this answer speaks only to the scoped mode.
+ * Where that refuses (held standalone, pinned to another deployment, pinned
+ * under another label, or a label required) the machine attaches in no mode at
+ * all, and that refusal's own reason is the one to report; this answer speaks
+ * only to the scoped mode.
  *
  * The overlay is all it reads, so it answers the same for a device that already
  * holds a scoped attachment as for any other. RUN BEFORE ANY NETWORK CALL OR

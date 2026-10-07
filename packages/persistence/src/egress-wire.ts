@@ -406,8 +406,8 @@ function isEnrollableKey(key: string): boolean {
  *
  * THIS DOES NOT REFUSE EVERY LOCAL PATH. A relative path that begins with `./`,
  * `../` or `-` is refused by the host rule above, but a bare relative path of
- * three or more segments, such as `src/acme/payments-api`, is indistinguishable
- * from a key whose host has no dot, and it IS accepted. A caller must refuse
+ * three or more segments can be accepted, for example `src/acme/payments-api`:
+ * it is indistinguishable from a key whose host has no dot. A caller must refuse
  * text that names an existing local directory before calling this.
  *
  * For a repository named by hand only. A key a checkout resolved for itself is

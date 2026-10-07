@@ -13,7 +13,7 @@
 // receives the type it was written for.
 import { z } from 'zod';
 
-import { printable } from './control-plane.ts';
+import { AttachmentMode, printable } from './control-plane.ts';
 
 // Deliberately NOT `.strict()`, for the reason exception-action.ts gives: an
 // unknown key from a newer client must not refuse a save over a field this
@@ -161,5 +161,12 @@ export const AttachInput = z.object({
   // renders a longer one usefully.
   label: printable(200).optional(),
   accessKey: z.string(),
+  // How much of this machine the attachment forwards: everything, or only the
+  // repositories its user enrolls. Optional, so a page built before the choice
+  // existed still posts a valid input. What an absent mode means is the action's
+  // rule, decided where the credential is read, not this shape's. A value that
+  // is not a mode is refused rather than stripped, so it can never arrive at the
+  // action looking like no choice at all.
+  mode: AttachmentMode.optional(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

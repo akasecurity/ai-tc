@@ -137,7 +137,9 @@ machine against a control plane **your organization runs**, never a service AKA
 operates, and from then on this machine forwards each captured event to that
 deployment as it stored it, and a scan you run on it (`aka scan`, or the dashboard's
 Scan page) sends the Data Shares register it just recorded over the same
-connection — destinations and call sites, never source text.
+connection — destinations and call sites, never source text. On a machine attached
+in the scoped mode, only the repositories enrolled with `aka enroll` are forwarded,
+and activity in any other repository stays on the machine.
 
 That is the same content [Data at rest](#data-at-rest) describes, so the masking
 rule is the same one: a flagged span is masked before the event is sent only

@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import type { AttachmentScopeEntry } from '@akasecurity/schema';
+
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 /**
@@ -91,6 +93,20 @@ export interface WriterJob {
    * answer set and the writer would apply nothing while still reporting success.
    */
   clear?: string[];
+  /**
+   * One enrollment, written the way a command that edits the scope record
+   * writes it: through the updater form, appending `entry` to the scope record
+   * for `endpoint` as found in the file the merge is about to land on. A writer
+   * given this applies only the enrollment; `set` and `clear` are ignored.
+   */
+  enroll?: { endpoint: string; entry: AttachmentScopeEntry };
+  /**
+   * One removal, written the same way: through the updater form, removing every
+   * stored entry whose identity is `identity` from the scope record for
+   * `endpoint`, as found in the file the merge is about to land on. A writer
+   * given this applies only the removal; `set`, `clear` and `enroll` are ignored.
+   */
+  unenroll?: { endpoint: string; identity: string };
 }
 
 /** One writer's own account of its write. */

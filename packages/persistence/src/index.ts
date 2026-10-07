@@ -8,6 +8,11 @@ export {
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
+export {
+  addAttachmentScopeEntries,
+  freshAttachmentScope,
+  removeAttachmentScopeEntries,
+} from './attachment-scope-edit.ts';
 export type {
   CredentialFileRead,
   CredentialState,

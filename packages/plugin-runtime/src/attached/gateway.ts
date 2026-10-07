@@ -435,9 +435,9 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    *
    * Anything the scan did not vouch for sends no deleted path, and the register
    * itself still goes: no list, a list that throws or whose read is rejected, or a
-   * list whose length is not the register's. Deleting is the only thing a dropped path could have done on
-   * the server, so the cost of a refusal is a stored row that stays, never a path
-   * that leaves.
+   * list whose length is not the register's. Deleting is the only thing a dropped
+   * path could have done on the server, so the cost of a refusal is a stored row
+   * that stays, never a path that leaves.
    *
    * Machine mode returns `input` itself, the same object and unread, so a machine
    * attachment's request is exactly what it was. A register that lists no deleted

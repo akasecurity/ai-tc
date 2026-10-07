@@ -44,7 +44,7 @@ import type { DiscoverOptions } from './discover.ts';
 import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
-import { type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
+import { type FileRepository, type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
 import { type WalkedFileMeta, type WalkOptions, walkSourceFiles } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
@@ -318,6 +318,95 @@ async function sweepDeletedFiles(
   return deleted;
 }
 
+// What a row records as the repository of a path, given the row the path already
+// has (`prev`, absent when the path has none under this ruleset) and the
+// repository the path climbs to now (`now`, from `scopeKeyOf.repositoryOf`).
+//
+//   1. No row, or a row with no root (a file that was in no repository, or a row
+//      written before roots were kept): record `now`.
+//   2. `now` is the recorded repository or one made inside it (its root equals
+//      the recorded root or lies below it): record `now`. This covers a remote
+//      that changed, a checkout replaced at the same path, and a directory made
+//      into a repository in place.
+//   3. Anything else (the root is above the recorded one, unrelated to it, or
+//      there is none): keep the recorded root AND key.
+//
+// Case 3 is the rule's point. The recorded repository has lost its `.git` and the
+// file now climbs to one around it, or to none. A scan cannot tell a removal in
+// progress from a permanent one, and the removal of a clone takes its `.git`
+// first whenever it sorts before the code directories, as it does under APFS name
+// order: a scan that walks the clone in between sees every file in it in the
+// project around it. Taking that answer would record the project's key for files
+// that belong to the clone, and once the removal finishes those paths are
+// deleted, keyed in scope, and their names are forwarded. The ledger never
+// forgets a path, so they would be sent again by every later register. The
+// reading that cannot leak is that the file still belongs to the repository it
+// was read in, so a record moves only to a repository at or below the one it
+// has, never out of it.
+//
+// Every row the scan writes for a path that already has one goes through here: a
+// file skipped unread at the first tier, a touched file, a deduplicated file, a
+// captured file and both manifest branches. A capture is NOT decided here: the
+// event's key stays the capture lookup's answer, which reads the disk as it is.
+//
+// WHAT THIS LEAVES, in one place (other comments point here):
+//   - A row is refreshed only when the scan has a register (Data Shares on), and
+//     only for a file the walks reach. A row for a file under a skipped
+//     directory, behind an ignore file, inside a hidden clone or over the size
+//     cap is never refreshed, whatever its repository does.
+//   (a) A file whose repository lost its `.git` keeps that repository's key for
+//       good, so on a scoped attachment its deletion is never sent, even after the
+//       enclosing project adopts the file. That is the safe direction.
+//   (b) A file READ while its repository's `.git` is missing is captured, and its
+//       Data Shares entries are registered, under the repository around it, in
+//       that scan: the capture lookup and the register read the disk as it is,
+//       though the ledger row keeps the earlier repository.
+//   (c) The one scan that fills a row trusts the disk as it is then. That is a
+//       row written before roots were kept, and also every row under a ruleset
+//       the ledger has not scanned yet (a rule pack changed, or Data Shares
+//       switched on or off), because `prev` holds only the current ruleset's rows.
+//   (d) A file replaced AND deleted between two scans is attributed by the
+//       repository it was last recorded under: no scan saw the replacement.
+function repositoryToRecord(
+  prev: ScanLedgerState | undefined,
+  now: FileRepository,
+): FileRepository {
+  const recordedRoot = prev?.scopeRoot;
+  if (recordedRoot === undefined) return now;
+  if (now.root !== undefined && isAtOrBelow(recordedRoot, now.root)) return now;
+  return { root: recordedRoot, key: prev?.scopeKey };
+}
+
+// True when `dir` is `ancestor` or lies below it. Compared as paths, never as
+// strings: a sibling whose name starts with the ancestor's is not below it.
+function isAtOrBelow(ancestor: string, dir: string): boolean {
+  const rel = relative(ancestor, dir);
+  // A path on another drive comes back absolute.
+  if (isAbsolute(rel)) return false;
+  const posixRel = toPosix(rel);
+  return posixRel === '' || (posixRel !== '..' && !posixRel.startsWith('../'));
+}
+
+// The ledger columns that record a repository, for an entry. A repository with
+// no remote has a root and no key; a file in none has neither.
+function repositoryColumns(
+  repository: FileRepository,
+): Pick<ScanLedgerEntry, 'scopeKey' | 'scopeRoot'> {
+  return {
+    ...(repository.key !== undefined ? { scopeKey: repository.key } : {}),
+    ...(repository.root !== undefined ? { scopeRoot: repository.root } : {}),
+  };
+}
+
+// True when the repository to record is not the one the row already holds.
+function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): boolean {
+  return decided.key !== prev.scopeKey || decided.root !== prev.scopeRoot;
+}
+
+// What a scan without a register records: no repository. Only a scan with a
+// register has any use for one.
+const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
+
 async function scanDir(
   runtime: PluginRuntime,
   gateway: DataGateway,
@@ -346,10 +435,12 @@ async function scanDir(
   // it remembers belongs to this root alone, and it reads nothing until it is
   // asked. It feeds three things: the key stamped on each file that reaches
   // capture (called as `scopeKeyOf(path)`, which climbs to the repository
-  // holding the file), the keys of the repositories nested in this root, which a
-  // gateway reads beside the register (`scopeKeyOf.ofRepositoryRoot`, see
-  // commitEgress), and the key of each path the register lists as deleted, which
-  // it reads the same way.
+  // holding the file), the repository a ledger row records for each file the
+  // walks reach (`scopeKeyOf.repositoryOf`, decided by `repositoryToRecord`), and
+  // the keys of the repositories nested in this root, which a gateway reads
+  // beside the register (`scopeKeyOf.ofRepositoryRoot`, see commitEgress). The key
+  // of a path the register lists as deleted does not come from here: it is the
+  // one the ledger recorded when the path was last read (see keysOfDeleted).
   const scopeKeyOf = scopeKeysUnder(rootDir);
 
   // Told every directory below the root, by either walk, that holds a `.git`
@@ -371,25 +462,27 @@ async function scanDir(
   // caller-supplied shouldRead (which filters silently, without counting).
   //
   // The file is not read, but the repository it is in can have changed without
-  // touching it: its directory made into a repository in place, or a row left
-  // with no key by a ledger that predates keys. The row was read to decide the
-  // skip, so its recorded key is at hand, and the key the file has now is the
-  // capture lookup's (memoized per directory, so each repository is read once per
-  // scan). When they differ, the row is rewritten with the new key and nothing
-  // else of it changed.
+  // touching it: a remote that changed, its directory made into a repository in
+  // place, or a row left with no repository by a ledger that predates them. The
+  // row was read to decide the skip, so its recorded repository is at hand, and
+  // the repository the file climbs to now is the capture lookup's (memoized per
+  // directory, so each repository is read once per scan). `repositoryToRecord`
+  // decides what the row holds: it moves to a repository at or below the recorded
+  // one and never out of it. When the decision differs from the row, the row is
+  // rewritten with it and nothing else of it changed.
   const shouldRead = (meta: WalkedFileMeta): boolean => {
     const prev = ledger.previous.get(meta.path);
     if (prev?.mtime === meta.mtime) {
       skipped++;
       if (egress !== null) {
-        const keyNow = scopeKeyOf(meta.relativePath);
-        if (keyNow !== prev.scopeKey) {
+        const decided = repositoryToRecord(prev, scopeKeyOf.repositoryOf(meta.relativePath));
+        if (repositoryDiffers(prev, decided)) {
           updates.push({
             path: meta.path,
             mtime: prev.mtime,
             contentHash: prev.contentHash,
             rulesetHash: ledger.rulesetHash,
-            ...(keyNow !== undefined ? { scopeKey: keyNow } : {}),
+            ...repositoryColumns(decided),
           });
         }
       }
@@ -409,22 +502,26 @@ async function scanDir(
     // ledger: a path that is deleted later is attributed from this record, since
     // the disk cannot say once its directory has been replaced or reused. The
     // same climbing lookup that keys captures, so a clone's file is keyed by the
-    // clone and a file in a repository with no remote has none. Only a scan with
-    // a register has any use for it. A file skipped unread at the first tier
-    // never reaches here: its row's key is compared with the key it has now and
-    // refreshed when they differ (see shouldRead).
-    const fileKey = egress === null ? undefined : scopeKeyOf(file.relativePath);
+    // clone and a file in a repository with no remote has none. A row the path
+    // already has moves only to a repository at or below the one it recorded
+    // (see repositoryToRecord). Only a scan with a register has any use for any
+    // of it. A file skipped unread at the first tier never reaches here: its row
+    // is decided the same way (see shouldRead).
+    const prev = ledger.previous.get(file.path);
+    const repository =
+      egress === null
+        ? NO_REPOSITORY
+        : repositoryToRecord(prev, scopeKeyOf.repositoryOf(file.relativePath));
     const ledgerEntry: ScanLedgerEntry = {
       path: file.path,
       mtime: file.mtime,
       contentHash: hash,
       rulesetHash: ledger.rulesetHash,
-      ...(fileKey !== undefined ? { scopeKey: fileKey } : {}),
+      ...repositoryColumns(repository),
     };
 
     // Tier-2 skip: mtime moved but the content didn't (a touch, a checkout).
     // Refresh the recorded mtime so the next run skips at tier 1.
-    const prev = ledger.previous.get(file.path);
     if (prev?.contentHash === hash) {
       skipped++;
       updates.push(ledgerEntry);
@@ -457,7 +554,8 @@ async function scanDir(
 
     // The file's nearest repository decides its key, not this scan root: a
     // nested clone or submodule keys by its own remote, and a nested repository
-    // with no remote gets none.
+    // with no remote gets none. This is the disk as it is now, whatever the ledger
+    // row records (see repositoryToRecord, residual (b)).
     const scopeKey = scopeKeyOf(file.relativePath);
     const result = await runtime.capture(
       {
@@ -565,19 +663,23 @@ function scanManifests(
   // the collector the source walk reports to as well (see scanDir).
   for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot)) {
     const prev = ledger.previous.get(manifest.path);
-    // Keyed like a walked file, as it is now: by the repository the manifest is
-    // in, so a manifest in a nested clone is the clone's. A manifest skipped
-    // unchanged has its row's key refreshed the same way a skipped source file's
-    // is (see scanDir).
-    const manifestKey = scopeKeyOf(toPosix(relative(rootDir, manifest.path)));
+    // Recorded like a walked file's repository, decided the same way: the
+    // repository the manifest is in, so a manifest in a nested clone is the
+    // clone's, and a row moves only to a repository at or below the one it
+    // recorded (see repositoryToRecord). A manifest skipped unchanged has its row
+    // refreshed the way a skipped source file's is (see scanDir).
+    const repository = repositoryToRecord(
+      prev,
+      scopeKeyOf.repositoryOf(toPosix(relative(rootDir, manifest.path))),
+    );
     if (prev?.mtime === manifest.mtime) {
-      if (manifestKey !== prev.scopeKey) {
+      if (repositoryDiffers(prev, repository)) {
         updates.push({
           path: manifest.path,
           mtime: prev.mtime,
           contentHash: prev.contentHash,
           rulesetHash: ledger.rulesetHash,
-          ...(manifestKey !== undefined ? { scopeKey: manifestKey } : {}),
+          ...repositoryColumns(repository),
         });
       }
       continue;
@@ -596,7 +698,7 @@ function scanManifests(
       mtime: manifest.mtime,
       contentHash: hash,
       rulesetHash: ledger.rulesetHash,
-      ...(manifestKey !== undefined ? { scopeKey: manifestKey } : {}),
+      ...repositoryColumns(repository),
     });
     if (prev?.contentHash === hash) continue;
 
@@ -617,8 +719,10 @@ function scanManifests(
 // Beside the register goes the scope key of every repository nested below the
 // scan root that either walk passed through. A gateway that forwards by scope
 // sends the register only when each of them may be sent too; the local store
-// ignores them. The keys are resolved only when a gateway reads them, so a
-// gateway that never asks costs no repository read.
+// ignores them. These nested-root keys are resolved only when a gateway reads
+// them, so a gateway that never asks costs no read of them. (A scan with a
+// register still reads each repository its walks reach, to record it in the
+// ledger: see repositoryToRecord.)
 //
 // The register's deleted files come from the ledger, not from the walk, so the
 // nested roots do not cover them: a clone removed since the last scan, or one an
@@ -706,14 +810,16 @@ async function commitEgress(
 // none: a file read before keys were kept, one in a repository with no remote,
 // or any path when the gateway cannot list the keys. A scoped attachment does
 // not send such a path. After an upgrade that is a gap of one scan: the next scan
-// fills the key of every unchanged file whose row has none (see shouldRead), so
-// only a path deleted before that scan is left without.
+// with a register fills the key of every unchanged file whose row has none (see
+// shouldRead), so only a path deleted before that scan is left without. A deleted
+// path is never walked again, so nothing fills its key later.
 //
-// Every scan compares the key of each file it skips unread with the key its row
-// recorded, so a directory made into a repository in place, or swapped for
-// another repository's with the same names and modification times, is corrected
-// by the next scan. What no scan can undo is a file replaced AND deleted between
-// two scans, which is attributed by the key it was last recorded under.
+// A scan with a register also refreshes the record of each file it reaches, so a
+// directory made into a repository in place, or swapped for another repository's
+// with the same names and modification times, is corrected by the next scan. A
+// row moves only to a repository at or below the one it recorded; what that
+// leaves unrefreshed, and what no scan can undo, is listed once, at
+// `repositoryToRecord`.
 //
 // The gateway's method is optional, and a read that throws gives no keys: a
 // missing answer sends fewer paths, never more.

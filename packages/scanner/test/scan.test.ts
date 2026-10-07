@@ -844,6 +844,8 @@ describe('scope key of each captured file', () => {
     write('src/work-a.ts', 'const work = 1;');
     write('src/work-b.ts', 'const work = 2;');
     await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    // Each row names the repository's directory as well as its key.
+    expect(recordedEntries().map((e) => e.scopeRoot)).toEqual([tmp, tmp]);
     scanLedger.mockResolvedValue(
       new Map(
         recordedEntries().map((e) => [
@@ -852,6 +854,7 @@ describe('scope key of each captured file', () => {
             mtime: e.mtime,
             contentHash: e.contentHash,
             ...(e.scopeKey !== undefined ? { scopeKey: e.scopeKey } : {}),
+            ...(e.scopeRoot !== undefined ? { scopeRoot: e.scopeRoot } : {}),
           },
         ]),
       ),

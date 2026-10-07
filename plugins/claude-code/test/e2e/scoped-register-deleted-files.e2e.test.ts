@@ -29,7 +29,16 @@
  * a directory that still exists, or a whole project directory, is sent, and a
  * machine-wide attachment sends what it always sent.
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 
@@ -330,6 +339,69 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     expect(deletedOf(registers[0])).toEqual([]);
   });
 
+  it('sends nothing of a clone when a scan lands between the removal of its `.git` and of its files', async () => {
+    // A removal takes the clone's `.git` first whenever it sorts before the code
+    // directories, so a scan that walks the clone in between finds its files
+    // with no repository of their own, in the enrolled project around them. They
+    // are the clone's, and stay recorded as the clone's: once the removal
+    // finishes they are deleted, and none of their names may leave the machine.
+    seedProjectWithClone();
+    const config = attach('scoped');
+    await scan(config);
+    expect(registers).toEqual([]);
+
+    rmSync(join(repo, CLONE, 'top.ts'));
+    rmSync(join(repo, CLONE, '.git'), { recursive: true, force: true });
+    await scan(config);
+
+    rmSync(join(repo, CLONE), { recursive: true, force: true });
+    write('src/new.ts', callFor('new'));
+    await scan(config);
+
+    // The scan after the removal sends the project's register, and no path of
+    // the clone: not the file removed first, and not the ones skipped unread in
+    // between.
+    expect(scannedOf(registers.at(-1))).toContain('src/new.ts');
+    expect(deletedOf(registers.at(-1))).toEqual([]);
+    expect(JSON.stringify(registers)).not.toContain(CLONE);
+    // Every later register carries them again unless the ledger forgot, and the
+    // ledger never does: a further scan still sends nothing of the clone.
+    write('src/newer.ts', callFor('newer'));
+    await scan(config);
+    expect(JSON.stringify(registers)).not.toContain(CLONE);
+  });
+
+  it('sends no deletion of a clone file that was changed in that window either', async () => {
+    // A file READ while its clone's `.git` is missing is the one thing a scan in
+    // that window cannot place: it is registered, like any file the walk reaches,
+    // under the project around it, in that scan. That is the disk as it is, and it
+    // is not what this case pins. What the ledger guarantees is that the row of
+    // the file keeps the clone, so nothing of the clone is sent once the removal
+    // finishes, and no register after that scan names it.
+    seedProjectWithClone();
+    const config = attach('scoped');
+    await scan(config);
+    expect(registers).toEqual([]);
+
+    write(`${CLONE}/src/keep.ts`, callFor('clone-keep-changed'));
+    // A modification time a scan cannot read as unchanged, however fast the
+    // rewrite followed the first write.
+    const kept = join(repo, CLONE, 'src', 'keep.ts');
+    const later = new Date(statSync(kept).mtimeMs + 60_000);
+    utimesSync(kept, later, later);
+    rmSync(join(repo, CLONE, '.git'), { recursive: true, force: true });
+    await scan(config);
+    const afterWindow = registers.length;
+
+    rmSync(join(repo, CLONE), { recursive: true, force: true });
+    write('src/new.ts', callFor('new'));
+    await scan(config);
+
+    expect(registers.length).toBeGreaterThan(afterWindow);
+    expect(deletedOf(registers.at(-1))).toEqual([]);
+    expect(JSON.stringify(registers.slice(afterWindow))).not.toContain(CLONE);
+  });
+
   it('sends the files of a project directory that was removed whole', async () => {
     gitRepo(repo, WORK_ORIGIN);
     write('src/pay.ts', callFor('pay'));
@@ -361,6 +433,37 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     expect(registers).toHaveLength(1);
     expect(deletedOf(registers[0])).toEqual(['src/old.ts']);
     expect(JSON.stringify(registers)).not.toContain(CLONE);
+  });
+});
+
+describe('a scoped attachment whose register has deleted paths and is kept local', () => {
+  // The gateway asks for the recorded keys of the deleted paths only once the
+  // register can be sent at all. A register that stays on the machine, because its
+  // project is not enrolled or a personal clone is nested in it, never reads them.
+  it('reads no recorded key for a personal project', async () => {
+    gitRepo(repo, PERSONAL_ORIGIN);
+    write('src/pay.ts', callFor('pay'));
+    write('src/old.ts', callFor('old'));
+    const config = attach('scoped');
+    await scan(config);
+
+    rmSync(join(repo, 'src', 'old.ts'));
+    await scan(config);
+
+    expect(registers).toEqual([]);
+    expect(keyReads()).toBe(0);
+  });
+
+  it('reads no recorded key while a personal clone is still walked inside the enrolled project', async () => {
+    seedProjectWithClone();
+    const config = attach('scoped');
+    await scan(config);
+
+    rmSync(join(repo, 'src', 'old.ts'));
+    await scan(config);
+
+    expect(registers).toEqual([]);
+    expect(keyReads()).toBe(0);
   });
 });
 

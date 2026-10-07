@@ -4,8 +4,10 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +19,7 @@ import type {
   RecordProjectEgressInput,
 } from '@akasecurity/plugin-sdk';
 import {
+  contentHashOf,
   loadConfig,
   manifestKindOf,
   resolveNonGitProject,
@@ -99,6 +102,8 @@ interface LedgerRow {
   // The repository the file was in when it was last read, replaced on every
   // write like the real column.
   scopeKey: string | undefined;
+  // The directory of that repository, replaced on every write like the key.
+  scopeRoot: string | undefined;
 }
 let ledgerRows: Map<string, LedgerRow>;
 
@@ -190,6 +195,7 @@ beforeEach(() => {
               mtime: row.mtime,
               contentHash: row.contentHash,
               ...(row.scopeKey !== undefined ? { scopeKey: row.scopeKey } : {}),
+              ...(row.scopeRoot !== undefined ? { scopeRoot: row.scopeRoot } : {}),
             },
           ]),
       ),
@@ -207,6 +213,7 @@ beforeEach(() => {
         contentHash: entry.contentHash,
         rulesetHash: entry.rulesetHash,
         scopeKey: entry.scopeKey,
+        scopeRoot: entry.scopeRoot,
       });
     }
     return Promise.resolve();
@@ -1164,12 +1171,14 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       await scan(config);
 
       // `top.ts` is gone, and is still the clone's: that is what it was when it was
-      // read. `keep.ts` is unchanged and skipped unread, but it is in the project
-      // now that its directory is no longer a repository, and its row says so.
+      // read. `keep.ts` is unchanged and skipped unread. It now climbs to the
+      // project, which is around the repository its row recorded, and the scan
+      // cannot tell a removal in progress from a permanent one, so its row keeps
+      // the clone.
       expect(await deletedWithKeys()).toEqual([
         { file: 'personal-clone/top.ts', key: PERSONAL_KEY },
       ]);
-      expect(recordedKey('personal-clone/keep.ts')).toBe(PROJECT_KEY);
+      expect(recordedKey('personal-clone/keep.ts')).toBe(PERSONAL_KEY);
     });
 
     it('keys a clone emptied in place, whose `.git` is still there, by the clone', async () => {
@@ -1202,7 +1211,7 @@ describe('scanWorktree — the scope key of each deleted path', () => {
       expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
     });
 
-    it('has no key when the read of the keys fails, and the scan still completes', async () => {
+    it("has no key when the read of the keys fails at the gateway's ask, though the scan completed", async () => {
       write(repo, 'src/pay.ts', STRIPE_CALL);
       write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
       const config = configWith(true);
@@ -1210,6 +1219,8 @@ describe('scanWorktree — the scope key of each deleted path', () => {
 
       rmSync(join(repo, 'src', 'old.ts'));
       scanLedgerPathKeys.mockRejectedValueOnce(new Error('the ledger could not be read'));
+      // The scan reads no keys, so the rejection is consumed after it returns,
+      // when `deletedWithKeys` asks the way a scoped gateway would.
       await scan(config);
 
       expect(await deletedWithKeys()).toEqual([{ file: 'src/old.ts', key: undefined }]);
@@ -1333,5 +1344,407 @@ describe('scanWorktree — a file the ledger skips as unchanged', () => {
     await scan(config);
 
     expect(recordScanned.mock.calls.flatMap(([entries]) => entries as unknown[])).toEqual([]);
+  });
+});
+
+describe('scanWorktree — a recorded repository moves only to one at or below it', () => {
+  // A row records the repository its file was read in, as a key and the
+  // directory holding that repository's `.git`. A later scan may move the row to
+  // the repository the file climbs to now only when that is the recorded
+  // repository or one made inside it. When the file climbs to a repository AROUND
+  // the recorded one, or to none, the recorded repository's `.git` is gone, and a
+  // scan cannot tell a removal in progress from a permanent one: the removal of a
+  // clone takes its `.git` first and its files after, so a scan that lands
+  // between the two sees every file of the clone in the project around it. The
+  // reading that cannot leak is that the file still belongs to the repository it
+  // was read in.
+  const PERSONAL_URL = 'https://github.com/me/personal.git';
+  const OTHER_URL = 'https://github.com/acme/tools.git';
+  const MOVED_URL = 'https://github.com/acme/payments-moved.git';
+  const PROJECT_KEY = 'github.com/acme/payments-api';
+  const PERSONAL_KEY = 'github.com/me/personal';
+  const OTHER_KEY = 'github.com/acme/tools';
+  const MOVED_KEY = 'github.com/acme/payments-moved';
+  const CLONE = 'personal-clone';
+  const NOTIFY_CALL = "await fetch('https://api.github.com/repos/me/personal/dispatches');\n";
+  // What the clone holds, relative to the clone.
+  const CLONE_FILES = ['package.json', 'src/keep.ts', 'src/notify.ts', 'top.ts'];
+
+  const cloneDir = (): string => join(repo, CLONE);
+  const absOf = (rel: string): string => join(repo, ...rel.split('/'));
+
+  function removeGit(dir: string): void {
+    rmSync(join(dir, '.git'), { recursive: true, force: true });
+  }
+
+  // A repository whose config names no remote.
+  function remotelessRepo(dir: string): void {
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+  }
+
+  function rowOf(rel: string): LedgerRow {
+    const row = ledgerRows.get(absOf(rel));
+    if (row === undefined) throw new Error(`${rel} is not in the ledger`);
+    return row;
+  }
+  const recordedKey = (rel: string): string | undefined => rowOf(rel).scopeKey;
+  const recordedRoot = (rel: string): string | undefined => rowOf(rel).scopeRoot;
+
+  // Moves a file's modification time forward, so a scan cannot read a rewrite
+  // made in the same millisecond as the original as no change.
+  function later(rel: string): void {
+    const at = new Date(statSync(absOf(rel)).mtimeMs + 60_000);
+    utimesSync(absOf(rel), at, at);
+  }
+
+  async function scan(config: PluginConfig, rootDir = repo): Promise<void> {
+    await scanWorktree(config, { rootDir, sourceTool: 'claude-code' });
+  }
+
+  async function lastDeleted(): Promise<{ file: string; key: string | undefined }[]> {
+    const [input, context] = recordProjectEgress.mock.calls.at(-1) as [
+      RecordProjectEgressInput,
+      ProjectEgressContext | undefined,
+    ];
+    if (input.reconcile.mode !== 'ledger') throw new Error('expected ledger mode');
+    const keys = await context?.deletedFileKeys?.();
+    if (keys === undefined) throw new Error('the scan supplied no keys for its deleted paths');
+    return input.reconcile.deletedFiles
+      .map((file, at) => ({ file, key: keys[at] }))
+      .sort((a, b) => a.file.localeCompare(b.file));
+  }
+
+  // The project with a personal clone inside it, each holding files and the
+  // clone a manifest.
+  function seedProjectWithClone(): void {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    gitRepo(cloneDir(), PERSONAL_URL);
+    write(repo, `${CLONE}/top.ts`, `${NOTIFY_CALL}// top\n`);
+    write(repo, `${CLONE}/src/keep.ts`, `${NOTIFY_CALL}// keep\n`);
+    write(repo, `${CLONE}/src/notify.ts`, `${NOTIFY_CALL}// notify\n`);
+    write(repo, `${CLONE}/package.json`, STRIPE_MANIFEST);
+  }
+
+  it('records the directory of the repository beside its key, the clone for a clone file', async () => {
+    seedProjectWithClone();
+    write(repo, 'pkg/package.json', STRIPE_MANIFEST);
+
+    await scan(configWith(true));
+
+    expect(recordedRoot('src/pay.ts')).toBe(repo);
+    expect(recordedRoot('pkg/package.json')).toBe(repo);
+    for (const rel of CLONE_FILES) {
+      expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      expect(recordedKey(`${CLONE}/${rel}`)).toBe(PERSONAL_KEY);
+    }
+  });
+
+  describe('a clone whose `.git` is gone while its files are still there', () => {
+    // The middle of `rm -rf`, `git clean -ffdx`, `git submodule deinit` or
+    // `git worktree remove`: the `.git` sorts first and goes first.
+    it('keeps the clone as the repository of every unchanged file, and a later deletion keys by the clone', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+
+      rmSync(join(cloneDir(), 'top.ts'));
+      removeGit(cloneDir());
+      await scan(config);
+
+      for (const rel of ['package.json', 'src/keep.ts', 'src/notify.ts']) {
+        expect(recordedKey(`${CLONE}/${rel}`)).toBe(PERSONAL_KEY);
+        expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      }
+
+      // The removal finishes.
+      rmSync(cloneDir(), { recursive: true, force: true });
+      write(repo, 'src/new.ts', `${STRIPE_CALL}// new\n`);
+      await scan(config);
+
+      expect(await lastDeleted()).toEqual(
+        CLONE_FILES.map((rel) => ({ file: `${CLONE}/${rel}`, key: PERSONAL_KEY })),
+      );
+    });
+
+    it('keeps the clone for a file read in that window, and the capture still takes the disk as it is', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+      capture.mockClear();
+
+      const changed = `${NOTIFY_CALL}// keep, changed\n`;
+      write(repo, `${CLONE}/src/keep.ts`, changed);
+      later(`${CLONE}/src/keep.ts`);
+      removeGit(cloneDir());
+      await scan(config);
+
+      const row = rowOf(`${CLONE}/src/keep.ts`);
+      // The row is the new read's, and still the clone's.
+      expect(row.contentHash).toBe(contentHashOf(changed));
+      expect(row.scopeKey).toBe(PERSONAL_KEY);
+      expect(row.scopeRoot).toBe(cloneDir());
+      // The event is keyed by the capture lookup, which reads the disk as it is:
+      // with the `.git` gone that is the project around the clone.
+      const input = capture.mock.calls
+        .map(([i]) => i as { metadata: { filePath: string }; scopeKey?: string })
+        .find((i) => i.metadata.filePath === absOf(`${CLONE}/src/keep.ts`));
+      expect(input?.scopeKey).toBe(PROJECT_KEY);
+    });
+
+    it('keeps the clone for a file that was only touched, its content unchanged', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+      const before = rowOf(`${CLONE}/src/keep.ts`).mtime;
+
+      later(`${CLONE}/src/keep.ts`);
+      removeGit(cloneDir());
+      await scan(config);
+
+      const row = rowOf(`${CLONE}/src/keep.ts`);
+      // The row was rewritten by the touch, which is the path under test.
+      expect(row.mtime).not.toBe(before);
+      expect(row.scopeKey).toBe(PERSONAL_KEY);
+      expect(row.scopeRoot).toBe(cloneDir());
+    });
+
+    it('keeps the clone for a file whose new content another file already recorded', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+      capture.mockClear();
+
+      const recorded = `${NOTIFY_CALL}// recorded elsewhere\n`;
+      knownContentHashes.mockImplementation(() =>
+        Promise.resolve(new Set([contentHashOf(recorded)])),
+      );
+      write(repo, `${CLONE}/src/keep.ts`, recorded);
+      later(`${CLONE}/src/keep.ts`);
+      removeGit(cloneDir());
+      await scan(config);
+
+      // Skipped at the content-hash dedup, never captured.
+      expect(
+        capture.mock.calls.some(
+          ([i]) =>
+            (i as { metadata: { filePath: string } }).metadata.filePath ===
+            absOf(`${CLONE}/src/keep.ts`),
+        ),
+      ).toBe(false);
+      const row = rowOf(`${CLONE}/src/keep.ts`);
+      expect(row.contentHash).toBe(contentHashOf(recorded));
+      expect(row.scopeKey).toBe(PERSONAL_KEY);
+      expect(row.scopeRoot).toBe(cloneDir());
+    });
+
+    it("keeps the clone for the clone's manifest, changed or not", async () => {
+      seedProjectWithClone();
+      write(repo, `${CLONE}/pkg/package.json`, STRIPE_MANIFEST);
+      const config = configWith(true);
+      await scan(config);
+
+      write(
+        repo,
+        `${CLONE}/package.json`,
+        JSON.stringify({ dependencies: { stripe: '^15.0.0' } }, null, 2),
+      );
+      later(`${CLONE}/package.json`);
+      removeGit(cloneDir());
+      await scan(config);
+
+      for (const rel of ['package.json', 'pkg/package.json']) {
+        expect(recordedKey(`${CLONE}/${rel}`)).toBe(PERSONAL_KEY);
+        expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      }
+    });
+
+    it('keeps a clone with no forge remote keyless, never the project around it', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      remotelessRepo(cloneDir());
+      write(repo, `${CLONE}/top.ts`, `${NOTIFY_CALL}// top\n`);
+      const config = configWith(true);
+      await scan(config);
+      expect(recordedKey(`${CLONE}/top.ts`)).toBeUndefined();
+      expect(recordedRoot(`${CLONE}/top.ts`)).toBe(cloneDir());
+
+      removeGit(cloneDir());
+      await scan(config);
+
+      expect(recordedKey(`${CLONE}/top.ts`)).toBeUndefined();
+      expect(recordedRoot(`${CLONE}/top.ts`)).toBe(cloneDir());
+    });
+
+    it('keeps the inner clone, not the repository around it, when a clone nested in a nested repository loses its `.git`', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      gitRepo(join(repo, 'tools'), OTHER_URL);
+      gitRepo(join(repo, 'tools', 'inner'), PERSONAL_URL);
+      write(repo, 'tools/a.ts', `${STRIPE_CALL}// a\n`);
+      write(repo, 'tools/inner/b.ts', `${NOTIFY_CALL}// b\n`);
+      write(repo, 'tools/inner/src/c.ts', `${NOTIFY_CALL}// c\n`);
+      const config = configWith(true);
+      await scan(config);
+      expect(recordedKey('tools/a.ts')).toBe(OTHER_KEY);
+      expect(recordedKey('tools/inner/b.ts')).toBe(PERSONAL_KEY);
+
+      removeGit(join(repo, 'tools', 'inner'));
+      await scan(config);
+
+      for (const rel of ['tools/inner/b.ts', 'tools/inner/src/c.ts']) {
+        expect(recordedKey(rel)).toBe(PERSONAL_KEY);
+        expect(recordedRoot(rel)).toBe(join(repo, 'tools', 'inner'));
+      }
+      // The repository around it keeps its own file.
+      expect(recordedKey('tools/a.ts')).toBe(OTHER_KEY);
+      expect(recordedRoot('tools/a.ts')).toBe(join(repo, 'tools'));
+    });
+  });
+
+  describe('a scan rooted at the clone itself', () => {
+    it('keeps the clone when its `.git` is removed between two scans from the same directory, with a project around it', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config, cloneDir());
+      expect(recordedKey(`${CLONE}/src/keep.ts`)).toBe(PERSONAL_KEY);
+      expect(recordedRoot(`${CLONE}/src/keep.ts`)).toBe(cloneDir());
+
+      removeGit(cloneDir());
+      await scan(config, cloneDir());
+
+      // From the clone's own directory the files climb to the scan root, whose
+      // key now comes from the project above it. The repository they sat in is
+      // gone, and the project is around it.
+      for (const rel of ['src/keep.ts', 'src/notify.ts', 'top.ts', 'package.json']) {
+        expect(recordedKey(`${CLONE}/${rel}`)).toBe(PERSONAL_KEY);
+        expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      }
+    });
+
+    it('keeps the clone when it is a repository of its own with nothing around it', async () => {
+      const solo = join(tmp, 'solo');
+      gitRepo(solo, PERSONAL_URL);
+      write(solo, 'a.ts', `${NOTIFY_CALL}// a\n`);
+      write(solo, 'package.json', STRIPE_MANIFEST);
+      const config = configWith(true);
+      await scan(config, solo);
+      expect(ledgerRows.get(join(solo, 'a.ts'))?.scopeKey).toBe(PERSONAL_KEY);
+      expect(ledgerRows.get(join(solo, 'a.ts'))?.scopeRoot).toBe(solo);
+
+      removeGit(solo);
+      await scan(config, solo);
+
+      expect(ledgerRows.get(join(solo, 'a.ts'))?.scopeKey).toBe(PERSONAL_KEY);
+      expect(ledgerRows.get(join(solo, 'a.ts'))?.scopeRoot).toBe(solo);
+    });
+  });
+
+  describe('a row that moves', () => {
+    it("takes the new key when the project's remote changes and no file does", async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      write(repo, 'pkg/package.json', STRIPE_MANIFEST);
+      const config = configWith(true);
+      await scan(config);
+      expect(recordedKey('src/pay.ts')).toBe(PROJECT_KEY);
+
+      gitRepo(repo, MOVED_URL);
+      await scan(config);
+
+      expect(recordedKey('src/pay.ts')).toBe(MOVED_KEY);
+      expect(recordedKey('pkg/package.json')).toBe(MOVED_KEY);
+      expect(recordedRoot('src/pay.ts')).toBe(repo);
+    });
+
+    it('takes the key and directory of a repository made inside the recorded one, in place', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      write(repo, 'tools/a.ts', `${STRIPE_CALL}// a\n`);
+      const config = configWith(true);
+      await scan(config);
+      expect(recordedRoot('tools/a.ts')).toBe(repo);
+
+      gitRepo(join(repo, 'tools'), PERSONAL_URL);
+      await scan(config);
+
+      expect(recordedKey('tools/a.ts')).toBe(PERSONAL_KEY);
+      expect(recordedRoot('tools/a.ts')).toBe(join(repo, 'tools'));
+      expect(recordedRoot('src/pay.ts')).toBe(repo);
+    });
+
+    it('takes the key of a clone replaced at the same path by another, whose files are read again', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+
+      rmSync(cloneDir(), { recursive: true, force: true });
+      gitRepo(cloneDir(), OTHER_URL);
+      for (const rel of CLONE_FILES.filter((f) => f !== 'package.json')) {
+        write(repo, `${CLONE}/${rel}`, `${NOTIFY_CALL}// ${rel}, another clone's\n`);
+        later(`${CLONE}/${rel}`);
+      }
+      await scan(config);
+
+      for (const rel of CLONE_FILES.filter((f) => f !== 'package.json')) {
+        expect(recordedKey(`${CLONE}/${rel}`)).toBe(OTHER_KEY);
+        expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      }
+    });
+
+    it('takes the key of a clone replaced at the same path by another whose files kept their times', async () => {
+      seedProjectWithClone();
+      const config = configWith(true);
+      await scan(config);
+      const times = new Map(CLONE_FILES.map((rel) => [rel, rowOf(`${CLONE}/${rel}`).mtime]));
+
+      rmSync(cloneDir(), { recursive: true, force: true });
+      gitRepo(cloneDir(), OTHER_URL);
+      for (const rel of CLONE_FILES) {
+        write(repo, `${CLONE}/${rel}`, rel === 'package.json' ? STRIPE_MANIFEST : `// ${rel}\n`);
+        const at = new Date(times.get(rel) ?? 0);
+        utimesSync(absOf(`${CLONE}/${rel}`), at, at);
+      }
+      await scan(config);
+
+      // Skipped unread, and the repository around the same names is the other one.
+      for (const rel of CLONE_FILES) {
+        expect(recordedKey(`${CLONE}/${rel}`)).toBe(OTHER_KEY);
+        expect(recordedRoot(`${CLONE}/${rel}`)).toBe(cloneDir());
+      }
+    });
+
+    it('fills a row that has a key and no directory from the disk as it is, and a row with neither', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      write(repo, 'src/old.ts', `${STRIPE_CALL}// old\n`);
+      const config = configWith(true);
+      await scan(config);
+      // As a store made by a build that kept the key and not the directory has it.
+      rowOf('src/pay.ts').scopeRoot = undefined;
+      rowOf('src/pay.ts').scopeKey = OTHER_KEY;
+      // As a row written before either was kept.
+      rowOf('src/old.ts').scopeRoot = undefined;
+      rowOf('src/old.ts').scopeKey = undefined;
+
+      await scan(config);
+
+      for (const rel of ['src/pay.ts', 'src/old.ts']) {
+        expect(recordedKey(rel)).toBe(PROJECT_KEY);
+        expect(recordedRoot(rel)).toBe(repo);
+      }
+    });
+  });
+
+  describe('a file whose repository is gone and that now sits in none', () => {
+    it('keeps the key and directory it was recorded under', async () => {
+      write(repo, 'src/pay.ts', STRIPE_CALL);
+      // A manifest anchors the project once there is no repository around it.
+      write(repo, 'package.json', STRIPE_MANIFEST);
+      const config = configWith(true);
+      await scan(config);
+      expect(recordedKey('src/pay.ts')).toBe(PROJECT_KEY);
+
+      removeGit(repo);
+      await scan(config);
+
+      expect(recordedKey('src/pay.ts')).toBe(PROJECT_KEY);
+      expect(recordedRoot('src/pay.ts')).toBe(repo);
+    });
   });
 });

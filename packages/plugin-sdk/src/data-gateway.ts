@@ -120,9 +120,9 @@ export interface RuleProbeVerdictEntry {
  * repository or reused by the project. A path whose record holds no key is
  * `undefined`: a file read before keys were kept, one in a repository with no
  * forge remote, or any path when the gateway cannot list the keys. A gateway that
- * forwards by scope does not send such a path, so after an upgrade the paths
- * deleted before the next scan has filled the keys of the unchanged files are
- * held back once.
+ * forwards by scope does not send such a path. After an upgrade, the paths deleted
+ * before the next scan has filled the keys of the unchanged files are therefore
+ * NEVER sent: a deleted path is not walked again, so nothing fills its key later.
  *
  * The earlier limits of keying from the disk are gone: the last file of a
  * directory, or a whole project directory, that is deleted still carries the

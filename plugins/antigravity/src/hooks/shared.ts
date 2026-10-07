@@ -361,8 +361,8 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  *     key, even when every root would agree on one;
  *   - otherwise (no path, as on a `run_command`, or an empty path) the event is
  *     keyed only when every root resolves to the SAME key. Roots that disagree,
- *     or a mix of keyed and keyless roots, give no key. The contract is that a
- *     scoped attachment's forward check is meant to keep a keyless event local.
+ *     or a mix of keyed and keyless roots, give no key. A scoped attachment
+ *     keeps a keyless event local (the gateway's verdict).
  *     A single root is therefore that root's key, as a Claude Code hook keys a
  *     path-less event by its cwd.
  *

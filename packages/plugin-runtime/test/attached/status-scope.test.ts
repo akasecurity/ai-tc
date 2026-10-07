@@ -24,9 +24,9 @@ import { renderAttachedStatus } from '../../src/attached/status.ts';
 import { attachmentScopeLines, printableForTerminal } from '../../src/index.ts';
 
 // What `aka status` says about a scoped attachment: the mode, what is enrolled,
-// and every state in which nothing is sent. Each case writes a real settings
-// file and a real credential file and reads them back through the renderer,
-// so a red here is the renderer's.
+// and every state in which nothing is sent. Each renderer case writes a real
+// settings file and a real credential file and reads them back through the
+// renderer, so a red here is the renderer's.
 
 const ENDPOINT = 'https://aka.acme.test';
 const OLD_ENDPOINT = 'https://aka.old.test';
@@ -236,6 +236,21 @@ describe('renderAttachedStatus — the enrolled scope', () => {
     expect(out).not.toContain(WORK_REPO);
   });
 
+  // The recorded endpoint is any non-empty string to the schema, so it can carry
+  // a terminal escape. It is echoed on the line naming the other deployment.
+  it('strips control characters from the endpoint a foreign scope names', () => {
+    attach('scoped', {
+      endpoint: `${OLD_ENDPOINT}${ESC}[2J`,
+      ...MEMBER,
+      entries: [entry(WORK_REPO)],
+    });
+    const out = status();
+    expect(out).not.toContain(ESC);
+    expect(out).toMatch(
+      /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\[2J\)$/m,
+    );
+  });
+
   it.each<[string, unknown[], string]>([
     [
       'one',
@@ -254,18 +269,15 @@ describe('renderAttachedStatus — the enrolled scope', () => {
       ],
       '2 entries',
     ],
-  ])(
-    'counts %s entries this version cannot read, without printing them',
-    (_name, entries, counted) => {
-      attach('scoped', bound(entries));
-      const out = status();
-      expect(out).toMatch(
-        /^ {2}scope {6}1 enrolled — activity anywhere else stays on this machine$/m,
-      );
-      expect(out).toContain(`\n             ${counted} this version cannot read — not sent`);
-      expect(out).not.toContain('acme-workspace');
-    },
-  );
+  ])('counts %s unreadable entries without printing them', (_name, entries, counted) => {
+    attach('scoped', bound(entries));
+    const out = status();
+    expect(out).toMatch(
+      /^ {2}scope {6}1 enrolled — activity anywhere else stays on this machine$/m,
+    );
+    expect(out).toContain(`\n             ${counted} this version cannot read — not sent`);
+    expect(out).not.toContain('acme-workspace');
+  });
 
   it.each<[string, Record<string, unknown>]>([
     ['no account at all', { endpoint: ENDPOINT, entries: [entry(WORK_REPO)] }],

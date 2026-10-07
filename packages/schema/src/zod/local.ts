@@ -383,8 +383,10 @@ export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefine
  * false: it might be someone else's. An empty field on either side binds
  * nothing and answers false too. A renamed organization reads as someone else,
  * so a record bound to the old name answers false. So does any record that is
- * unbound, mismatched, damaged or for another endpoint: only an exact match
- * answers true.
+ * unbound, mismatched, for another endpoint, or whose envelope fails to parse:
+ * only an exact match answers true. A record that parses but holds an invalid
+ * entry is read without that entry, and still answers true when its binding
+ * matches.
  *
  * Only the two binding fields of `who` are read, so a full whoami answer may be
  * passed. NOT part of the forwarding verdict: scopeVerdict and resolveScope

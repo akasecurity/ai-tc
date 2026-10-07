@@ -92,8 +92,8 @@ export function seedCaptureBacklogOwed(
  * that was already owed is sent by the drain as well, so 0 does not mean
  * nothing is waiting; it means this call marked nothing new.
  *
- * THE CALLER CHECKS CONSENT, and passes only the keys newly added. Marking is the
- * first step of sending, and `markScopeCapturesOwed` cannot tell whether the
+ * The caller must check consent and pass only the keys newly added. Marking is
+ * the first step of sending, and `markScopeCapturesOwed` cannot tell whether the
  * history grant is in force for this deployment: call this only when
  * `isHistorySyncConsentValid` holds for the effective endpoint.
  *

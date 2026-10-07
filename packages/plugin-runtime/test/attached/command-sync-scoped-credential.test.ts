@@ -24,6 +24,11 @@ vi.mock('@akasecurity/remote', async (importActual) => ({
   createRemoteClient: () => ({ pollCommand, ackCommand }),
 }));
 
+// Imported once here, after the mock is registered, rather than inside each case:
+// loaded inside a case, the import time is charged to that case's timeout, which
+// a loaded machine can exceed.
+const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
 const CONNECTION: ControlPlaneConnection = {
   endpoint: 'https://aka.acme.test',
   attachedAt: '2026-09-03T10:00:00.000Z',
@@ -86,7 +91,6 @@ describe('runCommandSync — a scoped credential read from disk', () => {
     attachScoped();
     pollCommand.mockResolvedValue(COMMAND);
     const run = vi.fn(() => Promise.resolve({ projects: 1 }));
-    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
     await expect(runCommandSync(depsAt('github.com/someone/side-project', run))).resolves.toBe(
       'out-of-scope',
@@ -100,7 +104,6 @@ describe('runCommandSync — a scoped credential read from disk', () => {
     attachScoped();
     pollCommand.mockResolvedValue(COMMAND);
     const run = vi.fn(() => Promise.resolve({ projects: 1 }));
-    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
     await expect(runCommandSync(depsAt(WORK_REPO, run))).resolves.toBe('reported');
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', { outcome: 'reported', projectsScanned: 1 });

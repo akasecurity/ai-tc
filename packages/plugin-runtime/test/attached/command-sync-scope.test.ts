@@ -18,8 +18,8 @@ import type { CommandScan } from '../../src/attached/command-sync.ts';
 
 // The device-command channel on a SCOPED attachment. A command is serviced only
 // from a scan root whose repository is enrolled for this deployment. From any
-// other root it is skipped — no scan and NO ACK — so the deployment re-serves
-// it and a sync from an enrolled checkout picks it up. Expiry still acks.
+// other root it is skipped — no scan and NO ACK — and left outstanding for a
+// sync from an enrolled checkout. Expiry still acks.
 //
 // THE MODE IS STOOD IN FOR, NOT WRITTEN. While `reader.scoped` is armed, the
 // usable v1 credential on disk is reported by the wide credential read as its
@@ -272,7 +272,7 @@ describe('commandScanFor — a session directory that cannot be read', () => {
     // No key, so a scoped attachment never services a command from here.
     expect(scan.rootScopeKey()).toBeUndefined();
     // A rejection, so the command channel's own catch acks `scan_failed`.
-    await expect(scan.run()).rejects.toThrow();
+    await expect(scan.run()).rejects.toThrow(/the session working directory cannot be read/);
     expect(scanWorktree).not.toHaveBeenCalled();
   });
 

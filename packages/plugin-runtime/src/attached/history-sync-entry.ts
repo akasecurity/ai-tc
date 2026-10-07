@@ -76,6 +76,10 @@ export async function runHistorySyncPass(
     // BOTH lanes. `counts` is structural-only by construction, so on its own it
     // would report the drain finished — and pin completedAtMs for the life of
     // the install — while the capture lane still owed thousands of rows.
+    //
+    // On a SCOPED attachment the structural counts are not scoped, so `phase` can
+    // stay `filling` and `pendingTotal` includes rows the scope excludes. Both are
+    // display only: nothing is sent because of them.
     const done = result.counts.pending === 0 && !result.capturesPending;
     writeHistorySyncState(dir, {
       phase: done ? 'complete' : 'filling',

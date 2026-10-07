@@ -14,9 +14,9 @@ import { renderAttachedStatus } from '../../src/attached/status.ts';
 
 // `aka status` on a machine whose credential file really is a scoped (v2) one,
 // read by the real reader. A build that predates scoped attachments printed
-// "no usable credential, re-attach" for this file — and a re-attach from that
-// build writes a v1 credential, which is a machine-wide attachment. Reading it
-// as usable is what keeps this surface from recommending that downgrade.
+// "no usable credential, re-attach" for this file — and re-attaching writes a
+// machine-wide v1 credential over it, which is a downgrade of the attachment.
+// Reading it as usable is what keeps this surface from recommending that.
 
 const ENDPOINT = 'https://aka.acme.test';
 const TEST_KEY = 'not-a-real-key';

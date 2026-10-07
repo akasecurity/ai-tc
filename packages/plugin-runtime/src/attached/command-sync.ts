@@ -88,11 +88,10 @@ export type CommandSyncOutcome =
  * on at all? It returns the canonical `host/owner/repo` key of the repository
  * the scan root sits in, or undefined when there is none (no repository, one
  * with no remote, or a session directory that could not be read), which a
- * scoped attachment never services. It is a function
- * rather than a value so the repository files are read only once a command has
- * actually arrived on a scoped attachment, never on the ordinary poll that
- * finds nothing. A key source that throws gets the command skipped, never
- * serviced.
+ * scoped attachment never services. It is a function rather than a value so
+ * the repository files are read only once a command has actually arrived on a
+ * scoped attachment, never on the ordinary poll that finds nothing. A key
+ * source that throws gets the command skipped, never serviced.
  *
  * Property signatures rather than methods, so a test can hand either member to
  * `expect` without detaching a method from its object.
@@ -177,7 +176,8 @@ function hasExpired(expiresAt: string, atMs: number): boolean {
  * a key source that fails cannot cost it a command.
  *
  * FAIL-CLOSED. A key source that throws, or anything else here, reads as
- * `local`: the command is skipped and re-served, never serviced on a guess.
+ * `local`: the command is skipped and left outstanding for a sync from an
+ * enrolled checkout, never serviced on a guess.
  */
 function rootVerdict(
   settings: WorkspaceSettings,

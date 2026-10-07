@@ -19,6 +19,12 @@
  */
 import { existsSync, writeFileSync, writeSync } from 'node:fs';
 
+import type { AttachmentScopeEntry } from '@akasecurity/schema';
+
+import {
+  addAttachmentScopeEntries,
+  removeAttachmentScopeEntries,
+} from '../../src/attachment-scope-edit.ts';
 import { applyOnboarding } from '../../src/settings.ts';
 
 const [base, jobJson, readyFile, goFile, barrierTimeoutArg, parentPidArg, readyToken] =
@@ -122,7 +128,12 @@ function abandon(reason: string): never {
   process.exit(EXIT_ABANDONED);
 }
 
-const job = JSON.parse(jobJson) as { set?: Record<string, unknown>; clear?: string[] };
+const job = JSON.parse(jobJson) as {
+  set?: Record<string, unknown>;
+  clear?: string[];
+  enroll?: { endpoint: string; entry: AttachmentScopeEntry };
+  unenroll?: { endpoint: string; identity: string };
+};
 
 // `clear` is a list of names rather than keys set to undefined, because
 // JSON.stringify DROPS an undefined value: a revoke written the natural way
@@ -191,8 +202,36 @@ while (!existsSync(goFile)) {
 const startedAt = Date.now();
 let ok = false;
 let error: string | undefined;
+const enroll = job.enroll;
+const unenroll = job.unenroll;
 try {
-  applyOnboarding(answers, base);
+  if (unenroll !== undefined) {
+    // The updater form, as a command that removes a repository writes it: the
+    // removal is computed from the file the merge lands on, inside the settings
+    // lock.
+    applyOnboarding(
+      (current) => ({
+        attachmentScope: removeAttachmentScopeEntries(current.attachmentScope, unenroll.endpoint, [
+          unenroll.identity,
+        ]).next,
+      }),
+      base,
+    );
+  } else if (enroll === undefined) {
+    applyOnboarding(answers, base);
+  } else {
+    // The updater form, as a command that enrolls a repository writes it: the
+    // append is computed from the file the merge lands on, inside the settings
+    // lock, never from a read taken before it.
+    applyOnboarding(
+      (current) => ({
+        attachmentScope: addAttachmentScopeEntries(current.attachmentScope, enroll.endpoint, [
+          enroll.entry,
+        ]).next,
+      }),
+      base,
+    );
+  }
   ok = true;
 } catch (err) {
   error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

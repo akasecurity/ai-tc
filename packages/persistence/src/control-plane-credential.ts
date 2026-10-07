@@ -11,6 +11,7 @@ import type {
 import {
   ATTACHED_CREDENTIAL_FILENAME,
   AttachedCredentialAny as CredentialSchema,
+  attachmentModeOf,
   isSafeEndpoint,
   originOnly,
   unsafeEndpointReason,
@@ -224,12 +225,28 @@ export function readControlPlaneCredentialFile(
   // recorded (captured activity, history, the Data Shares register, a device
   // command's scan) consults the scope verdict before it sends. The policy
   // pull, the posture report and the command poll and ack send without a
-  // verdict, by design. A build older than that parses `specVersion` as the
-  // literal 1, reads v2 as malformed, and forwards nothing. So a version is
-  // accepted here only in the same change that teaches every forwarder what it
-  // means.
+  // verdict, by design. A build that predates scoped attachments parses
+  // `specVersion` as the literal 1, reads v2 as malformed, and forwards nothing.
+  // So a version is accepted here only once every forwarder knows what it means.
   const result = CredentialSchema.safeParse(parsed);
   if (!result.success) return { usable: false, reason: 'malformed' };
+
+  // VERSION 1 NAMES NO MODE, and a file that says otherwise is refused. The v1
+  // shape is not strict, so the parse above DROPS a `mode` key it does not
+  // declare: `{ specVersion: 1, mode: 'scoped', … }` would arrive here as a
+  // plain machine-wide credential and send everything. The check is on the raw
+  // parsed object because the parsed one no longer carries the key. Every
+  // reader in this module goes through this function, so none of them can
+  // return such a file as usable. No writer emits one, so refusing it costs
+  // nothing.
+  if (
+    attachmentModeOf(result.data) === 'machine' &&
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    Object.hasOwn(parsed, 'mode')
+  ) {
+    return { usable: false, reason: 'malformed' };
+  }
 
   if (!isSafeEndpoint(result.data.endpoint)) {
     return { usable: false, reason: 'unsafe-endpoint' };

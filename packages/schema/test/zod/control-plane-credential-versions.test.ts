@@ -78,9 +78,12 @@ describe('AttachedCredentialAny', () => {
   });
 
   // v1 stays non-strict, exactly as every installed build parses it, so an
-  // unknown key is stripped. Nothing on the reading side can stop a
-  // `{ specVersion: 1, mode: 'scoped' }` file reading as machine-wide; the guard
-  // is the writer, which must write v2. Pinned so a change here is a decision.
+  // unknown key is stripped and THIS SCHEMA reads a `{ specVersion: 1, mode:
+  // 'scoped' }` record as machine-wide. Two things keep such a file from being
+  // used: the writer, which writes a scoped attachment as v2, and the credential
+  // file reader in @akasecurity/persistence, which refuses a v1 file that names a
+  // mode after this parse (its credential suite pins that). Pinned so a change to
+  // the parse is a decision.
   it('reads a v1 record that carries a stray mode as machine-wide', () => {
     const stray = AttachedCredentialAny.parse({ ...V1_RECORD, mode: 'scoped' });
     expect(stray).toEqual(V1_RECORD);

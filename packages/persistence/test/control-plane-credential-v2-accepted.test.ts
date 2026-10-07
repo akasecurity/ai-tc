@@ -21,15 +21,15 @@ import { useTempStore } from './helpers/temp-store.ts';
 // device-command channel's scan. The policy pull, the posture report and the
 // command poll and ack send without a verdict, by design.
 //
-// It replaces the pin that held this reader to v1 while that was not yet true.
-// The other half of that pin — a build from BEFORE this change reads a v2 file
-// as malformed and forwards nothing — is a claim about a reader this file can
-// no longer import, so it lives in @akasecurity/plugin-sdk's frozen-reader
-// suite, against a verbatim copy of that reader.
+// A build that predates scoped attachments reads a v2 file as malformed and
+// forwards nothing. That is a claim about a reader this file cannot import, so
+// it lives in @akasecurity/plugin-sdk's frozen-reader suite, against a verbatim
+// copy of that reader.
 //
 // Version 2 MEANS scoped. A v2 file without the mode, or naming another one, is
 // refused rather than half-read as either kind, and so is any version no build
-// has written.
+// has written. Version 1 means machine-wide and names no mode at all, so a v1
+// file that carries a `mode` key is refused too.
 
 // A home of its own per test. The store itself is never opened: only the
 // credential file under its settings directory is read.
@@ -157,6 +157,21 @@ describe('the credential reader refuses a credential it cannot place', () => {
 
   it('reads a specVersion no build has written as malformed', () => {
     writeRawCredential({ ...SCOPED_MINIMAL, specVersion: 3 });
+    expectEveryReaderRefuses();
+  });
+
+  it.each([
+    ['a scoped mode', { mode: 'scoped' }],
+    ['a machine mode', { mode: 'machine' }],
+    ['an unknown mode', { mode: 'everything' }],
+    ['a null mode', { mode: null }],
+  ])('reads a version-1 file with %s as malformed', (_label, mode) => {
+    // Version 1 names no mode: a machine-wide attachment is the absence of one.
+    // The version-1 shape is not strict, so parsing alone drops an unknown key
+    // and would read this file as a usable machine-wide credential, forwarding
+    // everything a machine that asked for scope was meant to keep. No writer
+    // emits this record, so refusing it costs nothing.
+    writeRawCredential({ specVersion: 1, endpoint: ENDPOINT, apiKey: KEY, ...mode });
     expectEveryReaderRefuses();
   });
 });

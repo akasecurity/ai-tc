@@ -11,7 +11,7 @@
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
+import { extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
@@ -166,15 +166,10 @@ interface EgressAccumulator {
   scannedFiles: string[];
   deletedFiles: string[];
   // The absolute path of each entry of `deletedFiles`, in the same order. The
-  // register's keys are relative to the project root; which repository a deleted
-  // path was in is read off the disk, from its absolute path (see commitEgress).
+  // register's keys are relative to the project root; the scan ledger is keyed
+  // by absolute path, and which repository a deleted path was in is looked up
+  // there (see commitEgress).
   deletedPaths: string[];
-  // The absolute directory of every file this scan's source walk reached under
-  // the scan root: each one that passed the walk's own filters (ignore layers,
-  // extension, size), whether or not it was then read. A file the ledger lets
-  // the scan skip unread is reached all the same. A deleted path is keyed only
-  // from one of these directories (see keyOfDeletedPath).
-  walkedDirs: Set<string>;
   // Every directory below the scan root that the source walk or the manifest
   // walk listed and that holds a `.git` entry (a nested clone, a submodule, a
   // linked worktree), as a posix path relative to the scan root. A directory
@@ -196,7 +191,6 @@ function startEgress(rootDir: string): EgressAccumulator | null {
     scannedFiles: [],
     deletedFiles: [],
     deletedPaths: [],
-    walkedDirs: new Set<string>(),
     nestedRoots: [],
   };
 }
@@ -387,20 +381,24 @@ async function scanDir(
   for (const file of walkSourceFiles({
     ...opts,
     rootDir,
-    shouldRead: (meta) => {
-      // Told of every eligible file BEFORE the gates below can skip it: an
-      // unchanged file is skipped unread and still holds its directory open.
-      egress?.walkedDirs.add(resolve(dirname(meta.path)));
-      return (opts.shouldRead?.(meta) ?? true) && shouldRead(meta);
-    },
+    shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
     onRepositoryRoot: egress === null ? undefined : noteNestedRoot,
   })) {
     const hash = contentHashOf(file.content);
+    // The repository this file is in as it is READ, recorded beside it in the
+    // ledger: a path that is deleted later is attributed from this record, since
+    // the disk cannot say once its directory has been replaced or reused. The
+    // same climbing lookup that keys captures, so a clone's file is keyed by the
+    // clone and a file in a repository with no remote has none. Only a scan with
+    // a register has any use for it. A file skipped unread at the first tier
+    // never reaches here, and its row keeps the key it was last read under.
+    const fileKey = egress === null ? undefined : scopeKeyOf(file.relativePath);
     const ledgerEntry: ScanLedgerEntry = {
       path: file.path,
       mtime: file.mtime,
       contentHash: hash,
       rulesetHash: ledger.rulesetHash,
+      ...(fileKey !== undefined ? { scopeKey: fileKey } : {}),
     };
 
     // Tier-2 skip: mtime moved but the content didn't (a touch, a checkout).
@@ -488,9 +486,10 @@ async function scanDir(
   // Dependency manifests carry SDK evidence but no source extension, so the
   // source walk never yields them. They are ledgered exactly like walked files
   // and never go through capture — they are egress evidence, not code to scan.
-  if (egress) scanManifests(egress, ledger, updates, rootDir, noteNestedRoot);
+  if (egress) scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
+  let recordedKeys: ReadonlyMap<string, string | undefined> = NO_RECORDED_KEYS;
   if (egress) {
     for (const path of deleted) {
       const key = egressKey(egress.project.root, path);
@@ -498,13 +497,14 @@ async function scanDir(
       egress.deletedFiles.push(key);
       egress.deletedPaths.push(path);
     }
+    if (egress.deletedPaths.length > 0) recordedKeys = await readRecordedKeys(gateway);
   }
 
   // Egress commits BEFORE the ledger. If the write fails the ledger batch is
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
-  const committed = await commitEgress(gateway, egress, rootDir, scopeKeyOf);
+  const committed = await commitEgress(gateway, egress, scopeKeyOf, recordedKeys);
   if (committed === null) {
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
@@ -537,6 +537,7 @@ function scanManifests(
   ledger: LedgerContext,
   updates: ScanLedgerEntry[],
   rootDir: string,
+  scopeKeyOf: ScopeKeyLookup,
   onRepositoryRoot: (relativeDir: string) => void,
 ): void {
   // This walk lists directories whether or not anything under them changed, so a
@@ -555,11 +556,15 @@ function scanManifests(
     }
 
     const hash = contentHashOf(content);
+    // Keyed like a walked file: by the repository the manifest is in as it is
+    // read, so a manifest in a nested clone is the clone's.
+    const manifestKey = scopeKeyOf(toPosix(relative(rootDir, manifest.path)));
     updates.push({
       path: manifest.path,
       mtime: manifest.mtime,
       contentHash: hash,
       rulesetHash: ledger.rulesetHash,
+      ...(manifestKey !== undefined ? { scopeKey: manifestKey } : {}),
     });
     if (prev?.contentHash === hash) continue;
 
@@ -586,18 +591,17 @@ function scanManifests(
 // The register's deleted files come from the ledger, not from the walk, so the
 // nested roots do not cover them: a clone removed since the last scan, or one an
 // ignore file now hides, is in neither walk, and its ledgered paths come back as
-// deleted. Beside the register goes the scope key of each deleted path too, read
-// off the disk when a gateway asks, and only for a path whose directory still
-// holds a file this scan's walk reached (see keyOfDeletedPath).
+// deleted. Beside the register goes the key of each deleted path too: the
+// repository it was in when it was last read, which the ledger recorded then
+// (see readRecordedKeys).
 async function commitEgress(
   gateway: DataGateway,
   egress: EgressAccumulator | null,
-  rootDir: string,
   scopeKeyOf: ScopeKeyLookup,
+  recordedKeys: ReadonlyMap<string, string | undefined>,
 ): Promise<ReadonlySet<string> | null> {
   if (!egress) return EMPTY_DROPPED;
-  const { project, files, scannedFiles, deletedFiles, deletedPaths, walkedDirs, nestedRoots } =
-    egress;
+  const { project, files, scannedFiles, deletedFiles, deletedPaths, nestedRoots } = egress;
   if (scannedFiles.length === 0 && deletedFiles.length === 0 && files.length === 0) {
     return EMPTY_DROPPED;
   }
@@ -636,12 +640,11 @@ async function commitEgress(
           nestedKeys ??= [...new Set(nestedRoots)].map((dir) => scopeKeyOf.ofRepositoryRoot(dir));
           return nestedKeys;
         },
-        // One key per entry of `reconcile.deletedFiles`, in its order, and
-        // memoized like the list above: a gateway reads it at most once.
+        // One key per entry of `reconcile.deletedFiles`, in its order: what the
+        // ledger recorded when the path was last read, and none for a row that
+        // recorded none. Memoized like the list above.
         deletedFileKeys: () => {
-          deletedKeys ??= deletedPaths.map((path) =>
-            keyOfDeletedPath(scopeKeyOf, rootDir, walkedDirs, path),
-          );
+          deletedKeys ??= deletedPaths.map((path) => recordedKeys.get(path));
           return deletedKeys;
         },
       },
@@ -652,39 +655,43 @@ async function commitEgress(
   }
 }
 
-// The scope key of the repository a deleted file was in, or `undefined` when
-// that cannot be proven.
+// The key of the repository each ledgered path was in when it was last READ,
+// which is how a deleted path is attributed: the ledger recorded it then (see
+// scanDir), and it is read back here once per scan that has a deleted path.
 //
-// A path is keyed only from a directory that still holds at least one file this
-// scan's source walk reached (`walkedDirs`), and that still exists when the key
-// is asked for. The key is then the capture lookup's: the nearest repository
-// above the path, climbing from its directory (./scope-key.ts), read from the
-// disk as it is now. That covers a project file deleted from a directory that
-// still holds other project files, and a file deleted from a clone the walk is
-// still reading, whose own `.git` the climb meets first.
+// It is the record, never the disk as it is now, that says. The ledger never
+// forgets a path, so a path deleted long ago is listed again by every later
+// sweep, and the directory it was in may by then be anything: a removed clone's
+// directory made again by the project, a personal checkout replaced at the same
+// path by an enrolled one, a nested repository emptied (as `git submodule
+// deinit` leaves it) and then refilled. Keying from the disk lets whatever sits
+// there now vouch for a file it never held. A path whose row recorded no key has
+// none: a file read before keys were kept, one in a repository with no remote,
+// or any path when the gateway cannot list the keys. A scoped attachment does
+// not send such a path. After an upgrade that is a one-time gap, closed as each
+// file is read again.
 //
-// Anything else has no key. A directory the walk reached no file in cannot say
-// which repository the path was in. It may be a nested repository whose working
-// tree was emptied while its directory stayed, as `git submodule deinit` leaves
-// it, and a climb from there crosses the vanished boundary and answers with the
-// project's key, as though the file had been the project's. The same holds for a
-// clone that was removed, one an ignore file or a skipped directory now hides, a
-// clone emptied in place, and a directory left holding only files the walk never
-// takes (a `.DS_Store`).
+// A file the ledger skipped unread keeps the key it was last read under, so a
+// directory that is swapped for another repository's, with the same names and
+// the same modification times, can leave a stale key until a file in it is
+// next read. That needs the replacement to preserve every timestamp.
 //
-// The cost, accepted: deleting the LAST walked file of a project directory, or
-// removing a project directory whole, leaves that file's stored row on the
-// deployment until a later scan can clear it. An accuracy gap, never a leak.
-function keyOfDeletedPath(
-  scopeKeyOf: ScopeKeyLookup,
-  rootDir: string,
-  walkedDirs: ReadonlySet<string>,
-  absPath: string,
-): string | undefined {
-  const dir = dirname(absPath);
-  if (!walkedDirs.has(resolve(dir)) || !existsSync(dir)) return undefined;
-  return scopeKeyOf(toPosix(relative(rootDir, absPath)));
+// The gateway's method is optional, and a read that throws gives no keys: a
+// missing answer sends fewer paths, never more.
+async function readRecordedKeys(
+  gateway: DataGateway,
+): Promise<ReadonlyMap<string, string | undefined>> {
+  try {
+    return (await gateway.scanLedgerPathKeys?.()) ?? NO_RECORDED_KEYS;
+  } catch {
+    return NO_RECORDED_KEYS;
+  }
 }
+
+const NO_RECORDED_KEYS: ReadonlyMap<string, string | undefined> = new Map<
+  string,
+  string | undefined
+>();
 
 const EMPTY_DROPPED: ReadonlySet<string> = new Set<string>();
 

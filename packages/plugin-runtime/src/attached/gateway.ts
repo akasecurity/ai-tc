@@ -1154,6 +1154,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     return this.deps.local.scanLedgerPaths();
   }
 
+  // Delegated, like the path list. An inner gateway that cannot say answers an
+  // empty map, which gives every deleted path no key.
+  async scanLedgerPathKeys(): Promise<Map<string, string | undefined>> {
+    return (await this.deps.local.scanLedgerPathKeys?.()) ?? new Map();
+  }
+
   async recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
     return this.deps.local.recordScanned(entries);
   }

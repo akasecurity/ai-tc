@@ -22,9 +22,12 @@
  * clone that was removed since the last scan, or one an ignore file now hides,
  * is in no walk, so the check on repositories nested in the register's project
  * never sees it, yet its paths come back as deleted and used to be sent under
- * the enrolled project's register. These cases pin that they are not, and pin
- * the two controls: an enrolled file deleted from a directory that still exists
- * is sent, and a machine-wide attachment sends what it always sent.
+ * the enrolled project's register. Which repository a deleted path was in is what
+ * the scan ledger recorded when the file was read, so a directory that has been
+ * emptied, replaced or reused since cannot change it. These cases pin that the
+ * clone's paths are not sent, and pin the controls: an enrolled file deleted from
+ * a directory that still exists, or a whole project directory, is sent, and a
+ * machine-wide attachment sends what it always sent.
  */
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -294,6 +297,44 @@ describe('a scoped attachment (version 2 credential) and the deleted files of a 
     expect(scannedOf(registers[0])).toContain('src/new.ts');
     expect(deletedOf(registers[0])).toEqual([]);
     expect(JSON.stringify(registers)).not.toContain(CLONE);
+  });
+
+  it('sends nothing of a removed clone when the project then makes a directory of the same name', async () => {
+    // The ledger never forgets a path, and the directory is the project's now.
+    // What the clone's files were is what the record says, not what the disk
+    // shows at the place they used to be.
+    seedProjectWithClone();
+    const config = attach('scoped');
+    await scan(config);
+    expect(registers).toEqual([]);
+
+    rmSync(join(repo, CLONE), { recursive: true, force: true });
+    write(`${CLONE}/new.ts`, callFor('new'));
+    await scan(config);
+
+    expect(registers).toHaveLength(1);
+    // The new file is the project's own, and travels as such.
+    expect(scannedOf(registers[0])).toContain(`${CLONE}/new.ts`);
+    expect(deletedOf(registers[0])).toEqual([]);
+  });
+
+  it('sends the files of a project directory that was removed whole', async () => {
+    gitRepo(repo, WORK_ORIGIN);
+    write('src/pay.ts', callFor('pay'));
+    write('src/legacy/a.ts', callFor('legacy-a'));
+    write('src/legacy/deep/b.ts', callFor('legacy-b'));
+    const config = attach('scoped');
+    await scan(config);
+    const before = registers.length;
+
+    rmSync(join(repo, 'src', 'legacy'), { recursive: true, force: true });
+    await scan(config);
+
+    expect(registers).toHaveLength(before + 1);
+    expect([...deletedOf(registers.at(-1))].sort()).toEqual([
+      'src/legacy/a.ts',
+      'src/legacy/deep/b.ts',
+    ]);
   });
 
   it('sends the enrolled file and not the clone when both are deleted in one scan', async () => {

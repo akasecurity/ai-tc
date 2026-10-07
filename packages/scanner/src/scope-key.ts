@@ -21,14 +21,14 @@
 // directory) keys by the repository around it.
 //
 // Lazy and scan-local. scanDir asks only for a file that reaches capture, so a
-// re-run that skips every file at the ledger reads no repository. (A gateway
-// that forwards by scope can ask for more, later: the keys of the nested roots,
-// and, through this same climbing lookup, the key of a path the scan lists as
-// deleted whose directory still exists.) The answer for every directory the
-// climbing lookup climbs through is remembered, so it probes no directory for
-// `.git` twice and reads each repository root once per scan. The memory belongs
-// to the one scan that made it: it grows with the tree rather than up to a
-// fixed count, and is dropped when the scan ends.
+// re-run that skips every file at the ledger reads no repository. (A scan with a
+// register also keys each file it reads, to record that key in the ledger, and a
+// gateway that forwards by scope can ask later for the keys of the nested
+// roots.) The answer for every directory the climbing lookup climbs through is
+// remembered, so it probes no directory for `.git` twice and reads each
+// repository root once per scan. The memory belongs to the one scan that made
+// it: it grows with the tree rather than up to a fixed count, and is dropped
+// when the scan ends.
 //
 // That per-scan memory is the only one this file trusts. Every call to
 // resolveRepoAttribution here passes `{ cache: false }`, so nothing in this file

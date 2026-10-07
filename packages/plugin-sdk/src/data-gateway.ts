@@ -46,14 +46,19 @@ export interface CaptureRecord {
 }
 
 // One worktree-scan ledger record: a file the scanner has processed (clean or
-// not) and the ruleset it was scanned under. Structurally identical to
-// @akasecurity/persistence's ScanLedgerEntry — persistence cannot depend on the SDK, so
-// the port shape lives here and structural typing joins them in plugin-runtime.
+// not), the ruleset it was scanned under, and the repository it was in when it
+// was read. Structurally identical to @akasecurity/persistence's ScanLedgerEntry
+// — persistence cannot depend on the SDK, so the port shape lives here and
+// structural typing joins them in plugin-runtime.
 export interface ScanLedgerEntry {
   path: string; // absolute path
   mtime: string; // ISO timestamp at scan time
   contentHash: string;
   rulesetHash: string;
+  // The canonical `host/owner/repo` of the repository the file was in when it
+  // was read, absent for a file in none with a remote. A record without one
+  // REPLACES the key an earlier read stored.
+  scopeKey?: string | undefined;
 }
 
 // The previous scan state the scanner skips against: same mtime → skip without
@@ -89,22 +94,22 @@ export interface RuleProbeVerdictEntry {
  * scan, or one an ignore file now hides, never appears in the walk, yet its
  * ledgered paths come back as deleted. It returns one entry per deleted path, in
  * the register's order: the scope key of the repository that path was in, or
- * `undefined` when that cannot be proven. It is a function so that nothing is
- * read for a gateway that never asks.
+ * `undefined` when that cannot be said. It is a function so that the register
+ * and the keys travel as one value, and a gateway that never asks reads nothing.
  *
- * A path is keyed only from a directory that still holds at least one file the
- * scan's source walk reached, and that still exists when the key is read; the
- * key is then that of the nearest repository above it, a clone's own key
- * included. Any other path is `undefined`: a directory the walk reached no file
- * in cannot say which repository the path was in. It may be a nested repository
- * emptied while its directory stayed (what `git submodule deinit` leaves), where
- * the enclosing project's key would be wrong. The same holds for a removed
- * clone, one an ignore file or a skipped directory now hides, a clone emptied in
- * place, and a directory left holding only files the walk never takes.
+ * A deleted path is keyed by the repository it was in when it was LAST READ,
+ * which the scan ledger recorded then (`DataGateway.scanLedgerPathKeys`). The
+ * disk as it is now cannot say: the ledger never forgets a path, and the
+ * directory the file was in may since have been removed, replaced by another
+ * repository or reused by the project. A path whose record holds no key is
+ * `undefined`: a file read before keys were kept, one in a repository with no
+ * forge remote, or any path when the gateway cannot list the keys. A gateway that
+ * forwards by scope does not send such a path, so after an upgrade the paths
+ * deleted before their files were next read are held back once.
  *
- * Accepted: deleting the last walked file of a project directory, or removing a
- * project directory whole, leaves that file's stored row on the deployment,
- * because its path cannot be keyed. An accuracy gap, never a disclosure.
+ * The earlier limits of keying from the disk are gone: the last file of a
+ * directory, or a whole project directory, that is deleted still carries the
+ * project's key, and is sent.
  *
  * Local only, and read only by a gateway that forwards by scope: the keys
  * decide whether the register, and each deleted path in it, may be forwarded,
@@ -217,6 +222,16 @@ export interface DataGateway {
   // universe. Skips are keyed to the ruleset; a deletion is not, so a file
   // removed before a ruleset change must still be found gone after it.
   scanLedgerPaths(): Promise<string[]>;
+  // Every ledgered path with the repository it was in when it was last read
+  // (`undefined` when it was in none with a remote, and for every record written
+  // before keys were kept). It is what attributes a path that has since been
+  // deleted: the disk can no longer say which repository it was in once its
+  // directory has been replaced or reused.
+  //
+  // OPTIONAL, so that an implementation of this port outside this repository
+  // keeps compiling unchanged. A gateway without it gives every deleted path no
+  // key, which a gateway that forwards by scope reads as "do not send".
+  scanLedgerPathKeys?(): Promise<Map<string, string | undefined>>;
   recordScanned(entries: ScanLedgerEntry[]): Promise<void>;
   // The one-time ReDoS timing verdict for a regex rule (keyed by a content
   // hash of its pattern+flags), so a rule already measured safe — or

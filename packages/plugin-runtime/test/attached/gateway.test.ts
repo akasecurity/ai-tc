@@ -68,6 +68,7 @@ const PORT_METHODS = [
   'knownContentHashes',
   'scanLedger',
   'scanLedgerPaths',
+  'scanLedgerPathKeys',
   'recordScanned',
   'getRuleProbeVerdict',
   'setRuleProbeVerdict',
@@ -136,6 +137,7 @@ function makeLocal(
       if (name === 'knownContentHashes') return Promise.resolve(new Set<string>());
       if (name === 'scanLedger') return Promise.resolve(new Map());
       if (name === 'scanLedgerPaths') return Promise.resolve([]);
+      if (name === 'scanLedgerPathKeys') return Promise.resolve(new Map());
       if (name === 'getPolicyBundle')
         return Promise.resolve({
           version: 'local',
@@ -424,6 +426,30 @@ const wireRule = (id: string, category: DetectionCategory) =>
   }) as NonNullable<PolicyBundle['rules']>[number];
 
 // ── the drift guard ─────────────────────────────────────────────────────────
+
+describe('the repository a ledgered file was in', () => {
+  it('is the answer of the inner local gateway, unchanged', async () => {
+    const keys = new Map<string, string | undefined>([['/repo/a.ts', IN]]);
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const { gateway } = build({
+      local: makeLocal(calls, { scanLedgerPathKeys: () => Promise.resolve(keys) }),
+    });
+
+    expect(await gateway.scanLedgerPathKeys()).toBe(keys);
+  });
+
+  it('is an empty answer when the inner gateway cannot say, so no path has a key', async () => {
+    // The method is optional on the port, for implementers outside this
+    // repository. An inner gateway without it gives every deleted path no key,
+    // which a scoped attachment reads as "do not send".
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls);
+    Reflect.deleteProperty(local, 'scanLedgerPathKeys');
+    const { gateway } = build({ local });
+
+    expect(await gateway.scanLedgerPathKeys()).toEqual(new Map());
+  });
+});
 
 describe('every DataGateway method delegates to the inner local gateway', () => {
   it.each(PORT_METHODS)('%s', async (name) => {

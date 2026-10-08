@@ -2004,8 +2004,10 @@ describe('what an attach says', () => {
     expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
     expect(said).toContain(
-      'An aka older than this one that re-attaches this machine makes it machine-wide.',
+      'Re-attaching with an aka older than this one, from its command line or its\n' +
+        'dashboard, makes this machine machine-wide.',
     );
+    expect(said).not.toContain('An aka older than this one that re-attaches');
     expect(said).not.toContain('Activity from here on is sent to that deployment automatically.');
   });
 
@@ -2035,7 +2037,8 @@ describe('what an attach says', () => {
         'finding counts and dates for everything recorded on the machine. Where a',
         'scan is available (the coding-agent plugins, not a browser chat), the same',
         'session start also checks it for device commands.',
-        'An aka older than this one that re-attaches this machine makes it machine-wide.',
+        'Re-attaching with an aka older than this one, from its command line or its',
+        'dashboard, makes this machine machine-wide.',
         '',
         'Policy arrives on the next session. Run `aka status` to see it.',
         '',

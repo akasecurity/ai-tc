@@ -894,9 +894,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'finding counts and dates for everything recorded on the machine. Where a',
           'scan is available (the coding-agent plugins, not a browser chat), the same',
           'session start also checks it for device commands.',
-          // An older aka writes a version-1 credential on every attach, which is
-          // machine-wide. Said here because the reader is the one who would run it.
-          'An aka older than this one that re-attaches this machine makes it machine-wide.',
+          // An aka older than this one writes a version-1 credential on every
+          // attach, from its command line and from its dashboard alike, and
+          // version 1 is machine-wide. Said here because the reader is the one
+          // who would run it.
+          'Re-attaching with an aka older than this one, from its command line or its',
+          'dashboard, makes this machine machine-wide.',
           '',
           'Policy arrives on the next session. Run `aka status` to see it.',
           ...(historyConsent === undefined

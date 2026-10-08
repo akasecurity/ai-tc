@@ -25,8 +25,12 @@ import type { CommandScan, WorktreeScan } from '../../src/attached/command-sync.
 // unenroll that lands between spawn and poll leaves the scan forwarding under
 // the scope it was spawned with.
 //
-// The credential on disk is real (a v2 file for the scoped cases), and so are
-// the settings the plugin's own loader reads. Only the network client is faked.
+// The network client and the scanner are faked, and no case runs a forward:
+// each records the configuration the scan was handed, which is what the forward
+// resolves its scope from. The first three cases drive the scan alone, with a
+// loader of their own and no files on disk. The two that go through
+// `runCommandSync` use a real credential (a v2 file for the scoped one) and
+// real settings, read by the plugin's own loader.
 
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
@@ -147,6 +151,12 @@ describe('commandScanFor loads its configuration when the scan runs', () => {
     await expect(scan.run()).resolves.toEqual({ projects: 1 });
     expect(load).toHaveBeenCalledTimes(1);
     expect(seen).toEqual([{ dataDir: 'at-run' }]);
+
+    // Every run reads afresh: a loader that were remembered from the first run
+    // would hand a later run the settings of an earlier one.
+    await expect(scan.run()).resolves.toEqual({ projects: 1 });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([{ dataDir: 'at-run' }, { dataDir: 'at-run' }]);
   });
 
   it('hands the scan the configuration in force when it runs, not when it was built', async () => {

@@ -407,11 +407,14 @@ function readSessionDirectory(): string | undefined {
  *
  * THE CONFIGURATION IS LOADED WHEN THE SCAN RUNS, not when it is built.
  * `loadConfig` is called inside `run`, once per run, so the scan's own forward
- * resolves the enrolled scope in force when the command is serviced — the
- * moment `runCommandSync` decided, from a live settings read, that this root may
- * be scanned at all. The scan is built when a session spawns the sync child, and
- * a scope captured then would let an unenroll that lands before the poll go
- * unseen by the forward.
+ * resolves the enrolled scope in force when the command is serviced. That is a
+ * second read, not the one `runCommandSync` decided on: it judges whether this
+ * root may be scanned at all from the settings it reads before it polls, and the
+ * scan only runs after that verdict. So the configuration is read after, never
+ * before, the live settings read the verdict used, and the forward never sees
+ * an older scope than the verdict did. The scan is built when a session spawns
+ * the sync child, and a scope captured then would let an unenroll that lands
+ * before the poll go unseen by the forward.
  *
  * NEVER THROWS, which matters because it is built while a sync entry evaluates
  * its arguments. A working directory removed under a running session makes

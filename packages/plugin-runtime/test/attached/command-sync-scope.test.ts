@@ -252,43 +252,43 @@ describe('commandScanFor — a session directory that cannot be read', () => {
 
   async function buildWithUnreadableDirectory() {
     const scanWorktree = vi.fn(() => Promise.resolve({ scanned: 1 }));
+    // The configuration is only loaded for a scan that has a directory to scan,
+    // so every case here expects this loader to stay unused.
+    const loadConfig = vi.fn(() => ({ dataDir: dataDirOf(base) }) as never);
     const { commandScanFor } = await import('../../src/attached/command-sync.ts');
-    const build = () =>
-      commandScanFor(
-        () => ({ dataDir: dataDirOf(base) }) as never,
-        scanWorktree,
-        SOURCE_TOOL.ClaudeCode,
-      );
+    const build = () => commandScanFor(loadConfig, scanWorktree, SOURCE_TOOL.ClaudeCode);
     const spy = vi.spyOn(process, 'cwd').mockImplementation(unreadableDirectory);
     try {
       // Built twice on purpose: the first asserts the build does not throw, the
       // second is the scan the case then drives.
       expect(build).not.toThrow();
-      return { scan: build(), scanWorktree };
+      return { scan: build(), scanWorktree, loadConfig };
     } finally {
       spy.mockRestore();
     }
   }
 
   it('builds anyway: no key, and a scan that rejects', async () => {
-    const { scan, scanWorktree } = await buildWithUnreadableDirectory();
+    const { scan, scanWorktree, loadConfig } = await buildWithUnreadableDirectory();
 
     // No key, so a scoped attachment never services a command from here.
     expect(scan.rootScopeKey()).toBeUndefined();
     // A rejection, so the command channel's own catch acks `scan_failed`.
     await expect(scan.run()).rejects.toThrow(/the session working directory cannot be read/);
     expect(scanWorktree).not.toHaveBeenCalled();
+    expect(loadConfig).not.toHaveBeenCalled();
   });
 
   it('acks a machine-wide attachment as scan_failed, exactly as it always has', async () => {
     reader.scoped = false;
     attach();
-    const { scan, scanWorktree } = await buildWithUnreadableDirectory();
+    const { scan, scanWorktree, loadConfig } = await buildWithUnreadableDirectory();
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
     await expect(runCommandSync(deps(scan))).resolves.toBe('failed');
 
     expect(scanWorktree).not.toHaveBeenCalled();
+    expect(loadConfig).not.toHaveBeenCalled();
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'failed',
       reason: 'scan_failed',

@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { COMMAND_SPECS } from '../../src/command-manifest.ts';
+import { runAttach } from '../../src/commands/attach.ts';
 import { defaultLabel, quotedForShell, runEnroll, runUnenroll } from '../../src/commands/enroll.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
@@ -524,25 +525,30 @@ describe('aka enroll — the re-attach command a refusal suggests', () => {
   );
 });
 
+/**
+ * Edits the stored settings by hand, as a person or an overlay could: the label
+ * is dropped and the deployment's address becomes `endpoint`, which no check
+ * made when settings are saved through the product has looked at.
+ */
+function editPlaneEndpoint(endpoint: string): void {
+  const file = join(settingsDirOf(base), SETTINGS_FILENAME);
+  const settings = JSON.parse(readFileSync(file, 'utf8')) as {
+    controlPlane: Record<string, unknown>;
+  };
+  delete settings.controlPlane.label;
+  settings.controlPlane.endpoint = endpoint;
+  writeFileSync(file, JSON.stringify(settings));
+}
+
 // The settings address is checked when settings are saved through the product,
 // not when the file is edited by hand or an overlay pins it. With no label the
 // command names the deployment by that address, so a refusal must not echo what
 // an address must never show: userinfo, a query, a fragment. The machine here is
-// governed because a refusal on an ungoverned one also prints the command that
-// re-attaches, which carries the address whole so that the command runs.
+// governed so that the refusal carries no re-attach command, which the describe
+// after this one covers on a machine nobody governs.
 describe('aka enroll — the deployment named by a settings address with no label', () => {
   const HIDDEN = 'hiddenpart';
   const governed = ManagedSettings.parse({ organization: 'Acme IT', lockedFields: ['runMode'] });
-
-  function editPlaneEndpoint(endpoint: string): void {
-    const file = join(settingsDirOf(base), SETTINGS_FILENAME);
-    const settings = JSON.parse(readFileSync(file, 'utf8')) as {
-      controlPlane: Record<string, unknown>;
-    };
-    delete settings.controlPlane.label;
-    settings.controlPlane.endpoint = endpoint;
-    writeFileSync(file, JSON.stringify(settings));
-  }
 
   it.each<[string, string, string]>([
     ['a username', `https://${HIDDEN}@aka.acme.test`, 'https://aka.acme.test, rest not shown'],
@@ -591,6 +597,71 @@ describe('aka enroll — the deployment named by a settings address with no labe
     });
     expect(await runEnroll(['--list'], deps(refused, { managedSettings: governed }))).toBe(1);
     expect(refused.errors()).toContain(`the stored credential for ${endpoint} cannot be used`);
+  });
+});
+
+// On a machine nobody governs a refusal also suggests the command that attaches
+// again. An address `aka attach` would refuse (userinfo, a query, a fragment, a
+// scheme that is not https, an address that is not a web address) cannot be
+// attached to by that command, so the suggestion carries the placeholder for it
+// and none of what the address held. An address it accepts is typed whole.
+describe('aka enroll — the re-attach command for a settings address aka attach would refuse', () => {
+  const HIDDEN = 'hiddenpart';
+  const PLACEHOLDER = '`aka attach --url <url> --scoped`';
+
+  const refused: [string, string][] = [
+    ['userinfo', `https://${HIDDEN}@aka.acme.test`],
+    ['a query', `https://aka.acme.test/?t=${HIDDEN}`],
+    ['a fragment', `https://aka.acme.test/#${HIDDEN}`],
+    ['a scheme that is not https', 'http://aka.acme.test'],
+    ['no scheme', `${HIDDEN}@aka.acme.test`],
+  ];
+
+  it.each(refused)('aka attach refuses an address with %s', async (_name, endpoint) => {
+    const io = recorder();
+    await runAttach(['--url', endpoint, '--scoped'], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      exit: (code) => {
+        exits.push(code);
+      },
+    });
+    expect(exits).toEqual([2]);
+    expect(io.errors()).toContain('refusing to attach to');
+    expect(io.errors()).not.toContain(HIDDEN);
+  });
+
+  it.each(refused)(
+    'suggests the placeholder, never the address, when it has %s',
+    async (_name, endpoint) => {
+      attach({ scope: fresh() });
+      editPlaneEndpoint(endpoint);
+      const list = recorder();
+      const add = recorder();
+      const remove = recorder();
+      expect(await runEnroll(['--list'], deps(list))).toBe(1);
+      expect(await runEnroll(['--repo', WORK_REPO], deps(add))).toBe(1);
+      expect(await runUnenroll(['--repo', WORK_REPO], deps(remove))).toBe(1);
+      for (const io of [list, add, remove]) {
+        expect(`${io.output()}${io.errors()}`).not.toContain(HIDDEN);
+        expect(io.errors()).toContain(PLACEHOLDER);
+        expect(io.errors()).not.toContain('--url http');
+      }
+    },
+  );
+
+  it.each([
+    'https://aka.acme.test',
+    'https://aka.acme.test/gateway',
+    'http://localhost:4100',
+    'http://127.0.0.1:4100',
+  ])('still suggests a command that carries the address %s', async (endpoint) => {
+    attach({ mode: 'machine', endpoint });
+    const io = recorder();
+    expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+    expect(io.errors()).toContain(`aka attach --url ${quotedForShell(endpoint)} --scoped`);
+    expect(io.errors()).not.toContain('<url>');
   });
 });
 

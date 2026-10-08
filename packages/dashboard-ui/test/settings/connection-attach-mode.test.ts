@@ -22,8 +22,10 @@ import {
 // offers, the line an attached row shows, and the forwarding notice a scoped
 // machine gets instead of the machine-wide one. Copy on this section is a
 // consent surface, so each string is held to what a scoped machine actually
-// sends: activity from enrolled repositories, the policy pull and a short report
-// on the install, and nothing else.
+// sends: activity only from enrolled repositories, and in every session on the
+// machine the policy pull, the check for device commands and a device report
+// whose counts cover every repository on it. The strings say that these happen
+// and name what the report holds, and none of them says "nothing else".
 
 // The phrasings WorkspaceSettingsFormView.test.ts bans on every section, repeated
 // for the strings this file adds (that list is not exported; see its note).
@@ -95,6 +97,18 @@ describe('attach-mode copy', () => {
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped');
     expect(scoped?.description).toMatch(/aka enroll/);
     expect(scoped?.description).toMatch(/stays on this machine/i);
+  });
+
+  it('names the device report on the personal-device choice, where the decision is made', () => {
+    // The report goes in both modes whatever the scope, so a person choosing
+    // between them has to be told it is not limited to enrolled repositories.
+    const description = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    expect(description).toMatch(/Any session on this machine, in an enrolled repository or not/);
+    expect(description).toMatch(/fetches the policy and checks for device commands/);
+    expect(description).toMatch(/at most every 15 minutes/);
+    expect(description).toMatch(/sends a device report \(at most hourly\)/);
+    expect(description).toMatch(/device identifier, host name, versions, detection packs/);
+    expect(description).toMatch(/finding counts and dates across every repository/);
   });
 
   it('words the personal-device choice and mode line so they cannot read as "nothing else is sent"', () => {

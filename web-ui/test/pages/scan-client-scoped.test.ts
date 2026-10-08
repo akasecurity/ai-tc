@@ -69,7 +69,13 @@ describe('the Scan page notice on a scoped machine', () => {
   });
 
   it('keeps the machine-wide wording when the page reports no mode', () => {
+    // An unreported mode is not a scoped one, and the wider claim is the safe
+    // one: the notice says the register is sent, with no enrolment condition.
     mount(undefined);
+    expect(container.textContent).toContain(`This machine is attached to ${LABEL}.`);
+    expect(container.textContent).toContain('is sent there.');
     expect(container.textContent).not.toContain('personal device');
+    expect(container.textContent).not.toContain('aka enroll');
+    expect(boxLabel()).toBe(`Send the Data Shares register to ${LABEL}`);
   });
 });

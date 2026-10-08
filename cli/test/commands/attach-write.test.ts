@@ -112,14 +112,14 @@ const ACCESS_KEY = 'Access key (input hidden): ';
 // real one does, so the order of questions can be checked.
 const DEVICE_CONFIRM = '  Attach this machine to that organization? [y/N] ';
 const PERSONAL_DEVICE = 'Is this a personal device? [y/n]: ';
-const WIDEN = 'Send activity from every project on this machine? [y/N]: ';
+const WIDEN = 'Send activity from anywhere on this machine? [y/N]: ';
 // Both causes of the no-terminal refusal, in one message, word for word.
 const NEEDS_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
   'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
-  '--machine to send activity from every project on this machine. Nothing was changed.';
+  '--machine to send activity from anywhere on this machine. Nothing was changed.';
 // What a failed save says when it put the earlier credential file back, and what
 // it says when it did not, by how it did not.
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
@@ -357,8 +357,8 @@ describe('parseAttachArgs: the mode flags', () => {
       '  --scoped   A personal device: send activity only from the repositories you',
     );
     expect(h.errors()).toContain(
-      '  --machine  A machine your organization owns: send activity from every\n' +
-        '             project on this machine.',
+      '  --machine  A machine your organization owns: send activity from anywhere on\n' +
+        '             this machine.',
     );
     // The policy pull, the check for device commands and the device report go
     // from a session anywhere on the machine, not on a timer, whatever is
@@ -376,6 +376,9 @@ describe('parseAttachArgs: the mode flags', () => {
     );
     expect(h.errors()).toContain('counts, and finding counts and dates across every repository on');
     expect(h.errors()).not.toContain('schedule');
+    // A session outside any repository, and a browser chat, are sent machine-wide
+    // though they belong to no project, so the machine-wide line cannot say project.
+    expect(h.errors()).not.toContain('project');
     // The re-attach rule is stated for neither flag, and a flag is said to decide.
     expect(h.errors()).toContain(
       '  With neither flag, a re-attach to the same deployment keeps the mode it has;',
@@ -583,10 +586,11 @@ describe('the personal-device question', () => {
     );
     expect(h.output()).toContain('  dates across every repository on this machine.');
     expect(h.output()).toContain(
-      '  A machine your organization owns sends activity from every project on',
+      '  A machine your organization owns sends activity from anywhere on this',
     );
     expect(h.output()).not.toContain('Nothing is sent');
     expect(h.output()).not.toContain('schedule');
+    expect(h.output()).not.toContain('every project');
     expect(modeOnDisk()).toBe('scoped');
     expect(storedSettings().attachmentScope).toEqual(FRESH);
   });
@@ -797,6 +801,10 @@ describe('widening a personal device with --machine', () => {
     expect(h.output()).toContain(
       'sent only from the repositories enrolled on it. With --machine, activity from',
     );
+    expect(h.output()).toContain(
+      'anywhere on this machine is sent, and the enrolled list is cleared.',
+    );
+    expect(h.output()).not.toContain('every project');
     expect(storedCredential()).toMatchObject({
       usable: true,
       credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },

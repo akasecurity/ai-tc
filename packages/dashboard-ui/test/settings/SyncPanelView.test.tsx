@@ -217,4 +217,43 @@ describe('SyncPanelView', () => {
     expect(held).toContain('paused after repeated failures');
     expect(held).toContain('disabled');
   });
+
+  // ─── On a personal device ──────────────────────────────────────────────────
+  //
+  // A personal device sends activity only from its enrolled repositories, so the
+  // line saying what is sent from now on must not say "this machine". The host
+  // passes `scoped` only for one; anything else keeps the machine-wide line.
+
+  it("says only an enrolled repository's activity is sent from now on", () => {
+    const html = render({ state: { status: 'not-shared' }, scoped: true });
+    expect(html).toContain(
+      'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.',
+    );
+    expect(html).not.toContain('this machine records');
+  });
+
+  it.each([undefined, false])('keeps the machine-wide line when scoped is %s', (scoped) => {
+    const html = render({ state: { status: 'not-shared' }, scoped });
+    expect(html).toContain(
+      'Existing activity is not shared. Only what this machine records from now on is sent.',
+    );
+    expect(html).not.toContain('enrolled repository');
+  });
+
+  // The bars on a personal device count only what is enrolled, so a header
+  // saying what "this machine" has sent would claim more than they show.
+  it('says the header counts only what is enrolled on a personal device', () => {
+    const html = render({ scoped: true });
+    expect(html).toMatch(
+      /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)? from what is enrolled, and what it still owes\./,
+    );
+  });
+
+  it.each([undefined, false])('keeps the machine-wide header when scoped is %s', (scoped) => {
+    const html = render({ scoped });
+    expect(html).toMatch(
+      /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)?, and what it still owes\./,
+    );
+    expect(html).not.toContain('from what is enrolled');
+  });
 });

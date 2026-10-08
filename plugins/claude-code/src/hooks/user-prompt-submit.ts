@@ -22,8 +22,11 @@
  * PreModelSwitch refuses a switch onto one, but a session can start on a
  * prohibited model, or have one restored on resume, without any switch passing
  * through that hook. Neither point blocks an LLM API call — no hook fires around
- * the request — so what the two enforce together is that a governed session does
- * not RUN on a prohibited model.
+ * the request — so what the two enforce together is that a session does not RUN
+ * on a prohibited model where the organization's model policy governs it:
+ * everywhere on a machine-wide attachment, and only in enrolled repositories on
+ * a scoped one, keyed from the directory each turn runs in. A turn the policy
+ * does not govern is scanned like any other.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed `/aka:setup`, surface a one-line pointer to it (fail-open

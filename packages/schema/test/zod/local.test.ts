@@ -417,11 +417,16 @@ describe('isHistorySyncConsentValid', () => {
 // describes what the new payload sends, and then update the number here.
 //
 //   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
-//   cli/src/commands/sync-history.ts  grant/revoke/describe output
+//   cli/src/commands/enroll.ts        earlierActivity — what enrolling a
+//                                     repository queues and sends under a grant
+//   cli/src/commands/sync-history.ts  grant/revoke/describe output and the
+//                                     help, each in its machine-wide and
+//                                     its personal-device wording
 //   packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
 //                                     HISTORY_SYNC_SECTION_DESCRIPTION,
 //                                     HISTORY_SYNC_CHOICES,
-//                                     HISTORY_SYNC_STALE_NOTICE
+//                                     HISTORY_SYNC_STALE_NOTICE, and each
+//                                     one's _SCOPED twin
 //   packages/plugin-runtime/src/attached/status.ts
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch

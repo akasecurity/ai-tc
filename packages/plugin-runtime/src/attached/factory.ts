@@ -136,11 +136,15 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),
         now: () => Date.now(),
+        // The mode THIS gateway enforces, from the attachment resolved above,
+        // so the report cannot name a mode the forward paths are not using.
+        attachmentMode: attachment.mode,
         // The reporting build's identity, when the caller knows it (the plugin
         // adapters do; an embedder or a test may not). Composed with the SAME
         // policy store the sync child writes, so the block names the bundle
-        // actually in force. Key omitted rather than set undefined — the
-        // reporter keys on presence.
+        // actually in force. The dependency key is omitted when no build is
+        // known, and the reporter's optional call (`deps.pluginBlock?.()`)
+        // then adds no block.
         ...(meta?.pluginBuild === undefined
           ? {}
           : { pluginBlock: createPluginBlock(meta.pluginBuild, store) }),

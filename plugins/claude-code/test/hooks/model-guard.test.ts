@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { GovernanceScope } from '@akasecurity/plugin-runtime';
 import { recordSessionModel } from '@akasecurity/plugin-sdk';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   decidePreModelSwitch,
@@ -374,5 +375,173 @@ describe('handleSubagentSpawn', () => {
     expect((g.recorded[0] as { attributes: Record<string, unknown> }).attributes.scope_key).toBe(
       'github.com/acme/work-repo',
     );
+  });
+
+  // ON A SCOPED ATTACHMENT the organization's model policy governs only the
+  // repositories enrolled on this device. The spawn is decided on the full list
+  // first; only once the list refuses is it keyed from the payload cwd and the
+  // gateway asked whether governance applies there, and the same key stamps the
+  // row. Every gateway above answers nothing, and is governed everywhere.
+  describe('on a scoped attachment, only enrolled repositories are governed', () => {
+    const WORK_REMOTE = 'https://github.com/acme/work-repo.git';
+    const WORK_KEY = 'github.com/acme/work-repo';
+    const PERSONAL_REMOTE = 'https://github.com/someone/dotfiles.git';
+    const PERSONAL_KEY = 'github.com/someone/dotfiles';
+
+    /**
+     * `gateway`, answering where governance applies the way the attached gateway
+     * does: for the `enrolled` keys only, or for every key (`'every'`, a
+     * machine-wide attachment). The answer reads `this`, as the real method does,
+     * so a caller that detached it from its gateway would throw, which reads as
+     * not governed, and the machine-wide case would fail.
+     */
+    function governed<G extends object>(
+      gateway: G,
+      enrolled: readonly string[] | 'every',
+    ): G & GovernanceScope {
+      const capability = {
+        enrolled,
+        governanceAppliesTo(scopeKey: string | undefined): boolean {
+          return (
+            this.enrolled === 'every' ||
+            (scopeKey !== undefined && this.enrolled.includes(scopeKey))
+          );
+        },
+      };
+      return Object.assign(gateway, capability);
+    }
+
+    /** A checkout under this test's directory whose origin is `remote`, or none. */
+    function checkout(name: string, remote: string | undefined): string {
+      const repo = join(dir, name);
+      mkdirSync(join(repo, '.git'), { recursive: true });
+      writeFileSync(
+        join(repo, '.git', 'config'),
+        remote === undefined
+          ? '[core]\n\tbare = false\n'
+          : `[remote "origin"]\n\turl = ${remote}\n`,
+      );
+      return repo;
+    }
+
+    /** The scope key of every row `g` recorded, in order (undefined for a row with none). */
+    const keysOf = (g: ReturnType<typeof gatewayWith>): unknown[] =>
+      g.recorded.map((e) => (e as { attributes: Record<string, unknown> }).attributes.scope_key);
+
+    /** One `Agent` spawn of `model` from `cwd` over `gateway`, emits logged into `g.order`. */
+    function spawn(
+      g: ReturnType<typeof gatewayWith>,
+      gateway: object,
+      cwd: string | undefined,
+      model = 'opus',
+    ): Promise<boolean> {
+      return handleSubagentSpawn(
+        () => gateway as never,
+        'Agent',
+        { model },
+        's1',
+        cwd,
+        async () => {
+          g.order.push('emit');
+          await Promise.resolve();
+        },
+      );
+    }
+
+    it('is refused in an enrolled repository, with the row keyed there', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(await spawn(g, governed(g.gateway, [WORK_KEY]), checkout('work', WORK_REMOTE))).toBe(
+        true,
+      );
+      expect(g.order).toEqual(['emit', 'close']);
+      expect(keysOf(g)).toEqual([WORK_KEY]);
+      expect((g.recorded[0] as { attributes: Record<string, unknown> }).attributes).toMatchObject({
+        refusal_seam: 'spawn',
+      });
+    });
+
+    it('is allowed in a personal repository: no output, no row, and the gateway closed', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(
+        await spawn(g, governed(g.gateway, [WORK_KEY]), checkout('mine', PERSONAL_REMOTE)),
+      ).toBe(false);
+      expect(g.order).toEqual(['close']);
+      expect(g.recorded).toHaveLength(0);
+    });
+
+    it('is allowed in a checkout with no key, the gateway closed', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(await spawn(g, governed(g.gateway, [WORK_KEY]), checkout('scratch', undefined))).toBe(
+        false,
+      );
+      expect(g.order).toEqual(['close']);
+      expect(g.recorded).toHaveLength(0);
+    });
+
+    it('is refused everywhere on a machine-wide attachment, a keyless checkout included', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(await spawn(g, governed(g.gateway, 'every'), checkout('scratch', undefined))).toBe(
+        true,
+      );
+      expect(g.order).toEqual(['emit', 'close']);
+      expect(g.recorded).toHaveLength(1);
+      expect(
+        (g.recorded[0] as { attributes: Record<string, unknown> }).attributes,
+      ).not.toHaveProperty('scope_key');
+    });
+
+    it('is refused in a personal repository by a gateway that does not answer', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(await spawn(g, g.gateway, checkout('mine', PERSONAL_REMOTE))).toBe(true);
+      expect(g.order).toEqual(['emit', 'close']);
+      expect(keysOf(g)).toEqual([PERSONAL_KEY]);
+    });
+
+    it('with no cwd, is keyed from the process directory, as a capture is', async () => {
+      const work = checkout('work', WORK_REMOTE);
+      const mine = checkout('mine', PERSONAL_REMOTE);
+      const from = async (processDir: string) => {
+        const g = gatewayWith(['claude-opus-5']);
+        const spy = vi.spyOn(process, 'cwd').mockReturnValue(processDir);
+        try {
+          const stop = await spawn(g, governed(g.gateway, [WORK_KEY]), undefined);
+          return { stop, order: g.order, keys: keysOf(g) };
+        } finally {
+          spy.mockRestore();
+        }
+      };
+      expect(await from(work)).toEqual({ stop: true, order: ['emit', 'close'], keys: [WORK_KEY] });
+      expect(await from(mine)).toEqual({ stop: false, order: ['close'], keys: [] });
+    });
+
+    it('asks only once the list refuses, with the key the row carries', async () => {
+      const ask = vi.fn<GovernanceScope['governanceAppliesTo']>(() => true);
+      const work = checkout('work', WORK_REMOTE);
+      const allowed = gatewayWith(['claude-opus-5']);
+      // The allowed spawn names no cwd, so a key computed before the decision
+      // would fall back to the process directory: the spy proves none was.
+      // Asserted BEFORE the restore, which clears the spy's calls.
+      const cwdRead = vi.spyOn(process, 'cwd').mockReturnValue(work);
+      try {
+        expect(
+          await spawn(
+            allowed,
+            Object.assign(allowed.gateway, { governanceAppliesTo: ask }),
+            undefined,
+            'sonnet',
+          ),
+        ).toBe(false);
+        expect(cwdRead).not.toHaveBeenCalled();
+      } finally {
+        cwdRead.mockRestore();
+      }
+      expect(ask).not.toHaveBeenCalled();
+      const refused = gatewayWith(['claude-opus-5']);
+      expect(
+        await spawn(refused, Object.assign(refused.gateway, { governanceAppliesTo: ask }), work),
+      ).toBe(true);
+      expect(ask.mock.calls).toEqual([[WORK_KEY]]);
+      expect(keysOf(refused)).toEqual([WORK_KEY]);
+    });
   });
 });

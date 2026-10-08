@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { AttachmentScopeEntry } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { enrollableRepoKey } from '../src/egress-wire.ts';
+import { canonicalRepoUrl, enrollableRepoKey } from '../src/egress-wire.ts';
 
 // The key for a repository named by hand. Keys are compared byte for byte
 // against what a checkout stamps on its events, so a key that is almost right is
@@ -62,6 +62,11 @@ const REFUSED: [string, string][] = [
   ['a typed host and one path segment', 'github.com/org'],
   ['a clone URL with one path segment', 'https://github.com/org'],
   ['a host alone', 'github.com'],
+  // One path segment from a clone URL as well: from the text alone, a repository
+  // kept at the top of its host cannot be told from an owner.
+  ['an scp clone URL with one path segment', 'git@git.example.com:payments.git'],
+  ['an ssh:// clone URL with one path segment', 'ssh://git@git.example.com:29418/payments'],
+  ['an https clone URL with one path segment', 'https://git.example.com/payments.git'],
   // A trailing-dot host names the same host, so it would be a second key for it.
   ['a typed trailing-dot host', 'github.com./acme/payments-api'],
   ['a clone URL with a trailing-dot host', 'https://github.com./acme/payments-api.git'],
@@ -95,6 +100,14 @@ describe('enrollableRepoKey', () => {
 
   it.each(REFUSED)('refuses %s', (_label, input) => {
     expect(enrollableRepoKey(input)).toBeUndefined();
+  });
+
+  it('refuses a one-segment clone URL by name although a checkout of it is keyed', () => {
+    // The trade the two-segment rule makes: a checkout cloned from this URL
+    // stamps this key on its events, and naming the URL by hand is refused.
+    const url = 'git@git.example.com:payments.git';
+    expect(canonicalRepoUrl(url)).toBe('git.example.com/payments');
+    expect(enrollableRepoKey(url)).toBeUndefined();
   });
 
   it.each(ACCEPTED)(

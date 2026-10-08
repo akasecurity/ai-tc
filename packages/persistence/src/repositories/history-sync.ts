@@ -363,9 +363,11 @@ export interface HistorySyncCounts {
  * leaves the first, which a single bucket could not express.
  *
  * A transient network failure is in NEITHER: it leaves the row NULL and reads
- * as queued. That is correct for a row that started before the attach, which
- * the drain re-offers; one that started after it is the live path's alone, and
- * stays queued because nothing re-offers it.
+ * as queued. That is correct for a capture, which the failed live send marks
+ * owed and the capture drain re-offers whenever it started, and for a
+ * structural row that started before the attach, which the structural drain
+ * re-offers. A structural row that started after the attach is the live path's
+ * alone, and stays queued because nothing re-offers it.
  *
  * `failed` cannot be ambiguous on a store that has been through the upgrade
  * adding these columns: that upgrade re-armed every sentinel row written before

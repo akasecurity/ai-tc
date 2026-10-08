@@ -51,8 +51,10 @@ export function managedRefusal(fields: readonly ManagedSettingKey[]): string {
 const ATTACH_KEEP_NAME_HINT = 'Attach with the name it already has, as this page shows it.';
 
 /**
- * An attach or detach refused before anything was sent or written, because an
- * administrator locked or pinned where this machine's connection stays.
+ * An attach or detach refused before anything was written, because an
+ * administrator locked or pinned where this machine's connection stays. An attach
+ * asks again once its key is verified, so the same refusal can follow that check,
+ * which sends the key to the deployment and nothing else.
  *
  * The decision is worded by `connectionRefusalMessage`, the same sentence
  * `aka attach` and `aka detach` refuse with. The one addition is this page's own:
@@ -125,6 +127,36 @@ export const DETACH_CREDENTIAL_STUCK =
  */
 export const ATTACH_CREDENTIAL_UNWRITABLE =
   'The access key could not be saved to ~/.aka/settings, so nothing was changed. Check that the directory exists and is writable.';
+
+/**
+ * An attach whose settings were saved ahead of its credential, and whose
+ * credential then could not be saved.
+ *
+ * The settings go first only where a stop between the two writes would pair the
+ * new credential with an enrolled list or a history grant the finished attach
+ * replaces (`writesSettingsFirst`, the rule `aka attach` uses): a machine-wide
+ * attach over a credential that is, or may be, a personal device's, or over no
+ * credential file beside settings that still carry a list or a grant; and a
+ * scoped attach that does not keep the list stored beside it, over settings that
+ * carry a list or a grant, and not over a usable machine-wide credential. The
+ * settings then hold no list (machine-wide) or an empty one (scoped), and they
+ * are not put back, because that would take another settings write that can fail
+ * too. Beside them, what the machine already had sends no repository's activity:
+ * a scoped credential has no repository enrolled (its device report still goes,
+ * as it did before), a file that cannot be used or a credential for another
+ * deployment sends nothing, and with no credential file there is nothing to send
+ * with.
+ *
+ * The last sentence is there because an earlier scoped key for this deployment
+ * survives the failed write, and enrolling a repository under it would send that
+ * repository. It names no command, as this page's other "Attach it again"
+ * notices (the stored key missing, or unusable) name none: the settings read
+ * attached now, so the page shows no attach form, and on a machine an
+ * administrator governs a detach is refused as well, so no step on this page is
+ * the way back for every machine.
+ */
+export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
+  "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.";
 
 /**
  * Added to a failed attach's refusal when the credential file could not be put
@@ -201,7 +233,10 @@ export const ATTACH_MODE_REQUIRED =
  * attached, re-attached or detached this machine in that time, writing what was
  * decided could widen a personal device, narrow a machine-wide attachment, or
  * replace its enrolled list with an empty one, with nobody asked about any of
- * it. Nothing is written; reloading shows the machine as it stands now.
+ * it. It is also the answer when an administrator's hold that settled the mode
+ * lifted in that time: the page that sent no mode was rendered under the hold and
+ * offered no choice. Nothing is written; reloading shows the machine as it stands
+ * now.
  */
 export const ATTACH_CHANGED_WHILE_WAITING =
   "This machine's connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.";

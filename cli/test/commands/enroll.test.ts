@@ -288,8 +288,9 @@ describe('aka enroll — usage', () => {
       'activity is sent to the deployment\nonly from the repositories enrolled here',
     );
     expect(io.errors()).toContain(
-      'The policy pull and the device report are not limited to them: the\nreport counts findings across every repository on the machine.',
+      "The policy pull and the device report are not limited to them: the\nreport's finding counts and dates are for everything recorded on the machine.",
     );
+    expect(io.errors()).not.toContain('across every repository');
     expect(io.errors()).not.toContain('only activity in');
   });
 
@@ -343,6 +344,12 @@ describe('aka enroll — who may enroll', () => {
     expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
     expect(io.errors()).toContain('machine-wide');
     expect(io.errors()).toContain('nothing is enrolled');
+    // What a machine-wide attachment sends is activity from anywhere on the
+    // machine, sessions outside any repository included, not every repository.
+    expect(io.errors()).toContain(
+      'machine-wide, so activity from\nanywhere on this machine is sent and nothing is enrolled.',
+    );
+    expect(io.errors()).not.toContain('every repository');
     expect(io.errors()).toContain(`aka attach --url ${ENDPOINT} --scoped`);
     expect(storedScope()).toBeUndefined();
   });
@@ -415,9 +422,13 @@ describe('aka enroll — who may enroll', () => {
     const unenroll = recorder();
     expect(await runUnenroll(['--repo', WORK_REPO], deps(unenroll))).toBe(1);
     expect(unenroll.errors()).toContain('machine-wide');
+    expect(unenroll.errors()).toContain('activity from\nanywhere on this machine is sent');
+    expect(unenroll.errors()).not.toContain('every repository');
     const list = recorder();
     expect(await runEnroll(['--list'], deps(list))).toBe(1);
     expect(list.errors()).toContain('machine-wide');
+    expect(list.errors()).toContain('activity from\nanywhere on this machine is sent');
+    expect(list.errors()).not.toContain('every repository');
   });
 });
 

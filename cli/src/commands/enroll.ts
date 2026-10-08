@@ -74,7 +74,7 @@ const ENROLL_USAGE = `Usage: aka enroll [path]
 On a machine attached in the scoped mode, activity is sent to the deployment
 only from the repositories enrolled here; activity anywhere else stays on this
 machine. The policy pull and the device report are not limited to them: the
-report counts findings across every repository on the machine.
+report's finding counts and dates are for everything recorded on the machine.
 
   [path]         Enroll the repository this directory is in (default: .).
   --repo <repo>  Enroll by clone URL, or by key, as in github.com/acme/payments-api.
@@ -388,8 +388,9 @@ function reattachCommand(endpoint: string): string {
  * Read with the administrator's overlay applied: the endpoint in force is the
  * one every forward path reads, so it is the one the record must name. The
  * credential is read for that endpoint and must be a usable SCOPED one. A
- * machine-wide attachment sends every repository whatever is enrolled, so an
- * enrollment there would be a promise the forward paths do not keep.
+ * machine-wide attachment sends activity from anywhere on the machine whatever
+ * is enrolled, so an enrollment there would be a promise the forward paths do
+ * not keep.
  */
 function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | null): Target {
   // Asked once, before any refusal is worded. An administrator who governs the
@@ -431,8 +432,8 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
     return {
       kind: 'refused',
       line:
-        `aka ${verb}: this machine is attached to ${name} machine-wide, so every repository's\n` +
-        'activity is sent and nothing is enrolled. ' +
+        `aka ${verb}: this machine is attached to ${name} machine-wide, so activity from\n` +
+        'anywhere on this machine is sent and nothing is enrolled. ' +
         (governed === null
           ? `To send activity only from the repositories you enroll, re-attach with\n${reattach}.`
           : refusalLine(governed)),

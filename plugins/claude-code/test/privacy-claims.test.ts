@@ -171,16 +171,36 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
 
 /**
  * A page that tells a reader a personal device keeps other repositories local
- * has to say, in the same breath, what that device still sends. The device
- * report, the policy pull and the check for device commands are not limited to
- * the repositories a user enrolls, and the report's finding counts and dates
- * cover every repository on the machine. A page that stops at "stays local"
- * reads as if nothing derived from the other repositories leaves.
+ * has to say, in the same breath, what that device still sends. The policy pull
+ * and the device report are not limited to the repositories a user enrolls: a
+ * session that starts anywhere on the machine, outside any repository or in a
+ * browser chat, triggers them, and the report's finding counts and dates are for
+ * everything recorded on the machine. The check for device commands runs only
+ * where a scan is available, which a browser chat is not. A page that stops at
+ * "stays local" reads as if nothing derived from the other repositories leaves.
+ *
+ * ONE sentence says it on every page, so the pages cannot drift apart.
  */
 const SCOPED_READMES = READMES.filter((r) => r.text.includes('--scoped'));
 const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
   .split(/^## /m)
   .find((section) => section.startsWith('Data in transit'));
+
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+const REPORT_SENTENCE =
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+  "included), the machine pulls the deployment's policy (at most every 15 minutes) and sends it " +
+  'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
+  'policy counts, and finding counts and dates for everything recorded on the machine. Where a ' +
+  'scan is available (the coding-agent plugins, not a browser chat), the same session start also ' +
+  'checks it for device commands.';
+// What the sentence replaced, each of which said less than what is sent.
+const REPORT_OLD_PHRASES = [
+  /across every repository/i,
+  /when a session runs/i,
+  /when any session runs/i,
+  /findings recorded on the machine/i,
+];
 
 describe('scoped attachment claims', () => {
   it('covers the pages that describe it, and the security page', () => {
@@ -189,22 +209,25 @@ describe('scoped attachment claims', () => {
   });
 
   describe.each(SCOPED_READMES)('$name', ({ text }) => {
-    const claim = paragraphs(text)
-      .filter((p) => p.includes('--scoped'))
-      .join('\n')
-      .replace(/\s+/g, ' ');
+    const claim = flat(
+      paragraphs(text)
+        .filter((p) => p.includes('--scoped'))
+        .join('\n'),
+    );
 
-    it('says a personal device still sends a device report covering every repository', () => {
-      expect(claim).toMatch(/device report/i);
-      expect(claim).toMatch(/across every repository/i);
-      expect(claim).toMatch(/policy/i);
+    it('says a personal device still sends the report and pulls the policy, in the one sentence', () => {
+      expect(claim).toContain(REPORT_SENTENCE);
     });
 
-    // A browser chat and a session outside any repository trigger them too, so
-    // a page cannot say they need a repository.
-    it('says the report goes from a session anywhere on the machine, not from a repository', () => {
-      expect(claim).toMatch(/when a session runs anywhere on the machine/i);
-      expect(claim).not.toMatch(/when a session runs in any repository/i);
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(REPORT_SENTENCE);
+    });
+
+    it('does not use the wording that said less', () => {
+      for (const old of REPORT_OLD_PHRASES) {
+        expect(claim).not.toMatch(old);
+        expect(flat(footnoteOf(text))).not.toMatch(old);
+      }
     });
 
     it('limits what is forwarded to activity, not to the repositories themselves', () => {
@@ -216,15 +239,13 @@ describe('scoped attachment claims', () => {
   });
 
   it('says in SECURITY.md that the report, the policy pull and the command check go either way', () => {
-    const section = (SECURITY_DATA_IN_TRANSIT ?? '').replace(/\s+/g, ' ');
-    expect(section).toMatch(/device report/i);
-    // What the count covers: findings on captured events, not every table.
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(REPORT_SENTENCE);
+    for (const old of REPORT_OLD_PHRASES) expect(section).not.toMatch(old);
+    // What the count covers: findings on captured events, from every session.
     expect(section).toMatch(
-      /findings detected in captured prompts, responses, code changes and tool uses/i,
+      /findings detected in captured prompts, responses, code changes and tool uses, from every session/i,
     );
-    expect(section).toMatch(/counted across every repository on the machine, enrolled or not/i);
-    expect(section).toMatch(/when any session runs on the machine, in a repository or not/i);
-    expect(section).not.toMatch(/findings recorded on the machine/i);
     expect(section).toMatch(/the exception: they go the same way on either kind of attachment/i);
     expect(section).not.toMatch(/\ball of the above\b/i);
   });

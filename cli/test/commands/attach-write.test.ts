@@ -138,6 +138,26 @@ const CHANGED_WHILE_WAITING =
 const SCOPED_HISTORY = 'Send unsent activity from the repositories you enroll? [y/N]: ';
 const MACHINE_HISTORY = "Send this machine's unsent activity? [y/N]: ";
 
+// What a personal device still sends, in the one sentence every surface uses
+// (the help text, the personal-device question and the attach summary differ
+// only in whose policy it is), compared with the line breaks and indentation of
+// each surface taken out.
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+const REPORT_SENTENCE = (policy: string): string =>
+  'Whenever a session starts anywhere on this machine, in a repository or not ' +
+  `(a browser chat included), the machine pulls ${policy} policy (at most every 15 minutes) ` +
+  'and sends it a device report (at most hourly): a device identifier, host name, ' +
+  'versions, detection packs, policy counts, and finding counts and dates for everything ' +
+  'recorded on the machine. Where a scan is available (the coding-agent plugins, not a ' +
+  'browser chat), the same session start also checks it for device commands.';
+// Phrases the sentence replaced, each of which said less than what is sent.
+const REPORT_OLD_PHRASES = [
+  'across every repository',
+  'Any session on this machine',
+  'in an enrolled repository or not',
+  'on a schedule',
+] as const;
+
 const entry = (identity: string) => ({ kind: 'repo', identity, enrolledAt: ISO });
 const BOUND = {
   endpoint: ENDPOINT,
@@ -360,24 +380,16 @@ describe('parseAttachArgs: the mode flags', () => {
       '  --machine  A machine your organization owns: send activity from anywhere on\n' +
         '             this machine.',
     );
-    // The policy pull, the check for device commands and the device report go
-    // from a session anywhere on the machine, not on a timer, whatever is
-    // enrolled; the report covers every repository, and the list says it is not
-    // the whole of it.
-    expect(h.errors()).toContain('Any session on this machine, in an enrolled repository or not,');
-    expect(h.errors()).toContain(
-      'still fetches the policy and checks for device commands (at most',
-    );
-    expect(h.errors()).toContain(
-      'every 15 minutes), and sends a device report (at most hourly) with',
-    );
-    expect(h.errors()).toContain(
-      'a device identifier, host name, versions, detection packs, policy',
-    );
-    expect(h.errors()).toContain('counts, and finding counts and dates across every repository on');
+    // The policy pull, the device report and, where a scan is available, the
+    // check for device commands go from a session starting anywhere on the
+    // machine, not on a timer, whatever is enrolled; the report's counts are for
+    // everything recorded on it, not for the repositories enrolled.
+    expect(flat(h.errors())).toContain(REPORT_SENTENCE("the deployment's"));
+    for (const phrase of REPORT_OLD_PHRASES) expect(h.errors()).not.toContain(phrase);
     expect(h.errors()).not.toContain('schedule');
-    // A session outside any repository, and a browser chat, are sent machine-wide
-    // though they belong to no project, so the machine-wide line cannot say project.
+    // The usage text names no project anywhere. The machine-wide line says
+    // anywhere on this machine because a session outside any repository and a
+    // browser chat belong to no project, yet are sent.
     expect(h.errors()).not.toContain('project');
     // The re-attach rule is stated for neither flag, and a flag is said to decide.
     expect(h.errors()).toContain(
@@ -572,19 +584,8 @@ describe('the personal-device question', () => {
     expect(h.output()).toContain('How much of this machine should AKA send?');
     // True on the scoped answer too: a personal device still pulls policy and
     // sends a device report, so the question never says nothing is sent.
-    expect(h.output()).toContain(
-      "  machine, in an enrolled repository or not, still fetches your organization's",
-    );
-    expect(h.output()).toContain(
-      '  policy and checks for device commands (at most every 15 minutes), and',
-    );
-    expect(h.output()).toContain(
-      '  sends a device report (at most hourly) with a device identifier, host',
-    );
-    expect(h.output()).toContain(
-      '  name, versions, detection packs, policy counts, and finding counts and',
-    );
-    expect(h.output()).toContain('  dates across every repository on this machine.');
+    expect(flat(h.output())).toContain(REPORT_SENTENCE("your organization's"));
+    for (const phrase of REPORT_OLD_PHRASES) expect(h.output()).not.toContain(phrase);
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
     );
@@ -1632,8 +1633,8 @@ describe('what an attach says', () => {
     expect(said).toContain(
       "repository is sent as that repository's activity, even when it reads files",
     );
-    expect(said).toContain('Any session on this machine, in an enrolled repository or not, still');
-    expect(said).not.toContain('schedule');
+    expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
+    for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
     expect(said).toContain(
       'An aka older than this one that re-attaches this machine makes it machine-wide.',
     );
@@ -1659,11 +1660,13 @@ describe('what an attach says', () => {
         'elsewhere.',
         'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
         '',
-        'Any session on this machine, in an enrolled repository or not, still',
-        "fetches that deployment's policy and checks it for device commands (at",
-        'most every 15 minutes), and sends it a device report (at most hourly) with',
-        'a device identifier, host name, versions, detection packs, policy counts,',
-        'and finding counts and dates across every repository on this machine.',
+        'Whenever a session starts anywhere on this machine, in a repository or not',
+        "(a browser chat included), the machine pulls that deployment's policy (at",
+        'most every 15 minutes) and sends it a device report (at most hourly): a',
+        'device identifier, host name, versions, detection packs, policy counts, and',
+        'finding counts and dates for everything recorded on the machine. Where a',
+        'scan is available (the coding-agent plugins, not a browser chat), the same',
+        'session start also checks it for device commands.',
         'An aka older than this one that re-attaches this machine makes it machine-wide.',
         '',
         'Policy arrives on the next session. Run `aka status` to see it.',

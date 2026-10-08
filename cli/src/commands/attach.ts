@@ -786,11 +786,17 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   const keepScope = holdsScopedFor(previous, endpoint);
   // How many entries this build can read in what was kept, for the success text.
   const kept = { readableEntries: 0 };
-  // What a fresh list replaced, for the success text: how many entries this build
-  // could read in it, and why it was not kept.
-  const cleared: { readableEntries: number; because: ListClearedBecause | undefined } = {
+  // What a fresh list replaced, for the success text: how many entries this
+  // build could read in it, why it was not kept, and what in it this build could
+  // not read.
+  const cleared: {
+    readableEntries: number;
+    because: ListClearedBecause | undefined;
+    unread: number | 'list';
+  } = {
     readableEntries: 0,
     because: undefined,
+    unread: 0,
   };
   // Whether this attach keeps `stored` as the enrolled list: only a rotation of a
   // personal device on this deployment, for the organization and account just
@@ -807,6 +813,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     cleared.because = whyListCleared(stored, endpoint, identity, keepScope);
     cleared.readableEntries =
       cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
+    cleared.unread = unreadInReplacedList(stored);
     return freshAttachmentScope(endpoint, identity);
   };
 
@@ -970,10 +977,14 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'elsewhere.',
           // A fresh list that replaced one holding entries this build can read
           // says how many and why they were not kept, so a re-attach that
-          // verified as someone else does not empty the list unannounced.
+          // verified as someone else does not empty the list unannounced. A list
+          // that held what this build cannot read, the whole record or some
+          // entries, says so on its own line, so a newer build's list is not
+          // emptied unannounced.
           ...(cleared.because === undefined
             ? []
             : [clearedListLine(cleared.readableEntries), LIST_CLEARED_BECAUSE[cleared.because]]),
+          ...unreadClearedLines(cleared.unread),
           // Chosen by what was KEPT that this build can read, not by whether a
           // record was kept: a bound record with no entries (a rotation before
           // anything was enrolled), or one holding only a newer build's kinds,
@@ -1454,7 +1465,8 @@ const LIST_CLEARED_BECAUSE: Record<ListClearedBecause, string> = {
 /**
  * Why a scoped attach to `endpoint` as `who` does not keep `stored`, or
  * undefined when the list holds no entry this build can read, which leaves
- * nothing to report. `continues` is whether the credential being replaced is a
+ * nothing for its line to report (what this build cannot read in it has a line
+ * of its own, see unreadInReplacedList). `continues` is whether the credential being replaced is a
  * personal device's for exactly this endpoint (holdsScopedFor). Judged by the
  * rules the keep decision uses, in its order: the endpoint as an exact string,
  * then whether this attach continues one, then the binding, each field byte for
@@ -1490,6 +1502,40 @@ function clearedListLine(readableEntries: number): string {
     ? 'The list on this machine held 1 enrollment; it was cleared because'
     : `The list on this machine held ${readableEntries.toLocaleString('en-US')} enrollments; ` +
         'they were cleared because';
+}
+
+/**
+ * What the list on file held that this build cannot read, for a scoped attach
+ * that replaces it with a fresh one: `'list'` when a record is stored (neither
+ * absent nor null, the two ways no list is stored) and does not parse, else how
+ * many of its stored entries the parse dropped. Pure; never throws.
+ */
+function unreadInReplacedList(stored: unknown): number | 'list' {
+  if (stored === undefined || stored === null) return 0;
+  const record = parseAttachmentScope(stored);
+  if (record === undefined) return 'list';
+  return typeof stored === 'object' && 'entries' in stored && Array.isArray(stored.entries)
+    ? stored.entries.length - record.entries.length
+    : 0;
+}
+
+/**
+ * The line that says a fresh list replaced what this build could not read in the
+ * one on file, the whole record or some of its entries, or none. The entries are
+ * counted, never printed: one written by a newer build is not this build's to
+ * describe.
+ */
+function unreadClearedLines(unread: number | 'list'): string[] {
+  if (unread === 'list') {
+    return ['This version of aka could not read the list on this machine; it was cleared.'];
+  }
+  if (unread === 0) return [];
+  return [
+    unread === 1
+      ? 'This version of aka could not read 1 entry in the list on this machine; it was cleared.'
+      : `This version of aka could not read ${unread.toLocaleString('en-US')} entries in the list ` +
+        'on this machine; they were cleared.',
+  ];
 }
 
 /**

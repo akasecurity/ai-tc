@@ -166,6 +166,8 @@ const NOTE_FAILED =
 const NOTE_SUPERSEDED =
   'The credential file changed while this attach was saving, so it was not put back and is ' +
   'left as it is now. Run `aka status` to see what this machine is attached to.';
+const NOTHING_ENROLLED =
+  'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.';
 const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
@@ -853,6 +855,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
     expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
     expect(h.output()).toContain('The repositories already enrolled here are kept');
     expect(h.output()).not.toContain('cleared because');
+    expect(h.output()).not.toContain('could not read');
   });
 
   it('through --key-stdin, with no terminal', async () => {
@@ -1327,7 +1330,7 @@ describe('the enrolled list is kept only for the organization and account that b
     );
   });
 
-  it('says nothing was cleared when the list it replaced held nothing this build can read', async () => {
+  it('says how many entries it could not read were cleared, when the list it replaced held nothing else', async () => {
     attachedScoped({
       ...BOUND,
       tenantName: 'Other Org',
@@ -1341,8 +1344,69 @@ describe('the enrolled list is kept only for the organization and account that b
     expect(storedSettings().attachmentScope).toEqual(FRESH);
     expect(h.output()).not.toContain('cleared because');
     expect(h.output()).toContain(
-      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+      'This version of aka could not read 1 entry in the list on this machine; it was cleared.\n' +
+        NOTHING_ENROLLED,
     );
+  });
+
+  it.each<[string, unknown]>([
+    [
+      'an organization name longer than this version accepts',
+      { ...BOUND, tenantName: 'x'.repeat(201) },
+    ],
+    ['entries that are not a list', { endpoint: ENDPOINT, entries: 'not a list' }],
+    ['a value that is not a record', 'not a record'],
+  ])('says a list this version cannot read was cleared: %s', async (_how, record) => {
+    attachedScoped(record);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'This version of aka could not read the list on this machine; it was cleared.\n' +
+        NOTHING_ENROLLED,
+    );
+    expect(h.output()).not.toContain('cleared because');
+  });
+
+  it('counts what it could not read beside what it could, when both were cleared', async () => {
+    attachedScoped({
+      ...BOUND_AND_NEWER,
+      tenantName: 'Other Org',
+      entries: [
+        ...BOUND_AND_NEWER.entries,
+        { kind: 'org', identity: 'example-team', enrolledAt: ISO },
+      ],
+    });
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'it names an organization other than the one this key verified as.\n' +
+        'This version of aka could not read 2 entries in the list on this machine; they were cleared.\n' +
+        NOTHING_ENROLLED,
+    );
+  });
+
+  it.each<[string, unknown]>([
+    ['no list is stored', undefined],
+    ['null stands where the list would be', null],
+    ['the list it replaced was empty', { ...FRESH, tenantName: 'Other Org' }],
+  ])('says nothing of a list it could not read when %s', async (_how, record) => {
+    attachedScoped(record);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).not.toContain('could not read');
+    expect(h.output()).toContain(NOTHING_ENROLLED);
   });
 });
 

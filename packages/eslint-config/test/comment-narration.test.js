@@ -90,6 +90,8 @@ describe('no-process-narration', () => {
       "// RFC 9110 §5.5's own leading and trailing whitespace set",
     ],
     ['a section of a TC39 spec', '// per ECMA-262 §13.15, assignment is right-associative'],
+    ['a section of the ARIA accname spec', '// accname §4.3.1 step 2A takes the label element'],
+    ['a section of a Postgres doc', '// Postgres §7.8.1 inlines a single-reference CTE'],
   ])('stays silent on %s', (_kind, code) => {
     expect(run(code)).toEqual([]);
   });

@@ -26,14 +26,17 @@ const PROBES = [
   { name: 'a unit number', re: /\bUnits?\s\d+(?:\.\d+)?\b/ },
   { name: 'a task number', re: /\btasks?\s\d+\.\d+\b/ },
   {
-    // `§` pointing at the repo's own conventions file is a live cross-reference,
-    // not narration; `§` pointing at a plan is what this catches.
+    // A `§` into the repo's own conventions, a README, or an EXTERNAL standard is a
+    // live cross-reference a reader can follow — only a `§` into a plan is narration.
+    // Three sweeps found three kinds the earlier list missed: RFC 9110, RFC 2045, and
+    // the WAI-ARIA accname computation. Precision matters more than reach here: a ban
+    // that fires on a correct comment earns a disable directive, and then it is nothing.
     name: 'a document section number',
     re: /§+\s?[\d.]+/,
     // A § belonging to a conventions file, a README, or an EXTERNAL standard is a
     // live cross-reference a reader can follow — only a § into a plan is narration.
     unless:
-      /\b(?:AGENTS|CLAUDE|GEMINI|CONTRIBUTING|README|INTERNALS)(?:\.md)?\b|\b(?:RFC|ISO|IEC|ECMA|IETF|W3C|WHATWG|Unicode|TC39|POSIX|NIST|OWASP)\b/,
+      /\b(?:AGENTS|CLAUDE|GEMINI|CONTRIBUTING|README|INTERNALS)(?:\.md)?\b|\b(?:RFC|ISO|IEC|ECMA(?:-262)?|ECMAScript|IETF|W3C|WHATWG|WAI-ARIA|ARIA|accname|WCAG|Unicode|TC39|POSIX|NIST|OWASP|SemVer|OAuth|OIDC|JWT|HTML|DOM|CSS|Postgres|PostgreSQL|SQLite)\b/,
   },
   { name: 'a review-response number', re: /\breview\sresponses?\s?\d*|\brr\d\b/i },
   // A numeric-only `#nnn` is an issue ref; `#000`-style repeats and `#nnnnnn`

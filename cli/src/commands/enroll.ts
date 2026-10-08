@@ -47,9 +47,10 @@ import { refusalLine } from '../lib/refusal-line.ts';
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
-// change is the record later sends decide by. A session or a scan that starts
+// change is the record later sends decide by. A session or a scan you start
 // after the edit reads the new record, so from then on an enrollment applies to
-// it and an unenrollment keeps the repository out of it. Work already under way
+// it and an unenrollment keeps the repository out of it. Work already under way,
+// such as a scan that is running or a background sync that was already started,
 // may have read the record before the edit, and nothing here says otherwise.
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
@@ -85,8 +86,8 @@ Enrolling changes this machine's settings and contacts nothing.`;
 const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --repo <clone-url | host/owner/repo>
 
-Stops sending a repository from a scoped attachment. Its activity stays on this
-machine from then on.
+Stops sending a repository from a scoped attachment: sessions and scans you
+start afterwards keep its activity on this machine.
 
   [path]         The repository this directory is in (default: .).
   --repo <repo>  A clone URL, or a key, as in github.com/acme/payments-api.
@@ -225,9 +226,10 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   // keeps those rows unsent for now: enrolling the repository again, or a
   // machine-wide attach to the same deployment, makes them sendable. Said here
   // so an unenroll is not mistaken for erasing anything, or for a promise that
-  // they stay unsent. Nothing is promised about a scan already running either.
+  // they stay unsent. Nothing is promised about work already under way (a scan
+  // that is running, a background sync that was already started) either.
   io.out(
-    `Unenrolled ${repository}. From now on, new sessions and scans do not send its activity to ${name}.\n` +
+    `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n` +
       'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
       'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
       'makes it sendable again.\n',

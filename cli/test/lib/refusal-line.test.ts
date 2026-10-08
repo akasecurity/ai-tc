@@ -1,3 +1,7 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { ConnectionRefusal } from '@akasecurity/schema';
 import { connectionRefusalMessage } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -84,4 +88,34 @@ describe('refusalLine', () => {
       endpoint: `${ENDPOINT}${ESC}`,
     });
   });
+});
+
+// The strip only helps if nothing prints a refusal without it. The schema's own
+// sentence stays exported, so what keeps a command from calling it directly is
+// this test: only the module that strips may name it.
+describe('who may name connectionRefusalMessage', () => {
+  const SRC = fileURLToPath(new URL('../../src/', import.meta.url));
+  const sources = readdirSync(SRC, { recursive: true, encoding: 'utf8' })
+    .map((file) => file.replaceAll('\\', '/'))
+    .filter((file) => file.endsWith('.ts'));
+
+  it('finds the commands that print a refusal, so the search is not empty', () => {
+    expect(sources).toEqual(
+      expect.arrayContaining(['commands/attach.ts', 'commands/enroll.ts', 'lib/refusal-line.ts']),
+    );
+  });
+
+  it('is named by the strip module alone', () => {
+    const naming = sources.filter((file) =>
+      /\bconnectionRefusalMessage\b/.test(readFileSync(join(SRC, file), 'utf8')),
+    );
+    expect(naming).toEqual(['lib/refusal-line.ts']);
+  });
+
+  it.each(['commands/attach.ts', 'commands/enroll.ts'])(
+    'has %s print through refusalLine',
+    (file) => {
+      expect(readFileSync(join(SRC, file), 'utf8')).toMatch(/\brefusalLine\(/);
+    },
+  );
 });

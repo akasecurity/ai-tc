@@ -293,6 +293,15 @@ describe('aka enroll — usage', () => {
     expect(io.errors()).not.toContain('only activity in');
   });
 
+  it('limits what unenroll promises in its usage to sessions and scans started afterwards', async () => {
+    const io = recorder();
+    expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
+    expect(io.errors()).toContain(
+      'sessions and scans you\nstart afterwards keep its activity on this machine.',
+    );
+    expect(io.errors()).not.toContain('from then on');
+  });
+
   it('aka unenroll takes no --list', async () => {
     const io = recorder();
     expect(await runUnenroll(['--list'], deps(io))).toBe(2);
@@ -1015,7 +1024,7 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. From now on, new sessions and scans do not send its activity to Acme.`,
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.`,
     );
     // Said as far as it is true: a scan already running may have read the scope
     // before the edit, so nothing promises it stops; and what was waiting is
@@ -1029,6 +1038,9 @@ describe('aka unenroll', () => {
     );
     expect(shown).toContain('makes it sendable again.');
     expect(shown).not.toContain('no longer sent');
+    // The promise is for what the user starts: work already under way, a
+    // background sync included, may have read the scope before the edit.
+    expect(shown).not.toContain('new sessions');
     expect(shown).not.toContain('until you detach');
     expect(shown).not.toContain('held on this machine');
   });

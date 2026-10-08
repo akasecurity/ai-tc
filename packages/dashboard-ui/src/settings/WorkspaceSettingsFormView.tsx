@@ -1164,7 +1164,7 @@ export const CONNECTION_FORWARDING_NOTICE_SCOPED =
 export const CONNECTION_MODE_SCOPED =
   'Scoped — a personal device. Activity is sent only from repositories enrolled with `aka enroll`.';
 export const CONNECTION_MODE_MACHINE =
-  'Machine-wide — an organization device. Activity from every project on this machine is sent.';
+  'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
 
 export const ATTACH_MODE_LABEL = 'What kind of device is this?';
 
@@ -1187,7 +1187,7 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
   {
     value: 'machine',
     label: 'Organization device',
-    description: 'Activity from every project on this machine is sent to the deployment.',
+    description: 'Activity from anywhere on this machine is sent to the deployment.',
   },
 ];
 
@@ -1196,7 +1196,7 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
 // offering a pick would be a control with no effect.
 export const ATTACH_MODE_MANAGED_NOTICE =
   'Your organization manages this machine’s connection, so it attaches as an organization ' +
-  'device: activity from every project on it is sent. A personal-device attach is refused here.';
+  'device: activity from anywhere on it is sent. A personal-device attach is refused here.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 //

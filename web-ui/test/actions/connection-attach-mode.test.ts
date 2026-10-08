@@ -722,7 +722,7 @@ describe('another aka changes the machine while the key is verified', () => {
 describe('the history grant', () => {
   // A grant given while the machine is a personal device is for the history of
   // its enrolled repositories. Over a machine-wide credential the same grant
-  // would send the history of every project on the machine, and a grant names
+  // would send the history of activity from anywhere on the machine, and a grant names
   // its deployment, so one for another deployment would come back the day this
   // machine is attached there again.
   const grantFor = (endpoint: string): HistorySyncConsent => ({

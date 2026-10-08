@@ -87,6 +87,23 @@ describe('attach-mode copy', () => {
     for (const claim of ALWAYS_FALSE) expect(text).not.toMatch(claim);
   });
 
+  it.each(Object.entries(NEW_COPY))('%s never says "nothing else"', (_name, text) => {
+    // The header above holds every string to what is sent, and a session outside
+    // a repository or a browser chat is sent too, so "nothing else" would be false
+    // of the machine-wide mode and of the report in the scoped one.
+    expect(text).not.toMatch(/nothing else/i);
+  });
+
+  it('describes machine-wide as activity from anywhere on the machine', () => {
+    // A session outside a git repository, or a browser chat, is sent in this mode
+    // although it belongs to no project, so "every project" would claim less.
+    const machine = ATTACH_MODE_CHOICES.find((c) => c.value === 'machine')?.description ?? '';
+    for (const text of [machine, CONNECTION_MODE_MACHINE, ATTACH_MODE_MANAGED_NOTICE]) {
+      expect(text).toMatch(/activity from anywhere on (this machine|it)/i);
+      expect(text).not.toMatch(/every project/i);
+    }
+  });
+
   it('offers exactly the two modes a credential can record', () => {
     expect(ATTACH_MODE_CHOICES.map((c) => c.value).sort()).toEqual(
       [...AttachmentMode.options].sort(),

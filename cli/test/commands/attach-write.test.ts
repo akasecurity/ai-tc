@@ -1755,6 +1755,93 @@ describe('the administrator overlay is read again after the round trip, for ever
     expect(onDisk()).toEqual(before);
   });
 
+  it('answers every late check from one read of the overlay', async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+    // Once the key is verified, the first read says this deployment is pinned and every later
+    // one says nothing is managed. Answered from that one read, a scoped write is refused.
+    // Answered from two, the check that passes a pin of this deployment would read first and the
+    // check for a scoped write would read nothing managed, and the write would go ahead.
+    let verified = false;
+    let readsAfterVerify = 0;
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      managed: () => {
+        if (!verified) return null;
+        readsAfterVerify += 1;
+        return readsAfterVerify === 1 ? planeOnly() : null;
+      },
+      duringVerify: () => {
+        verified = true;
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expectNothingWritten(h, before);
+    expect(h.errors()).toContain(`${SCOPED_MANAGED}${NOTHING_CHANGED}`);
+    expect(readsAfterVerify).toBe(1);
+  });
+
+  describe('the notice that the enrolled list will be cleared', () => {
+    const CLEARED = 'its enrolled list will be cleared.';
+
+    it('is not said for a managed machine whose attach is stopped after the wait', async () => {
+      attachedScoped(BOUND);
+
+      const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+      expect(h.output()).not.toContain(CLEARED);
+    });
+
+    it('is not said for a --machine over a personal device that is refused after the wait', async () => {
+      attachedScoped(BOUND);
+
+      const h = await attachWhileOverlayChanges(
+        ['--machine', '--key-stdin'],
+        null,
+        pinnedElsewhere(),
+      );
+
+      expect(exits).toEqual([1]);
+      expect(h.output()).not.toContain('Attaching machine-wide, as --machine asks.');
+      expect(h.output()).not.toContain(CLEARED);
+    });
+
+    it.each<[string, readonly string[], () => ManagedSettings | null, string]>([
+      [
+        'the administrator manages the machine',
+        ['--key-stdin'],
+        planeOnly,
+        `${SCOPED_MANAGED} This machine was attached to ${ENDPOINT} as a personal device; ${CLEARED}`,
+      ],
+      [
+        'a --machine is typed with no terminal',
+        ['--machine', '--key-stdin'],
+        () => null,
+        `Attaching machine-wide, as --machine asks. This machine was attached to ${ENDPOINT} as a personal device; ${CLEARED}`,
+      ],
+    ])('is said before anything is written when %s', async (_how, flags, overlay, said) => {
+      attachedScoped(BOUND);
+      const h = harness({ interactive: false, stdin: KEY_2, managed: overlay });
+      let atFirstWrite: string | undefined;
+      stand.beforeNextCredentialWrite = () => {
+        atFirstWrite = h.output();
+      };
+
+      await runAttach(['--url', ENDPOINT, ...flags, '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(atFirstWrite).toContain(said);
+      expect(h.output()).toContain(said);
+    });
+  });
+
   it('still writes what was settled when the administrator stops managing it and the decision stands', async () => {
     const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
 

@@ -29,8 +29,12 @@ import { tempHomes } from '../helpers/temp-home.ts';
 // enrolled list or a history grant the finished attach replaces; there the
 // settings go first, so a stop between the two leaves what the machine had beside
 // no list (machine-wide) or an empty one (scoped), which sends no repository's
-// activity. The writes are counted and can be made to fail, and a hook runs just
-// before the settings write to read what is on disk at that moment.
+// activity. The one exception is a scoped attach over a usable machine-wide
+// credential, which writes the credential first as well, as `aka attach` does: a
+// stop there leaves the new scoped key beside the list on file, which may belong
+// to another organization or account, and the earlier grant. The writes are
+// counted and can be made to fail, and a hook runs just before the settings write
+// to read what is on disk at that moment.
 const osHome = vi.hoisted(() => ({ dir: '' }));
 vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof NodeOs>();
@@ -570,12 +574,12 @@ describe('a scoped attach that will not keep the stored list writes the settings
       expect(seen.get()).toBe(KEY);
     });
 
-    // The exception. Settings first here would leave the machine-wide credential
-    // beside the fresh list, and the history drain would read a grant given for
-    // enrolled repositories as one for the whole machine. So a stop between the
-    // writes leaves the new scoped key beside the list on file, which may be
-    // another account's and, if it names this deployment, forwards under the new
-    // key until the machine is attached again.
+    // The exception, taken for parity with `aka attach` alone. This surface asks
+    // no history question, and its scoped attach keeps the grant already stored,
+    // so settings first would be harmless here. A stop between the writes leaves
+    // the new scoped key beside the list on file, which may be another account's
+    // and, if it names this deployment, forwards under the new key until the
+    // machine is attached again.
     it('writes the credential first over a machine-wide credential, whatever settings are stored', async () => {
       machineCredential();
       attachedSettings(STALE);

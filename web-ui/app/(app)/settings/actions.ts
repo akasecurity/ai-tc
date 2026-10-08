@@ -406,13 +406,17 @@ function nextWebChatCapture(
  *   VERIFY BEFORE WRITING ANYTHING. A key that the deployment does not accept
  *   must leave the machine as it was, not attached-and-broken by a second route.
  *
- *   CREDENTIAL FIRST, THEN DESCRIPTOR, WHERE A STOP BETWEEN THEM IS HARMLESS. The
- *   reverse order leaves a machine claiming an attachment it has no credential
- *   for if the second write fails. The settings go first exactly where `aka
- *   attach` puts them first (`writesSettingsFirst`, which both surfaces share):
- *   where the credential written first would sit beside an enrolled list or a
- *   history grant the finished attach replaces. See the order of the writes
- *   below.
+ *   CREDENTIAL FIRST, THEN DESCRIPTOR, WHERE A STOP BETWEEN THEM IS HARMLESS,
+ *   WITH ONE EXCEPTION. The reverse order leaves a machine claiming an
+ *   attachment it has no credential for if the second write fails. The settings
+ *   go first exactly where `aka attach` puts them first (`writesSettingsFirst`,
+ *   which both surfaces share): where the credential written first would sit
+ *   beside an enrolled list or a history grant the finished attach replaces. The
+ *   exception is a scoped attach over a usable machine-wide credential, which
+ *   writes the credential first as well, as `aka attach` does: a stop there
+ *   leaves the new scoped key beside the list on file, which may belong to
+ *   another organization or account, and the earlier grant, until the machine is
+ *   attached again. See the order of the writes below.
  *
  * THE MODE IS DECIDED BEFORE THE KEY IS SENT, TOO. A machine attaches
  * machine-wide or scoped (`AttachInput.mode`), by `decideAttachMode` asked as a

@@ -89,7 +89,7 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
     const missed = SCANNED_RESPONSE_TOOL_NAMES.filter((tool) => !matcher.test(tool));
     expect(missed, 'tools whose output is never scanned').toEqual([]);
     expect(SCANNED_RESPONSE_TOOL_NAMES).toEqual(
-      expect.arrayContaining(['Bash', 'Read', 'WebFetch', 'Grep']),
+      expect.arrayContaining(['Bash', 'Read', 'WebFetch', 'Grep', 'WebSearch', 'Agent', 'Task']),
     );
   });
 

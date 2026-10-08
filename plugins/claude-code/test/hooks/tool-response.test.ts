@@ -21,6 +21,18 @@ const grepRecording = JSON.parse(
   calls: { tool_input: { output_mode: string }; tool_response: unknown }[];
 };
 
+// WebSearch and Agent tool_response objects as a live Claude Code sent them.
+interface Recording {
+  hostVersion: string;
+  calls: { tool_input: unknown; tool_response: unknown }[];
+}
+const webSearchRecording = JSON.parse(
+  readFileSync(new URL('../fixtures/websearch-tool-response.json', import.meta.url), 'utf8'),
+) as Recording;
+const agentRecording = JSON.parse(
+  readFileSync(new URL('../fixtures/agent-tool-response.json', import.meta.url), 'utf8'),
+) as Recording;
+
 describe('scannableResponseFields', () => {
   it('treats a plain-string response as one scannable field at the root', () => {
     expect(scannableResponseFields('Bash', 'some output')).toEqual([
@@ -161,6 +173,109 @@ describe('scannableResponseFields — Grep', () => {
     const total = fields.reduce((sum, field) => sum + field.text.length, 0);
     expect(total).toBe(RESPONSE_MAX_TOTAL_CHARS);
     expect(fields.at(-1)?.range?.end).toBe(RESPONSE_MAX_TOTAL_CHARS);
+  });
+});
+
+describe('scannableResponseFields — WebSearch', () => {
+  const response = webSearchRecording.calls[0]?.tool_response;
+
+  it('records an object whose results mix link lists with summary text', () => {
+    expect(webSearchRecording.hostVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(typeof response).toBe('object');
+    const results = (response as { results: unknown[] }).results;
+    expect(results.some((entry) => typeof entry === 'string')).toBe(true);
+    expect(results.some((entry) => typeof entry === 'object' && entry !== null)).toBe(true);
+  });
+
+  it('scans the summary text and every link title of the recorded response', () => {
+    const results = (response as { results: unknown[] }).results;
+    const links = (results[0] as { content: { title: string }[] }).content;
+    const expected = [
+      ...links.map((link, j) => ({
+        path: ['results', 0, 'content', j, 'title'],
+        text: link.title,
+      })),
+      { path: ['results', 1], text: results[1] },
+    ];
+    expect(scannableResponseFields('WebSearch', response)).toEqual(expected);
+  });
+
+  it('scans neither the echoed query nor the link URLs', () => {
+    const paths = scannableResponseFields('WebSearch', response).map((field) => field.path);
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      expect(path).not.toContain('query');
+      expect(path).not.toContain('url');
+    }
+  });
+
+  it('skips malformed entries while keeping indices', () => {
+    const malformed = {
+      query: 'q',
+      results: [
+        null,
+        42,
+        '',
+        { content: 'not an array' },
+        { content: [null, { url: 'https://example.invalid' }, { title: 7 }, { title: 'kept' }] },
+        'summary',
+      ],
+    };
+    expect(scannableResponseFields('WebSearch', malformed)).toEqual([
+      { path: ['results', 4, 'content', 3, 'title'], text: 'kept' },
+      { path: ['results', 5], text: 'summary' },
+    ]);
+  });
+
+  it('returns nothing for an object without an own results array', () => {
+    expect(scannableResponseFields('WebSearch', { query: 'q' })).toEqual([]);
+    expect(scannableResponseFields('WebSearch', { results: 'text' })).toEqual([]);
+    const inherited = Object.create({ results: ['inherited'] }) as object;
+    expect(scannableResponseFields('WebSearch', inherited)).toEqual([]);
+  });
+
+  it('caps the number of captures', () => {
+    const many = {
+      results: Array.from({ length: RESPONSE_MAX_CAPTURES + 50 }, (_, i) => `entry ${String(i)}`),
+    };
+    const fields = scannableResponseFields('WebSearch', many);
+    expect(fields).toHaveLength(RESPONSE_MAX_CAPTURES);
+    expect(fields.at(-1)?.path).toEqual(['results', RESPONSE_MAX_CAPTURES - 1]);
+  });
+});
+
+describe('scannableResponseFields — Agent and Task', () => {
+  const response = agentRecording.calls[0]?.tool_response;
+
+  it('scans the text blocks of the recorded subagent result', () => {
+    expect(agentRecording.hostVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(scannableResponseFields('Agent', response)).toEqual([
+      { path: ['content', 0, 'text'], text: 'pineapple' },
+    ]);
+  });
+
+  it('does not scan the prompt the result echoes back', () => {
+    expect((response as { prompt: string }).prompt).not.toBe('');
+    const paths = scannableResponseFields('Agent', response).map((field) => field.path);
+    expect(paths).not.toContainEqual(['prompt']);
+  });
+
+  it('reads the legacy Task spelling the same way', () => {
+    expect(scannableResponseFields('Task', response)).toEqual(
+      scannableResponseFields('Agent', response),
+    );
+  });
+
+  it('ignores non-text blocks while keeping indices', () => {
+    const mixed = {
+      content: [
+        { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+        { type: 'text', text: 'final report' },
+      ],
+    };
+    expect(scannableResponseFields('Agent', mixed)).toEqual([
+      { path: ['content', 1, 'text'], text: 'final report' },
+    ]);
   });
 });
 

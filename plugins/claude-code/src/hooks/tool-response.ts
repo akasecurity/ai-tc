@@ -1,7 +1,9 @@
 // PostToolUse tool_response shapes. Claude Code hands hooks the tool's native
 // result object, not a flat string — Read wraps the file under file.content,
 // Bash splits stdout/stderr, WebFetch carries the page under result, Grep
-// carries matching lines under content, and an MCP tool returns its content
+// carries matching lines under content, WebSearch carries link lists and
+// summary text under results, a subagent (Agent, formerly Task) returns its
+// final message as content blocks, and an MCP tool returns its content
 // blocks ([{ type: 'text', text }, …]) or a plain string. Redaction
 // must rewrite those fields *in place*: Claude Code validates a hook's
 // updatedToolOutput against the tool's own output shape and silently falls back
@@ -27,8 +29,9 @@ export interface ScannableResponseField {
 // Which fields of each tool's structured response carry text the model will
 // see. Mirrors the PreToolUse input map in pre-tool-use-fields.ts
 // (scannableInputFields / STATIC_FIELDS); extend per-tool as the PostToolUse
-// matcher grows. The mcp__* family has no fixed shape and is handled by
-// mcpResponseFields below instead.
+// matcher grows. The tools whose text sits in arrays of varying length are
+// handled by the walks below instead: content blocks for mcp__* and the
+// subagent tools, and the results list for WebSearch.
 const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   Read: [['file', 'content']],
   Bash: [['stdout'], ['stderr']],
@@ -45,11 +48,23 @@ const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
 };
 
 /**
- * The tools whose response fields come from the static table above. The
- * mcp__* family is handled dynamically and is not listed. Exported so the
- * manifest test can check the PostToolUse matcher selects every one of them.
+ * Subagent tools, whose result carries the subagent's final message as text
+ * content blocks under `content`. `Task` is the earlier name of `Agent`.
  */
-export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = Object.keys(RESPONSE_TEXT_PATHS);
+const CONTENT_BLOCK_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task']);
+
+const WEB_SEARCH_TOOL = 'WebSearch';
+
+/**
+ * Every tool, by exact name, whose response this module reads. The mcp__*
+ * family is matched by prefix and is not listed. Exported so the manifest test
+ * can check the PostToolUse matcher selects every one of them.
+ */
+export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = [
+  ...Object.keys(RESPONSE_TEXT_PATHS),
+  WEB_SEARCH_TOOL,
+  ...CONTENT_BLOCK_TOOLS,
+];
 
 // Bounds on what one response costs to scan, so an oversized result degrades
 // to partial coverage instead of outrunning the hook timeout (a timed-out hook
@@ -126,29 +141,31 @@ class BoundedFields {
   }
 }
 
+/** The value of an own array property, or undefined. */
+function ownArray(value: unknown, key: string): unknown[] | undefined {
+  if (typeof value !== 'object' || value === null || !Object.hasOwn(value, key)) return undefined;
+  const property = (value as Record<string, unknown>)[key];
+  return Array.isArray(property) ? property : undefined;
+}
+
 /**
- * The text blocks of an MCP tool result: either the bare content-block array
- * or an object wrapping it under `content`. Only `{ type: 'text', text }`
- * blocks are scanned; image, resource and other block types are left alone.
- * Each field addresses the block's `text` in place, so a rewrite keeps the
- * array, its length and every sibling block intact.
+ * The text blocks of an MCP or subagent tool result: either the bare
+ * content-block array or an object wrapping it under `content`. Only
+ * `{ type: 'text', text }` blocks are scanned; image, resource and other block
+ * types are left alone. Each field addresses the block's `text` in place, so a
+ * rewrite keeps the array, its length and every sibling block intact.
  */
-function mcpResponseFields(response: unknown): ScannableResponseField[] {
+function contentBlockFields(response: unknown): ScannableResponseField[] {
   let blocks: unknown[];
   let base: PathSegment[];
   if (Array.isArray(response)) {
     blocks = response;
     base = [];
-  } else if (
-    typeof response === 'object' &&
-    response !== null &&
-    Object.hasOwn(response, 'content') &&
-    Array.isArray((response as { content: unknown }).content)
-  ) {
-    blocks = (response as { content: unknown[] }).content;
-    base = ['content'];
   } else {
-    return [];
+    const wrapped = ownArray(response, 'content');
+    if (wrapped === undefined) return [];
+    blocks = wrapped;
+    base = ['content'];
   }
 
   const bounded = new BoundedFields();
@@ -159,6 +176,35 @@ function mcpResponseFields(response: unknown): ScannableResponseField[] {
     const text = stringAtPath(response, path);
     if (text === undefined || text === '') continue;
     if (!bounded.add(path, text)) break;
+  }
+  return bounded.fields;
+}
+
+/**
+ * The text of a WebSearch result. `results` mixes link lists
+ * (`{ content: [{ title, url }, …] }`) with plain-string summary text; the
+ * summaries and the link titles are scanned. URLs are left alone, and so is
+ * the echoed `query`, which is the tool's own input. Each field addresses its
+ * string in place, so a rewrite keeps the list and its entries intact.
+ */
+function webSearchResponseFields(response: unknown): ScannableResponseField[] {
+  const results = ownArray(response, 'results');
+  if (results === undefined) return [];
+
+  const bounded = new BoundedFields();
+  for (const [index, entry] of results.entries()) {
+    if (typeof entry === 'string') {
+      if (entry !== '' && !bounded.add(['results', index], entry)) break;
+      continue;
+    }
+    const links = ownArray(entry, 'content');
+    if (links === undefined) continue;
+    for (const linkIndex of links.keys()) {
+      const path: PathSegment[] = ['results', index, 'content', linkIndex, 'title'];
+      const title = stringAtPath(response, path);
+      if (title === undefined || title === '') continue;
+      if (!bounded.add(path, title)) return bounded.fields;
+    }
   }
   return bounded.fields;
 }
@@ -177,7 +223,10 @@ export function scannableResponseFields(
     if (response !== '') bounded.add([], response);
     return bounded.fields;
   }
-  if (toolName.startsWith('mcp__')) return mcpResponseFields(response);
+  if (toolName.startsWith('mcp__') || CONTENT_BLOCK_TOOLS.has(toolName)) {
+    return contentBlockFields(response);
+  }
+  if (toolName === WEB_SEARCH_TOOL) return webSearchResponseFields(response);
   // hasOwn guard: a bare index would resolve Object.prototype members for
   // tool names like 'constructor' (non-nullish, so ?? does not catch them).
   const paths = Object.hasOwn(RESPONSE_TEXT_PATHS, toolName)

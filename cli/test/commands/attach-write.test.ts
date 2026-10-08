@@ -359,13 +359,16 @@ describe('parseAttachArgs: the mode flags', () => {
     expect(h.errors()).toContain(
       '  --machine  A machine your organization owns: send everything it records.',
     );
-    // The device report goes either way, on a schedule, covering every repository.
-    expect(h.errors()).toContain('policy pull and a scheduled device report (finding counts and');
-    expect(h.errors()).toContain('dates across every repository on this machine) still go.');
-    // A re-attach is the first thing said about neither flag, ahead of the question.
+    // The device report goes either way, on a schedule, covering every repository,
+    // and the list says it is not the whole of it.
+    expect(h.errors()).toContain('policy pull and a scheduled device report (including a device');
+    expect(h.errors()).toContain('identifier, policy counts, and finding counts and dates across');
+    expect(h.errors()).toContain('every repository on this machine) still go.');
+    // The re-attach rule is stated for neither flag, and a flag is said to decide.
     expect(h.errors()).toContain(
-      '  A re-attach to the same deployment keeps the mode it has. Otherwise, with',
+      '  With neither flag, a re-attach to the same deployment keeps the mode it has;',
     );
+    expect(h.errors()).toContain('With a flag, the flag decides.');
   });
 });
 
@@ -555,7 +558,13 @@ describe('the personal-device question', () => {
     // True on the scoped answer too: a personal device still pulls policy and
     // sends a device report, so the question never says nothing is sent.
     expect(h.output()).toContain(
-      "your organization's policy, and sends it a device report on a schedule:",
+      "your organization's policy, and sends it a device report on a schedule,",
+    );
+    expect(h.output()).toContain(
+      'including a device identifier, host name, versions, detection packs,',
+    );
+    expect(h.output()).toContain(
+      'policy counts, and finding counts and dates across every repository',
     );
     expect(h.output()).not.toContain('Nothing is sent');
     expect(modeOnDisk()).toBe('scoped');
@@ -1620,8 +1629,9 @@ describe('what an attach says', () => {
         'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
         '',
         "This machine still fetches that deployment's policy, and sends it a device",
-        'report on a schedule: host name, versions, detection packs, and finding',
-        'counts and dates across every repository on this machine.',
+        'report on a schedule, including a device identifier, host name, versions,',
+        'detection packs, policy counts, and finding counts and dates across every',
+        'repository on this machine.',
         'An aka older than this one that re-attaches this machine makes it machine-wide.',
         '',
         'Policy arrives on the next session. Run `aka status` to see it.',
@@ -1643,6 +1653,20 @@ describe('what an attach says', () => {
     expect(h.output()).toContain('Verified against Example[31m Org.');
     expect(h.output()).toContain('  organization  Example[31m Org');
     expect(h.output()).toContain('  you           member[2J-17');
+  });
+
+  it('shows an organization and an account as long as the schema allows, whole', async () => {
+    // The strip bounds a value, and the bound has to be the schema's: a name of
+    // 200 characters and an address of 320 are valid and would be cut at 80.
+    const who = { tenantName: 'o'.repeat(150), userEmail: `${'u'.repeat(150)}@example.com` };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(`Verified against ${who.tenantName}.`);
+    expect(h.output()).toContain(`  organization  ${who.tenantName}\n`);
+    expect(h.output()).toContain(`  you           ${who.userEmail}\n`);
   });
 
   it('leaves the machine-wide text as it was', async () => {

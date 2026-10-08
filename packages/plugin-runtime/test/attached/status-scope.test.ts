@@ -45,6 +45,8 @@ const ESC = String.fromCharCode(0x1b);
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 // A part of a recorded address that must never reach the screen.
 const HIDDEN = 'hiddenpart';
+const NOT_LIMITED =
+  '             the policy pull and the device report are not limited to what is enrolled';
 
 let root: string;
 let settingsDir: string;
@@ -267,13 +269,14 @@ describe('renderAttachedStatus — the enrolled scope', () => {
     expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
   });
 
-  it('reads a scope recorded for another deployment as sending nothing', () => {
+  it('reads a scope recorded for another deployment as sending no activity', () => {
     attach('scoped', { endpoint: OLD_ENDPOINT, ...MEMBER, entries: [entry(WORK_REPO)] });
     const out = status();
     expect(out).toMatch(
       /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\)$/m,
     );
-    expect(out).toContain('— nothing is sent here (run `aka enroll` to enroll for this one)');
+    expect(out).toContain('— no activity is sent here (run `aka enroll` to enroll for this one)');
+    expect(out).not.toContain('nothing is sent here');
     expect(out).not.toContain(WORK_REPO);
   });
 
@@ -446,5 +449,42 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     const out = status();
     expect(out).toContain('  history    sending — 10 of 15 records sent');
     expect(out).not.toContain('counts cover every repository');
+  });
+});
+
+describe('attachmentScopeLines — what the record does not limit', () => {
+  it.each<[string, unknown]>([
+    ['no record', undefined],
+    ['a value that is not a record', 'not-a-scope-record'],
+    ['an empty record', bound()],
+    [
+      'a record for another deployment',
+      { endpoint: OLD_ENDPOINT, ...MEMBER, entries: [entry(WORK_REPO)] },
+    ],
+    ['an enrolled list', bound([entry(WORK_REPO, 'payments-api')])],
+    [
+      'an unbound list with an entry this version cannot read',
+      {
+        endpoint: ENDPOINT,
+        entries: [
+          entry(WORK_REPO),
+          { kind: 'workspace', identity: 'acme-workspace', enrolledAt: ENROLLED_AT },
+        ],
+      },
+    ],
+  ])('ends the block for %s with the policy pull and the device report', (_name, scope) => {
+    const lines = attachmentScopeLines(scope, ENDPOINT);
+    expect(lines[lines.length - 1]).toBe(NOT_LIMITED);
+    expect(lines.filter((line) => line === NOT_LIMITED)).toHaveLength(1);
+  });
+
+  it('prints it in status straight after the scope block', () => {
+    attach('scoped');
+    expect(status()).toContain(`\n${NOT_LIMITED}\n  sync `);
+  });
+
+  it('prints it nowhere on a machine-wide attachment', () => {
+    attach('machine', bound([entry(WORK_REPO)]));
+    expect(status()).not.toContain('the policy pull and the device report');
   });
 });

@@ -931,6 +931,38 @@ describe('widening a personal device with --machine', () => {
     });
     expect(storedSettings()).not.toHaveProperty('attachmentScope');
   });
+
+  it('asks first when --machine names the deployment with a trailing slash', async () => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: true, answers: [KEY_2, 'y'] });
+
+    await runAttach(['--url', `${ENDPOINT}/`, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(h.output()).toContain(
+      `This machine is attached to ${ENDPOINT}/ as a personal device: activity is`,
+    );
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: `${ENDPOINT}/`, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('says what it does without a terminal when --machine names the host in another case', async () => {
+    attachedScoped(BOUND);
+    const typed = 'https://AKA.example.com';
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', typed, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `Attaching machine-wide, as --machine asks. This machine was attached to ${typed} ` +
+        'as a personal device; its enrolled list will be cleared.',
+    );
+  });
 });
 
 describe('an attach is not written over what changed while it waited', () => {
@@ -1256,6 +1288,21 @@ describe('a machine an administrator manages attaches machine-wide', () => {
       credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
     });
     expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('names the widening of a personal device attached to another spelling of this deployment', async () => {
+    attachedScoped(BOUND);
+    const overlay = ManagedSettings.parse({ organization: ADMIN, values: { runMode: 'attached' } });
+    const h = harness({ interactive: false, stdin: KEY_2, managed: () => overlay });
+
+    await runAttach(['--url', `${ENDPOINT}/`, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `${SCOPED_MANAGED} This machine was attached to ${ENDPOINT}/ as a personal device; ` +
+        'its enrolled list will be cleared.',
+    );
+    expect(h.output()).not.toContain('another deployment');
   });
 
   it('refuses a scoped write on a machine that became managed while it waited', async () => {

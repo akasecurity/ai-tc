@@ -24,7 +24,8 @@ import type { CredentialFileRead } from './control-plane-credential.ts';
  * What an attach does about the mode.
  *
  *   `use`    — write `mode`. `widening` is set when that is machine-wide over a
- *              usable SCOPED credential for the same endpoint: this attach would
+ *              usable SCOPED credential for the same endpoint, spelled as typed
+ *              or otherwise (see holdsScopedForSpelling): this attach would
  *              send what the machine has been keeping local. `why` names what
  *              chose the mode: a flag, the mode already held for this endpoint,
  *              an administrator's management of the connection, or the absence
@@ -63,9 +64,9 @@ export type AttachModeDecision =
  *
  * Second, A FLAG decides. `--scoped` is never questioned, since it sends less,
  * and it narrows an earlier machine-wide credential. `--machine` over a scoped
- * credential for THIS endpoint is a widening, so a caller should confirm it
- * with the user before it goes ahead; over a scoped credential for another
- * endpoint it is never a widening.
+ * credential for THIS endpoint, or for another spelling of it, is a widening,
+ * so a caller should confirm it with the user before it goes ahead; over a
+ * scoped credential for another endpoint it is never a widening.
  *
  * Third, A USABLE CREDENTIAL FOR THIS ENDPOINT keeps its mode. That is a key
  * rotation: re-attaching to the same deployment changes the key and nothing
@@ -112,15 +113,18 @@ export function decideAttachMode(input: {
    * value.
    */
   previous: CredentialFileRead;
-  /** The endpoint being attached to. Compared with the credential's as an exact string. */
+  /**
+   * The endpoint being attached to. Compared with the credential's as an exact
+   * string, except where `widening` is judged (holdsScopedForSpelling).
+   */
   endpoint: string;
   /** Whether a terminal is available to ask. */
   interactive: boolean;
 }): AttachModeDecision {
   const { flag, managed, previous, endpoint, interactive } = input;
-  // The mode this machine already holds FOR THIS ENDPOINT, or undefined. A
-  // scoped credential for another endpoint leaves it undefined, which is also
-  // what keeps `widening` false there (see holdsScopedFor).
+  // The mode this machine already holds FOR THIS ENDPOINT, spelled exactly, or
+  // undefined. `widening` is judged more loosely (see holdsScopedForSpelling), so
+  // that another spelling of a personal device's endpoint still counts as one.
   const held: AttachmentMode | undefined =
     previous.usable && previous.credential.endpoint === endpoint
       ? attachmentModeOf(previous.credential)
@@ -131,7 +135,7 @@ export function decideAttachMode(input: {
   ): AttachModeDecision => ({
     kind: 'use',
     mode,
-    widening: mode === 'machine' && holdsScopedFor(previous, endpoint),
+    widening: mode === 'machine' && holdsScopedForSpelling(previous, endpoint),
     why,
   });
 
@@ -160,11 +164,11 @@ export function decideAttachMode(input: {
  * in another case) is another deployment. A credential file that cannot be used,
  * a machine-wide credential, and a scoped one for another endpoint all fail it.
  *
- * It is the question of whether a write replaces a personal device for the same
- * deployment, and two things follow from the answer. A machine-wide write over
- * such a credential is a widening (`widening` on the decision above). And a
- * scoped write over it is a key rotation, which is the one case that may keep
- * the enrolled list already on file instead of starting a fresh one.
+ * It is the question of whether a scoped write replaces a personal device for
+ * the same deployment: such a write is a key rotation, which is the one case
+ * that may keep the enrolled list already on file instead of starting a fresh
+ * one. Whether a machine-wide write is a widening is asked more loosely, by
+ * holdsScopedForSpelling, so that another spelling of the endpoint counts too.
  *
  * Pass the credential as it is read just before the write: a read taken earlier
  * answers for the machine as it was then.
@@ -177,6 +181,51 @@ export function holdsScopedFor(previous: CredentialFileRead, endpoint: string): 
     previous.credential.endpoint === endpoint &&
     attachmentModeOf(previous.credential) === 'scoped'
   );
+}
+
+/**
+ * Whether `previous` is a usable SCOPED credential for `endpoint` or for another
+ * spelling of it, for the widening check alone.
+ *
+ * LOOSER THAN holdsScopedFor, on purpose and in one direction. Two endpoints are
+ * taken for one deployment when they have the same scheme, host and port, and the
+ * same path once trailing slashes are trimmed, compared without regard to case,
+ * a host's trailing dot ignored. So `--machine` typed with a trailing slash, or
+ * with the host in another case, over a personal device attached to that
+ * deployment is still a widening: a terminal confirms it, a run without one says
+ * it is happening, and the enrolled list it clears is said to be cleared. Calling
+ * another deployment a widening by mistake costs a question; missing one would
+ * widen a personal device with nobody told. Every other comparison stays exact,
+ * the enrolled list's binding included, so a list is kept only for the endpoint
+ * spelled exactly as before. An endpoint that does not parse matches only itself.
+ *
+ * No I/O; never throws.
+ */
+function holdsScopedForSpelling(previous: CredentialFileRead, endpoint: string): boolean {
+  return (
+    previous.usable &&
+    attachmentModeOf(previous.credential) === 'scoped' &&
+    sameDeploymentSpelling(previous.credential.endpoint, endpoint)
+  );
+}
+
+/** Whether `a` and `b` spell one deployment, by the rules holdsScopedForSpelling gives. */
+function sameDeploymentSpelling(a: string, b: string): boolean {
+  if (a === b) return true;
+  const left = deploymentKey(a);
+  return left !== undefined && left === deploymentKey(b);
+}
+
+/** `endpoint` as scheme, host, port and trimmed path, lower-cased; undefined when it does not parse. */
+function deploymentKey(endpoint: string): string | undefined {
+  try {
+    const url = new URL(endpoint);
+    const port = url.port === '' ? '' : `:${url.port}`;
+    const host = url.hostname.replace(/\.$/, '');
+    return `${url.protocol}//${host}${port}${url.pathname.replace(/\/+$/, '')}`.toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -123,6 +123,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'managedDetachRefusal',
   'managedScopedRefusal',
   'managedSettingsPaths',
+  'mayBePersonalDevice',
   'migrateLegacyLayout',
   'normalizeHost',
   'openLocalDatabase',
@@ -171,6 +172,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'writeControlPlaneCredential',
   'writeHistorySyncState',
   'writeOwnerOnlyFileSync',
+  'writesSettingsFirst',
 ];
 
 describe('package barrel', () => {

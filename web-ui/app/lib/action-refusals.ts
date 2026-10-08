@@ -178,7 +178,7 @@ export const ATTACH_MODE_REQUIRED =
  * it. Nothing is written; reloading shows the machine as it stands now.
  */
 export const ATTACH_CHANGED_WHILE_WAITING =
-  'This machine’s connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.';
+  "This machine's connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.";
 
 /**
  * The four refusals `syncNow` adds.

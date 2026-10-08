@@ -711,6 +711,9 @@ describe('another aka changes the machine while the key is verified', () => {
 
   it('words the refusal so a person knows nothing was written and what to do', () => {
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/changed while/i);
+    // Plain ASCII, like the other refusals beside it: no typographic apostrophe.
+    expect(ATTACH_CHANGED_WHILE_WAITING).toContain("This machine's connection");
+    expect(ATTACH_CHANGED_WHILE_WAITING).not.toContain(String.fromCharCode(0x2019));
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/nothing was written/i);
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/reload the page/i);
   });
@@ -786,6 +789,91 @@ describe('the history grant', () => {
     await attachScoped();
 
     expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
+  });
+
+  it('is kept when there was no credential before', async () => {
+    // A grant with nothing under it is not a personal device's: nothing says it
+    // was given for enrolled repositories only.
+    grantHistory(deployment.origin);
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
+  });
+
+  it('is cleared when the widening was agreed to and an older aka writes a machine-wide key meanwhile', async () => {
+    // The earlier read said personal device and the machine choice agreed to
+    // widen it. By the time of the write an older aka has already made the key
+    // machine-wide, so the file read then no longer says scoped. The grant was
+    // still given to a personal device.
+    await attachScoped();
+    grantHistory(deployment.origin);
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      writeControlPlaneCredential(settingsDir(akaHome()), {
+        specVersion: 1,
+        endpoint: deployment.origin,
+        apiKey: OTHER_AKA_KEY,
+        mintedAt: '2026-10-07T00:00:00.000Z',
+      });
+    });
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect(storedCredential()).toMatchObject({ specVersion: 1, apiKey: KEY });
+    expect('historySyncConsent' in storedSettings()).toBe(false);
+  });
+
+  it('is cleared when a credential this build cannot read is replaced by a machine-wide one', async () => {
+    // It may be a personal device's credential written by a newer build, and a
+    // grant given to it was for enrolled repositories only.
+    grantHistory(deployment.origin);
+    writeFileSync(
+      credentialFile(),
+      JSON.stringify({
+        specVersion: 3,
+        mode: 'scoped',
+        endpoint: deployment.origin,
+        apiKey: OTHER_AKA_KEY,
+      }),
+      { mode: 0o600 },
+    );
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect(storedCredential()).toMatchObject({ specVersion: 1, apiKey: KEY });
+    expect('historySyncConsent' in storedSettings()).toBe(false);
+  });
+
+  it('is cleared when a credential this build cannot read appears while the key is verified', async () => {
+    // Nothing was on file when the mode was settled. A newer aka writes its
+    // personal-device credential in the wait; the machine choice goes ahead over
+    // it, and the later read is the only one that sees what is replaced.
+    grantHistory(deployment.origin);
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      writeFileSync(
+        credentialFile(),
+        JSON.stringify({
+          specVersion: 3,
+          mode: 'scoped',
+          endpoint: deployment.origin,
+          apiKey: OTHER_AKA_KEY,
+        }),
+        { mode: 0o600 },
+      );
+    });
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect(storedCredential()).toMatchObject({ specVersion: 1, apiKey: KEY });
+    expect('historySyncConsent' in storedSettings()).toBe(false);
   });
 });
 

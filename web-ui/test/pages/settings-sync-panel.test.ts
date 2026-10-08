@@ -685,13 +685,13 @@ describe('the settings route — the sync panel', () => {
 });
 
 describe('the settings route — the sync panel on a scoped attachment', () => {
-  // A scoped attachment sends only what its enrolled repositories recorded, and
-  // its history drain filters every pass by that scope. The bars are counted by
-  // the same scope, resolved from the same inputs, so they describe what this
-  // machine sends rather than everything its store holds. Each case writes a
-  // real credential file and a real settings record; only the store's rows are
-  // seeded by hand, and one case calls the reader directly to give it a mode
-  // the page could not read.
+  // A scoped attachment sends activity only from what its enrolled repositories
+  // recorded, and its history drain filters every pass by that scope. The bars
+  // are counted by the same scope, resolved from the same inputs, so they
+  // describe what this machine sends rather than everything its store holds.
+  // Each case writes a real credential file and a real settings record; only the
+  // store's rows are seeded by hand, and one case calls the reader directly to
+  // give it a mode the page could not read.
 
   it('counts the enrolled repository and leaves a personal one out of every bar', async () => {
     attachScoped(scopeRecord([WORK]));
@@ -791,8 +791,8 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
   });
 
   // A machine-wide attachment never reads the scope record, so one left in the
-  // settings changes nothing: every repository is counted, as before.
-  it('counts every repository on a machine-wide attachment, whatever scope is recorded', async () => {
+  // settings changes nothing: everything recorded is counted, as before.
+  it('counts everything recorded on a machine-wide attachment, whatever scope is recorded', async () => {
     attach();
     applyOnboarding({ attachmentScope: scopeRecord([WORK]) }, akaHome());
     grant();

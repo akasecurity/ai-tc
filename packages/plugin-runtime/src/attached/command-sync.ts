@@ -416,6 +416,14 @@ function readSessionDirectory(): string | undefined {
  * the sync child, and a scope captured then would let an unenroll that lands
  * before the poll go unseen by the forward.
  *
+ * THE OTHER SKEW IS NOT CLOSED HERE. The verdict and this load are two reads. A
+ * root that is unenrolled between them passes the verdict, is scanned, and has its
+ * forwards filtered under the newer scope, while the acknowledgement still counts
+ * the scanned worktree. Nothing leaves the machine, but the deployment is told a
+ * result that was not sent. One read deciding both, and an acknowledgement based on
+ * what was forwarded, is a change to how `runCommandSync` acknowledges, not to how
+ * the scan loads its configuration.
+ *
  * NEVER THROWS, which matters because it is built while a sync entry evaluates
  * its arguments. A working directory removed under a running session makes
  * `process.cwd()` throw, and a throw here would end the whole sync, the policy

@@ -43,6 +43,7 @@ import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   AttachInput,
+  attachmentModeOf,
   BodyRetention,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -434,6 +435,17 @@ function nextWebChatCapture(
  * device attached meanwhile keeps its enrolled list and one widened meanwhile by
  * an older build does not get the record it left behind revived.
  *
+ * A HISTORY GRANT GIVEN TO A PERSONAL DEVICE DOES NOT SURVIVE BECOMING A
+ * MACHINE-WIDE ONE. Such a grant was given for the history of the repositories
+ * the machine enrolled; the same grant over a machine-wide credential would let
+ * the drain send the history of every project on it. This surface has no
+ * terminal to ask again on, so a machine-wide write over a usable scoped
+ * credential clears the grant (`replacesPersonalDevice`) and history needs a
+ * fresh grant from the Sync panel. That holds whichever deployment the scoped
+ * credential was for, because a grant names its deployment and one for another
+ * deployment would be valid again the day this machine is attached there. Every
+ * other re-attach, a key rotation included, leaves the grant as it is.
+ *
  * The key reaches `writeControlPlaneCredential` and nothing else. It is not
  * logged, not returned, and never enters settings.json, which keeps carrying the
  * public half alone (see ControlPlaneConnection). No refusal below interpolates
@@ -602,6 +614,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // record beside a machine-wide credential, or beside none, was left by a
   // writer that did not clear it (an older build's re-attach or detach).
   const keepScope = holdsScopedFor(previous, endpoint);
+  const clearsHistoryGrant = replacesPersonalDevice(mode, previous);
 
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
@@ -631,6 +644,10 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
         attachedAt: new Date().toISOString(),
       },
       attachmentScope: scopeRecordFor(current.attachmentScope, endpoint, who, keepScope),
+      // SPELLED, because this writer merges: leaving the key out would keep the
+      // grant. Only when a personal device is being replaced by a machine-wide
+      // one; otherwise the key is absent and the grant stands.
+      ...(clearsHistoryGrant ? { historySyncConsent: undefined } : {}),
     }));
   } catch (error) {
     try {
@@ -931,6 +948,17 @@ function credentialFor(
         mode: 'scoped',
       }
     : { specVersion: ATTACHED_CREDENTIAL_SPEC_VERSION, endpoint, apiKey, mintedAt };
+}
+
+/**
+ * Whether this attach replaces a personal device's credential with a
+ * machine-wide one, for the deployment it was attached to or any other. A
+ * credential this build cannot read is not counted: nothing says what it was.
+ */
+function replacesPersonalDevice(mode: AttachmentMode, previous: CredentialFileRead): boolean {
+  return (
+    mode === 'machine' && previous.usable && attachmentModeOf(previous.credential) === 'scoped'
+  );
 }
 
 /**

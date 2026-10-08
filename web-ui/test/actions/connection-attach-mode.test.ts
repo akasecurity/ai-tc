@@ -12,8 +12,12 @@ import {
   settingsDir,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import type { ManagedSettings } from '@akasecurity/schema';
-import { connectionRefusalMessage, MANAGED_SETTINGS_FILENAME } from '@akasecurity/schema';
+import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
+import {
+  connectionRefusalMessage,
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  MANAGED_SETTINGS_FILENAME,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../packages/persistence/src/managed-settings.ts';
@@ -709,6 +713,79 @@ describe('another aka changes the machine while the key is verified', () => {
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/changed while/i);
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/nothing was written/i);
     expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/reload the page/i);
+  });
+});
+
+describe('the history grant', () => {
+  // A grant given while the machine is a personal device is for the history of
+  // its enrolled repositories. Over a machine-wide credential the same grant
+  // would send the history of every project on the machine, and a grant names
+  // its deployment, so one for another deployment would come back the day this
+  // machine is attached there again.
+  const grantFor = (endpoint: string): HistorySyncConsent => ({
+    acknowledgedAt: '2026-10-01T00:00:00.000Z',
+    payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+    endpoint,
+  });
+  const grantHistory = (endpoint: string): void => {
+    applyOnboarding({ historySyncConsent: grantFor(endpoint) }, akaHome(), null);
+  };
+
+  it('is cleared when a personal device is widened to the whole machine', async () => {
+    await attachScoped();
+    grantHistory(deployment.origin);
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect('historySyncConsent' in storedSettings()).toBe(false);
+  });
+
+  it('is cleared when a personal device is replaced by a machine-wide attach elsewhere', async () => {
+    await attachScoped();
+    grantHistory(deployment.origin);
+
+    expect(
+      await attachToControlPlane({ endpoint: other.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+
+    expect('historySyncConsent' in storedSettings()).toBe(false);
+  });
+
+  it('is kept when a personal device rotates its key', async () => {
+    await attachScoped();
+    grantHistory(deployment.origin);
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: ROTATED_KEY }),
+    ).toEqual({ ok: true });
+
+    expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
+  });
+
+  it('is kept when a machine-wide attachment rotates its key', async () => {
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+    grantHistory(deployment.origin);
+
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: ROTATED_KEY }),
+    ).toEqual({ ok: true });
+
+    expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
+  });
+
+  it('is kept when a machine-wide attachment is narrowed to a personal device', async () => {
+    expect(
+      await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY, mode: 'machine' }),
+    ).toEqual({ ok: true });
+    grantHistory(deployment.origin);
+
+    await attachScoped();
+
+    expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
   });
 });
 

@@ -34,6 +34,7 @@ import {
   AttachmentScopeEntry,
   controlPlaneName,
   isAttached,
+  isAttachmentScopeValid,
   isHistorySyncConsentValid,
   parseAttachmentScope,
 } from '@akasecurity/schema';
@@ -235,11 +236,20 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   // so an unenroll is not mistaken for erasing anything, or for a promise that
   // they stay unsent. Nothing is promised about work already under way (a scan
   // that is running, a background sync that was already started) either.
+  //
+  // The removal also edits a list this version cannot read (it only takes an
+  // entry out), and enrolling is refused into such a list, so for that list the
+  // tail does not offer enrolling again.
+  const unreadable = !isAttachmentScopeValid(edit.committed.attachmentScope, connection.endpoint);
   io.out(
     `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n` +
-      'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
-      'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
-      'makes it sendable again.\n',
+      (unreadable
+        ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
+          'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
+          'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n'
+        : 'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
+          'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
+          'makes it sendable again.\n'),
   );
   return 0;
 }

@@ -145,7 +145,7 @@ const NOTE_REPLACED =
 const NOTE_UNTOUCHED =
   'The credential file this machine had before could not be read; this attempt did not change it.';
 const NOTE_FAILED =
-  'The access key file on this machine could not be put back as it was before this attempt, ' +
+  'The credential file on this machine could not be put back as it was before this attempt, ' +
   'so it may differ from what it was. Run `aka attach` again.';
 const NOTE_SUPERSEDED =
   'The credential file changed while this attach was saving, so it was not put back and is ' +

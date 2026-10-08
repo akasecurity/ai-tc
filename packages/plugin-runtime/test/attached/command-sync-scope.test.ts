@@ -254,7 +254,11 @@ describe('commandScanFor — a session directory that cannot be read', () => {
     const scanWorktree = vi.fn(() => Promise.resolve({ scanned: 1 }));
     const { commandScanFor } = await import('../../src/attached/command-sync.ts');
     const build = () =>
-      commandScanFor({ dataDir: dataDirOf(base) } as never, scanWorktree, SOURCE_TOOL.ClaudeCode);
+      commandScanFor(
+        () => ({ dataDir: dataDirOf(base) }) as never,
+        scanWorktree,
+        SOURCE_TOOL.ClaudeCode,
+      );
     const spy = vi.spyOn(process, 'cwd').mockImplementation(unreadableDirectory);
     try {
       // Built twice on purpose: the first asserts the build does not throw, the

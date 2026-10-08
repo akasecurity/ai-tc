@@ -12,7 +12,7 @@ import { connectionRefusalMessage } from '@akasecurity/schema';
  * in either one could repaint or hide the lines around the refusal. `aka
  * attach`, `aka detach`, `aka enroll` and `aka unenroll` print every connection
  * refusal through this one function, and a test fails when any other source file
- * under cli/src names `connectionRefusalMessage`.
+ * (TypeScript or TSX) under cli/src names `connectionRefusalMessage`.
  *
  * The bound is the one the other echoes of an organization or an endpoint use.
  */

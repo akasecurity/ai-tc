@@ -9,8 +9,10 @@ import { describe, expect, it } from 'vitest';
 import { refusalLine } from '../../src/lib/refusal-line.ts';
 
 // A refusal's organization and pinned endpoint come from an administrator's
-// file, and nothing in the schema keeps control characters out of either. Every
-// command that prints a refusal goes through this function.
+// file, and nothing in the schema keeps control characters out of either. The
+// last describe block holds the guard: attach, detach, enroll and unenroll print
+// every connection refusal through this function, and no other source file
+// under cli/src, TypeScript or TSX, names the schema's own sentence.
 
 const ESC = String.fromCharCode(0x1b);
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
@@ -97,11 +99,17 @@ describe('who may name connectionRefusalMessage', () => {
   const SRC = fileURLToPath(new URL('../../src/', import.meta.url));
   const sources = readdirSync(SRC, { recursive: true, encoding: 'utf8' })
     .map((file) => file.replaceAll('\\', '/'))
-    .filter((file) => file.endsWith('.ts'));
+    .filter((file) => /\.tsx?$/.test(file));
 
-  it('finds the commands that print a refusal, so the search is not empty', () => {
+  it('finds the commands that print a refusal and the TSX sources, so the search is not empty', () => {
     expect(sources).toEqual(
-      expect.arrayContaining(['commands/attach.ts', 'commands/enroll.ts', 'lib/refusal-line.ts']),
+      expect.arrayContaining([
+        'commands/attach.ts',
+        'commands/enroll.ts',
+        'lib/refusal-line.ts',
+        'commands/tui.tsx',
+        'tui/Dashboard.tsx',
+      ]),
     );
   });
 

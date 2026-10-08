@@ -12,7 +12,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { FingerprintKeyState } from '@akasecurity/schema';
 import { isMatchableUnder, stripInvisiblePadding } from '@akasecurity/schema';
@@ -92,6 +92,17 @@ const SQLITE_ERROR = 1;
 // default 2s, taken twice, is a quarter-minute of a user's session.
 const FLOOR_BUSY_TIMEOUT_MS = 250;
 
+// The floor read is this module's only use of the store, so the builtin is
+// resolved when that read runs rather than when the module loads. Loading this
+// module therefore never loads `node:sqlite`, which keeps it usable by a
+// bundle that ships the plugin runtime without the store layer. On a Node
+// that lacks the builtin this throws inside the floor read, which already
+// fails secure.
+function openReadOnly(file: string): DatabaseSync {
+  const { DatabaseSync: Database } = process.getBuiltinModule('node:sqlite');
+  return new Database(file, { readOnly: true });
+}
+
 /** Raised when the store exists but cannot answer which key versions it holds. */
 class FloorUnreadableError extends Error {
   readonly code = 'floor-unreadable';
@@ -138,7 +149,7 @@ function storedKeyVersionFloor(dataDir: string): number {
   if (!existsSync(file)) return 0;
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(file, { readOnly: true });
+    db = openReadOnly(file);
     db.exec(`PRAGMA busy_timeout = ${String(FLOOR_BUSY_TIMEOUT_MS)}`);
     let floor = 0;
     for (const [table, column] of Object.entries(KEY_VERSION_COLUMNS)) {

@@ -41,6 +41,7 @@ import {
   isAttachmentScopeValid,
   isHistorySyncConsentValid,
   parseAttachmentScope,
+  unsafeEndpointReason,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -411,11 +412,17 @@ type Target =
  *
  * The command is built from the whole endpoint, quoted for a shell, so it runs
  * as shown. An endpoint with control characters in it cannot be typed back as
- * it would have to be shown, so it gets the form with a placeholder instead of
- * a command that would not do what it says.
+ * it would have to be shown, and one that `aka attach` itself refuses (it
+ * carries userinfo, a query or a fragment, is not an https address or a loopback
+ * http one, or is not a web address) could not be attached to by the command
+ * whatever it said. Both get the form with a placeholder instead of a command
+ * that would not do what it says, which also keeps what such an address carries
+ * off the screen.
  */
 function reattachCommand(endpoint: string): string {
-  const typable = printableForTerminal(endpoint, Infinity) === endpoint;
+  const typable =
+    printableForTerminal(endpoint, Infinity) === endpoint &&
+    unsafeEndpointReason(endpoint) === null;
   return `\`aka attach --url ${typable ? quotedForShell(endpoint) : '<url>'} --scoped\``;
 }
 

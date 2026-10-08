@@ -1726,6 +1726,35 @@ describe('the administrator overlay is read again after the round trip, for ever
     expect(h.errors()).not.toContain(CHANGED_WHILE_WAITING);
   });
 
+  it("does not take the administrator's word for a widening once they stopped managing the machine, where a terminal would ask", async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+
+    const waited = await attachWhileOverlayChanges(['--machine'], planeOnly(), null, {
+      interactive: true,
+      answers: [KEY_2],
+    });
+
+    // Under management no question was asked, so none was answered: the run stops.
+    expectNothingWritten(waited, before);
+    expect(waited.asked).toEqual([ACCESS_KEY]);
+    expect(waited.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+
+    // The next run, on a machine nobody manages, asks the question, and "no" leaves it as it was.
+    exits = [];
+    const next = harness({ interactive: true, answers: [KEY_2, 'n'] });
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], next.deps);
+
+    expect(next.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(exits).toEqual([1]);
+    expect(next.errors()).toContain(
+      'not attaching machine-wide. Nothing was changed on this machine.',
+    );
+    expect(onDisk()).toEqual(before);
+  });
+
   it('still writes what was settled when the administrator stops managing it and the decision stands', async () => {
     const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
 

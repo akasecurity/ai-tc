@@ -315,6 +315,13 @@ function deploymentKey(endpoint: string): string | undefined {
  * there was no terminal to ask on, or by an administrator's management, which
  * asks nothing; what is written still sends what was agreed to.
  *
+ * An agreement only the administrator gave counts only while they still manage
+ * the machine when the decision is put again. A machine they have stopped
+ * managing is the user's to decide, and a terminal would ask the question that
+ * management skipped, so the decision does not hold there. Typing the
+ * machine-wide flag with no terminal is still the answer, whoever manages the
+ * machine then.
+ *
  * `mode` is the mode about to be written: the settled decision's own, or the
  * answer given when the settled decision was to ask. A refusal is never settled,
  * so `settled` excludes it.
@@ -333,6 +340,25 @@ export function settledDecisionHolds(
   const now = decideAttachMode(inputs);
   if (now.kind === 'refuse') return false;
   if (now.kind === 'ask') return settled.kind === 'ask';
-  const agreedToWidening = settled.kind === 'use' && settled.widening;
-  return now.mode === mode && (!now.widening || agreedToWidening);
+  return now.mode === mode && (!now.widening || wideningStillAgreed(settled, inputs));
+}
+
+/**
+ * Whether the settled decision carries an agreement to widen a personal device
+ * that still stands when the decision is put again with `now`: the flag, the
+ * terminal and the administrator's answer as they are then.
+ *
+ * What a person agreed to, by answering a confirmation or by typing the flag
+ * with no terminal to ask on, stands. What only the administrator agreed to
+ * (`why: 'managed'`, which asked nobody) stands while they still manage the
+ * machine, and without a terminal where the flag was typed, which answers there
+ * as it would on a machine nobody manages.
+ */
+function wideningStillAgreed(
+  settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,
+  now: Parameters<typeof decideAttachMode>[0],
+): boolean {
+  if (settled.kind !== 'use' || !settled.widening) return false;
+  if (settled.why !== 'managed') return true;
+  return now.managed !== null || (!now.interactive && now.flag === 'machine');
 }

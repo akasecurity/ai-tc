@@ -181,9 +181,10 @@ export function createPostureReporter(deps: PostureReporterDeps): PostureReporte
         capturedAt: nowMs,
         ...measurement,
         // Omit the key rather than spread an explicit `undefined`. The type
-        // does not enforce it (the schema's optional member admits
-        // `undefined`), so this rests on presence alone: an omitted key keeps
-        // the body's bytes, and the bridge in factory.ts keys on presence.
+        // admits `undefined` here (the schema's optional member), and
+        // JSON.stringify sends the same bytes either way. Omitting keeps the
+        // in-memory object free of an explicit `undefined` member, which the
+        // tests pin by key presence.
         ...(plugin === undefined ? {} : { plugin }),
         // LAST, and only for a scoped attachment. A machine attachment omits
         // the key the same way, so its body is byte for byte the one it sent

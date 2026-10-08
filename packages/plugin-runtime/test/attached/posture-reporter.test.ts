@@ -374,9 +374,9 @@ describe('createPostureReporter', () => {
   }, 10_000);
 
   it('omits the plugin KEY without a producer — never an explicit undefined', async () => {
-    // The wire shape is `.optional()`, and downstream bridges key on presence:
-    // a spread `plugin: undefined` is a different object from an absent key
-    // under exactOptionalPropertyTypes.
+    // Pins that the key is absent from the object, not present with an
+    // `undefined` value. The serialised bytes are the same either way, so only
+    // a presence check can tell the two apart.
     const report = mockReport();
     await run(createPostureReporter(makeDeps({ report })));
     const sent = report.mock.calls[0]?.[0];

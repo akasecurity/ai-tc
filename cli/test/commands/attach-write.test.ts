@@ -2075,6 +2075,33 @@ describe('what an attach says', () => {
     expect(h.output()).toContain(`  you           ${who.userEmail}\n`);
   });
 
+  it('prints nothing from the deployment that could repaint a terminal on a machine-wide attach', async () => {
+    const ESC = String.fromCharCode(27);
+    const who = { tenantName: `Example${ESC}[31m Org`, userEmail: `member${ESC}[2J-17` };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
+
+    await runAttach(['--url', ENDPOINT, '--machine'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, MACHINE_HISTORY]);
+    expect(h.output()).not.toContain(ESC);
+    expect(h.output()).toContain('Verified against Example[31m Org.');
+    expect(h.output()).toContain('  organization  Example[31m Org');
+    expect(h.output()).toContain('  you           member[2J-17');
+  });
+
+  it('shows an organization and an account as long as the schema allows, whole, on a machine-wide attach', async () => {
+    const who = { tenantName: 'o'.repeat(200), userEmail: `${'u'.repeat(308)}@example.com` };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
+
+    await runAttach(['--url', ENDPOINT, '--machine'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(`Verified against ${who.tenantName}.`);
+    expect(h.output()).toContain(`  organization  ${who.tenantName}\n`);
+    expect(h.output()).toContain(`  you           ${who.userEmail}\n`);
+  });
+
   it('leaves the machine-wide text as it was', async () => {
     const h = harness({ interactive: false, stdin: KEY_1 });
 

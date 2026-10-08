@@ -96,12 +96,17 @@ export function freshAttachmentScope(
  *
  * A record that names `endpoint` but does not count for it — a binding field
  * outside this build's bounds (a newer build may allow more), entries that are
- * not a list — is neither replaced nor repaired. Its entries may be another
- * build's, read and forwarded there, and a new record in its place would delete
- * them for good. Dropping the binding instead would make this build forward
- * every entry the record holds, which nobody asked for here, and the binding
- * cannot be worked out again without asking the deployment. So this THROWS
- * UnreadableAttachmentScopeError, and nothing should be written.
+ * not a list — is neither replaced nor repaired. For a binding outside this
+ * build's bounds, its entries may be another build's, read and forwarded there,
+ * and a new record in its place would delete them for good. Dropping the
+ * binding instead would make this build forward every entry the record holds,
+ * which nobody asked for here, and the binding cannot be worked out again
+ * without asking the deployment. Entries that are not a list hold nothing that
+ * this or any earlier build reads, but they may be a shape a newer build writes
+ * and reads, and this build cannot tell that from damage, so it refuses there
+ * too rather than guess. So this THROWS UnreadableAttachmentScopeError, and
+ * nothing should be written. The record is not stuck: a scoped attach starts a
+ * new list, and the caller says so.
  *
  * `added` lists the identities appended, in order. When it is empty, `next` is
  * `raw` itself, so a caller can skip a write that would change nothing. That

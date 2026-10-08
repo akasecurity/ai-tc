@@ -20,7 +20,11 @@ import {
   settingsDir as settingsDirOf,
   UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
-import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
+import {
+  attachmentScopeLines,
+  endpointForTerminal,
+  printableForTerminal,
+} from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type {
   ControlPlaneConnection,
@@ -37,6 +41,7 @@ import {
   isAttachmentScopeValid,
   isHistorySyncConsentValid,
   parseAttachmentScope,
+  unsafeEndpointReason,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -303,9 +308,28 @@ function preflight(
     managed,
     connection,
     settings,
-    name: printableForTerminal(controlPlaneName(connection)),
+    name: deploymentNameForTerminal(connection),
     cwd: deps.cwd ?? (() => process.cwd()),
   };
+}
+
+/**
+ * The deployment's name as the terminal shows it: the label, or the settings
+ * address when there is none.
+ *
+ * A label is free text and gets the plain strip at its default bound, the one
+ * `aka status` cuts a label at, so a label reads the same on both commands. The
+ * settings address is checked when settings are saved through the product, not
+ * when the file is edited by hand or an overlay pins it, and the plain strip
+ * leaves userinfo, a query and a fragment in an address. So an address goes
+ * through `endpointForTerminal`, the function `aka status` prints one with, which
+ * keeps those off the screen and prints a clean address whole up to two hundred
+ * characters.
+ */
+function deploymentNameForTerminal(connection: ControlPlaneConnection): string {
+  return connection.label === undefined
+    ? endpointForTerminal(controlPlaneName(connection))
+    : printableForTerminal(controlPlaneName(connection));
 }
 
 /** The repository the command names, or the exit code after saying why it names none. */
@@ -391,11 +415,17 @@ type Target =
  *
  * The command is built from the whole endpoint, quoted for a shell, so it runs
  * as shown. An endpoint with control characters in it cannot be typed back as
- * it would have to be shown, so it gets the form with a placeholder instead of
- * a command that would not do what it says.
+ * it would have to be shown, and one that `aka attach` itself refuses (it
+ * carries userinfo, a query or a fragment, is not an https address or a loopback
+ * http one, or is not a web address) could not be attached to by the command
+ * whatever it said. Both get the form with a placeholder instead of a command
+ * that would not do what it says, which also keeps what such an address carries
+ * off the screen.
  */
 function reattachCommand(endpoint: string): string {
-  const typable = printableForTerminal(endpoint, Infinity) === endpoint;
+  const typable =
+    printableForTerminal(endpoint, Infinity) === endpoint &&
+    unsafeEndpointReason(endpoint) === null;
   return `\`aka attach --url ${typable ? quotedForShell(endpoint) : '<url>'} --scoped\``;
 }
 
@@ -431,7 +461,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
     };
   }
   const connection = settings.controlPlane;
-  const name = printableForTerminal(controlPlaneName(connection));
+  const name = deploymentNameForTerminal(connection);
   const reattach = reattachCommand(connection.endpoint);
   const read = readControlPlaneCredentialFile(settingsDirOf(base), connection);
   if (!read.usable) {

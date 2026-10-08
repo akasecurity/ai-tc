@@ -128,6 +128,14 @@ export interface SyncPanelViewProps {
    */
   startError?: string | undefined;
   localOnly?: readonly SyncLocalOnlyLine[] | undefined;
+  /**
+   * The machine is attached as a personal device, which sends activity only
+   * from the repositories enrolled on it, so the header and the line saying
+   * what is sent from now on name them. Set by the host from the credential's
+   * mode, and only for one: absent reads as machine-wide, the wording that
+   * says more is sent, never less.
+   */
+  scoped?: boolean | undefined;
 }
 
 const OUTCOME_LINE: Record<SyncLastOutcome, string> = {
@@ -165,7 +173,9 @@ function KindRow({ row, locale }: { row: SyncKindRow; locale: string }) {
 }
 
 /**
- * What this machine has sent to its deployment, and what it still owes.
+ * What this machine has sent to its deployment, and what it still owes: of all
+ * its activity on a machine-wide attachment, and of only what the repositories
+ * enrolled on it hold on a personal device (`scoped`), where the header says so.
  *
  * Props-driven and bundler-agnostic like every view here: it fetches nothing and
  * decides nothing about which machine it is describing.
@@ -183,6 +193,7 @@ export function SyncPanelView({
   busy,
   startError,
   localOnly,
+  scoped,
 }: SyncPanelViewProps) {
   // Wherever a pass could be asked for: the machine shares its history and its
   // key works. A scoped attachment with nothing in its scope is one of those, as
@@ -201,7 +212,16 @@ export function SyncPanelView({
         <CardHeading>
           <CardTitle>Sync</CardTitle>
           <CardDescription>
-            What this machine has sent to {deployment}, and what it still owes.
+            {/* The bars on a personal device count only what is enrolled there, so
+                the header does not claim the whole machine's history. */}
+            {scoped === true ? (
+              <>
+                What this machine has sent to {deployment} from what is enrolled, and what it still
+                owes.
+              </>
+            ) : (
+              <>What this machine has sent to {deployment}, and what it still owes.</>
+            )}
           </CardDescription>
         </CardHeading>
         {running && <Tag dot={COLORS.primary}>Sending…</Tag>}
@@ -211,7 +231,11 @@ export function SyncPanelView({
       <CardContent className="flex flex-col gap-3">
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
-            Existing activity is not shared. Only what this machine records from now on is sent.
+            {/* What is sent from now on is the attachment's own, and a personal
+                device's attachment sends only its enrolled repositories. */}
+            {scoped === true
+              ? 'Existing activity is not shared. Only what an enrolled repository records from now on is sent.'
+              : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}
         {state.status === 'consent-stale' && (

@@ -19,6 +19,8 @@ import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-po
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
 import { rebuildAuditEvent } from '../../src/attached/history-rebuild.ts';
+import { createPostureReporter } from '../../src/attached/posture-reporter.ts';
+import type { StoreReadout } from '../../src/attached/posture-snapshot.ts';
 
 /**
  * Machine-mode byte identity, judged at the `AttachedClient` boundary.
@@ -38,6 +40,12 @@ import { rebuildAuditEvent } from '../../src/attached/history-rebuild.ts';
  *
  * Unstamped inputs would pass vacuously. That is why every audit-shaped input
  * below is the stamped twin of a frozen expectation.
+ *
+ * The device report has no stamped twin, because nothing stamps it. What could
+ * change a machine attachment's report is the attachment mode a scoped one
+ * adds, so its case drives the real reporter, in machine mode, through the
+ * gateway's inventory call, and compares the body with the string it sent
+ * before the mode existed.
  */
 
 const KEY = 'github.com/org/api';
@@ -49,6 +57,7 @@ interface Wire {
   ingestInventory: string[];
   recordAuditEvent: string[];
   recordAuditEvents: string[];
+  reportStorePosture: string[];
   recordProjectEgress: string[];
 }
 
@@ -57,6 +66,7 @@ const emptyWire = (): Wire => ({
   ingestInventory: [],
   recordAuditEvent: [],
   recordAuditEvents: [],
+  reportStorePosture: [],
   recordProjectEgress: [],
 });
 
@@ -79,7 +89,10 @@ function recordingClient(wire: Wire, overrides: Partial<AttachedClient> = {}): A
       wire.recordAuditEvents.push(JSON.stringify(bodies));
       return Promise.resolve({ accepted: bodies.length });
     },
-    reportStorePosture: () => Promise.resolve({}),
+    reportStorePosture: (snapshot) => {
+      wire.reportStorePosture.push(JSON.stringify(snapshot));
+      return Promise.resolve({});
+    },
     recordProjectEgress: (request) => {
       wire.recordProjectEgress.push(JSON.stringify(request));
       return Promise.resolve({});
@@ -146,7 +159,14 @@ afterEach(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-function build(wire: Wire, opts: { forward?: ForwardPolicy; client?: AttachedClient } = {}) {
+function build(
+  wire: Wire,
+  opts: {
+    forward?: ForwardPolicy;
+    client?: AttachedClient;
+    posture?: AttachedDataGatewayDeps['posture'];
+  } = {},
+) {
   return new AttachedDataGateway({
     dataDir,
     local: quietLocal(),
@@ -155,6 +175,7 @@ function build(wire: Wire, opts: { forward?: ForwardPolicy; client?: AttachedCli
     forward: opts.forward ?? passthrough,
     // MACHINE mode: what this whole suite is about.
     attachment: { mode: 'machine', keys: new Set<string>() },
+    ...(opts.posture === undefined ? {} : { posture: opts.posture }),
   });
 }
 
@@ -227,6 +248,29 @@ const INVENTORY: InventoryContext = {
   project: { url: REMOTE, name: 'api', attributes: {} },
 };
 
+const DEVICE_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+/** A full store readout, keyed in the order the real reader builds one. */
+function postureReadout(): StoreReadout {
+  return {
+    storePresent: true,
+    schemaVersion: 14,
+    findingsTotal: 5,
+    findingsFirstAt: 1_700_000_000_000,
+    findingsLastAt: 1_779_000_000_000,
+    packs: [
+      { packId: 'aka/secrets', version: '1.4.0', enabled: true, updatedAt: '1779000000000' },
+      { packId: 'aka/pii', version: '0.9.0', enabled: false, updatedAt: null },
+    ],
+    policyCounts: {
+      total: 3,
+      disabled: 1,
+      byAction: { warn: 2, redact: 0, block: 1, allow: 0, log: 0 },
+    },
+    readError: false,
+  };
+}
+
 // ── frozen bodies: what each UNSTAMPED input put on the wire ───────────────
 
 /** The root before any inventory resolved: every local id dropped. */
@@ -262,6 +306,16 @@ const EGRESS_WIRE =
   '"reconcile":{"mode":"walk","walkedPrefix":"/work/api"},"hits":[]}';
 
 const INVENTORY_WIRE = `{"project":{"url":"${REMOTE}","name":"api","attributes":{}}}`;
+
+/** The machine device report before the attachment mode existed. */
+const POSTURE_WIRE =
+  '{"deviceId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","hostname":"DevMac-01",' +
+  '"capturedAt":1780000000000,"storePresent":true,"schemaVersion":14,"findingsTotal":5,' +
+  '"findingsFirstAt":1700000000000,"findingsLastAt":1779000000000,' +
+  '"packs":[{"packId":"aka/secrets","version":"1.4.0","enabled":true,' +
+  '"updatedAt":"1779000000000"},{"packId":"aka/pii","version":"0.9.0","enabled":false,' +
+  '"updatedAt":null}],"policyCounts":{"total":3,"disabled":1,' +
+  '"byAction":{"warn":2,"redact":0,"block":1,"allow":0,"log":0}}}';
 
 describe('machine-mode byte identity at the AttachedClient boundary', () => {
   it('ingestEvents: a capture carries its key beside the event, so the body is unchanged', async () => {
@@ -338,6 +392,29 @@ describe('machine-mode byte identity at the AttachedClient boundary', () => {
     const wire = emptyWire();
     await build(wire).ensureInventory(INVENTORY);
     expect(wire.ingestInventory).toEqual([INVENTORY_WIRE]);
+  });
+
+  it('reportStorePosture: a machine attachment reports the body it sent before the mode existed', async () => {
+    const wire = emptyWire();
+    const client = recordingClient(wire);
+    const gateway = build(wire, {
+      client,
+      posture: createPostureReporter({
+        report: (snapshot) => passthrough.run(() => client.reportStorePosture(snapshot)),
+        store: {
+          read: () => Promise.resolve({ deviceId: DEVICE_ID, lastAttemptedAtMs: 0 }),
+          markAttempted: () => Promise.resolve(),
+          file: join(dataDir, 'posture-state.json'),
+        },
+        readStore: postureReadout,
+        hostname: () => 'DevMac-01',
+        now: () => 1_780_000_000_000,
+        attachmentMode: 'machine',
+      }),
+    });
+    await gateway.ensureInventory(INVENTORY);
+    expect(wire.ingestInventory).toEqual([INVENTORY_WIRE]);
+    expect(wire.reportStorePosture).toEqual([POSTURE_WIRE]);
   });
 });
 

@@ -136,21 +136,20 @@ describe('the frozen copy', () => {
 // What `aka attach --scoped` writes, byte for byte. The CLI's own suite proves
 // its attach emits exactly these bytes (cli/test/commands/attach-write.test.ts),
 // so the cases below are about the CLI's output, not a shape built here.
-const CLI_SCOPED_BYTES = readFileSync(
-  new URL('./fixtures/cli-scoped-credential-v2.json', import.meta.url),
-  'utf8',
-);
-
 describe('what aka attach --scoped writes', () => {
+  // Read per case, so a missing fixture fails these three and not the file.
+  const cliScopedBytes = (): string =>
+    readFileSync(new URL('./fixtures/cli-scoped-credential-v2.json', import.meta.url), 'utf8');
+
   it('reads as malformed to the reader that shipped before scoped attachments', () => {
-    expect(frozenClassifyCredential(CLI_SCOPED_BYTES)).toEqual({
+    expect(frozenClassifyCredential(cliScopedBytes())).toEqual({
       usable: false,
       reason: 'malformed',
     });
   });
 
   it('reads as a usable scoped credential through this build', () => {
-    writeFileSync(controlPlaneCredentialPath(settingsDir), CLI_SCOPED_BYTES, { mode: 0o600 });
+    writeFileSync(controlPlaneCredentialPath(settingsDir), cliScopedBytes(), { mode: 0o600 });
 
     expect(readControlPlaneCredentialFile(settingsDir)).toEqual({
       usable: true,
@@ -167,10 +166,10 @@ describe('what aka attach --scoped writes', () => {
   it('comes back as the same bytes when what the reader returned is written again', () => {
     // A failed re-attach rolls back by writing what this reader returned, so a
     // scoped machine whose re-attach fails keeps exactly the file it had.
-    writeFileSync(controlPlaneCredentialPath(settingsDir), CLI_SCOPED_BYTES, { mode: 0o600 });
+    writeFileSync(controlPlaneCredentialPath(settingsDir), cliScopedBytes(), { mode: 0o600 });
     const read = readControlPlaneCredentialFile(settingsDir);
     if (!read.usable) throw new Error(`expected a usable credential, got ${read.reason}`);
 
-    expect(writtenBytes(read.credential)).toBe(CLI_SCOPED_BYTES);
+    expect(writtenBytes(read.credential)).toBe(cliScopedBytes());
   });
 });

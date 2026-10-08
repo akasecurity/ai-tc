@@ -56,6 +56,7 @@ import {
   scopeVerdict,
 } from '@akasecurity/schema';
 
+import type { GovernanceScope } from '../governance-scope.ts';
 import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
@@ -157,6 +158,9 @@ export interface AttachedDataGatewayDeps {
    * `'forward'` without reading a key, which is what keeps a machine
    * attachment's traffic exactly what it was.
    *
+   * It also answers `governanceAppliesTo`, the question of where the
+   * organization's model policy applies.
+   *
    * REQUIRED, for the reason `local` and `dataDir` are. An optional member
    * would let a construction site omit it, and neither default is safe to
    * reach by leaving a line out: scoped-with-no-keys silently stops a machine
@@ -222,9 +226,11 @@ function bundledRulesFlat(): readonly Rule[] {
  * already written, so nothing is copied anywhere to enqueue it.
  *
  * `getPolicyBundle` composes the local bundle with the out-of-band-pulled
- * control-plane bundle, raise-only — see mergeRaiseOnly.
+ * control-plane bundle, raise-only — see mergeRaiseOnly. It is the same bundle
+ * on either attachment mode. Where the organization's model policy applies is a
+ * separate question, answered per event by `governanceAppliesTo`.
  */
-export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
+export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, GovernanceScope {
   /**
    * The control plane's OWN resolution of this session's inventory, captured by
    * ensureInventory. Null until the first successful forward — and it stays
@@ -266,6 +272,9 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    *
    * Machine mode answers before any key is read, so a machine attachment pays
    * nothing for scoping and forwards exactly what it always has.
+   *
+   * `governanceAppliesTo` answers from this same verdict, so it agrees with
+   * forwarding key for key.
    */
   private verdictFor(keyOf: () => string | undefined): ScopeVerdict {
     try {
@@ -1265,6 +1274,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // and the spread above would otherwise drop the field silently — which is
       // exactly what it did, leaving the whole control inert on every device
       // while every test around it stayed green.
+      //
+      // WHOLE ON EVERY ATTACHMENT. A scoped attachment does not narrow the list
+      // here: the port's `getPolicyBundle()` takes no event, and the runtime
+      // reads this bundle once to build detection, so the detections it carries
+      // apply to every event on the machine. Where a prohibition applies is
+      // answered per event by `governanceAppliesTo` below.
       prohibitedModels: cached.prohibitedModels,
       // NAMED for the same reason as the line above, and it is the same defect
       // if it is not: `...local` above spreads the DEVICE's bundle, so a field
@@ -1322,6 +1337,32 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       //                         differently. Worth carrying once there is a
       //                         reader that needs it; nothing reads it today.
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // GovernanceScope — where the organization's model policy applies
+  // ---------------------------------------------------------------------
+
+  /**
+   * Whether the organization's governance applies to an event keyed `scopeKey`:
+   * the question a model-guard site asks once it has decided to refuse.
+   *
+   * THE FORWARD VERDICT, through `verdictFor`: the answer is whether a capture
+   * with the same key would be forwarded. A machine-wide attachment governs
+   * every event, keyless included, exactly as before. A scoped one governs an
+   * event only when its key names an enrolled repository. An event in a
+   * personal repository, in no repository, with an empty key, or met by a fault
+   * is not governed.
+   *
+   * The event's OWN key, never its session root's. The root rule in
+   * `auditVerdict` decides whether a row can be forwarded without orphaning it;
+   * this decides whether a refusal applies, which is a question about where the
+   * event happened.
+   *
+   * Answered from memory: no store read, no bundle read, nothing sent.
+   */
+  governanceAppliesTo(scopeKey: string | undefined): boolean {
+    return this.verdictFor(() => scopeKey) === 'forward';
   }
 
   // ---------------------------------------------------------------------

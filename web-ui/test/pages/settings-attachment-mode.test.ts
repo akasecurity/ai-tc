@@ -191,15 +191,60 @@ describe('SettingsClient and the mode', () => {
       }),
     );
 
-  it('hands a scoped mode to the form, which names it and says to enroll', () => {
+  // The sentences are compared whole, as a reader sees them, so a false sentence
+  // that keeps the words a substring check looks for cannot pass. Spelled out
+  // here and never imported from the view: a test that imports the sentence
+  // cannot catch a change to it, and a change to one is made here too.
+  const SCOPED_MODE_LINE =
+    'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`.';
+  const MACHINE_MODE_LINE =
+    'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
+  const SCOPED_FORWARDING =
+    'While this machine is attached as a personal device, the plugin forwards activity only from ' +
+    'repositories you enroll with `aka enroll`; activity anywhere else stays on this machine. ' +
+    'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+    "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
+    'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
+    'packs, policy counts, and finding counts and dates for everything recorded on the machine. ' +
+    'Where a scan is available (the coding-agent plugins, not a browser chat), the same session ' +
+    'start also checks it for device commands. A scan you run from the Scan page sends the Data ' +
+    'Shares register only for an enrolled repository — destinations and call sites, never source ' +
+    'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
+    'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
+    'received. Detach to stop sending.';
+  const MACHINE_FORWARDING =
+    'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
+    'to see. Whenever a session starts anywhere on this machine, in a repository or not (a ' +
+    "browser chat included), the machine pulls that deployment's policy (at most every 15 " +
+    'minutes) and sends it a device report (at most hourly): a device identifier, host name, ' +
+    'versions, detection packs, policy counts, and finding counts and dates for everything ' +
+    'recorded on the machine. Where a scan is available (the coding-agent plugins, not a browser ' +
+    'chat), the same session start also checks it for device commands. A scan you run from the ' +
+    'Scan page also sends the Data Shares register it records — destinations and call sites, ' +
+    'never source text. This page reads only your local store, so it cannot report what the ' +
+    'deployment received. Detach to stop sending.';
+
+  /** The text of the element carrying `data-slot="<slot>"`, as a reader sees it, or undefined. */
+  function slotText(html: string, slot: string): string | undefined {
+    const match = new RegExp(`<(\\w+)[^>]*\\bdata-slot="${slot}"[^>]*>([^<]*)</\\1>`).exec(html);
+    return match?.[2]
+      ?.replaceAll('&#x27;', "'")
+      .replaceAll('&quot;', '"')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&amp;', '&');
+  }
+
+  it('hands a scoped mode to the form, which names it and says what is sent, word for word', () => {
     const html = render({ attachmentMode: 'scoped' });
-    expect(html).toContain('data-slot="connection-mode"');
-    expect(html).toContain('aka enroll');
+    expect(slotText(html, 'connection-mode')).toBe(SCOPED_MODE_LINE);
+    expect(slotText(html, 'connection-forwarding')).toBe(SCOPED_FORWARDING);
   });
 
-  it('hands a machine-wide mode to the form, which names it without the enroll verb', () => {
+  it('hands a machine-wide mode to the form, which names it and says what is sent, word for word, without the enroll verb', () => {
     const html = render({ attachmentMode: 'machine' });
-    expect(html).toContain('data-slot="connection-mode"');
+    expect(slotText(html, 'connection-mode')).toBe(MACHINE_MODE_LINE);
+    expect(slotText(html, 'connection-forwarding')).toBe(MACHINE_FORWARDING);
     expect(html).not.toContain('aka enroll');
   });
 

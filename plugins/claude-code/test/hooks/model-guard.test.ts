@@ -411,6 +411,19 @@ describe('handleSubagentSpawn', () => {
       return Object.assign(gateway, capability);
     }
 
+    /**
+     * `gateway`, offering the capability but unable to answer it: the question
+     * throws. That reads as not governed, so a refusal the list would make is
+     * allowed.
+     */
+    function unanswering<G extends object>(gateway: G): G & GovernanceScope {
+      return Object.assign(gateway, {
+        governanceAppliesTo(): boolean {
+          throw new Error('the capability cannot answer');
+        },
+      });
+    }
+
     /** A checkout under this test's directory whose origin is `remote`, or none. */
     function checkout(name: string, remote: string | undefined): string {
       const repo = join(dir, name);
@@ -495,6 +508,13 @@ describe('handleSubagentSpawn', () => {
       expect(await spawn(g, g.gateway, checkout('mine', PERSONAL_REMOTE))).toBe(true);
       expect(g.order).toEqual(['emit', 'close']);
       expect(keysOf(g)).toEqual([PERSONAL_KEY]);
+    });
+
+    it('is allowed in an enrolled repository when the capability throws: no output, no row, and the gateway closed', async () => {
+      const g = gatewayWith(['claude-opus-5']);
+      expect(await spawn(g, unanswering(g.gateway), checkout('work', WORK_REMOTE))).toBe(false);
+      expect(g.order).toEqual(['close']);
+      expect(g.recorded).toHaveLength(0);
     });
 
     it('with no cwd, is keyed from the process directory, as a capture is', async () => {

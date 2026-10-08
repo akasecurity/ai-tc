@@ -62,6 +62,18 @@ describe('StorePostureSnapshot.attachmentMode', () => {
     });
   });
 
+  it('is dropped, not refused, by a reader built before the member', () => {
+    // An older reader's schema is this one without the member. Deriving it from
+    // the live schema is the point: a `.strict()` added to the snapshot carries
+    // over into the derived shape and fails here, where an older receiver would
+    // refuse the whole report of every scoped device instead of ignoring the key.
+    const olderReader = StorePostureSnapshot.omit({ attachmentMode: true });
+    const result = olderReader.safeParse({ ...SNAPSHOT, attachmentMode: 'scoped' });
+    if (!result.success) throw new Error('an older reader refused a body that carries the mode');
+    expect(Object.keys(result.data)).not.toContain('attachmentMode');
+    expect(result.data).toEqual(SNAPSHOT);
+  });
+
   it.each<unknown>(['account', '', 'Scoped', null, 1])(
     'refuses the whole snapshot for a mode outside the vocabulary (%j)',
     (mode) => {

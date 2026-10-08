@@ -81,6 +81,11 @@ describe('no-process-narration', () => {
       '// authorizes the send, which is what CLAUDE.md §4 promises',
     ],
     ['a section of a README', '// §2 of the README names the seam'],
+    [
+      'a section of an external standard',
+      "// RFC 9110 §5.5's own leading and trailing whitespace set",
+    ],
+    ['a section of a TC39 spec', '// per ECMA-262 §13.15, assignment is right-associative'],
   ])('stays silent on %s', (_kind, code) => {
     expect(run(code)).toEqual([]);
   });

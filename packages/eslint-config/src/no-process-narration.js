@@ -30,7 +30,10 @@ const PROBES = [
     // not narration; `§` pointing at a plan is what this catches.
     name: 'a document section number',
     re: /§+\s?[\d.]+/,
-    unless: /\b(?:AGENTS|CLAUDE|GEMINI|CONTRIBUTING|README|INTERNALS)(?:\.md)?\b/,
+    // A § belonging to a conventions file, a README, or an EXTERNAL standard is a
+    // live cross-reference a reader can follow — only a § into a plan is narration.
+    unless:
+      /\b(?:AGENTS|CLAUDE|GEMINI|CONTRIBUTING|README|INTERNALS)(?:\.md)?\b|\b(?:RFC|ISO|IEC|ECMA|IETF|W3C|WHATWG|Unicode|TC39|POSIX|NIST|OWASP)\b/,
   },
   { name: 'a review-response number', re: /\breview\sresponses?\s?\d*|\brr\d\b/i },
   // A numeric-only `#nnn` is an issue ref; `#000`-style repeats and `#nnnnnn`

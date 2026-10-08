@@ -28,15 +28,15 @@ import { DB_FILENAME } from './paths.ts';
  * takes a read to work out (the credential file's) should pass one. It is
  * evaluated here, after the store check and inside this helper's best-effort
  * envelope, so a throw while working it out cannot turn a recorded grant into a
- * reported failure. A throw means `undefined`, every capture, never no seed.
- * That is safe for SENDING, because marking is not sending and the drain's own
- * capture read applies the scope in SQL whatever was marked. It is not free for
- * RETENTION: a scoped attachment's retention holds every body still marked owed
- * whatever its key, so a fallback to every capture makes it hold the bodies of
- * repositories it does not cover now, which stay held for as long as the mark
- * stands and become reachable if one is enrolled. On a machine with no store the
- * function is never called, so no credential is read for a backlog that does not
- * exist.
+ * reported failure. A throw MARKS NOTHING. Marking every capture instead would
+ * be safe for sending, because the drain's own capture read applies the scope
+ * in SQL whatever was marked, but not for retention: a scoped attachment's
+ * retention holds every body still marked owed whatever its key, so it would
+ * hold the bodies of repositories it does not cover, for as long as the mark
+ * stands. What a throw costs is this grant's capture backlog, which waits for
+ * the next grant like any other miss here (see below). On a machine with no
+ * store the function is never called, so no credential is read for a backlog
+ * that does not exist.
  *
  * BEST-EFFORT and deliberately silent, for the reason
  * `clearAttachmentDerivedState` gives for its own callers: the grant has
@@ -66,9 +66,9 @@ export function seedCaptureBacklogOwed(
   try {
     keys = typeof scopeKeys === 'function' ? scopeKeys() : scopeKeys;
   } catch {
-    // Unscoped, as documented above: a scope that cannot be worked out marks
-    // everything rather than nothing.
-    keys = undefined;
+    // Nothing, as documented above: a scope that cannot be worked out marks no
+    // capture rather than every one.
+    return;
   }
   try {
     const db = openLocalDatabase(dataDir);

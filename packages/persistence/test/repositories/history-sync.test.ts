@@ -1587,10 +1587,10 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
     expect(outboxOwed(raw, 'cap-p')).toBe(false);
   });
 
-  // A scope that cannot be computed falls back to the unscoped seed rather than
-  // to no seed, and does not throw: marking is not sending, and the drain's own
-  // capture read applies the scope in SQL whatever was marked.
-  it('marks every capture, and does not throw, when the scope function throws', () => {
+  // A scope that cannot be computed marks no capture, and does not throw:
+  // marking every capture would make a scoped attachment's retention hold the
+  // bodies of repositories it does not cover.
+  it('marks no capture, and does not throw, when the scope function throws', () => {
     const db = store.open();
     const raw = store.openRaw();
     seedKeyedCapture(db, 'cap-w', MINUTE, WORK, false);
@@ -1602,8 +1602,8 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
       });
     }).not.toThrow();
 
-    expect(outboxOwed(raw, 'cap-w')).toBe(true);
-    expect(outboxOwed(raw, 'cap-p')).toBe(true);
+    expect(outboxOwed(raw, 'cap-w')).toBe(false);
+    expect(outboxOwed(raw, 'cap-p')).toBe(false);
   });
 
   // No store, nothing to mark, so nothing to compute a scope for: the credential

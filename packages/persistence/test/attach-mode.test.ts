@@ -1,7 +1,14 @@
-import type { AttachmentMode, ConnectionRefusal } from '@akasecurity/schema';
+import type { AttachmentMode, ConnectionRefusal, WorkspaceSettings } from '@akasecurity/schema';
+import { defaultWorkspaceSettings, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { decideAttachMode, holdsScopedFor, settledDecisionHolds } from '../src/attach-mode.ts';
+import {
+  decideAttachMode,
+  holdsScopedFor,
+  mayBePersonalDevice,
+  settledDecisionHolds,
+  writesSettingsFirst,
+} from '../src/attach-mode.ts';
 import type { CredentialFileRead } from '../src/control-plane-credential.ts';
 
 // How an attach chooses between a scoped and a machine-wide attachment. The
@@ -484,5 +491,211 @@ describe('settledDecisionHolds', () => {
     it('does not take an agreement made for a personal device elsewhere as one for this endpoint', () => {
       expect(holdsAfter({ flag: 'machine', previous: SCOPED_ELSEWHERE }, SCOPED)).toBe(false);
     });
+  });
+
+  describe('with the administrator answer read again after the wait', () => {
+    const put = (before: Inputs, managedNow: ConnectionRefusal | null, mode: AttachmentMode) => {
+      const settled = decideAttachMode(before);
+      if (settled.kind === 'refuse') throw new Error('a refusal is never settled');
+      return settledDecisionHolds({ ...before, managed: managedNow, settled, mode });
+    };
+    const quiet: Inputs = {
+      flag: undefined,
+      managed: MANAGED,
+      previous: ABSENT,
+      endpoint: ENDPOINT,
+      interactive: false,
+    };
+
+    it('does not hold for a mode only the administrator settled, once they stop managing the machine', () => {
+      expect(put({ ...quiet, previous: SCOPED }, MANAGED, 'machine')).toBe(true);
+      expect(put({ ...quiet, previous: SCOPED }, null, 'machine')).toBe(false);
+      expect(put({ ...quiet, interactive: true }, null, 'machine')).toBe(false);
+    });
+
+    it('holds where the decision is the same whoever manages the machine now', () => {
+      expect(put(quiet, null, 'machine')).toBe(true);
+      expect(put({ ...quiet, flag: 'machine', managed: null }, MANAGED, 'machine')).toBe(true);
+    });
+
+    // Under management a machine-wide flag over a personal device asks nobody:
+    // the administrator decided. That is an agreement to the widening only while
+    // they still manage the machine when the decision is put again.
+    describe('an agreement to widen that only the administrator gave', () => {
+      /** The decision settled from `before`, put again on a different file with the same administrator. */
+      const putOnFile = (before: Inputs, now: CredentialFileRead): boolean => {
+        const settled = decideAttachMode(before);
+        if (settled.kind === 'refuse') throw new Error('a refusal is never settled');
+        return settledDecisionHolds({ ...before, previous: now, settled, mode: 'machine' });
+      };
+      const widening: Inputs = { ...quiet, flag: 'machine', previous: SCOPED };
+
+      it('does not count once they stop managing the machine and a terminal would ask', () => {
+        expect(put({ ...widening, interactive: true }, null, 'machine')).toBe(false);
+        expect(
+          put({ ...widening, interactive: true, previous: SCOPED_TRAILING_SLASH }, null, 'machine'),
+        ).toBe(false);
+      });
+
+      it('counts while they still manage the machine', () => {
+        expect(put({ ...widening, interactive: true }, MANAGED, 'machine')).toBe(true);
+        expect(put(widening, MANAGED, 'machine')).toBe(true);
+      });
+
+      it('counts without a terminal once they stop, where the flag typed is the answer', () => {
+        expect(put(widening, null, 'machine')).toBe(true);
+      });
+
+      it('is not needed once the widening has gone away', () => {
+        expect(putOnFile({ ...widening, interactive: true }, ABSENT)).toBe(true);
+        expect(putOnFile({ ...widening, interactive: true }, MACHINE)).toBe(true);
+      });
+
+      it('leaves an agreement a person gave alone, whoever manages the machine now', () => {
+        const confirmed: Inputs = { ...widening, managed: null, interactive: true };
+        expect(put(confirmed, null, 'machine')).toBe(true);
+        expect(put(confirmed, MANAGED, 'machine')).toBe(true);
+      });
+    });
+  });
+});
+
+// The order of an attach's two writes, shared by every surface that attaches a
+// machine, so that each orders them by the same rule.
+
+describe('mayBePersonalDevice', () => {
+  it.each<[string, CredentialFileRead, boolean]>([
+    ['a scoped credential for this endpoint', SCOPED, true],
+    ['a scoped credential for another endpoint', SCOPED_ELSEWHERE, true],
+    ['a machine-wide credential for this endpoint', MACHINE, false],
+    ['a machine-wide credential for another endpoint', MACHINE_ELSEWHERE, false],
+    ['no credential file', ABSENT, false],
+    ['a file that is malformed', { usable: false, reason: 'malformed' }, true],
+    ['a file that is unreadable', { usable: false, reason: 'unreadable' }, true],
+    ['a file that is untrusted', { usable: false, reason: 'untrusted-file' }, true],
+    ['a file that names an unsafe endpoint', { usable: false, reason: 'unsafe-endpoint' }, true],
+    ['a file reported as an endpoint mismatch', MISMATCHED, true],
+  ])('answers for %s', (_name, read, expected) => {
+    expect(mayBePersonalDevice(read)).toBe(expected);
+  });
+});
+
+describe('writesSettingsFirst', () => {
+  const CONSENT = {
+    acknowledgedAt: '2026-10-01T09:00:00.000Z',
+    payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+    endpoint: ENDPOINT,
+  };
+  const NOTHING: WorkspaceSettings = defaultWorkspaceSettings();
+  const LIST: WorkspaceSettings = {
+    ...NOTHING,
+    attachmentScope: { endpoint: ENDPOINT, entries: [] },
+  };
+  const GRANT: WorkspaceSettings = { ...NOTHING, historySyncConsent: CONSENT };
+  const BOTH: WorkspaceSettings = { ...LIST, historySyncConsent: CONSENT };
+
+  it.each<[string, AttachmentMode, CredentialFileRead, WorkspaceSettings, boolean, boolean]>([
+    [
+      'machine-wide over a scoped credential for this endpoint',
+      'machine',
+      SCOPED,
+      NOTHING,
+      false,
+      true,
+    ],
+    [
+      'machine-wide over a scoped credential for another endpoint',
+      'machine',
+      SCOPED_ELSEWHERE,
+      NOTHING,
+      false,
+      true,
+    ],
+    ['machine-wide over a file that cannot be read', 'machine', UNREADABLE, NOTHING, false, true],
+    [
+      'machine-wide over a file reported as an endpoint mismatch',
+      'machine',
+      MISMATCHED,
+      NOTHING,
+      false,
+      true,
+    ],
+    ['machine-wide with no file and a list stored', 'machine', ABSENT, LIST, false, true],
+    ['machine-wide with no file and a grant stored', 'machine', ABSENT, GRANT, false, true],
+    ['machine-wide with no file and nothing stored', 'machine', ABSENT, NOTHING, false, false],
+    [
+      'machine-wide over a machine-wide credential, a list and a grant stored',
+      'machine',
+      MACHINE,
+      BOTH,
+      false,
+      false,
+    ],
+    [
+      'machine-wide over a machine-wide credential for another endpoint, a list stored',
+      'machine',
+      MACHINE_ELSEWHERE,
+      LIST,
+      false,
+      false,
+    ],
+    ['scoped with no file, a list stored and not kept', 'scoped', ABSENT, LIST, false, true],
+    ['scoped with no file, a grant stored and not kept', 'scoped', ABSENT, GRANT, false, true],
+    [
+      'scoped over a scoped credential, a list stored and not kept',
+      'scoped',
+      SCOPED,
+      LIST,
+      false,
+      true,
+    ],
+    [
+      'scoped over a file that cannot be read, a grant stored and not kept',
+      'scoped',
+      UNREADABLE,
+      GRANT,
+      false,
+      true,
+    ],
+    [
+      'scoped over a scoped credential, a list and a grant stored and kept',
+      'scoped',
+      SCOPED,
+      BOTH,
+      true,
+      false,
+    ],
+    [
+      'scoped over a machine-wide credential, a list and a grant stored and not kept',
+      'scoped',
+      MACHINE,
+      BOTH,
+      false,
+      false,
+    ],
+    ['scoped with no file and nothing stored', 'scoped', ABSENT, NOTHING, false, false],
+  ])('answers for a %s', (_name, mode, previous, stored, kept, expected) => {
+    expect(writesSettingsFirst(mode, previous, stored, () => kept)).toBe(expected);
+  });
+
+  it('asks keepsList about the stored list itself', () => {
+    const seen: unknown[] = [];
+    writesSettingsFirst('scoped', SCOPED, LIST, (stored) => {
+      seen.push(stored);
+      return false;
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(LIST.attachmentScope);
+  });
+
+  it('asks keepsList nothing on a machine-wide attach', () => {
+    const seen: unknown[] = [];
+    for (const previous of [SCOPED, UNREADABLE, ABSENT, MACHINE]) {
+      writesSettingsFirst('machine', previous, BOTH, (stored) => {
+        seen.push(stored);
+        return false;
+      });
+    }
+    expect(seen).toEqual([]);
   });
 });

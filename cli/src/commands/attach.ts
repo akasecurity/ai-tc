@@ -20,12 +20,14 @@ import {
   readControlPlaneCredentialState,
   readEffectiveSettings,
   readLocalHistoryPreview,
+  readManagedSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   settledDecisionHolds,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
+  writesSettingsFirst,
 } from '@akasecurity/persistence';
 import {
   printableForTerminal,
@@ -38,6 +40,7 @@ import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
   AttachmentMode,
+  ConnectionRefusal,
   HistorySyncConsent,
   ManagedSettings,
   PluginWhoami,
@@ -255,6 +258,19 @@ const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
 
+/**
+ * Said when the settled decision, put again with the administrator's answer as it
+ * is after the wait, no longer holds, although it holds with the answer read
+ * before it: whether an administrator manages this machine's connection changed
+ * while this command waited. A machine they stopped managing is the user's to
+ * decide again, so what was settled is not written. Nothing has been written when
+ * this is said.
+ */
+const MANAGEMENT_CHANGED_WHILE_WAITING =
+  "whether an administrator manages this machine's connection changed while this command " +
+  'waited, so the attachment was not written. Nothing was changed on this machine; run the ' +
+  'command again.';
+
 /** What a failed save says when the earlier credential file is back exactly as it was. */
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
@@ -332,6 +348,37 @@ function saveFailedMessage(err: unknown, rollback: CredentialRollback): string {
     );
   }
   return note === undefined ? LEFT_AS_IT_WAS : `could not save the attachment. ${note}`;
+}
+
+/**
+ * The line an attach refused by the administrator's overlay prints, whether the
+ * refusal came before the round trip or after it. Leaving --label off is refused
+ * as the rename it amounts to, and the flag that keeps the name is this
+ * surface's to name.
+ */
+function attachRefusalLine(refusal: ConnectionRefusal): string {
+  return refusal.reason === 'label-required'
+    ? `${refusalLine(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
+    : refusalLine(refusal);
+}
+
+/**
+ * The administrator's overlay, read once: an overlay handed in is returned as it
+ * is, and otherwise the system's is read, a read that fails being no overlay, as
+ * in every other read of it.
+ *
+ * For answers that must agree with one another. Each refusal function reads the
+ * system overlay itself when it is handed none, so two of them asked in a row
+ * can see two overlays if one lands between the reads.
+ */
+function overlayNow(deps: AttachDeps): ManagedSettings | null {
+  const handedIn = deps.managedSettings;
+  if (handedIn !== undefined) return handedIn;
+  try {
+    return readManagedSettings();
+  } catch {
+    return null;
+  }
 }
 
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
@@ -428,13 +475,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // with the dashboard's attach action, so the two surfaces cannot disagree.
   const refusal = managedAttachRefusal({ endpoint, label: args.label }, base, deps.managedSettings);
   if (refusal !== null) {
-    // Leaving --label off is refused as the rename it amounts to, and the flag
-    // that keeps the name is this surface's to name.
-    io.err(
-      refusal.reason === 'label-required'
-        ? `${refusalLine(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
-        : refusalLine(refusal),
-    );
+    io.err(attachRefusalLine(refusal));
     exit(2);
     return;
   }
@@ -552,6 +593,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // its own confirmation has returned by now, so the two questions follow one
   // another and neither repeats the other.
   let mode: AttachmentMode;
+  // What this attach says about the enrolled list it replaces, held until every
+  // check that can still stop it has passed: a line promising a list will be
+  // cleared must not be followed by a refusal that clears nothing.
+  let listNotice: string | undefined;
   if (modeDecision.kind === 'ask') {
     const answered = await askAboutMode(io);
     if (answered === undefined) {
@@ -579,7 +624,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         // The decision's own answer, so another spelling of this deployment is
         // named as this one, the way the widening it is counts it.
         const notice = modeDecision.widening ? wideningNotice(endpoint) : MANAGED_ELSEWHERE_NOTICE;
-        io.out(`${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`);
+        listNotice = `${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`;
       }
     } else if (modeDecision.widening) {
       // WIDENING by --machine over a scoped attachment to this deployment. The
@@ -593,7 +638,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         }
       } else {
         // No terminal to ask on, and --machine was typed: the flag is the answer.
-        io.out(`Attaching machine-wide, as --machine asks. ${wideningNotice(endpoint)}\n`);
+        listNotice = `Attaching machine-wide, as --machine asks. ${wideningNotice(endpoint)}\n`;
       }
     }
   }
@@ -610,19 +655,42 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     mode,
   );
 
-  // A SCOPED WRITE IS RE-CHECKED against the administrator's overlay here, with
-  // nothing written yet. The decision above was made before a browser approval
-  // that can take minutes, and an overlay that arrived meanwhile makes this
-  // machine machine-only. It is also what lets the enrolled list below bind to
-  // `endpoint`: with no pin on the connection, the overlay leaves the descriptor
-  // this attach writes alone, so the endpoint written is the one every read sees.
-  if (mode === 'scoped') {
-    const lateRefusal = managedScopedRefusal(base, deps.managedSettings);
-    if (lateRefusal !== null) {
-      io.err(`${refusalLine(lateRefusal)} Nothing was changed on this machine.`);
-      exit(1);
-      return;
-    }
+  // THE ADMINISTRATOR'S OVERLAY, READ AGAIN for every attach, with nothing written
+  // yet. The answers above were read before a browser approval or a key
+  // verification that can take minutes, and an overlay may have arrived, changed or
+  // gone since.
+  //
+  // First the refusals no mode gets past, worded as the check above words them: a
+  // machine held at standalone, a connection pinned to another deployment, a name
+  // the administrator gives or a lock keeps. The settings writer refuses a change to
+  // a LOCKED pair but writes a PINNED one through, and the next read overlays the pin
+  // back over it, so without this a machine-wide attach could store a credential for
+  // a deployment the settings no longer name.
+  //
+  // Then a scoped write on a machine that has become machine-only. That check is
+  // also what lets the enrolled list below bind to `endpoint`: with no pin on the
+  // connection, the overlay leaves the descriptor this attach writes alone, so the
+  // endpoint written is the one every read sees.
+  //
+  // Both are answered from ONE read of the overlay, and so is the second put
+  // below: an overlay landing between two reads would otherwise be seen by one
+  // check and not by the other.
+  //
+  // This narrows the window rather than closing it: an overlay can still arrive
+  // between here and the settings write, and there the writer refuses a lock but
+  // not a pin.
+  const overlayAfterWait = overlayNow(deps);
+  const lateRefusal = managedAttachRefusal({ endpoint, label: args.label }, base, overlayAfterWait);
+  if (lateRefusal !== null) {
+    io.err(`${attachRefusalLine(lateRefusal)} Nothing was changed on this machine.`);
+    exit(1);
+    return;
+  }
+  const lateScopedRefusal = managedScopedRefusal(base, overlayAfterWait);
+  if (mode === 'scoped' && lateScopedRefusal !== null) {
+    io.err(`${refusalLine(lateScopedRefusal)} Nothing was changed on this machine.`);
+    exit(1);
+    return;
   }
 
   // What was there before, so a failed write can be put back. Re-attaching is
@@ -642,29 +710,44 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
-  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was settled from the file
-  // read before the key was verified, and on the browser path that can be
-  // minutes ago. The same decision is put again on what is on disk now, with the
-  // same flag, overlay and terminal. If it no longer agrees (see
-  // settledDecisionHolds) another aka has attached, re-attached or detached
-  // this machine in between, and writing what was settled could widen a personal
-  // device, narrow a machine-wide attachment, or overwrite a newer build's file
-  // that the confirmation in front of the user never covered. Stop and say so;
-  // the next run decides again from what is on disk.
-  const holds = settledDecisionHolds({
+  // THE LOST UPDATE THE DECISION CANNOT SEE, put twice. The mode was settled from
+  // the file read before the key was verified, and on the browser path that can be
+  // minutes ago.
+  //
+  // First with the administrator's answer the decision was made with, so that what
+  // it measures is the file. If the decision no longer agrees (see
+  // settledDecisionHolds) another aka has attached, re-attached or detached this
+  // machine in between, and writing what was settled could widen a personal device,
+  // narrow a machine-wide attachment, or overwrite a newer build's file that the
+  // confirmation in front of the user never covered.
+  //
+  // Then with the answer read again above. The two can disagree only where an
+  // administrator began or stopped managing the connection during the wait, and a
+  // machine they stopped managing is the user's to decide again: a mode the
+  // administrator alone settled could widen what it sends.
+  //
+  // Either way, stop and say which; the next run decides again from what is there.
+  const putAgain = {
     flag: args.mode,
-    managed: scopedRefusal,
     previous,
     endpoint,
     interactive: io.isInteractive,
     settled: modeDecision,
     mode,
-  });
-  if (!holds) {
+  };
+  if (!settledDecisionHolds({ ...putAgain, managed: scopedRefusal })) {
     io.err(CHANGED_WHILE_WAITING);
     exit(1);
     return;
   }
+  if (!settledDecisionHolds({ ...putAgain, managed: lateScopedRefusal })) {
+    io.err(MANAGEMENT_CHANGED_WHILE_WAITING);
+    exit(1);
+    return;
+  }
+  // Every check that can stop this attach has passed: now it says what it is
+  // about to do to the enrolled list.
+  if (listNotice !== undefined) io.out(listNotice);
   // A file this build cannot parse may be a scoped credential a newer aka
   // wrote; this attach goes ahead over it only because a flag or an answer
   // chose the mode. Its BYTES are kept, so a failed write puts that file back
@@ -733,11 +816,17 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   const keepScope = holdsScopedFor(previous, endpoint);
   // How many entries this build can read in what was kept, for the success text.
   const kept = { readableEntries: 0 };
-  // What a fresh list replaced, for the success text: how many entries this build
-  // could read in it, and why it was not kept.
-  const cleared: { readableEntries: number; because: ListClearedBecause | undefined } = {
+  // What a fresh list replaced, for the success text: how many entries this
+  // build could read in it, why it was not kept, and what in it this build could
+  // not read.
+  const cleared: {
+    readableEntries: number;
+    because: ListClearedBecause | undefined;
+    unread: number | 'list';
+  } = {
     readableEntries: 0,
     because: undefined,
+    unread: 0,
   };
   // Whether this attach keeps `stored` as the enrolled list: only a rotation of a
   // personal device on this deployment, for the organization and account just
@@ -754,6 +843,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     cleared.because = whyListCleared(stored, endpoint, identity, keepScope);
     cleared.readableEntries =
       cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
+    cleared.unread = unreadInReplacedList(stored);
     return freshAttachmentScope(endpoint, identity);
   };
 
@@ -917,10 +1007,14 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'elsewhere.',
           // A fresh list that replaced one holding entries this build can read
           // says how many and why they were not kept, so a re-attach that
-          // verified as someone else does not empty the list unannounced.
+          // verified as someone else does not empty the list unannounced. A list
+          // that held what this build cannot read, the whole record or some
+          // entries, says so on its own line, so a newer build's list is not
+          // emptied unannounced.
           ...(cleared.because === undefined
             ? []
             : [clearedListLine(cleared.readableEntries), LIST_CLEARED_BECAUSE[cleared.because]]),
+          ...unreadClearedLines(cleared.unread),
           // Chosen by what was KEPT that this build can read, not by whether a
           // record was kept: a bound record with no entries (a rotation before
           // anything was enrolled), or one holding only a newer build's kinds,
@@ -1011,48 +1105,6 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
     );
     return undefined;
   }
-}
-
-/**
- * Whether a credential read is a personal device's, or could be: a usable scoped
- * credential, for this endpoint or any other, or a file that is there but cannot
- * be used, which may be a scoped credential a newer aka wrote. No file at all is
- * not, and neither is a usable machine-wide credential.
- */
-function mayBePersonalDevice(read: CredentialFileRead): boolean {
-  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
-}
-
-/**
- * Whether the settings are written before the credential (see the order of the
- * writes in runAttach). Two cases, and nothing else.
- *
- * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
- * personal device's (mayBePersonalDevice), or when there is no credential file
- * but the stored settings still carry an enrolled list or a history grant, which
- * this attach replaces. A deleted credential file leaves the settings so, and so
- * does a rollback that reports a file it could not read as gone.
- *
- * A SCOPED attach, when the settings carry a list or a grant for it to replace
- * and it does not keep the list (`keepsList` answers for the stored one), unless
- * the credential being replaced is a usable machine-wide one.
- *
- * Pure.
- */
-function writesSettingsFirst(
-  mode: AttachmentMode,
-  previous: CredentialFileRead,
-  stored: WorkspaceSettings,
-  keepsList: (stored: unknown) => boolean,
-): boolean {
-  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
-  if (mode === 'machine') {
-    return (
-      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
-    );
-  }
-  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
-  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */
@@ -1446,7 +1498,8 @@ const LIST_CLEARED_BECAUSE: Record<ListClearedBecause, string> = {
 /**
  * Why a scoped attach to `endpoint` as `who` does not keep `stored`, or
  * undefined when the list holds no entry this build can read, which leaves
- * nothing to report. `continues` is whether the credential being replaced is a
+ * nothing for its line to report (what this build cannot read in it has a line
+ * of its own, see unreadInReplacedList). `continues` is whether the credential being replaced is a
  * personal device's for exactly this endpoint (holdsScopedFor). Judged by the
  * rules the keep decision uses, in its order: the endpoint as an exact string,
  * then whether this attach continues one, then the binding, each field byte for
@@ -1482,6 +1535,40 @@ function clearedListLine(readableEntries: number): string {
     ? 'The list on this machine held 1 enrollment; it was cleared because'
     : `The list on this machine held ${readableEntries.toLocaleString('en-US')} enrollments; ` +
         'they were cleared because';
+}
+
+/**
+ * What the list on file held that this build cannot read, for a scoped attach
+ * that replaces it with a fresh one: `'list'` when a record is stored (neither
+ * absent nor null, the two ways no list is stored) and does not parse, else how
+ * many of its stored entries the parse dropped. Pure; never throws.
+ */
+function unreadInReplacedList(stored: unknown): number | 'list' {
+  if (stored === undefined || stored === null) return 0;
+  const record = parseAttachmentScope(stored);
+  if (record === undefined) return 'list';
+  return typeof stored === 'object' && 'entries' in stored && Array.isArray(stored.entries)
+    ? stored.entries.length - record.entries.length
+    : 0;
+}
+
+/**
+ * The line that says a fresh list replaced what this build could not read in the
+ * one on file, the whole record or some of its entries, or none. The entries are
+ * counted, never printed: one written by a newer build is not this build's to
+ * describe.
+ */
+function unreadClearedLines(unread: number | 'list'): string[] {
+  if (unread === 'list') {
+    return ['This version of aka could not read the list on this machine; it was cleared.'];
+  }
+  if (unread === 0) return [];
+  return [
+    unread === 1
+      ? 'This version of aka could not read 1 entry in the list on this machine; it was cleared.'
+      : `This version of aka could not read ${unread.toLocaleString('en-US')} entries in the list ` +
+        'on this machine; they were cleared.',
+  ];
 }
 
 /**

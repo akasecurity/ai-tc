@@ -38,6 +38,9 @@ const TEST_KEY = 'not-a-real-key';
 const ENROLLED_AT = '2026-10-07T09:30:00.000Z';
 const WORK_REPO = 'github.com/acme/payments-api';
 const SECOND_REPO = 'github.com/acme/billing-worker';
+// A scope entry of the other kind, a web-chat workspace. Nothing in this build
+// writes one; a newer build or a hand edit can.
+const ACCOUNT = 'example-chat:acme-workspace';
 // The binding a scoped attach records. The account is any printable string to
 // the schema; nothing here reads it as an address.
 const MEMBER = { tenantName: 'Acme', userEmail: 'member-of-acme' } as const;
@@ -164,14 +167,22 @@ describe('renderAttachedStatus — the attachment mode', () => {
     attach('machine', bound([entry(WORK_REPO)]));
     const out = status();
     expect(out.split('\n')[0]).toBe('AKA: attached');
-    expect(out).toMatch(/^ {2}mode {7}machine \(every repository\)$/m);
+    expect(out).toMatch(/^ {2}mode {7}machine \(activity from anywhere on this machine\)$/m);
     expect(out).not.toMatch(/^ {2}scope /m);
     expect(out).not.toContain(WORK_REPO);
   });
 
   it('names a scoped attachment', () => {
     attach('scoped', bound());
-    expect(status()).toMatch(/^ {2}mode {7}scoped \(enrolled repositories only\)$/m);
+    expect(status()).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+  });
+
+  it('names a scoped attachment without naming the kind of entry it enrolls', () => {
+    attach('scoped', bound([{ kind: 'account', identity: ACCOUNT, enrolledAt: ENROLLED_AT }]));
+    const out = status();
+    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(out).toContain(`\n             ${ACCOUNT}, enrolled 2026-10-07\n`);
+    expect(out).not.toContain('repositories only');
   });
 
   it('prints no mode for a credential it cannot use', () => {
@@ -232,7 +243,7 @@ describe('renderAttachedStatus — a machine that became managed after a scoped 
     UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
 
     const out = status();
-    expect(out).toMatch(/^ {2}mode {7}scoped \(enrolled repositories only\)$/m);
+    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
     expect(out).toContain(`\n             ${WORK_REPO}, enrolled 2026-10-07\n`);
   });
 });
@@ -253,19 +264,19 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   it('says nothing is sent when no scope is recorded', () => {
     attach('scoped');
     const out = status();
-    expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no repository's activity is sent$/m);
+    expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
     expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
   });
 
   it('says nothing is sent when the stored scope is not a record at all', () => {
     attach('scoped', 'not-a-scope-record');
-    expect(status()).toMatch(/^ {2}scope {6}nothing enrolled — no repository's activity is sent$/m);
+    expect(status()).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
   });
 
   it('says a freshly recorded scope enrolls nothing yet', () => {
     attach('scoped', bound());
     const out = status();
-    expect(out).toMatch(/^ {2}scope {6}nothing enrolled yet — no repository's activity is sent$/m);
+    expect(out).toMatch(/^ {2}scope {6}nothing enrolled yet — no activity is sent$/m);
     expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
   });
 
@@ -385,7 +396,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
       attach('scoped', scope);
       const out = status();
       expect(resolveScope({ mode: 'scoped', scope, endpoint: ENDPOINT }).keys.size).toBe(0);
-      expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no repository's activity is sent$/m);
+      expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
       expect(out).not.toMatch(/^ {2}scope {6}\d+ enrolled/m);
       expect(out).not.toContain(WORK_REPO);
       expect(out).not.toContain('not tied to an account');

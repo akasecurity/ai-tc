@@ -1412,11 +1412,11 @@ const MODE_QUESTION_TRIES = 3;
  *
  * NO DEFAULT. Either wrong answer costs something: a personal device attached
  * machine-wide sends what nothing can recall, and a machine the organization
- * owns attached as a personal device reports nothing until someone notices.
- * So only y/yes and n/no are answers, case-insensitive and trimmed; anything
- * else, an empty line included, is asked again, up to MODE_QUESTION_TRIES
- * times. `undefined` after the last means no answer, and the caller writes
- * nothing.
+ * owns attached as a personal device forwards activity only from the
+ * repositories enrolled until someone notices. So only y/yes and n/no are
+ * answers, case-insensitive and trimmed; anything else, an empty line
+ * included, is asked again, up to MODE_QUESTION_TRIES times. `undefined` after
+ * the last means no answer, and the caller writes nothing.
  */
 async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
   io.out(

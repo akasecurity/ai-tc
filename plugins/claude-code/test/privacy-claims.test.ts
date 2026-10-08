@@ -271,6 +271,13 @@ describe('scoped attachment claims', () => {
         'says that it is attached as a personal device.',
     );
     expect(section).not.toMatch(/the same way on either kind of attachment/i);
+    // What enrolling queues under the history grant is said where the scoped mode is
+    // introduced, not in the paragraph on what the grant covers on any attachment.
+    expect(section).toContain(
+      'activity in any other repository stays on the machine. Under the `aka sync-history` ' +
+        'grant, enrolling a repository also queues the captures still kept for it, including ' +
+        'those it recorded between attaching and enrolling.',
+    );
     expect(section).not.toMatch(/\ball of the above\b/i);
   });
 });

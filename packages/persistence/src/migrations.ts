@@ -1240,6 +1240,8 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
  * 23 seconds measured above for a CHECK). One index reads it, built for the one
  * read a measured plan said needed it: idx_audit_scope_owed below, which is
  * partial on owed, unsettled captures and so holds the key of no other row.
+ * SQLite refuses `DROP COLUMN scope_key` while idx_audit_scope_owed exists, so
+ * a rebuild of the column must drop that index first.
  *
  * GUARDED WITH json_valid, which its siblings are not. json_extract throws
  * `malformed JSON` on a bag that is not JSON, and an unguarded expression
@@ -1407,23 +1409,30 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
  *   - the same 20,000, all settled: 5.15 ms;
  *   - 120,000 captures with 40 KB prompts (5047 MB), none owed:
  *     27 ms; all owed and unsettled: 810 ms.
- * A cold cache was not measured. At the 40 KB rate the build fits the 800 ms
- * decision-path budget (`DECISION_PATH_BUDGET_MS`, in plugin-runtime's forward
- * policy) until a store owes some 122,000 unsettled captures of
- * that size at once, as a consent grant on a large store can leave it before
- * its first drain finishes. Past that, the first open after the upgrade spends
- * longer than the budget on the build, once.
+ * A cold cache was not measured. Against the 800 ms decision-path budget
+ * (`DECISION_PATH_BUDGET_MS`, in plugin-runtime's forward policy), the first
+ * open after the upgrade took 151 ms on the 100,000-capture store and
+ * 136 ms on the 20,000-capture store above: both inside it. The largest
+ * store measured, the 120,000-capture one above with every capture owed and
+ * unsettled, was PAST it: an 810 ms build and an 833 ms first open. At
+ * that store's own rate, 6.8 microseconds a capture, the line is about
+ * 118,000 unsettled captures of that size at once, as a consent grant on a
+ * large store can leave it before its first drain finishes. Past that, the
+ * first open after the upgrade spends longer than the budget on the build,
+ * once.
  *
  * NOT DEFERRED, though `deferred-migrations.ts` in the schema package keeps
  * index builds that walk capture bodies off the hook path. Those indexes carry
  * columns computed from every capture's attribute bag, so their build walks
  * every capture's body; this one's predicate is answered from each row's record
- * header, so its build walks only the owed, unsettled ones, and its cost
- * follows the outbox, not the store. And a deferred index needs a read that
- * works without it, where this read names it. The hazard that rule guards
- * against applies here past the host's timeout: a hook killed mid-build rolls
- * the index back, and the next open starts it again, under the write lock, so
- * a build that never fits the timeout never lands.
+ * header, so its build walks only the owed, unsettled ones, and with the store
+ * cached its cost follows the outbox, not the store. Off the OS cache the
+ * build also pays a pass over every row's record header, and single samples
+ * on the largest store measured far slower than its medians. And a deferred
+ * index needs a read that works without it, where this read names it. The
+ * hazard that rule guards against applies here past the host's timeout: a hook
+ * killed mid-build rolls the index back, and the next open starts it again,
+ * under the write lock, so a build that never fits the timeout never lands.
  *
  * A BUILD THAT FAILS FAILS THE OPEN, as the indexes ensureSyncedAtColumn builds
  * do. Nothing here catches, so SQLITE_BUSY after the busy timeout, SQLITE_FULL

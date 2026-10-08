@@ -211,6 +211,19 @@ describe('handleProhibitedTurn keys the refusal row', () => {
     }
 
     /**
+     * `gateway`, offering the capability but unable to answer it: the question
+     * throws. That reads as not governed, so a refusal the list would make is
+     * allowed.
+     */
+    function unanswering<G extends object>(gateway: G): G & GovernanceScope {
+      return Object.assign(gateway, {
+        governanceAppliesTo(): boolean {
+          throw new Error('the capability cannot answer');
+        },
+      });
+    }
+
+    /**
      * The refusal path's three members, refusing `o3`, with the rows and the close
      * in the test's hands (`recordingGateway` above keeps its close to itself).
      */
@@ -351,6 +364,19 @@ describe('handleProhibitedTurn keys the refusal row', () => {
       const result = await turn(refusing(recorded), checkout('mine', PERSONAL_REMOTE));
       expect(result).toEqual({ stop: true, emitted: 1 });
       expect(recorded.map((e) => e.attributes.scope_key)).toEqual([PERSONAL_KEY]);
+    });
+
+    it('is allowed in an enrolled repository when the capability throws: no output, no row, and the gateway left OPEN', async () => {
+      recordSessionModel(dir, 's1', 'o3');
+      const recorded: { attributes: Record<string, unknown> }[] = [];
+      const close = vi.fn(() => Promise.resolve());
+      const result = await turn(
+        unanswering(refusing(recorded, close)),
+        checkout('work', WORK_REMOTE),
+      );
+      expect(result).toEqual({ stop: false, emitted: 0 });
+      expect(close).not.toHaveBeenCalled();
+      expect(recorded).toHaveLength(0);
     });
 
     it('with no cwd, is keyed from the process directory, as its capture is', async () => {

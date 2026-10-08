@@ -449,6 +449,19 @@ describe('the refusal row carries the scope key of the checkout it happened in',
     }
 
     /**
+     * `gateway`, offering the capability but unable to answer it: the question
+     * throws. That reads as not governed, so a refusal the list would make is
+     * allowed.
+     */
+    function unanswering<G extends object>(gateway: G): G & GovernanceScope {
+      return Object.assign(gateway, {
+        governanceAppliesTo(): boolean {
+          throw new Error('the capability cannot answer');
+        },
+      });
+    }
+
+    /**
      * A linked worktree of `main`, laid out the way `git worktree add` lays one
      * out: a `.git` FILE naming its gitdir under the main checkout's `.git`,
      * whose `commondir` leads back to the shared config, and so to the remote.
@@ -597,6 +610,28 @@ describe('the refusal row carries the scope key of the checkout it happened in',
         expect(onlyEvent(rec.events).attributes.scope_key).toBe(PERSONAL_KEY);
       });
 
+      it('is allowed in an enrolled repository when the capability throws: no output, no row, closed, and the model recorded', async () => {
+        const rec = recorder();
+        const close = vi.fn(() => Promise.resolve());
+        const emit = vi.fn(() => Promise.resolve());
+        const refused = await runPreModelSwitch(
+          'claude-opus-5',
+          's1',
+          checkout('work', WORK_REMOTE),
+          {
+            config: config(),
+            openGateway: () => unanswering(gatewayWith(['claude-opus-5'], close, rec.fn)),
+            emit,
+            warnIfStoreRedirected: vi.fn(),
+          },
+        );
+        expect(refused).toBe(false);
+        expect(emit).not.toHaveBeenCalled();
+        expect(rec.events).toHaveLength(0);
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(readSessionModel(dir, 's1')).toBe('claude-opus-5');
+      });
+
       it('with no cwd, is keyed from the process directory, as a capture is', async () => {
         const work = checkout('work', WORK_REMOTE);
         const mine = checkout('mine', PERSONAL_REMOTE);
@@ -730,6 +765,19 @@ describe('the refusal row carries the scope key of the checkout it happened in',
         );
         expect(result).toEqual({ stop: true, emitted: 1 });
         expect(onlyEvent(rec.events).attributes.scope_key).toBe(PERSONAL_KEY);
+      });
+
+      it('is allowed in an enrolled repository when the capability throws: no output, no row, and the gateway left OPEN', async () => {
+        recordSessionModel(dir, 's1', 'claude-opus-5');
+        const rec = recorder();
+        const close = vi.fn(() => Promise.resolve());
+        const result = await turn(
+          unanswering(gatewayWith(['claude-opus-5'], close, rec.fn)),
+          checkout('work', WORK_REMOTE),
+        );
+        expect(result).toEqual({ stop: false, emitted: 0 });
+        expect(close).not.toHaveBeenCalled();
+        expect(rec.events).toHaveLength(0);
       });
 
       it('with no cwd, is keyed from the process directory, as its capture is', async () => {

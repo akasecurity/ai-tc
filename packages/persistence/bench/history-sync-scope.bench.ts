@@ -2,12 +2,14 @@
  * The history-sync ledger's SCOPED reads beside their machine twins, on the
  * same rows.
  *
- * On a scoped attachment the scope is a residual clause in each read: a personal
- * row is never stamped (it has to stay eligible for the day its repository is
- * enrolled), so it stays in the unsent set on every pass, and every page reads
- * past it. That is the cost measured here: a store whose pre-attach backlog is
- * mostly personal, with a few enrolled sessions and captures at the far end of
- * it, at two sizes an order of magnitude apart.
+ * On a scoped attachment a personal row is never stamped (it has to stay
+ * eligible for the day its repository is enrolled), so it stays in the unsent
+ * set on every pass. Where the scope is a residual clause, as in the session
+ * reads and the counts, every page reads past those rows; the capture reads
+ * seek an index of their own by scope key instead. Both kinds are measured
+ * here, on a store whose pre-attach backlog is mostly personal, with a few
+ * enrolled sessions and captures at the far end of it, at two sizes an order
+ * of magnitude apart.
  *
  * THE DELIVERY-STATE COUNTS are measured on a store of their own, with MIXED
  * keys: a session root and its leaves carry different ones, the shape a session

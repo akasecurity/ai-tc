@@ -212,6 +212,11 @@ export function applyMigrations(
   // reads can filter on — local-only forwarding state like the columns above,
   // installed the same way. See ensureScopeKeyColumn.
   ensureScopeKeyColumn(db);
+  // The scoped capture read's index, over the column above, so it is installed
+  // after it, and as a step of its own, outside ensureScopeKeyColumn, which
+  // returns early on every store that already has the column. See
+  // ensureScopeOwedIndex.
+  ensureScopeOwedIndex(db);
   ensureScanLedgerTable(db);
   ensureHistorySyncTable(db);
   ensureBlockedDetectionsTable(db);
@@ -1161,26 +1166,26 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   //
   // Its predicate is `outbox_owed = 1` plus the capture types, ordered by
   // started_at — and `outbox_owed` leads no other index, so without this the
-  // "is anything owed?" probe (LIMIT 1, three call sites a pass) tests every
+  // "is anything owed?" probe (LIMIT 1, two call sites a pass) tests every
   // unsettled capture row in a table that has no retention policy. On the
   // machine this design is aimed at — one that ran detached and accumulated
   // capture rows — that is exactly the set that grows without bound.
   //
-  // PARTIAL for the reason the sweep's index below is: an owed row exists only
-  // between being marked and the drain that settles it, so the writes that never
-  // touch the column — nearly all of them — do not maintain it at all. WIDTH is a
-  // separate claim, and only the LIVE forward path's own marking keeps it to a
-  // handful: it marks one row at a time, transiently, between a failed forward
-  // and the drain that settles it. `markCaptureBacklogOwedStmt` (and its scoped
-  // form) and the enroll re-seed, `markScopeCapturesOwedStmt`, are the other
-  // writers, and both mark in bulk — everything on disk as of one grant, or
-  // every unsent capture of a repository just enrolled, at once —
-  // so the machine this design is aimed at, one that ran detached and
-  // accumulated capture rows, is exactly the one whose FIRST backfill can put its
-  // whole unsynced capture set into this index at once. It still narrows the
-  // set the drain has to consider from every unsettled capture to only the owed
-  // ones, and the drain settles it back down over the sessions that follow — the
-  // width just is not bounded to "a handful" the instant a grant lands.
+  // PARTIAL, so the writes that never touch the marker — nearly all of them — do
+  // not maintain it at all. But the marker OUTLIVES delivery: settling a capture
+  // writes `synced_at` and leaves `outbox_owed` set, and nothing clears it but a
+  // change of deployment (`disownCapturesStmt`). So a delivered or skipped
+  // capture keeps its entry here, under its new `synced_at`, for as long as the
+  // row exists, and the WIDTH is every capture ever marked owed: the live
+  // forward path's misses, one row at a time, and everything the bulk writers
+  // marked — `markCaptureBacklogOwedStmt` (and its scoped form) everything on
+  // disk as of one grant, the enroll re-seed `markScopeCapturesOwedStmt` every
+  // unsent capture of a repository just enrolled. Reads stay right and stay
+  // bounded, because the seek on `synced_at` steps past every settled entry; it
+  // is the index that grows with delivered history, not what a read touches. It
+  // still narrows the drain's candidates from every unsettled capture to the
+  // owed ones. The scoped read's index, idx_audit_scope_owed, puts
+  // `synced_at IS NULL` in its predicate for this reason.
   //
   // Its COLUMNS mirror idx_audit_events_sync deliberately, and that is what makes
   // the planner take it: with fewer, it prices the wider index higher and picks
@@ -1232,8 +1237,9 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
  * VIRTUAL, like every attribute column on this table, so it stores nothing and
  * the ALTER is a schema edit at any table size. No CHECK and no NOT NULL: either
  * would make the ALTER validate every existing row on the hook's open path (the
- * 23 seconds measured above for a CHECK). No index: none is justified by a
- * measured plan yet.
+ * 23 seconds measured above for a CHECK). One index reads it, built for the one
+ * read a measured plan said needed it: idx_audit_scope_owed below, which is
+ * partial on owed, unsettled captures and so holds the key of no other row.
  *
  * GUARDED WITH json_valid, which its siblings are not. json_extract throws
  * `malformed JSON` on a bag that is not JSON, and an unguarded expression
@@ -1301,6 +1307,159 @@ export function ensureScopeKeyColumn(db: DatabaseSync): void {
 
 function hasScopeKeyColumn(db: DatabaseSync): boolean {
   return columnNames(db, 'audit_events', { includeGenerated: true }).includes('scope_key');
+}
+
+/**
+ * The SCOPED capture read's index: owed, unsettled captures, by scope key.
+ *
+ * THE QUERY. `scopedCaptureRowsStmt` in the history-sync ledger, the read
+ * behind `pendingCaptureRows(limit, before, scopeKeys)`. A scoped attachment's
+ * drain runs it twice a pass with a limit of one, to ask whether anything in
+ * scope is owed, and once for each capture batch it sends. Its WHERE is
+ *
+ *   synced_at IS NULL AND sync_claimed_at IS NULL AND outbox_owed = 1
+ *   AND event_type IN (<the capture kinds>) AND started_at < :before
+ *   AND scope_key IN (<the enrolled keys>)
+ *
+ * WITHOUT THIS INDEX the scope is a residual test on idx_audit_outbox_owed,
+ * which carries no key. Every owed, unsettled capture is fetched and its key
+ * computed from its attribute bag, which sits after the body, so a prompt
+ * longer than a page costs a walk of its overflow chain; and the read sorts
+ * what passes before its LIMIT applies, so nothing cuts the walk short:
+ *
+ *   SEARCH audit_events USING INDEX idx_audit_outbox_owed
+ *     (event_type=? AND synced_at=? AND sync_claimed_at=? AND started_at<?)
+ *   USE TEMP B-TREE FOR ORDER BY
+ *
+ * What makes that set large is captures owed OUTSIDE the scope, and nothing
+ * settles those: a machine attachment's live forward marks a capture of any
+ * repository, a scoped re-attach to the same deployment keeps those markers,
+ * and unenrolling a repository leaves its captures owed.
+ *
+ * WITH IT the read seeks each enrolled key and touches only rows in scope:
+ *
+ *   SEARCH audit_events USING INDEX idx_audit_scope_owed
+ *     (scope_key=? AND event_type=? AND started_at<?)
+ *   USE TEMP B-TREE FOR ORDER BY
+ *
+ * The sort remains, since an IN over several keys cannot stream in
+ * `started_at` order, but it sorts the scope's own backlog and nothing else.
+ *
+ * MEASURED with no ANALYZE, on Node 24.20.0 and SQLite 3.53.4. The probe
+ * with nothing owed in scope, from `bench/history-sync-scope.bench.ts` (means),
+ * without the index and then with it:
+ *   - over 2,000 owed personal captures: 0.490 ms, then 0.017 ms;
+ *   - over 20,000: 5.94 ms, then 0.018 ms;
+ *   - over 20,000 with 4 KB prompts: 20.4 ms, then 0.018 ms.
+ *
+ * THE COLUMNS. `scope_key` leads, so each enrolled key is one seek.
+ * `event_type` is a key column rather than a list in the predicate. SQLite
+ * proves a partial index applies only when the read's own terms match its
+ * predicate, and it does not reason about one IN list containing another, so a
+ * predicate naming today's capture kinds would stop matching the read the day
+ * the lane gains a kind; and `IF NOT EXISTS` matches the name alone, so every
+ * upgraded store would keep that stale index. `started_at` makes the grace
+ * bound a seek. `sync_claimed_at` is left out on purpose: claimed rows are at
+ * most one batch, so the read tests it on the row, and a claim or a release
+ * never touches this index.
+ *
+ * THE PREDICATE is two of the read's own AND-terms, word for word, and
+ * `synced_at IS NULL` is the one that bounds it. Settling a capture leaves its
+ * `outbox_owed` marker set (see idx_audit_outbox_owed in ensureSyncedAtColumn),
+ * so on the marker alone this index would keep an entry for every capture ever
+ * owed, and the read would walk the scope's delivered history. With it a
+ * capture leaves the index when it is delivered or skipped, and the index stays
+ * the size of the outbox, about 82 entries to a 4 KiB page.
+ *
+ * CHANGING IT. Installed by name with `IF NOT EXISTS`, which matches the name
+ * alone, so an edit to this statement's columns or predicate made in place
+ * reaches only fresh stores, and every upgraded store keeps the old index (the
+ * trap idx_audit_events_sync's comment in ensureSyncedAtColumn describes). A
+ * change takes a new index name, and the read's INDEXED BY with it, or a
+ * compare-and-rebuild that runs once, as that index has; a predicate is
+ * compared through sqlite_master's sql, since index_info cannot show one.
+ *
+ * NAMED IN THE READ. With no statistics the planner keeps the scoped read on
+ * idx_audit_outbox_owed even with this index present, so the read says
+ * `INDEXED BY idx_audit_scope_owed`. The ledger prepares that statement when it
+ * is constructed, so this index must exist on EVERY store, a machine
+ * attachment's and a never-attached one's included, or opening the store fails
+ * with `no such index`. A store that owes nothing holds it empty.
+ *
+ * WHAT A WRITE PAYS. Only a row that becomes, or stops being, owed and
+ * unsettled touches it. Recording a capture does not, the predicate being false
+ * for it, so the capture write path is unchanged (`bench/capture.bench.ts`);
+ * nor does a claim, which changes no column the index names. Marking a row owed
+ * adds an entry and settling it removes one. Measured on a generated store of
+ * 100,000 captures with 4 KB prompts, built through this package's API:
+ *   - the consent-time bulk mark: 925 ms without the index, 960 ms with it;
+ *   - settling all of them: 9676 ms without, 10240 ms with.
+ *
+ * THE FIRST OPEN AFTER AN UPGRADE BUILDS IT, on the hook's open path, holding
+ * the write lock. The build reads every row's record header, which is all the
+ * predicate needs for a row nothing owes or one already settled, and follows a
+ * body's overflow chain only to compute the key of an owed, unsettled capture.
+ * Measured on fresh handles, with the store in the OS file cache:
+ *   - 100,000 captures with 4 KB prompts (519 MB), none owed: 21 ms;
+ *   - the same 100,000, all owed and unsettled: 150 ms;
+ *   - 20,000 captures with 40 KB prompts (841 MB), all owed and unsettled:
+ *     131 ms, about 6.5 microseconds a capture;
+ *   - the same 20,000, all settled: 5.15 ms;
+ *   - 120,000 captures with 40 KB prompts (5047 MB), none owed:
+ *     27 ms; all owed and unsettled: 810 ms.
+ * A cold cache was not measured. At the 40 KB rate the build fits the 800 ms
+ * decision-path budget (`DECISION_PATH_BUDGET_MS`, in plugin-runtime's forward
+ * policy) until a store owes some 122,000 unsettled captures of
+ * that size at once, as a consent grant on a large store can leave it before
+ * its first drain finishes. Past that, the first open after the upgrade spends
+ * longer than the budget on the build, once.
+ *
+ * NOT DEFERRED, though `deferred-migrations.ts` in the schema package keeps
+ * index builds that walk capture bodies off the hook path. Those indexes carry
+ * columns computed from every capture's attribute bag, so their build walks
+ * every capture's body; this one's predicate is answered from each row's record
+ * header, so its build walks only the owed, unsettled ones, and its cost
+ * follows the outbox, not the store. And a deferred index needs a read that
+ * works without it, where this read names it. The hazard that rule guards
+ * against applies here past the host's timeout: a hook killed mid-build rolls
+ * the index back, and the next open starts it again, under the write lock, so
+ * a build that never fits the timeout never lands.
+ *
+ * A BUILD THAT FAILS FAILS THE OPEN, as the indexes ensureSyncedAtColumn builds
+ * do. Nothing here catches, so SQLITE_BUSY after the busy timeout, SQLITE_FULL
+ * or SQLITE_READONLY propagates out of `openLocalDatabase`, and a plugin hook,
+ * which opens the store fail-open, goes without it for that call. The build is
+ * one statement, so a failure leaves nothing behind and the next open builds
+ * it again. An opener that meets another opener's build waits for the write
+ * lock up to its busy timeout (2 s) and then finds the index there, which
+ * `IF NOT EXISTS` makes a no-op; a build that outlasts that wait fails the
+ * waiting open with SQLITE_BUSY, and its next open finds the index.
+ */
+export const SCOPE_OWED_INDEX_DDL =
+  'CREATE INDEX IF NOT EXISTS idx_audit_scope_owed ON audit_events (scope_key, event_type, started_at) WHERE outbox_owed = 1 AND synced_at IS NULL';
+
+/**
+ * Install idx_audit_scope_owed if this store lacks it; see SCOPE_OWED_INDEX_DDL.
+ *
+ * GUARDED on `audit_events` being a TABLE and on `scope_key`, the column it
+ * indexes, so a store without them is left alone rather than failing its open
+ * on `no such column`, or on `views may not be indexed` for a view of that
+ * name: PRAGMA table_xinfo lists a view's columns, so the column guard alone
+ * would pass one. applyMigrations runs it after ensureSyncedAtColumn
+ * (which adds `outbox_owed` and `synced_at`) and directly after
+ * ensureScopeKeyColumn, so on a store it opens all of them are there.
+ *
+ * ITS OWN STEP, not a line in ensureScopeKeyColumn: that function returns early
+ * whenever the column already exists, which is every store an earlier build
+ * opened, so a build placed there would never reach one of them.
+ *
+ * NO SECOND CHECK under a lock, unlike the column's, which needs one only
+ * because `ADD COLUMN` has no `IF NOT EXISTS`. This statement has it.
+ */
+export function ensureScopeOwedIndex(db: DatabaseSync): void {
+  if (!schemaObjectExists(db, 'table', 'audit_events')) return;
+  if (!hasScopeKeyColumn(db)) return;
+  db.exec(SCOPE_OWED_INDEX_DDL);
 }
 
 // Worktree-scan bookkeeping: which files the scanner has already run under which

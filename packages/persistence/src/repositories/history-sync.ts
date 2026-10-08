@@ -659,9 +659,24 @@ export class SqliteHistorySyncRepository {
     // scope. A caller on a scoped attachment must read captures through this
     // statement and not the machine one: this filter, not either seed's, is what
     // keeps a personal capture out of a batch, whatever any build marked owed.
+    //
+    // INDEXED BY, and the reason is measured. The scope is the one condition here
+    // the machine read's index cannot seek, and with no statistics the planner
+    // keeps this read on that index anyway: it then fetches every owed, unsettled
+    // capture, in scope or not, reads its key from the attribute bag past the
+    // body, and sorts them all before the LIMIT applies. The drain asks this read
+    // twice a pass with a limit of one. idx_audit_scope_owed seeks the enrolled
+    // keys instead; SCOPE_OWED_INDEX_DDL in migrations.ts has both plans and the
+    // timings.
+    //
+    // THE WHERE AND THE INDEX MUST AGREE. The index is partial on the two terms
+    // `outbox_owed = 1` and `synced_at IS NULL`, and both are written here as they
+    // are there, which is what lets SQLite prove the index applies. Drop or reword
+    // either and the prepare below fails with `no query solution`, in this
+    // constructor, so every open of the store fails until the two agree again.
     this.scopedCaptureRowsStmt = db.prepare(
       `SELECT ${ROW_COLUMNS}
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_scope_owed
         WHERE synced_at IS NULL
           AND sync_claimed_at IS NULL
           AND outbox_owed = 1

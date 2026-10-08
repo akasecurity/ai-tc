@@ -1531,6 +1531,42 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
     expect(db.historySync.pendingCaptureRows(100, ALL, [WORK]).map((r) => r.id)).toEqual(['cap-w']);
   });
 
+  // The capture read through its own index returns what the residual it
+  // replaced returned: owed, unsettled, unclaimed, in scope and inside the grace
+  // bound, oldest first ACROSS keys, in whatever order the keys come (the index
+  // is ordered by key first, so the order is the statement's own sort), and
+  // never a delivered capture, though delivery leaves its marker on.
+  it('reads owed captures of several enrolled keys oldest first, none settled or claimed', () => {
+    const db = store.open();
+    const OTHER = 'github.com/acme/other';
+    seedKeyedCapture(db, 'cap-o-1', MINUTE, OTHER, true);
+    seedKeyedCapture(db, 'cap-w-1', 2 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-o-2', 3 * MINUTE, OTHER, true);
+    seedKeyedCapture(db, 'cap-w-sent', 4 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-w-claimed', 5 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-p', 6 * MINUTE, PERSONAL, true);
+    seedKeyedCapture(db, 'cap-w-late', 30 * MINUTE, WORK, true);
+    db.historySync.markSynced(['cap-w-sent'], T0);
+    db.historySync.claimRows(['cap-w-claimed'], T0);
+    const cutoff = T0 + 10 * MINUTE;
+
+    for (const keys of [
+      [WORK, OTHER],
+      [OTHER, WORK],
+    ]) {
+      expect(db.historySync.pendingCaptureRows(10, cutoff, keys).map((r) => r.id)).toEqual([
+        'cap-o-1',
+        'cap-w-1',
+        'cap-o-2',
+      ]);
+      expect(db.historySync.pendingCaptureRows(2, cutoff, keys).map((r) => r.id)).toEqual([
+        'cap-o-1',
+        'cap-w-1',
+      ]);
+    }
+    expect(outboxOwed(store.openRaw(), 'cap-w-sent')).toBe(true);
+  });
+
   // Read straight off the row, for the reason outboxOwed gives: through the
   // scoped reader this would pass whether or not the writer was scoped.
   it('marks only enrolled captures at the consent instant', () => {
@@ -1691,9 +1727,10 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
 // THE SCOPED COUNTS. A scoped attachment's delivery-state reads count what its
 // drain can carry and nothing else: a structural row whose own key and session
 // root's key are both enrolled, and a capture whose own key is. Every bucket is
-// scoped, so "sent" and "pending" describe one population. Each case also reads
-// its rows through the machine statements, as the control, so an empty scoped
-// answer is the scope's doing and not an empty store's.
+// scoped, so "sent" and "pending" describe one population. Each case either
+// reads its rows through the machine statements, as the control, so an empty
+// scoped answer is the scope's doing and not an empty store's, or pins a
+// non-empty scoped answer.
 describe('SqliteHistorySyncRepository — scoped delivery-state counts (a scoped attachment)', () => {
   it('leaves a personal repository out of every bucket of all three reads', () => {
     const db = store.open();
@@ -1920,8 +1957,9 @@ describe('SqliteHistorySyncRepository — scoped delivery-state counts (a scoped
     for (const statement of empty) expect(statement).toContain('json_each(');
   });
 
-  // The two scoped partition reads share one clause, so a surface showing both
-  // never shows two answers about one machine.
+  // The two scoped partition reads share one clause, so the per-kind rows sum
+  // to the scoped aggregate, and the two cannot disagree about which rows a
+  // scope counts.
   it('breaks the scoped partition down per kind, and reconciles with the scoped aggregate', () => {
     const db = store.open();
     seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
@@ -2165,11 +2203,17 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
 
   // The CAPTURE drain's read, which has no lower bound on started_at and so has
   // nothing to stop a walk without an index of its own. Its "is anything owed?"
-  // form runs three times a pass over a table with no retention policy.
+  // form runs twice a pass over a table with no retention policy.
   it('finds owed captures on the partial index rather than scanning', () => {
-    const plan = planFor((ledger) => ledger.pendingCaptureRows(1, ALL));
-    expect(plan).toContain('idx_audit_outbox_owed');
-    expect(plan).not.toContain('SCAN audit_events');
+    const { details } = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL));
+    // EXACT names, not a substring of the joined plan. The scoped read's index
+    // is partial on owed captures too, and this read must never drift onto it:
+    // it leads with a key this read does not have, so it would be walked whole.
+    expect(indexesIn(details)).toEqual(['idx_audit_outbox_owed']);
+    expect(details.join(' | ')).toMatch(
+      /SEARCH audit_events USING INDEX idx_audit_outbox_owed \(event_type=\?/,
+    );
+    expect(fullScans(details)).toEqual([]);
     // A temp B-tree for the ORDER BY REMAINS, and is not what this index is for:
     // `event_type IN (…)` is several seeks, so the order cannot come straight
     // off any index of this shape — the pre-existing one sorts too. What the
@@ -2208,11 +2252,14 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(plan).not.toContain('SCAN audit_events');
   });
 
-  // THE SCOPED TWINS. Each must seek the index its machine twin seeks (the scope
-  // is a residual test on rows the index already found, never a reason to walk
-  // the table) and none may scan, under any name. `json_each(` in the recorded
-  // SQL is what proves the scoped statement ran at all, rather than a machine
-  // statement that ignored its argument.
+  // THE SCOPED TWINS. None may scan, under any name. Each seeks the index its
+  // machine twin seeks, with the scope a residual test on rows that index
+  // already found, plus, for the counts' structural rows, one primary-key
+  // probe of the session root, except the capture read: it seeks an index of
+  // its own by scope key, because as a residual the scope cost a row fetch for
+  // every owed capture outside it. `json_each(` in the recorded SQL is what
+  // proves the scoped statement ran at all, rather than a machine statement
+  // that ignored its argument.
   it('reads scoped pending sessions on the machine read index, each root by key', () => {
     const machine = recordFor((ledger) => ledger.pendingSessions(10, ALL));
     const scoped = recordFor((ledger) => ledger.pendingSessions(10, ALL, [WORK]));
@@ -2244,14 +2291,28 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(fullScans(scoped.details)).toEqual([]);
   });
 
-  it('finds scoped owed captures on the machine read partial index', () => {
+  // The scoped capture read seeks an index of its own, by scope key. Tested as
+  // a residual on the machine read's index, the scope cost a row fetch, and for
+  // a long prompt a walk of its overflow chain to the attribute bag, for every
+  // owed, unsettled capture outside it, and the drain asks this read twice a
+  // pass. The statement names the index with INDEXED BY because, with no
+  // statistics, the planner keeps it on the machine read's index: the SEARCH
+  // below is what goes red if the hint goes.
+  it('finds scoped owed captures by scope key, on an index of their own', () => {
     const machine = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL));
     const scoped = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL, [WORK]));
 
     expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
-    expect(indexesIn(machine.details)).toContain('idx_audit_outbox_owed');
-    expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
+    // Each key in the list is one seek, and the grace bound is a seek too.
+    expect(scoped.details.join(' | ')).toMatch(
+      /SEARCH audit_events USING INDEX idx_audit_scope_owed \(scope_key=\? AND event_type=\? AND started_at<\?\)/,
+    );
+    expect(indexesIn(scoped.details)).toEqual(['idx_audit_scope_owed']);
+    expect(scoped.sql.some((s) => s.includes('INDEXED BY idx_audit_scope_owed'))).toBe(true);
     expect(fullScans(scoped.details)).toEqual([]);
+    // The machine read is untouched: its own index, and never the scoped one.
+    expect(indexesIn(machine.details)).toEqual(['idx_audit_outbox_owed']);
+    expect(fullScans(machine.details)).toEqual([]);
   });
 
   it('finds the scoped capture backlog to mark on the machine seed index', () => {

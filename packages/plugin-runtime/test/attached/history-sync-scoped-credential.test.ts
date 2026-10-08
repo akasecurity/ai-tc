@@ -16,8 +16,10 @@ import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { readHistorySyncState } from '../../src/attached/history-state.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
+import { runHistorySyncPass } from '../../src/attached/history-sync-entry.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 // The history drain on a machine whose credential file really is a scoped (v2)
@@ -159,10 +161,43 @@ describe('runHistorySync — a scoped credential read from disk', () => {
     });
 
     expect(attempted(result).capturesPending).toBe(false);
+    // Nothing this scope will send is left. The capture session's root carries
+    // no key, so no scoped pass ever offers it, and no scoped count holds it.
+    expect(attempted(result).counts.pending).toBe(0);
+    expect(attempted(result).countsScope).toBe('scoped');
     expect(captures.map((c) => c.content)).toEqual(['text of cap-work']);
     // The capture session's root carries no key, and no key is never in scope.
     expect(structural).toEqual([]);
     expect(delivery('cap-work')?.syncedAt).toEqual(expect.any(Number));
+    expect(delivery('cap-personal')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // The same machine through the entry every harness runs: the state file says
+  // the drain is complete, counted through the scope, while a personal capture
+  // stays owed and the keyless root stays unsent.
+  it('records the drain complete, counted through the scope, with a personal capture still owed', async () => {
+    attachScoped();
+    seedOwedCaptures();
+    let clock = T0;
+
+    await expect(
+      runHistorySyncPass(home, {
+        now: () => clock,
+        sleep: () => {
+          clock += 1;
+          return Promise.resolve();
+        },
+        random: () => 0,
+        sendBatch: (events) => Promise.resolve({ settled: events.length }),
+        sendCaptures: (events) => Promise.resolve({ settled: events.length }),
+      }),
+    ).resolves.toBe('ok');
+
+    expect(readHistorySyncState(dataDirOf(home))).toMatchObject({
+      phase: 'complete',
+      pendingTotal: 0,
+      countsScope: 'scoped',
+    });
     expect(delivery('cap-personal')).toEqual({ syncedAt: null, owed: 1 });
   });
 });

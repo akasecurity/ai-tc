@@ -309,4 +309,17 @@ describe('runHistorySyncPass', () => {
     // ...and the pin did not move.
     expect(after?.completedAtMs).toBe(first);
   });
+
+  // Every pass records which population its totals cover, so `aka status` can
+  // tell a scoped pass's numbers from those of a build that counted everything
+  // recorded on the machine. A machine-wide attachment's pass records it too.
+  it('records that a machine-wide pass counted every repository', async () => {
+    attachWithGrant();
+    const db = openLocalDatabase(dataDirOf(home));
+    db.close();
+
+    await runHistorySyncPass(home);
+
+    expect(readHistorySyncState(dataDirOf(home))?.countsScope).toBe('machine');
+  });
 });

@@ -126,6 +126,22 @@ const ENROLL_HINT = '             (run `aka enroll` inside a work repository to 
 const NOT_LIMITED_LINE =
   '             the policy pull and the device report are not limited to what is enrolled';
 
+/**
+ * The note under a SCOPED machine's history numbers when the pass that wrote
+ * them counted everything recorded on this machine, keyed on what that pass
+ * recorded about its counts: nothing at all (a version of aka from before passes
+ * recorded it, whose drain counted the whole machine in either mode), or a
+ * machine-wide count (a pass that ran while this machine was attached
+ * machine-wide, kept by a re-attach that made it scoped). An exhaustive Record,
+ * so a mode added later fails typecheck here instead of printing no note.
+ */
+const WIDE_COUNTS_NOTES: Record<'unmarked' | Exclude<AttachmentMode, 'scoped'>, string> = {
+  unmarked:
+    '             (counted by an older version of aka, for everything recorded on this machine)',
+  machine:
+    '             (counted while attached machine-wide, for everything recorded on this machine)',
+};
+
 function ageLine(fromMs: number, nowMs: number): string {
   const deltaMs = Math.max(0, nowMs - fromMs);
   const minutes = Math.floor(deltaMs / 60_000);
@@ -462,10 +478,27 @@ function dropLines(dataDir: string, nowMs: number): string[] {
  * the user opens a session, so any projection would be a guess dressed as a
  * measurement.
  *
- * On a SCOPED attachment every line with numbers carries a note that they cover
- * every repository. The drain's state file counts the whole machine's backlog,
- * enrolled or not, so read bare those numbers would describe a queue far larger
- * than the one a scoped drain sends, and one that never completes.
+ * On a SCOPED attachment a pass counts only its scope's rows, and records in
+ * the file that it did. A file that does not say so was counted for
+ * everything recorded on this machine: by an older version of aka, whose drain
+ * counted the whole machine in either mode, or by a pass that ran while this
+ * machine was attached machine-wide. Read bare, those numbers would describe a
+ * queue far larger than the one a scoped drain sends, and one that never
+ * completes, so every line with numbers then carries a note saying which. The
+ * note describes the pass that wrote the file, and goes once a pass that counts
+ * through the scope writes it again. While an older plugin's drain still runs
+ * beside a newer one, each pass leaves a line that is true of that pass.
+ *
+ * A scoped attachment with nothing enrolled for this deployment sends no
+ * history at all, and says so instead of any number. That is read from the
+ * scope in force now, through the settings this block already read and the
+ * endpoint the drain resolves the scope against, not from the file: a pass over
+ * an empty scope records "complete" with nothing sent, which would read as a
+ * finished drain rather than one with nothing it may send. A refusal the last
+ * pass recorded still comes first: while the deployment refuses this machine's
+ * key, enrolling resumes nothing, and re-attaching is the step that does.
+ *
+ * A machine-wide attachment prints none of this, whatever the file says.
  */
 function historyLines(
   dataDir: string,
@@ -492,6 +525,23 @@ function historyLines(
   }
 
   const state = readHistorySyncState(dataDir);
+  // A refused key stops the drain whatever is enrolled, so it is said first,
+  // ahead of the nothing-to-send line below. It never printed a number, so
+  // moving it up changes no line on any attachment.
+  if (state?.lastOutcome === 'refused') {
+    return [
+      "  history    stopped — that deployment refused this machine's key",
+      '             re-attach to resume',
+    ];
+  }
+  // Nothing enrolled for this deployment: no history is sent, whatever the file
+  // says. See the docblock for why this is read from the scope, not the file.
+  if (
+    scoped &&
+    resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }).keys.size === 0
+  ) {
+    return ['  history    nothing to send — the scope above forwards no activity'];
+  }
   // Granted but nothing recorded yet: the grant is real and the first pass has
   // not run. Saying "waiting" rather than "0 sent" avoids reporting a number
   // that no pass produced.
@@ -500,16 +550,12 @@ function historyLines(
   const sent = count(state.sentTotal);
   const total = count(state.sentTotal + state.pendingTotal);
   const skipped = state.skippedTotal > 0 ? `, ${count(state.skippedTotal)} could not be sent` : '';
-  const caveat = scoped
-    ? ['             (counts cover every repository on this machine, enrolled or not)']
-    : [];
+  // Only on a scoped attachment, and only when the pass that wrote the file did
+  // not count through the scope: see the docblock.
+  const countedAs = state.countsScope;
+  const caveat =
+    scoped && countedAs !== 'scoped' ? [WIDE_COUNTS_NOTES[countedAs ?? 'unmarked']] : [];
 
-  if (state.lastOutcome === 'refused') {
-    return [
-      "  history    stopped — that deployment refused this machine's key",
-      '             re-attach to resume',
-    ];
-  }
   if (state.lastOutcome === 'unreachable') {
     return [
       `  history    paused — deployment unreachable, last tried ${ageLine(state.lastPassAtMs, nowMs)}`,

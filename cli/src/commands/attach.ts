@@ -256,6 +256,18 @@ const CHANGED_WHILE_WAITING =
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
 /**
+ * What a machine-wide attach over a personal device says when its settings
+ * landed and its credential did not (see the order of the writes in runAttach).
+ * The settings dropped the enrolled list; beside no list, the credential the
+ * machine already had sends no repository's activity, and a file that cannot be
+ * used, or one for another deployment, sends none either.
+ */
+const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
+  'could not save the attachment: the settings were saved but the credential was not. The ' +
+  "enrolled list is cleared, and no repository's activity is sent until this machine is " +
+  'attached again with `aka attach`.';
+
+/**
  * What a failed save left of the credential file the machine held before.
  *
  *   `restored`  — the earlier state is back, or was never disturbed (this
@@ -716,13 +728,27 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return freshAttachmentScope(endpoint, identity);
   };
 
-  try {
-    // The credential FIRST, then the descriptor. In the other order a machine
-    // that fails on the second write is left claiming an attachment it has no
-    // credential for — which reads to every later surface as a broken
-    // attachment rather than as one that never happened.
-    writeControlPlaneCredential(settingsDirOf(base), credential);
-    committed = applyOnboarding(
+  // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave.
+  //
+  // CREDENTIAL FIRST, then the descriptor, on most attaches. In the other order a
+  // machine that fails on the second write is left claiming an attachment it has
+  // no credential for, which reads to every later surface as a broken attachment
+  // rather than as one that never happened. A stop between them leaves the new
+  // credential beside the settings it was replacing, which send no more than
+  // those settings already let through.
+  //
+  // SETTINGS FIRST for a machine-wide attach over a credential that is, or may
+  // be, a personal device's (mayBePersonalDevice). The settings drop the enrolled
+  // list and carry this run's history answer; the credential that follows makes
+  // the machine machine-wide. In the other order a stop between them would leave
+  // a machine-wide credential beside the grant and the list the personal device
+  // had, and the history drain would read a grant given for enrolled
+  // repositories as one for the whole machine. In this order a stop leaves the
+  // personal device's credential beside no list, which sends no repository's
+  // activity.
+  const settingsFirst = mode === 'machine' && mayBePersonalDevice(previous);
+  const writeSettings = (): WorkspaceSettings =>
+    applyOnboarding(
       // The FUNCTION form, so the enrolled list is judged against the file this
       // merge lands on, inside the settings lock: an `aka enroll` that lands just
       // before is judged with it rather than overwritten by a stale copy.
@@ -750,7 +776,25 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // and the pre-flight cannot disagree about who manages this machine.
       deps.managedSettings,
     );
+  // Set once the settings have landed ahead of the credential, so a failure after
+  // that point is reported as what it left rather than rolled back: putting the
+  // list and the grant back would take another settings write that can fail too.
+  let settingsSaved = false;
+  try {
+    if (settingsFirst) {
+      committed = writeSettings();
+      settingsSaved = true;
+      writeControlPlaneCredential(settingsDirOf(base), credential);
+    } else {
+      writeControlPlaneCredential(settingsDirOf(base), credential);
+      committed = writeSettings();
+    }
   } catch (err) {
+    if (settingsSaved) {
+      io.err(CREDENTIAL_NOT_SAVED_AFTER_SETTINGS);
+      exit(1);
+      return;
+    }
     // Put back exactly what was there, rather than removing unconditionally,
     // and only while the file still holds what this attach wrote (see
     // restoreCredential): another aka may have attached or detached this machine
@@ -898,6 +942,16 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
     );
     return undefined;
   }
+}
+
+/**
+ * Whether a credential read is a personal device's, or could be: a usable scoped
+ * credential, for this endpoint or any other, or a file that is there but cannot
+ * be used, which may be a scoped credential a newer aka wrote. No file at all is
+ * not, and neither is a usable machine-wide credential.
+ */
+function mayBePersonalDevice(read: CredentialFileRead): boolean {
+  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */

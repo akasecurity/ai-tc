@@ -13,8 +13,11 @@ import { z } from 'zod';
  * A flagged specialisation, or `null` for a general-purpose model. `null` is a
  * curated statement ("reviewed, no flagged specialisation"), not an unfilled
  * field — entries carry a note saying so.
+ *
+ * `embedding` marks a model that returns vectors rather than generated text, so
+ * it bills input tokens only.
  */
-export const ModelCapability = z.enum(['reasoning', 'code']);
+export const ModelCapability = z.enum(['reasoning', 'code', 'embedding']);
 export type ModelCapability = z.infer<typeof ModelCapability>;
 
 /**

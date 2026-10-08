@@ -101,6 +101,66 @@ describe('id resolution', () => {
     expect(resolveModel('claude-haiku-4-5', MODEL_INDEX).entry?.id).toBe('claude-haiku-4-5');
   });
 
+  it('resolves hyphen-dated OpenAI snapshot ids to their undated entry', () => {
+    const cases: [string, string][] = [
+      ['gpt-4o-2024-08-06', 'gpt-4o'],
+      ['gpt-4o-2024-11-20', 'gpt-4o'],
+      ['gpt-4o-mini-2024-07-18', 'gpt-4o-mini'],
+      ['azure/gpt-4o-2024-08-06', 'gpt-4o'],
+    ];
+    for (const [raw, id] of cases) {
+      const resolved = resolveModel(raw, MODEL_INDEX);
+      expect(resolved.entry?.id, raw).toBe(id);
+      expect(resolved.canonicalId, raw).toBe(id);
+    }
+  });
+
+  it('resolves a separately priced snapshot to its own entry, not the undated one', () => {
+    const resolved = resolveModel('gpt-4o-2024-05-13', MODEL_INDEX);
+    expect(resolved.entry?.id).toBe('gpt-4o-2024-05-13');
+    expect(resolved.entry?.familyId).toBe('gpt');
+    const price = resolved.entry?.platforms.get('openai')?.price;
+    expect(price?.input).toBe(5);
+    expect(price?.output).toBe(15);
+  });
+
+  it('strips only a whole trailing date, never a partial one', () => {
+    // A month-day suffix or a malformed date is not a snapshot date.
+    for (const raw of [
+      'gpt-4o-08-06',
+      'gpt-4o-2024-0806',
+      'gpt-4o-24-08-06',
+      'gpt-4o-2024-08-06x',
+    ]) {
+      expect(resolveModel(raw, MODEL_INDEX).entry, raw).toBeNull();
+    }
+  });
+
+  it('resolves the OpenAI embedding models with their input price and no output price', () => {
+    const expected: [string, number][] = [
+      ['text-embedding-3-small', 0.02],
+      ['text-embedding-3-large', 0.13],
+      ['text-embedding-ada-002', 0.1],
+    ];
+    for (const [id, input] of expected) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.vendor, id).toBe('openai');
+      expect(entry?.capability, id).toBe('embedding');
+      const price = entry?.platforms.get('openai')?.price;
+      expect(price?.input, id).toBe(input);
+      expect(price?.output, id).toBe(0);
+    }
+  });
+
+  it('prices an embedding call from input tokens alone', () => {
+    const cost = defaultCostModel.costFor({
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    expect(cost).toBeCloseTo(0.02, 10);
+  });
+
   it('returns no entry for an unknown model rather than a lookalike', () => {
     const resolved = resolveModel('claude-nonexistent-9', MODEL_INDEX);
     expect(resolved.entry).toBeNull();

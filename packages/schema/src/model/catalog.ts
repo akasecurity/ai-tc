@@ -292,6 +292,16 @@ openai.model('gpt-4o', {
   on: [...OPENAI_RESELLERS],
 });
 
+// The original GPT-4o snapshot is priced separately from `gpt-4o`, so it is its
+// own entry rather than a dated spelling of it. The other dated snapshots
+// (`gpt-4o-2024-08-06`, `gpt-4o-2024-11-20`) resolve to `gpt-4o` by the
+// resolver's dated-suffix strip.
+openai.model('gpt-4o-2024-05-13', {
+  name: 'GPT-4o (2024-05-13)',
+  price: tokenPrice(5, 15),
+  on: [...OPENAI_RESELLERS],
+});
+
 openai.model('gpt-4o-mini', {
   name: 'GPT-4o mini',
   price: tokenPrice(0.15, 0.6, { cacheRead: 0.075 }),
@@ -311,6 +321,29 @@ openai.model('o3', {
   name: 'o3',
   capability: 'reasoning',
   price: tokenPrice(2, 8, { cacheRead: 0.5 }),
+  on: [...OPENAI_RESELLERS],
+});
+
+// Embedding models. The pricing page lists an input rate only: an embedding
+// call returns vectors, not generated tokens, so output is priced at zero.
+openai.model('text-embedding-3-small', {
+  name: 'text-embedding-3-small',
+  capability: 'embedding',
+  price: tokenPrice(0.02, 0),
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('text-embedding-3-large', {
+  name: 'text-embedding-3-large',
+  capability: 'embedding',
+  price: tokenPrice(0.13, 0),
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('text-embedding-ada-002', {
+  name: 'text-embedding-ada-002',
+  capability: 'embedding',
+  price: tokenPrice(0.1, 0),
   on: [...OPENAI_RESELLERS],
 });
 

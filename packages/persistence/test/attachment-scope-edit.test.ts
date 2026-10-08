@@ -1,11 +1,16 @@
 import type { AttachmentScopeEntry, PluginWhoami } from '@akasecurity/schema';
-import { isAttachmentScopeBoundTo, parseAttachmentScope } from '@akasecurity/schema';
+import {
+  isAttachmentScopeBoundTo,
+  isAttachmentScopeValid,
+  parseAttachmentScope,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
   addAttachmentScopeEntries,
   freshAttachmentScope,
   removeAttachmentScopeEntries,
+  UnreadableAttachmentScopeError,
 } from '../src/attachment-scope-edit.ts';
 
 // The enrolled scope is edited RAW. A record on disk may carry what this build
@@ -46,6 +51,16 @@ const stored = () => ({
   builtBy: 'a newer build',
   entries: [repo(PAYMENTS), NEWER] as unknown[],
 });
+
+/**
+ * What makes a record for ENDPOINT one this build cannot read, through its
+ * binding alone: each is laid over stored(), so the entries stay readable.
+ */
+const UNREADABLE_BINDING: [string, Record<string, unknown>][] = [
+  ['a tenant name longer than this build reads', { tenantName: 't'.repeat(201) }],
+  ['a control character in the account', { userEmail: `member-17${ESC}` }],
+  ['a binding field that is not a string', { tenantName: null }],
+];
 
 /** The stored entries list of a record an edit returned. */
 function entriesOf(raw: unknown): readonly unknown[] {
@@ -137,9 +152,12 @@ describe('addAttachmentScopeEntries', () => {
   it.each<[string, unknown]>([
     ['no record at all, as an older settings writer leaves it', undefined],
     ['a record with no endpoint', { entries: [repo(PAYMENTS)] }],
-    ['a damaged record', { endpoint: ENDPOINT, entries: 'x' }],
     ['a value that is not a record', 'not-a-scope'],
     ['a record for another deployment', { ...stored(), endpoint: OTHER_ENDPOINT }],
+    [
+      'an unreadable record for another deployment',
+      { ...stored(), endpoint: OTHER_ENDPOINT, tenantName: 't'.repeat(201) },
+    ],
   ])('starts a new, UNBOUND record from %s', (_label, raw) => {
     const { next, added } = addAttachmentScopeEntries(raw, ENDPOINT, [repo(LEDGER)]);
 
@@ -149,9 +167,34 @@ describe('addAttachmentScopeEntries', () => {
     expect(isAttachmentScopeBoundTo(next, ENDPOINT, WHO)).toBe(false);
   });
 
+  it.each<[string, Record<string, unknown>]>([
+    ...UNREADABLE_BINDING,
+    ['entries that are not a list', { entries: 'x' }],
+  ])(
+    'refuses to enroll into a record for this deployment with %s, and leaves it as found',
+    (_label, over) => {
+      // Its entries may be another build's, read and forwarded there: a new record
+      // in its place would delete them, and dropping the binding would make this
+      // build forward every one of them.
+      const raw = { ...stored(), ...over };
+      const before = structuredClone(raw);
+      expect(isAttachmentScopeValid(raw, ENDPOINT)).toBe(false);
+      expect(() => addAttachmentScopeEntries(raw, ENDPOINT, [repo(LEDGER)])).toThrow(
+        UnreadableAttachmentScopeError,
+      );
+      expect(() => addAttachmentScopeEntries(raw, ENDPOINT, [repo(LEDGER)])).toThrow(
+        /^refusing to enroll into a scope record this build cannot read$/,
+      );
+      expect(raw).toStrictEqual(before);
+    },
+  );
+
   it('changes nothing when handed nothing to add', () => {
     const raw = stored();
     expect(addAttachmentScopeEntries(raw, ENDPOINT, []).next).toBe(raw);
+    // Nothing to add judges no record, so an unreadable one is not refused.
+    const unreadable = { ...stored(), tenantName: 't'.repeat(201) };
+    expect(addAttachmentScopeEntries(unreadable, ENDPOINT, []).next).toBe(unreadable);
     expect(addAttachmentScopeEntries(undefined, ENDPOINT, [])).toEqual({
       next: undefined,
       added: [],

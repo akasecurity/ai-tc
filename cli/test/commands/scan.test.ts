@@ -215,7 +215,7 @@ describe('renderForwardLine', () => {
     // and the enroll verb is named with the remote it needs.
     const line = renderForwardLine({ status: 'not-enrolled', endpoint: 'Acme Security' });
     expect(line).toBe(
-      'Data shares: not forwarded to Acme Security — project not enrolled; ' +
+      'Data shares: not forwarded to Acme Security — the project or a repository nested in it is not enrolled; ' +
         'its scans stay on this machine (`aka enroll --list` shows what is sent; ' +
         '`aka enroll` adds a repository with a code-host remote)',
     );

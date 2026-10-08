@@ -304,8 +304,8 @@ const ROLLBACK_NOTE: Record<Exclude<CredentialRollback, 'restored'>, string> = {
     'The credential file changed while this attach was saving, so it was not put back and is ' +
     'left as it is now. Run `aka status` to see what this machine is attached to.',
   failed:
-    'The credential file this machine had before could not be put back, so it may differ ' +
-    'from what it was. Run `aka attach` again.',
+    'The access key file on this machine could not be put back as it was before this attempt, ' +
+    'so it may differ from what it was. Run `aka attach` again.',
 };
 
 /** The one line a failed save prints, from what the rollback managed. */

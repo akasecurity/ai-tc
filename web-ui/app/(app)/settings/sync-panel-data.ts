@@ -171,6 +171,11 @@ function toRow(p: HistorySyncKindPartition): SyncKindRow | null {
  * repository that is unenrolled leaves the bars at the next render, and what it
  * already sent leaves with it. A machine-wide attachment resolves to no filter
  * and runs the read it always ran.
+ *
+ * A KNOWN LIMIT of those bars: the session, model-call and tool-call rows a
+ * repository recorded after the machine attached but before it was enrolled stay
+ * on this machine, and the drain never offers them. This panel still counts them
+ * as queued, because its scoped count has no attach-time bound.
  */
 export function readSyncPanel(
   settings: WorkspaceSettings,
@@ -267,7 +272,8 @@ function panelState(
   if (kinds.length > 0) return { status: 'ready', kinds };
   // Nothing counted means nothing recorded only when nothing was filtered out. A
   // scoped attachment's store can be full of activity its scope does not cover,
-  // so it gets its own state, carrying how many identities the scope enrolls.
+  // so it gets its own state, carrying how many identities the scope enrolls, as
+  // this build resolves it: a list it cannot read resolves to 0.
   return scopeKeys === undefined
     ? { status: 'nothing-recorded' }
     : { status: 'nothing-in-scope', enrolled: scopeKeys.length };

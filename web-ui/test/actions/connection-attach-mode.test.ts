@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,7 @@ import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
 import {
   connectionRefusalMessage,
   HISTORY_SYNC_PAYLOAD_VERSION,
+  isAttached,
   MANAGED_SETTINGS_FILENAME,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +27,8 @@ import {
   ATTACH_CHANGED_WHILE_WAITING,
   ATTACH_CREDENTIAL_UNWRITABLE,
   ATTACH_MODE_REQUIRED,
+  ATTACH_ROLLBACK_LOST,
+  managedRefusal,
 } from '../../app/lib/action-refusals.ts';
 import { type LoopbackServer, startLoopbackServer } from '../helpers/loopback.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -167,6 +170,13 @@ const pinFleet = (endpoint: string): ManagedSettings => ({
   organization: ORGANIZATION,
   values: { runMode: 'attached', controlPlane: { endpoint } },
   lockedFields: [],
+});
+
+const lockMode = (): ManagedSettings => ({
+  specVersion: 1,
+  organization: ORGANIZATION,
+  values: {},
+  lockedFields: ['runMode'],
 });
 
 async function attachScoped(endpoint = deployment.origin): Promise<void> {
@@ -534,6 +544,9 @@ describe('a credential file this build cannot read', () => {
     return content;
   }
 
+  const plantedElsewhere = (): string =>
+    JSON.stringify({ specVersion: 3, endpoint: deployment.origin, apiKey: OTHER_AKA_KEY });
+
   it('refuses an attach that names no mode, before the key is sent', async () => {
     const content = plantUnreadable();
 
@@ -552,6 +565,89 @@ describe('a credential file this build cannot read', () => {
     ).toEqual({ ok: true });
 
     expect(storedCredential()).toMatchObject({ specVersion: 1, endpoint: deployment.origin });
+  });
+
+  it('puts its bytes back when an administrator locks the mode while the key is verified', async () => {
+    const content = plantUnreadable();
+    // The lock lands during the round trip, after the check before it: the key
+    // is written over the file, and then the settings write refuses.
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      administer(lockMode());
+    });
+
+    const res = await attachToControlPlane({
+      endpoint: deployment.origin,
+      accessKey: KEY,
+      mode: 'machine',
+    });
+
+    // The refusal says the change was not saved, and that is true of the whole
+    // machine: the file a newer build may have written is back, byte for byte.
+    expect(res).toEqual({ ok: false, error: managedRefusal(['runMode']) });
+    expectNoEchoOf(res.error, KEY);
+    expect(deployment.received).toHaveLength(1);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(content);
+    expect(isAttached(readWorkspaceSettings(akaHome()))).toBe(false);
+  });
+
+  it('puts back a credential that names an endpoint no key may be sent to', async () => {
+    mkdirSync(settingsDir(akaHome()), { recursive: true, mode: 0o700 });
+    const content = `${JSON.stringify(
+      {
+        specVersion: 1,
+        endpoint: 'http://aka.acme.test',
+        apiKey: OTHER_AKA_KEY,
+        mintedAt: '2026-10-07T00:00:00.000Z',
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(credentialFile(), content, { mode: 0o600 });
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      administer(lockMode());
+    });
+
+    const res = await attachToControlPlane({
+      endpoint: deployment.origin,
+      accessKey: KEY,
+      mode: 'machine',
+    });
+
+    expect(res).toEqual({ ok: false, error: managedRefusal(['runMode']) });
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(content);
+  });
+
+  it('says the earlier file is gone when it could not be read at all', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('Creating a symbolic link needs a privilege Windows runners do not grant');
+      return;
+    }
+    mkdirSync(settingsDir(akaHome()), { recursive: true, mode: 0o700 });
+    const target = join(home, 'elsewhere-credential.json');
+    const content = plantedElsewhere();
+    writeFileSync(target, content, { mode: 0o600 });
+    symlinkSync(target, credentialFile());
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      administer(lockMode());
+    });
+
+    const res = await attachToControlPlane({
+      endpoint: deployment.origin,
+      accessKey: KEY,
+      mode: 'machine',
+    });
+
+    // A link is never followed, so there were no bytes to put back. The attach's
+    // own file had replaced the link and is removed as well, and the refusal says
+    // the earlier file is gone rather than implying nothing changed.
+    expect(res).toEqual({
+      ok: false,
+      error: `${managedRefusal(['runMode'])} ${ATTACH_ROLLBACK_LOST}`,
+    });
+    expectNoEchoOf(res.error, KEY);
+    expect(existsSync(credentialFile())).toBe(false);
+    // What the link pointed at was never written through.
+    expect(readFileSync(target, 'utf8')).toBe(content);
   });
 });
 

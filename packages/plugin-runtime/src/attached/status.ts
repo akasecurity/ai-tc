@@ -232,6 +232,13 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * its identity. So the block lists what a forward path forwards, once per
  * identity however often it is stored.
  *
+ * ONE INPUT IT CANNOT SEE. The block reads the stored record alone. resolveScope
+ * can also merge extra entries, identities that never live in settings.json, into
+ * the key set it returns, and this block is not given them. It matches what is
+ * forwarded because no caller adds extra entries to the key set today. A caller
+ * that ever does must give this block the same entries, or a forward path would
+ * send an identity the block does not list.
+ *
  * Each state that sends nothing has its own line, because each has its own
  * cause: no record (never enrolled, an older settings writer dropped it, or the
  * record is damaged and reads as none), a record for another deployment, or a
@@ -263,7 +270,8 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   for (const entry of record.entries) {
     // The filter is redundant while resolveScope keeps every parsed entry. It stays
     // as the literal form of "listed only when the verdict's key set holds the
-    // identity", so this block stays honest if resolveScope ever filters.
+    // identity", so this block stays honest if resolveScope ever filters. It sees
+    // the stored record only, not extra entries (see the note above).
     if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
     listed.add(entry.identity);
     rows.push(`             ${entryLine(entry)}`);

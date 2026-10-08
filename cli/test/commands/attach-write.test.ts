@@ -52,7 +52,8 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // reset, so a case can fail the write-back of a rollback and let the first
 // write through), after running a hook that can change the disk first. Armed,
 // the history preview answers with counts a case can look for, and every read
-// of it is counted.
+// of it is counted. Every settings write is counted, and every call that marks
+// the capture backlog owed is recorded with its arguments.
 const stand = vi.hoisted(() => ({
   failSettingsWrite: false,
   credentialWrites: 0,
@@ -62,6 +63,8 @@ const stand = vi.hoisted(() => ({
   beforeNextSettingsWrite: undefined as (() => void) | undefined,
   preview: undefined as { sessions: number; days: number } | undefined,
   previewReads: 0,
+  settingsWrites: 0,
+  seedCalls: [] as unknown[][],
 }));
 
 vi.mock('@akasecurity/persistence', async (importActual) => {
@@ -71,6 +74,7 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     applyOnboarding: (
       ...args: Parameters<typeof actual.applyOnboarding>
     ): ReturnType<typeof actual.applyOnboarding> => {
+      stand.settingsWrites += 1;
       if (stand.failSettingsWrite) throw new Error('settings write failed');
       // One shot, cleared before it runs, so the write it makes reaches the
       // real function and the call it precedes is the only one it races.
@@ -88,6 +92,12 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
         throw new Error('credential write failed');
       }
       actual.writeControlPlaneCredential(...args);
+    },
+    seedCaptureBacklogOwed: (
+      ...args: Parameters<typeof actual.seedCaptureBacklogOwed>
+    ): ReturnType<typeof actual.seedCaptureBacklogOwed> => {
+      stand.seedCalls.push(args);
+      actual.seedCaptureBacklogOwed(...args);
     },
     removeControlPlaneCredential: (
       ...args: Parameters<typeof actual.removeControlPlaneCredential>
@@ -220,6 +230,8 @@ afterEach(() => {
   stand.beforeNextSettingsWrite = undefined;
   stand.preview = undefined;
   stand.previewReads = 0;
+  stand.settingsWrites = 0;
+  stand.seedCalls = [];
   vi.useRealTimers();
   removeTree(base);
 });
@@ -410,7 +422,7 @@ const GRANT = {
 const CREDENTIAL_NOT_SAVED =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
   "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-  'attached again with `aka attach`.';
+  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
 
 /** Settings that say attached to ENDPOINT, with `extra` beside them and no credential file written. */
 function attachedSettings(extra: Record<string, unknown>): void {
@@ -2226,6 +2238,59 @@ describe('a scoped attach that will not keep the stored list writes the settings
       expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
     },
   );
+
+  // The history question answered yes: this run's grant is written by the same
+  // single settings write as the empty list, and the capture backlog is marked
+  // only once the credential has landed too.
+  describe('with the history question answered yes', () => {
+    const SCOPED_YES_ARGS = ['--url', ENDPOINT, '--scoped', '--key-stdin', '--sync-history'];
+    const NOW = '2026-10-02T00:00:00.000Z';
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date(NOW) });
+      attachedSettings(STALE_SETTINGS);
+      stand.settingsWrites = 0;
+    });
+
+    const writtenTogether = (): void => {
+      expect(stand.settingsWrites).toBe(1);
+      expect(storedSettings().historySyncConsent).toEqual({
+        acknowledgedAt: NOW,
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+        endpoint: ENDPOINT,
+      });
+      expect(storedSettings().attachmentScope).toEqual(FRESH);
+    };
+
+    it('writes the grant with the empty list in one settings write, and marks nothing when the credential write then fails', async () => {
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_YES_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      writtenTogether();
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(stand.seedCalls).toEqual([]);
+    });
+
+    it('marks the capture backlog once, from the empty list, when both writes succeed', async () => {
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_YES_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      writtenTogether();
+      expect(modeOnDisk()).toBe('scoped');
+      expect(stand.seedCalls).toHaveLength(1);
+      // The scope it is handed is the one just written: nothing is enrolled.
+      const scope = stand.seedCalls[0]?.[2];
+      expect(typeof scope).toBe('function');
+      expect((scope as () => readonly string[] | undefined)()).toEqual([]);
+    });
+  });
 
   describe('and keeps the credential first everywhere else', () => {
     it('writes the credential first on a rotation that keeps the list', async () => {

@@ -260,17 +260,21 @@ const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as i
  * What an attach says when its settings landed and its credential did not (see
  * the order of the writes in runAttach): a machine-wide attach over a personal
  * device's credential, a file that cannot be used or no file with a list or a
- * grant stored, and a scoped attach that does not keep the list stored beside it.
+ * grant stored, and a scoped attach that does not keep the list stored beside
+ * it, over settings with a list or a grant, and not over a usable machine-wide
+ * credential (which writes the credential first and never prints this).
  * The settings dropped the enrolled list, or replaced it with an empty one, and
  * carry no earlier grant. Beside that, what the machine already had sends no
  * repository's activity: a scoped credential has no repository enrolled, a file
  * that cannot be used or one for another deployment sends nothing, and with no
- * credential file there is nothing to send with.
+ * credential file there is nothing to send with. The last sentence is there
+ * because the earlier scoped key for this deployment can survive the failed
+ * write, and enrolling a repository under it would send that repository.
  */
 const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
   "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-  'attached again with `aka attach`.';
+  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
 
 /**
  * What a failed save left of the credential file the machine held before.
@@ -760,7 +764,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   //
   // SETTINGS FIRST (writesSettingsFirst) where the credential first would put the
   // new credential beside an enrolled list or a history grant that the finished
-  // attach replaces, in a pairing the machine did not have:
+  // attach replaces, in a pairing of credential mode and stored list or grant that
+  // the machine did not have:
   //   - a machine-wide attach over a credential that is, or may be, a personal
   //     device's, or over no credential file beside settings that still carry a
   //     list or a grant. The history drain would read a grant given for enrolled
@@ -776,7 +781,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // repository's activity.
   //
   // So an attach is credential first only where a stop cannot leave the new
-  // credential in a pairing the machine did not already have, with one exception:
+  // credential in such a pairing, with one exception:
   //   - a machine-wide attach replaces a machine-wide credential, or there is no
   //     credential file and the settings hold neither a list nor a grant;
   //   - a scoped attach finds settings that hold neither a list nor a grant, or
@@ -785,8 +790,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   //   - the exception is a scoped attach over a machine-wide credential. Settings
   //     first there would leave the machine-wide credential beside this run's
   //     answer about the repositories to be enrolled, and the drain would read
-  //     that as a grant for the whole machine. So a stop there can leave the new
-  //     scoped credential beside a list the finished attach would have replaced.
+  //     that as a grant for the whole machine. So a stop there leaves the new
+  //     scoped credential beside the list on file, which the finished attach would
+  //     have replaced and which may be another organization's or account's, and
+  //     beside the earlier grant, with this run's answer lost. If that list names
+  //     this deployment, its repositories forward under the new key, and their
+  //     history goes under the earlier grant, until `aka attach` is run again.
   const settingsFirst = writesSettingsFirst(
     mode,
     previous,

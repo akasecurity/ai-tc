@@ -295,7 +295,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   // what to do about one is not what to do about the other.
   if (raw === undefined || raw === null) {
     return [
-      "  scope      no enrolled list is stored — no repository's activity is sent",
+      '  scope      no enrolled list is stored — no activity is sent',
       '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
       '             drops the list when it saves settings)',
     ];
@@ -303,7 +303,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
     return [
-      "  scope      the enrolled list cannot be read by this aka — it sends no repository's activity under it",
+      '  scope      the enrolled list cannot be read by this aka — it sends no activity under it',
       '             (it may have been written by a newer aka)',
     ];
   }

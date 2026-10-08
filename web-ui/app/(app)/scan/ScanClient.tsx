@@ -59,16 +59,16 @@ export function ScanClient({
         {/* Said BEFORE the click, on the surface that starts the send: an attached
             machine forwards what this scan records, and the box is the per-scan
             way to keep one tree local without detaching. A scoped machine sends
-            the register only for an enrolled repository, and says so rather than
-            promising a send a not-enrolled project never makes. */}
+            the register only when the project and every repository nested in it
+            are enrolled, and says so rather than promising a send it never makes. */}
         {attachedTo !== null && (
           <div className="mb-3 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-text-2">
             {attachmentMode === 'scoped' ? (
               <p>
                 This machine is attached to {attachedTo} as a personal device. The Data Shares
                 register this scan records — destinations and call sites, never source text — is
-                sent there only when the project is a repository enrolled with `aka enroll`;
-                otherwise it stays on this machine.
+                sent there only when the project is a repository enrolled with `aka enroll` and
+                every repository nested in it is enrolled too; otherwise it stays on this machine.
               </p>
             ) : (
               <p>
@@ -86,7 +86,9 @@ export function ScanClient({
               />
               <span>
                 Send the Data Shares register to {attachedTo}
-                {attachmentMode === 'scoped' ? ' if the project is enrolled' : ''}
+                {attachmentMode === 'scoped'
+                  ? ' if the project and every repository nested in it are enrolled'
+                  : ''}
               </span>
             </label>
           </div>

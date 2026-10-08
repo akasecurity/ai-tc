@@ -52,13 +52,16 @@ function boxLabel(): string {
 }
 
 describe('the Scan page notice on a scoped machine', () => {
-  it('says the register goes only for an enrolled repository, and names the verb', () => {
+  it('says the register goes only when the project and every repository nested in it are enrolled', () => {
     mount('scoped');
     const text = container.textContent;
     expect(text).toContain(`This machine is attached to ${LABEL} as a personal device`);
     expect(text).toContain('only when the project is a repository enrolled with `aka enroll`');
+    expect(text).toContain('and every repository nested in it is enrolled too');
     expect(text).toContain('otherwise it stays on this machine');
-    expect(boxLabel()).toBe(`Send the Data Shares register to ${LABEL} if the project is enrolled`);
+    expect(boxLabel()).toBe(
+      `Send the Data Shares register to ${LABEL} if the project and every repository nested in it are enrolled`,
+    );
   });
 
   it('keeps the machine-wide wording on a machine-wide machine', () => {

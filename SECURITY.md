@@ -161,12 +161,26 @@ as it does there: **under monitor or warn the matched value is drained as it
 was seen**, and no detection ships on redact or block, so on a default install that
 is what a backfill or a drain sends.
 
+An attached machine also sends things that are not activity, and no repository
+limits them. It pulls the organization's policy, checks the deployment for
+device commands, and sends it a device report: a device identifier, the host
+name, versions, the detection packs installed, policy counts, and the number of
+findings recorded on the machine with the dates of the first and latest one,
+counted across every repository on it, enrolled or not. The report carries no
+event content and names no repository. These happen when a session runs on the
+machine, in any repository, the policy pull and the command check at most every
+15 minutes and the report at most once an hour, so the deployment learns when
+the tool is in use anywhere on the machine.
+
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
-forwarding. On a machine attached with `aka attach --scoped`, all of the above — live
-events, the scan register, and the history backfill and drain — covers only activity
-in the repositories enrolled with `aka enroll`; activity in any other repository
-stays on the machine. A machine that was never attached forwards none of this.
+forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
+activity described above — live events, the scan register, and the history
+backfill and drain — covers only activity in the repositories enrolled with
+`aka enroll`; activity in any other repository stays on the machine. The policy
+pull, the command check and the device report are the exception: they go the
+same way on either kind of attachment. A machine that was never attached
+forwards none of this.
 
 ## Supported versions
 

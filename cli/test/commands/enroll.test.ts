@@ -281,6 +281,18 @@ describe('aka enroll — usage', () => {
     expect(stored()).toBeUndefined();
   });
 
+  it('says the scoped limit applies to activity, and that the report and policy pull do not stop', async () => {
+    const io = recorder();
+    expect(await runEnroll(['--everything'], deps(io))).toBe(2);
+    expect(io.errors()).toContain(
+      'activity is sent to the deployment\nonly from the repositories enrolled here',
+    );
+    expect(io.errors()).toContain(
+      'The policy pull and the device report are not limited to them: the\nreport counts findings across every repository on the machine.',
+    );
+    expect(io.errors()).not.toContain('only activity in');
+  });
+
   it('aka unenroll takes no --list', async () => {
     const io = recorder();
     expect(await runUnenroll(['--list'], deps(io))).toBe(2);
@@ -1003,11 +1015,22 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. Its activity stays on this machine and is no longer sent to Acme.`,
+      `Unenrolled ${WORK_REPO}. From now on, new sessions and scans do not send its activity to Acme.`,
+    );
+    // Said as far as it is true: a scan already running may have read the scope
+    // before the edit, so nothing promises it stops; and what was waiting is
+    // not held for good, since enrolling again or a machine-wide attach to the
+    // same deployment makes it sendable.
+    expect(shown).toContain(
+      'Anything from it that was waiting to be sent stays unsent while it is not enrolled;',
     );
     expect(shown).toContain(
-      'Anything from it that was waiting to be sent is held on this machine, unsent, until you detach.',
+      'enrolling it again, or attaching this machine machine-wide to the same deployment,',
     );
+    expect(shown).toContain('makes it sendable again.');
+    expect(shown).not.toContain('no longer sent');
+    expect(shown).not.toContain('until you detach');
+    expect(shown).not.toContain('held on this machine');
   });
 
   it('takes a clone URL', async () => {

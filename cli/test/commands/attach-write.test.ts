@@ -112,14 +112,14 @@ const ACCESS_KEY = 'Access key (input hidden): ';
 // real one does, so the order of questions can be checked.
 const DEVICE_CONFIRM = '  Attach this machine to that organization? [y/N] ';
 const PERSONAL_DEVICE = 'Is this a personal device? [y/n]: ';
-const WIDEN = 'Send everything this machine records? [y/N]: ';
+const WIDEN = 'Send activity from every project on this machine? [y/N]: ';
 // Both causes of the no-terminal refusal, in one message, word for word.
 const NEEDS_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send only activity from the repositories you enroll, or with ' +
-  '--machine to send everything this machine records. Nothing was changed.';
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
+  '--machine to send activity from every project on this machine. Nothing was changed.';
 // What a failed save says when it put the earlier credential file back, and what
 // it says when it did not, by how it did not.
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
@@ -354,16 +354,28 @@ describe('parseAttachArgs: the mode flags', () => {
     expect(exits).toEqual([2]);
     expect(h.errors()).toContain('[--scoped | --machine]');
     expect(h.errors()).toContain(
-      '  --scoped   A personal device: send only activity from the repositories you',
+      '  --scoped   A personal device: send activity only from the repositories you',
     );
     expect(h.errors()).toContain(
-      '  --machine  A machine your organization owns: send everything it records.',
+      '  --machine  A machine your organization owns: send activity from every\n' +
+        '             project on this machine.',
     );
-    // The device report goes either way, on a schedule, covering every repository,
-    // and the list says it is not the whole of it.
-    expect(h.errors()).toContain('policy pull and a scheduled device report (including a device');
-    expect(h.errors()).toContain('identifier, policy counts, and finding counts and dates across');
-    expect(h.errors()).toContain('every repository on this machine) still go.');
+    // The policy pull, the check for device commands and the device report go
+    // from a session anywhere on the machine, not on a timer, whatever is
+    // enrolled; the report covers every repository, and the list says it is not
+    // the whole of it.
+    expect(h.errors()).toContain('Any session on this machine, in an enrolled repository or not,');
+    expect(h.errors()).toContain(
+      'still fetches the policy and checks for device commands (at most',
+    );
+    expect(h.errors()).toContain(
+      'every 15 minutes), and sends a device report (at most hourly) with',
+    );
+    expect(h.errors()).toContain(
+      'a device identifier, host name, versions, detection packs, policy',
+    );
+    expect(h.errors()).toContain('counts, and finding counts and dates across every repository on');
+    expect(h.errors()).not.toContain('schedule');
     // The re-attach rule is stated for neither flag, and a flag is said to decide.
     expect(h.errors()).toContain(
       '  With neither flag, a re-attach to the same deployment keeps the mode it has;',
@@ -558,15 +570,23 @@ describe('the personal-device question', () => {
     // True on the scoped answer too: a personal device still pulls policy and
     // sends a device report, so the question never says nothing is sent.
     expect(h.output()).toContain(
-      "your organization's policy, and sends it a device report on a schedule,",
+      "  machine, in an enrolled repository or not, still fetches your organization's",
     );
     expect(h.output()).toContain(
-      'including a device identifier, host name, versions, detection packs,',
+      '  policy and checks for device commands (at most every 15 minutes), and',
     );
     expect(h.output()).toContain(
-      'policy counts, and finding counts and dates across every repository',
+      '  sends a device report (at most hourly) with a device identifier, host',
+    );
+    expect(h.output()).toContain(
+      '  name, versions, detection packs, policy counts, and finding counts and',
+    );
+    expect(h.output()).toContain('  dates across every repository on this machine.');
+    expect(h.output()).toContain(
+      '  A machine your organization owns sends activity from every project on',
     );
     expect(h.output()).not.toContain('Nothing is sent');
+    expect(h.output()).not.toContain('schedule');
     expect(modeOnDisk()).toBe('scoped');
     expect(storedSettings().attachmentScope).toEqual(FRESH);
   });
@@ -772,7 +792,10 @@ describe('widening a personal device with --machine', () => {
     expect(exits).toEqual([]);
     expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
     expect(h.output()).toContain(
-      `This machine is attached to ${ENDPOINT} as a personal device: it sends only`,
+      `This machine is attached to ${ENDPOINT} as a personal device: activity is`,
+    );
+    expect(h.output()).toContain(
+      'sent only from the repositories enrolled on it. With --machine, activity from',
     );
     expect(storedCredential()).toMatchObject({
       usable: true,
@@ -1588,8 +1611,9 @@ describe('what an attach says', () => {
     const said = h.output();
     expect(said).toContain(`Attached to ${ENDPOINT} as a personal device.`);
     expect(said).toContain(
-      'Only activity from repositories you enroll is sent to that deployment, and',
+      'Activity is sent to that deployment only from repositories you enroll, and',
     );
+    expect(said).not.toContain('Only activity');
     expect(said).toContain(
       'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
     );
@@ -1600,9 +1624,8 @@ describe('what an attach says', () => {
     expect(said).toContain(
       "repository is sent as that repository's activity, even when it reads files",
     );
-    expect(said).toContain(
-      "This machine still fetches that deployment's policy, and sends it a device",
-    );
+    expect(said).toContain('Any session on this machine, in an enrolled repository or not, still');
+    expect(said).not.toContain('schedule');
     expect(said).toContain(
       'An aka older than this one that re-attaches this machine makes it machine-wide.',
     );
@@ -1620,7 +1643,7 @@ describe('what an attach says', () => {
         '  organization  Example Org',
         '  you           member-17',
         '',
-        'Only activity from repositories you enroll is sent to that deployment, and',
+        'Activity is sent to that deployment only from repositories you enroll, and',
         'the Data Shares register a scan records goes only for an enrolled',
         'repository — destinations and call sites, never source text. Activity',
         'anywhere else stays on this machine. A command you run inside an enrolled',
@@ -1628,10 +1651,11 @@ describe('what an attach says', () => {
         'elsewhere.',
         'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
         '',
-        "This machine still fetches that deployment's policy, and sends it a device",
-        'report on a schedule, including a device identifier, host name, versions,',
-        'detection packs, policy counts, and finding counts and dates across every',
-        'repository on this machine.',
+        'Any session on this machine, in an enrolled repository or not, still',
+        "fetches that deployment's policy and checks it for device commands (at",
+        'most every 15 minutes), and sends it a device report (at most hourly) with',
+        'a device identifier, host name, versions, detection packs, policy counts,',
+        'and finding counts and dates across every repository on this machine.',
         'An aka older than this one that re-attaches this machine makes it machine-wide.',
         '',
         'Policy arrives on the next session. Run `aka status` to see it.',
@@ -1907,7 +1931,7 @@ describe('what an attach prints of strings it did not write', () => {
     expect(exits).toEqual([]);
     expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
     expect(h.output()).toContain(
-      `This machine is attached to ${SHOWN_TYPED} as a personal device: it sends only`,
+      `This machine is attached to ${SHOWN_TYPED} as a personal device: activity is`,
     );
     expect(h.output()).not.toContain(ESC);
   });

@@ -40,6 +40,7 @@ import type {
   AttachmentMode,
   HistorySyncConsent,
   ManagedSettings,
+  PluginWhoami,
   UnsafeEndpointReason,
   WorkspaceSettings,
 } from '@akasecurity/schema';
@@ -719,12 +720,21 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   const keepScope = holdsScopedFor(previous, endpoint);
   // How many entries this build can read in what was kept, for the success text.
   const kept = { readableEntries: 0 };
+  // What a fresh list replaced, for the success text: how many entries this build
+  // could read in it, and why it was not kept.
+  const cleared: { readableEntries: number; because: ListClearedBecause | undefined } = {
+    readableEntries: 0,
+    because: undefined,
+  };
   const scopeToWrite = (stored: unknown): unknown => {
     if (mode === 'machine') return undefined;
     if (keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity)) {
       kept.readableEntries = parseAttachmentScope(stored)?.entries.length ?? 0;
       return stored;
     }
+    cleared.because = whyListCleared(stored, endpoint, identity, keepScope);
+    cleared.readableEntries =
+      cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
     return freshAttachmentScope(endpoint, identity);
   };
 
@@ -858,6 +868,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'anywhere else stays on this machine. A command you run inside an enrolled',
           "repository is sent as that repository's activity, even when it reads files",
           'elsewhere.',
+          // A fresh list that replaced one holding entries this build can read
+          // says how many and why they were not kept, so a re-attach that
+          // verified as someone else does not empty the list unannounced.
+          ...(cleared.because === undefined
+            ? []
+            : [clearedListLine(cleared.readableEntries), LIST_CLEARED_BECAUSE[cleared.because]]),
           // Chosen by what was KEPT that this build can read, not by whether a
           // record was kept: a bound record with no entries (a rotation before
           // anything was enrolled), or one holding only a newer build's kinds,
@@ -1320,6 +1336,62 @@ function wideningNotice(endpoint: string): string {
     `This machine was attached to ${printableForTerminal(endpoint, 200)} as a personal device; ` +
     'its enrolled list will be cleared.'
   );
+}
+
+/**
+ * Why a scoped attach started a fresh enrolled list instead of keeping the one
+ * on file, for the line that says so. An exhaustive Record keys the wording, so
+ * a reason added later cannot print a line with a hole in it.
+ */
+type ListClearedBecause = 'deployment' | 'replaced' | 'unbound' | 'organization' | 'account';
+
+const LIST_CLEARED_BECAUSE: Record<ListClearedBecause, string> = {
+  deployment: 'it was made for another deployment.',
+  replaced: 'this attach does not continue a personal-device attachment to this deployment.',
+  unbound: 'it names no account, so whose it is could not be checked.',
+  organization: 'it names an organization other than the one this key verified as.',
+  account: 'it names an account other than the one this key verified as.',
+};
+
+/**
+ * Why a scoped attach to `endpoint` as `who` does not keep `stored`, or
+ * undefined when the list holds no entry this build can read, which leaves
+ * nothing to report. `continues` is whether the credential being replaced is a
+ * personal device's for exactly this endpoint (holdsScopedFor). Judged by the
+ * rules the keep decision uses, in its order: the endpoint as an exact string,
+ * then whether this attach continues one, then the binding, each field byte for
+ * byte. Pure; never throws.
+ */
+function whyListCleared(
+  stored: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+  continues: boolean,
+): ListClearedBecause | undefined {
+  const record = parseAttachmentScope(stored);
+  if (record === undefined || record.entries.length === 0) return undefined;
+  if (record.endpoint !== endpoint) return 'deployment';
+  if (!continues) return 'replaced';
+  const { tenantName, userEmail } = record;
+  if (
+    tenantName === undefined ||
+    tenantName === '' ||
+    userEmail === undefined ||
+    userEmail === ''
+  ) {
+    return 'unbound';
+  }
+  if (tenantName !== who.tenantName) return 'organization';
+  if (userEmail !== who.userEmail) return 'account';
+  return undefined;
+}
+
+/** The line that opens the report of a list a scoped attach did not keep. */
+function clearedListLine(readableEntries: number): string {
+  return readableEntries === 1
+    ? 'The list on this machine held 1 enrollment; it was cleared because'
+    : `The list on this machine held ${readableEntries.toLocaleString('en-US')} enrollments; ` +
+        'they were cleared because';
 }
 
 /**

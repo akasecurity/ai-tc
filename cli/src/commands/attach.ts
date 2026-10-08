@@ -913,11 +913,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           '',
         ]
       : [
-          // The address is whatever was typed, so it goes through the strip, as
-          // the scoped block's does.
+          // The label, the address and the verified identity come from outside this
+          // process, so each goes through the one shared terminal strip, as in the
+          // scoped block.
           `Attached to ${printableForTerminal(args.label ?? endpoint, 200)}.`,
-          `  organization  ${identity.tenantName}`,
-          `  you           ${identity.userEmail}`,
+          `  organization  ${printableForTerminal(identity.tenantName, 200)}`,
+          `  you           ${printableForTerminal(identity.userEmail, 320)}`,
           '',
           // Said here, on the one path every successful attach ends on, because the
           // forwarding they describe follows from the attachment and not from the
@@ -1167,7 +1168,7 @@ async function askAboutHistory(
   io.out(
     [
       '',
-      `Verified against ${identity.tenantName}.`,
+      `Verified against ${printableForTerminal(identity.tenantName, 200)}.`,
       '',
       ...(backlog === undefined ? [] : [backlog]),
       `AKA can ${backlog === undefined ? '' : 'also '}keep anything a live send fails to deliver, instead of`,

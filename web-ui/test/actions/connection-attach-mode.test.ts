@@ -905,6 +905,35 @@ describe('the history grant', () => {
     expect(storedSettings().historySyncConsent).toEqual(grantFor(deployment.origin));
   });
 
+  it.each([undefined, 'machine'] as const)(
+    'is cleared when no credential file is left beside a stored enrolled list, with the mode %s',
+    async (mode) => {
+      // What a personal device leaves when its credential file is gone: a deleted
+      // file, or a rollback that could not put an unreadable one back. The list says
+      // the grant beside it was given for enrolled repositories.
+      applyOnboarding(
+        {
+          attachmentScope: enrolledFor(deployment.origin),
+          historySyncConsent: grantFor(deployment.origin),
+        },
+        akaHome(),
+        null,
+      );
+
+      expect(
+        await attachToControlPlane({
+          endpoint: deployment.origin,
+          accessKey: KEY,
+          ...(mode === undefined ? {} : { mode }),
+        }),
+      ).toEqual({ ok: true });
+
+      expect(storedCredential()).toMatchObject({ specVersion: 1, apiKey: KEY });
+      expect('attachmentScope' in storedSettings()).toBe(false);
+      expect('historySyncConsent' in storedSettings()).toBe(false);
+    },
+  );
+
   it('is cleared when the widening was agreed to and an older aka writes a machine-wide key meanwhile', async () => {
     // The earlier read said personal device and the machine choice agreed to
     // widen it. By the time of the write an older aka has already made the key

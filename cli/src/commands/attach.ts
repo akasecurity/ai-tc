@@ -20,6 +20,7 @@ import {
   readControlPlaneCredentialState,
   readEffectiveSettings,
   readLocalHistoryPreview,
+  readManagedSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
@@ -359,6 +360,25 @@ function attachRefusalLine(refusal: ConnectionRefusal): string {
     : refusalLine(refusal);
 }
 
+/**
+ * The administrator's overlay, read once: an overlay handed in is returned as it
+ * is, and otherwise the system's is read, a read that fails being no overlay, as
+ * in every other read of it.
+ *
+ * For answers that must agree with one another. Each refusal function reads the
+ * system overlay itself when it is handed none, so two of them asked in a row
+ * can see two overlays if one lands between the reads.
+ */
+function overlayNow(deps: AttachDeps): ManagedSettings | null {
+  const handedIn = deps.managedSettings;
+  if (handedIn !== undefined) return handedIn;
+  try {
+    return readManagedSettings();
+  } catch {
+    return null;
+  }
+}
+
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
 /**
@@ -571,6 +591,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // its own confirmation has returned by now, so the two questions follow one
   // another and neither repeats the other.
   let mode: AttachmentMode;
+  // What this attach says about the enrolled list it replaces, held until every
+  // check that can still stop it has passed: a line promising a list will be
+  // cleared must not be followed by a refusal that clears nothing.
+  let listNotice: string | undefined;
   if (modeDecision.kind === 'ask') {
     const answered = await askAboutMode(io);
     if (answered === undefined) {
@@ -598,7 +622,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         // The decision's own answer, so another spelling of this deployment is
         // named as this one, the way the widening it is counts it.
         const notice = modeDecision.widening ? wideningNotice(endpoint) : MANAGED_ELSEWHERE_NOTICE;
-        io.out(`${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`);
+        listNotice = `${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`;
       }
     } else if (modeDecision.widening) {
       // WIDENING by --machine over a scoped attachment to this deployment. The
@@ -612,7 +636,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         }
       } else {
         // No terminal to ask on, and --machine was typed: the flag is the answer.
-        io.out(`Attaching machine-wide, as --machine asks. ${wideningNotice(endpoint)}\n`);
+        listNotice = `Attaching machine-wide, as --machine asks. ${wideningNotice(endpoint)}\n`;
       }
     }
   }
@@ -646,20 +670,21 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // connection, the overlay leaves the descriptor this attach writes alone, so the
   // endpoint written is the one every read sees.
   //
+  // Both are answered from ONE read of the overlay, and so is the second put
+  // below: an overlay landing between two reads would otherwise be seen by one
+  // check and not by the other.
+  //
   // This narrows the window rather than closing it: an overlay can still arrive
   // between here and the settings write, and there the writer refuses a lock but
   // not a pin.
-  const lateRefusal = managedAttachRefusal(
-    { endpoint, label: args.label },
-    base,
-    deps.managedSettings,
-  );
+  const overlayAfterWait = overlayNow(deps);
+  const lateRefusal = managedAttachRefusal({ endpoint, label: args.label }, base, overlayAfterWait);
   if (lateRefusal !== null) {
     io.err(`${attachRefusalLine(lateRefusal)} Nothing was changed on this machine.`);
     exit(1);
     return;
   }
-  const lateScopedRefusal = managedScopedRefusal(base, deps.managedSettings);
+  const lateScopedRefusal = managedScopedRefusal(base, overlayAfterWait);
   if (mode === 'scoped' && lateScopedRefusal !== null) {
     io.err(`${refusalLine(lateScopedRefusal)} Nothing was changed on this machine.`);
     exit(1);
@@ -718,6 +743,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     exit(1);
     return;
   }
+  // Every check that can stop this attach has passed: now it says what it is
+  // about to do to the enrolled list.
+  if (listNotice !== undefined) io.out(listNotice);
   // A file this build cannot parse may be a scoped credential a newer aka
   // wrote; this attach goes ahead over it only because a flag or an answer
   // chose the mode. Its BYTES are kept, so a failed write puts that file back

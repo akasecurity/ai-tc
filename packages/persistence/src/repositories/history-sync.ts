@@ -664,10 +664,10 @@ export class SqliteHistorySyncRepository {
     // the machine read's index cannot seek, and with no statistics the planner
     // keeps this read on that index anyway: it then fetches every owed, unsettled
     // capture, in scope or not, reads its key from the attribute bag past the
-    // body, and sorts them all before the LIMIT applies. The drain asks this read
-    // twice a pass with a limit of one. idx_audit_scope_owed seeks the enrolled
-    // keys instead; SCOPE_OWED_INDEX_DDL in migrations.ts has both plans and the
-    // timings.
+    // body, and sorts those that pass before the LIMIT applies. The drain asks
+    // this read twice a pass with a limit of one. idx_audit_scope_owed seeks the
+    // enrolled keys instead; SCOPE_OWED_INDEX_DDL in migrations.ts has both
+    // plans and the timings.
     //
     // THE WHERE AND THE INDEX MUST AGREE. The index is partial on the two terms
     // `outbox_owed = 1` and `synced_at IS NULL`, and both are written here as they

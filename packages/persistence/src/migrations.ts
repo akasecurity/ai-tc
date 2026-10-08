@@ -1334,9 +1334,10 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
  *   USE TEMP B-TREE FOR ORDER BY
  *
  * What makes that set large is captures owed OUTSIDE the scope, and nothing
- * settles those: a machine attachment's live forward marks a capture of any
- * repository, a scoped re-attach to the same deployment keeps those markers,
- * and unenrolling a repository leaves its captures owed.
+ * settles those: a machine attachment marks captures of any repository, at its
+ * consent grant (every unsettled capture on disk) and on each live forward that
+ * fails to deliver; a scoped re-attach to the same deployment keeps those
+ * markers; and unenrolling a repository leaves its captures owed.
  *
  * WITH IT the read seeks each enrolled key and touches only rows in scope:
  *
@@ -1377,9 +1378,14 @@ function hasScopeKeyColumn(db: DatabaseSync): boolean {
  * alone, so an edit to this statement's columns or predicate made in place
  * reaches only fresh stores, and every upgraded store keeps the old index (the
  * trap idx_audit_events_sync's comment in ensureSyncedAtColumn describes). A
- * change takes a new index name, and the read's INDEXED BY with it, or a
- * compare-and-rebuild that runs once, as that index has; a predicate is
- * compared through sqlite_master's sql, since index_info cannot show one.
+ * change takes a new index name, and the read's INDEXED BY with it, and leaves
+ * this index in place. The plugin, the CLI and web-ui are installed separately
+ * and share one store, so a build that predates the change keeps creating this
+ * index by name and keeps naming it in its read, which only prepares against an
+ * index whose predicate matches its WHERE. A compare-and-rebuild under the same
+ * name would redefine the index that build names, and once two builds each
+ * carry one with their own definition, each would rebuild the other's on
+ * alternate opens, under the write lock on a hook's open path.
  *
  * NAMED IN THE READ. With no statistics the planner keeps the scoped read on
  * idx_audit_outbox_owed even with this index present, so the read says

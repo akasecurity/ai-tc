@@ -1233,6 +1233,34 @@ describe('the scoped owed-capture index', () => {
       view.close();
     }
   });
+
+  // The index's predicate names two columns besides its key, so the function
+  // checks them too and is total on its own, rather than leaning on
+  // applyMigrations having added them first. Each table here carries scope_key,
+  // so the key guard passes and only the predicate's column can stop the build.
+  it.each([
+    ['outbox_owed', 'synced_at integer'],
+    ['synced_at', 'outbox_owed integer'],
+  ])('leaves a store alone that has scope_key but not %s', (missing, kept) => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(
+        `CREATE TABLE audit_events (
+           id text PRIMARY KEY NOT NULL, event_type text NOT NULL, started_at integer NOT NULL,
+           attributes text, scope_key text, ${kept})`,
+      );
+      const columns = columnNames(db, 'audit_events', { includeGenerated: true });
+      expect(columns).toContain('scope_key');
+      expect(columns).not.toContain(missing);
+
+      expect(() => {
+        ensureScopeOwedIndex(db);
+      }).not.toThrow();
+      expect(indexExists(db, 'idx_audit_scope_owed')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // ─── Migration 0006 (write gate) compat ──────────────────────────────────────

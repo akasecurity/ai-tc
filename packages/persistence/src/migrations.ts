@@ -1456,13 +1456,16 @@ export const SCOPE_OWED_INDEX_DDL =
 /**
  * Install idx_audit_scope_owed if this store lacks it; see SCOPE_OWED_INDEX_DDL.
  *
- * GUARDED on `audit_events` being a TABLE and on `scope_key`, the column it
- * indexes, so a store without them is left alone rather than failing its open
- * on `no such column`, or on `views may not be indexed` for a view of that
- * name: PRAGMA table_xinfo lists a view's columns, so the column guard alone
- * would pass one. applyMigrations runs it after ensureSyncedAtColumn
- * (which adds `outbox_owed` and `synced_at`) and directly after
- * ensureScopeKeyColumn, so on a store it opens all of them are there.
+ * GUARDED on `audit_events` being a TABLE and on all three columns the index
+ * names: `scope_key`, which it indexes, and `outbox_owed` and `synced_at`,
+ * which its predicate tests. A store missing any of them is left alone, a
+ * no-op, rather than failing its open on `no such column`, or on `views may not
+ * be indexed` for a view of that name: PRAGMA table_xinfo lists a view's
+ * columns, so the column guards alone would pass one. That makes the function
+ * total on its own; it does not lean on its caller. applyMigrations runs it
+ * after ensureSyncedAtColumn (which adds `outbox_owed` and `synced_at`) and
+ * directly after ensureScopeKeyColumn, so on a store it opens all of them are
+ * there.
  *
  * ITS OWN STEP, not a line in ensureScopeKeyColumn: that function returns early
  * whenever the column already exists, which is every store an earlier build
@@ -1473,7 +1476,9 @@ export const SCOPE_OWED_INDEX_DDL =
  */
 export function ensureScopeOwedIndex(db: DatabaseSync): void {
   if (!schemaObjectExists(db, 'table', 'audit_events')) return;
-  if (!hasScopeKeyColumn(db)) return;
+  const columns = columnNames(db, 'audit_events', { includeGenerated: true });
+  const complete = ['scope_key', 'outbox_owed', 'synced_at'].every((c) => columns.includes(c));
+  if (!complete) return;
   db.exec(SCOPE_OWED_INDEX_DDL);
 }
 

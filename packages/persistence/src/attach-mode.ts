@@ -1,4 +1,4 @@
-import type { AttachmentMode, ConnectionRefusal } from '@akasecurity/schema';
+import type { AttachmentMode, ConnectionRefusal, WorkspaceSettings } from '@akasecurity/schema';
 import { attachmentModeOf } from '@akasecurity/schema';
 
 import type { CredentialFileRead } from './control-plane-credential.ts';
@@ -19,6 +19,11 @@ import type { CredentialFileRead } from './control-plane-credential.ts';
 // SCOPED credential for a DIFFERENT endpoint: a machine-wide credential written
 // over either by automation would widen a machine that may be scoped, with
 // nobody told.
+//
+// It also holds the rule for the ORDER of an attach's two writes, the credential and
+// the settings (writesSettingsFirst), and the judgement that rule rests on
+// (mayBePersonalDevice). Pure too, and exported so every surface that attaches a
+// machine can order its writes by the same rule.
 
 /**
  * What an attach does about the mode.
@@ -181,6 +186,59 @@ export function holdsScopedFor(previous: CredentialFileRead, endpoint: string): 
     previous.credential.endpoint === endpoint &&
     attachmentModeOf(previous.credential) === 'scoped'
   );
+}
+
+/**
+ * Whether a credential read is a personal device's, or could be: a usable scoped
+ * credential, for this endpoint or any other, or a file that is there but cannot
+ * be used, which may be a scoped credential a newer build wrote. No file at all is
+ * not, and neither is a usable machine-wide credential.
+ *
+ * No I/O; never throws.
+ */
+export function mayBePersonalDevice(read: CredentialFileRead): boolean {
+  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
+}
+
+/**
+ * Whether an attach writes the settings before the credential. Two cases, and
+ * nothing else.
+ *
+ * An attach writes the credential and the settings one after the other, and a
+ * stop between the two leaves the first beside whatever the second would have
+ * replaced. The credential goes first unless that could leave the new credential
+ * beside an enrolled list or a history grant the finished attach replaces.
+ *
+ * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
+ * personal device's (mayBePersonalDevice), or when there is no credential file
+ * but the stored settings still carry an enrolled list or a history grant, which
+ * this attach replaces. A deleted credential file leaves the settings so, and so
+ * does a rollback that reports a file it could not read as gone.
+ *
+ * A SCOPED attach, when the settings carry a list or a grant for it to replace
+ * and it does not keep the list (`keepsList` answers for the stored one), unless
+ * the credential being replaced is a usable machine-wide one.
+ *
+ * `previous` is the credential file as read just before the writes, and `stored`
+ * the settings in force then, overlay applied.
+ *
+ * No I/O. Throws only if `keepsList` does, and asks it nothing on a machine-wide
+ * attach.
+ */
+export function writesSettingsFirst(
+  mode: AttachmentMode,
+  previous: CredentialFileRead,
+  stored: WorkspaceSettings,
+  keepsList: (stored: unknown) => boolean,
+): boolean {
+  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
+  if (mode === 'machine') {
+    return (
+      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
+    );
+  }
+  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
+  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
 }
 
 /**

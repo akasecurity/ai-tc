@@ -26,6 +26,7 @@ import {
   settledDecisionHolds,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
+  writesSettingsFirst,
 } from '@akasecurity/persistence';
 import {
   printableForTerminal,
@@ -1007,48 +1008,6 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
     );
     return undefined;
   }
-}
-
-/**
- * Whether a credential read is a personal device's, or could be: a usable scoped
- * credential, for this endpoint or any other, or a file that is there but cannot
- * be used, which may be a scoped credential a newer aka wrote. No file at all is
- * not, and neither is a usable machine-wide credential.
- */
-function mayBePersonalDevice(read: CredentialFileRead): boolean {
-  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
-}
-
-/**
- * Whether the settings are written before the credential (see the order of the
- * writes in runAttach). Two cases, and nothing else.
- *
- * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
- * personal device's (mayBePersonalDevice), or when there is no credential file
- * but the stored settings still carry an enrolled list or a history grant, which
- * this attach replaces. A deleted credential file leaves the settings so, and so
- * does a rollback that reports a file it could not read as gone.
- *
- * A SCOPED attach, when the settings carry a list or a grant for it to replace
- * and it does not keep the list (`keepsList` answers for the stored one), unless
- * the credential being replaced is a usable machine-wide one.
- *
- * Pure.
- */
-function writesSettingsFirst(
-  mode: AttachmentMode,
-  previous: CredentialFileRead,
-  stored: WorkspaceSettings,
-  keepsList: (stored: unknown) => boolean,
-): boolean {
-  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
-  if (mode === 'machine') {
-    return (
-      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
-    );
-  }
-  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
-  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */

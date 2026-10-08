@@ -1,7 +1,14 @@
-import type { AttachmentMode, ConnectionRefusal } from '@akasecurity/schema';
+import type { AttachmentMode, ConnectionRefusal, WorkspaceSettings } from '@akasecurity/schema';
+import { defaultWorkspaceSettings, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { decideAttachMode, holdsScopedFor, settledDecisionHolds } from '../src/attach-mode.ts';
+import {
+  decideAttachMode,
+  holdsScopedFor,
+  mayBePersonalDevice,
+  settledDecisionHolds,
+  writesSettingsFirst,
+} from '../src/attach-mode.ts';
 import type { CredentialFileRead } from '../src/control-plane-credential.ts';
 
 // How an attach chooses between a scoped and a machine-wide attachment. The
@@ -484,5 +491,145 @@ describe('settledDecisionHolds', () => {
     it('does not take an agreement made for a personal device elsewhere as one for this endpoint', () => {
       expect(holdsAfter({ flag: 'machine', previous: SCOPED_ELSEWHERE }, SCOPED)).toBe(false);
     });
+  });
+});
+
+// The order of an attach's two writes, shared by every surface that attaches a
+// machine, so that each orders them by the same rule.
+
+describe('mayBePersonalDevice', () => {
+  it.each<[string, CredentialFileRead, boolean]>([
+    ['a scoped credential for this endpoint', SCOPED, true],
+    ['a scoped credential for another endpoint', SCOPED_ELSEWHERE, true],
+    ['a machine-wide credential for this endpoint', MACHINE, false],
+    ['a machine-wide credential for another endpoint', MACHINE_ELSEWHERE, false],
+    ['no credential file', ABSENT, false],
+    ['a file that is malformed', { usable: false, reason: 'malformed' }, true],
+    ['a file that is unreadable', { usable: false, reason: 'unreadable' }, true],
+    ['a file that is untrusted', { usable: false, reason: 'untrusted-file' }, true],
+    ['a file that names an unsafe endpoint', { usable: false, reason: 'unsafe-endpoint' }, true],
+    ['a file reported as an endpoint mismatch', MISMATCHED, true],
+  ])('answers for %s', (_name, read, expected) => {
+    expect(mayBePersonalDevice(read)).toBe(expected);
+  });
+});
+
+describe('writesSettingsFirst', () => {
+  const CONSENT = {
+    acknowledgedAt: '2026-10-01T09:00:00.000Z',
+    payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+    endpoint: ENDPOINT,
+  };
+  const NOTHING: WorkspaceSettings = defaultWorkspaceSettings();
+  const LIST: WorkspaceSettings = {
+    ...NOTHING,
+    attachmentScope: { endpoint: ENDPOINT, entries: [] },
+  };
+  const GRANT: WorkspaceSettings = { ...NOTHING, historySyncConsent: CONSENT };
+  const BOTH: WorkspaceSettings = { ...LIST, historySyncConsent: CONSENT };
+
+  it.each<[string, AttachmentMode, CredentialFileRead, WorkspaceSettings, boolean, boolean]>([
+    [
+      'machine-wide over a scoped credential for this endpoint',
+      'machine',
+      SCOPED,
+      NOTHING,
+      false,
+      true,
+    ],
+    [
+      'machine-wide over a scoped credential for another endpoint',
+      'machine',
+      SCOPED_ELSEWHERE,
+      NOTHING,
+      false,
+      true,
+    ],
+    ['machine-wide over a file that cannot be read', 'machine', UNREADABLE, NOTHING, false, true],
+    [
+      'machine-wide over a file reported as an endpoint mismatch',
+      'machine',
+      MISMATCHED,
+      NOTHING,
+      false,
+      true,
+    ],
+    ['machine-wide with no file and a list stored', 'machine', ABSENT, LIST, false, true],
+    ['machine-wide with no file and a grant stored', 'machine', ABSENT, GRANT, false, true],
+    ['machine-wide with no file and nothing stored', 'machine', ABSENT, NOTHING, false, false],
+    [
+      'machine-wide over a machine-wide credential, a list and a grant stored',
+      'machine',
+      MACHINE,
+      BOTH,
+      false,
+      false,
+    ],
+    [
+      'machine-wide over a machine-wide credential for another endpoint, a list stored',
+      'machine',
+      MACHINE_ELSEWHERE,
+      LIST,
+      false,
+      false,
+    ],
+    ['scoped with no file, a list stored and not kept', 'scoped', ABSENT, LIST, false, true],
+    ['scoped with no file, a grant stored and not kept', 'scoped', ABSENT, GRANT, false, true],
+    [
+      'scoped over a scoped credential, a list stored and not kept',
+      'scoped',
+      SCOPED,
+      LIST,
+      false,
+      true,
+    ],
+    [
+      'scoped over a file that cannot be read, a grant stored and not kept',
+      'scoped',
+      UNREADABLE,
+      GRANT,
+      false,
+      true,
+    ],
+    [
+      'scoped over a scoped credential, a list and a grant stored and kept',
+      'scoped',
+      SCOPED,
+      BOTH,
+      true,
+      false,
+    ],
+    [
+      'scoped over a machine-wide credential, a list and a grant stored and not kept',
+      'scoped',
+      MACHINE,
+      BOTH,
+      false,
+      false,
+    ],
+    ['scoped with no file and nothing stored', 'scoped', ABSENT, NOTHING, false, false],
+  ])('answers for a %s', (_name, mode, previous, stored, kept, expected) => {
+    expect(writesSettingsFirst(mode, previous, stored, () => kept)).toBe(expected);
+  });
+
+  it('asks keepsList about the stored list itself', () => {
+    const seen: unknown[] = [];
+    writesSettingsFirst('scoped', SCOPED, LIST, (stored) => {
+      seen.push(stored);
+      return false;
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(LIST.attachmentScope);
+  });
+
+  it('asks keepsList nothing on a machine-wide attach', () => {
+    const seen: unknown[] = [];
+    for (const previous of [SCOPED, UNREADABLE, ABSENT, MACHINE]) {
+      writesSettingsFirst('machine', previous, BOTH, (stored) => {
+        seen.push(stored);
+        return false;
+      });
+    }
+    expect(seen).toEqual([]);
   });
 });

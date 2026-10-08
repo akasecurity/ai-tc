@@ -933,6 +933,59 @@ describe('aka enroll — the stored record', () => {
   });
 });
 
+// A record whose binding this version cannot read: the organization's name is
+// longer than the schema allows, as a newer version might write it. Adding to it
+// would start a new record over the entries already there, so enrolling refuses;
+// removing from it loses nothing, so unenrolling still works.
+describe('aka enroll — a list this version cannot read', () => {
+  const UNREADABLE = { ...fresh([enrolled()]), tenantName: 't'.repeat(201) };
+  const FIRST_LINE =
+    'aka enroll: this version of aka cannot read the list of repositories enrolled with Acme, ' +
+    'so nothing was enrolled and the list was left as it is.';
+
+  it('refuses to enroll into it, names how to start the list again, and leaves it as written', async () => {
+    attach({ scope: UNREADABLE, extra: consent() });
+    const io = recorder();
+    expect(await runEnroll(['--repo', SECOND_REPO], deps(io))).toBe(1);
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toBe(
+      `${FIRST_LINE}\n` +
+        'A newer version of aka may have written it. Enroll with that version, or start the ' +
+        `list again with \`aka attach --url ${ENDPOINT} --scoped\`, which leaves it empty.\n`,
+    );
+    expect(io.errors()).not.toContain('Could not save that');
+    expect(io.output()).not.toContain('Enrolled.');
+    expect(storedScope()).toEqual(UNREADABLE);
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('names no scoped attach on a governed machine, and says what governs it instead', async () => {
+    attach({ scope: UNREADABLE, extra: consent() });
+    const io = recorder();
+    expect(
+      await runEnroll(['--repo', SECOND_REPO], deps(io, { managedSettings: governedBy() })),
+    ).toBe(1);
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toBe(
+      `${FIRST_LINE}\n` +
+        `${connectionRefusalMessage({ reason: 'scoped-managed', organization: 'Acme IT' })}\n`,
+    );
+    expect(io.errors()).not.toContain('--scoped');
+    expect(io.output()).not.toContain('Enrolled.');
+    expect(storedScope()).toEqual(UNREADABLE);
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('still removes an entry from it, and keeps the binding as written', async () => {
+    attach({ scope: UNREADABLE });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain(`Unenrolled ${WORK_REPO}.`);
+    expect(storedScope()).toEqual({ ...UNREADABLE, entries: [] });
+  });
+});
+
 describe('aka enroll — what was recorded before', () => {
   it('queues the earlier captures of exactly the repository it added, under a grant', async () => {
     attach({ scope: fresh([enrolled(SECOND_REPO, null)]), extra: consent() });

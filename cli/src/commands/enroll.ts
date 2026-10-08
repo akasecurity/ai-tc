@@ -18,6 +18,7 @@ import {
   removeAttachmentScopeEntries,
   seedEnrolledCapturesOwed,
   settingsDir as settingsDirOf,
+  UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
 import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
@@ -173,6 +174,10 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     const { next, added } = addAttachmentScopeEntries(raw, connection.endpoint, [entry]);
     return { next, changed: added };
   });
+  if (edit.kind === 'unreadable') {
+    io.err(unreadableListRefusal(base, managed, connection.endpoint, name));
+    return fail(1);
+  }
   if (edit.kind !== 'saved') {
     io.err(EDIT_FAILURES[edit.kind]('enrolled'));
     return fail(1);
@@ -208,7 +213,9 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     return { next, changed: removed };
   });
   if (edit.kind !== 'saved') {
-    io.err(EDIT_FAILURES[edit.kind]('unenrolled'));
+    // Taking an entry out never raises the unreadable-list refusal, so that kind
+    // cannot reach here; the generic failure is the safe reading if it ever did.
+    io.err(EDIT_FAILURES[edit.kind === 'unreadable' ? 'failed' : edit.kind]('unenrolled'));
     return fail(1);
   }
   const keyText = (key: string): string =>
@@ -671,6 +678,7 @@ class AttachmentMoved extends Error {}
 
 type ScopeEdit =
   | { kind: 'saved'; changed: readonly string[]; committed: WorkspaceSettings }
+  | { kind: 'unreadable' }
   | { kind: 'moved' }
   | { kind: 'failed' };
 
@@ -682,6 +690,31 @@ const EDIT_FAILURES: Record<'moved' | 'failed', (done: string) => string> = {
     `Could not save that, so nothing was ${done}. If another program is changing AKA's\n` +
     'settings right now, run the command again.\n',
 };
+
+/**
+ * What `aka enroll` says when the stored list names this deployment but this
+ * version cannot read it, so adding to it would start a new list over the
+ * entries already there. Nothing was enrolled and the list was left as it is;
+ * the way to start it again is the scoped attach, which writes an empty list,
+ * except where an administrator governs the connection and no scoped attach is
+ * on offer, so that machine is told what governs it instead.
+ */
+function unreadableListRefusal(
+  base: string,
+  managed: ManagedSettings | null,
+  endpoint: string,
+  name: string,
+): string {
+  const governed = managedScopedRefusal(base, managed);
+  const first =
+    `aka enroll: this version of aka cannot read the list of repositories enrolled with ${name}, ` +
+    'so nothing was enrolled and the list was left as it is.';
+  return governed === null
+    ? `${first}\n` +
+        'A newer version of aka may have written it. Enroll with that version, or start the ' +
+        `list again with ${reattachCommand(endpoint)}, which leaves it empty.\n`
+    : `${first}\n${refusalLine(governed)}\n`;
+}
 
 /**
  * One raw edit of the stored scope record, inside the settings lock.
@@ -696,6 +729,10 @@ const EDIT_FAILURES: Record<'moved' | 'failed', (done: string) => string> = {
  * The credential is read again there too, and must still be usable and scoped:
  * a machine-wide re-attach to the same endpoint changes nothing the endpoint
  * check can see.
+ *
+ * A list that names this endpoint but that this version cannot read is not
+ * added to (see UnreadableAttachmentScopeError): the check is the updater's own,
+ * inside the lock, because the record can change before the lock is taken.
  *
  * Returns the identities the edit changed and the settings as written, overlay
  * applied, or why nothing was written. Never throws.
@@ -727,6 +764,7 @@ function editScope(
     );
     return { kind: 'saved', changed, committed: overlayManagedSettings(written, managed) };
   } catch (err) {
+    if (err instanceof UnreadableAttachmentScopeError) return { kind: 'unreadable' };
     return { kind: err instanceof AttachmentMoved ? 'moved' : 'failed' };
   }
 }

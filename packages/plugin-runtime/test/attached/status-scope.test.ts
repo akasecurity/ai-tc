@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
   writeHistorySyncState,
@@ -235,6 +236,44 @@ describe('renderAttachedStatus — the attachment mode', () => {
     expect(out).toMatch(/^ {2}plane {6}https:\/\/aka\.acme\.test$/m);
     expect(out).not.toMatch(/^ {2}endpoint /m);
   });
+});
+
+describe('renderAttachedStatus — the plane line without a label', () => {
+  // The settings address is checked when settings are saved through the product,
+  // not when the file is edited by hand or an overlay pins it. With no label the
+  // plane line names the deployment by that address, so it must not echo what an
+  // address must never show.
+  function editPlaneEndpoint(endpoint: string): void {
+    const file = join(settingsDir, SETTINGS_FILENAME);
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as {
+      controlPlane: Record<string, unknown>;
+    };
+    delete stored.controlPlane.label;
+    stored.controlPlane.endpoint = endpoint;
+    writeFileSync(file, JSON.stringify(stored));
+  }
+
+  it.each<[string, string, string]>([
+    ['a username', `https://${HIDDEN}@aka.acme.test`, 'https://aka.acme.test, rest not shown'],
+    ['a query', `https://aka.acme.test/?t=${HIDDEN}`, 'https://aka.acme.test, rest not shown'],
+    ['a fragment', `https://aka.acme.test/#${HIDDEN}`, 'https://aka.acme.test, rest not shown'],
+    ['no scheme', `${HIDDEN}@aka.acme.test`, 'address not shown'],
+  ])('names a deployment whose address has %s without echoing it', (_name, endpoint, shown) => {
+    attach('machine');
+    editPlaneEndpoint(endpoint);
+    const out = status();
+    expect(out).toContain(`\n  plane      ${shown}\n`);
+    expect(out).not.toContain(HIDDEN);
+  });
+
+  it.each(['https://aka.acme.test', 'https://aka.acme.test/', 'https://AKA.acme.test'])(
+    'prints the clean address %s as stored',
+    (endpoint) => {
+      attach('machine');
+      editPlaneEndpoint(endpoint);
+      expect(status()).toContain(`\n  plane      ${endpoint}\n`);
+    },
+  );
 });
 
 describe('renderAttachedStatus — a machine that became managed after a scoped attach', () => {

@@ -56,15 +56,14 @@ const NOT_LIMITED =
   '             the policy pull and the device report are not limited to what is enrolled';
 // The three states of the list itself that forward no activity. Each has its own
 // headline, because what to do about one is not what to do about another.
-const MISSING_HEADLINE =
-  "  scope      no enrolled list is stored — no repository's activity is sent";
+const MISSING_HEADLINE = '  scope      no enrolled list is stored — no activity is sent';
 const MISSING_LIST = [
   MISSING_HEADLINE,
   '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
   '             drops the list when it saves settings)',
 ];
 const UNREADABLE_HEADLINE =
-  "  scope      the enrolled list cannot be read by this aka — it sends no repository's activity under it";
+  '  scope      the enrolled list cannot be read by this aka — it sends no activity under it';
 const UNREADABLE_LIST = [
   UNREADABLE_HEADLINE,
   '             (it may have been written by a newer aka)',
@@ -603,5 +602,7 @@ describe('attachmentScopeLines — a missing list and one this build cannot read
     for (const other of [MISSING_HEADLINE, UNREADABLE_HEADLINE, EMPTY_HEADLINE]) {
       expect(out.split(other).length - 1).toBe(other === headline ? 1 : 0);
     }
+    // The three read alike: none names a kind of entry the others leave out.
+    expect(out).not.toContain("repository's activity");
   });
 });

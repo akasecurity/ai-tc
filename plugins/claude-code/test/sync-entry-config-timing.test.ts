@@ -12,7 +12,16 @@
 import type * as Runtime from '@akasecurity/plugin-runtime';
 import type * as Sdk from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type MockInstance,
+  vi,
+} from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   runAttachedSync: vi.fn<typeof Runtime.runAttachedSync>(),
@@ -36,6 +45,17 @@ const configB = { marker: 'config-b' } as unknown as Sdk.PluginConfig;
 
 describe('the claude-code sync entry', () => {
   let exit: MockInstance<typeof process.exit>;
+
+  // The first import of the real runtime and SDK is the slow part: it is where
+  // their source is transformed, which takes seconds on a busy machine and
+  // longer on a slow runner. Paying it here, under a hook timeout sized for
+  // that, keeps it out of the first case, whose own timeout is the default and
+  // which would otherwise still be importing when the next case began. Only the
+  // two real modules are loaded: importing the entry would run it.
+  beforeAll(async () => {
+    await vi.importActual('@akasecurity/plugin-runtime');
+    await vi.importActual('@akasecurity/plugin-sdk');
+  }, 120_000);
 
   beforeEach(() => {
     mocks.runAttachedSync.mockReset().mockResolvedValue(undefined);

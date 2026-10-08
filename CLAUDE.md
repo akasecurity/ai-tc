@@ -2581,7 +2581,8 @@ opposite.
 **Outside `packages/persistence` the harness is deliberately NOT available, and the
 decision is not "nobody got round to it".** It lives under `test/`, and the package's
 `exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"` (the store-free modules the
-plugin-sdk runtime path needs, none of which reaches `database.ts`) — which is exactly
+plugin-sdk runtime path needs: a subset of the root entry's bindings that never loads
+`database.ts`, both held by `packages/persistence/test/sqlite-free-entry.test.ts`) — which is exactly
 what makes `UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
 that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
 package would gain a supported route to the raw `DatabaseSync`, and
@@ -2669,8 +2670,10 @@ not reach for a `./testing` export instead.
   through, exported from `src/database.ts`, and the only test-only seam in shipped
   source. It is
   symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
-  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
-  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  is `"." -> "./src/index.ts"` plus `"./sqlite-free"` — a subset of the root entry's
+  bindings that never loads `database.ts`, both held by
+  `packages/persistence/test/sqlite-free-entry.test.ts` — so no other package can reach the
+  module that defines it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
   property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
   enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
   the **real** connection, so `close()` reaches it.

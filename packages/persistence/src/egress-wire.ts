@@ -406,7 +406,7 @@ function isEnrollableKey(key: string): boolean {
  *     Accepting the second would store a key no repository cloned from GitHub
  *     carries, and report it as an enrollment. A caller enrolling a repository
  *     kept at the top of its host takes the key its checkout resolves for
- *     itself, which this does not judge (see the last paragraph);
+ *     itself;
  *   - an empty, `.` or `..` path segment.
  *
  * An absolute path, a Windows path, a `file://` URL, a query or fragment, a

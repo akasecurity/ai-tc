@@ -189,6 +189,24 @@ describe('addAttachmentScopeEntries', () => {
     },
   );
 
+  it('refuses with an error named UnreadableAttachmentScopeError, a plain Error to a caller', () => {
+    // The name is part of what a caller can match on, as well as the class.
+    const raw = { ...stored(), tenantName: 't'.repeat(201) };
+    const refusal = (): unknown => {
+      try {
+        addAttachmentScopeEntries(raw, ENDPOINT, [repo(LEDGER)]);
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+    const error = refusal();
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(UnreadableAttachmentScopeError);
+    expect(error).toHaveProperty('name', 'UnreadableAttachmentScopeError');
+  });
+
   it('changes nothing when handed nothing to add', () => {
     const raw = stored();
     expect(addAttachmentScopeEntries(raw, ENDPOINT, []).next).toBe(raw);
@@ -213,6 +231,18 @@ describe('addAttachmentScopeEntries', () => {
     expect(() => {
       addAttachmentScopeEntries(stored(), ENDPOINT, [entry]);
     }).toThrow(/^refusing to enroll an entry this build would not read back$/);
+  });
+
+  it('raises the entry error, not the refusal, for an invalid entry over an unreadable record', () => {
+    // The entry is judged first: whichever way the call fails, nothing is written,
+    // but a caller learns the entry was at fault, not the record.
+    const raw = { ...stored(), tenantName: 't'.repeat(201) };
+    const before = structuredClone(raw);
+    const offer = () => addAttachmentScopeEntries(raw, ENDPOINT, [repo('')]);
+
+    expect(offer).toThrow(/^refusing to enroll an entry this build would not read back$/);
+    expect(offer).not.toThrow(UnreadableAttachmentScopeError);
+    expect(raw).toStrictEqual(before);
   });
 
   it('stores the parse of each entry, so a stray key on one is not written', () => {

@@ -175,6 +175,16 @@ const REPORT_SENTENCE = (policy: string): string =>
   'Whenever a session starts anywhere on this machine, in a repository or not ' +
   `(a browser chat included), the machine pulls ${policy} policy (at most every 15 minutes) ` +
   'and sends it a device report (at most hourly): a device identifier, host name, ' +
+  'versions, detection packs, policy counts, finding counts and dates for everything ' +
+  'recorded on the machine, and, when the machine is attached as a personal device, the ' +
+  'fact that it is one. Where a scan is available (the coding-agent plugins, not a ' +
+  'browser chat), the same session start also checks it for device commands.';
+// The sentence as it stood before the report said whether the machine is a personal
+// device. A surface that printed it beside the new one would contradict itself.
+const PREVIOUS_REPORT_SENTENCE = (policy: string): string =>
+  'Whenever a session starts anywhere on this machine, in a repository or not ' +
+  `(a browser chat included), the machine pulls ${policy} policy (at most every 15 minutes) ` +
+  'and sends it a device report (at most hourly): a device identifier, host name, ' +
   'versions, detection packs, policy counts, and finding counts and dates for everything ' +
   'recorded on the machine. Where a scan is available (the coding-agent plugins, not a ' +
   'browser chat), the same session start also checks it for device commands.';
@@ -510,6 +520,7 @@ describe('parseAttachArgs: the mode flags', () => {
     // machine, not on a timer, whatever is enrolled; the report's counts are for
     // everything recorded on it, not for the repositories enrolled.
     expect(flat(h.errors())).toContain(REPORT_SENTENCE("the deployment's"));
+    expect(flat(h.errors())).not.toContain(PREVIOUS_REPORT_SENTENCE("the deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(h.errors()).not.toContain(phrase);
     expect(h.errors()).not.toContain('schedule');
     // The usage text names no project anywhere. The machine-wide line says
@@ -710,6 +721,7 @@ describe('the personal-device question', () => {
     // True on the scoped answer too: a personal device still pulls policy and
     // sends a device report, so the question never says nothing is sent.
     expect(flat(h.output())).toContain(REPORT_SENTENCE("your organization's"));
+    expect(flat(h.output())).not.toContain(PREVIOUS_REPORT_SENTENCE("your organization's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(h.output()).not.toContain(phrase);
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
@@ -2479,6 +2491,7 @@ describe('what an attach says', () => {
       "repository is sent as that repository's activity, even when it reads files",
     );
     expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
+    expect(flat(said)).not.toContain(PREVIOUS_REPORT_SENTENCE("that deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
     expect(said).toContain(
       'Re-attaching with an aka older than this one, from its command line or its\n' +
@@ -2510,9 +2523,10 @@ describe('what an attach says', () => {
         'Whenever a session starts anywhere on this machine, in a repository or not',
         "(a browser chat included), the machine pulls that deployment's policy (at",
         'most every 15 minutes) and sends it a device report (at most hourly): a',
-        'device identifier, host name, versions, detection packs, policy counts, and',
-        'finding counts and dates for everything recorded on the machine. Where a',
-        'scan is available (the coding-agent plugins, not a browser chat), the same',
+        'device identifier, host name, versions, detection packs, policy counts,',
+        'finding counts and dates for everything recorded on the machine, and, when',
+        'the machine is attached as a personal device, the fact that it is one. Where',
+        'a scan is available (the coding-agent plugins, not a browser chat), the same',
         'session start also checks it for device commands.',
         'Re-attaching with an aka older than this one, from its command line or its',
         'dashboard, makes this machine machine-wide.',

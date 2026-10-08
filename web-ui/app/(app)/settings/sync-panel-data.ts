@@ -30,7 +30,8 @@ import { db } from '../../lib/db.ts';
  *
  * The view's own props minus the callbacks, because those belong to the client
  * that can hold them — this is the serialisable half, and every field in it is
- * a number, a string or a member of a closed enum.
+ * plain serialisable data: numbers, strings, booleans, closed-enum members, and
+ * arrays and objects of those.
  */
 export type SyncPanelData = Omit<
   SyncPanelViewProps,
@@ -171,6 +172,11 @@ function toRow(p: HistorySyncKindPartition): SyncKindRow | null {
  * repository that is unenrolled leaves the bars at the next render, and what it
  * already sent leaves with it. A machine-wide attachment resolves to no filter
  * and runs the read it always ran.
+ *
+ * A KNOWN LIMIT of those bars: the session, model-call and tool-call rows a
+ * repository recorded after the machine attached but before it was enrolled stay
+ * on this machine, and the drain never offers them. This panel still counts them
+ * as queued, because its scoped count has no attach-time bound.
  */
 export function readSyncPanel(
   settings: WorkspaceSettings,
@@ -205,6 +211,10 @@ export function readSyncPanel(
     // all unless this page reads the same file the pass would.
     paused: isForwardPaused(readForwardHealth(dir, at), at),
     localOnly: LOCAL_ONLY,
+    // A personal device sends activity only from its enrolled repositories, and
+    // the not-shared line says what is sent from now on. Present only on one,
+    // so a machine-wide attachment's props are what they were.
+    ...(attachmentMode === 'scoped' ? { scoped: true } : {}),
     ...(progress === null
       ? {}
       : {
@@ -267,7 +277,8 @@ function panelState(
   if (kinds.length > 0) return { status: 'ready', kinds };
   // Nothing counted means nothing recorded only when nothing was filtered out. A
   // scoped attachment's store can be full of activity its scope does not cover,
-  // so it gets its own state, carrying how many identities the scope enrolls.
+  // so it gets its own state, carrying how many identities the scope enrolls, as
+  // this build resolves it: a list it cannot read resolves to 0.
   return scopeKeys === undefined
     ? { status: 'nothing-recorded' }
     : { status: 'nothing-in-scope', enrolled: scopeKeys.length };

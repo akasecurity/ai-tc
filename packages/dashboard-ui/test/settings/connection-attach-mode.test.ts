@@ -24,9 +24,10 @@ import {
 // consent surface, so each string is held to what a scoped machine actually
 // sends: activity only from enrolled repositories, and whenever a session starts
 // anywhere on the machine the policy pull and a device report whose finding counts
-// and dates are for everything recorded on it, plus the check for device commands
-// where a scan is available. The strings say that these happen, in the terms the
-// terminal command uses, and none of them says "nothing else".
+// and dates are for everything recorded on it, which on a personal device also says
+// that it is one, plus the check for device commands where a scan is available.
+// The strings say that these happen, in the terms the terminal command uses, and
+// none of them says "nothing else".
 
 // The phrasings WorkspaceSettingsFormView.test.ts bans on every section, repeated
 // for the strings this file adds (that list is not exported; see its note).
@@ -39,7 +40,18 @@ const ALWAYS_FALSE = [/next hook/i, /nothing is altered/i, /immediately/i, /righ
 const SESSION_START =
   'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat included), the machine pulls';
 const POLICY_AND_REPORT =
-  'policy (at most every 15 minutes) and sends it a device report (at most hourly): a device identifier, host name, versions, detection packs, policy counts, and finding counts and dates for everything recorded on the machine. Where a scan is available (the coding-agent plugins, not a browser chat), the same session start also checks it for device commands.';
+  'policy (at most every 15 minutes) and sends it a device report (at most hourly): a device ' +
+  'identifier, host name, versions, detection packs, policy counts, finding counts and dates ' +
+  'for everything recorded on the machine, and, when the machine is attached as a personal ' +
+  'device, the fact that it is one. Where a scan is available (the coding-agent plugins, not ' +
+  'a browser chat), the same session start also checks it for device commands.';
+// The second half as it stood before the report said whether the machine is a personal
+// device. A string that kept it beside the new one would contradict itself.
+const PREVIOUS_POLICY_AND_REPORT =
+  'policy (at most every 15 minutes) and sends it a device report (at most hourly): a device ' +
+  'identifier, host name, versions, detection packs, policy counts, and finding counts and ' +
+  'dates for everything recorded on the machine. Where a scan is available (the coding-agent ' +
+  'plugins, not a browser chat), the same session start also checks it for device commands.';
 
 // What the strings used to say, and must not again: a count "across every
 // repository" reads as a limit to repositories, and "every project" leaves out a
@@ -149,6 +161,7 @@ describe('attach-mode copy', () => {
     // between them has to be told it is not limited to enrolled repositories.
     const description = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
     expect(description).toContain(`${SESSION_START} your organization's ${POLICY_AND_REPORT}`);
+    expect(description).not.toContain(PREVIOUS_POLICY_AND_REPORT);
   });
 
   it.each([
@@ -156,6 +169,7 @@ describe('attach-mode copy', () => {
     ['the scoped notice', CONNECTION_FORWARDING_NOTICE_SCOPED],
   ])('says the same about the policy pull and the report in %s', (_name, notice) => {
     expect(notice).toContain(`${SESSION_START} that deployment's ${POLICY_AND_REPORT}`);
+    expect(notice).not.toContain(PREVIOUS_POLICY_AND_REPORT);
   });
 
   it('words the personal-device choice and mode line so they cannot read as "nothing else is sent"', () => {

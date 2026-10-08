@@ -685,13 +685,13 @@ describe('the settings route — the sync panel', () => {
 });
 
 describe('the settings route — the sync panel on a scoped attachment', () => {
-  // A scoped attachment sends only what its enrolled repositories recorded, and
-  // its history drain filters every pass by that scope. The bars are counted by
-  // the same scope, resolved from the same inputs, so they describe what this
-  // machine sends rather than everything its store holds. Each case writes a
-  // real credential file and a real settings record; only the store's rows are
-  // seeded by hand, and one case calls the reader directly to give it a mode
-  // the page could not read.
+  // A scoped attachment sends activity only from what its enrolled repositories
+  // recorded, and its history drain filters every pass by that scope. The bars
+  // are counted by the same scope, resolved from the same inputs, so they
+  // describe what this machine sends rather than everything its store holds.
+  // Each case writes a real credential file and a real settings record; only the
+  // store's rows are seeded by hand, and one case calls the reader directly to
+  // give it a mode the page could not read.
 
   it('counts the enrolled repository and leaves a personal one out of every bar', async () => {
     attachScoped(scopeRecord([WORK]));
@@ -791,8 +791,8 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
   });
 
   // A machine-wide attachment never reads the scope record, so one left in the
-  // settings changes nothing: every repository is counted, as before.
-  it('counts every repository on a machine-wide attachment, whatever scope is recorded', async () => {
+  // settings changes nothing: everything recorded is counted, as before.
+  it('counts everything recorded on a machine-wide attachment, whatever scope is recorded', async () => {
     attach();
     applyOnboarding({ attachmentScope: scopeRecord([WORK]) }, akaHome());
     grant();
@@ -805,5 +805,25 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
       ['llm_call', 0, 3, 0, 3],
       ['tool_call', 0, 3, 0, 3],
     ]);
+  });
+});
+
+// The not-shared line says what is sent from now on, and a personal device
+// sends activity only from its enrolled repositories. The route reads the mode
+// once, for the form, and the panel takes the same answer; a machine-wide
+// attachment's props carry no flag at all.
+describe('the settings route — the sync panel on a personal device', () => {
+  it('tells the panel the machine is a personal device', async () => {
+    attachScoped();
+    const sync = await panel();
+    expect(sync.state).toEqual({ status: 'not-shared' });
+    expect(sync.scoped).toBe(true);
+  });
+
+  it('adds no flag to a machine-wide attachment', async () => {
+    attach();
+    const sync = await panel();
+    expect(sync.state).toEqual({ status: 'not-shared' });
+    expect(sync).not.toHaveProperty('scoped');
   });
 });

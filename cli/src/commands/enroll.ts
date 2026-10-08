@@ -20,7 +20,11 @@ import {
   settingsDir as settingsDirOf,
   UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
-import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
+import {
+  attachmentScopeLines,
+  endpointForTerminal,
+  printableForTerminal,
+} from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type {
   ControlPlaneConnection,
@@ -303,9 +307,25 @@ function preflight(
     managed,
     connection,
     settings,
-    name: printableForTerminal(controlPlaneName(connection)),
+    name: deploymentNameForTerminal(connection),
     cwd: deps.cwd ?? (() => process.cwd()),
   };
+}
+
+/**
+ * The deployment's name as the terminal shows it: the label, or the settings
+ * address when there is none.
+ *
+ * A label is free text and gets the plain strip. The settings address is checked
+ * when settings are saved through the product, not when the file is edited by
+ * hand or an overlay pins it, and the plain strip leaves userinfo, a query and a
+ * fragment in an address. So an address goes through `endpointForTerminal`, the
+ * function `aka status` prints one with, which keeps those off the screen.
+ */
+function deploymentNameForTerminal(connection: ControlPlaneConnection): string {
+  return connection.label === undefined
+    ? endpointForTerminal(controlPlaneName(connection))
+    : printableForTerminal(controlPlaneName(connection), 200);
 }
 
 /** The repository the command names, or the exit code after saying why it names none. */
@@ -431,7 +451,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
     };
   }
   const connection = settings.controlPlane;
-  const name = printableForTerminal(controlPlaneName(connection));
+  const name = deploymentNameForTerminal(connection);
   const reattach = reattachCommand(connection.endpoint);
   const read = readControlPlaneCredentialFile(settingsDirOf(base), connection);
   if (!read.usable) {

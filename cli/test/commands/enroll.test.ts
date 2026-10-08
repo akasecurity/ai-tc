@@ -524,6 +524,76 @@ describe('aka enroll — the re-attach command a refusal suggests', () => {
   );
 });
 
+// The settings address is checked when settings are saved through the product,
+// not when the file is edited by hand or an overlay pins it. With no label the
+// command names the deployment by that address, so a refusal must not echo what
+// an address must never show: userinfo, a query, a fragment. The machine here is
+// governed because a refusal on an ungoverned one also prints the command that
+// re-attaches, which carries the address whole so that the command runs.
+describe('aka enroll — the deployment named by a settings address with no label', () => {
+  const HIDDEN = 'hiddenpart';
+  const governed = ManagedSettings.parse({ organization: 'Acme IT', lockedFields: ['runMode'] });
+
+  function editPlaneEndpoint(endpoint: string): void {
+    const file = join(settingsDirOf(base), SETTINGS_FILENAME);
+    const settings = JSON.parse(readFileSync(file, 'utf8')) as {
+      controlPlane: Record<string, unknown>;
+    };
+    delete settings.controlPlane.label;
+    settings.controlPlane.endpoint = endpoint;
+    writeFileSync(file, JSON.stringify(settings));
+  }
+
+  it.each<[string, string, string]>([
+    ['a username', `https://${HIDDEN}@aka.acme.test`, 'https://aka.acme.test, rest not shown'],
+    ['a query', `https://aka.acme.test/?t=${HIDDEN}`, 'https://aka.acme.test, rest not shown'],
+    ['a fragment', `https://aka.acme.test/#${HIDDEN}`, 'https://aka.acme.test, rest not shown'],
+    ['no scheme', `${HIDDEN}@aka.acme.test`, 'address not shown'],
+  ])(
+    'names a deployment whose address has %s without echoing it, in every verb',
+    async (_name, endpoint, shown) => {
+      attach({ scope: fresh() });
+      editPlaneEndpoint(endpoint);
+      const options = { managedSettings: governed };
+      const list = recorder();
+      const add = recorder();
+      const remove = recorder();
+      expect(await runEnroll(['--list'], deps(list, options))).toBe(1);
+      expect(await runEnroll(['--repo', WORK_REPO], deps(add, options))).toBe(1);
+      expect(await runUnenroll(['--repo', WORK_REPO], deps(remove, options))).toBe(1);
+      for (const io of [list, add, remove]) {
+        expect(`${io.output()}${io.errors()}`).not.toContain(HIDDEN);
+        expect(io.errors()).toContain(`the stored credential for ${shown} cannot be used`);
+      }
+    },
+  );
+
+  // The last is longer than the eighty characters a label is cut to: an address
+  // is printed whole up to two hundred, as `aka status` prints it.
+  it.each([
+    'https://aka.acme.test',
+    'https://aka.acme.test/gateway',
+    'https://AKA.acme.test',
+    `https://aka.acme.test/${'g'.repeat(100)}`,
+  ])('prints the clean address %s as stored, in a result and in a refusal', async (endpoint) => {
+    attach({ scope: { endpoint, ...MEMBER, entries: [] }, endpoint });
+    editPlaneEndpoint(endpoint);
+    const list = recorder();
+    expect(await runEnroll(['--list'], deps(list))).toBe(0);
+    expect(list.output()).toContain(`Enrolled with ${endpoint}:\n`);
+
+    const refused = recorder();
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+      mode: 'scoped',
+      endpoint: OTHER_ENDPOINT,
+      apiKey: TEST_KEY,
+    });
+    expect(await runEnroll(['--list'], deps(refused, { managedSettings: governed }))).toBe(1);
+    expect(refused.errors()).toContain(`the stored credential for ${endpoint} cannot be used`);
+  });
+});
+
 describe('aka enroll [path]', () => {
   it('enrolls the repository the working directory is in, echoing it before the write', async () => {
     attach({ scope: fresh() });

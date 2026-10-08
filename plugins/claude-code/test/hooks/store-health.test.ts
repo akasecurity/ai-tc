@@ -7,14 +7,21 @@
 // session, that nothing is being scanned. Before this seam existed, a corrupt
 // store silently disabled all detection while the onboarding nudge still
 // claimed AKA was monitoring.
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dataDir as dataDirOf, StoreAheadOfBuildError } from '@akasecurity/persistence';
+import {
+  dataDir as dataDirOf,
+  StoreAheadOfBuildError,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
+import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -134,6 +141,62 @@ describe('openGateway — the reason survives the failure', () => {
     expect(opened.gateway).not.toBeNull();
     expect(opened.error).toBeUndefined();
     await opened.gateway?.close();
+  });
+});
+
+// The hop between the runtime's door and the model-guard sites. Each site asks
+// governanceApplies of the gateway openGateway hands it, so a wrapper here that
+// kept only the port's members would hide the attached gateway's answer, and a
+// scoped machine would be governed in every repository again. A real scoped
+// credential, real settings and the real factory: the client is built and never
+// called, so nothing is sent.
+describe('openGateway — a scoped attachment keeps its governance answer', () => {
+  const ENDPOINT = 'https://plane.example.test';
+  const AT = '2026-10-08T09:00:00.000Z';
+  const WORK = 'github.com/acme/payments-api';
+  const PERSONAL = 'github.com/someone/side-project';
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'aka-store-scoped-'));
+  });
+  afterEach(() => {
+    removeTree(home);
+  });
+
+  function scopedConfig(): PluginConfig {
+    const config = configFor(home);
+    writeControlPlaneCredential(config.settingsDir, {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: randomUUID(),
+      mintedAt: AT,
+    });
+    return {
+      ...config,
+      settings: {
+        ...config.settings,
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+        attachmentScope: {
+          endpoint: ENDPOINT,
+          entries: [{ kind: 'repo', identity: WORK, enrolledAt: AT }],
+        },
+      },
+    };
+  }
+
+  it('hands the sites a gateway that governs an enrolled repository and no other', async () => {
+    const opened = openGateway(scopedConfig());
+    expect(opened.error).toBeUndefined();
+    const { gateway } = opened;
+    if (gateway === null) throw new Error('the store did not open');
+    try {
+      expect(governanceApplies(gateway, WORK)).toBe(true);
+      expect(governanceApplies(gateway, PERSONAL)).toBe(false);
+    } finally {
+      await gateway.close();
+    }
   });
 });
 

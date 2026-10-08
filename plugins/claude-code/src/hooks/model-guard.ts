@@ -11,6 +11,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   buildModelRefusalEvent,
@@ -143,8 +144,9 @@ export async function refuseProhibitedTurn(
 }
 
 /**
- * The whole containment step: decide, and on a refusal close the gateway and
- * emit. Returns true when the turn was refused and the caller must stop.
+ * The whole containment step: decide, ask whether the organization governs this
+ * turn, and on a governed refusal record it, close the gateway and emit. Returns
+ * true when the turn was refused and the caller must stop.
  *
  * The emit and the close live HERE rather than in the hook entry for the same
  * reason the decision does — an entry runs `main()` on import, so a test can
@@ -154,12 +156,19 @@ export async function refuseProhibitedTurn(
  * `emit` is a parameter rather than an import so this module stays free of the
  * stdout contract and testable without one.
  *
- * `cwd` is the payload's own, and only the refusal path reads it. The refusal
- * row is keyed by `captureScopeKey` from the directory the turn's capture is
- * keyed from, and an allowed turn pays no `.git` walk for a row it never writes.
- * It is REQUIRED rather than optional: the hook entry is the only production
- * caller and no test can import an entry, so the compiler is the one check that
- * the entry passes it.
+ * `cwd` is the payload's own, and only the refusal path reads it. It is keyed by
+ * `captureScopeKey`, from the directory the turn's capture is keyed from, and
+ * that one key does two things: it asks the gateway whether the organization's
+ * model policy governs this turn (`governanceApplies`), and it stamps the
+ * refusal row when it does. A machine-wide attachment, a standalone store and
+ * any gateway that does not answer the question are governed everywhere. A
+ * scoped attachment is governed only in its enrolled repositories: anywhere
+ * else, a turn the list would refuse is allowed silently, records no row, and
+ * leaves the gateway OPEN for the caller's scan, exactly as any allowed turn
+ * does. The question is asked only once the list has refused, so an allowed
+ * turn pays no `.git` walk and no lookup for it. `cwd` is REQUIRED rather than
+ * optional: the hook entry is the only production caller and no test can import
+ * an entry, so the compiler is the one check that the entry passes it.
  */
 export async function handleProhibitedTurn(
   gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
@@ -171,6 +180,14 @@ export async function handleProhibitedTurn(
 ): Promise<boolean> {
   const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
   if (blocked === null) return false;
+  // Keyed ONCE, and the one key both asks and stamps, so the verdict and the
+  // row can never disagree about where the turn ran. Total by contract, so it
+  // cannot cost the refusal it keys.
+  const scopeKey = captureScopeKey({ cwd });
+  // Not governed here: allowed, silently and with no row, and the gateway stays
+  // OPEN because the caller goes on to scan this turn over it. Only the model
+  // policy is scoped; the scan's detections run either way.
+  if (!governanceApplies(gateway, scopeKey)) return false;
   // Recorded while the gateway is still open, and best-effort: a refusal that
   // cannot be written down is still a refusal, so a failed write must not reach
   // the entry's outer catch and turn this block into a fail-open allow — the one
@@ -185,8 +202,7 @@ export async function handleProhibitedTurn(
         seam: 'turn',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         occurredAt: new Date().toISOString(),
-        // Total by contract, so it cannot cost the record it stamps.
-        scopeKey: captureScopeKey({ cwd }),
+        scopeKey,
       }),
     );
   } catch {
@@ -362,8 +378,9 @@ export function decideSubagentSpawn(
 }
 
 /**
- * The whole spawn step: decide, and on a refusal record it, emit and close.
- * Returns true when the spawn was refused and the caller must stop.
+ * The whole spawn step: decide, ask whether the organization governs this
+ * spawn, and on a governed refusal record it, emit and close. Returns true when
+ * the spawn was refused and the caller must stop.
  *
  * Opens its own gateway and owns its lifecycle, because it runs BEFORE
  * pre-tool-use has opened one: a spawn carries no scannable field, so the scan
@@ -373,10 +390,16 @@ export function decideSubagentSpawn(
  * enforce, and resolving the model would be a file read spent to reach the same
  * allow — the same ordering `refuseProhibitedTurn` uses for the same reason.
  *
- * The refusal row is keyed by `captureScopeKey` from the payload's `cwd`, the
- * directory and fallback a capture that names no file is keyed from; a spawn
- * names none. It is keyed only once the spawn is refused, so the tool calls
- * this seam waves through pay no `.git` walk for it.
+ * The key is `captureScopeKey` from the payload's `cwd`, the directory and
+ * fallback a capture that names no file is keyed from; a spawn names none. It
+ * is computed only once the list has refused the spawn, so the tool calls this
+ * seam waves through pay no `.git` walk for it, and that one key both asks the
+ * gateway whether the organization's model policy governs the spawn
+ * (`governanceApplies`) and stamps the refusal row when it does. A machine-wide
+ * attachment, a standalone store and any gateway that does not answer the
+ * question are governed everywhere; a scoped attachment only in its enrolled
+ * repositories. A spawn that is not governed is allowed silently, records no
+ * row, and closes the gateway like every other allow.
  *
  * TOTAL AND FAIL-OPEN: any failure returns false and the call proceeds.
  */
@@ -412,6 +435,17 @@ export async function handleSubagentSpawn(
     return false;
   }
 
+  // Keyed ONCE, now that the list refuses, and the one key both asks and
+  // stamps, so the verdict and the row can never disagree about where the spawn
+  // was requested.
+  const scopeKey = captureScopeKey({ cwd });
+  // Not governed here: allowed, silently and with no row, and closed like every
+  // other allow above, because this seam owns its gateway.
+  if (!governanceApplies(gateway, scopeKey)) {
+    await gateway.close();
+    return false;
+  }
+
   // Best-effort and swallowed, for the same reason the other two seams swallow
   // theirs: a refusal that cannot be written down is still a refusal, and
   // letting a failed write reach the entry's outer catch would turn this deny
@@ -430,7 +464,7 @@ export async function handleSubagentSpawn(
         seam: 'spawn',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         occurredAt: new Date().toISOString(),
-        scopeKey: captureScopeKey({ cwd }),
+        scopeKey,
       }),
     );
   } catch {

@@ -159,9 +159,7 @@ send could not deliver, which sends the capture as the store holds it. Both
 send the same content a live forward would have, so the rule applies exactly
 as it does there: **under monitor or warn the matched value is drained as it
 was seen**, and no detection ships on redact or block, so on a default install that
-is what a backfill or a drain sends. On a machine attached with `--scoped`,
-enrolling a repository under this grant also queues the captures still kept for
-it.
+is what a backfill or a drain sends.
 
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository
@@ -183,11 +181,13 @@ disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`; activity in any other repository stays on the machine. The policy
-pull, the command check and the device report are the exception: they go on
-either kind of attachment, whatever is enrolled, and a scoped machine's report
-also says that it is attached as a personal device. A machine that was never
-attached forwards none of this.
+`aka enroll`; activity in any other repository stays on the machine. Under the
+`aka sync-history` grant, enrolling a repository also queues the captures still
+kept for it, including those it recorded between attaching and enrolling. The
+policy pull, the command check and the device report are the exception: they go
+on either kind of attachment, whatever is enrolled, and a scoped machine's
+report also says that it is attached as a personal device. A machine that was
+never attached forwards none of this.
 
 ## Supported versions
 

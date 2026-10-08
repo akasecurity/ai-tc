@@ -73,7 +73,7 @@ export function PolicyStatsView({
     {
       icon: ListIcon,
       value: statValue(stats?.detectionsGoverned, locale),
-      label: 'Detections governed',
+      label: 'Detections assigned',
       tone: 'ok',
     },
   ];
@@ -112,9 +112,7 @@ function PolicyRow({
         <span className="block truncate text-sm font-semibold text-text" title={policy.name}>
           {policy.name}
         </span>
-        <span className="mt-px block text-xs text-text-3">
-          {count} detection{count === 1 ? '' : 's'}
-        </span>
+        <span className="mt-px block text-xs text-text-3">{count} assigned</span>
       </span>
       {policy.kind === 'builtin' && (
         <LockIcon aria-hidden focusable={false} className="size-3.5 shrink-0 text-text-3" />
@@ -213,18 +211,18 @@ export function PolicyDetailView({ policy }: { policy: PolicyDetail }) {
           )}
         </div>
 
-        {/* Applied by */}
+        {/* Assigned to */}
         <div>
           <div className="mb-2.5 flex items-center gap-2">
             <span className="text-label font-semibold uppercase tracking-wider text-text-3">
-              Applied by
+              Assigned to
             </span>
             <span className="rounded-full bg-surface-3 px-2 py-0.5 text-xs font-semibold text-text-2">
               {detections.length}
             </span>
           </div>
           {detections.length === 0 ? (
-            <p className="py-2 text-sm text-text-3">No detections use this policy yet.</p>
+            <p className="py-2 text-sm text-text-3">No detections are assigned this policy yet.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {detections.map((d) => (

@@ -29,7 +29,7 @@ const STATS: PolicyStatsResponse = {
 
 const STAT = 'data-slot="summary-stat"';
 const SKELETON = 'data-slot="skeleton"';
-const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections governed'];
+const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections assigned'];
 
 function count(html: string, needle: string): number {
   return html.split(needle).length - 1;
@@ -75,7 +75,7 @@ describe('PolicyStatsView', () => {
     expect(count(html, STAT)).toBe(4);
     expect(values(html, '—')).toBe(4);
     // Settled, not loading: the labels are still there to say WHAT is unknown.
-    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, 'Detections assigned')).toBe(1);
     expect(count(html, SKELETON)).toBe(0);
   });
 

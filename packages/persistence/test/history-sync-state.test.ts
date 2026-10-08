@@ -215,6 +215,18 @@ describe('history sync state — what a reader from before the marker reads', ()
       'a timestamp that is a string',
       JSON.stringify({ specVersion: 1, ...STATE, startedAtMs: 'yesterday' }),
     ],
+    [
+      'a last-pass time that is a string',
+      JSON.stringify({ specVersion: 1, ...STATE, lastPassAtMs: 'now' }),
+    ],
+    [
+      'a skipped count that is a string',
+      JSON.stringify({ specVersion: 1, ...STATE, skippedTotal: 'some' }),
+    ],
+    [
+      'a completion time that is a string',
+      JSON.stringify({ specVersion: 1, ...STATE, completedAtMs: 'later' }),
+    ],
   ])('agrees with the live reader on %s', (_name, body) => {
     corrupt(body);
     expect(frozenReadHistorySyncState(historySyncStatePath(dir))).toStrictEqual(

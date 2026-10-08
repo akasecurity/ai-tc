@@ -843,3 +843,23 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
     ]);
   });
 });
+
+// The not-shared line says what is sent from now on, and a personal device
+// sends only what its enrolled repositories record. The route reads the mode
+// once, for the form, and the panel takes the same answer; a machine-wide
+// attachment's props carry no flag at all.
+describe('the settings route — the sync panel on a personal device', () => {
+  it('tells the panel the machine is a personal device', async () => {
+    attachScoped();
+    const sync = await panel();
+    expect(sync.state).toEqual({ status: 'not-shared' });
+    expect(sync.scoped).toBe(true);
+  });
+
+  it('adds no flag to a machine-wide attachment', async () => {
+    attach();
+    const sync = await panel();
+    expect(sync.state).toEqual({ status: 'not-shared' });
+    expect(sync).not.toHaveProperty('scoped');
+  });
+});

@@ -153,12 +153,18 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
-// The grant covering activity recorded BEFORE this machine attached. Separate
-// from the attachment itself, which governs only what is recorded from now on,
-// and separate again from historical access, which governs local READING.
+// The grant covering activity recorded BEFORE this machine attached (on a
+// personal device, the enrolled repositories' activity only; see the _SCOPED
+// set below). Separate from the attachment itself, which governs only what is
+// recorded from now on, and separate again from historical access, which
+// governs local READING.
 type HistorySyncChoice = 'granted' | 'revoked';
 
 export const HISTORY_SYNC_SECTION_LABEL = 'Unsent activity';
+
+// The row's one-line summary, shown while it is collapsed.
+export const HISTORY_SYNC_ROW_DESCRIPTION =
+  'Whether activity this machine has not delivered may be sent later.';
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
@@ -202,6 +208,57 @@ export const HISTORY_SYNC_STALE_NOTICE =
   'text of the activity recorded before this machine attached — only what a live send failed ' +
   'to deliver afterward — sending is paused until you re-consent. Saving with "Shared" ' +
   'selected re-consents to the current version.';
+
+// The same row on a machine attached as a personal device, picked when the host
+// reports `attachmentMode: 'scoped'`. Such a machine sends only what the
+// repositories enrolled on it hold (the grant's seed marks their captures
+// alone, and the drain reads with the same scope), so every string here names
+// them and none describes the whole machine's backlog. Same payload, same
+// masking rule, same two answers under the same labels: only the subject
+// narrows. The payload-version tripwire in packages/schema names these beside
+// their machine-wide twins, so a payload change re-reads both.
+export const HISTORY_SYNC_ROW_DESCRIPTION_SCOPED =
+  'Whether activity the repositories enrolled here have not delivered may be sent later.';
+
+export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
+  'Whether activity the repositories enrolled on this device have not delivered to the ' +
+  'deployment it is attached to may be sent later. Activity in any other repository, or ' +
+  'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
+  'here before you enrolled it, and anything a live send from one could not deliver because ' +
+  'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
+  'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
+  'call, which tools were called with their inputs truncated and every detected secret ' +
+  'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
+  'tool results themselves — for which a captured one INCLUDES ITS TEXT. What is masked in ' +
+  'that text follows the policy assigned to the detection that flagged the value: it is ' +
+  'masked only where that policy is redact or block, and under monitor or warn the value is ' +
+  'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
+  'or block, so on a default install nothing in that text is masked. Live sending from ' +
+  'enrolled repositories is part of being attached and this setting does not change it: ' +
+  'declining means an undelivered item is dropped rather than kept and retried. With no ' +
+  'repository enrolled, no activity is sent. Sending happens in the background over later ' +
+  'sessions. Revoking stops what has not been sent; it cannot recall what has.';
+
+export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not shared',
+    description:
+      'Anything an enrolled repository does not deliver live is dropped rather than kept (default — never assumed).',
+  },
+  {
+    value: 'granted',
+    label: 'Shared',
+    description:
+      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+  },
+];
+
+export const HISTORY_SYNC_STALE_NOTICE_SCOPED =
+  'Your grant was recorded against an older version of this setting, which did not cover the ' +
+  'text of what an enrolled repository recorded before you enrolled it — only what a live send ' +
+  'from one failed to deliver afterward — sending is paused until you re-consent. Saving with ' +
+  '"Shared" selected re-consents to the current version.';
 
 // The grant covering what the browser extension may write down from a web chat.
 // Its own consent rather than a corner of an existing one, because it records a
@@ -737,6 +794,11 @@ export function WorkspaceSettingsFormView({
     settings.historySyncConsent,
     settings.controlPlane?.endpoint,
   );
+  // The history row's wording. A personal device sends only what its enrolled
+  // repositories hold, so on one the row names them; anything else, a mode the
+  // host did not report included, keeps the machine-wide wording, which says
+  // more is sent, never less (the convention `attachmentMode` documents).
+  const historyScoped = attachmentMode === 'scoped';
   // VALIDITY, not presence, and TOUCHED rather than a seed comparison — the
   // model-judge row's shape, for the same two reasons. A grant recorded against
   // another version authorizes nothing, so it must not render as "Granted"; and
@@ -919,9 +981,11 @@ export function WorkspaceSettingsFormView({
         {isAttached(settings) && (
           <SettingRow
             label={HISTORY_SYNC_SECTION_LABEL}
-            description="Whether activity this machine has not delivered may be sent later."
+            description={
+              historyScoped ? HISTORY_SYNC_ROW_DESCRIPTION_SCOPED : HISTORY_SYNC_ROW_DESCRIPTION
+            }
             name="historySyncConsent"
-            choices={HISTORY_SYNC_CHOICES}
+            choices={historyScoped ? HISTORY_SYNC_CHOICES_SCOPED : HISTORY_SYNC_CHOICES}
             value={historySync}
             onChange={answerHistorySync}
             alert={historySyncStale ? HISTORY_SYNC_STALE_BADGE : undefined}
@@ -933,11 +997,13 @@ export function WorkspaceSettingsFormView({
                     className="mb-3 text-xs text-sev-high-ink"
                     data-slot="history-sync-stale-notice"
                   >
-                    {HISTORY_SYNC_STALE_NOTICE}
+                    {historyScoped ? HISTORY_SYNC_STALE_NOTICE_SCOPED : HISTORY_SYNC_STALE_NOTICE}
                   </p>
                 )}
                 <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
-                  {HISTORY_SYNC_SECTION_DESCRIPTION}
+                  {historyScoped
+                    ? HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED
+                    : HISTORY_SYNC_SECTION_DESCRIPTION}
                 </p>
               </>
             }

@@ -30,7 +30,8 @@ import { db } from '../../lib/db.ts';
  *
  * The view's own props minus the callbacks, because those belong to the client
  * that can hold them — this is the serialisable half, and every field in it is
- * a number, a string or a member of a closed enum.
+ * plain serialisable data: numbers, strings, booleans, closed-enum members, and
+ * arrays and objects of those.
  */
 export type SyncPanelData = Omit<
   SyncPanelViewProps,
@@ -210,6 +211,10 @@ export function readSyncPanel(
     // all unless this page reads the same file the pass would.
     paused: isForwardPaused(readForwardHealth(dir, at), at),
     localOnly: LOCAL_ONLY,
+    // A personal device sends only what its enrolled repositories record, and
+    // the not-shared line says what is sent from now on. Present only on one,
+    // so a machine-wide attachment's props are what they were.
+    ...(attachmentMode === 'scoped' ? { scoped: true } : {}),
     ...(progress === null
       ? {}
       : {

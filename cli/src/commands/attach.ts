@@ -82,12 +82,14 @@ Registers this machine against your organization's AKA deployment.
 
   --scoped   A personal device: send activity only from the repositories you
              enroll with \`aka enroll\`; none is sent until you enroll one.
-             Any session on this machine, in an enrolled repository or not,
-             still fetches the policy and checks for device commands (at most
-             every 15 minutes), and sends a device report (at most hourly) with
-             a device identifier, host name, versions, detection packs, policy
-             counts, and finding counts and dates across every repository on
-             this machine.
+             Whenever a session starts anywhere on this machine, in a
+             repository or not (a browser chat included), the machine pulls
+             the deployment's policy (at most every 15 minutes) and sends it a
+             device report (at most hourly): a device identifier, host name,
+             versions, detection packs, policy counts, and finding counts and
+             dates for everything recorded on the machine. Where a scan is
+             available (the coding-agent plugins, not a browser chat), the
+             same session start also checks it for device commands.
   --machine  A machine your organization owns: send activity from anywhere on
              this machine.
 
@@ -812,15 +814,18 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
             ? 'The repositories already enrolled here are kept: `aka enroll --list` shows them.'
             : 'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
           '',
-          // The policy pull, the check for device commands and the device report
-          // happen in either mode, when a session runs anywhere on the machine, and
+          // The policy pull and the device report happen in either mode, when a
+          // session starts anywhere on the machine (a browser chat included), and
           // the scope does not gate them: the report's finding counts and dates
-          // cover every repository on this machine, enrolled or not.
-          'Any session on this machine, in an enrolled repository or not, still',
-          "fetches that deployment's policy and checks it for device commands (at",
-          'most every 15 minutes), and sends it a device report (at most hourly) with',
-          'a device identifier, host name, versions, detection packs, policy counts,',
-          'and finding counts and dates across every repository on this machine.',
+          // are for the whole store. The check for device commands is made only
+          // where the host supplies a scan, which the browser host does not.
+          'Whenever a session starts anywhere on this machine, in a repository or not',
+          "(a browser chat included), the machine pulls that deployment's policy (at",
+          'most every 15 minutes) and sends it a device report (at most hourly): a',
+          'device identifier, host name, versions, detection packs, policy counts, and',
+          'finding counts and dates for everything recorded on the machine. Where a',
+          'scan is available (the coding-agent plugins, not a browser chat), the same',
+          'session start also checks it for device commands.',
           // An older aka writes a version-1 credential on every attach, which is
           // machine-wide. Said here because the reader is the one who would run it.
           'An aka older than this one that re-attaches this machine makes it machine-wide.',
@@ -1180,12 +1185,14 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       'How much of this machine should AKA send?',
       '',
       '  A personal device sends activity only from the repositories you enroll',
-      '  with `aka enroll`, and none until you enroll one. Any session on this',
-      "  machine, in an enrolled repository or not, still fetches your organization's",
-      '  policy and checks for device commands (at most every 15 minutes), and',
-      '  sends a device report (at most hourly) with a device identifier, host',
-      '  name, versions, detection packs, policy counts, and finding counts and',
-      '  dates across every repository on this machine.',
+      '  with `aka enroll`, and none until you enroll one. Whenever a session',
+      '  starts anywhere on this machine, in a repository or not (a browser chat',
+      "  included), the machine pulls your organization's policy (at most every 15",
+      '  minutes) and sends it a device report (at most hourly): a device',
+      '  identifier, host name, versions, detection packs, policy counts, and',
+      '  finding counts and dates for everything recorded on the machine. Where a',
+      '  scan is available (the coding-agent plugins, not a browser chat), the same',
+      '  session start also checks it for device commands.',
       '  A machine your organization owns sends activity from anywhere on this',
       '  machine.',
       '',

@@ -29,10 +29,12 @@ import {
   printableForTerminal,
 } from '../../src/index.ts';
 
-// What `aka status` says about a scoped attachment: the mode, what is enrolled,
-// and every state in which nothing is sent. Each renderer case writes a real
-// settings file and a real credential file and reads them back through the
-// renderer, so a red here is the renderer's.
+// What `aka status` says about an attachment's mode and enrolled scope: the
+// mode, what is enrolled, every state in which the list forwards no activity,
+// what the record does not limit, and the address lines that name the
+// deployment. Each renderer case writes a real settings file and a real
+// credential file and reads them back through the renderer, so a red here is
+// the renderer's.
 
 const ENDPOINT = 'https://aka.acme.test';
 const OLD_ENDPOINT = 'https://aka.old.test';

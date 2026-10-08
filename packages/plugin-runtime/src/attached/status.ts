@@ -109,11 +109,19 @@ const MODE_LINES: Record<AttachmentMode, string> = {
 };
 
 /**
- * What to do about a scope that sends nothing: printed under the "nothing
+ * What to do about a scope that forwards no activity: printed under the "nothing
  * enrolled" line (no record) and the "nothing enrolled yet" line (a record with
  * no entries).
  */
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
+
+/**
+ * The last line of every scope block: what the record does not limit. A scoped
+ * attachment's record decides which activity is forwarded, not whether the
+ * machine pulls its deployment's policy or sends it a device report.
+ */
+const NOT_LIMITED_LINE =
+  '             the policy pull and the device report are not limited to what is enrolled';
 
 function ageLine(fromMs: number, nowMs: number): string {
   const deltaMs = Math.max(0, nowMs - fromMs);
@@ -240,13 +248,18 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * that ever does must give this block the same entries, or a forward path would
  * send an identity the block does not list.
  *
- * Each state that sends nothing has its own line, because each has its own
+ * Each state that forwards no activity has its own line, because each has its own
  * cause: no record (never enrolled, an older settings writer dropped it, or the
  * record is damaged and reads as none), a record for another deployment, or a
  * record with nothing in it yet. Entries this version cannot read are counted and
  * never printed: one written by a newer build is not this build's to describe. A
  * record that names no account is said to be one, because the next scoped attach
  * cannot tell whose it is and starts it empty.
+ *
+ * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
+ * activity is forwarded, not whether the machine pulls its deployment's policy or
+ * sends it a device report. So the last line says so in every state, and a block
+ * that says no activity is sent does not read as a machine that sends nothing.
  *
  * Every stored string goes through printableForTerminal. The schema already
  * refuses control characters in an identity or a label; the strip is the layer
@@ -257,6 +270,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
  */
 export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
+  return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
+}
+
+/** The lines for the record's state, before the line every block ends with. */
+function scopeStateLines(raw: unknown, endpoint: string): string[] {
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
     return ["  scope      nothing enrolled — no repository's activity is sent", ENROLL_HINT];
@@ -264,7 +282,7 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
       `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
-      '             — nothing is sent here (run `aka enroll` to enroll for this one)',
+      '             — no activity is sent here (run `aka enroll` to enroll for this one)',
     ];
   }
   const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;

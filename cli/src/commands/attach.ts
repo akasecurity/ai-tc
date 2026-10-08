@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
-import type { AttachModeDecision, CredentialFileRead } from '@akasecurity/persistence';
+import type { CredentialFileRead } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureBackfillScope,
@@ -10,6 +10,7 @@ import {
   dataDir as dataDirOf,
   decideAttachMode,
   freshAttachmentScope,
+  holdsScopedFor,
   managedAttachRefusal,
   managedDetachRefusal,
   ManagedFieldError,
@@ -22,6 +23,7 @@ import {
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
+  settledDecisionHolds,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
@@ -607,19 +609,21 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // read before the key was verified, and on the browser path that can be
   // minutes ago. The same decision is put again on what is on disk now, with the
   // same flag, overlay and terminal. If it no longer agrees (see
-  // decisionNoLongerHolds) another aka has attached, re-attached or detached
+  // settledDecisionHolds) another aka has attached, re-attached or detached
   // this machine in between, and writing what was settled could widen a personal
   // device, narrow a machine-wide attachment, or overwrite a newer build's file
   // that the confirmation in front of the user never covered. Stop and say so;
   // the next run decides again from what is on disk.
-  const recheck = decideAttachMode({
+  const holds = settledDecisionHolds({
     flag: args.mode,
     managed: scopedRefusal,
     previous,
     endpoint,
     interactive: io.isInteractive,
+    settled: modeDecision,
+    mode,
   });
-  if (decisionNoLongerHolds(modeDecision, mode, recheck)) {
+  if (!holds) {
     io.err(CHANGED_WHILE_WAITING);
     exit(1);
     return;
@@ -854,19 +858,6 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
 }
 
 /**
- * Whether `read` is a usable scoped credential for exactly `endpoint`. The
- * endpoint is compared as typed, the comparison every endpoint binding makes,
- * so another spelling of a deployment reads as another deployment.
- */
-function holdsScopedFor(read: CredentialFileRead, endpoint: string): boolean {
-  return (
-    read.usable &&
-    read.credential.endpoint === endpoint &&
-    attachmentModeOf(read.credential) === 'scoped'
-  );
-}
-
-/**
  * The wide credential read, reported rather than thrown.
  *
  * GUARDED, although the reader's docblock says it never throws: with a FILE
@@ -887,34 +878,6 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
     );
     return undefined;
   }
-}
-
-/**
- * Whether the decision made before the key was verified, and the mode settled
- * from it, still hold against the decision made again on what is on disk now.
- *
- * They do not when the new decision:
- *   - refuses (the file became one that needs a flag this run did not get);
- *   - asks where the settled one did not (a usable file became one this build
- *     cannot read, or a personal device was detached, so a terminal would now
- *     be asked something it was not);
- *   - settles a different mode; or
- *   - finds a personal device for this deployment where no widening was agreed
- *     to.
- * A widening that WAS agreed to and has since gone away is not a change. It was
- * agreed to by answering the confirmation, by typing --machine where there was
- * no terminal to ask on, or by an administrator's management, which asks
- * nothing and says so; the attach still sends what was agreed to.
- */
-function decisionNoLongerHolds(
-  settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,
-  mode: AttachmentMode,
-  again: AttachModeDecision,
-): boolean {
-  if (again.kind === 'refuse') return true;
-  if (again.kind === 'ask') return settled.kind !== 'ask';
-  const confirmed = settled.kind === 'use' && settled.widening;
-  return again.mode !== mode || (again.widening && !confirmed);
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */

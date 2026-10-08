@@ -118,9 +118,9 @@ export function decideAttachMode(input: {
   interactive: boolean;
 }): AttachModeDecision {
   const { flag, managed, previous, endpoint, interactive } = input;
-  // The mode this machine already holds FOR THIS ENDPOINT, or undefined. It is
-  // what makes `widening` true only over a credential for this endpoint: a
-  // scoped credential for another endpoint leaves it undefined.
+  // The mode this machine already holds FOR THIS ENDPOINT, or undefined. A
+  // scoped credential for another endpoint leaves it undefined, which is also
+  // what keeps `widening` false there (see holdsScopedFor).
   const held: AttachmentMode | undefined =
     previous.usable && previous.credential.endpoint === endpoint
       ? attachmentModeOf(previous.credential)
@@ -131,7 +131,7 @@ export function decideAttachMode(input: {
   ): AttachModeDecision => ({
     kind: 'use',
     mode,
-    widening: mode === 'machine' && held === 'scoped',
+    widening: mode === 'machine' && holdsScopedFor(previous, endpoint),
     why,
   });
 
@@ -150,4 +150,79 @@ export function decideAttachMode(input: {
     return interactive ? { kind: 'ask' } : { kind: 'refuse', why: 'needs-flag' };
   }
   return interactive ? { kind: 'ask' } : use('machine', 'non-interactive');
+}
+
+/**
+ * Whether `previous` is a usable SCOPED credential for exactly `endpoint`.
+ *
+ * `endpoint` is compared as the string it is, the comparison every endpoint
+ * binding makes, so another spelling of a deployment (a trailing slash, a host
+ * in another case) is another deployment. A credential file that cannot be used,
+ * a machine-wide credential, and a scoped one for another endpoint all fail it.
+ *
+ * It is the question of whether a write replaces a personal device for the same
+ * deployment, and two things follow from the answer. A machine-wide write over
+ * such a credential is a widening (`widening` on the decision above). And a
+ * scoped write over it is a key rotation, which is the one case that may keep
+ * the enrolled list already on file instead of starting a fresh one.
+ *
+ * Pass the credential as it is read just before the write: a read taken earlier
+ * answers for the machine as it was then.
+ *
+ * No I/O; never throws.
+ */
+export function holdsScopedFor(previous: CredentialFileRead, endpoint: string): boolean {
+  return (
+    previous.usable &&
+    previous.credential.endpoint === endpoint &&
+    attachmentModeOf(previous.credential) === 'scoped'
+  );
+}
+
+/**
+ * Whether a decision made earlier still holds against the credential file as it
+ * is now.
+ *
+ * A decision is made from the file as it was read at one moment and acted on
+ * later, and the wait between them can be long: a network round trip, and a
+ * question put to a person. Something else may attach, re-attach or detach the
+ * machine in that time. Writing what was settled over a different state could
+ * widen a personal device, narrow a machine-wide attachment, or overwrite a file
+ * a newer build wrote, with nobody asked about any of it. So the decision is put
+ * again, with the same flag, administrator's answer, endpoint and terminal, on
+ * the file as it is now (`previous`), and compared with the one that was settled.
+ *
+ * It does not hold when the new decision:
+ *   - refuses (the file became one that needs a flag this run did not get);
+ *   - asks where the settled one did not (a usable file became one that cannot
+ *     be read, or a personal device was detached, so a terminal would now be
+ *     asked something it was not);
+ *   - settles a different mode than `mode`; or
+ *   - finds a personal device for this endpoint where no widening was agreed to.
+ *
+ * A widening that WAS agreed to and has since gone away is not a change. It was
+ * agreed to by answering a confirmation, by typing the machine-wide flag where
+ * there was no terminal to ask on, or by an administrator's management, which
+ * asks nothing; what is written still sends what was agreed to.
+ *
+ * `mode` is the mode about to be written: the settled decision's own, or the
+ * answer given when the settled decision was to ask. A refusal is never settled,
+ * so `settled` excludes it.
+ *
+ * No I/O; never throws.
+ */
+export function settledDecisionHolds(
+  input: Parameters<typeof decideAttachMode>[0] & {
+    /** The decision made before the wait, and not a refusal. */
+    settled: Exclude<AttachModeDecision, { kind: 'refuse' }>;
+    /** The mode about to be written. */
+    mode: AttachmentMode;
+  },
+): boolean {
+  const { settled, mode, ...inputs } = input;
+  const now = decideAttachMode(inputs);
+  if (now.kind === 'refuse') return false;
+  if (now.kind === 'ask') return settled.kind === 'ask';
+  const agreedToWidening = settled.kind === 'use' && settled.widening;
+  return now.mode === mode && (!now.widening || agreedToWidening);
 }

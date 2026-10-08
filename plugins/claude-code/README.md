@@ -43,13 +43,14 @@ The plugin installs Claude Code hooks that run locally with no `node_modules`, a
 
 - **SessionStart** — snapshot the session context.
 - **UserPromptSubmit** — scan prompts before they reach the model.
-- **PreToolUse** — scan tool inputs (Bash, Edit, Write, MultiEdit, NotebookEdit, WebFetch, Agent /
-  Task, and any `mcp__*` tool) before they run. Sensitive content in text a tool merely stores is masked in
-  place; in text a tool acts on — a shell command, a URL, an MCP argument — masking would change what
-  runs, so the call is blocked instead.
+- **PreToolUse** — scan tool inputs (Bash, Edit, Write, MultiEdit, NotebookEdit, WebFetch, WebSearch,
+  Agent / Task, and any `mcp__*` tool) before they run. Sensitive content in text a tool merely stores is
+  masked in place; in text a tool acts on — a shell command, a URL, a search query, an MCP argument —
+  masking would change what runs, so the call is blocked instead.
 - **PostToolUse** — scan tool outputs and file reads (Bash, Read, WebFetch, Grep, WebSearch
-  summaries and link titles, a subagent's report, and the text blocks of any `mcp__*` tool's
-  result) after they return.
+  summaries and links, the report of a subagent run in the foreground, and the text blocks of any
+  `mcp__*` tool's result) after they return. A subagent run in the background reports outside any
+  tool result, so its report is not scanned.
 - **Stop** — reconcile token usage and finalize the session record.
 
 It also adds slash commands for reports and setup (`/aka:health`, `/aka:findings`, `/aka:dashboard`, and more).

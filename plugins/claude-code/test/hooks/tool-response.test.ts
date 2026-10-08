@@ -187,26 +187,23 @@ describe('scannableResponseFields — WebSearch', () => {
     expect(results.some((entry) => typeof entry === 'object' && entry !== null)).toBe(true);
   });
 
-  it('scans the summary text and every link title of the recorded response', () => {
+  it('scans the summary text and every link title and URL of the recorded response', () => {
     const results = (response as { results: unknown[] }).results;
-    const links = (results[0] as { content: { title: string }[] }).content;
+    const links = (results[0] as { content: { title: string; url: string }[] }).content;
     const expected = [
-      ...links.map((link, j) => ({
-        path: ['results', 0, 'content', j, 'title'],
-        text: link.title,
-      })),
+      ...links.flatMap((link, j) => [
+        { path: ['results', 0, 'content', j, 'title'], text: link.title },
+        { path: ['results', 0, 'content', j, 'url'], text: link.url },
+      ]),
       { path: ['results', 1], text: results[1] },
     ];
     expect(scannableResponseFields('WebSearch', response)).toEqual(expected);
   });
 
-  it('scans neither the echoed query nor the link URLs', () => {
+  it('does not scan the echoed query', () => {
     const paths = scannableResponseFields('WebSearch', response).map((field) => field.path);
     expect(paths.length).toBeGreaterThan(0);
-    for (const path of paths) {
-      expect(path).not.toContain('query');
-      expect(path).not.toContain('url');
-    }
+    for (const path of paths) expect(path).not.toContain('query');
   });
 
   it('skips malformed entries while keeping indices', () => {
@@ -217,11 +214,19 @@ describe('scannableResponseFields — WebSearch', () => {
         42,
         '',
         { content: 'not an array' },
-        { content: [null, { url: 'https://example.invalid' }, { title: 7 }, { title: 'kept' }] },
+        {
+          content: [
+            null,
+            { url: 'https://example.invalid' },
+            { title: 7, url: '' },
+            { title: 'kept' },
+          ],
+        },
         'summary',
       ],
     };
     expect(scannableResponseFields('WebSearch', malformed)).toEqual([
+      { path: ['results', 4, 'content', 1, 'url'], text: 'https://example.invalid' },
       { path: ['results', 4, 'content', 3, 'title'], text: 'kept' },
       { path: ['results', 5], text: 'summary' },
     ]);

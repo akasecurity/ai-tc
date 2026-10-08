@@ -14,6 +14,7 @@
 // run main() on import and hang vitest collection).
 import type { PathSegment } from './paths.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
+import { SUBAGENT_TOOLS } from './subagent-tools.ts';
 
 export interface ScannableResponseField {
   /** Key path into the response object; [] means the response itself. */
@@ -47,12 +48,6 @@ const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   Grep: [['content']],
 };
 
-/**
- * Subagent tools, whose result carries the subagent's final message as text
- * content blocks under `content`. `Task` is the earlier name of `Agent`.
- */
-const CONTENT_BLOCK_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task']);
-
 const WEB_SEARCH_TOOL = 'WebSearch';
 
 /**
@@ -63,7 +58,7 @@ const WEB_SEARCH_TOOL = 'WebSearch';
 export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = [
   ...Object.keys(RESPONSE_TEXT_PATHS),
   WEB_SEARCH_TOOL,
-  ...CONTENT_BLOCK_TOOLS,
+  ...SUBAGENT_TOOLS,
 ];
 
 // Bounds on what one response costs to scan, so an oversized result degrades
@@ -150,7 +145,10 @@ function ownArray(value: unknown, key: string): unknown[] | undefined {
 
 /**
  * The text blocks of an MCP or subagent tool result: either the bare
- * content-block array or an object wrapping it under `content`. Only
+ * content-block array or an object wrapping it under `content`. A subagent
+ * started in the background returns a launch acknowledgement with no
+ * `content`; its report reaches the session later, outside any tool result,
+ * and is not seen here. Only
  * `{ type: 'text', text }` blocks are scanned; image, resource and other block
  * types are left alone. Each field addresses the block's `text` in place, so a
  * rewrite keeps the array, its length and every sibling block intact.
@@ -183,9 +181,10 @@ function contentBlockFields(response: unknown): ScannableResponseField[] {
 /**
  * The text of a WebSearch result. `results` mixes link lists
  * (`{ content: [{ title, url }, …] }`) with plain-string summary text; the
- * summaries and the link titles are scanned. URLs are left alone, and so is
- * the echoed `query`, which is the tool's own input. Each field addresses its
- * string in place, so a rewrite keeps the list and its entries intact.
+ * summaries and each link's title and URL are scanned, since the model reads
+ * all three. The echoed `query` is not: it is the tool's own input, scanned
+ * before the search runs. Each field addresses its string in place, so a
+ * rewrite keeps the list and its entries intact.
  */
 function webSearchResponseFields(response: unknown): ScannableResponseField[] {
   const results = ownArray(response, 'results');
@@ -200,10 +199,12 @@ function webSearchResponseFields(response: unknown): ScannableResponseField[] {
     const links = ownArray(entry, 'content');
     if (links === undefined) continue;
     for (const linkIndex of links.keys()) {
-      const path: PathSegment[] = ['results', index, 'content', linkIndex, 'title'];
-      const title = stringAtPath(response, path);
-      if (title === undefined || title === '') continue;
-      if (!bounded.add(path, title)) return bounded.fields;
+      for (const key of ['title', 'url']) {
+        const path: PathSegment[] = ['results', index, 'content', linkIndex, key];
+        const text = stringAtPath(response, path);
+        if (text === undefined || text === '') continue;
+        if (!bounded.add(path, text)) return bounded.fields;
+      }
     }
   }
   return bounded.fields;
@@ -223,7 +224,7 @@ export function scannableResponseFields(
     if (response !== '') bounded.add([], response);
     return bounded.fields;
   }
-  if (toolName.startsWith('mcp__') || CONTENT_BLOCK_TOOLS.has(toolName)) {
+  if (toolName.startsWith('mcp__') || SUBAGENT_TOOLS.has(toolName)) {
     return contentBlockFields(response);
   }
   if (toolName === WEB_SEARCH_TOOL) return webSearchResponseFields(response);

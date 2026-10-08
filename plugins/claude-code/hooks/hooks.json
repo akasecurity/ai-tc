@@ -24,7 +24,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|WebFetch|MultiEdit|NotebookEdit|Task|Agent|mcp__.*",
+        "matcher": "^(?:Bash|Edit|Write|WebFetch|WebSearch|MultiEdit|NotebookEdit|Task|Agent|mcp__.*)$",
         "hooks": [
           {
             "type": "command",
@@ -36,7 +36,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Read|WebFetch|Grep|WebSearch|Agent|Task|mcp__.*",
+        "matcher": "^(?:Bash|Read|WebFetch|Grep|WebSearch|Agent|Task|mcp__.*)$",
         "hooks": [
           {
             "type": "command",

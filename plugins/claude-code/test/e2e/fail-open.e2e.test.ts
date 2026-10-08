@@ -631,7 +631,72 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
       monitor: null,
     },
   },
+  {
+    // WebSearch results mix a link list with summary text; the secret sits in
+    // the summary and is rewritten at its index in the list.
+    name: 'post-tool-use',
+    label: 'post-tool-use (WebSearch results)',
+    payload: (home) => webSearchPostToolUsePayload(home),
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+  {
+    // A subagent's report arrives as text content blocks under `content`.
+    name: 'post-tool-use',
+    label: 'post-tool-use (Agent report)',
+    payload: (home) => agentPostToolUsePayload(home),
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
 ];
+
+const SEARCH_LINKS = {
+  tool_use_id: 'srvtoolu_e2e',
+  content: [{ title: 'Release notes', url: 'https://example.invalid/notes' }],
+};
+
+function webSearchPostToolUsePayload(home: string): string {
+  return JSON.stringify({
+    tool_name: 'WebSearch',
+    tool_input: { query: 'release notes' },
+    tool_response: {
+      query: 'release notes',
+      results: [SEARCH_LINKS, `The setup page lists TWILIO_KEY=${SECRET} as the example.`],
+      durationSeconds: 1.2,
+      searchCount: 1,
+    },
+    session_id: SESSION_ID,
+    cwd: projectDir(home),
+    hook_event_name: 'PostToolUse',
+  });
+}
+
+function agentPostToolUsePayload(home: string): string {
+  return JSON.stringify({
+    tool_name: 'Agent',
+    tool_input: { description: 'find config', prompt: 'report the config line' },
+    tool_response: {
+      status: 'completed',
+      prompt: 'report the config line',
+      agentType: 'general-purpose',
+      content: [{ type: 'text', text: `Found it: TWILIO_KEY=${SECRET}` }],
+      totalToolUseCount: 1,
+    },
+    session_id: SESSION_ID,
+    cwd: projectDir(home),
+    hook_event_name: 'PostToolUse',
+  });
+}
 
 const MCP_TOOL = 'mcp__reader__read_url';
 
@@ -778,22 +843,49 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
     });
   });
 
-  it('redacts a secret in WebSearch summary text and keeps the link list', () => {
+  it('redacts a secret in WebSearch summary text and keeps the rest of the result', () => {
     withTempHome((home) => {
       seedPolicy(home, 'redact');
-      const links = {
-        tool_use_id: 'srvtoolu_e2e',
-        content: [{ title: 'Release notes', url: 'https://example.invalid/notes' }],
+      const result = runHook('post-tool-use', webSearchPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: { results: unknown[] } };
+        systemMessage: string;
+      };
+      const updated = payload.hookSpecificOutput.updatedToolOutput;
+      expect(updated).toMatchObject({
+        query: 'release notes',
+        durationSeconds: 1.2,
+        searchCount: 1,
+      });
+      expect(updated.results).toHaveLength(2);
+      expect(updated.results[0]).toEqual(SEARCH_LINKS);
+      expect(updated.results[1]).toEqual(
+        expect.stringContaining('The setup page lists TWILIO_KEY='),
+      );
+      expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('redacts a secret carried in a WebSearch link URL', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const link = {
+        title: 'Build config',
+        url: `https://example.invalid/cfg?TWILIO_KEY=${SECRET}`,
       };
       const result = runHook(
         'post-tool-use',
         JSON.stringify({
           tool_name: 'WebSearch',
-          tool_input: { query: 'release notes' },
+          tool_input: { query: 'build config' },
           tool_response: {
-            query: 'release notes',
-            results: [links, `The setup page lists TWILIO_KEY=${SECRET} as the example.`],
-            durationSeconds: 1.2,
+            query: 'build config',
+            results: [{ tool_use_id: 'srvtoolu_e2e', content: [link] }],
+            durationSeconds: 0.8,
             searchCount: 1,
           },
           session_id: SESSION_ID,
@@ -804,17 +896,15 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
       );
       expect(result.status).toBe(0);
       const payload = JSON.parse(result.stdout) as {
-        hookSpecificOutput: { updatedToolOutput: { query: string; results: unknown[] } };
-        systemMessage: string;
+        hookSpecificOutput: {
+          updatedToolOutput: { results: { content: { title: string; url: string }[] }[] };
+        };
       };
-      const updated = payload.hookSpecificOutput.updatedToolOutput;
-      expect(updated.query).toBe('release notes');
-      expect(updated.results).toHaveLength(2);
-      expect(updated.results[0]).toEqual(links);
-      expect(updated.results[1]).toEqual(
-        expect.stringContaining('The setup page lists TWILIO_KEY='),
+      const rewritten = payload.hookSpecificOutput.updatedToolOutput.results[0]?.content[0];
+      expect(rewritten?.title).toBe('Build config');
+      expect(rewritten?.url).toEqual(
+        expect.stringContaining('https://example.invalid/cfg?TWILIO_KEY='),
       );
-      expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
       expectNoEchoOf(result.stdout, SECRET);
     });
   });
@@ -822,24 +912,9 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
   it('redacts a secret in a subagent report without disturbing the result envelope', () => {
     withTempHome((home) => {
       seedPolicy(home, 'redact');
-      const result = runHook(
-        'post-tool-use',
-        JSON.stringify({
-          tool_name: 'Agent',
-          tool_input: { description: 'find config', prompt: 'report the config line' },
-          tool_response: {
-            status: 'completed',
-            prompt: 'report the config line',
-            agentType: 'general-purpose',
-            content: [{ type: 'text', text: `Found it: TWILIO_KEY=${SECRET}` }],
-            totalToolUseCount: 1,
-          },
-          session_id: SESSION_ID,
-          cwd: projectDir(home),
-          hook_event_name: 'PostToolUse',
-        }),
-        { env: tempHomeEnv(home) },
-      );
+      const result = runHook('post-tool-use', agentPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
       expect(result.status).toBe(0);
       const payload = JSON.parse(result.stdout) as {
         hookSpecificOutput: { updatedToolOutput: Record<string, unknown> };
@@ -857,6 +932,23 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
       expect(blocks[0]?.type).toBe('text');
       expect(blocks[0]?.text).toContain('Found it: TWILIO_KEY=');
       expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('withholds a blocked subagent report without telling the model to re-run it', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'block');
+      const result = runHook('post-tool-use', agentPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: { content: { text: string }[] } };
+      };
+      const text = payload.hookSpecificOutput.updatedToolOutput.content[0]?.text ?? '';
+      expect(text).toContain('The subagent already ran');
+      expect(text).not.toContain('re-run this same tool call');
       expectNoEchoOf(result.stdout, SECRET);
     });
   });

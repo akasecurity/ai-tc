@@ -51,8 +51,10 @@ export function managedRefusal(fields: readonly ManagedSettingKey[]): string {
 const ATTACH_KEEP_NAME_HINT = 'Attach with the name it already has, as this page shows it.';
 
 /**
- * An attach or detach refused before anything was sent or written, because an
- * administrator locked or pinned where this machine's connection stays.
+ * An attach or detach refused before anything was written, because an
+ * administrator locked or pinned where this machine's connection stays. An attach
+ * asks again once its key is verified, so the same refusal can follow that check,
+ * which sends the key to the deployment and nothing else.
  *
  * The decision is worded by `connectionRefusalMessage`, the same sentence
  * `aka attach` and `aka detach` refuse with. The one addition is this page's own:
@@ -201,7 +203,10 @@ export const ATTACH_MODE_REQUIRED =
  * attached, re-attached or detached this machine in that time, writing what was
  * decided could widen a personal device, narrow a machine-wide attachment, or
  * replace its enrolled list with an empty one, with nobody asked about any of
- * it. Nothing is written; reloading shows the machine as it stands now.
+ * it. It is also the answer when an administrator's hold that settled the mode
+ * lifted in that time: the page that sent no mode was rendered under the hold and
+ * offered no choice. Nothing is written; reloading shows the machine as it stands
+ * now.
  */
 export const ATTACH_CHANGED_WHILE_WAITING =
   "This machine's connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.";

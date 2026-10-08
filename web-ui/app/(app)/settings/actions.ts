@@ -424,10 +424,11 @@ function nextWebChatCapture(
  * endpoint and the record is bound to it and to the organization and account
  * the key just verified as — which is how a key rotation keeps every
  * enrollment — and replaced by an empty one otherwise, so a key for someone else
- * starts with nothing enrolled. Whether the machine is governed is asked again
- * after the round trip, so a scoped write never lands on a machine that became
- * managed while the key was being verified. A machine-wide attach clears the
- * record, so a dormant one cannot come back under a later scoped attach. A
+ * starts with nothing enrolled. The administrator's overlay is asked again after
+ * the round trip, for every attach, so no write lands where an overlay that
+ * arrived while the key was being verified refuses it, and a scoped write never
+ * lands on a machine that became managed meanwhile. A machine-wide attach clears
+ * the record, so a dormant one cannot come back under a later scoped attach. A
  * machine-wide credential is the v1 file this action has always written, byte
  * for byte.
  *
@@ -435,11 +436,12 @@ function nextWebChatCapture(
  * The mode was settled from a read made before the key went out, and another
  * process can attach, re-attach or detach the machine while the reply is awaited.
  * So the credential is read once more just before the write and the same decision
- * is made on it (`settledDecisionHolds`). If it no longer agrees, nothing is
- * written and the answer says the connection changed. What is kept of the stored
- * scope record follows that later read as well (`holdsScopedFor`), so a personal
- * device attached meanwhile keeps its enrolled list and one widened meanwhile by
- * an older build does not get the record it left behind revived.
+ * is made on it, with the administrator's answer read again too
+ * (`settledDecisionHolds`). If it no longer agrees, nothing is written and the
+ * answer says the connection changed. What is kept of the stored scope record
+ * follows that later read as well (`holdsScopedFor`), so a personal device
+ * attached meanwhile keeps its enrolled list and one widened meanwhile by an
+ * older build does not get the record it left behind revived.
  *
  * A MACHINE-WIDE WRITE OVER ANYTHING THAT WAS, OR MAY HAVE BEEN, A PERSONAL
  * DEVICE'S CREDENTIAL CLEARS THE HISTORY GRANT. A grant given to a personal
@@ -516,10 +518,11 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // back — leaving a credential for a deployment the settings never name again.
   // No key the caller could supply changes either answer, so a missing key is
   // not reported first.
-  const refusal = managedAttachRefusal({
-    endpoint,
-    label: label === undefined || label === '' ? undefined : label,
-  });
+  //
+  // The name typed, an empty one read as none, for this check and the one made
+  // again after the round trip.
+  const request = { endpoint, label: label === undefined || label === '' ? undefined : label };
+  const refusal = managedAttachRefusal(request);
   if (refusal !== null) return { ok: false, error: connectionRefusal(refusal) };
 
   // What the machine holds now, read for the mode decision and before the key
@@ -558,13 +561,18 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     return { ok: false, error: ATTACH_VERIFY_FAILED };
   }
 
-  // A SCOPED WRITE IS RE-CHECKED against the administrator's overlay now, with
-  // nothing written yet: the check above ran before the round trip, and an
-  // overlay that arrived meanwhile makes this machine machine-only. It is also
-  // what keeps the scope record below bound to the endpoint every read sees.
-  if (mode === 'scoped') {
-    const late = managedScopedRefusal();
-    if (late !== null) return { ok: false, error: connectionRefusal(late) };
+  // THE ADMINISTRATOR'S OVERLAY IS ASKED AGAIN NOW, FOR EVERY ATTACH, with nothing
+  // written yet. Both checks above ran before the round trip, and an overlay that
+  // arrived meanwhile can hold this machine at standalone, pin it to another
+  // deployment or name, or make it machine-only. They are asked again in the same
+  // order and answered in the same sentences. The answer about the scoped mode is
+  // also what the decision is put again with below, and what keeps the scope
+  // record bound to the endpoint every read sees.
+  const lateRefusal = managedAttachRefusal(request);
+  if (lateRefusal !== null) return { ok: false, error: connectionRefusal(lateRefusal) };
+  const governedNow = managedScopedRefusal();
+  if (mode === 'scoped' && governedNow !== null) {
+    return { ok: false, error: connectionRefusal(governedNow) };
   }
 
   // What was there before, so a failed write can be put back, and so the decision
@@ -595,14 +603,15 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was settled from `prior`,
   // read before the key went out, and another process can attach, re-attach or
   // detach this machine while the reply is awaited. The same decision is put
-  // again on `previous`, with the same flag, administrator's answer and endpoint;
-  // if it no longer agrees (see settledDecisionHolds) writing what was settled
-  // could widen a personal device, narrow a machine-wide attachment, or overwrite
-  // a credential a newer build wrote, so nothing is written.
+  // again on `previous`, with the same flag and endpoint and the administrator's
+  // answer as it is now (`governedNow`); if it no longer agrees (see
+  // settledDecisionHolds) writing what was settled could widen a personal device,
+  // narrow a machine-wide attachment, or overwrite a credential a newer build
+  // wrote, so nothing is written.
   if (
     !settledDecisionHolds({
       flag: parsed.data.mode,
-      managed: governed,
+      managed: governedNow,
       previous,
       endpoint,
       interactive: false,

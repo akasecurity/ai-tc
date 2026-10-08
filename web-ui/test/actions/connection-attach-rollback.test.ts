@@ -1,5 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +15,11 @@ import { controlPlaneCredentialPath, settingsDir } from '@akasecurity/persistenc
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { attachToControlPlane } from '../../app/(app)/settings/actions.ts';
-import { ATTACH_ROLLBACK_FAILED, SETTINGS_WRITE_ERROR } from '../../app/lib/action-refusals.ts';
+import {
+  ATTACH_ROLLBACK_FAILED,
+  ATTACH_ROLLBACK_LOST,
+  SETTINGS_WRITE_ERROR,
+} from '../../app/lib/action-refusals.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
 
@@ -48,6 +59,8 @@ const newHome = tempHomes('aka-web-attach-rollback-');
 
 /** A high-entropy key made at run time, so no key-shaped literal sits in the tree. */
 const KEY = randomBytes(24).toString('base64url');
+/** The key an earlier credential file on the machine holds. */
+const OTHER_KEY = randomBytes(24).toString('base64url');
 const ENDPOINT = 'https://aka.acme.internal';
 
 let home: string;
@@ -114,5 +127,82 @@ describe('a rollback that cannot put the earlier credential file back', () => {
     });
     expectNoEchoOf(res.error, KEY);
     expect(readFileSync(controlPlaneCredentialPath(`${dir}.moved`), 'utf8')).toContain(KEY);
+  });
+});
+
+// Scoped, with nothing stored beside the file: an attach over a credential file
+// this build cannot read that writes the credential before the settings, so a
+// failed settings write rolls it back.
+describe('a rollback that puts the earlier credential file back, or says it is gone', () => {
+  function credentialFile(): string {
+    return controlPlaneCredentialPath(settingsDir(akaHome()));
+  }
+
+  function plantSettingsDirectory(): void {
+    mkdirSync(settingsDir(akaHome()), { recursive: true, mode: 0o700 });
+  }
+
+  it('puts back the bytes of a file this build cannot parse', async () => {
+    plantSettingsDirectory();
+    const content = JSON.stringify({
+      specVersion: 3,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: OTHER_KEY,
+    });
+    writeFileSync(credentialFile(), content, { mode: 0o600 });
+
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'scoped' });
+
+    expect(res).toEqual({ ok: false, error: SETTINGS_WRITE_ERROR });
+    expectNoEchoOf(res.error, KEY);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(content);
+  });
+
+  it('puts back a credential that names an endpoint no key may be sent to', async () => {
+    plantSettingsDirectory();
+    const content = `${JSON.stringify(
+      {
+        specVersion: 1,
+        endpoint: 'http://aka.acme.test',
+        apiKey: OTHER_KEY,
+        mintedAt: '2026-10-07T00:00:00.000Z',
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(credentialFile(), content, { mode: 0o600 });
+
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'scoped' });
+
+    expect(res).toEqual({ ok: false, error: SETTINGS_WRITE_ERROR });
+    expectNoEchoOf(res.error, KEY);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(content);
+  });
+
+  it('says the earlier file is gone when it could not be read at all', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('Creating a symbolic link needs a privilege Windows runners do not grant');
+      return;
+    }
+    plantSettingsDirectory();
+    const target = join(home, 'elsewhere-credential.json');
+    const content = JSON.stringify({ specVersion: 3, endpoint: ENDPOINT, apiKey: OTHER_KEY });
+    writeFileSync(target, content, { mode: 0o600 });
+    symlinkSync(target, credentialFile());
+
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'scoped' });
+
+    // A link is never followed, so there were no bytes to put back. The attach's
+    // own file had replaced the link and is removed as well, and the refusal says
+    // the earlier file is gone rather than implying nothing changed.
+    expect(res).toEqual({
+      ok: false,
+      error: `${SETTINGS_WRITE_ERROR} ${ATTACH_ROLLBACK_LOST}`,
+    });
+    expectNoEchoOf(res.error, KEY);
+    expect(existsSync(credentialFile())).toBe(false);
+    // What the link pointed at was never written through.
+    expect(readFileSync(target, 'utf8')).toBe(content);
   });
 });

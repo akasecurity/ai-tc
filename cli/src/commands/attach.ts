@@ -283,7 +283,9 @@ const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
  *                 replaced it.
  *   `superseded` — the file no longer held what this attach wrote, nor what was
  *                  there before: another attach, re-attach or detach changed it
- *                  after this attach's write. It is left as it is.
+ *                  after this attach's write. It is left as it is. Where the
+ *                  earlier file could not be read, a usable credential from
+ *                  another attach in its place counts as the same.
  *   `failed`    — the earlier state could not be written back.
  */
 type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'superseded' | 'failed';
@@ -557,8 +559,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // A MANAGED machine that was a personal device, attached to this
       // deployment or to another: nobody is asked, because the administrator
       // decided, and one line says why it attaches machine-wide now. `widening`
-      // is not read here: under management it is information, never a question.
-      // The write below clears the enrolled list either way. Another deployment
+      // is never asked about here: under management it is information, never a
+      // question, and it only picks which notice names the deployment. The write
+      // below clears the enrolled list either way. Another deployment
       // is not named: its endpoint is read from disk, so that notice says
       // nothing of it. The administrator's name in the refusal sentence is their
       // own, and refusalLine strips it for the terminal.
@@ -1077,7 +1080,11 @@ function restoreCredential(
       removeControlPlaneCredential(settingsDir);
       return 'replaced';
     }
-    return 'untouched';
+    // Neither the earlier file, which could not be read, nor this attach's: a
+    // usable credential is another attach's, whether it replaced this attach's
+    // file or the unreadable one this attach never got to replace. A file that is
+    // still unusable is the earlier one, which this attempt did not change.
+    return now.usable ? 'superseded' : 'untouched';
   } catch {
     // The rollback itself failed. Nothing further to try.
     return 'failed';

@@ -1,0 +1,68 @@
+{
+  "host": "Claude Code",
+  "hostVersion": "2.1.294",
+  "event": "PostToolUse",
+  "tool": "WebSearch",
+  "note": "One WebSearch call recorded on hook stdin. results mixes link-list objects (content[].title/url) with plain-string summary text. tool_input and tool_response are unchanged; the session envelope (ids, transcript path, cwd) is left out.",
+  "calls": [
+    {
+      "tool_input": {
+        "query": "vitest release notes",
+        "mode": "standard"
+      },
+      "tool_response": {
+        "query": "vitest release notes",
+        "results": [
+          {
+            "tool_use_id": "srvtoolu_01J4TP3xnVrDTGtxEVDQ8V5L",
+            "content": [
+              {
+                "title": "main.vitest.dev",
+                "url": "https://main.vitest.dev/blog"
+              },
+              {
+                "title": "releasealert.dev",
+                "url": "https://releasealert.dev/github/vitest-dev/vitest"
+              },
+              {
+                "title": "addon vitest",
+                "url": "https://releasealert.dev/npmjs/@storybook/addon-vitest"
+              },
+              {
+                "title": "releases.sh",
+                "url": "https://releases.sh/collections/js-toolchain/digest/2026-08-31"
+              },
+              {
+                "title": "vitest pool workers",
+                "url": "https://releasealert.dev/npmjs/@cloudflare/vitest-pool-workers"
+              },
+              {
+                "title": "releases.sh",
+                "url": "https://releases.sh/vitest/overview"
+              },
+              {
+                "title": "cn.vitest.dev",
+                "url": "https://cn.vitest.dev/blog"
+              },
+              {
+                "title": "vitest config",
+                "url": "https://releasealert.dev/npmjs/@n8n/vitest-config"
+              },
+              {
+                "title": "Release Notes",
+                "url": "https://help.schuhfried.com/en/vts/8.30/release-notes"
+              },
+              {
+                "title": "npm @vitest/ui 1.0.4",
+                "url": "https://newreleases.io/project/npm/@vitest/ui/release/1.0.4"
+              }
+            ]
+          },
+          "The search turned up several places to find Vitest release notes, but the sources don't agree on how current they are.\n\n**Where to look**\n- The official Vitest blog lists announcements for Vitest 4.0 (October 22, 2025), 3.2 (June 2, 2025), and 3.0 (January 17, 2025). The docs site also has a release notes section, and its sidebar showed v4.0.16 as the latest version at the time of indexing. (https://main.vitest.dev/blog)\n- The GitHub repository (vitest-dev/vitest) is the primary source for full changelogs. The ReleaseAlert tracker shows that repo has about 485 releases and lists versions including v5.0.0 betas alongside v4.1.x stable releases. (https://releasealert.dev/github/vitest-dev/vitest)\n- The releases.sh overview page for Vitest is another option. (https://releases.sh/vitest/overview)\n\n**Latest major version**\nA weekly digest from releases.sh covering August 31 to September 6, 2026 reports that Vitest 5.0.0 arrived with a performance-focused rewrite and long-awaited fixes. The same digest says loupe.inspect is gone, swapped for the more widely known pretty-format. It also says vitest list now parses test files statically by default. The digest is a beta product, and its summaries are AI-generated, so check these claims against the official 5.0.0 release notes on GitHub before relying on them.\n\n**Other notable changes from the 5.0 line**\nThe releases.sh overview lists several breaking changes from the v5 pre-release line. For example, the sequential test/suite options were removed — use concurrent: false instead. It also notes that toHaveTextContent became strict, with toMatchTextContent as the partial-match alternative. These were pre-release changes, so the final 5.0.0 notes may differ.\n\n**Caveat**\nThe official blog I found was last indexed at 4.0.16, so it may be out of date. For the authoritative, current notes, go to the Vitest blog and the GitHub releases page for the latest version."
+        ],
+        "durationSeconds": 6.704831875,
+        "searchCount": 1
+      }
+    }
+  ]
+}

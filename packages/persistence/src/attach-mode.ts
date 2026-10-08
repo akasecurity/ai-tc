@@ -361,6 +361,16 @@ export function settledDecisionHolds(
  * (`why: 'managed'`, which asked nobody) stands while they still manage the
  * machine, and without a terminal where the flag was typed, which answers there
  * as it would on a machine nobody manages.
+ *
+ * "Still manage" means the machine is managed, not that the same administrator
+ * does. That is deliberate. The overlay names no administrator that can be
+ * checked: its organization is an optional name shown to the user, not verified,
+ * so there is nothing to key an agreement to. What a different administrator
+ * could change that matters here is the deployment or the name the connection is
+ * pinned or locked to, or a mode that holds the machine at standalone, and
+ * `managedAttachRefusal` refuses those before this decision is put again (a
+ * caller must run it first, as `decideAttachMode` says). Under any other
+ * management the attach is machine-wide just the same.
  */
 function wideningStillAgreed(
   settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,

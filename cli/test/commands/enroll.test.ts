@@ -11,6 +11,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { attachmentScopeLines } from '@akasecurity/plugin-runtime';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
@@ -1155,6 +1156,20 @@ describe('aka enroll --list', () => {
     expect(shown).toContain('2 enrolled — activity anywhere else stays on this machine');
     expect(shown).toContain(`             ${WORK_REPO} (payments-api), enrolled 2026-10-07`);
     expect(shown).toContain(`             ${SECOND_REPO}, enrolled 2026-10-07`);
+    expect(settingsWrite.calls).toBe(0);
+  });
+
+  // A build before the enrolled list existed rewrites settings through a schema
+  // that drops `attachmentScope`, so a scoped machine can be left with no list at
+  // all. The list command prints the status block's lines for that state, which
+  // differ from the lines for an empty list, and writes nothing.
+  it('shows a missing list the way aka status does, not as an empty one', async () => {
+    attach();
+    const io = recorder();
+    expect(await runEnroll(['--list'], deps(io))).toBe(0);
+    const missing = attachmentScopeLines(undefined, ENDPOINT);
+    expect(io.output()).toBe(`Enrolled with Acme:\n${missing.join('\n')}\n`);
+    expect(missing).not.toEqual(attachmentScopeLines(fresh(), ENDPOINT));
     expect(settingsWrite.calls).toBe(0);
   });
 

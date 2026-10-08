@@ -91,4 +91,28 @@ describe('a rollback that cannot put the earlier credential file back', () => {
     // the true thing to say.
     expect(readFileSync(controlPlaneCredentialPath(`${dir}.moved`), 'utf8')).toContain(KEY);
   });
+
+  it('says the same when the machine held no credential file before', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('A file where the settings directory belongs reads as ENOTDIR on POSIX only');
+      return;
+    }
+    // Nothing was planted, so the attach's own write creates the directory and
+    // the file, and the rollback has nothing earlier to restore: it is trying to
+    // remove the key this attach saved, and it cannot reach it.
+    const dir = settingsDir(akaHome());
+    writeFailure.onCall = () => {
+      renameSync(dir, `${dir}.moved`);
+      writeFileSync(dir, 'not a directory');
+    };
+
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'machine' });
+
+    expect(res).toEqual({
+      ok: false,
+      error: `${SETTINGS_WRITE_ERROR} ${ATTACH_ROLLBACK_FAILED}`,
+    });
+    expectNoEchoOf(res.error, KEY);
+    expect(readFileSync(controlPlaneCredentialPath(`${dir}.moved`), 'utf8')).toContain(KEY);
+  });
 });

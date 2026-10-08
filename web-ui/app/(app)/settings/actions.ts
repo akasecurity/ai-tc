@@ -435,16 +435,22 @@ function nextWebChatCapture(
  * device attached meanwhile keeps its enrolled list and one widened meanwhile by
  * an older build does not get the record it left behind revived.
  *
- * A HISTORY GRANT GIVEN TO A PERSONAL DEVICE DOES NOT SURVIVE BECOMING A
- * MACHINE-WIDE ONE. Such a grant was given for the history of the repositories
- * the machine enrolled; the same grant over a machine-wide credential would let
- * the drain send the history of every project on it. This surface has no
- * terminal to ask again on, so a machine-wide write over a usable scoped
- * credential clears the grant (`replacesPersonalDevice`) and history needs a
- * fresh grant from the Sync panel. That holds whichever deployment the scoped
+ * A MACHINE-WIDE WRITE OVER ANYTHING THAT WAS, OR MAY HAVE BEEN, A PERSONAL
+ * DEVICE'S CREDENTIAL CLEARS THE HISTORY GRANT. A grant given to a personal
+ * device was for the history of the repositories the machine enrolled; the same
+ * grant over a machine-wide credential would let the drain send the history of
+ * activity from anywhere on the machine. This surface has no terminal to ask
+ * again on, so the grant is cleared (`replacesPersonalDevice`) and history needs
+ * a fresh grant from the Sync panel. "Was or may have been" is judged on both
+ * reads of the credential, the one the mode was settled from and the one just
+ * before the write, because another process can change the file between them,
+ * and a credential file that exists but cannot be read counts, since it may be a
+ * personal device's written by a newer build. It holds whichever deployment the
  * credential was for, because a grant names its deployment and one for another
- * deployment would be valid again the day this machine is attached there. Every
- * other re-attach, a key rotation included, leaves the grant as it is.
+ * deployment would be valid again the day this machine is attached there. A
+ * machine with no credential file does not count. Every other re-attach, a key
+ * rotation that stays scoped and narrowing a machine-wide attachment included,
+ * leaves the grant as it is.
  *
  * The key reaches `writeControlPlaneCredential` and nothing else. It is not
  * logged, not returned, and never enters settings.json, which keeps carrying the
@@ -614,7 +620,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // record beside a machine-wide credential, or beside none, was left by a
   // writer that did not clear it (an older build's re-attach or detach).
   const keepScope = holdsScopedFor(previous, endpoint);
-  const clearsHistoryGrant = replacesPersonalDevice(mode, previous);
+  const clearsHistoryGrant = replacesPersonalDevice(mode, prior, previous);
 
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
@@ -931,7 +937,8 @@ function modeForAttach(
  * has always written, the same keys in the same order, so a machine attachment
  * stays byte-identical; scoped is v2 with its mode last, the order the schema's
  * own parse gives and the terminal command's captured file has. The suite
- * compares the written bytes with that file, so the two cannot drift apart.
+ * compares the written bytes with a literal in that order, and the order of the
+ * keys with that captured file, so the two cannot drift apart.
  */
 function credentialFor(
   mode: AttachmentMode,
@@ -951,14 +958,22 @@ function credentialFor(
 }
 
 /**
- * Whether this attach replaces a personal device's credential with a
- * machine-wide one, for the deployment it was attached to or any other. A
- * credential this build cannot read is not counted: nothing says what it was.
+ * Whether this attach replaces what was, or may have been, a personal device's
+ * credential with a machine-wide one, for the deployment it was attached to or
+ * any other. Every read passed is asked about, so a change between the early read
+ * and the later one cannot hide a personal device.
  */
-function replacesPersonalDevice(mode: AttachmentMode, previous: CredentialFileRead): boolean {
-  return (
-    mode === 'machine' && previous.usable && attachmentModeOf(previous.credential) === 'scoped'
-  );
+function replacesPersonalDevice(mode: AttachmentMode, ...reads: CredentialFileRead[]): boolean {
+  return mode === 'machine' && reads.some(mayBePersonalDevice);
+}
+
+/**
+ * Whether a credential read is a personal device's, or could be. A usable one
+ * says; a file that exists but cannot be used does not, and may be a scoped
+ * credential a newer build wrote, so it counts. No file at all does not.
+ */
+function mayBePersonalDevice(read: CredentialFileRead): boolean {
+  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
 }
 
 /**

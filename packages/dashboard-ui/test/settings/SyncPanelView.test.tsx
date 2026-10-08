@@ -177,4 +177,44 @@ describe('SyncPanelView', () => {
     const html = render({ onSyncNow: vi.fn() });
     expect(html).toContain('Sends what is queued above');
   });
+
+  // ─── A scoped attachment with nothing in its scope ──────────────────────────
+  //
+  // A scoped attachment counts only its enrolled repositories, so its store can
+  // be full while it has no bar to draw, and "Nothing recorded yet" over that
+  // store would be false. Each of the two causes has its own sentence.
+
+  it('says no repository is enrolled, and how to enroll one, when the scope is empty', () => {
+    const html = render({ state: { status: 'nothing-in-scope', enrolled: 0 } });
+    expect(html).toContain('No repository on this machine is enrolled for');
+    // The deployment is interpolated, so allow a text separator either side of it.
+    expect(html).toMatch(
+      /enrolled for (?:<!-- -->)?plane\.example(?:<!-- -->)?, so none of this machine’s activity is sent to it\./,
+    );
+    expect(html).toContain('aka enroll</code>');
+    expect(html).toContain('inside a work repository to add one.');
+    expect(html).not.toContain('Nothing recorded yet');
+    expect(html).not.toContain('Nothing from an enrolled repository');
+    expect(html).not.toContain('role="meter"');
+  });
+
+  it('says nothing from an enrolled repository is sent or queued yet when the scope holds one', () => {
+    const html = render({ state: { status: 'nothing-in-scope', enrolled: 2 } });
+    expect(html).toContain('Nothing from an enrolled repository has been sent or queued yet.');
+    expect(html).toContain('Activity anywhere else on this machine stays on it.');
+    expect(html).not.toContain('aka enroll');
+    expect(html).not.toContain('Nothing recorded yet');
+    expect(html).not.toContain('role="meter"');
+  });
+
+  // The control is offered wherever a pass could be asked for, and a pass held
+  // off by the breaker must say so here too, or the button appears to do nothing.
+  it('offers a pass with nothing in scope, as with nothing recorded, and says when it is held off', () => {
+    const state = { status: 'nothing-in-scope', enrolled: 1 } as const;
+    expect(render({ state, onSyncNow: vi.fn() })).toContain('Sync now');
+
+    const held = render({ state, onSyncNow: vi.fn(), paused: true });
+    expect(held).toContain('paused after repeated failures');
+    expect(held).toContain('disabled');
+  });
 });

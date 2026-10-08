@@ -74,6 +74,14 @@ export type SyncPanelState =
   | { status: 'consent-stale' }
   | { status: 'credential-unusable'; detail: string }
   | { status: 'nothing-recorded' }
+  // A SCOPED attachment whose enrolled repositories hold nothing to count. Its
+  // own member rather than `nothing-recorded`, because a scoped attachment
+  // counts only what its scope covers: its store can be full of activity from
+  // repositories it does not enroll, and "Nothing recorded yet" over that store
+  // would be false. `enrolled` is how many identities the scope enrolls for
+  // this deployment (repositories, and web-chat accounts, though nothing writes
+  // an account entry yet), so a scope with none can say how to add one.
+  | { status: 'nothing-in-scope'; enrolled: number }
   | { status: 'ready'; kinds: readonly SyncKindRow[] };
 
 export interface SyncPanelViewProps {
@@ -176,7 +184,13 @@ export function SyncPanelView({
   startError,
   localOnly,
 }: SyncPanelViewProps) {
-  const canSync = state.status === 'ready' || state.status === 'nothing-recorded';
+  // Wherever a pass could be asked for: the machine shares its history and its
+  // key works. A scoped attachment with nothing in its scope is one of those, as
+  // a machine with nothing recorded is.
+  const canSync =
+    state.status === 'ready' ||
+    state.status === 'nothing-recorded' ||
+    state.status === 'nothing-in-scope';
   // Only where a pass could otherwise be asked for. In every other state the
   // machine is not sending for a reason the reader can act on, and a second
   // "paused" beside it would be two answers to one question.
@@ -210,6 +224,20 @@ export function SyncPanelView({
         )}
         {state.status === 'nothing-recorded' && (
           <p className="text-ui text-text-2">Nothing recorded yet.</p>
+        )}
+        {state.status === 'nothing-in-scope' && state.enrolled === 0 && (
+          <p className="text-ui text-text-2">
+            No repository on this machine is enrolled for {deployment}, so none of this machine’s
+            activity is sent to it. Run{' '}
+            <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">aka enroll</code>{' '}
+            inside a work repository to add one.
+          </p>
+        )}
+        {state.status === 'nothing-in-scope' && state.enrolled > 0 && (
+          <p className="text-ui text-text-2">
+            Nothing from an enrolled repository has been sent or queued yet. Activity anywhere else
+            on this machine stays on it.
+          </p>
         )}
 
         {state.status === 'ready' &&

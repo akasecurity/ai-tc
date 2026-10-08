@@ -462,9 +462,11 @@ function nextWebChatCapture(
  * personal device's written by a newer build. It holds whichever deployment the
  * credential was for, because a grant names its deployment and one for another
  * deployment would be valid again the day this machine is attached there. A
- * machine with no credential file does not count. Every other re-attach, a key
- * rotation that stays scoped and narrowing a machine-wide attachment included,
- * leaves the grant as it is.
+ * machine with no credential file counts only when its settings still hold an
+ * enrolled list, which is written only for a personal device; a grant with no
+ * list and no credential file is kept. Every other re-attach, a key rotation
+ * that stays scoped and narrowing a machine-wide attachment included, leaves the
+ * grant as it is.
  *
  * The key reaches `writeControlPlaneCredential` and nothing else. It is not
  * logged, not returned, and never enters settings.json, which keeps carrying the
@@ -648,7 +650,17 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // the settings write holds and by the order of the two writes below.
   const keepsStoredList = (stored: unknown): boolean =>
     who !== undefined && keepScope && isAttachmentScopeBoundTo(stored, endpoint, who);
-  const clearsHistoryGrant = replacesPersonalDevice(mode, prior, previous);
+  // A machine-wide write over anything that was, or may have been, a personal
+  // device clears the history grant (see the docblock): either read of the
+  // credential says it is or may be a personal device's, or there is no credential
+  // file and the settings the write lands on still hold an enrolled list, which is
+  // written only for a personal device. Judged inside the write, like the list.
+  const clearsHistoryGrant = (current: WorkspaceSettings): boolean =>
+    replacesPersonalDevice(mode, prior, previous) ||
+    (mode === 'machine' &&
+      !previous.usable &&
+      previous.reason === 'absent' &&
+      current.attachmentScope !== undefined);
   // A file this build cannot parse may be a personal device's credential a newer
   // build wrote, and this attach goes ahead over it only because the caller named
   // the mode. Its BYTES are kept, so a failed settings write below puts that file
@@ -714,8 +726,9 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       attachmentScope: scopeRecordFor(current.attachmentScope, endpoint, who, keepsStoredList),
       // SPELLED, because this writer merges: leaving the key out would keep the
       // grant. Only when a personal device is being replaced by a machine-wide
-      // one; otherwise the key is absent and the grant stands.
-      ...(clearsHistoryGrant ? { historySyncConsent: undefined } : {}),
+      // one, or the credential file is gone beside an enrolled list; otherwise the
+      // key is absent and the grant stands.
+      ...(clearsHistoryGrant(current) ? { historySyncConsent: undefined } : {}),
     }));
   };
   // Why a settings write failed: an administrator's lock, or a write that did not land.

@@ -543,10 +543,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // nothing of it. The administrator's name in the refusal sentence is their
       // own, and refusalLine strips it for the terminal.
       if (prior.usable && attachmentModeOf(prior.credential) === 'scoped') {
-        const notice =
-          prior.credential.endpoint === endpoint
-            ? wideningNotice(endpoint)
-            : MANAGED_ELSEWHERE_NOTICE;
+        // The decision's own answer, so another spelling of this deployment is
+        // named as this one, the way the widening it is counts it.
+        const notice = modeDecision.widening ? wideningNotice(endpoint) : MANAGED_ELSEWHERE_NOTICE;
         io.out(`${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`);
       }
     } else if (modeDecision.widening) {

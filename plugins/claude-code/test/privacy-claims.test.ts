@@ -169,6 +169,55 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
   });
 });
 
+/**
+ * A page that tells a reader a personal device keeps other repositories local
+ * has to say, in the same breath, what that device still sends. The device
+ * report, the policy pull and the check for device commands are not limited to
+ * the repositories a user enrolls, and the report's finding counts and dates
+ * cover every repository on the machine. A page that stops at "stays local"
+ * reads as if nothing derived from the other repositories leaves.
+ */
+const SCOPED_READMES = READMES.filter((r) => r.text.includes('--scoped'));
+const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
+  .split(/^## /m)
+  .find((section) => section.startsWith('Data in transit'));
+
+describe('scoped attachment claims', () => {
+  it('covers the pages that describe it, and the security page', () => {
+    expect(SCOPED_READMES.map((r) => r.name)).toEqual(['README.md', 'cli/README.md']);
+    expect(SECURITY_DATA_IN_TRANSIT).toBeDefined();
+  });
+
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    const claim = paragraphs(text)
+      .filter((p) => p.includes('--scoped'))
+      .join('\n')
+      .replace(/\s+/g, ' ');
+
+    it('says a personal device still sends a device report covering every repository', () => {
+      expect(claim).toMatch(/device report/i);
+      expect(claim).toMatch(/across every repository/i);
+      expect(claim).toMatch(/policy/i);
+    });
+
+    it('limits what is forwarded to activity, not to the repositories themselves', () => {
+      expect(claim).toMatch(
+        /only activity from the repositories you enroll|activity only from the repositories enrolled/i,
+      );
+      expect(claim).not.toMatch(/forwards only the repositories you enroll/i);
+    });
+  });
+
+  it('says in SECURITY.md that the report, the policy pull and the command check go either way', () => {
+    const section = (SECURITY_DATA_IN_TRANSIT ?? '').replace(/\s+/g, ' ');
+    expect(section).toMatch(/device report/i);
+    expect(section).toMatch(/counted across every repository on it, enrolled or not/i);
+    expect(section).toMatch(/when a session runs on the machine, in any repository/i);
+    expect(section).toMatch(/the exception: they go the same way on either kind of attachment/i);
+    expect(section).not.toMatch(/\ball of the above\b/i);
+  });
+});
+
 describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   const footnote = footnoteOf(text);
 

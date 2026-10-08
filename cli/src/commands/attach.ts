@@ -80,12 +80,16 @@ Registers this machine against your organization's AKA deployment.
   --key-stdin     Read the access key from stdin instead of prompting.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
-  --scoped   A personal device: send only activity from the repositories you
-             enroll with \`aka enroll\`. None is sent until you enroll one. The
-             policy pull and a scheduled device report (including a device
-             identifier, policy counts, and finding counts and dates across
-             every repository on this machine) still go.
-  --machine  A machine your organization owns: send everything it records.
+  --scoped   A personal device: send activity only from the repositories you
+             enroll with \`aka enroll\`; none is sent until you enroll one.
+             Any session on this machine, in an enrolled repository or not,
+             still fetches the policy and checks for device commands (at most
+             every 15 minutes), and sends a device report (at most hourly) with
+             a device identifier, host name, versions, detection packs, policy
+             counts, and finding counts and dates across every repository on
+             this machine.
+  --machine  A machine your organization owns: send activity from every
+             project on this machine.
 
   With neither flag, a re-attach to the same deployment keeps the mode it has;
   otherwise a terminal is asked which, and a run with no terminal attaches
@@ -231,8 +235,8 @@ const NEEDS_MODE_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send only activity from the repositories you enroll, or with ' +
-  '--machine to send everything this machine records. Nothing was changed.';
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
+  '--machine to send activity from every project on this machine. Nothing was changed.';
 
 /**
  * Said when the credential on disk no longer fits the mode that was settled.
@@ -794,7 +798,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           `  organization  ${printableForTerminal(identity.tenantName, 200)}`,
           `  you           ${printableForTerminal(identity.userEmail, 320)}`,
           '',
-          'Only activity from repositories you enroll is sent to that deployment, and',
+          'Activity is sent to that deployment only from repositories you enroll, and',
           'the Data Shares register a scan records goes only for an enrolled',
           'repository — destinations and call sites, never source text. Activity',
           'anywhere else stays on this machine. A command you run inside an enrolled',
@@ -808,13 +812,15 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
             ? 'The repositories already enrolled here are kept: `aka enroll --list` shows them.'
             : 'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
           '',
-          // The device report is sent in either mode, on a schedule, and the scope
-          // does not gate it: its finding counts and dates cover every repository
-          // on this machine, enrolled or not.
-          "This machine still fetches that deployment's policy, and sends it a device",
-          'report on a schedule, including a device identifier, host name, versions,',
-          'detection packs, policy counts, and finding counts and dates across every',
-          'repository on this machine.',
+          // The policy pull, the check for device commands and the device report
+          // happen in either mode, when a session runs anywhere on the machine, and
+          // the scope does not gate them: the report's finding counts and dates
+          // cover every repository on this machine, enrolled or not.
+          'Any session on this machine, in an enrolled repository or not, still',
+          "fetches that deployment's policy and checks it for device commands (at",
+          'most every 15 minutes), and sends it a device report (at most hourly) with',
+          'a device identifier, host name, versions, detection packs, policy counts,',
+          'and finding counts and dates across every repository on this machine.',
           // An older aka writes a version-1 credential on every attach, which is
           // machine-wide. Said here because the reader is the one who would run it.
           'An aka older than this one that re-attaches this machine makes it machine-wide.',
@@ -1173,14 +1179,15 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '',
       'How much of this machine should AKA send?',
       '',
-      '  A personal device sends only the activity of repositories you enroll',
-      '  with `aka enroll`, and none until you enroll one. It still fetches',
-      "  your organization's policy, and sends it a device report on a schedule,",
-      '  including a device identifier, host name, versions, detection packs,',
-      '  policy counts, and finding counts and dates across every repository',
-      '  on this machine, enrolled or not.',
-      '  A machine your organization owns sends everything it records, from',
-      '  every repository.',
+      '  A personal device sends activity only from the repositories you enroll',
+      '  with `aka enroll`, and none until you enroll one. Any session on this',
+      "  machine, in an enrolled repository or not, still fetches your organization's",
+      '  policy and checks for device commands (at most every 15 minutes), and',
+      '  sends a device report (at most hourly) with a device identifier, host',
+      '  name, versions, detection packs, policy counts, and finding counts and',
+      '  dates across every repository on this machine.',
+      '  A machine your organization owns sends activity from every project on',
+      '  this machine.',
       '',
     ].join('\n'),
   );
@@ -1205,13 +1212,13 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
   io.out(
     [
       '',
-      `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: it sends only`,
-      'activity from the repositories enrolled on it. With --machine it sends',
-      'everything it records, from every repository, and the enrolled list is cleared.',
+      `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: activity is`,
+      'sent only from the repositories enrolled on it. With --machine, activity from',
+      'every project on this machine is sent, and the enrolled list is cleared.',
       '',
     ].join('\n'),
   );
-  const answer = (await io.ask('Send everything this machine records? [y/N]: '))
+  const answer = (await io.ask('Send activity from every project on this machine? [y/N]: '))
     .trim()
     .toLowerCase();
   return answer === 'y' || answer === 'yes';

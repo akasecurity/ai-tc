@@ -47,9 +47,10 @@ import { refusalLine } from '../lib/refusal-line.ts';
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
-// change is what later forwards decide. Every forward path reads the scope
-// record when it runs, so an enrollment applies from the next event and an
-// unenrollment stops the next one.
+// change is the record later sends decide by. A session or a scan that starts
+// after the edit reads the new record, so from then on an enrollment applies to
+// it and an unenrollment keeps the repository out of it. Work already under way
+// may have read the record before the edit, and nothing here says otherwise.
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
 // envelope keys a newer build wrote. The edits append to, or take out of, the
@@ -69,9 +70,10 @@ const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --repo <clone-url | host/owner/repo>
        aka enroll --list
 
-On a machine attached in the scoped mode, only activity in the repositories
-enrolled here is sent to the deployment; activity anywhere else stays on this
-machine.
+On a machine attached in the scoped mode, activity is sent to the deployment
+only from the repositories enrolled here; activity anywhere else stays on this
+machine. The policy pull and the device report are not limited to them: the
+report counts findings across every repository on the machine.
 
   [path]         Enroll the repository this directory is in (default: .).
   --repo <repo>  Enroll by clone URL, or by key, as in github.com/acme/payments-api.
@@ -219,12 +221,16 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   }
   // The keys actually removed, as stored: what `aka enroll --list` showed.
   const repository = edit.changed.map(keyText).join(', ');
-  // The owed markers stay (nothing clears them), the scoped read is what keeps
-  // those rows unsent, and retention holds their bodies until the machine
-  // detaches. Said here so an unenroll is not mistaken for erasing anything.
+  // The owed markers stay (nothing clears them) and the scoped read is what
+  // keeps those rows unsent for now: enrolling the repository again, or a
+  // machine-wide attach to the same deployment, makes them sendable. Said here
+  // so an unenroll is not mistaken for erasing anything, or for a promise that
+  // they stay unsent. Nothing is promised about a scan already running either.
   io.out(
-    `Unenrolled ${repository}. Its activity stays on this machine and is no longer sent to ${name}.\n` +
-      'Anything from it that was waiting to be sent is held on this machine, unsent, until you detach.\n',
+    `Unenrolled ${repository}. From now on, new sessions and scans do not send its activity to ${name}.\n` +
+      'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
+      'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
+      'makes it sendable again.\n',
   );
   return 0;
 }

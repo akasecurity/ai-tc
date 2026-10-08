@@ -16,6 +16,8 @@ import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   controlPlaneCredentialPath,
+  dataDir as dataDirOf,
+  openLocalDatabase,
   readControlPlaneCredentialFile,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
@@ -337,6 +339,48 @@ function plantUntrustedCredential(): void {
     `${JSON.stringify({ specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1 })}\n`,
   );
   symlinkSync(target, credentialFile());
+}
+
+/** Captures recorded before any attach: one per enrolled key, one for a key nobody enrolled, one with none. */
+function seedCaptures(): void {
+  const db = openLocalDatabase(dataDirOf(base));
+  try {
+    db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+    for (const [id, key] of [
+      ['cap-repo', REPO],
+      ['cap-ledger', LEDGER],
+      ['cap-new', NEW_REPO],
+      ['cap-unkeyed', undefined],
+    ] as const) {
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2026-08-01T00:01:00.000Z',
+        content: `text of ${id}`,
+        ...(key === undefined ? {} : { attributes: { scope_key: key } }),
+      });
+    }
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Every capture marked to send, read WITHOUT a scope: a scoped writer that
+ * marked too much shows up here, where a scoped read would hide it.
+ */
+function owedCaptures(): string[] {
+  const db = openLocalDatabase(dataDirOf(base));
+  try {
+    return db.historySync
+      .pendingCaptureRows(10, Date.now() + 1)
+      .map((row) => row.id)
+      .sort();
+  } finally {
+    db.close();
+  }
 }
 
 const fixture = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -1586,6 +1630,43 @@ describe('what a scoped attach writes', () => {
     expect(exits).toEqual([1]);
     expect(second.errors()).toContain(LEFT_AS_IT_WAS);
     expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+  });
+});
+
+describe('what an attach granted --sync-history marks to send of what was recorded before it', () => {
+  it('marks nothing on a first attach as a personal device, since nothing is enrolled', async () => {
+    seedCaptures();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+    expect(owedCaptures()).toEqual([]);
+  });
+
+  it('marks only the enrolled repositories on a key rotation of a personal device', async () => {
+    seedCaptures();
+    attachedScoped(BOUND);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(owedCaptures()).toEqual(['cap-ledger', 'cap-repo']);
+  });
+
+  // The control: the unscoped read sees every mark a machine-wide grant makes,
+  // so the empty answer above is not a read that sees nothing.
+  it('marks every capture on a machine-wide attach', async () => {
+    seedCaptures();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(owedCaptures()).toEqual(['cap-ledger', 'cap-new', 'cap-repo', 'cap-unkeyed']);
   });
 });
 

@@ -51,14 +51,33 @@ function boxLabel(): string {
   return label.textContent;
 }
 
+/** The notice above the per-scan forwarding box. */
+function noticeText(): string {
+  const notice = container
+    .querySelector('input[type="checkbox"]')
+    ?.closest('div')
+    ?.querySelector('p');
+  if (notice === null || notice === undefined)
+    throw new Error('no notice above the forwarding box');
+  return notice.textContent;
+}
+
+// The notices are compared whole, as rendered, so a false sentence that keeps the
+// words a substring check looks for cannot pass. Spelled out here and never read
+// from the page's source: a change to one is made here too.
+const SCOPED_NOTICE =
+  `This machine is attached to ${LABEL} as a personal device. The Data Shares register this scan ` +
+  'records — destinations and call sites, never source text — is sent there only when the project ' +
+  'is a repository enrolled with `aka enroll` and every repository nested in it is enrolled too; ' +
+  'otherwise it stays on this machine.';
+const MACHINE_NOTICE =
+  `This machine is attached to ${LABEL}. The Data Shares register this scan records — ` +
+  'destinations and call sites, never source text — is sent there.';
+
 describe('the Scan page notice on a scoped machine', () => {
   it('says the register goes only when the project and every repository nested in it are enrolled', () => {
     mount('scoped');
-    const text = container.textContent;
-    expect(text).toContain(`This machine is attached to ${LABEL} as a personal device`);
-    expect(text).toContain('only when the project is a repository enrolled with `aka enroll`');
-    expect(text).toContain('and every repository nested in it is enrolled too');
-    expect(text).toContain('otherwise it stays on this machine');
+    expect(noticeText()).toBe(SCOPED_NOTICE);
     expect(boxLabel()).toBe(
       `Send the Data Shares register to ${LABEL} if the project and every repository nested in it are enrolled`,
     );
@@ -66,7 +85,7 @@ describe('the Scan page notice on a scoped machine', () => {
 
   it('keeps the machine-wide wording on a machine-wide machine', () => {
     mount('machine');
-    expect(container.textContent).toContain('is sent there.');
+    expect(noticeText()).toBe(MACHINE_NOTICE);
     expect(container.textContent).not.toContain('aka enroll');
     expect(boxLabel()).toBe(`Send the Data Shares register to ${LABEL}`);
   });
@@ -75,8 +94,7 @@ describe('the Scan page notice on a scoped machine', () => {
     // An unreported mode is not a scoped one, and the wider claim is the safe
     // one: the notice says the register is sent, with no enrolment condition.
     mount(undefined);
-    expect(container.textContent).toContain(`This machine is attached to ${LABEL}.`);
-    expect(container.textContent).toContain('is sent there.');
+    expect(noticeText()).toBe(MACHINE_NOTICE);
     expect(container.textContent).not.toContain('personal device');
     expect(container.textContent).not.toContain('aka enroll');
     expect(boxLabel()).toBe(`Send the Data Shares register to ${LABEL}`);

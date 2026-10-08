@@ -51,7 +51,8 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // would. Armed, one numbered credential write throws (counted from the last
 // reset, so a case can fail the write-back of a rollback and let the first
 // write through), after running a hook that can change the disk first. Armed,
-// the history preview answers with counts a case can look for, and every read
+// once, a hook runs just before the next credential write, after every check an
+// attach makes. Armed, the history preview answers with counts a case can look for, and every read
 // of it is counted. Every settings write is counted, and every call that marks
 // the capture backlog owed is recorded with its arguments.
 const stand = vi.hoisted(() => ({
@@ -60,6 +61,7 @@ const stand = vi.hoisted(() => ({
   failCredentialWriteAt: undefined as number | undefined,
   failCredentialRemoval: false,
   whenCredentialWriteFails: undefined as (() => void) | undefined,
+  beforeNextCredentialWrite: undefined as (() => void) | undefined,
   beforeNextSettingsWrite: undefined as (() => void) | undefined,
   preview: undefined as { sessions: number; days: number } | undefined,
   previewReads: 0,
@@ -86,6 +88,10 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     writeControlPlaneCredential: (
       ...args: Parameters<typeof actual.writeControlPlaneCredential>
     ): void => {
+      // One shot, cleared before it runs, like beforeNextSettingsWrite.
+      const before = stand.beforeNextCredentialWrite;
+      stand.beforeNextCredentialWrite = undefined;
+      before?.();
       stand.credentialWrites += 1;
       if (stand.failCredentialWriteAt === stand.credentialWrites) {
         stand.whenCredentialWriteFails?.();
@@ -160,9 +166,16 @@ const NOTE_FAILED =
 const NOTE_SUPERSEDED =
   'The credential file changed while this attach was saving, so it was not put back and is ' +
   'left as it is now. Run `aka status` to see what this machine is attached to.';
+const NOTHING_ENROLLED =
+  'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.';
 const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
+const MANAGEMENT_CHANGED_WHILE_WAITING =
+  "whether an administrator manages this machine's connection changed while this command " +
+  'waited, so the attachment was not written. Nothing was changed on this machine; run the ' +
+  'command again.';
+const NOTHING_CHANGED = ' Nothing was changed on this machine.';
 const SCOPED_HISTORY = 'Send unsent activity from the repositories you enroll? [y/N]: ';
 const MACHINE_HISTORY = "Send this machine's unsent activity? [y/N]: ";
 
@@ -227,6 +240,7 @@ afterEach(() => {
   stand.failCredentialWriteAt = undefined;
   stand.failCredentialRemoval = false;
   stand.whenCredentialWriteFails = undefined;
+  stand.beforeNextCredentialWrite = undefined;
   stand.beforeNextSettingsWrite = undefined;
   stand.preview = undefined;
   stand.previewReads = 0;
@@ -841,6 +855,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
     expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
     expect(h.output()).toContain('The repositories already enrolled here are kept');
     expect(h.output()).not.toContain('cleared because');
+    expect(h.output()).not.toContain('could not read');
   });
 
   it('through --key-stdin, with no terminal', async () => {
@@ -1315,7 +1330,7 @@ describe('the enrolled list is kept only for the organization and account that b
     );
   });
 
-  it('says nothing was cleared when the list it replaced held nothing this build can read', async () => {
+  it('says how many entries it could not read were cleared, when the list it replaced held nothing else', async () => {
     attachedScoped({
       ...BOUND,
       tenantName: 'Other Org',
@@ -1329,8 +1344,69 @@ describe('the enrolled list is kept only for the organization and account that b
     expect(storedSettings().attachmentScope).toEqual(FRESH);
     expect(h.output()).not.toContain('cleared because');
     expect(h.output()).toContain(
-      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+      'This version of aka could not read 1 entry in the list on this machine; it was cleared.\n' +
+        NOTHING_ENROLLED,
     );
+  });
+
+  it.each<[string, unknown]>([
+    [
+      'an organization name longer than this version accepts',
+      { ...BOUND, tenantName: 'x'.repeat(201) },
+    ],
+    ['entries that are not a list', { endpoint: ENDPOINT, entries: 'not a list' }],
+    ['a value that is not a record', 'not a record'],
+  ])('says a list this version cannot read was cleared: %s', async (_how, record) => {
+    attachedScoped(record);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'This version of aka could not read the list on this machine; it was cleared.\n' +
+        NOTHING_ENROLLED,
+    );
+    expect(h.output()).not.toContain('cleared because');
+  });
+
+  it('counts what it could not read beside what it could, when both were cleared', async () => {
+    attachedScoped({
+      ...BOUND_AND_NEWER,
+      tenantName: 'Other Org',
+      entries: [
+        ...BOUND_AND_NEWER.entries,
+        { kind: 'org', identity: 'example-team', enrolledAt: ISO },
+      ],
+    });
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'it names an organization other than the one this key verified as.\n' +
+        'This version of aka could not read 2 entries in the list on this machine; they were cleared.\n' +
+        NOTHING_ENROLLED,
+    );
+  });
+
+  it.each<[string, unknown]>([
+    ['no list is stored', undefined],
+    ['null stands where the list would be', null],
+    ['the list it replaced was empty', { ...FRESH, tenantName: 'Other Org' }],
+  ])('says nothing of a list it could not read when %s', async (_how, record) => {
+    attachedScoped(record);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).not.toContain('could not read');
+    expect(h.output()).toContain(NOTHING_ENROLLED);
   });
 });
 
@@ -1449,6 +1525,364 @@ describe('a machine an administrator manages attaches machine-wide', () => {
     expect(h.calls).toEqual(['verify']);
     expect(h.errors()).toContain(`${SCOPED_MANAGED} Nothing was changed on this machine.`);
     expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+});
+
+describe('the administrator overlay is read again after the round trip, for every attach', () => {
+  /** A machine attached machine-wide to ENDPOINT by an earlier run of this command. */
+  const attachedMachineWide = async (): Promise<void> => {
+    await runAttach(
+      ['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'],
+      harness({ interactive: false, stdin: KEY_1 }).deps,
+    );
+  };
+  const nothing = (): Promise<void> => Promise.resolve();
+  const pinnedElsewhere = (): ManagedSettings =>
+    ManagedSettings.parse({
+      organization: ADMIN,
+      values: { controlPlane: { endpoint: OTHER_ENDPOINT } },
+    });
+  /** What is on disk, to compare before and after a run that must write nothing. */
+  const onDisk = () => ({
+    credential: credentialText(),
+    settings: existsSync(settingsFile()) ? readFileSync(settingsFile(), 'utf8') : undefined,
+  });
+
+  /**
+   * One attach whose overlay is `start` when it begins and `arrives` once the key
+   * has been verified. Called after the arrange, so the run reads the disk it left.
+   */
+  const attachWhileOverlayChanges = async (
+    flags: readonly string[],
+    start: ManagedSettings | null,
+    arrives: ManagedSettings | null,
+    script: { interactive: boolean; answers?: readonly string[] } = { interactive: false },
+  ) => {
+    let overlay = start;
+    const h = harness({
+      ...script,
+      stdin: KEY_2,
+      managed: () => overlay,
+      duringVerify: () => {
+        overlay = arrives;
+      },
+    });
+    await runAttach(['--url', ENDPOINT, ...flags, '--no-sync-history'], h.deps);
+    return h;
+  };
+
+  /** The run was refused with nothing written: no write was attempted and the disk is as it was. */
+  const expectNothingWritten = (
+    h: ReturnType<typeof harness>,
+    before: ReturnType<typeof onDisk>,
+  ): void => {
+    expect(exits).toEqual([1]);
+    expect(stand.credentialWrites).toBe(0);
+    expect(stand.settingsWrites).toBe(0);
+    expect(onDisk()).toEqual(before);
+    expect(h.output()).not.toContain('Attached to');
+  };
+
+  it.each<[string, readonly string[], boolean, readonly string[], () => Promise<void>]>([
+    ['--machine with no terminal', ['--machine', '--key-stdin'], false, [], nothing],
+    ['no flag and no terminal, on a first attach', ['--key-stdin'], false, [], nothing],
+    [
+      'no flag, and the answer "no" to the personal-device question',
+      [],
+      true,
+      [KEY_2, 'n'],
+      nothing,
+    ],
+    [
+      'no flag, on a rotation of a machine-wide attachment',
+      ['--key-stdin'],
+      false,
+      [],
+      attachedMachineWide,
+    ],
+    ['--scoped with no terminal', ['--scoped', '--key-stdin'], false, [], nothing],
+    [
+      'no flag, on a rotation of a personal device',
+      ['--key-stdin'],
+      false,
+      [],
+      () => {
+        attachedScoped(BOUND);
+        return Promise.resolve();
+      },
+    ],
+  ])(
+    'refuses %s when another deployment was pinned while it waited',
+    async (_how, flags, interactive, answers, arrange) => {
+      await arrange();
+      const before = onDisk();
+      stand.credentialWrites = 0;
+      stand.settingsWrites = 0;
+
+      const h = await attachWhileOverlayChanges(flags, null, pinnedElsewhere(), {
+        interactive,
+        answers,
+      });
+
+      expectNothingWritten(h, before);
+      expect(h.errors()).toContain(
+        `${connectionRefusalMessage({ reason: 'pinned-endpoint', organization: ADMIN, endpoint: OTHER_ENDPOINT })}${NOTHING_CHANGED}`,
+      );
+      expect(h.errors()).not.toContain(SCOPED_MANAGED);
+    },
+  );
+
+  it.each<[string, () => void, readonly string[], ManagedSettings, string]>([
+    [
+      'pinned the mode to standalone',
+      () => undefined,
+      [],
+      ManagedSettings.parse({ organization: ADMIN, values: { runMode: 'standalone' } }),
+      connectionRefusalMessage({ reason: 'held-standalone', organization: ADMIN }),
+    ],
+    [
+      'locked the mode of a machine that reads as standalone',
+      () => undefined,
+      [],
+      ManagedSettings.parse({ organization: ADMIN, lockedFields: ['runMode'] }),
+      connectionRefusalMessage({ reason: 'held-standalone', organization: ADMIN }),
+    ],
+    [
+      'named the deployment otherwise',
+      () => undefined,
+      ['--label', 'Mine'],
+      ManagedSettings.parse({
+        organization: ADMIN,
+        values: { controlPlane: { endpoint: ENDPOINT, label: 'Example Prod' } },
+      }),
+      connectionRefusalMessage({ reason: 'pinned-label', organization: ADMIN }),
+    ],
+    [
+      'locked a name this attach leaves off',
+      () => {
+        applyOnboarding(
+          {
+            runMode: 'attached',
+            controlPlane: { endpoint: ENDPOINT, attachedAt: ISO, label: 'Old' },
+          },
+          base,
+          null,
+        );
+      },
+      [],
+      ManagedSettings.parse({ organization: ADMIN, lockedFields: ['runMode'] }),
+      `${connectionRefusalMessage({ reason: 'label-required', organization: ADMIN })} Attach with the --label it already has, as \`aka status\` shows it.`,
+    ],
+  ])(
+    'refuses a machine-wide attach when the administrator %s while it waited',
+    async (_how, arrange, extra, arrives, says) => {
+      arrange();
+      const before = onDisk();
+      stand.credentialWrites = 0;
+      stand.settingsWrites = 0;
+
+      const h = await attachWhileOverlayChanges(
+        ['--machine', '--key-stdin', ...extra],
+        null,
+        arrives,
+      );
+
+      expectNothingWritten(h, before);
+      expect(h.errors()).toContain(`${says}${NOTHING_CHANGED}`);
+    },
+  );
+
+  it('does not widen a personal device whose administrator stopped managing it while it waited', async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+
+    const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
+
+    expectNothingWritten(h, before);
+    expect(h.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+    expect(h.errors()).not.toContain(CHANGED_WHILE_WAITING);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: KEY_1 },
+    });
+    expect(storedSettings().attachmentScope).toEqual(BOUND);
+  });
+
+  it('does not attach a first attach machine-wide unasked once the administrator stopped managing it while it waited', async () => {
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+
+    const h = await attachWhileOverlayChanges([], planeOnly(), null, {
+      interactive: true,
+      answers: [KEY_2],
+    });
+
+    expectNothingWritten(h, before);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(h.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+    expect(h.errors()).not.toContain(CHANGED_WHILE_WAITING);
+  });
+
+  it("does not take the administrator's word for a widening once they stopped managing the machine, where a terminal would ask", async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+
+    const waited = await attachWhileOverlayChanges(['--machine'], planeOnly(), null, {
+      interactive: true,
+      answers: [KEY_2],
+    });
+
+    // Under management no question was asked, so none was answered: the run stops.
+    expectNothingWritten(waited, before);
+    expect(waited.asked).toEqual([ACCESS_KEY]);
+    expect(waited.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+
+    // The next run, on a machine nobody manages, asks the question, and "no" leaves it as it was.
+    exits = [];
+    const next = harness({ interactive: true, answers: [KEY_2, 'n'] });
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], next.deps);
+
+    expect(next.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(exits).toEqual([1]);
+    expect(next.errors()).toContain(
+      'not attaching machine-wide. Nothing was changed on this machine.',
+    );
+    expect(onDisk()).toEqual(before);
+  });
+
+  it('answers every late check from one read of the overlay', async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+    // Once the key is verified, the first read says this deployment is pinned and every later
+    // one says nothing is managed. Answered from that one read, a scoped write is refused.
+    // Answered from two, the check that passes a pin of this deployment would read first and the
+    // check for a scoped write would read nothing managed, and the write would go ahead.
+    let verified = false;
+    let readsAfterVerify = 0;
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      managed: () => {
+        if (!verified) return null;
+        readsAfterVerify += 1;
+        return readsAfterVerify === 1 ? planeOnly() : null;
+      },
+      duringVerify: () => {
+        verified = true;
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expectNothingWritten(h, before);
+    expect(h.errors()).toContain(`${SCOPED_MANAGED}${NOTHING_CHANGED}`);
+    expect(readsAfterVerify).toBe(1);
+  });
+
+  describe('the notice that the enrolled list will be cleared', () => {
+    const CLEARED = 'its enrolled list will be cleared.';
+
+    it('is not said for a managed machine whose attach is stopped after the wait', async () => {
+      attachedScoped(BOUND);
+
+      const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(MANAGEMENT_CHANGED_WHILE_WAITING);
+      expect(h.output()).not.toContain(CLEARED);
+    });
+
+    it('is not said for a --machine over a personal device that is refused after the wait', async () => {
+      attachedScoped(BOUND);
+
+      const h = await attachWhileOverlayChanges(
+        ['--machine', '--key-stdin'],
+        null,
+        pinnedElsewhere(),
+      );
+
+      expect(exits).toEqual([1]);
+      expect(h.output()).not.toContain('Attaching machine-wide, as --machine asks.');
+      expect(h.output()).not.toContain(CLEARED);
+    });
+
+    it.each<[string, readonly string[], () => ManagedSettings | null, string]>([
+      [
+        'the administrator manages the machine',
+        ['--key-stdin'],
+        planeOnly,
+        `${SCOPED_MANAGED} This machine was attached to ${ENDPOINT} as a personal device; ${CLEARED}`,
+      ],
+      [
+        'a --machine is typed with no terminal',
+        ['--machine', '--key-stdin'],
+        () => null,
+        `Attaching machine-wide, as --machine asks. This machine was attached to ${ENDPOINT} as a personal device; ${CLEARED}`,
+      ],
+    ])('is said before anything is written when %s', async (_how, flags, overlay, said) => {
+      attachedScoped(BOUND);
+      const h = harness({ interactive: false, stdin: KEY_2, managed: overlay });
+      let atFirstWrite: string | undefined;
+      stand.beforeNextCredentialWrite = () => {
+        atFirstWrite = h.output();
+      };
+
+      await runAttach(['--url', ENDPOINT, ...flags, '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(atFirstWrite).toContain(said);
+      expect(h.output()).toContain(said);
+    });
+  });
+
+  it('still writes what was settled when the administrator stops managing it and the decision stands', async () => {
+    const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
+
+    expect(h.errors()).toBe('');
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('machine');
+  });
+
+  it.each<[string, readonly string[], () => Promise<void>]>([
+    ['with --machine', ['--machine', '--key-stdin'], nothing],
+    [
+      'with no flag, on a rotation of a machine-wide attachment',
+      ['--key-stdin'],
+      attachedMachineWide,
+    ],
+  ])(
+    'still attaches machine-wide %s when this deployment was pinned while it waited',
+    async (_how, flags, arrange) => {
+      await arrange();
+
+      await attachWhileOverlayChanges(flags, null, planeOnly());
+
+      expect(exits).toEqual([]);
+      expect(storedCredential()).toMatchObject({
+        usable: true,
+        credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
+      });
+      expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    },
+  );
+
+  it('refuses to keep a personal device scoped once it became managed while it waited, with no flag', async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+
+    const h = await attachWhileOverlayChanges(['--key-stdin'], null, planeOnly());
+
+    expectNothingWritten(h, before);
+    expect(h.errors()).toContain(`${SCOPED_MANAGED}${NOTHING_CHANGED}`);
   });
 });
 
@@ -1756,7 +2190,9 @@ describe('a save that fails puts the credential file back as it was, or says it 
       'your organization manages this setting on this machine, so it cannot be attached here.';
 
     // Half attached: a credential and no settings that say so, so the machine
-    // reads as standalone and the lock only bites at the settings write.
+    // reads as standalone and the lock only bites at the settings write. The lock
+    // arrives as the credential is written, after every check, so only the
+    // settings writer's refusal can catch it.
     const arrange = (): { overlay: () => ManagedSettings | null; freeze: () => void } => {
       let overlay: ManagedSettings | null = null;
       writeControlPlaneCredential(settingsDirOf(base), {
@@ -1780,8 +2216,8 @@ describe('a save that fails puts the credential file back as it was, or says it 
         interactive: false,
         stdin: KEY_2,
         managed: overlay,
-        duringVerify: freeze,
       });
+      stand.beforeNextCredentialWrite = freeze;
 
       await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
 
@@ -1799,8 +2235,8 @@ describe('a save that fails puts the credential file back as it was, or says it 
         interactive: false,
         stdin: KEY_2,
         managed: overlay,
-        duringVerify: freeze,
       });
+      stand.beforeNextCredentialWrite = freeze;
 
       await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
 
@@ -2735,6 +3171,33 @@ describe('what an attach prints of strings it did not write', () => {
     expect(h.errors()).toContain(
       `${connectionRefusalMessage({ reason: 'scoped-managed', organization: SHOWN_ORG })} ` +
         'Nothing was changed on this machine.',
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips the organization and the pinned endpoint from the refusal of another deployment pinned while it waited', async () => {
+    let overlay: ManagedSettings | null = null;
+    const h = harness({
+      interactive: false,
+      stdin: KEY_1,
+      managed: () => overlay,
+      duringVerify: () => {
+        overlay = ManagedSettings.parse({
+          organization: EVIL_ORG,
+          values: { controlPlane: { endpoint: EVIL_ENDPOINT } },
+        });
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(
+      `${connectionRefusalMessage({
+        reason: 'pinned-endpoint',
+        organization: SHOWN_ORG,
+        endpoint: SHOWN_ENDPOINT,
+      })} Nothing was changed on this machine.`,
     );
     expect(h.errors()).not.toContain(ESC);
   });

@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -39,11 +40,16 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // Stand-ins, each unarmed by default so every call reaches the real function.
 // Armed, the settings write throws, as a full disk would; or, once, another
 // writer's change lands just before it, as an `aka enroll` racing the attach
-// would. Armed, the credential write throws. Armed, the history preview answers
-// with counts a case can look for, and every read of it is counted.
+// would. Armed, one numbered credential write throws (counted from the last
+// reset, so a case can fail the write-back of a rollback and let the first
+// write through), after running a hook that can change the disk first. Armed,
+// the history preview answers with counts a case can look for, and every read
+// of it is counted.
 const stand = vi.hoisted(() => ({
   failSettingsWrite: false,
-  failCredentialWrite: false,
+  credentialWrites: 0,
+  failCredentialWriteAt: undefined as number | undefined,
+  whenCredentialWriteFails: undefined as (() => void) | undefined,
   beforeNextSettingsWrite: undefined as (() => void) | undefined,
   preview: undefined as { sessions: number; days: number } | undefined,
   previewReads: 0,
@@ -67,7 +73,11 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     writeControlPlaneCredential: (
       ...args: Parameters<typeof actual.writeControlPlaneCredential>
     ): void => {
-      if (stand.failCredentialWrite) throw new Error('credential write failed');
+      stand.credentialWrites += 1;
+      if (stand.failCredentialWriteAt === stand.credentialWrites) {
+        stand.whenCredentialWriteFails?.();
+        throw new Error('credential write failed');
+      }
       actual.writeControlPlaneCredential(...args);
     },
     readLocalHistoryPreview: (
@@ -109,14 +119,20 @@ const NEEDS_FLAG =
   'what it sends. Re-run with --scoped to send only the repositories you enroll, or with ' +
   '--machine to send everything this machine records. Nothing was changed.';
 // What a failed save says when it put the earlier credential file back, and what
-// it says when it cannot promise that.
+// it says when it did not, by how it did not.
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
-const NOT_CONFIRMED =
-  'could not save the attachment, and aka cannot confirm that the credential file this ' +
-  'machine had before is as it was. Run `aka attach` again.';
+const SAVE_FAILED = 'could not save the attachment. ';
+const NOTE_REPLACED =
+  'The credential file this machine had before could not be read, so it could not be put ' +
+  'back, and it is gone. Run `aka attach` again.';
+const NOTE_UNTOUCHED =
+  'The credential file this machine had before could not be read; this attempt did not change it.';
+const NOTE_FAILED =
+  'The credential file this machine had before could not be put back, so it may differ ' +
+  'from what it was. Run `aka attach` again.';
 const CHANGED_WHILE_WAITING =
-  'this machine was attached as a personal device while this command waited, so it was not ' +
-  'changed to machine-wide. Nothing was changed; run the command again.';
+  "this machine's attachment changed while this command waited, so it was not written over. " +
+  'Nothing was changed on this machine; run the command again.';
 const SCOPED_HISTORY = 'Send unsent activity from the repositories you enroll? [y/N]: ';
 const MACHINE_HISTORY = "Send this machine's unsent activity? [y/N]: ";
 
@@ -157,7 +173,9 @@ beforeEach(() => {
 
 afterEach(() => {
   stand.failSettingsWrite = false;
-  stand.failCredentialWrite = false;
+  stand.credentialWrites = 0;
+  stand.failCredentialWriteAt = undefined;
+  stand.whenCredentialWriteFails = undefined;
   stand.beforeNextSettingsWrite = undefined;
   stand.preview = undefined;
   stand.previewReads = 0;
@@ -818,7 +836,7 @@ describe('widening a personal device with --machine', () => {
   });
 });
 
-describe('a machine-wide attach never overwrites a personal device that appeared while it waited', () => {
+describe('an attach is not written over what changed while it waited', () => {
   // The mode is decided before the key is verified, and a browser approval can
   // take minutes. Another aka may attach this machine as a personal device in
   // that time; writing machine-wide over it would widen it with nobody asked.
@@ -826,7 +844,7 @@ describe('a machine-wide attach never overwrites a personal device that appeared
     ['--machine and no terminal', ['--machine', '--key-stdin'], false, []],
     ['no flag and no terminal', ['--key-stdin'], false, []],
     ['no flag, and the answer "no" to the personal-device question', [], true, ['n']],
-  ])('%s', async (_how, flags, interactive, answers) => {
+  ])('a personal device appeared: %s', async (_how, flags, interactive, answers) => {
     const script = {
       interactive,
       answers: interactive ? [KEY_2, ...answers] : [],
@@ -1056,33 +1074,141 @@ describe('what a machine attach writes', () => {
   );
 });
 
-describe('a settings write that fails after the credential was written', () => {
-  it('removes the credential it wrote when there was none before', async () => {
-    stand.failSettingsWrite = true;
-    const h = harness({ interactive: false, stdin: KEY_1 });
+describe('a save that fails puts the credential file back as it was, or says it could not', () => {
+  interface Earlier {
+    name: string;
+    /** Flags that choose the mode; none keeps the mode the credential already holds. */
+    flags: string[];
+    /** The row needs POSIX behaviour (a directory or a symlink in the file's place). */
+    posixOnly?: boolean;
+    /** Plants the earlier file and returns its bytes when it is a regular file. */
+    plant: () => string | undefined;
+    /** What is on disk afterwards, given the bytes that were planted. */
+    onDisk: (planted: string | undefined) => void;
+    /** What the failed save says. */
+    says: string;
+  }
 
-    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+  const sameBytes = (planted: string | undefined): void => {
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(planted);
+  };
+  const plantFile = (text: string): string => {
+    mkdirSync(settingsDirOf(base), { recursive: true, mode: 0o700 });
+    writeFileSync(credentialFile(), text, { mode: 0o600 });
+    return text;
+  };
 
-    expect(exits).toEqual([1]);
-    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
-    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
-  });
+  const EARLIER: Earlier[] = [
+    {
+      name: 'no file',
+      flags: ['--machine'],
+      plant: () => undefined,
+      onDisk: () => {
+        expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      },
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      name: 'a machine-wide credential',
+      flags: [],
+      plant: () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        return readFileSync(credentialFile(), 'utf8');
+      },
+      onDisk: sameBytes,
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      name: 'a scoped credential',
+      flags: [],
+      plant: () => {
+        attachedScoped(BOUND);
+        return readFileSync(credentialFile(), 'utf8');
+      },
+      onDisk: sameBytes,
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      name: 'a file that is not JSON',
+      flags: ['--machine'],
+      plant: () => plantFile('{ not json\n'),
+      onDisk: sameBytes,
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      // It may be a newer build's scoped credential. --machine lets the attach go
+      // ahead over it; a failed write must not then delete it.
+      name: 'a credential from a newer version',
+      flags: ['--machine'],
+      plant: plantUnreadableCredential,
+      onDisk: sameBytes,
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      name: 'a credential for an endpoint no key is sent to',
+      flags: ['--machine'],
+      plant: () =>
+        plantFile(
+          `${JSON.stringify({ specVersion: 1, endpoint: 'http://aka.example.org', apiKey: KEY_1, mintedAt: ISO }, null, 2)}\n`,
+        ),
+      onDisk: sameBytes,
+      says: LEFT_AS_IT_WAS,
+    },
+    {
+      // The credential write cannot replace a directory, so it fails before the
+      // settings write is reached, and the directory is as it was.
+      name: 'a directory where the file should be',
+      flags: ['--machine'],
+      posixOnly: true,
+      plant: () => {
+        mkdirSync(credentialFile(), { recursive: true });
+        return undefined;
+      },
+      onDisk: () => {
+        expect(lstatSync(credentialFile()).isDirectory()).toBe(true);
+      },
+      says: `${SAVE_FAILED}${NOTE_UNTOUCHED}`,
+    },
+    {
+      // A symlink is never followed, so there are no bytes to put back, and the
+      // new credential replaced the link itself.
+      name: 'a symlink where the file should be',
+      flags: ['--machine'],
+      posixOnly: true,
+      plant: () => {
+        plantUntrustedCredential();
+        return undefined;
+      },
+      onDisk: () => {
+        expect(lstatSync(credentialFile(), { throwIfNoEntry: false })).toBeUndefined();
+      },
+      says: `${SAVE_FAILED}${NOTE_REPLACED}`,
+    },
+  ];
 
-  it('puts the credential file back when it was one this build cannot read', async () => {
-    // It may be a newer build's scoped credential. --machine lets the attach go
-    // ahead over it; a failed write must not then delete it.
-    const before = plantUnreadableCredential();
+  it.for(EARLIER)('with $name before it', async (row, ctx) => {
+    if (row.posixOnly === true && process.platform === 'win32') {
+      ctx.skip('a directory or a symlink in the file place is a POSIX arrangement');
+      return;
+    }
+    const planted = row.plant();
     stand.failSettingsWrite = true;
     const h = harness({ interactive: false, stdin: KEY_2 });
 
-    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+    await runAttach(['--url', ENDPOINT, ...row.flags, '--key-stdin', '--no-sync-history'], h.deps);
 
     expect(exits).toEqual([1]);
-    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
-    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+    expect(h.errors()).toContain(row.says);
+    if (row.says !== LEFT_AS_IT_WAS) expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+    row.onDisk(planted);
   });
 
-  it('puts that file back owner-only', async (ctx) => {
+  it('puts an unreadable credential file back owner-only', async (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('POSIX modes do not apply on Windows');
       return;
@@ -1097,54 +1223,132 @@ describe('a settings write that fails after the credential was written', () => {
     expect(statSync(credentialFile()).mode & 0o777).toBe(0o600);
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'does not say the machine is left as it was when the earlier file was one it could not read back',
-    async () => {
-      // A symlink is never followed, so there are no bytes to put back, and the
-      // new credential replaced the link itself. The only true thing to say is
-      // that the earlier state cannot be promised.
-      plantUntrustedCredential();
-      stand.failSettingsWrite = true;
-      const h = harness({ interactive: false, stdin: KEY_2 });
-
-      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
-
-      expect(exits).toEqual([1]);
-      expect(h.errors()).toContain(NOT_CONFIRMED);
-      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
-      // The credential this attach wrote is not left behind beside a descriptor
-      // that never said it was attached.
-      expect(existsSync(credentialFile())).toBe(false);
-    },
-  );
-
-  it.skipIf(process.platform === 'win32')(
-    'leaves an earlier file it could not read alone when the credential was never written',
-    async () => {
-      plantUntrustedCredential();
-      stand.failCredentialWrite = true;
-      const h = harness({ interactive: false, stdin: KEY_2 });
-
-      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
-
-      expect(exits).toEqual([1]);
-      expect(h.errors()).toContain(NOT_CONFIRMED);
-      // The link is still there: the rollback removes only a file this attach wrote.
-      expect(lstatSync(credentialFile()).isSymbolicLink()).toBe(true);
-    },
-  );
-
-  it('does not say the machine is left as it was when the earlier credential cannot be written back', async () => {
+  it('says so when the earlier credential cannot be written back', async () => {
     attachedScoped(BOUND);
-    stand.failCredentialWrite = true;
+    // The attach's own write goes through; the write that would put the earlier
+    // credential back is the second, and it fails.
+    stand.credentialWrites = 0;
+    stand.failCredentialWriteAt = 2;
+    stand.failSettingsWrite = true;
     const h = harness({ interactive: false, stdin: KEY_2 });
 
     await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
 
     expect(exits).toEqual([1]);
-    expect(h.errors()).toContain(NOT_CONFIRMED);
+    expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_FAILED}`);
     expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+    // What the line means: the file on disk is the attach's, not the earlier one.
+    expect(storedCredential()).toMatchObject({ usable: true, credential: { apiKey: KEY_2 } });
   });
+
+  describe('when the administrator froze the mode after the checks', () => {
+    const FROZEN = (): ManagedSettings =>
+      ManagedSettings.parse({ organization: ADMIN, lockedFields: ['runMode'] });
+    const REFUSED =
+      'your organization manages this setting on this machine, so it cannot be attached here.';
+
+    // Half attached: a credential and no settings that say so, so the machine
+    // reads as standalone and the lock only bites at the settings write.
+    const arrange = (): { overlay: () => ManagedSettings | null; freeze: () => void } => {
+      let overlay: ManagedSettings | null = null;
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: KEY_1,
+        mintedAt: ISO,
+      });
+      return {
+        overlay: () => overlay,
+        freeze: () => {
+          overlay = FROZEN();
+        },
+      };
+    };
+
+    it('reports the refusal and puts the earlier credential back', async () => {
+      const { overlay, freeze } = arrange();
+      const before = readFileSync(credentialFile(), 'utf8');
+      const h = harness({
+        interactive: false,
+        stdin: KEY_2,
+        managed: overlay,
+        duringVerify: freeze,
+      });
+
+      await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(REFUSED);
+      expect(h.errors()).not.toContain('could not be put back');
+      expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+    });
+
+    it('also says so when the earlier credential cannot be put back', async () => {
+      const { overlay, freeze } = arrange();
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 2;
+      const h = harness({
+        interactive: false,
+        stdin: KEY_2,
+        managed: overlay,
+        duringVerify: freeze,
+      });
+
+      await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${REFUSED} ${NOTE_FAILED}`);
+    });
+  });
+});
+
+describe('a credential write that fails', () => {
+  it.skipIf(process.platform === 'win32')(
+    'leaves an earlier file it could not read alone, and says it did not change it',
+    async () => {
+      plantUntrustedCredential();
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_UNTOUCHED}`);
+      // The link is still there: the rollback removes only a file this attach wrote.
+      expect(lstatSync(credentialFile()).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'does not remove a credential with the same key that this attach did not write',
+    async () => {
+      plantUntrustedCredential();
+      // Another writer puts a usable credential with the same key in the file's
+      // place while this attach's write is failing. It is not this attach's file.
+      stand.whenCredentialWriteFails = () => {
+        rmSync(credentialFile());
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_2,
+          mintedAt: ISO,
+        });
+      };
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_UNTOUCHED}`);
+      expect(storedCredential()).toEqual({
+        usable: true,
+        credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2, mintedAt: ISO },
+      });
+    },
+  );
 });
 
 describe('what a scoped attach writes', () => {

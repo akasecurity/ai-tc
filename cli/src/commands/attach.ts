@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
-import type { CredentialFileRead } from '@akasecurity/persistence';
+import type { AttachModeDecision, CredentialFileRead } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureBackfillScope,
@@ -230,27 +230,66 @@ const NEEDS_MODE_FLAG =
   '--machine to send everything this machine records. Nothing was changed.';
 
 /**
- * Said when the credential on disk turned out to be a personal device's after
- * the mode was decided as machine-wide. The decision is made before a key is
- * verified, which on the browser path can take minutes, and another aka may
- * attach this machine as a personal device in that time. Writing machine-wide
- * over it would widen it with nobody asked, so nothing is written.
+ * Said when the credential on disk no longer fits the mode that was settled.
+ * The decision is made before a key is verified, which on the browser path can
+ * take minutes, and another aka may attach, detach or re-attach this machine in
+ * that time. Writing what was settled over a different state could widen a
+ * personal device or overwrite a newer build's credential with nobody asked, so
+ * nothing is written.
  */
 const CHANGED_WHILE_WAITING =
-  'this machine was attached as a personal device while this command waited, so it was not ' +
-  'changed to machine-wide. Nothing was changed; run the command again.';
+  "this machine's attachment changed while this command waited, so it was not written over. " +
+  'Nothing was changed on this machine; run the command again.';
 
 /** What a failed save says when the earlier credential file is back exactly as it was. */
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
 /**
- * What a failed save says when it cannot promise that: the earlier credential
- * file could not be written back, or could not be read in the first place, so
- * there is nothing to compare what is on disk with.
+ * What a failed save left of the credential file the machine held before.
+ *
+ *   `restored`  — the earlier state is back: the credential or the raw bytes of
+ *                 an unparseable file written again, or no earlier file existed
+ *                 and the one this attach wrote is gone.
+ *   `replaced`  — the earlier file could not be read at all (a symlink, someone
+ *                 else's file), so there were no bytes to put back, and this
+ *                 attach's file had already replaced it. This attach's file is
+ *                 removed; the earlier one is gone.
+ *   `untouched` — the earlier file could not be read and this attempt never
+ *                 replaced it.
+ *   `failed`    — the earlier state could not be written back.
  */
-const NOT_CONFIRMED =
-  'could not save the attachment, and aka cannot confirm that the credential file this ' +
-  'machine had before is as it was. Run `aka attach` again.';
+type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'failed';
+
+/**
+ * What is added to a failed save's message when the earlier credential file is
+ * not back as it was, one true sentence per way that can happen. A Record, so a
+ * new outcome cannot be added without saying what it means.
+ */
+const ROLLBACK_NOTE: Record<Exclude<CredentialRollback, 'restored'>, string> = {
+  replaced:
+    'The credential file this machine had before could not be read, so it could not be put ' +
+    'back, and it is gone. Run `aka attach` again.',
+  untouched:
+    'The credential file this machine had before could not be read; this attempt did not ' +
+    'change it.',
+  failed:
+    'The credential file this machine had before could not be put back, so it may differ ' +
+    'from what it was. Run `aka attach` again.',
+};
+
+/** The one line a failed save prints, from what the rollback managed. */
+function saveFailedMessage(err: unknown, rollback: CredentialRollback): string {
+  const note = rollback === 'restored' ? undefined : ROLLBACK_NOTE[rollback];
+  // An administrator can freeze `runMode`, and a machine they froze to
+  // standalone is one this command must not talk around.
+  if (err instanceof ManagedFieldError) {
+    return (
+      'your organization manages this setting on this machine, so it cannot be attached here.' +
+      (note === undefined ? '' : ` ${note}`)
+    );
+  }
+  return note === undefined ? LEFT_AS_IT_WAS : `could not save the attachment. ${note}`;
+}
 
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
@@ -372,19 +411,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // below), because a browser approval can wait up to fifteen minutes and a
   // rollback must put back what was on disk immediately before the write.
   //
-  // GUARDED, although the reader's docblock says it never throws: with a FILE
-  // where ~/.aka/settings should be, its lstat raises ENOTDIR (`throwIfNoEntry:
-  // false` covers a missing entry only), the case the dashboard's attach action
-  // already guards. Reported here, before anything is sent, rather than as a
-  // crash after a device approval.
-  let prior: CredentialFileRead;
-  try {
-    prior = readControlPlaneCredentialFile(settingsDirOf(base));
-  } catch {
-    io.err(
-      `could not read this machine's AKA settings in ${settingsDirOf(base)}; nothing was ` +
-        'changed. Check that it is a directory you own.',
-    );
+  // GUARDED (see readCredentialGuarded): reported here, before anything is sent,
+  // rather than as a crash after a device approval.
+  const prior = readCredentialGuarded(base, io);
+  if (prior === undefined) {
     exit(1);
     return;
   }
@@ -522,11 +552,6 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       }
     }
   }
-  // Whether a personal device's attachment to THIS deployment was already in
-  // front of the decision and has been dealt with: confirmed on a terminal,
-  // taken from the flag, or announced because an administrator decided it.
-  const wideningHandled = modeDecision.kind === 'use' && modeDecision.widening;
-
   // ASKED AFTER VERIFICATION, ANSWERED BEFORE THE WRITES. After, so the machine
   // is never asked about a deployment it turns out not to join; before, so the
   // grant rides the same `applyOnboarding` call as the attachment itself and the
@@ -563,15 +588,32 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // The WIDE read, because a rollback writes back the exact bytes that were
   // there. This runs in the CLI's own process; nothing here crosses to a
   // browser, which is the boundary the narrow state exists to protect.
-  const previous = readControlPlaneCredentialFile(settingsDirOf(base));
+  //
+  // GUARDED like the early read: a file can take the settings directory's place
+  // during a browser approval, and that is reported with nothing written.
+  const previous = readCredentialGuarded(base, io);
+  if (previous === undefined) {
+    exit(1);
+    return;
+  }
 
-  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was decided from the file
-  // read before the key was verified. If another aka attached this machine as a
-  // personal device to THIS deployment since, a machine-wide write would widen
-  // it, and the confirmation that guards a widening was never asked, because
-  // the machine did not hold a personal device when the decision was made.
-  // Stop and say so; the next run decides again from what is on disk.
-  if (mode === 'machine' && !wideningHandled && holdsScopedFor(previous, endpoint)) {
+  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was settled from the file
+  // read before the key was verified, and on the browser path that can be
+  // minutes ago. The same decision is put again on what is on disk now, with the
+  // same flag, overlay and terminal. If it no longer agrees (see
+  // decisionNoLongerHolds) another aka has attached, re-attached or detached
+  // this machine in between, and writing what was settled could widen a personal
+  // device, narrow a machine-wide attachment, or overwrite a newer build's file
+  // that the confirmation in front of the user never covered. Stop and say so;
+  // the next run decides again from what is on disk.
+  const recheck = decideAttachMode({
+    flag: args.mode,
+    managed: scopedRefusal,
+    previous,
+    endpoint,
+    interactive: io.isInteractive,
+  });
+  if (decisionNoLongerHolds(modeDecision, mode, recheck)) {
     io.err(CHANGED_WHILE_WAITING);
     exit(1);
     return;
@@ -638,8 +680,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // and a bound list found beside a machine-wide credential, or none, was left
   // by a writer that did not clear it (an older aka's re-attach or detach), so
   // its enrollments belong to an attachment that has ended.
-  // `prior` is the credential the mode was decided from.
-  const keepScope = holdsScopedFor(prior, endpoint);
+  // `previous` is the credential on disk just before the write, not the one the
+  // mode was decided from: another aka may have attached this machine in between,
+  // and what is kept must follow what is there now.
+  const keepScope = holdsScopedFor(previous, endpoint);
   // How many entries this build can read in what was kept, for the success text.
   const kept = { readableEntries: 0 };
   const scopeToWrite = (stored: unknown): unknown => {
@@ -690,16 +734,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     // On a first attach that is "no credential"; on a rotation it is the key
     // the machine was working with, and restoring it is what makes the message
     // below true. When it cannot be put back, the message says so instead.
-    const restored = restoreCredential(settingsDirOf(base), previous, previousBytes, credential);
-    // An administrator can freeze `runMode`, and a machine they froze to
-    // standalone is one this command must not talk around.
-    io.err(
-      err instanceof ManagedFieldError
-        ? 'your organization manages this setting on this machine, so it cannot be attached here.'
-        : restored
-          ? LEFT_AS_IT_WAS
-          : NOT_CONFIRMED,
-    );
+    const rollback = restoreCredential(settingsDirOf(base), previous, previousBytes, credential);
+    io.err(saveFailedMessage(err, rollback));
     exit(1);
     return;
   }
@@ -817,9 +853,64 @@ function holdsScopedFor(read: CredentialFileRead, endpoint: string): boolean {
 }
 
 /**
- * Put the credential file back as it was before a failed save, and say whether
- * that is certain: true only when what was there is on disk again, or when
- * nothing was there and the file this attach wrote is gone. Never throws.
+ * The wide credential read, reported rather than thrown.
+ *
+ * GUARDED, although the reader's docblock says it never throws: with a FILE
+ * where ~/.aka/settings should be, its lstat raises ENOTDIR (`throwIfNoEntry:
+ * false` covers a missing entry only), the case the dashboard's attach action
+ * already guards. Both reads in an attach go through here, the early one and
+ * the one just before the writes, since that file can take the directory's
+ * place during a browser approval. `undefined` means it was reported and the
+ * caller exits having written nothing.
+ */
+function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead | undefined {
+  try {
+    return readControlPlaneCredentialFile(settingsDirOf(base));
+  } catch {
+    io.err(
+      `could not read this machine's AKA settings in ${settingsDirOf(base)}; nothing was ` +
+        'changed on this machine. Check that it is a directory you own.',
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Whether the decision made before the key was verified, and the mode settled
+ * from it, still hold against the decision made again on what is on disk now.
+ *
+ * Not so when the new decision refuses (the file became one that needs a flag
+ * this run did not get), or asks where the settled decision did not (a usable
+ * file became one that cannot be read), or settles a different mode, or finds a
+ * personal device for this deployment where none was there to confirm
+ * widening. A widening that WAS confirmed and has since gone away is not a
+ * change: the user agreed to send more and the machine still sends that much.
+ */
+function decisionNoLongerHolds(
+  settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,
+  mode: AttachmentMode,
+  again: AttachModeDecision,
+): boolean {
+  if (again.kind === 'refuse') return true;
+  if (again.kind === 'ask') return settled.kind !== 'ask';
+  const confirmed = settled.kind === 'use' && settled.widening;
+  return again.mode !== mode || (again.widening && !confirmed);
+}
+
+/** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */
+function sameCredential(a: AttachedCredentialAny, b: AttachedCredentialAny): boolean {
+  return (
+    a.specVersion === b.specVersion &&
+    a.endpoint === b.endpoint &&
+    a.apiKey === b.apiKey &&
+    a.mintedAt === b.mintedAt &&
+    attachmentModeOf(a) === attachmentModeOf(b)
+  );
+}
+
+/**
+ * Put the credential file back as it was before a failed save, and say what
+ * came of it (see CredentialRollback). Never throws.
  *
  * - A credential this build could read is written back from the reader's own
  *   parse, which is the same bytes (the scoped literal's key order exists for
@@ -828,40 +919,44 @@ function holdsScopedFor(read: CredentialFileRead, endpoint: string): boolean {
  * - A file the reader opened and could not parse: its raw bytes go back.
  * - A file it could not open at all (a symlink, someone else's file, one that
  *   would not read) has no bytes to put back. If the credential write replaced
- *   it, the file now on disk is the one this attach wrote, and that is removed
- *   rather than left beside a descriptor that never said it was attached;
- *   the earlier state is gone either way, so this answers false. If the
- *   credential write never got as far as replacing it, the file is left alone:
- *   removing it would delete something this attach did not write.
+ *   it, the file now on disk is the one this attach wrote, identified by every
+ *   member of it and not by the key alone, and that file is removed: its
+ *   settings were never written, so the settings on disk describe whatever the
+ *   machine had before (or nothing), and a credential for another key or
+ *   deployment beside them is a half-written attachment. The earlier file is
+ *   gone either way. If the credential write never got as far as replacing it,
+ *   the file is left alone: removing it would delete something this attach did
+ *   not write.
  */
 function restoreCredential(
   settingsDir: string,
   previous: CredentialFileRead,
   previousBytes: string | undefined,
   written: AttachedCredentialAny,
-): boolean {
+): CredentialRollback {
   try {
     if (previous.usable) {
       writeControlPlaneCredential(settingsDir, previous.credential);
-      return true;
+      return 'restored';
     }
     if (previous.reason === 'absent') {
       removeControlPlaneCredential(settingsDir);
-      return true;
+      return 'restored';
     }
     if (previousBytes !== undefined) {
       // Owner-only and atomic, as every credential write is; the bytes as read.
       writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
-      return true;
+      return 'restored';
     }
     const now = readControlPlaneCredentialFile(settingsDir);
-    if (now.usable && now.credential.apiKey === written.apiKey) {
+    if (now.usable && sameCredential(now.credential, written)) {
       removeControlPlaneCredential(settingsDir);
+      return 'replaced';
     }
-    return false;
+    return 'untouched';
   } catch {
     // The rollback itself failed. Nothing further to try.
-    return false;
+    return 'failed';
   }
 }
 

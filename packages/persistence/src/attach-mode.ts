@@ -207,7 +207,9 @@ export function mayBePersonalDevice(read: CredentialFileRead): boolean {
  * An attach writes the credential and the settings one after the other, and a
  * stop between the two leaves the first beside whatever the second would have
  * replaced. The credential goes first unless that could leave the new credential
- * beside an enrolled list or a history grant the finished attach replaces.
+ * beside an enrolled list or a history grant the finished attach replaces, in a
+ * pairing of credential mode and stored list or grant that the machine did not
+ * have. One case is left credential first although it could, and is named below.
  *
  * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
  * personal device's (mayBePersonalDevice), or when there is no credential file
@@ -218,6 +220,12 @@ export function mayBePersonalDevice(read: CredentialFileRead): boolean {
  * A SCOPED attach, when the settings carry a list or a grant for it to replace
  * and it does not keep the list (`keepsList` answers for the stored one), unless
  * the credential being replaced is a usable machine-wide one.
+ *
+ * The exception is a scoped attach over a usable machine-wide credential, which
+ * is left credential first although it does not keep the list. A stop after its
+ * credential write leaves the new scoped key beside the stored list, which may
+ * belong to another organization or account, and beside the history grant
+ * already on file, which stays as it was.
  *
  * `previous` is the credential file as read just before the writes, and `stored`
  * the settings in force then, overlay applied.

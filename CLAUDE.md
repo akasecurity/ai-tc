@@ -2580,8 +2580,9 @@ opposite.
 
 **Outside `packages/persistence` the harness is deliberately NOT available, and the
 decision is not "nobody got round to it".** It lives under `test/`, and the package's
-`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
-`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+`exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"` (the store-free modules the
+plugin-sdk runtime path needs, none of which reaches `database.ts`) — which is exactly
+what makes `UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
 that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
 package would gain a supported route to the raw `DatabaseSync`, and
 `test-only-seam.test.js` would stay green throughout because the new callers are tests.

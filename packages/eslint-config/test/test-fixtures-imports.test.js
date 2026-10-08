@@ -154,7 +154,8 @@ describe('the test-and-benchmark-only fixture directory', () => {
     const entry = readFileSync(join(REPO_ROOT, ENTRY), 'utf8');
 
     // What makes the rule structural rather than a request. The manifest below
-    // exposes `.` alone, so the directory is unreachable from another package —
+    // exposes only `.` and `./sqlite-free`, neither of which reaches the
+    // directory, so it is unreachable from another package —
     // re-export it here and every consumer of `@akasecurity/persistence` can
     // import the dataset, at which point no rule about THIS repo helps.
     const reachesFixtures = importSpecifiers(entry).some((spec) =>

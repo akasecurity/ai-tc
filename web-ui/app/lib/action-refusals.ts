@@ -175,11 +175,18 @@ export const ATTACH_LABEL_INVALID =
  * Attaching machine-wide over either because nobody named a mode would widen
  * what the machine sends without anyone deciding to.
  *
- * Two callers meet it. A client that predates the choice sends no mode. And the
- * form sends none on a machine an administrator governs, where it offers no
- * choice: if that hold lifted before the form was submitted, the page still on
- * screen has no choice to make and cannot follow the refusal until it is
- * reloaded, so the copy says to reload.
+ * ONLY THERE. With no mode named, a machine with no credential file, or with a
+ * usable machine-wide one, attaches machine-wide, as every attach did before the
+ * choice existed, and, on a machine no administrator governs, a personal device
+ * re-attaching to the same deployment stays one. The form is what asks a user to
+ * choose; this action refuses only where a machine-wide write could widen a
+ * machine that may be scoped.
+ *
+ * Two callers can meet it on such a machine. A client that predates the choice
+ * sends no mode. And the form sends none on a machine an administrator governs,
+ * where it offers no choice: if that hold lifted before the form was submitted,
+ * the page still on screen has no choice to make and cannot follow the refusal
+ * until it is reloaded, so the copy says to reload.
  */
 export const ATTACH_MODE_REQUIRED =
   'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';

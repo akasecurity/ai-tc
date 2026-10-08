@@ -975,9 +975,10 @@ describe('the history grant', () => {
 
 describe('the refusal that asks for a mode', () => {
   it('tells a stale page what to do: reload, then choose the kind of device', () => {
-    // The form sends no mode while the machine is managed, so a page rendered
-    // then and submitted after the administrator's hold lifted meets this
-    // refusal too, and has no choice on screen until it is reloaded.
+    // The form sends no mode while the machine is managed. A page rendered then
+    // and submitted after the administrator's hold lifted meets this refusal too
+    // when the machine holds a credential the mode cannot be settled from, and
+    // has no choice on screen until it is reloaded.
     expect(ATTACH_MODE_REQUIRED).toMatch(/reload the page/i);
     expect(ATTACH_MODE_REQUIRED).toMatch(/personal or an organization device/i);
   });

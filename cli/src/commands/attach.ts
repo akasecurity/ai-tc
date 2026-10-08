@@ -80,15 +80,16 @@ Registers this machine against your organization's AKA deployment.
 
   --scoped   A personal device: send only activity from the repositories you
              enroll with \`aka enroll\`. None is sent until you enroll one. The
-             policy pull and a scheduled device report (finding counts and
-             dates across every repository on this machine) still go.
+             policy pull and a scheduled device report (including a device
+             identifier, policy counts, and finding counts and dates across
+             every repository on this machine) still go.
   --machine  A machine your organization owns: send everything it records.
 
-  A re-attach to the same deployment keeps the mode it has. Otherwise, with
-  neither flag, a terminal is asked which; and a run with no terminal attaches
+  With neither flag, a re-attach to the same deployment keeps the mode it has;
+  otherwise a terminal is asked which, and a run with no terminal attaches
   machine-wide, or stops for one of these flags when that could widen what this
-  machine sends. A machine whose connection an administrator manages attaches
-  machine-wide only.
+  machine sends. With a flag, the flag decides. A machine whose connection an
+  administrator manages attaches machine-wide only.
 
   --sync-history     Also send the activity already recorded on this machine,
                      without asking.
@@ -787,8 +788,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           // (a deployment's whoami, a typed flag), so each goes through the one
           // shared terminal strip.
           `Attached to ${printableForTerminal(args.label ?? endpoint, 200)} as a personal device.`,
-          `  organization  ${printableForTerminal(identity.tenantName)}`,
-          `  you           ${printableForTerminal(identity.userEmail)}`,
+          `  organization  ${printableForTerminal(identity.tenantName, 200)}`,
+          `  you           ${printableForTerminal(identity.userEmail, 320)}`,
           '',
           'Only activity from repositories you enroll is sent to that deployment, and',
           'the Data Shares register a scan records goes only for an enrolled',
@@ -808,8 +809,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           // does not gate it: its finding counts and dates cover every repository
           // on this machine, enrolled or not.
           "This machine still fetches that deployment's policy, and sends it a device",
-          'report on a schedule: host name, versions, detection packs, and finding',
-          'counts and dates across every repository on this machine.',
+          'report on a schedule, including a device identifier, host name, versions,',
+          'detection packs, policy counts, and finding counts and dates across every',
+          'repository on this machine.',
           // An older aka writes a version-1 credential on every attach, which is
           // machine-wide. Said here because the reader is the one who would run it.
           'An aka older than this one that re-attaches this machine makes it machine-wide.',
@@ -891,12 +893,18 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
  * Whether the decision made before the key was verified, and the mode settled
  * from it, still hold against the decision made again on what is on disk now.
  *
- * Not so when the new decision refuses (the file became one that needs a flag
- * this run did not get), or asks where the settled decision did not (a usable
- * file became one that cannot be read), or settles a different mode, or finds a
- * personal device for this deployment where none was there to confirm
- * widening. A widening that WAS confirmed and has since gone away is not a
- * change: the user agreed to send more and the machine still sends that much.
+ * They do not when the new decision:
+ *   - refuses (the file became one that needs a flag this run did not get);
+ *   - asks where the settled one did not (a usable file became one this build
+ *     cannot read, or a personal device was detached, so a terminal would now
+ *     be asked something it was not);
+ *   - settles a different mode; or
+ *   - finds a personal device for this deployment where no widening was agreed
+ *     to.
+ * A widening that WAS agreed to and has since gone away is not a change. It was
+ * agreed to by answering the confirmation, by typing --machine where there was
+ * no terminal to ask on, or by an administrator's management, which asks
+ * nothing and says so; the attach still sends what was agreed to.
  */
 function decisionNoLongerHolds(
   settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,
@@ -1148,7 +1156,7 @@ async function askAboutHistory(
 function scopedHistoryQuestion(tenantName: string): string {
   return [
     '',
-    `Verified against ${printableForTerminal(tenantName)}.`,
+    `Verified against ${printableForTerminal(tenantName, 200)}.`,
     '',
     'This machine is attaching as a personal device: AKA sends the activity of',
     'the repositories you enroll with `aka enroll`, and none from anywhere else.',
@@ -1203,9 +1211,10 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '',
       '  A personal device sends only the activity of repositories you enroll',
       '  with `aka enroll`, and none until you enroll one. It still fetches',
-      "  your organization's policy, and sends it a device report on a schedule:",
-      '  host name, versions, detection packs, and finding counts and dates',
-      '  across every repository on this machine, enrolled or not.',
+      "  your organization's policy, and sends it a device report on a schedule,",
+      '  including a device identifier, host name, versions, detection packs,',
+      '  policy counts, and finding counts and dates across every repository',
+      '  on this machine, enrolled or not.',
       '  A machine your organization owns sends everything it records, from',
       '  every repository.',
       '',

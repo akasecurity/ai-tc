@@ -317,16 +317,19 @@ function preflight(
  * The deployment's name as the terminal shows it: the label, or the settings
  * address when there is none.
  *
- * A label is free text and gets the plain strip. The settings address is checked
- * when settings are saved through the product, not when the file is edited by
- * hand or an overlay pins it, and the plain strip leaves userinfo, a query and a
- * fragment in an address. So an address goes through `endpointForTerminal`, the
- * function `aka status` prints one with, which keeps those off the screen.
+ * A label is free text and gets the plain strip at its default bound, the one
+ * `aka status` cuts a label at, so a label reads the same on both commands. The
+ * settings address is checked when settings are saved through the product, not
+ * when the file is edited by hand or an overlay pins it, and the plain strip
+ * leaves userinfo, a query and a fragment in an address. So an address goes
+ * through `endpointForTerminal`, the function `aka status` prints one with, which
+ * keeps those off the screen and prints a clean address whole up to two hundred
+ * characters.
  */
 function deploymentNameForTerminal(connection: ControlPlaneConnection): string {
   return connection.label === undefined
     ? endpointForTerminal(controlPlaneName(connection))
-    : printableForTerminal(controlPlaneName(connection), 200);
+    : printableForTerminal(controlPlaneName(connection));
 }
 
 /** The repository the command names, or the exit code after saying why it names none. */

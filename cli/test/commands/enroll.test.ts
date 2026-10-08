@@ -574,8 +574,9 @@ describe('aka enroll — the deployment named by a settings address with no labe
     },
   );
 
-  // The last is longer than the eighty characters a label is cut to: an address
-  // is printed whole up to two hundred, as `aka status` prints it.
+  // The last is longer than the eighty characters a label is cut to, and is not
+  // cut: an address is printed whole up to two hundred, as `aka status` prints
+  // it. The describe at the end of this group pins both bounds.
   it.each([
     'https://aka.acme.test',
     'https://aka.acme.test/gateway',
@@ -662,6 +663,54 @@ describe('aka enroll — the re-attach command for a settings address aka attach
     expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
     expect(io.errors()).toContain(`aka attach --url ${quotedForShell(endpoint)} --scoped`);
     expect(io.errors()).not.toContain('<url>');
+  });
+});
+
+// `aka status` cuts a label at eighty characters and an address at two hundred,
+// and the deployment named on the lines aka enroll prints is cut at the same
+// two bounds, so one deployment reads the same on every command.
+describe('aka enroll — how much of the deployment name is printed', () => {
+  const CUT_AT_EIGHTY = `${'L'.repeat(80)}…`;
+
+  function credentialFor(endpoint: string): void {
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+      mode: 'scoped',
+      endpoint,
+      apiKey: TEST_KEY,
+    });
+  }
+
+  it('cuts a label at eighty characters, in a result and in a refusal', async () => {
+    attach({ scope: fresh(), label: 'L'.repeat(150) });
+    const list = recorder();
+    expect(await runEnroll(['--list'], deps(list))).toBe(0);
+    expect(list.output()).toContain(`Enrolled with ${CUT_AT_EIGHTY}:\n`);
+    expect(list.output()).not.toContain('L'.repeat(81));
+
+    credentialFor(OTHER_ENDPOINT);
+    const refused = recorder();
+    expect(await runEnroll(['--list'], deps(refused))).toBe(1);
+    expect(refused.errors()).toContain(`the stored credential for ${CUT_AT_EIGHTY} cannot be used`);
+    expect(refused.errors()).not.toContain('L'.repeat(81));
+  });
+
+  it('prints an address whole where a label would be cut, and cuts it at two hundred', async () => {
+    const endpoint = `https://aka.acme.test/${'g'.repeat(300)}`;
+    attach({ scope: { endpoint, ...MEMBER, entries: [] }, endpoint });
+    editPlaneEndpoint(endpoint);
+    const list = recorder();
+    expect(await runEnroll(['--list'], deps(list))).toBe(0);
+    expect(list.output()).toContain(`Enrolled with ${endpoint.slice(0, 200)}…:\n`);
+    expect(list.output()).not.toContain(endpoint.slice(0, 201));
+
+    // Longer than a label may print and shorter than the address bound.
+    const shorter = `https://aka.acme.test/${'g'.repeat(100)}`;
+    attach({ scope: { endpoint: shorter, ...MEMBER, entries: [] }, endpoint: shorter });
+    editPlaneEndpoint(shorter);
+    const again = recorder();
+    expect(await runEnroll(['--list'], deps(again))).toBe(0);
+    expect(again.output()).toContain(`Enrolled with ${shorter}:\n`);
   });
 });
 

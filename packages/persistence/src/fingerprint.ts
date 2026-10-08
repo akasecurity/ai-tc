@@ -95,12 +95,19 @@ const FLOOR_BUSY_TIMEOUT_MS = 250;
 // The floor read is this module's only use of the store, so the builtin is
 // resolved when that read runs rather than when the module loads. Loading this
 // module therefore never loads `node:sqlite`, which keeps it usable by a
-// bundle that ships the plugin runtime without the store layer. On a Node
-// that lacks the builtin this throws inside the floor read, which already
-// fails secure.
+// bundle that ships the plugin runtime without the store layer.
+//
+// `@types/node` types the lookup as always present and always answering, and
+// neither holds everywhere: Node before 22.3 has no `getBuiltinModule`, and a
+// Node without the builtin answers `undefined` rather than throwing. Both are
+// named here, so the floor read still fails secure but its error points at the
+// runtime instead of a damaged store.
 function openReadOnly(file: string): DatabaseSync {
-  const { DatabaseSync: Database } = process.getBuiltinModule('node:sqlite');
-  return new Database(file, { readOnly: true });
+  const host = process as { getBuiltinModule?: (id: string) => unknown };
+  const sqlite = host.getBuiltinModule?.('node:sqlite') as
+    { DatabaseSync: typeof DatabaseSync } | undefined;
+  if (sqlite === undefined) throw new Error('this Node runtime cannot load node:sqlite');
+  return new sqlite.DatabaseSync(file, { readOnly: true });
 }
 
 /** Raised when the store exists but cannot answer which key versions it holds. */

@@ -2230,7 +2230,7 @@ describe('runHistorySync — a scoped attachment', () => {
 
   // A MACHINE attachment counts everything recorded, a stored scope ignored, and
   // says that it did: the state file records it for `aka status`.
-  it('counts every repository on a machine attachment, and says so', async () => {
+  it('counts everything recorded on a machine attachment, and says so', async () => {
     attach({ grantFor: ENDPOINT });
     enroll([WORK]);
     seedKeyedSession('p-1', 0, { root: PERSONAL, leaf: PERSONAL });

@@ -55,6 +55,27 @@ const attachWithGrant = (): void => {
   });
 };
 
+/** The same attachment as a personal device: a scoped credential and one enrolled repository. */
+const attachScopedWithGrant = (): void => {
+  attachWithGrant();
+  applyOnboarding(
+    {
+      attachmentScope: {
+        endpoint: ENDPOINT,
+        entries: [{ kind: 'repo', identity: 'github.com/acme/payments-api', enrolledAt: AT }],
+      },
+    },
+    home,
+  );
+  writeControlPlaneCredential(settingsDirOf(home), {
+    specVersion: 2,
+    mode: 'scoped',
+    endpoint: ENDPOINT,
+    apiKey: FIXTURE,
+    mintedAt: AT,
+  });
+};
+
 describe('runHistorySyncPass', () => {
   // The child runs detached with stdio ignored: a rejection would be an
   // unhandled rejection nobody ever reads.
@@ -313,7 +334,7 @@ describe('runHistorySyncPass', () => {
   // Every pass records which population its totals cover, so `aka status` can
   // tell a scoped pass's numbers from those of a build that counted everything
   // recorded on the machine. A machine-wide attachment's pass records it too.
-  it('records that a machine-wide pass counted every repository', async () => {
+  it('records that a machine-wide pass counted everything recorded', async () => {
     attachWithGrant();
     const db = openLocalDatabase(dataDirOf(home));
     db.close();
@@ -322,4 +343,38 @@ describe('runHistorySyncPass', () => {
 
     expect(readHistorySyncState(dataDirOf(home))?.countsScope).toBe('machine');
   });
+
+  // THE MARKER IS THIS PASS'S OWN. The state file outlives an attachment's mode:
+  // only a detach removes it, so a re-attach that changes the mode meets a file
+  // the other mode wrote. A pass that carried the earlier marker over, as it
+  // carries `startedAtMs`, would label its own numbers with the other
+  // population's name, and `aka status` would read them as that population's: a
+  // machine-wide count printed bare on a scoped machine is the unsafe direction.
+  it.each([
+    { was: 'scoped', now: 'machine' },
+    { was: 'machine', now: 'scoped' },
+  ] as const)(
+    'writes the marker of the pass that ran, not the earlier $was one, for a $now pass',
+    async ({ was, now }) => {
+      if (now === 'scoped') attachScopedWithGrant();
+      else attachWithGrant();
+      const dir = dataDirOf(home);
+      openLocalDatabase(dir).close();
+      writeHistorySyncState(dir, {
+        phase: 'filling',
+        lastOutcome: 'ok',
+        lastPassAtMs: Date.parse(AT),
+        sentTotal: 3,
+        pendingTotal: 4,
+        skippedTotal: 0,
+        startedAtMs: Date.parse(AT),
+        completedAtMs: null,
+        countsScope: was,
+      });
+
+      await expect(runHistorySyncPass(home)).resolves.toBe('ok');
+
+      expect(readHistorySyncState(dir)?.countsScope).toBe(now);
+    },
+  );
 });

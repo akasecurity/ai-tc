@@ -525,7 +525,7 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
   };
 
   it.each(numbered)(
-    'notes that an older version counted every repository under the %s line',
+    'notes that an older version counted everything recorded under the %s line',
     (_name, shape, line) => {
       attach('scoped', bound([entry(WORK_REPO)]), consent);
       // No marker: the file every drain before this one writes, in either mode.

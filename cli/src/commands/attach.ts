@@ -258,18 +258,22 @@ const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as i
 /**
  * What a failed save left of the credential file the machine held before.
  *
- *   `restored`  — the earlier state is back: the credential or the raw bytes of
- *                 an unparseable file written again, or no earlier file existed
- *                 and the one this attach wrote is gone.
+ *   `restored`  — the earlier state is back, or was never disturbed (this
+ *                 attach's credential write did not land): the credential or the
+ *                 raw bytes of an unparseable file written again, or no earlier
+ *                 file existed and the one this attach wrote is gone.
  *   `replaced`  — the earlier file could not be read at all (a symlink, someone
  *                 else's file), so there were no bytes to put back, and this
  *                 attach's file had already replaced it. This attach's file is
  *                 removed; the earlier one is gone.
  *   `untouched` — the earlier file could not be read and this attempt never
  *                 replaced it.
+ *   `superseded` — the file no longer held what this attach wrote, nor what was
+ *                  there before: another attach, re-attach or detach changed it
+ *                  after this attach's write. It is left as it is.
  *   `failed`    — the earlier state could not be written back.
  */
-type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'failed';
+type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'superseded' | 'failed';
 
 /**
  * What is added to a failed save's message when the earlier credential file is
@@ -283,6 +287,9 @@ const ROLLBACK_NOTE: Record<Exclude<CredentialRollback, 'restored'>, string> = {
   untouched:
     'The credential file this machine had before could not be read; this attempt did not ' +
     'change it.',
+  superseded:
+    'The credential file changed while this attach was saving, so it was not put back and is ' +
+    'left as it is now. Run `aka status` to see what this machine is attached to.',
   failed:
     'The credential file this machine had before could not be put back, so it may differ ' +
     'from what it was. Run `aka attach` again.',
@@ -744,10 +751,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       deps.managedSettings,
     );
   } catch (err) {
-    // Put back exactly what was there, rather than removing unconditionally.
-    // On a first attach that is "no credential"; on a rotation it is the key
-    // the machine was working with, and restoring it is what makes the message
-    // below true. When it cannot be put back, the message says so instead.
+    // Put back exactly what was there, rather than removing unconditionally,
+    // and only while the file still holds what this attach wrote (see
+    // restoreCredential): another aka may have attached or detached this machine
+    // after that write. On a first attach that is "no credential"; on a rotation
+    // it is the key the machine was working with. When it cannot be put back, or
+    // must not be, the message below says so instead.
     const rollback = restoreCredential(settingsDirOf(base), previous, previousBytes, credential);
     io.err(saveFailedMessage(err, rollback));
     exit(1);
@@ -921,6 +930,15 @@ function sameCredential(a: AttachedCredentialAny, b: AttachedCredentialAny): boo
  *   gone either way. If the credential write never got as far as replacing it,
  *   the file is left alone: removing it would delete something this attach did
  *   not write.
+ *
+ * Each of those writes or removals happens only while the file still holds what
+ * this attach wrote, every member of it (see sameCredential). Otherwise the file
+ * is left alone: `restored` when it is still what was there before (this attach's
+ * write never landed), `superseded` when something else changed it after that
+ * write, since putting the earlier credential back would pair it with the
+ * settings that other change wrote. None of the credential helpers takes a lock,
+ * so this narrows the window between the read here and the write-back rather
+ * than closing it.
  */
 function restoreCredential(
   settingsDir: string,
@@ -929,21 +947,33 @@ function restoreCredential(
   written: AttachedCredentialAny,
 ): CredentialRollback {
   try {
+    const now = readControlPlaneCredentialFile(settingsDir);
+    const holdsWritten = now.usable && sameCredential(now.credential, written);
     if (previous.usable) {
-      writeControlPlaneCredential(settingsDir, previous.credential);
-      return 'restored';
+      if (holdsWritten) {
+        writeControlPlaneCredential(settingsDir, previous.credential);
+        return 'restored';
+      }
+      return now.usable && sameCredential(now.credential, previous.credential)
+        ? 'restored'
+        : 'superseded';
     }
     if (previous.reason === 'absent') {
-      removeControlPlaneCredential(settingsDir);
-      return 'restored';
+      if (holdsWritten) {
+        removeControlPlaneCredential(settingsDir);
+        return 'restored';
+      }
+      return !now.usable && now.reason === 'absent' ? 'restored' : 'superseded';
     }
     if (previousBytes !== undefined) {
-      // Owner-only and atomic, as every credential write is; the bytes as read.
-      writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
-      return 'restored';
+      if (holdsWritten) {
+        // Owner-only and atomic, as every credential write is; the bytes as read.
+        writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
+        return 'restored';
+      }
+      return credentialBytes(settingsDir) === previousBytes ? 'restored' : 'superseded';
     }
-    const now = readControlPlaneCredentialFile(settingsDir);
-    if (now.usable && sameCredential(now.credential, written)) {
+    if (holdsWritten) {
       removeControlPlaneCredential(settingsDir);
       return 'replaced';
     }

@@ -12,6 +12,7 @@ export {
   addAttachmentScopeEntries,
   freshAttachmentScope,
   removeAttachmentScopeEntries,
+  UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
 export type {
   CredentialFileRead,

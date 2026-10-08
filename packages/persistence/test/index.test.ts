@@ -63,6 +63,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'SqliteSourceProjectRepository',
   'StoreAheadOfBuildError',
   'UNAVAILABLE',
+  'UnreadableAttachmentScopeError',
   'UserGrantPolicyProvider',
   'VAULT_KEY_FILENAME',
   'VaultKeyEpochMissingError',

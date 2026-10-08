@@ -21,7 +21,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
 import { renderAttachedStatus } from '../../src/attached/status.ts';
-import { attachmentScopeLines, printableForTerminal } from '../../src/index.ts';
+import {
+  attachmentScopeLines,
+  endpointForTerminal,
+  printableForTerminal,
+} from '../../src/index.ts';
 
 // What `aka status` says about a scoped attachment: the mode, what is enrolled,
 // and every state in which nothing is sent. Each renderer case writes a real
@@ -39,6 +43,8 @@ const SECOND_REPO = 'github.com/acme/billing-worker';
 const MEMBER = { tenantName: 'Acme', userEmail: 'member-of-acme' } as const;
 const ESC = String.fromCharCode(0x1b);
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+// A part of a recorded address that must never reach the screen.
+const HIDDEN = 'hiddenpart';
 
 let root: string;
 let settingsDir: string;
@@ -113,6 +119,41 @@ describe('printableForTerminal', () => {
     expect(printableForTerminal('x'.repeat(80))).toBe('x'.repeat(80));
     expect(printableForTerminal('x'.repeat(81))).toBe(`${'x'.repeat(80)}…`);
     expect(printableForTerminal('abcdef', 3)).toBe('abc…');
+  });
+});
+
+describe('endpointForTerminal', () => {
+  it.each<[string, string]>([
+    ['https://aka.old.test', 'https://aka.old.test'],
+    ['https://aka.old.test/', 'https://aka.old.test/'],
+    ['https://AKA.old.test', 'https://AKA.old.test'],
+    ['https://aka.old.test/v1', 'https://aka.old.test/v1'],
+    ['http://localhost:4000', 'http://localhost:4000'],
+  ])('prints %s as stored', (stored, shown) => {
+    expect(endpointForTerminal(stored)).toBe(shown);
+  });
+
+  it.each<[string, string]>([
+    ['a username', `https://${HIDDEN}@aka.old.test`],
+    ['a query', `https://aka.old.test/?t=${HIDDEN}`],
+    ['a fragment', `https://aka.old.test/#${HIDDEN}`],
+    ['an empty query', 'https://aka.old.test/?'],
+    ['an empty fragment', 'https://aka.old.test/#'],
+  ])('prints only the origin of an address with %s', (_name, stored) => {
+    expect(endpointForTerminal(stored)).toBe('https://aka.old.test, rest not shown');
+  });
+
+  it.each(['', 'aka.old.test', `mailto:${HIDDEN}@aka.old.test`, `ftp://${HIDDEN}@aka.old.test`])(
+    'prints a placeholder for %j',
+    (stored) => {
+      expect(endpointForTerminal(stored)).toBe('address not shown');
+    },
+  );
+
+  it('strips control characters from an address it prints, and bounds it', () => {
+    expect(endpointForTerminal(`https://aka.old.test/${ESC}[2J`)).toBe('https://aka.old.test/[2J');
+    const long = `https://aka.old.test/${'p'.repeat(300)}`;
+    expect(endpointForTerminal(long)).toBe(`${long.slice(0, 200)}…`);
   });
 });
 
@@ -240,15 +281,31 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   // a terminal escape. It is echoed on the line naming the other deployment.
   it('strips control characters from the endpoint a foreign scope names', () => {
     attach('scoped', {
-      endpoint: `${OLD_ENDPOINT}${ESC}[2J`,
+      endpoint: `${OLD_ENDPOINT}/${ESC}[2J`,
       ...MEMBER,
       entries: [entry(WORK_REPO)],
     });
     const out = status();
     expect(out).not.toContain(ESC);
     expect(out).toMatch(
-      /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\[2J\)$/m,
+      /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\/\[2J\)$/m,
     );
+  });
+
+  it.each<[string, string, string]>([
+    ['a username', `https://${HIDDEN}@aka.old.test`, 'https://aka.old.test, rest not shown'],
+    ['a query', `https://aka.old.test/?t=${HIDDEN}`, 'https://aka.old.test, rest not shown'],
+    ['a fragment', `https://aka.old.test/#${HIDDEN}`, 'https://aka.old.test, rest not shown'],
+    ['no scheme', `${HIDDEN}@aka.old.test`, 'address not shown'],
+    ['another scheme', `mailto:${HIDDEN}@aka.old.test`, 'address not shown'],
+    ['a control character in its host', `${OLD_ENDPOINT}${ESC}[2J`, 'address not shown'],
+  ])('names a foreign scope recorded with %s without echoing it', (_name, recorded, shown) => {
+    attach('scoped', { endpoint: recorded, ...MEMBER, entries: [entry(WORK_REPO)] });
+    const out = status();
+    expect(out).toContain(`\n  scope      recorded for another deployment (${shown})\n`);
+    expect(out).not.toContain(HIDDEN);
+    expect(out).not.toContain(ESC);
+    expect(out).not.toContain(WORK_REPO);
   });
 
   it.each<[string, unknown[], string]>([

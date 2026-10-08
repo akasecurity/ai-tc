@@ -14,6 +14,7 @@ import {
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
+  originOnly,
   parseAttachmentScope,
   resolveScope,
 } from '@akasecurity/schema';
@@ -249,7 +250,9 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  *
  * Every stored string goes through printableForTerminal. The schema already
  * refuses control characters in an identity or a label; the strip is the layer
- * that holds whatever a settings file actually carries.
+ * that holds whatever a settings file actually carries. The record's address
+ * goes through endpointForTerminal, which also keeps userinfo, a query or a
+ * fragment off the screen.
  *
  * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
  */
@@ -260,7 +263,7 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   }
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
-      `  scope      recorded for another deployment (${printableForTerminal(record.endpoint, 200)})`,
+      `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
       '             — nothing is sent here (run `aka enroll` to enroll for this one)',
     ];
   }
@@ -613,6 +616,40 @@ function failOpenLines(dataDir: string, nowMs: number): string[] {
 export function printableForTerminal(value: string, max = 80): string {
   const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');
   return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** What endpointForTerminal prints in place of an address it will not echo. */
+const ENDPOINT_NOT_SHOWN = 'address not shown';
+
+/**
+ * A deployment address read back from a file, made safe to print in a terminal.
+ *
+ * The schema holds a stored address to no more than being a non-empty string,
+ * so it can carry what an address must never show: userinfo, a query, a
+ * fragment. An http or https address with none of them is printed as stored,
+ * through printableForTerminal, so a spelling that differs from another address
+ * (a trailing slash, the case of the host) stays visible. One that carries any
+ * of them is printed as its origin alone, with "rest not shown" after it.
+ * Anything else, a string that does not parse as a URL or one with another
+ * scheme, is printed as ENDPOINT_NOT_SHOWN. Never throws.
+ *
+ * Exported so a command that echoes an address it read from a file prints it
+ * with this one function rather than a copy that could drift.
+ */
+export function endpointForTerminal(endpoint: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return ENDPOINT_NOT_SHOWN;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return ENDPOINT_NOT_SHOWN;
+  // The serialized URL equals scheme, host and path exactly when the address
+  // carries no userinfo, query or fragment, an empty query or fragment included.
+  const bare = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  return parsed.href === bare
+    ? printableForTerminal(endpoint, 200)
+    : `${printableForTerminal(originOnly(endpoint), 200)}, rest not shown`;
 }
 
 /**

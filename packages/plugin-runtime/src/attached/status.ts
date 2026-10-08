@@ -112,8 +112,8 @@ const MODE_LINES: Record<AttachmentMode, string> = {
 
 /**
  * What to do about a scope that forwards no activity: printed under the "nothing
- * enrolled" line (no record) and the "nothing enrolled yet" line (a record with
- * no entries).
+ * enrolled yet" line (a record with no entries). The lines for a list that is
+ * not stored, and for one this build cannot read, carry their own advice.
  */
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
 
@@ -251,12 +251,13 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * send an identity the block does not list.
  *
  * Each state that forwards no activity has its own line, because each has its own
- * cause: no record (never enrolled, an older settings writer dropped it, or the
- * record is damaged and reads as none), a record for another deployment, or a
- * record with nothing in it yet. Entries this version cannot read are counted and
- * never printed: one written by a newer build is not this build's to describe. A
- * record that names no account is said to be one, because the next scoped attach
- * cannot tell whose it is and starts it empty.
+ * cause: no list stored (never enrolled, or an older settings writer dropped it),
+ * a list this version cannot read (damaged, or written by a newer build), a record
+ * for another deployment, or a record with nothing in it yet. The first two are
+ * told apart on purpose, each with its own advice. Entries this version cannot
+ * read are counted and never printed: one written by a newer build is not this
+ * build's to describe. A record that names no account is said to be one, because
+ * the next scoped attach cannot tell whose it is and starts it empty.
  *
  * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
  * activity is forwarded, not whether the machine pulls its deployment's policy or
@@ -277,9 +278,22 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
 
 /** The lines for the record's state, before the line every block ends with. */
 function scopeStateLines(raw: unknown, endpoint: string): string[] {
+  // No list at all and a list this build cannot read are told apart before
+  // anything is parsed: parseAttachmentScope answers undefined for both, and
+  // what to do about one is not what to do about the other.
+  if (raw === undefined || raw === null) {
+    return [
+      "  scope      no enrolled list is stored — no repository's activity is sent",
+      '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
+      '             drops the list when it saves settings)',
+    ];
+  }
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
-    return ['  scope      nothing enrolled — no activity is sent', ENROLL_HINT];
+    return [
+      "  scope      the enrolled list cannot be read by this aka — it sends no repository's activity under it",
+      '             (it may have been written by a newer aka)',
+    ];
   }
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [

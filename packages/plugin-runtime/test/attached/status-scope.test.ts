@@ -15,6 +15,7 @@ import {
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   HISTORY_SYNC_PAYLOAD_VERSION,
   MANAGED_SETTINGS_FILENAME,
+  parseAttachmentScope,
   resolveScope,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -50,6 +51,22 @@ const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 const HIDDEN = 'hiddenpart';
 const NOT_LIMITED =
   '             the policy pull and the device report are not limited to what is enrolled';
+// The three states of the list itself that forward no activity. Each has its own
+// headline, because what to do about one is not what to do about another.
+const MISSING_HEADLINE =
+  "  scope      no enrolled list is stored — no repository's activity is sent";
+const MISSING_LIST = [
+  MISSING_HEADLINE,
+  '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
+  '             drops the list when it saves settings)',
+];
+const UNREADABLE_HEADLINE =
+  "  scope      the enrolled list cannot be read by this aka — it sends no repository's activity under it";
+const UNREADABLE_LIST = [
+  UNREADABLE_HEADLINE,
+  '             (it may have been written by a newer aka)',
+];
+const EMPTY_HEADLINE = '  scope      nothing enrolled yet — no activity is sent';
 
 let root: string;
 let settingsDir: string;
@@ -261,16 +278,18 @@ describe('renderAttachedStatus — the enrolled scope', () => {
     expect(out).not.toContain('this version cannot read');
   });
 
-  it('says nothing is sent when no scope is recorded', () => {
+  it('says no list is stored when no scope is recorded', () => {
     attach('scoped');
     const out = status();
-    expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
-    expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
+    expect(out).toContain(`\n${MISSING_LIST.join('\n')}\n`);
+    expect(out).not.toMatch(/^ {2}scope {6}nothing enrolled/m);
   });
 
-  it('says nothing is sent when the stored scope is not a record at all', () => {
+  it('says the list cannot be read when the stored scope is not a record at all', () => {
     attach('scoped', 'not-a-scope-record');
-    expect(status()).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
+    const out = status();
+    expect(out).toContain(`\n${UNREADABLE_LIST.join('\n')}\n`);
+    expect(out).not.toMatch(/^ {2}scope {6}nothing enrolled/m);
   });
 
   it('says a freshly recorded scope enrolls nothing yet', () => {
@@ -396,7 +415,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
       attach('scoped', scope);
       const out = status();
       expect(resolveScope({ mode: 'scoped', scope, endpoint: ENDPOINT }).keys.size).toBe(0);
-      expect(out).toMatch(/^ {2}scope {6}nothing enrolled — no activity is sent$/m);
+      expect(out).toContain(`\n${UNREADABLE_LIST.join('\n')}\n`);
       expect(out).not.toMatch(/^ {2}scope {6}\d+ enrolled/m);
       expect(out).not.toContain(WORK_REPO);
       expect(out).not.toContain('not tied to an account');
@@ -497,5 +516,51 @@ describe('attachmentScopeLines — what the record does not limit', () => {
   it('prints it nowhere on a machine-wide attachment', () => {
     attach('machine', bound([entry(WORK_REPO)]));
     expect(status()).not.toContain('the policy pull and the device report');
+  });
+});
+
+describe('attachmentScopeLines — a missing list and one this build cannot read', () => {
+  // Two ways a record that is present can fail to read: its entries are not a
+  // list, and a name past its bound. Each is checked to be unreadable first, so
+  // a fixture that quietly became readable cannot pass for the state.
+  const UNREADABLE: [string, unknown][] = [
+    ['entries that are not a list', { endpoint: ENDPOINT, ...MEMBER, entries: 'x' }],
+    [
+      'an organization name past its bound',
+      { endpoint: ENDPOINT, tenantName: 'x'.repeat(201), userEmail: 'member', entries: [] },
+    ],
+  ];
+
+  it.each<[string, unknown]>([
+    ['undefined', undefined],
+    ['null', null],
+  ])('says no list is stored when the value is %s', (_name, raw) => {
+    expect(attachmentScopeLines(raw, ENDPOINT)).toEqual([...MISSING_LIST, NOT_LIMITED]);
+  });
+
+  it.each(UNREADABLE)('says the list cannot be read for %s, and offers no enroll', (_name, raw) => {
+    expect(parseAttachmentScope(raw)).toBeUndefined();
+    const lines = attachmentScopeLines(raw, ENDPOINT);
+    expect(lines).toEqual([...UNREADABLE_LIST, NOT_LIMITED]);
+    expect(lines.join('\n')).not.toContain('aka enroll');
+  });
+
+  it('gives the missing list, the unreadable list and the empty list three different blocks', () => {
+    const blocks = [undefined, 'not-a-scope-record', bound()].map((raw) =>
+      attachmentScopeLines(raw, ENDPOINT).join('\n'),
+    );
+    expect(new Set(blocks).size).toBe(3);
+  });
+
+  it.each<[string, unknown, string]>([
+    ['no list stored', undefined, MISSING_HEADLINE],
+    ['a list this build cannot read', UNREADABLE[0]?.[1], UNREADABLE_HEADLINE],
+    ['a list with nothing in it yet', bound(), EMPTY_HEADLINE],
+  ])('shows %s once, under its own headline only', (_name, scope, headline) => {
+    attach('scoped', scope);
+    const out = status();
+    for (const other of [MISSING_HEADLINE, UNREADABLE_HEADLINE, EMPTY_HEADLINE]) {
+      expect(out.split(other).length - 1).toBe(other === headline ? 1 : 0);
+    }
   });
 });

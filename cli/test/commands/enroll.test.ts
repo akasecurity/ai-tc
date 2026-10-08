@@ -665,6 +665,61 @@ describe('aka enroll --repo', () => {
     expect(storedScope()).toEqual(fresh());
   });
 
+  // A repository kept at the top of its host cannot be enrolled by naming its
+  // clone URL, since from the text alone it cannot be told from an owner. Its
+  // checkout resolves the key for itself, so that is where it is enrolled, and
+  // the refusal says so instead of asking for the clone URL that was just given.
+  describe('given a clone URL for a repository at the top of its host', () => {
+    const CHECKOUT_ROUTE = 'is enrolled from inside its checkout';
+
+    it.each([
+      ['an scp clone URL', 'git@git.example.test:payments.git'],
+      ['an ssh:// clone URL', 'ssh://git@git.example.test:29418/payments'],
+      ['an https clone URL ending in .git', 'https://git.example.test/payments.git'],
+    ])('sends %s to the checkout', async (_name, typed) => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
+      expect(exits).toEqual([1]);
+      expect(io.errors()).toContain(
+        `aka enroll: ${typed} names a repository kept at the top of its host. Such a repository ${CHECKOUT_ROUTE}:\n` +
+          'run `aka enroll` there, which stores the key the checkout itself resolves.\n',
+      );
+      expect(io.errors()).not.toContain('Give its clone');
+      expect(io.output()).not.toContain('Enrolled.');
+      expect(storedScope()).toEqual(fresh());
+    });
+
+    it('is true: the checkout of that repository enrolls under its own key', async () => {
+      attach({ scope: fresh() });
+      const repo = gitRepo(join(work, 'payments'), 'git@git.example.test:payments.git');
+      const io = recorder();
+      expect(await runEnroll([repo], deps(io))).toBe(0);
+      expect(identities()).toEqual(['git.example.test/payments']);
+    });
+
+    it.each([
+      ['an owner URL', 'https://github.com/acme'],
+      ['an owner URL with a trailing slash', 'https://github.com/acme/'],
+      [
+        'an https URL with one path segment and no .git, which may be an owner',
+        'https://git.example.test/payments',
+      ],
+      ['a path with a dot-dot segment', 'ssh://git@git.example.test/a/../b.git'],
+      ['a path with an empty segment', 'git@git.example.test:a//b.git'],
+    ])('keeps the old refusal for %s', async (_name, typed) => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
+      expect(io.errors()).toBe(
+        `aka enroll: ${typed} does not name a repository that can be enrolled. Give its clone\n` +
+          'URL, or its key, as in github.com/acme/payments-api.\n',
+      );
+      expect(io.errors()).not.toContain(CHECKOUT_ROUTE);
+      expect(storedScope()).toEqual(fresh());
+    });
+  });
+
   // A relative path such as `src/acme/payments-api` reads as a key whose host
   // has no dot, and the key check alone would store it as a repository that
   // matches nothing. A name that is a directory here is a path, so it is sent

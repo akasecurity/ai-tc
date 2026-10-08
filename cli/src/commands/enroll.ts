@@ -611,12 +611,38 @@ function identityFromInput(input: string, cwd: string): Identity {
       line: `aka enroll: ${shownInput} is not how that repository is keyed; its key is ${canonical}.`,
     };
   }
+  if (namesTopOfHostRepository(typed)) {
+    return {
+      kind: 'refused',
+      line:
+        `aka enroll: ${shownInput} names a repository kept at the top of its host. Such a repository is enrolled from inside its checkout:\n` +
+        'run `aka enroll` there, which stores the key the checkout itself resolves.',
+    };
+  }
   return {
     kind: 'refused',
     line:
       `aka enroll: ${shownInput} does not name a repository that can be enrolled. Give its clone\n` +
       'URL, or its key, as in github.com/acme/payments-api.',
   };
+}
+
+/**
+ * Whether `typed` is a clone URL for a repository kept at the top of its host:
+ * one path segment after the host, as in `git@git.example.com:payments.git`.
+ *
+ * The two-segment rule refuses such a key by name, because from the text alone
+ * it cannot be told from an owner (`https://github.com/acme` keys the same way).
+ * So this answers only where the text cannot be an owner's page: an scp, ssh://
+ * or other non-web address, or an http(s) address that ends in `.git`. A bare
+ * http(s) address with one path segment may be an owner and is not taken for a
+ * repository. The checkout of such a repository resolves its key for itself,
+ * which is where it is enrolled. Pure.
+ */
+function namesTopOfHostRepository(typed: string): boolean {
+  const key = canonicalRepoUrl(typed);
+  if (key?.split('/').length !== 2) return false;
+  return !/^https?:\/\//i.test(typed) || /\.git\/?$/i.test(typed);
 }
 
 /**

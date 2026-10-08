@@ -263,10 +263,30 @@ describe('removeAttachmentScopeEntries', () => {
     expect(removed).toEqual([LEDGER, PAYMENTS]);
   });
 
+  it.each(UNREADABLE_BINDING)(
+    'removes the identity from a record for this deployment with %s, keeping the rest as found',
+    (_label, over) => {
+      // A build that reads this record would go on forwarding the identity.
+      const raw = { ...stored(), ...over, entries: [repo(PAYMENTS), NEWER, repo(LEDGER)] };
+      expect(isAttachmentScopeValid(raw, ENDPOINT)).toBe(false);
+      const { next, removed } = removeAttachmentScopeEntries(raw, ENDPOINT, [PAYMENTS]);
+
+      expect(removed).toEqual([PAYMENTS]);
+      expect(next).toStrictEqual({ ...stored(), ...over, entries: [NEWER, repo(LEDGER)] });
+    },
+  );
+
   it.each<[string, unknown]>([
     ['no record at all', undefined],
-    ['a damaged record', { endpoint: ENDPOINT, entries: 'x' }],
+    [
+      'a record for this deployment whose entries are not a list',
+      { endpoint: ENDPOINT, entries: 'x' },
+    ],
     ['a record for another deployment', { ...stored(), endpoint: OTHER_ENDPOINT }],
+    [
+      'an unreadable record for another deployment',
+      { ...stored(), endpoint: OTHER_ENDPOINT, tenantName: 't'.repeat(201) },
+    ],
   ])('edits nothing for %s', (_label, raw) => {
     // Another deployment's record is not this function's to edit.
     const result = removeAttachmentScopeEntries(raw, ENDPOINT, [PAYMENTS]);

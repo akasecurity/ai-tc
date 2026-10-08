@@ -12,7 +12,8 @@
 //
 // A record that names the deployment but that this build cannot read (a binding
 // field a newer build's bounds allow, say) is not replaced either: enrolling into
-// it throws UnreadableAttachmentScopeError, so the caller writes nothing.
+// it throws UnreadableAttachmentScopeError, so the caller writes nothing, and
+// unenrolling from it filters its stored entries like any other record's.
 //
 // Pure: no I/O. Run them inside applyOnboarding's updater, which hands over the
 // file the merge is about to land on, so two writers cannot lose each other's
@@ -152,17 +153,21 @@ export function addAttachmentScopeEntries(
  * behind to keep forwarding it there. Everything else the record carries is
  * copied as found.
  *
- * With no record that counts for `endpoint`, nothing is removed: another
- * deployment's record is not this function's to edit. `removed` lists each
- * identity that matched at least one stored entry, once, in the order asked.
- * When it is empty, `next` is `raw` itself. Never mutates `raw`.
+ * The record need only name `endpoint`. One this build cannot otherwise read (a
+ * binding field outside its bounds, say) is edited the same way, for the same
+ * reason as an entry it cannot read: a build that reads the record would go on
+ * forwarding what was asked to stop. Without a record that names `endpoint` —
+ * none, or another deployment's — nothing is removed: another deployment's
+ * record is not this function's to edit. `removed` lists each identity that
+ * matched at least one stored entry, once, in the order asked. When it is
+ * empty, `next` is `raw` itself. Never mutates `raw`.
  */
 export function removeAttachmentScopeEntries(
   raw: unknown,
   endpoint: string,
   identities: readonly string[],
 ): { next: unknown; removed: readonly string[] } {
-  if (!isAttachmentScopeValid(raw, endpoint)) return { next: raw, removed: [] };
+  if (!namesEndpoint(raw, endpoint)) return { next: raw, removed: [] };
   const asked = new Set(identities);
   const matched = new Set<string>();
   const kept = storedEntries(raw).filter((entry) => {

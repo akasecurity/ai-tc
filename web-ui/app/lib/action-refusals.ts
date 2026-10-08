@@ -167,6 +167,20 @@ export const ATTACH_MODE_REQUIRED =
   'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
 
 /**
+ * An attach whose key was verified, and then found the machine's credential
+ * changed.
+ *
+ * The mode is decided from the credential read before the key goes out, and the
+ * reply can take seconds. If a terminal `aka attach` (or another dashboard)
+ * attached, re-attached or detached this machine in that time, writing what was
+ * decided could widen a personal device, narrow a machine-wide attachment, or
+ * replace its enrolled list with an empty one, with nobody asked about any of
+ * it. Nothing is written; reloading shows the machine as it stands now.
+ */
+export const ATTACH_CHANGED_WHILE_WAITING =
+  'This machine’s connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.';
+
+/**
  * The four refusals `syncNow` adds.
  *
  * The first three re-state a gate the panel has already applied, and they exist

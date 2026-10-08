@@ -25,12 +25,15 @@ import type { CommandScan, WorktreeScan } from '../../src/attached/command-sync.
 // unenroll that lands between spawn and poll leaves the scan forwarding under
 // the scope it was spawned with.
 //
-// The network client and the scanner are faked, and no case runs a forward:
-// each records the configuration the scan was handed, which is what the forward
-// resolves its scope from. The first three cases drive the scan alone, with a
-// loader of their own and no files on disk. The two that go through
-// `runCommandSync` use a real credential (a v2 file for the scoped one) and
-// real settings, read by the plugin's own loader.
+// The network client and the scanner are faked, and no case runs a forward. The
+// cases that reach the scanner record the configuration it was handed, which is
+// what the forward resolves its scope from. The first three cases drive the
+// scan alone, with a loader of their own and no credential or settings files:
+// the first two record that configuration, and the third has a loader that
+// throws and asserts the scan still builds, its run rejects and the scanner is
+// never called. The two that go through `runCommandSync` use a real credential
+// (a v2 file for the scoped one) and real settings, read by the plugin's own
+// loader.
 
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();

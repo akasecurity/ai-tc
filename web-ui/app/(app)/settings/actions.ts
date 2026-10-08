@@ -21,6 +21,7 @@ import {
   managedDetachRefusal,
   ManagedFieldError,
   managedScopedRefusal,
+  mayBePersonalDevice,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
@@ -32,6 +33,7 @@ import {
   settledDecisionHolds,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
+  writesSettingsFirst,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type {
@@ -47,7 +49,6 @@ import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   AttachInput,
-  attachmentModeOf,
   BodyRetention,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -72,6 +73,7 @@ import { revalidatePath } from 'next/cache';
 
 import {
   ATTACH_CHANGED_WHILE_WAITING,
+  ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS,
   ATTACH_CREDENTIAL_UNWRITABLE,
   ATTACH_ENDPOINT_INSECURE,
   ATTACH_ENDPOINT_UNPARSEABLE,
@@ -404,9 +406,13 @@ function nextWebChatCapture(
  *   VERIFY BEFORE WRITING ANYTHING. A key that the deployment does not accept
  *   must leave the machine as it was, not attached-and-broken by a second route.
  *
- *   CREDENTIAL FIRST, THEN DESCRIPTOR. The reverse order leaves a machine
- *   claiming an attachment it has no credential for if the second write fails —
- *   which is precisely the state this change exists to stop producing.
+ *   CREDENTIAL FIRST, THEN DESCRIPTOR, WHERE A STOP BETWEEN THEM IS HARMLESS. The
+ *   reverse order leaves a machine claiming an attachment it has no credential
+ *   for if the second write fails. The settings go first exactly where `aka
+ *   attach` puts them first (`writesSettingsFirst`, which both surfaces share):
+ *   where the credential written first would sit beside an enrolled list or a
+ *   history grant the finished attach replaces. See the order of the writes
+ *   below.
  *
  * THE MODE IS DECIDED BEFORE THE KEY IS SENT, TOO. A machine attaches
  * machine-wide or scoped (`AttachInput.mode`), by `decideAttachMode` asked as a
@@ -635,6 +641,13 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // record beside a machine-wide credential, or beside none, was left by a
   // writer that did not clear it (an older build's re-attach or detach).
   const keepScope = holdsScopedFor(previous, endpoint);
+  // Whether this attach keeps `stored` as the enrolled list: only a scoped
+  // re-attach over a personal device's credential for this exact endpoint, with a
+  // list bound to the organization and account the key just verified as (`who` is
+  // defined exactly when the attach is scoped). The one judgment, shared by what
+  // the settings write holds and by the order of the two writes below.
+  const keepsStoredList = (stored: unknown): boolean =>
+    who !== undefined && keepScope && isAttachmentScopeBoundTo(stored, endpoint, who);
   const clearsHistoryGrant = replacesPersonalDevice(mode, prior, previous);
   // A file this build cannot parse may be a personal device's credential a newer
   // build wrote, and this attach goes ahead over it only because the caller named
@@ -647,6 +660,90 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       ? credentialBytes(dir)
       : undefined;
 
+  // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave,
+  // by the rule `aka attach` uses (`writesSettingsFirst`, shared through the
+  // persistence package so the two surfaces cannot order them differently).
+  //
+  // CREDENTIAL FIRST, then the settings, unless the rule picks the other order.
+  // In the other order a machine that fails on the second write is left claiming
+  // an attachment it has no credential for.
+  //
+  // SETTINGS FIRST where the credential written first would sit beside an enrolled
+  // list or a history grant that the finished attach replaces:
+  //   - a machine-wide attach over a credential that is, or may be, a personal
+  //     device's, or over no credential file beside settings that still carry a
+  //     list or a grant. The history drain would read a grant given for enrolled
+  //     repositories as one for the whole machine;
+  //   - a scoped attach that does not keep the list it finds, over settings that
+  //     carry a list or a grant. A list enrolled under another organization or
+  //     account would forward under the new key.
+  // A stop then leaves what the machine had before beside no list (machine-wide)
+  // or an empty one (scoped), which sends no repository's activity.
+  //
+  // THE EXCEPTION is a scoped attach over a usable machine-wide credential, which
+  // writes the credential first, as `aka attach` does. In `aka attach`, settings
+  // first there would leave the machine-wide credential beside that run's answer
+  // about the repositories to be enrolled, and the drain would read it as a grant
+  // for the whole machine; this surface asks no history question, but takes the
+  // same order so the two cannot differ. So a stop there leaves the new scoped
+  // credential beside the list on file, which the finished attach would have
+  // replaced and which may be another organization's or account's, and beside the
+  // earlier grant. If that list names this deployment, its repositories forward
+  // under the new key, and their history goes under the earlier grant, until the
+  // machine is attached again.
+  const settingsFirst = writesSettingsFirst(
+    mode,
+    previous,
+    readWorkspaceSettings(),
+    keepsStoredList,
+  );
+  const writeCredential = (): void => {
+    writeControlPlaneCredential(dir, credentialFor(mode, endpoint, accessKey));
+  };
+  const writeSettings = (): void => {
+    // The updater form, so the scope decision reads the record this write is
+    // about to merge over, inside the settings lock.
+    applyOnboarding((current) => ({
+      runMode: 'attached',
+      controlPlane: {
+        endpoint,
+        ...(label === undefined || label === '' ? {} : { label }),
+        // Stamped server-side like every other timestamp on this page.
+        attachedAt: new Date().toISOString(),
+      },
+      attachmentScope: scopeRecordFor(current.attachmentScope, endpoint, who, keepsStoredList),
+      // SPELLED, because this writer merges: leaving the key out would keep the
+      // grant. Only when a personal device is being replaced by a machine-wide
+      // one; otherwise the key is absent and the grant stands.
+      ...(clearsHistoryGrant ? { historySyncConsent: undefined } : {}),
+    }));
+  };
+  // Why a settings write failed: an administrator's lock, or a write that did not land.
+  const settingsRefusal = (error: unknown): string =>
+    error instanceof ManagedFieldError ? managedRefusal(error.fields) : SETTINGS_WRITE_ERROR;
+
+  if (settingsFirst) {
+    // The first write: when it fails nothing has changed and there is nothing to
+    // roll back.
+    try {
+      writeSettings();
+    } catch (error) {
+      return { ok: false, error: settingsRefusal(error) };
+    }
+    // The settings have landed, and they are NOT put back if the credential write
+    // fails: that would take another settings write, which can fail too. The
+    // refusal says what is left, and the page is refreshed, because it was
+    // rendered from settings that have changed.
+    try {
+      writeCredential();
+    } catch {
+      revalidatePath('/settings');
+      return { ok: false, error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS };
+    }
+    revalidatePath('/settings');
+    return { ok: true };
+  }
+
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
   // its own account — ensureDataDirSync failing, EACCES on ~/.aka/settings, a
@@ -658,35 +755,19 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // Nothing to roll back here: this is the first write, so failing it leaves the
   // machine exactly as it was.
   try {
-    writeControlPlaneCredential(dir, credentialFor(mode, endpoint, accessKey));
+    writeCredential();
   } catch {
     return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
   }
 
   try {
-    // The updater form, so the scope decision reads the record this write is
-    // about to merge over, inside the settings lock.
-    applyOnboarding((current) => ({
-      runMode: 'attached',
-      controlPlane: {
-        endpoint,
-        ...(label === undefined || label === '' ? {} : { label }),
-        // Stamped server-side like every other timestamp on this page.
-        attachedAt: new Date().toISOString(),
-      },
-      attachmentScope: scopeRecordFor(current.attachmentScope, endpoint, who, keepScope),
-      // SPELLED, because this writer merges: leaving the key out would keep the
-      // grant. Only when a personal device is being replaced by a machine-wide
-      // one; otherwise the key is absent and the grant stands.
-      ...(clearsHistoryGrant ? { historySyncConsent: undefined } : {}),
-    }));
+    writeSettings();
   } catch (error) {
     // The refusal names why the write failed, and adds what the rollback could
     // not put back. With nothing added, the credential file holds what it held
     // before this attach, or what another process has written to it since.
     const note = restoreCredential(dir, previous, previousBytes, accessKey);
-    const reason =
-      error instanceof ManagedFieldError ? managedRefusal(error.fields) : SETTINGS_WRITE_ERROR;
+    const reason = settingsRefusal(error);
     return { ok: false, error: note === undefined ? reason : `${reason} ${note}` };
   }
   revalidatePath('/settings');
@@ -974,49 +1055,43 @@ function replacesPersonalDevice(mode: AttachmentMode, ...reads: CredentialFileRe
 }
 
 /**
- * Whether a credential read is a personal device's, or could be. A usable one
- * says; a file that exists but cannot be used does not, and may be a scoped
- * credential a newer build wrote, so it counts. No file at all does not.
- */
-function mayBePersonalDevice(read: CredentialFileRead): boolean {
-  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
-}
-
-/**
  * The `attachmentScope` an attach writes, given the one on file.
  *
  * Machine-wide (`who` undefined): none, spelled, so the merge drops the key. A
  * machine attachment never holds a scope record, so a later scoped attach
  * cannot revive one.
  *
- * Scoped: the stored record, RAW, when `keep` (the machine was already a scoped
- * attachment to this exact endpoint) and it is bound to this endpoint and to the
- * verified organization and account — a key rotation keeps every enrollment, and
- * an entry or envelope key a newer build added survives because nothing here
- * rebuilds the record. Otherwise a fresh empty record bound to them: a record for
- * another endpoint, for someone else, or with no binding at all cannot be
- * checked, and one left beside a machine-wide credential (or none) belongs to an
- * attachment that ended, so it does not carry over.
+ * Scoped: the stored record, RAW, when `keepsList` keeps it (the machine was
+ * already a scoped attachment to this exact endpoint, and the record is bound to
+ * this endpoint and to the verified organization and account) — a key rotation
+ * keeps every enrollment, and an entry or envelope key a newer build added
+ * survives because nothing here rebuilds the record. Otherwise a fresh empty
+ * record bound to them: a record for another endpoint, for someone else, or with
+ * no binding at all cannot be checked, and one left beside a machine-wide
+ * credential (or none) belongs to an attachment that ended, so it does not carry
+ * over.
  *
  * `endpoint` is the effective one: a scoped attach happens only where no
  * administrator governs the connection, so nothing overlays it.
+ *
+ * `keepsList` is the attach's one judgment of whether the stored list is kept,
+ * the same function that chooses the order of its writes.
  */
 function scopeRecordFor(
   raw: unknown,
   endpoint: string,
   who: Pick<PluginWhoami, 'tenantName' | 'userEmail'> | undefined,
-  keep: boolean,
+  keepsList: (stored: unknown) => boolean,
 ): unknown {
   if (who === undefined) return undefined;
-  return keep && isAttachmentScopeBoundTo(raw, endpoint, who)
-    ? raw
-    : freshAttachmentScope(endpoint, who);
+  return keepsList(raw) ? raw : freshAttachmentScope(endpoint, who);
 }
 
 /**
  * Put the credential file back as it was before this attach wrote over it, once
- * the settings write has failed, and return the sentence the refusal adds when
- * that could not be done: undefined when nothing needs adding. Never throws.
+ * the settings write has failed on an attach that wrote the credential first, and
+ * return the sentence the refusal adds when that could not be done: undefined
+ * when nothing needs adding. Never throws.
  *
  * ONLY WHILE THE FILE STILL HOLDS THE KEY THIS ATTACH WROTE. None of the
  * credential helpers takes a lock (settings.json does, through

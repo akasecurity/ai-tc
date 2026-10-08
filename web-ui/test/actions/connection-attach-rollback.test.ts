@@ -93,7 +93,9 @@ describe('a rollback that cannot put the earlier credential file back', () => {
       writeFileSync(dir, 'not a directory');
     };
 
-    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'machine' });
+    // Scoped, with nothing stored beside the file, so the credential still goes
+    // first (a machine-wide attach over this file would write the settings first).
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY, mode: 'scoped' });
 
     expect(res).toEqual({
       ok: false,

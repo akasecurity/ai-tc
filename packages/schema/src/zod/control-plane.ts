@@ -38,7 +38,9 @@ import {
 // `RemoteFailureKind`: a device-side vocabulary nothing sends, so it carries NO
 // id — an id registers the shape in Zod's global registry, and a consumer
 // walking that registry would publish it into a generated document as a
-// component no route uses.
+// component no route uses. `AttachmentMode` is a third no-id shape: a
+// credential vocabulary that the device report carries inline, as a member of
+// `StorePostureSnapshot`, and never as a component of its own.
 
 // ─── The credential file ─────────────────────────────────────────────────────
 

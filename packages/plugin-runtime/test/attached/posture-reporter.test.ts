@@ -542,7 +542,8 @@ describe('createPostureReporter — the attachment mode on the wire', () => {
 
   it('omits the mode KEY on a machine attachment — never an explicit undefined', async () => {
     // The bytes cannot tell the two apart (JSON.stringify drops an undefined
-    // member); a presence check, and exactOptionalPropertyTypes, can.
+    // member), and neither can the type: the schema's optional member admits
+    // `undefined`. Only a presence check can.
     const sent = await sentBody({ attachmentMode: 'machine' });
     expect(Object.keys(sent)).not.toContain('attachmentMode');
   });

@@ -410,11 +410,12 @@ describe('isHistorySyncConsentValid', () => {
 // FOOTNOTE_DISCLOSURE, keyed on TriageHit.shape) only after a field crossed to
 // the model API with the workspace fully green.
 //
-// The disclosure here has no single Zod shape to derive from — it is four pieces
-// of hand-written prose in three packages — so this pins the literal instead and
-// makes the failure message carry the checklist. Bumping the constant WILL fail
-// this test; the fix is to re-read every surface below, confirm each still
-// describes what the new payload sends, and then update the number here.
+// The disclosure here has no single Zod shape to derive from — it is
+// hand-written prose on the surfaces listed below, in code and in documents —
+// so this pins the literal instead and makes the failure message carry the
+// checklist. Bumping the constant WILL fail this test; the fix is to re-read
+// every surface below, confirm each still describes what the new payload
+// sends, and then update the number here.
 //
 //   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
 //   cli/src/commands/enroll.ts        earlierActivity — what enrolling a
@@ -432,11 +433,13 @@ describe('isHistorySyncConsentValid', () => {
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
 //   SECURITY.md                       the "Data in transit" section's
-//                                     sync-history paragraph — pinned by no
-//                                     other test; at-rest-docs.test.ts scopes
-//                                     to "## Data at rest" and
-//                                     privacy-claims.test.ts reads only the
-//                                     three READMEs
+//                                     sync-history paragraph, which no test
+//                                     pins (at-rest-docs.test.ts scopes to
+//                                     "## Data at rest"), and the enroll-
+//                                     queueing sentence in its scoped-
+//                                     attachment paragraph, which the
+//                                     claude-code plugin's privacy-claims
+//                                     test pins word for word
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,

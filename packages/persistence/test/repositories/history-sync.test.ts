@@ -1008,8 +1008,9 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     const byKind = db.historySync.partitionByKind();
     const aggregate = db.historySync.partition();
 
-    // Every bucket reconciles: a surface shows both, so a per-kind number that
-    // did not add up to the aggregate would be two answers about one machine.
+    // Every bucket reconciles: the two reads are one clause, so a per-kind
+    // number that did not add up to the aggregate would be two answers about the
+    // same rows.
     for (const bucket of [
       'queued',
       'inProgress',
@@ -1724,13 +1725,14 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
   });
 });
 
-// THE SCOPED COUNTS. A scoped attachment's delivery-state reads count what its
-// drain can carry and nothing else: a structural row whose own key and session
-// root's key are both enrolled, and a capture whose own key is. Every bucket is
-// scoped, so "sent" and "pending" describe one population. Each case either
-// reads its rows through the machine statements, as the control, so an empty
-// scoped answer is the scope's doing and not an empty store's, or pins a
-// non-empty scoped answer.
+// THE SCOPED COUNTS. A scoped attachment's delivery-state reads count the rows
+// that pass its drain's reachability rule and nothing else: a structural row
+// whose own key and session root's key are both enrolled, and a capture whose
+// own key is. The rule takes no attach-time bound, though the drain's structural
+// pages do. Every bucket is scoped, so "sent" and "pending" describe one
+// population. Each case either reads its rows through the machine statements, as
+// the control, so an empty scoped answer is the scope's doing and not an empty
+// store's, or pins a non-empty scoped answer.
 describe('SqliteHistorySyncRepository — scoped delivery-state counts (a scoped attachment)', () => {
   it('leaves a personal repository out of every bucket of all three reads', () => {
     const db = store.open();

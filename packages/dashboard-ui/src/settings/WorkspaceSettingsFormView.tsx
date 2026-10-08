@@ -153,11 +153,13 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
-// The grant covering activity recorded BEFORE this machine attached (on a
-// personal device, what the enrolled repositories hold; see the _SCOPED set
-// below). Separate from the attachment itself, which governs only what is
-// recorded from now on, and separate again from historical access, which
-// governs local READING.
+// The grant covering activity this machine has not delivered: what it recorded
+// BEFORE it attached, and what a live send could not deliver. On a personal
+// device that is the enrolled repositories' activity (see the _SCOPED set
+// below), and enrolling a repository under the grant also queues the captures
+// still kept for it, including any recorded after attaching. Separate from the
+// attachment itself, which governs only what is recorded from now on, and
+// separate again from historical access, which governs local READING.
 type HistorySyncChoice = 'granted' | 'revoked';
 
 export const HISTORY_SYNC_SECTION_LABEL = 'Unsent activity';

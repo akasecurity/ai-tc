@@ -201,8 +201,9 @@ const ROOT_SCOPE_KEY = `(SELECT session_root.scope_key
  * Counted any other way, a scoped machine's backlog would include rows its
  * drain never offers, and would never empty.
  *
- * Written ONCE for the aggregate and the per-kind read, for the reason
- * PARTITION_BUCKETS is: a surface shows both.
+ * Written ONCE for the aggregate and the per-kind read, so the two cannot
+ * disagree about which rows a scope counts: the per-kind rows sum to the
+ * aggregate.
  */
 const COUNTED_IN_SCOPE = `
          AND ${inScope('scope_key')}
@@ -267,7 +268,7 @@ const CAPTURE_SKIPS = `SELECT COUNT(*) AS skipped
  * WHICH ROWS: every row on the machine, or, from `counts(before, scopeKeys)` on
  * a scoped attachment, only the rows that scope's drain can carry (the rule
  * COUNTED_IN_SCOPE states). Every figure is scoped alike, so a scoped machine's
- * totals are one population: its enrolled repositories' rows.
+ * totals are one population: the rows its drain can carry.
  */
 export interface HistorySyncCounts {
   pending: number;

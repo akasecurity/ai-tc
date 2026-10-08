@@ -79,8 +79,9 @@ export type SyncPanelState =
   // counts only what its scope covers: its store can be full of activity from
   // repositories it does not enroll, and "Nothing recorded yet" over that store
   // would be false. `enrolled` is how many identities the scope enrolls for
-  // this deployment (repositories, and web-chat accounts, though nothing writes
-  // an account entry yet), so a scope with none can say how to add one.
+  // this deployment, as this build resolves it (repositories, and web-chat
+  // accounts, though nothing writes an account entry yet; a list this build
+  // cannot read resolves to 0), so a scope with none can say how to add one.
   | { status: 'nothing-in-scope'; enrolled: number }
   | { status: 'ready'; kinds: readonly SyncKindRow[] };
 
@@ -232,9 +233,10 @@ export function SyncPanelView({
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
             {/* What is sent from now on is the attachment's own, and a personal
-                device's attachment sends only its enrolled repositories. */}
+                device's attachment sends activity only from its enrolled
+                repositories. */}
             {scoped === true
-              ? 'Existing activity is not shared. Only what an enrolled repository records from now on is sent.'
+              ? 'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.'
               : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}

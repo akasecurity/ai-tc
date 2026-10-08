@@ -18,8 +18,8 @@ import {
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
 // The Unsent activity row on a machine attached as a personal device. Such a
-// machine sends only what its enrolled repositories hold, so every string the
-// row shows there names them and none describes the whole machine's backlog.
+// machine sends activity only from its enrolled repositories, so every string
+// the row shows there names them and none describes the whole machine's backlog.
 // The host passes the credential's mode as `attachmentMode`; anything but
 // 'scoped' keeps the machine-wide wording, the one that says more is sent,
 // never less.

@@ -220,14 +220,14 @@ describe('SyncPanelView', () => {
 
   // ─── On a personal device ──────────────────────────────────────────────────
   //
-  // A personal device sends only what its enrolled repositories record, so the
+  // A personal device sends activity only from its enrolled repositories, so the
   // line saying what is sent from now on must not say "this machine". The host
   // passes `scoped` only for one; anything else keeps the machine-wide line.
 
-  it('says only an enrolled repository sends what it records from now on', () => {
+  it("says only an enrolled repository's activity is sent from now on", () => {
     const html = render({ state: { status: 'not-shared' }, scoped: true });
     expect(html).toContain(
-      'Existing activity is not shared. Only what an enrolled repository records from now on is sent.',
+      'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.',
     );
     expect(html).not.toContain('this machine records');
   });

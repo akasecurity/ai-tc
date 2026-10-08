@@ -167,6 +167,15 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     const mode: AttachmentMode | undefined = state.usable
       ? attachmentModeOf(state.credential)
       : undefined;
+    // The name is the label, or the endpoint when there is none. An endpoint is an
+    // address, and the settings one is checked when settings are saved through the
+    // product, not when the file is edited by hand or an overlay pins it, so it
+    // goes through endpointForTerminal, which also keeps userinfo, a query and a
+    // fragment off the screen. A label is free text and gets the plain strip.
+    const plane =
+      connection.label === undefined
+        ? endpointForTerminal(controlPlaneName(connection))
+        : printableForTerminal(controlPlaneName(connection));
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -191,7 +200,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       // off the credential file — and all of them land in a status block a user
       // reads to decide whether their machine is managed. An ANSI escape in any
       // of them can repaint that block or hide a line.
-      `  plane      ${printableForTerminal(controlPlaneName(connection))}`,
+      `  plane      ${plane}`,
       `  attached   ${printableForTerminal(connection.attachedAt, 40)}`,
     ];
     if (state.usable && state.credential.keyPrefix !== undefined) {

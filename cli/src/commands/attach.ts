@@ -26,6 +26,7 @@ import {
   writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
 import {
+  printableForTerminal,
   readDeviceIdentity,
   renderAttachedStatus,
   renderPolicyLine,
@@ -77,16 +78,17 @@ Registers this machine against your organization's AKA deployment.
   --key-stdin     Read the access key from stdin instead of prompting.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
-  --scoped   A personal device: send only the repositories you enroll with
-             \`aka enroll\`. No repository's activity is sent until you enroll
-             one; the policy pull and a short install report still go.
+  --scoped   A personal device: send only activity from the repositories you
+             enroll with \`aka enroll\`. None is sent until you enroll one. The
+             policy pull and a scheduled device report (finding counts and
+             dates across every repository on this machine) still go.
   --machine  A machine your organization owns: send everything it records.
 
-  With neither: a terminal is asked which; a re-attach to the same deployment
-  keeps the mode it has; and a run with no terminal attaches machine-wide, or
-  stops for one of these flags when that could widen what this machine sends.
-  A machine whose connection an administrator manages attaches machine-wide
-  only.
+  A re-attach to the same deployment keeps the mode it has. Otherwise, with
+  neither flag, a terminal is asked which; and a run with no terminal attaches
+  machine-wide, or stops for one of these flags when that could widen what this
+  machine sends. A machine whose connection an administrator manages attaches
+  machine-wide only.
 
   --sync-history     Also send the activity already recorded on this machine,
                      without asking.
@@ -226,7 +228,7 @@ const NEEDS_MODE_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send only the repositories you enroll, or with ' +
+  'what it sends. Re-run with --scoped to send only activity from the repositories you enroll, or with ' +
   '--machine to send everything this machine records. Nothing was changed.';
 
 /**
@@ -512,7 +514,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   if (modeDecision.kind === 'ask') {
     const answered = await askAboutMode(io);
     if (answered === undefined) {
-      io.err('not attaching: no answer to whether this is a personal device. Nothing was changed.');
+      io.err(
+        'not attaching: no answer to whether this is a personal device. ' +
+          'Nothing was changed on this machine.',
+      );
       exit(1);
       return;
     }
@@ -542,7 +547,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // rather than reviving it, and that is said before it happens.
       if (io.isInteractive) {
         if (!(await confirmWidening(io, endpoint))) {
-          io.err('not attaching machine-wide. Nothing was changed.');
+          io.err('not attaching machine-wide. Nothing was changed on this machine.');
           exit(1);
           return;
         }
@@ -574,7 +579,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   if (mode === 'scoped') {
     const lateRefusal = managedScopedRefusal(base, deps.managedSettings);
     if (lateRefusal !== null) {
-      io.err(`${connectionRefusalMessage(lateRefusal)} Nothing was changed.`);
+      io.err(`${connectionRefusalMessage(lateRefusal)} Nothing was changed on this machine.`);
       exit(1);
       return;
     }
@@ -778,9 +783,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   const attachedLines =
     mode === 'scoped'
       ? [
-          `Attached to ${args.label ?? endpoint} as a personal device.`,
-          `  organization  ${identity.tenantName}`,
-          `  you           ${identity.userEmail}`,
+          // The label and the verified identity come from outside this process
+          // (a deployment's whoami, a typed flag), so each goes through the one
+          // shared terminal strip.
+          `Attached to ${printableForTerminal(args.label ?? endpoint, 200)} as a personal device.`,
+          `  organization  ${printableForTerminal(identity.tenantName)}`,
+          `  you           ${printableForTerminal(identity.userEmail)}`,
           '',
           'Only activity from repositories you enroll is sent to that deployment, and',
           'the Data Shares register a scan records goes only for an enrolled',
@@ -796,8 +804,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
             ? 'The repositories already enrolled here are kept: `aka enroll --list` shows them.'
             : 'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
           '',
-          "This machine still fetches that deployment's policy and sends a short report",
-          'on this install: its host name, versions, detection packs and finding counts.',
+          // The device report is sent in either mode, on a schedule, and the scope
+          // does not gate it: its finding counts and dates cover every repository
+          // on this machine, enrolled or not.
+          "This machine still fetches that deployment's policy, and sends it a device",
+          'report on a schedule: host name, versions, detection packs, and finding',
+          'counts and dates across every repository on this machine.',
           // An older aka writes a version-1 credential on every attach, which is
           // machine-wide. Said here because the reader is the one who would run it.
           'An aka older than this one that re-attaches this machine makes it machine-wide.',
@@ -1127,19 +1139,21 @@ async function askAboutHistory(
  * The history question on a SCOPED attachment.
  *
  * It names no count. The local preview counts every session this machine
- * recorded, enrolled or not, and nothing here is enrolled yet, so a number would
- * describe what this grant never sends. What the grant can send is said in
- * terms of enrolled repositories: some of what one recorded before it was
- * enrolled (whatever this machine still holds of it), and anything a live send
- * from one fails to deliver.
+ * recorded, enrolled or not, so a number would describe what this grant never
+ * sends. What the grant can send is said in terms of enrolled repositories:
+ * some of what one recorded before it was enrolled (whatever this machine still
+ * holds of it), and anything a live send from one fails to deliver. The tenant
+ * name comes from the deployment, so it goes through the terminal strip.
  */
 function scopedHistoryQuestion(tenantName: string): string {
   return [
     '',
-    `Verified against ${tenantName}.`,
+    `Verified against ${printableForTerminal(tenantName)}.`,
     '',
     'This machine is attaching as a personal device: AKA sends the activity of',
     'the repositories you enroll with `aka enroll`, and none from anywhere else.',
+    "A command you run inside an enrolled repository is sent as that repository's",
+    'activity, even when it reads files elsewhere.',
     'It can also send some of what an enrolled repository recorded here before',
     'you enrolled it, and keep anything a live send from one fails to deliver,',
     'instead of dropping it.',
@@ -1189,8 +1203,9 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '',
       '  A personal device sends only the activity of repositories you enroll',
       '  with `aka enroll`, and none until you enroll one. It still fetches',
-      "  your organization's policy and sends a short report on this install",
-      '  (host name, versions, detection packs, finding counts).',
+      "  your organization's policy, and sends it a device report on a schedule:",
+      '  host name, versions, detection packs, and finding counts and dates',
+      '  across every repository on this machine, enrolled or not.',
       '  A machine your organization owns sends everything it records, from',
       '  every repository.',
       '',
@@ -1218,8 +1233,8 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
     [
       '',
       `This machine is attached to ${endpoint} as a personal device: it sends only`,
-      'the repositories enrolled on it. With --machine it sends everything it',
-      'records, from every repository, and the enrolled list is cleared.',
+      'activity from the repositories enrolled on it. With --machine it sends',
+      'everything it records, from every repository, and the enrolled list is cleared.',
       '',
     ].join('\n'),
   );
@@ -1233,7 +1248,7 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
 function wideningNotice(endpoint: string): string {
   return (
     `This machine was attached to ${endpoint} as a personal device; ` +
-    'the repositories enrolled on it will be cleared.'
+    'its enrolled list will be cleared.'
   );
 }
 
@@ -1243,7 +1258,7 @@ function wideningNotice(endpoint: string): string {
  */
 const MANAGED_ELSEWHERE_NOTICE =
   'This machine was attached to another deployment as a personal device; ' +
-  'the repositories enrolled on it will be cleared.';
+  'its enrolled list will be cleared.';
 
 /** The real verification: one round trip that proves the key is accepted. */
 async function verifyWithControlPlane(

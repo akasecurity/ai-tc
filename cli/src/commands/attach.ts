@@ -47,7 +47,6 @@ import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   attachmentModeOf,
-  connectionRefusalMessage,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttachmentScopeBoundTo,
   originOnly,
@@ -59,6 +58,7 @@ import { homeBase } from '../lib/args.ts';
 import { openUrl } from '../lib/open-url.ts';
 import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
+import { refusalLine } from '../lib/refusal-line.ts';
 import { attachByDeviceCode, type DeviceAttachOutcome } from './attach-device.ts';
 
 // `aka attach` / `aka detach` / `aka status` — registering this machine against
@@ -184,7 +184,7 @@ export function parseAttachArgs(argv: readonly string[]): ParsedArgs | { error: 
     } else if (arg?.startsWith('--home=')) {
       parsed.home = arg.slice('--home='.length);
     } else {
-      return { error: `unknown option ${String(arg)}` };
+      return { error: `unknown option ${printableForTerminal(String(arg), 200)}` };
     }
   }
   if (parsed.label !== undefined && CONTROL_CHARS.test(parsed.label)) {
@@ -394,8 +394,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     // that keeps the name is this surface's to name.
     io.err(
       refusal.reason === 'label-required'
-        ? `${connectionRefusalMessage(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
-        : connectionRefusalMessage(refusal),
+        ? `${refusalLine(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
+        : refusalLine(refusal),
     );
     exit(2);
     return;
@@ -434,7 +434,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   if (modeDecision.kind === 'refuse') {
     io.err(
       modeDecision.why === 'scoped-managed'
-        ? `${connectionRefusalMessage(scopedRefusal ?? { reason: 'scoped-managed' })} ` +
+        ? `${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ` +
             'Re-run without --scoped.'
         : NEEDS_MODE_FLAG,
     );
@@ -501,7 +501,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       confirmed?.identity ?? (await (deps.verify ?? verifyWithControlPlane)(endpoint, apiKey));
   } catch {
     io.err(
-      `could not verify that key against ${endpoint}. Nothing was changed — ` +
+      `could not verify that key against ${printableForTerminal(endpoint, 200)}. Nothing was changed — ` +
         'check the URL and that the key has not been revoked.',
     );
     exit(1);
@@ -533,16 +533,15 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // decided, and one line says why it attaches machine-wide now. `widening`
       // is not read here: under management it is information, never a question.
       // The write below clears the enrolled list either way. Another deployment
-      // is not named: its endpoint is read from disk, and no line here echoes a
-      // stored value.
+      // is not named: its endpoint is read from disk, so that notice says
+      // nothing of it. The administrator's name in the refusal sentence is their
+      // own, and refusalLine strips it for the terminal.
       if (prior.usable && attachmentModeOf(prior.credential) === 'scoped') {
         const notice =
           prior.credential.endpoint === endpoint
             ? wideningNotice(endpoint)
             : MANAGED_ELSEWHERE_NOTICE;
-        io.out(
-          `${connectionRefusalMessage(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`,
-        );
+        io.out(`${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`);
       }
     } else if (modeDecision.widening) {
       // WIDENING by --machine over a scoped attachment to this deployment. The
@@ -582,7 +581,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   if (mode === 'scoped') {
     const lateRefusal = managedScopedRefusal(base, deps.managedSettings);
     if (lateRefusal !== null) {
-      io.err(`${connectionRefusalMessage(lateRefusal)} Nothing was changed on this machine.`);
+      io.err(`${refusalLine(lateRefusal)} Nothing was changed on this machine.`);
       exit(1);
       return;
     }
@@ -832,7 +831,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           '',
         ]
       : [
-          `Attached to ${args.label ?? endpoint}.`,
+          // The address is whatever was typed, so it goes through the strip, as
+          // the scoped block's does.
+          `Attached to ${printableForTerminal(args.label ?? endpoint, 200)}.`,
           `  organization  ${identity.tenantName}`,
           `  you           ${identity.userEmail}`,
           '',
@@ -873,7 +874,7 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
     return readControlPlaneCredentialFile(settingsDirOf(base));
   } catch {
     io.err(
-      `could not read this machine's AKA settings in ${settingsDirOf(base)}; nothing was ` +
+      `could not read this machine's AKA settings in ${printableForTerminal(settingsDirOf(base), Infinity)}; nothing was ` +
         'changed on this machine. Check that it is a directory you own.',
     );
     return undefined;
@@ -1204,7 +1205,7 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
   io.out(
     [
       '',
-      `This machine is attached to ${endpoint} as a personal device: it sends only`,
+      `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: it sends only`,
       'activity from the repositories enrolled on it. With --machine it sends',
       'everything it records, from every repository, and the enrolled list is cleared.',
       '',
@@ -1219,7 +1220,7 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
 /** What a widening that is not asked about says it is doing. */
 function wideningNotice(endpoint: string): string {
   return (
-    `This machine was attached to ${endpoint} as a personal device; ` +
+    `This machine was attached to ${printableForTerminal(endpoint, 200)} as a personal device; ` +
     'its enrolled list will be cleared.'
   );
 }
@@ -1280,7 +1281,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   // dashboard's detach action decides through as well.
   const refusal = managedDetachRefusal(base, deps.managedSettings);
   if (refusal !== null) {
-    io.err(connectionRefusalMessage(refusal));
+    io.err(refusalLine(refusal));
     exit(1);
     return;
   }

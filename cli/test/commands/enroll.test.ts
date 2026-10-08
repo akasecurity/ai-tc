@@ -153,6 +153,8 @@ function attach(
     mode?: 'machine' | 'scoped';
     scope?: unknown;
     label?: string;
+    /** The deployment the settings name. The credential is for it too, unless it is given. */
+    endpoint?: string;
     credentialEndpoint?: string;
     extra?: Partial<WorkspaceSettings>;
   } = {},
@@ -161,7 +163,7 @@ function attach(
     {
       runMode: 'attached',
       controlPlane: {
-        endpoint: ENDPOINT,
+        endpoint: options.endpoint ?? ENDPOINT,
         label: options.label ?? 'Acme',
         attachedAt: '2026-10-01T09:00:00.000Z',
       },
@@ -171,7 +173,7 @@ function attach(
     base,
     null,
   );
-  const endpoint = options.credentialEndpoint ?? ENDPOINT;
+  const endpoint = options.credentialEndpoint ?? options.endpoint ?? ENDPOINT;
   writeControlPlaneCredential(
     settingsDirOf(base),
     (options.mode ?? 'scoped') === 'scoped'
@@ -429,6 +431,64 @@ describe('aka enroll — the organization named in a refusal', () => {
     expect(io.errors()).toContain('Acme[2J IT manages this machine');
     expect(io.errors()).not.toContain(ESC);
   });
+});
+
+// The command a refusal suggests is one to paste, or it is not a command: the
+// whole endpoint, quoted for a shell, or the form with a placeholder.
+describe('aka enroll — the re-attach command a refusal suggests', () => {
+  const attachCommand = (endpoint: string): string =>
+    `aka attach --url ${quotedForShell(endpoint)} --scoped`;
+  // An ampersand is accepted in the path of an endpoint, and a shell would take
+  // it for the end of the command.
+  const WITH_AMPERSAND = 'https://aka.acme.test/gateway/a&b';
+  const LONG = `https://aka.acme.test/${'p'.repeat(300)}`;
+  const WITH_ESCAPE = `https://aka.acme.test/gateway${ESC}[2J`;
+
+  it.each<[string, string]>([
+    ['an ampersand in its path', WITH_AMPERSAND],
+    ['more than two hundred characters', LONG],
+  ])(
+    'suggests a command that carries the whole endpoint when it has %s',
+    async (_name, endpoint) => {
+      attach({ mode: 'machine', endpoint });
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+      expect(io.errors()).toContain(attachCommand(endpoint));
+      expect(io.errors()).not.toContain('…');
+    },
+  );
+
+  it('suggests the same command when the credential cannot be used', async () => {
+    attach({ scope: fresh(), endpoint: WITH_AMPERSAND, credentialEndpoint: OTHER_ENDPOINT });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+    expect(io.errors()).toContain(`Re-attach with \`${attachCommand(WITH_AMPERSAND)}\``);
+  });
+
+  it.each<[string, (endpoint: string) => void]>([
+    [
+      'a machine-wide attachment',
+      (endpoint) => {
+        attach({ mode: 'machine', endpoint });
+      },
+    ],
+    [
+      'a credential that cannot be used',
+      (endpoint) => {
+        attach({ scope: fresh(), endpoint, credentialEndpoint: OTHER_ENDPOINT });
+      },
+    ],
+  ])(
+    'names the form, with no command, when the endpoint has a control character (%s)',
+    async (_name, arrange) => {
+      arrange(WITH_ESCAPE);
+      const io = recorder();
+      expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(1);
+      expect(io.errors()).toContain('`aka attach --url <url> --scoped`');
+      expect(io.errors()).not.toContain('gateway');
+      expect(io.errors()).not.toContain(ESC);
+    },
+  );
 });
 
 describe('aka enroll [path]', () => {

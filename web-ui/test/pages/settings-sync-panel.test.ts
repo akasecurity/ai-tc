@@ -845,7 +845,7 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
 });
 
 // The not-shared line says what is sent from now on, and a personal device
-// sends only what its enrolled repositories record. The route reads the mode
+// sends activity only from its enrolled repositories. The route reads the mode
 // once, for the form, and the panel takes the same answer; a machine-wide
 // attachment's props carry no flag at all.
 describe('the settings route — the sync panel on a personal device', () => {

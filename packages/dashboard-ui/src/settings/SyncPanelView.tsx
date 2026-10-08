@@ -233,9 +233,10 @@ export function SyncPanelView({
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
             {/* What is sent from now on is the attachment's own, and a personal
-                device's attachment sends only its enrolled repositories. */}
+                device's attachment sends activity only from its enrolled
+                repositories. */}
             {scoped === true
-              ? 'Existing activity is not shared. Only what an enrolled repository records from now on is sent.'
+              ? 'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.'
               : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}

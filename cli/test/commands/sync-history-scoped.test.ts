@@ -27,8 +27,8 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // and that the machine-wide wording is byte for byte what it was.
 //
 // A personal device sends the history of the repositories enrolled on it and
-// nothing else: the grant's seed marks only their captures, and the drain reads
-// with the same scope. So on one, no line may describe the whole machine's
+// no other activity: the grant's seed marks only their captures, and the drain
+// reads with the same scope. So on one, no line may describe the whole machine's
 // backlog, and with nothing enrolled no line may leave "Sending" standing alone.
 //
 // The settings file and the credential file are real, in a temp home. Only the

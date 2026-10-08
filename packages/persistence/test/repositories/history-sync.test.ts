@@ -2054,6 +2054,33 @@ describe('SqliteHistorySyncRepository — scoped delivery-state counts (a scoped
     expect(db.historySync.partitionByKind(every)).toEqual(db.historySync.partitionByKind());
     expect(db.historySync.partition().total).toBe(10);
   });
+
+  // PINS TODAY'S DOCUMENTED BEHAVIOUR, not a rule: the scoped partition takes
+  // no attach-time bound (the COUNTED_IN_SCOPE docblock says why), so a
+  // structural row that started after the boundary reads as queued, while the
+  // drain's bounded pending count and its session read leave it out.
+  it('pins the documented behaviour: the scoped partition counts a post-attach structural row as queued, and the drain pending does not', () => {
+    const db = store.open();
+    const boundary = T0 + 30 * MINUTE;
+    seedKeyedSession(db, 'before-boundary', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'after-boundary', 40 * MINUTE, { root: WORK, leaves: WORK });
+
+    // The drain offers the session that started before the boundary and not the
+    // one after it, and its pending count agrees.
+    expect(db.historySync.pendingSessions(10, boundary, [WORK])).toEqual(['before-boundary']);
+    expect(db.historySync.counts(boundary, [WORK]).pending).toBe(3);
+    // The same rows with no boundary in the way: the bound is the whole difference.
+    expect(db.historySync.counts(ALL, [WORK]).pending).toBe(6);
+
+    // The partition has no boundary to pass: both sessions' rows are queued.
+    expect(db.historySync.partition([WORK])).toMatchObject({ queued: 6, total: 6 });
+    const byKind = db.historySync.partitionByKind([WORK]);
+    expect(byKind.map((k) => [k.kind, k.queued]).sort()).toEqual([
+      ['llm_call', 2],
+      ['session', 2],
+      ['tool_call', 2],
+    ]);
+  });
 });
 
 // The ledger's reads used to scan `audit_events` — the table captures land in.

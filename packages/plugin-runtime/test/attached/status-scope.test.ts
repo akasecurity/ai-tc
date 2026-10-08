@@ -514,6 +514,12 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     '             (counted by an older version of aka, for everything recorded on this machine)';
   const MACHINE_WIDE_NOTE =
     '             (counted while attached machine-wide, for everything recorded on this machine)';
+  // Under a machine-wide attachment, numbers a scoped pass wrote and a re-attach
+  // left behind.
+  const SCOPED_COUNTS_NOTE = [
+    '             (counted while attached as a personal device, for what was enrolled only;',
+    '             the next pass counts everything recorded on this machine)',
+  ].join('\n');
   // What a scoped pass writes when its scope sends nothing: zeros, and complete.
   const emptyScopePass: Omit<HistorySyncState, 'specVersion'> = {
     ...progress,
@@ -558,7 +564,9 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     },
   );
 
-  it.each(['unmarked', 'machine', 'scoped'] as const)(
+  // A machine-wide attachment prints its numbers exactly as it always has when
+  // the file is unmarked or marked machine-wide: nothing is mistaken for scoped.
+  it.each(['unmarked', 'machine'] as const)(
     'never notes the counts on a machine-wide attachment (marker %s)',
     (marker) => {
       attach('machine', undefined, consent);
@@ -569,6 +577,21 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
       const out = status();
       expect(out).toMatch(/^ {2}history {4}sending — 10 of 15 records sent$/m);
       expect(out).not.toMatch(/records sent\n {13}\(/);
+      expect(out).not.toContain('nothing to send');
+    },
+  );
+
+  // The one machine-wide file that is not machine-wide: a scoped pass wrote it,
+  // and a re-attach made the machine machine-wide while the file stayed. Read
+  // bare, its scoped totals would pass for the whole machine's until a pass runs.
+  it.each(numbered)(
+    'notes scoped counts a machine-wide re-attach left behind under the %s line',
+    (_name, shape, line) => {
+      attach('machine', undefined, consent);
+      writeHistorySyncState(dataDir, { ...progress, ...shape, countsScope: 'scoped' });
+      const out = status();
+      expect(out).toContain(`\n${line}\n${SCOPED_COUNTS_NOTE}`);
+      expect(out).not.toContain('older version');
       expect(out).not.toContain('nothing to send');
     },
   );

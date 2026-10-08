@@ -1178,7 +1178,11 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
     label: 'Personal device',
     description:
       'Activity is sent only from repositories you enroll with `aka enroll`. Activity anywhere ' +
-      'else stays on this machine.',
+      'else stays on this machine. Any session on this machine, in an enrolled repository or ' +
+      'not, still fetches the policy and checks for device commands (at most every 15 ' +
+      'minutes), and sends a device report (at most hourly) with a device identifier, host ' +
+      'name, versions, detection packs, policy counts, and finding counts and dates across ' +
+      'every repository.',
   },
   {
     value: 'machine',

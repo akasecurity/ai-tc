@@ -68,8 +68,8 @@ export interface HistorySyncState {
   completedAtMs: number | null;
   /**
    * Which rows the counts above cover: `'scoped'` when the pass that wrote them
-   * counted only what its enrolled scope's drain can carry, `'machine'` when it
-   * counted every repository on the machine.
+   * counted through its enrolled scope, `'machine'` when it counted with no
+   * scope, so whichever repository a row was recorded in.
    *
    * ABSENT means "not recorded", never either mode. A build from before this
    * field writes none, and the CLI and each plugin are installed separately,

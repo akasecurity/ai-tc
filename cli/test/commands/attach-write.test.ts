@@ -134,6 +134,9 @@ const NOTE_UNTOUCHED =
 const NOTE_FAILED =
   'The credential file this machine had before could not be put back, so it may differ ' +
   'from what it was. Run `aka attach` again.';
+const NOTE_SUPERSEDED =
+  'The credential file changed while this attach was saving, so it was not put back and is ' +
+  'left as it is now. Run `aka status` to see what this machine is attached to.';
 const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
@@ -1487,6 +1490,76 @@ describe('a save that fails puts the credential file back as it was, or says it 
     expect(h.errors()).toContain(row.says);
     if (row.says !== LEFT_AS_IT_WAS) expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
     row.onDisk(planted);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      'a machine-wide credential',
+      () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        applyOnboarding(
+          { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO } },
+          base,
+          null,
+        );
+      },
+    ],
+    ['no credential', () => undefined],
+  ])(
+    'leaves a personal device another attach made while this one was saving, over %s',
+    async (_name, arrange) => {
+      arrange();
+      // Lands after this attach wrote its credential and just before its settings
+      // write, which then fails: a second attach that won the race.
+      stand.beforeNextSettingsWrite = () => {
+        attachedScoped(BOUND);
+        throw new Error('settings write failed');
+      };
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({
+        usable: true,
+        credential: {
+          specVersion: 2,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+          mode: 'scoped',
+        },
+      });
+      expect(storedSettings().attachmentScope).toEqual(BOUND);
+    },
+  );
+
+  it('writes nothing back, and says the machine is as it was, when its own credential write never landed', async () => {
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: KEY_1,
+      mintedAt: ISO,
+    });
+    const before = readFileSync(credentialFile(), 'utf8');
+    stand.credentialWrites = 0;
+    stand.failCredentialWriteAt = 1;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+    // The failed write was the only one: the file already held the earlier credential.
+    expect(stand.credentialWrites).toBe(1);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
   });
 
   it('puts an unreadable credential file back owner-only', async (ctx) => {

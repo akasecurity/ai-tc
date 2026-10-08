@@ -79,8 +79,9 @@ export type SyncPanelState =
   // counts only what its scope covers: its store can be full of activity from
   // repositories it does not enroll, and "Nothing recorded yet" over that store
   // would be false. `enrolled` is how many identities the scope enrolls for
-  // this deployment (repositories, and web-chat accounts, though nothing writes
-  // an account entry yet), so a scope with none can say how to add one.
+  // this deployment, as this build resolves it (repositories, and web-chat
+  // accounts, though nothing writes an account entry yet; a list this build
+  // cannot read resolves to 0), so a scope with none can say how to add one.
   | { status: 'nothing-in-scope'; enrolled: number }
   | { status: 'ready'; kinds: readonly SyncKindRow[] };
 

@@ -734,6 +734,10 @@ describe('the personal-device question', () => {
       credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_2, mode: 'scoped' },
     });
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'it was made for another deployment.\n',
+    );
   });
 });
 
@@ -764,6 +768,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
     // RAW: the envelope key and the entry this build cannot read survive.
     expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
     expect(h.output()).toContain('The repositories already enrolled here are kept');
+    expect(h.output()).not.toContain('cleared because');
   });
 
   it('through --key-stdin, with no terminal', async () => {
@@ -809,6 +814,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
       'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
     );
     expect(h.output()).not.toContain('already enrolled here are kept');
+    expect(h.output()).not.toContain('cleared because');
   });
 
   it('judges the list inside the settings lock, so an enrollment that lands first is kept', async () => {
@@ -1145,27 +1151,41 @@ describe('an attach is not written over what changed while it waited', () => {
 });
 
 describe('the enrolled list is kept only for the organization and account that built it', () => {
-  it.each([
-    ['another organization', { ...ANA, tenantName: 'Other Org' }],
-    ['another account', { ...ANA, userEmail: 'member-18' }],
-  ])('starts empty when the key verifies as %s', async (_label, who) => {
-    attachedScoped(BOUND);
-    const h = harness({ interactive: false, stdin: KEY_2, who });
+  it.each<[string, { tenantName: string; userEmail: string }, string]>([
+    [
+      'another organization',
+      { ...ANA, tenantName: 'Other Org' },
+      'it names an organization other than the one this key verified as.',
+    ],
+    [
+      'another account',
+      { ...ANA, userEmail: 'member-18' },
+      'it names an account other than the one this key verified as.',
+    ],
+  ])(
+    'starts empty when the key verifies as %s, and says how many were cleared',
+    async (_label, who, because) => {
+      attachedScoped(BOUND);
+      const h = harness({ interactive: false, stdin: KEY_2, who });
 
-    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+      await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
 
-    expect(exits).toEqual([]);
-    expect(modeOnDisk()).toBe('scoped');
-    expect(storedSettings().attachmentScope).toEqual({
-      endpoint: ENDPOINT,
-      tenantName: who.tenantName,
-      userEmail: who.userEmail,
-      entries: [],
-    });
-    expect(h.output()).toContain(
-      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
-    );
-  });
+      expect(exits).toEqual([]);
+      expect(modeOnDisk()).toBe('scoped');
+      expect(storedSettings().attachmentScope).toEqual({
+        endpoint: ENDPOINT,
+        tenantName: who.tenantName,
+        userEmail: who.userEmail,
+        entries: [],
+      });
+      expect(h.output()).toContain(
+        `The list on this machine held 2 enrollments; they were cleared because\n${because}\n`,
+      );
+      expect(h.output()).toContain(
+        'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+      );
+    },
+  );
 
   it('starts empty over a list that names nobody, which cannot be checked', async () => {
     attachedScoped(UNBOUND);
@@ -1175,6 +1195,10 @@ describe('the enrolled list is kept only for the organization and account that b
 
     expect(exits).toEqual([]);
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 1 enrollment; it was cleared because\n' +
+        'it names no account, so whose it is could not be checked.\n',
+    );
   });
 
   it.each<[string, () => void]>([
@@ -1213,6 +1237,28 @@ describe('the enrolled list is kept only for the organization and account that b
     expect(exits).toEqual([]);
     expect(modeOnDisk()).toBe('scoped');
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'this attach does not continue a personal-device attachment to this deployment.\n',
+    );
+  });
+
+  it('says nothing was cleared when the list it replaced held nothing this build can read', async () => {
+    attachedScoped({
+      ...BOUND,
+      tenantName: 'Other Org',
+      entries: [{ kind: 'org', identity: 'example-org', enrolledAt: ISO }],
+    });
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).not.toContain('cleared because');
+    expect(h.output()).toContain(
+      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+    );
   });
 });
 

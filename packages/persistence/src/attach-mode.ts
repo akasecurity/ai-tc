@@ -1,4 +1,4 @@
-import type { AttachmentMode, ConnectionRefusal } from '@akasecurity/schema';
+import type { AttachmentMode, ConnectionRefusal, WorkspaceSettings } from '@akasecurity/schema';
 import { attachmentModeOf } from '@akasecurity/schema';
 
 import type { CredentialFileRead } from './control-plane-credential.ts';
@@ -19,6 +19,11 @@ import type { CredentialFileRead } from './control-plane-credential.ts';
 // SCOPED credential for a DIFFERENT endpoint: a machine-wide credential written
 // over either by automation would widen a machine that may be scoped, with
 // nobody told.
+//
+// It also holds the rule for the ORDER of an attach's two writes, the credential and
+// the settings (writesSettingsFirst), and the judgement that rule rests on
+// (mayBePersonalDevice). Pure too, and exported so every surface that attaches a
+// machine can order its writes by the same rule.
 
 /**
  * What an attach does about the mode.
@@ -184,6 +189,67 @@ export function holdsScopedFor(previous: CredentialFileRead, endpoint: string): 
 }
 
 /**
+ * Whether a credential read is a personal device's, or could be: a usable scoped
+ * credential, for this endpoint or any other, or a file that is there but cannot
+ * be used, which may be a scoped credential a newer build wrote. No file at all is
+ * not, and neither is a usable machine-wide credential.
+ *
+ * No I/O; never throws.
+ */
+export function mayBePersonalDevice(read: CredentialFileRead): boolean {
+  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
+}
+
+/**
+ * Whether an attach writes the settings before the credential. Two cases, and
+ * nothing else.
+ *
+ * An attach writes the credential and the settings one after the other, and a
+ * stop between the two leaves the first beside whatever the second would have
+ * replaced. The credential goes first unless that could leave the new credential
+ * beside an enrolled list or a history grant the finished attach replaces, in a
+ * pairing of credential mode and stored list or grant that the machine did not
+ * have. One case is left credential first although it could, and is named below.
+ *
+ * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
+ * personal device's (mayBePersonalDevice), or when there is no credential file
+ * but the stored settings still carry an enrolled list or a history grant, which
+ * this attach replaces. A deleted credential file leaves the settings so, and so
+ * does a rollback that reports a file it could not read as gone.
+ *
+ * A SCOPED attach, when the settings carry a list or a grant for it to replace
+ * and it does not keep the list (`keepsList` answers for the stored one), unless
+ * the credential being replaced is a usable machine-wide one.
+ *
+ * The exception is a scoped attach over a usable machine-wide credential, which
+ * is left credential first although it does not keep the list. A stop after its
+ * credential write leaves the new scoped key beside the stored list, which may
+ * belong to another organization or account, and beside the history grant
+ * already on file, which stays as it was.
+ *
+ * `previous` is the credential file as read just before the writes, and `stored`
+ * the settings in force then, overlay applied.
+ *
+ * No I/O. Throws only if `keepsList` does, and asks it nothing on a machine-wide
+ * attach.
+ */
+export function writesSettingsFirst(
+  mode: AttachmentMode,
+  previous: CredentialFileRead,
+  stored: WorkspaceSettings,
+  keepsList: (stored: unknown) => boolean,
+): boolean {
+  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
+  if (mode === 'machine') {
+    return (
+      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
+    );
+  }
+  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
+  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
+}
+
+/**
  * Whether `previous` is a usable SCOPED credential for `endpoint` or for another
  * spelling of it, for the widening check alone.
  *
@@ -238,8 +304,11 @@ function deploymentKey(endpoint: string): string | undefined {
  * machine in that time. Writing what was settled over a different state could
  * widen a personal device, narrow a machine-wide attachment, or overwrite a file
  * a newer build wrote, with nobody asked about any of it. So the decision is put
- * again, with the same flag, administrator's answer, endpoint and terminal, on
- * the file as it is now (`previous`), and compared with the one that was settled.
+ * again, with the same flag, endpoint and terminal, on the file as it is now
+ * (`previous`), and compared with the one that was settled. The administrator's
+ * answer is the caller's to pass: the one the decision was made with, so that
+ * only the file is measured, or one read again after the wait, so that the
+ * decision is also put under the overlay as it is then.
  *
  * It does not hold when the new decision:
  *   - refuses (the file became one that needs a flag this run did not get);
@@ -253,6 +322,13 @@ function deploymentKey(endpoint: string): string | undefined {
  * agreed to by answering a confirmation, by typing the machine-wide flag where
  * there was no terminal to ask on, or by an administrator's management, which
  * asks nothing; what is written still sends what was agreed to.
+ *
+ * An agreement only the administrator gave counts only while they still manage
+ * the machine when the decision is put again. A machine they have stopped
+ * managing is the user's to decide, and a terminal would ask the question that
+ * management skipped, so the decision does not hold there. Typing the
+ * machine-wide flag with no terminal is still the answer, whoever manages the
+ * machine then.
  *
  * `mode` is the mode about to be written: the settled decision's own, or the
  * answer given when the settled decision was to ask. A refusal is never settled,
@@ -272,6 +348,25 @@ export function settledDecisionHolds(
   const now = decideAttachMode(inputs);
   if (now.kind === 'refuse') return false;
   if (now.kind === 'ask') return settled.kind === 'ask';
-  const agreedToWidening = settled.kind === 'use' && settled.widening;
-  return now.mode === mode && (!now.widening || agreedToWidening);
+  return now.mode === mode && (!now.widening || wideningStillAgreed(settled, inputs));
+}
+
+/**
+ * Whether the settled decision carries an agreement to widen a personal device
+ * that still stands when the decision is put again with `now`: the flag, the
+ * terminal and the administrator's answer as they are then.
+ *
+ * What a person agreed to, by answering a confirmation or by typing the flag
+ * with no terminal to ask on, stands. What only the administrator agreed to
+ * (`why: 'managed'`, which asked nobody) stands while they still manage the
+ * machine, and without a terminal where the flag was typed, which answers there
+ * as it would on a machine nobody manages.
+ */
+function wideningStillAgreed(
+  settled: Exclude<AttachModeDecision, { kind: 'refuse' }>,
+  now: Parameters<typeof decideAttachMode>[0],
+): boolean {
+  if (settled.kind !== 'use' || !settled.widening) return false;
+  if (settled.why !== 'managed') return true;
+  return now.managed !== null || (!now.interactive && now.flag === 'machine');
 }

@@ -21,6 +21,15 @@
  * real store. The first store is unchanged, so its rows stay comparable with
  * earlier runs.
  *
+ * THE CAPTURE PROBE AND LONG PROMPTS. `scoped.capturesProbe` is the drain's
+ * "is anything owed in scope?" question, a limit of one, asked with a key no
+ * row carries: the answer is no, and a read can only give it once it has ruled
+ * out every row it could have returned. The capture reads run again on a store
+ * whose prompts are longer than a page holds (the `-4KB` rows): a row's scope
+ * key is read from its attribute bag, which sits after the body, so on a long
+ * prompt a read that computes keys walks the body's overflow chain, and short
+ * prompts would hide that cost.
+ *
  * BEFORE AND AFTER, ON THE SAME ROWS. Against a build that predates a scoped
  * statement, its `scoped.*` case passes a scope list the method ignores, so it
  * runs the machine statement; against one with it, it runs the scoped
@@ -35,9 +44,9 @@
  * package, not this one.
  *
  * NO ASSERTIONS: a measurement, not a gate. What must HOLD about these reads is
- * asserted as query plans in `test/repositories/history-sync.test.ts`. Neither
- * store is ever ANALYZEd: the product never runs it, so the planner plans from
- * schema shape alone here, as it does on a user's machine.
+ * asserted as query plans in `test/repositories/history-sync.test.ts`. No
+ * store here is ever ANALYZEd: the product never runs it, so the planner plans
+ * from schema shape alone here, as it does on a user's machine.
  */
 import { bench, describe } from 'vitest';
 
@@ -64,8 +73,17 @@ const LONG_PROMPT = 'x'.repeat(4_096);
 
 const at = (offsetMs: number): string => new Date(T0 + offsetMs).toISOString();
 
-/** A root, an llm_call leaf and an owed prompt, all stamped with `scopeKey`. */
-function seedSession(db: LocalDatabase, id: string, offsetMs: number, scopeKey: string): void {
+/**
+ * A root, an llm_call leaf and an owed prompt, all stamped with `scopeKey`. The
+ * prompt's body is `content`: a few bytes unless a store asks for a long one.
+ */
+function seedSession(
+  db: LocalDatabase,
+  id: string,
+  offsetMs: number,
+  scopeKey: string,
+  content = `text of ${id}`,
+): void {
   const attributes = { scope_key: scopeKey };
   db.auditEvents.insertAuditEvent({
     id,
@@ -87,7 +105,7 @@ function seedSession(db: LocalDatabase, id: string, offsetMs: number, scopeKey: 
     rootSessionId: id,
     parentId: id,
     startedAt: at(offsetMs + 2_000),
-    content: `text of ${id}`,
+    content,
     attributes,
   });
   db.historySync.markCaptureOwed(`${id}-prompt`);
@@ -159,6 +177,7 @@ interface Fixture {
 
 const fixtures = new Map<number, Fixture>();
 const mixedFixtures = new Map<number, Fixture>();
+const longFixtures = new Map<number, Fixture>();
 
 function fixtureFor(personal: number): LocalDatabase {
   const existing = fixtures.get(personal);
@@ -204,11 +223,40 @@ function mixedFixtureFor(sessions: number): LocalDatabase {
   return db;
 }
 
+/**
+ * The first store's shape with every prompt LONG_PROMPT long, for the capture
+ * reads. Measured from a fresh handle, opened after the seeding one closed.
+ */
+function longFixtureFor(personal: number): LocalDatabase {
+  const existing = longFixtures.get(personal);
+  if (existing) return existing.db;
+  const store = createTempStore(`aka-bench-history-scope-long-${String(personal)}-`, {
+    migrated: true,
+  });
+  const seeding = store.open();
+  seeding.auditEvents.runInTransaction(() => {
+    for (let i = 0; i < personal; i += 1) {
+      seedSession(seeding, `p-${String(i)}`, i * 10_000, PERSONAL, LONG_PROMPT);
+    }
+    for (let i = 0; i < ENROLLED; i += 1) {
+      seedSession(seeding, `w-${String(i)}`, (personal + i) * 10_000, WORK, LONG_PROMPT);
+    }
+  });
+  seeding.close();
+  const db = store.open();
+  longFixtures.set(personal, { store, db });
+  return db;
+}
+
 // tinybench has no "after all files" hook, so the stores are removed when the
 // process ends. `createTempStore` roots them under the OS temp dir, so a killed
 // run leaks a directory the OS reaps rather than anything in the tree.
 process.on('exit', () => {
-  for (const { store } of [...fixtures.values(), ...mixedFixtures.values()]) {
+  for (const { store } of [
+    ...fixtures.values(),
+    ...mixedFixtures.values(),
+    ...longFixtures.values(),
+  ]) {
     try {
       store.destroy();
     } catch {
@@ -217,11 +265,21 @@ process.on('exit', () => {
   }
 });
 
+/** A key no row in any store here is stamped with: a scope with nothing owed in it. */
+const ABSENT_KEY = 'github.com/nobody/enrolled-nowhere';
+
+/** The capture reads, run on the short-prompt store and again on the long-prompt one. */
+const CAPTURE_READS: readonly (readonly [string, (db: LocalDatabase) => unknown])[] = [
+  ['machine.captures', (db) => db.historySync.pendingCaptureRows(100, ALL)],
+  ['scoped.captures', (db) => db.historySync.pendingCaptureRows(100, ALL, [WORK])],
+  // The drain's "is anything owed in scope?" probe, answered no.
+  ['scoped.capturesProbe', (db) => db.historySync.pendingCaptureRows(1, ALL, [ABSENT_KEY])],
+];
+
 const READS: readonly (readonly [string, (db: LocalDatabase) => unknown])[] = [
   ['machine.sessions', (db) => db.historySync.pendingSessions(25, ALL)],
   ['scoped.sessions', (db) => db.historySync.pendingSessions(25, ALL, [WORK])],
-  ['machine.captures', (db) => db.historySync.pendingCaptureRows(100, ALL)],
-  ['scoped.captures', (db) => db.historySync.pendingCaptureRows(100, ALL, [WORK])],
+  ...CAPTURE_READS,
 ];
 
 const COUNT_READS: readonly (readonly [string, (db: LocalDatabase) => unknown])[] = [
@@ -266,6 +324,25 @@ for (const sessions of SCALES) {
           ...OPTIONS,
           setup: () => {
             mixedFixtureFor(sessions);
+          },
+        },
+      );
+    }
+  });
+}
+
+for (const personal of SCALES) {
+  describe(`history-sync capture reads at ${personal.toLocaleString('en-US')} personal sessions, 4 KB prompts`, () => {
+    for (const [name, read] of CAPTURE_READS) {
+      bench(
+        `${name}@${String(personal)}-4KB`,
+        () => {
+          read(longFixtureFor(personal));
+        },
+        {
+          ...OPTIONS,
+          setup: () => {
+            longFixtureFor(personal);
           },
         },
       );

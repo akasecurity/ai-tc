@@ -1,0 +1,1272 @@
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import type * as Persistence from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  controlPlaneCredentialPath,
+  readControlPlaneCredentialFile,
+  SETTINGS_FILENAME,
+  settingsDir as settingsDirOf,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
+import type { AttachmentMode } from '@akasecurity/schema';
+import { attachmentModeOf, connectionRefusalMessage, ManagedSettings } from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import type { AttachDeps } from '../../src/commands/attach.ts';
+import { parseAttachArgs, runAttach, runDetach, runStatus } from '../../src/commands/attach.ts';
+import type { DeviceAttachOutcome } from '../../src/commands/attach-device.ts';
+import type { Prompter } from '../../src/lib/prompter.ts';
+
+// What `aka attach` writes once it knows the mode, how it asks about the mode,
+// and what it says afterwards; and how `aka detach` clears the enrolled list.
+// The pure decision is pinned by the persistence package's own tests. This file
+// drives runAttach end to end against a temp home, with the browser path, the
+// key verification and the administrator's overlay replaced by recorders.
+
+// Stand-ins, each unarmed by default so every call reaches the real function.
+// Armed, the settings write throws, as a full disk would; or, once, another
+// writer's change lands just before it, as an `aka enroll` racing the attach
+// would. Armed, the credential write throws. Armed, the history preview answers
+// with counts a case can look for, and every read of it is counted.
+const stand = vi.hoisted(() => ({
+  failSettingsWrite: false,
+  failCredentialWrite: false,
+  beforeNextSettingsWrite: undefined as (() => void) | undefined,
+  preview: undefined as { sessions: number; days: number } | undefined,
+  previewReads: 0,
+}));
+
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    applyOnboarding: (
+      ...args: Parameters<typeof actual.applyOnboarding>
+    ): ReturnType<typeof actual.applyOnboarding> => {
+      if (stand.failSettingsWrite) throw new Error('settings write failed');
+      // One shot, cleared before it runs, so the write it makes reaches the
+      // real function and the call it precedes is the only one it races.
+      const racing = stand.beforeNextSettingsWrite;
+      stand.beforeNextSettingsWrite = undefined;
+      racing?.();
+      return actual.applyOnboarding(...args);
+    },
+    writeControlPlaneCredential: (
+      ...args: Parameters<typeof actual.writeControlPlaneCredential>
+    ): void => {
+      if (stand.failCredentialWrite) throw new Error('credential write failed');
+      actual.writeControlPlaneCredential(...args);
+    },
+    readLocalHistoryPreview: (
+      ...args: Parameters<typeof actual.readLocalHistoryPreview>
+    ): ReturnType<typeof actual.readLocalHistoryPreview> => {
+      stand.previewReads += 1;
+      return stand.preview ?? actual.readLocalHistoryPreview(...args);
+    },
+  };
+});
+
+const ENDPOINT = 'https://aka.example.com';
+const OTHER_ENDPOINT = 'https://aka.example.net';
+// An endpoint with a path, and the same one spelled without its last slash.
+const PATHED = `${ENDPOINT}/gateway/`;
+const PATHED_NO_SLASH = `${ENDPOINT}/gateway`;
+const KEY_1 = 'key-1';
+const KEY_2 = 'key-2';
+const ISO = '2026-10-01T09:00:00.000Z';
+const ADMIN = 'Example IT';
+// whoami's answer. The binding compares both fields byte for byte, so any
+// printable strings stand in for them.
+const ANA = { tenantName: 'Example Org', userEmail: 'member-17' };
+const REPO = 'github.com/example-org/payments-api';
+const LEDGER = 'github.com/example-org/ledger';
+const NEW_REPO = 'github.com/example-org/new-service';
+
+const ACCESS_KEY = 'Access key (input hidden): ';
+// The browser path's own question, which the stand-in below asks the way the
+// real one does, so the order of questions can be checked.
+const DEVICE_CONFIRM = '  Attach this machine to that organization? [y/N] ';
+const PERSONAL_DEVICE = 'Is this a personal device? [y/n]: ';
+const WIDEN = 'Send everything this machine records? [y/N]: ';
+// Both causes of the no-terminal refusal, in one message, word for word.
+const NEEDS_FLAG =
+  'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
+  'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
+  'attachment to another deployment, and attaching machine-wide without asking could widen ' +
+  'what it sends. Re-run with --scoped to send only the repositories you enroll, or with ' +
+  '--machine to send everything this machine records. Nothing was changed.';
+// What a failed save says when it put the earlier credential file back, and what
+// it says when it cannot promise that.
+const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
+const NOT_CONFIRMED =
+  'could not save the attachment, and aka cannot confirm that the credential file this ' +
+  'machine had before is as it was. Run `aka attach` again.';
+const CHANGED_WHILE_WAITING =
+  'this machine was attached as a personal device while this command waited, so it was not ' +
+  'changed to machine-wide. Nothing was changed; run the command again.';
+const SCOPED_HISTORY = 'Send unsent activity from the repositories you enroll? [y/N]: ';
+const MACHINE_HISTORY = "Send this machine's unsent activity? [y/N]: ";
+
+const entry = (identity: string) => ({ kind: 'repo', identity, enrolledAt: ISO });
+const BOUND = {
+  endpoint: ENDPOINT,
+  tenantName: ANA.tenantName,
+  userEmail: ANA.userEmail,
+  entries: [entry(REPO), entry(LEDGER)],
+};
+/** BOUND as a newer build might leave it: an envelope key, and an entry of a kind this build cannot read. */
+const BOUND_AND_NEWER = {
+  ...BOUND,
+  builtBy: 'a newer build',
+  entries: [...BOUND.entries, { kind: 'org', identity: 'example-org', enrolledAt: ISO }],
+};
+const UNBOUND = { endpoint: ENDPOINT, entries: [entry(REPO)] };
+const FRESH = {
+  endpoint: ENDPOINT,
+  tenantName: ANA.tenantName,
+  userEmail: ANA.userEmail,
+  entries: [],
+};
+
+/** The fleet overlay's shape: the deployment pinned, the mode left alone. */
+const planeOnly = (): ManagedSettings =>
+  ManagedSettings.parse({ organization: ADMIN, values: { controlPlane: { endpoint: ENDPOINT } } });
+
+const SCOPED_MANAGED = connectionRefusalMessage({ reason: 'scoped-managed', organization: ADMIN });
+
+let base: string;
+let exits: number[];
+
+beforeEach(() => {
+  base = mkdtempSync(join(tmpdir(), 'aka-attach-write-'));
+  exits = [];
+});
+
+afterEach(() => {
+  stand.failSettingsWrite = false;
+  stand.failCredentialWrite = false;
+  stand.beforeNextSettingsWrite = undefined;
+  stand.preview = undefined;
+  stand.previewReads = 0;
+  vi.useRealTimers();
+  removeTree(base);
+});
+
+interface Script {
+  interactive: boolean;
+  /** Answers to every question, hidden or not, in the order they are asked. */
+  answers?: readonly string[];
+  stdin?: string;
+  /** What the browser path returns. Not offered unless a case says otherwise. */
+  device?: DeviceAttachOutcome;
+  /** Who the deployment says the key belongs to; `null` refuses the key. */
+  who?: { tenantName: string; userEmail: string } | null;
+  /** The administrator's overlay, read each time the attach asks for it. */
+  managed?: () => ManagedSettings | null;
+  /** Runs while the key is being verified, before the answer comes back. */
+  duringVerify?: () => void;
+}
+
+/** One run's seams. A question with no scripted answer left fails the run. */
+function harness(script: Script) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const asked: string[] = [];
+  const calls: string[] = [];
+  const answers = [...(script.answers ?? [])];
+  let stdinReads = 0;
+  const ask = (question: string): Promise<string> => {
+    asked.push(question);
+    const answer = answers.shift();
+    return answer === undefined
+      ? Promise.reject(new Error(`unscripted prompt: ${question}`))
+      : Promise.resolve(answer);
+  };
+  const io: Prompter = {
+    out: (text) => {
+      out.push(text);
+    },
+    err: (text) => {
+      err.push(text);
+    },
+    isInteractive: script.interactive,
+    ask,
+    askHidden: ask,
+    readAllStdin: () => {
+      stdinReads += 1;
+      return Promise.resolve(script.stdin ?? '');
+    },
+  };
+  const managed = script.managed ?? (() => null);
+  const who = script.who === undefined ? ANA : script.who;
+  const deps: AttachDeps = {
+    base,
+    prompter: io,
+    // A getter, so a case can change the overlay while an attach is in flight.
+    get managedSettings(): ManagedSettings | null {
+      return managed();
+    },
+    exit: (code) => {
+      exits.push(code);
+    },
+    installBackgroundSync: () => undefined,
+    uninstallBackgroundSync: () => undefined,
+    deviceAttach: async ({ io: deviceIo }) => {
+      calls.push('device');
+      const outcome: DeviceAttachOutcome = script.device ?? { kind: 'not-offered' };
+      if (outcome.kind === 'attached') await deviceIo.ask(DEVICE_CONFIRM);
+      return outcome;
+    },
+    verify: () => {
+      calls.push('verify');
+      script.duringVerify?.();
+      return who === null ? Promise.reject(new Error('refused')) : Promise.resolve(who);
+    },
+  };
+  return {
+    deps,
+    asked,
+    calls,
+    output: () => out.join(''),
+    errors: () => err.join(''),
+    stdinReads: () => stdinReads,
+  };
+}
+
+const settingsFile = (): string => join(settingsDirOf(base), SETTINGS_FILENAME);
+const credentialFile = (): string => controlPlaneCredentialPath(settingsDirOf(base));
+
+/** settings.json as stored, with no schema between the file and the assertion. */
+function storedSettings(): Record<string, unknown> {
+  return JSON.parse(readFileSync(settingsFile(), 'utf8')) as Record<string, unknown>;
+}
+
+function storedCredential(): Persistence.CredentialFileRead {
+  return readControlPlaneCredentialFile(settingsDirOf(base));
+}
+
+/** The mode of the credential on disk, or undefined when there is none this build can read. */
+function modeOnDisk(): AttachmentMode | undefined {
+  const read = storedCredential();
+  return read.usable ? attachmentModeOf(read.credential) : undefined;
+}
+
+/** A machine attached earlier as a personal device, holding `scope`. */
+function attachedScoped(scope: unknown, endpoint = ENDPOINT): void {
+  writeControlPlaneCredential(settingsDirOf(base), {
+    specVersion: 2,
+    endpoint,
+    apiKey: KEY_1,
+    mintedAt: ISO,
+    mode: 'scoped',
+  });
+  applyOnboarding(
+    { runMode: 'attached', controlPlane: { endpoint, attachedAt: ISO }, attachmentScope: scope },
+    base,
+    null,
+  );
+}
+
+/** A credential file a newer build could have written: version 3, which this build cannot read. */
+function plantUnreadableCredential(): string {
+  mkdirSync(settingsDirOf(base), { recursive: true, mode: 0o700 });
+  const bytes = `${JSON.stringify({ specVersion: 3, endpoint: ENDPOINT, apiKey: KEY_1 }, null, 2)}\n`;
+  writeFileSync(credentialFile(), bytes, { mode: 0o600 });
+  return bytes;
+}
+
+/** A symlink where the credential should be, which the reader refuses to follow. */
+function plantUntrustedCredential(): void {
+  mkdirSync(settingsDirOf(base), { recursive: true, mode: 0o700 });
+  const target = join(base, 'elsewhere.json');
+  writeFileSync(
+    target,
+    `${JSON.stringify({ specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1 })}\n`,
+  );
+  symlinkSync(target, credentialFile());
+}
+
+const fixture = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
+
+describe('parseAttachArgs: the mode flags', () => {
+  it('reads --scoped and --machine wherever they appear', () => {
+    expect(parseAttachArgs(['--url', ENDPOINT, '--scoped'])).toMatchObject({ mode: 'scoped' });
+    expect(parseAttachArgs(['--machine', '--url', ENDPOINT])).toMatchObject({ mode: 'machine' });
+  });
+
+  it('leaves the mode unset when neither is given', () => {
+    expect(parseAttachArgs(['--url', ENDPOINT])).not.toHaveProperty('mode');
+  });
+
+  it.each([
+    ['--scoped', '--machine'],
+    ['--machine', '--scoped'],
+  ])('refuses %s together with %s', (first, second) => {
+    expect(parseAttachArgs(['--url', ENDPOINT, first, second])).toEqual({
+      error: '--scoped and --machine are mutually exclusive',
+    });
+  });
+
+  it('accepts a flag given twice', () => {
+    expect(parseAttachArgs(['--scoped', '--url', ENDPOINT, '--scoped'])).toMatchObject({
+      mode: 'scoped',
+    });
+  });
+
+  it('names both flags in the usage text, with what each sends', async () => {
+    const h = harness({ interactive: false });
+
+    await runAttach([], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.errors()).toContain('[--scoped | --machine]');
+    expect(h.errors()).toContain(
+      '  --scoped   A personal device: send only the repositories you enroll with',
+    );
+    expect(h.errors()).toContain(
+      '  --machine  A machine your organization owns: send everything it records.',
+    );
+  });
+});
+
+describe('aka detach and aka status take no mode flag', () => {
+  it.each(['--scoped', '--machine'])('aka detach refuses %s and leaves the attachment', (flag) => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: false });
+
+    runDetach([flag], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.errors()).toContain('aka detach does not take --scoped or --machine.');
+    expect(storedSettings().runMode).toBe('attached');
+    expect(storedSettings().attachmentScope).toEqual(BOUND);
+    expect(modeOnDisk()).toBe('scoped');
+  });
+
+  it.each(['--scoped', '--machine'])('aka status refuses %s', async (flag) => {
+    const h = harness({ interactive: false });
+
+    await runStatus([flag], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.output()).toBe('');
+    expect(h.errors()).toContain('aka status does not take --scoped or --machine.');
+  });
+});
+
+describe('aka attach refuses before any network call', () => {
+  const MANAGED_SHAPES: { name: string; arrange: () => ManagedSettings }[] = [
+    { name: 'pins only the deployment', arrange: planeOnly },
+    {
+      name: 'pins only the mode',
+      arrange: () =>
+        ManagedSettings.parse({ organization: ADMIN, values: { runMode: 'attached' } }),
+    },
+    {
+      name: 'locks the mode',
+      arrange: () => {
+        // Attached already: on a standalone machine a lock is refused earlier,
+        // as held standalone, and that refusal is not the one under test.
+        applyOnboarding(
+          { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO } },
+          base,
+          null,
+        );
+        return ManagedSettings.parse({ organization: ADMIN, lockedFields: ['runMode'] });
+      },
+    },
+  ];
+
+  it.each(MANAGED_SHAPES)('refuses --scoped when the administrator $name', async ({ arrange }) => {
+    const overlay = arrange();
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.asked).toEqual([]);
+    expect(h.errors()).toContain(`${SCOPED_MANAGED} Re-run without --scoped.`);
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+
+  it('reports a machine held at standalone as that, not as a refusal of --scoped', async () => {
+    // The lock on a machine that reads as standalone refuses every attach, and
+    // that is the more useful thing to be told: a machine-wide attach would be
+    // refused for the same reason.
+    const overlay = ManagedSettings.parse({ organization: ADMIN, lockedFields: ['runMode'] });
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.errors()).toContain(
+      connectionRefusalMessage({ reason: 'held-standalone', organization: ADMIN }),
+    );
+    expect(h.errors()).not.toContain(SCOPED_MANAGED);
+  });
+
+  it('reports a deployment pinned elsewhere as that, not as a refusal of --scoped', async () => {
+    const overlay = ManagedSettings.parse({
+      organization: ADMIN,
+      values: { controlPlane: { endpoint: OTHER_ENDPOINT } },
+    });
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.errors()).toContain(
+      connectionRefusalMessage({
+        reason: 'pinned-endpoint',
+        organization: ADMIN,
+        endpoint: OTHER_ENDPOINT,
+      }),
+    );
+    expect(h.errors()).not.toContain(SCOPED_MANAGED);
+  });
+
+  it('stops a run with no terminal and no flag over a credential file it cannot read', async () => {
+    const before = plantUnreadableCredential();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.stdinReads()).toBe(0);
+    expect(h.errors()).toContain(NEEDS_FLAG);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+  });
+
+  it('stops a run with no terminal and no flag that would point a personal device elsewhere', async () => {
+    attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+    const before = readFileSync(credentialFile(), 'utf8');
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.stdinReads()).toBe(0);
+    expect(h.errors()).toContain(NEEDS_FLAG);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+    expect(storedSettings().attachmentScope).toEqual({ ...BOUND, endpoint: OTHER_ENDPOINT });
+  });
+
+  it('compares the endpoint as typed, so another spelling of it is another deployment', async () => {
+    attachedScoped({ ...BOUND, endpoint: PATHED }, PATHED);
+    const before = readFileSync(credentialFile(), 'utf8');
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', PATHED_NO_SLASH, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.calls).toEqual([]);
+    expect(h.errors()).toContain(NEEDS_FLAG);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+  });
+
+  it('goes ahead over an unreadable file when --machine says which mode to write', async () => {
+    plantUnreadableCredential();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.calls).toEqual(['verify']);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1 },
+    });
+  });
+
+  it('stops before any network call when a file sits where the settings directory should be', async () => {
+    // The credential read's lstat throws ENOTDIR here: `throwIfNoEntry: false`
+    // covers a missing entry only.
+    writeFileSync(settingsDirOf(base), 'not a directory');
+    const h = harness({ interactive: true });
+
+    await runAttach(['--url', ENDPOINT], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.calls).toEqual([]);
+    expect(h.asked).toEqual([]);
+    expect(h.errors()).toContain('nothing was changed');
+  });
+});
+
+describe('the personal-device question', () => {
+  it('is asked once, after the key verifies, on the key path', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.calls).toEqual(['device', 'verify']);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE]);
+    expect(h.output()).toContain('How much of this machine should AKA send?');
+    // True on the scoped answer too: a personal device still pulls policy and
+    // reports on its install, so the question never says nothing is sent.
+    expect(h.output()).toContain(
+      "your organization's policy and sends a short report on this install",
+    );
+    expect(h.output()).not.toContain('Nothing is sent');
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it('is asked once, after the browser path has confirmed the organization', async () => {
+    const h = harness({
+      interactive: true,
+      answers: ['y', 'n'],
+      device: { kind: 'attached', apiKey: KEY_1, identity: ANA },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.calls).toEqual(['device']);
+    expect(h.asked).toEqual([DEVICE_CONFIRM, PERSONAL_DEVICE]);
+    expect(modeOnDisk()).toBe('machine');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it.each<[string, AttachmentMode]>([
+    ['y', 'scoped'],
+    ['YES', 'scoped'],
+    ['  yes  ', 'scoped'],
+    ['n', 'machine'],
+    ['No', 'machine'],
+  ])('answered %j, attaches %s', async (answer, mode) => {
+    const h = harness({ interactive: true, answers: [KEY_1, answer] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    // Asked: a machine-wide attach with no question is what a run with no
+    // terminal does, so the mode on disk alone would not tell the two apart.
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE]);
+    expect(modeOnDisk()).toBe(mode);
+  });
+
+  it('has no default: an empty answer, or one that is neither, asks again', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1, '', 'maybe', 'n'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE, PERSONAL_DEVICE, PERSONAL_DEVICE]);
+    expect(h.output()).toContain(
+      'Answer y for a personal device, or n for a machine your organization owns.',
+    );
+    expect(modeOnDisk()).toBe('machine');
+  });
+
+  it('attaches nothing after three answers that are neither yes nor no', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1, '', 'maybe', 'sure'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE, PERSONAL_DEVICE, PERSONAL_DEVICE]);
+    expect(h.errors()).toContain(
+      'not attaching: no answer to whether this is a personal device. Nothing was changed.',
+    );
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+    expect(existsSync(settingsFile())).toBe(false);
+  });
+
+  it('is never asked about a deployment that refuses the key', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1], who: null });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+
+  it('is asked on a terminal when a personal device points elsewhere, and the list starts empty', async () => {
+    attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+    const h = harness({ interactive: true, answers: [KEY_2, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE]);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_2, mode: 'scoped' },
+    });
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+});
+
+describe('a key rotation on a personal device keeps the mode and every enrollment', () => {
+  it('through the browser path', async () => {
+    attachedScoped(BOUND_AND_NEWER);
+    const h = harness({
+      interactive: true,
+      answers: ['y'],
+      device: { kind: 'attached', apiKey: KEY_2, identity: ANA },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.calls).toEqual(['device']);
+    expect(h.asked).toEqual([DEVICE_CONFIRM]);
+    expect(storedCredential()).toEqual({
+      usable: true,
+      credential: {
+        specVersion: 2,
+        endpoint: ENDPOINT,
+        apiKey: KEY_2,
+        mintedAt: expect.any(String) as string,
+        mode: 'scoped',
+      },
+    });
+    // RAW: the envelope key and the entry this build cannot read survive.
+    expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
+    expect(h.output()).toContain('The repositories already enrolled here are kept');
+  });
+
+  it('through --key-stdin, with no terminal', async () => {
+    attachedScoped(BOUND_AND_NEWER);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.calls).toEqual(['verify']);
+    expect(h.asked).toEqual([]);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_2, mode: 'scoped' },
+    });
+    expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
+  });
+
+  it('for an endpoint with a path, compared and stored as typed', async () => {
+    attachedScoped({ ...BOUND, endpoint: PATHED }, PATHED);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', PATHED, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 2, endpoint: PATHED, apiKey: KEY_2, mode: 'scoped' },
+    });
+    expect(storedSettings().attachmentScope).toEqual({ ...BOUND, endpoint: PATHED });
+  });
+
+  it('says nothing is enrolled when the list it kept holds nothing', async () => {
+    // A rotation before anything was enrolled: the record is kept, and is empty.
+    attachedScoped(FRESH);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+    );
+    expect(h.output()).not.toContain('already enrolled here are kept');
+  });
+
+  it('judges the list inside the settings lock, so an enrollment that lands first is kept', async () => {
+    attachedScoped(BOUND);
+    // Lands after the attach has verified and decided, immediately before its
+    // own settings write takes the lock, as `aka enroll` racing it would.
+    stand.beforeNextSettingsWrite = () => {
+      applyOnboarding(
+        (current) => ({
+          attachmentScope: {
+            ...(current.attachmentScope as Record<string, unknown>),
+            entries: [...BOUND.entries, entry(NEW_REPO)],
+          },
+        }),
+        base,
+        null,
+      );
+    };
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual({
+      ...BOUND,
+      entries: [...BOUND.entries, entry(NEW_REPO)],
+    });
+  });
+});
+
+describe('widening a personal device with --machine', () => {
+  it('asks first on a terminal, then attaches machine-wide and clears the list', async () => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: true, answers: [KEY_2, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(h.output()).toContain(
+      `This machine is attached to ${ENDPOINT} as a personal device: it sends only`,
+    );
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('changes nothing when the widening is declined', async () => {
+    attachedScoped(BOUND);
+    const credentialBefore = readFileSync(credentialFile(), 'utf8');
+    const settingsBefore = readFileSync(settingsFile(), 'utf8');
+    const h = harness({ interactive: true, answers: [KEY_2, ''] });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    // Asked after verification, like every question here.
+    expect(h.calls).toEqual(['device', 'verify']);
+    expect(h.errors()).toContain('not attaching machine-wide. Nothing was changed.');
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(credentialBefore);
+    expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+  });
+
+  it('takes the flag as the answer without a terminal, and says what it does', async () => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([]);
+    expect(h.output()).toContain(
+      `Attaching machine-wide, as --machine asks. This machine was attached to ${ENDPOINT} ` +
+        'as a personal device; the repositories enrolled on it will be cleared.',
+    );
+    expect(modeOnDisk()).toBe('machine');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('leaves nothing for a later --scoped to revive', async () => {
+    attachedScoped(BOUND);
+    const widen = harness({ interactive: false, stdin: KEY_2 });
+    await runAttach(
+      ['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'],
+      widen.deps,
+    );
+
+    const narrow = harness({ interactive: false, stdin: KEY_1 });
+    await runAttach(
+      ['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'],
+      narrow.deps,
+    );
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it('is neither refused nor asked about when the personal device was attached to another deployment', async () => {
+    // Nothing was being sent to this deployment, so attaching to it machine-wide
+    // widens nothing here. The list for the other deployment goes with the
+    // credential it belonged to.
+    attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+    const h = harness({ interactive: true, answers: [KEY_2] });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(h.output()).not.toContain('personal device');
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+});
+
+describe('a machine-wide attach never overwrites a personal device that appeared while it waited', () => {
+  // The mode is decided before the key is verified, and a browser approval can
+  // take minutes. Another aka may attach this machine as a personal device in
+  // that time; writing machine-wide over it would widen it with nobody asked.
+  it.each<[string, string[], boolean, string[]]>([
+    ['--machine and no terminal', ['--machine', '--key-stdin'], false, []],
+    ['no flag and no terminal', ['--key-stdin'], false, []],
+    ['no flag, and the answer "no" to the personal-device question', [], true, ['n']],
+  ])('%s', async (_how, flags, interactive, answers) => {
+    const script = {
+      interactive,
+      answers: interactive ? [KEY_2, ...answers] : [],
+      stdin: KEY_2,
+      duringVerify: () => {
+        attachedScoped(BOUND);
+      },
+    };
+    const h = harness(script);
+
+    await runAttach(['--url', ENDPOINT, ...flags, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CHANGED_WHILE_WAITING);
+    expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+    // Untouched: the credential and the list the other attach left.
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_1, mode: 'scoped' },
+    });
+    expect(storedSettings().attachmentScope).toEqual(BOUND);
+  });
+});
+
+describe('the enrolled list is kept only for the organization and account that built it', () => {
+  it.each([
+    ['another organization', { ...ANA, tenantName: 'Other Org' }],
+    ['another account', { ...ANA, userEmail: 'member-18' }],
+  ])('starts empty when the key verifies as %s', async (_label, who) => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: false, stdin: KEY_2, who });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual({
+      endpoint: ENDPOINT,
+      tenantName: who.tenantName,
+      userEmail: who.userEmail,
+      entries: [],
+    });
+    expect(h.output()).toContain(
+      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+    );
+  });
+
+  it('starts empty over a list that names nobody, which cannot be checked', async () => {
+    attachedScoped(UNBOUND);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      'beside a machine-wide credential, as an older re-attach leaves it',
+      () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        applyOnboarding(
+          {
+            runMode: 'attached',
+            controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+            attachmentScope: BOUND,
+          },
+          base,
+          null,
+        );
+      },
+    ],
+    [
+      'with no credential, as an older detach leaves it',
+      () => {
+        applyOnboarding({ runMode: 'standalone', attachmentScope: BOUND }, base, null);
+      },
+    ],
+  ])('starts empty over a bound list left %s', async (_how, arrange) => {
+    arrange();
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+});
+
+describe('a machine an administrator manages attaches machine-wide', () => {
+  it('asks nothing on a first attach', async () => {
+    const overlay = planeOnly();
+    const h = harness({
+      interactive: true,
+      answers: ['y'],
+      device: { kind: 'attached', apiKey: KEY_1, identity: ANA },
+      managed: () => overlay,
+    });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([DEVICE_CONFIRM]);
+    expect(modeOnDisk()).toBe('machine');
+    expect(h.output()).not.toContain('personal device');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('widens a personal device that became managed, with one line and no question', async () => {
+    attachedScoped(BOUND);
+    const overlay = planeOnly();
+    const h = harness({
+      interactive: true,
+      answers: ['y'],
+      device: { kind: 'attached', apiKey: KEY_2, identity: ANA },
+      managed: () => overlay,
+    });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([DEVICE_CONFIRM]);
+    expect(h.output()).toContain(
+      `${SCOPED_MANAGED} This machine was attached to ${ENDPOINT} as a personal device; ` +
+        'the repositories enrolled on it will be cleared.',
+    );
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('asks nothing of a managed --machine over a personal device, even with a terminal', async () => {
+    // The typed flag would be a widening to confirm on an unmanaged machine;
+    // here the administrator decided, so the line is information and not a question.
+    attachedScoped(BOUND);
+    const overlay = planeOnly();
+    const h = harness({ interactive: true, answers: [KEY_2], managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(h.output()).toContain(SCOPED_MANAGED);
+    expect(h.output()).not.toContain('Attaching machine-wide, as --machine asks.');
+    expect(modeOnDisk()).toBe('machine');
+  });
+
+  it('says why when a personal device attached to another deployment attaches here managed', async () => {
+    // The mode pinned and nothing else: the attach to a new deployment is not
+    // refused, and the machine is no longer the user's to scope.
+    attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+    const overlay = ManagedSettings.parse({ organization: ADMIN, values: { runMode: 'attached' } });
+    const h = harness({ interactive: false, stdin: KEY_2, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `${SCOPED_MANAGED} This machine was attached to another deployment as a personal device; ` +
+        'the repositories enrolled on it will be cleared.',
+    );
+    // The other deployment is read from disk and never echoed.
+    expect(h.output()).not.toContain(OTHER_ENDPOINT);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('refuses a scoped write on a machine that became managed while it waited', async () => {
+    let overlay: ManagedSettings | null = null;
+    const h = harness({
+      interactive: false,
+      stdin: KEY_1,
+      managed: () => overlay,
+      duringVerify: () => {
+        overlay = planeOnly();
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.calls).toEqual(['verify']);
+    expect(h.errors()).toContain(`${SCOPED_MANAGED} Nothing was changed.`);
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+});
+
+describe('what a machine attach writes', () => {
+  // The values the persistence suite's fixture was captured with, from the
+  // writer as it stood before scoped attachments existed.
+  const FIXTURE_ENDPOINT = 'https://cp.example';
+  const FIXTURE_KEY = 'placeholder';
+  const FIXTURE_MINTED_AT = '2026-10-01T00:00:00.000Z';
+
+  it.each<[string, string[]]>([
+    ['with --machine', ['--machine']],
+    ['with no flag and no terminal', []],
+  ])(
+    'writes the version-1 bytes every attach wrote before modes existed, %s',
+    async (_how, flags) => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date(FIXTURE_MINTED_AT) });
+      const h = harness({ interactive: false, stdin: FIXTURE_KEY });
+
+      await runAttach(
+        ['--url', FIXTURE_ENDPOINT, ...flags, '--key-stdin', '--no-sync-history'],
+        h.deps,
+      );
+
+      expect(exits).toEqual([]);
+      expect(readFileSync(credentialFile(), 'utf8')).toBe(
+        fixture('../../../packages/persistence/test/fixtures/machine-credential-v1.json'),
+      );
+      expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    },
+  );
+});
+
+describe('a settings write that fails after the credential was written', () => {
+  it('removes the credential it wrote when there was none before', async () => {
+    stand.failSettingsWrite = true;
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+
+  it('puts the credential file back when it was one this build cannot read', async () => {
+    // It may be a newer build's scoped credential. --machine lets the attach go
+    // ahead over it; a failed write must not then delete it.
+    const before = plantUnreadableCredential();
+    stand.failSettingsWrite = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+    expect(statSync(credentialFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not say the machine is left as it was when the earlier file was one it could not read back',
+    async () => {
+      // A symlink is never followed, so there are no bytes to put back, and the
+      // new credential replaced the link itself. The only true thing to say is
+      // that the earlier state cannot be promised.
+      plantUntrustedCredential();
+      stand.failSettingsWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(NOT_CONFIRMED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      // The credential this attach wrote is not left behind beside a descriptor
+      // that never said it was attached.
+      expect(existsSync(credentialFile())).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves an earlier file it could not read alone when the credential was never written',
+    async () => {
+      plantUntrustedCredential();
+      stand.failCredentialWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(NOT_CONFIRMED);
+      // The link is still there: the rollback removes only a file this attach wrote.
+      expect(lstatSync(credentialFile()).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  it('does not say the machine is left as it was when the earlier credential cannot be written back', async () => {
+    attachedScoped(BOUND);
+    stand.failCredentialWrite = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(NOT_CONFIRMED);
+    expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+  });
+});
+
+describe('what a scoped attach writes', () => {
+  it('writes the version-2 bytes the frozen-reader suite reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(ISO) });
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(
+      fixture('../../../packages/plugin-sdk/test/fixtures/cli-scoped-credential-v2.json'),
+    );
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it('puts the mode where the reader returns it, so writing back what was read gives the same bytes', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    const bytes = readFileSync(credentialFile(), 'utf8');
+    const read = storedCredential();
+    if (!read.usable) throw new Error(`expected a usable credential, got ${read.reason}`);
+    expect(`${JSON.stringify(read.credential, null, 2)}\n`).toBe(bytes);
+  });
+
+  it('puts back the scoped credential byte for byte when the settings write fails', async () => {
+    const first = harness({ interactive: false, stdin: KEY_1 });
+    await runAttach(
+      ['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'],
+      first.deps,
+    );
+    const before = readFileSync(credentialFile(), 'utf8');
+    expect(before).toContain('"mode": "scoped"');
+
+    stand.failSettingsWrite = true;
+    const second = harness({ interactive: false, stdin: KEY_2 });
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], second.deps);
+
+    expect(exits).toEqual([1]);
+    expect(second.errors()).toContain(LEFT_AS_IT_WAS);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+  });
+});
+
+describe('aka detach', () => {
+  it('clears the enrolled list, so a later scoped attach as the same account starts empty', async () => {
+    attachedScoped(BOUND);
+    const detach = harness({ interactive: false });
+
+    runDetach([], detach.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().runMode).toBe('standalone');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+
+    const again = harness({ interactive: false, stdin: KEY_2 });
+    await runAttach(
+      ['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'],
+      again.deps,
+    );
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+});
+
+describe('what an attach says', () => {
+  it('says on a personal device that only enrolled repositories are sent, and how to enroll one', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    const said = h.output();
+    expect(said).toContain(`Attached to ${ENDPOINT} as a personal device.`);
+    expect(said).toContain(
+      'Only activity from repositories you enroll is sent to that deployment, and',
+    );
+    expect(said).toContain(
+      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+    );
+    expect(said).not.toContain('Everything else this machine records');
+    expect(said).toContain(
+      'anywhere else stays on this machine. A command you run inside an enrolled',
+    );
+    expect(said).toContain(
+      "repository is sent as that repository's activity, even when it reads files",
+    );
+    expect(said).toContain(
+      "This machine still fetches that deployment's policy and sends a short report",
+    );
+    expect(said).toContain(
+      'An aka older than this one that re-attaches this machine makes it machine-wide.',
+    );
+    expect(said).not.toContain('Activity from here on is sent to that deployment automatically.');
+  });
+
+  it('leaves the machine-wide text as it was', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    const said = h.output();
+    expect(said).toContain('Activity from here on is sent to that deployment automatically.');
+    expect(said).toContain(
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+    );
+    expect(said).not.toContain('personal device');
+  });
+
+  it('asks a personal device about history without counting the machine', async () => {
+    stand.preview = { sessions: 40, days: 12 };
+    const h = harness({ interactive: true, answers: [KEY_1, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, SCOPED_HISTORY]);
+    expect(stand.previewReads).toBe(0);
+    const said = h.output();
+    expect(said).toContain(
+      'This machine is attaching as a personal device: AKA sends the activity of',
+    );
+    expect(said).not.toContain('12 days');
+    expect(said).not.toContain('40 sessions');
+    expect(said).toContain(
+      'Unsent activity from the repositories you enroll is sent in the background,',
+    );
+    expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+  });
+
+  it('still counts the machine before a machine-wide history grant', async () => {
+    stand.preview = { sessions: 40, days: 12 };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'] });
+
+    await runAttach(['--url', ENDPOINT, '--machine'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, MACHINE_HISTORY]);
+    expect(stand.previewReads).toBe(1);
+    expect(h.output()).toContain(
+      'This machine has 12 days of activity already recorded locally (40 sessions).',
+    );
+  });
+});

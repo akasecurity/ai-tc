@@ -1,12 +1,19 @@
+import { readFileSync } from 'node:fs';
+
 import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
+import type { CredentialFileRead } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  controlPlaneCredentialPath,
   dataDir as dataDirOf,
+  decideAttachMode,
+  freshAttachmentScope,
   managedAttachRefusal,
   managedDetachRefusal,
   ManagedFieldError,
+  managedScopedRefusal,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
@@ -16,6 +23,7 @@ import {
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
+  writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
 import {
   readDeviceIdentity,
@@ -25,16 +33,22 @@ import {
 import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
-  AttachedCredential,
+  AttachedCredentialAny,
+  AttachmentMode,
   HistorySyncConsent,
   ManagedSettings,
   UnsafeEndpointReason,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
+  ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  ATTACHED_CREDENTIAL_SPEC_VERSION,
+  attachmentModeOf,
   connectionRefusalMessage,
   HISTORY_SYNC_PAYLOAD_VERSION,
+  isAttachmentScopeBoundTo,
   originOnly,
+  parseAttachmentScope,
   unsafeEndpointReason,
 } from '@akasecurity/schema';
 
@@ -54,7 +68,7 @@ import { attachByDeviceCode, type DeviceAttachOutcome } from './attach-device.ts
 // 2 rather than being ignored, because a mistyped `--key` that was silently
 // dropped would be the exact failure this rule exists to prevent.
 
-const USAGE = `Usage: aka attach --url <https-url> [--label <name>] [--key-stdin]
+const USAGE = `Usage: aka attach --url <https-url> [--label <name>] [--key-stdin] [--scoped | --machine]
 
 Registers this machine against your organization's AKA deployment.
 
@@ -62,6 +76,17 @@ Registers this machine against your organization's AKA deployment.
   --label <name>  What to call it on screen. Defaults to the URL.
   --key-stdin     Read the access key from stdin instead of prompting.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
+
+  --scoped   A personal device: send only the repositories you enroll with
+             \`aka enroll\`. No repository's activity is sent until you enroll
+             one; the policy pull and a short install report still go.
+  --machine  A machine your organization owns: send everything it records.
+
+  With neither: a terminal is asked which; a re-attach to the same deployment
+  keeps the mode it has; and a run with no terminal attaches machine-wide, or
+  stops for one of these flags when that could widen what this machine sends.
+  A machine whose connection an administrator manages attaches machine-wide
+  only.
 
   --sync-history     Also send the activity already recorded on this machine,
                      without asking.
@@ -105,6 +130,8 @@ interface ParsedArgs {
   keyStdin: boolean;
   /** Set only by a flag; undefined means "ask", which is what a bare attach does. */
   syncHistory?: boolean | undefined;
+  /** Set only by `--scoped` / `--machine`; undefined means decide (see decideAttachMode). */
+  mode?: AttachmentMode | undefined;
 }
 
 /**
@@ -135,6 +162,10 @@ export function parseAttachArgs(argv: readonly string[]): ParsedArgs | { error: 
     } else if (arg === '--no-sync-history') {
       if (parsed.syncHistory === true) return { error: MUTUALLY_EXCLUSIVE };
       parsed.syncHistory = false;
+    } else if (arg === '--scoped' || arg === '--machine') {
+      const mode: AttachmentMode = arg === '--scoped' ? 'scoped' : 'machine';
+      if (parsed.mode !== undefined && parsed.mode !== mode) return { error: MODES_EXCLUSIVE };
+      parsed.mode = mode;
     } else if (arg === '--url') {
       parsed.url = argv[++i];
     } else if (arg?.startsWith('--url=')) {
@@ -177,6 +208,49 @@ export function parseAttachArgs(argv: readonly string[]): ParsedArgs | { error: 
 const CONTROL_CHARS = /[\p{Cc}\p{Cf}]/u;
 
 const MUTUALLY_EXCLUSIVE = '--sync-history and --no-sync-history are mutually exclusive';
+
+const MODES_EXCLUSIVE = '--scoped and --machine are mutually exclusive';
+
+/**
+ * Why a run with no terminal and no mode flag stops before any network call.
+ *
+ * decideAttachMode refuses for either of two causes and does not say which,
+ * so the message names both: a credential file that exists but cannot be
+ * read, which may be a scoped attachment a newer aka wrote, and a scoped
+ * attachment this machine holds for another deployment. In either case a
+ * machine-wide credential written from automation would widen what this
+ * machine sends with nobody told, and whoever runs it is one flag away from
+ * saying which. It echoes nothing read from disk.
+ */
+const NEEDS_MODE_FLAG =
+  'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
+  'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
+  'attachment to another deployment, and attaching machine-wide without asking could widen ' +
+  'what it sends. Re-run with --scoped to send only the repositories you enroll, or with ' +
+  '--machine to send everything this machine records. Nothing was changed.';
+
+/**
+ * Said when the credential on disk turned out to be a personal device's after
+ * the mode was decided as machine-wide. The decision is made before a key is
+ * verified, which on the browser path can take minutes, and another aka may
+ * attach this machine as a personal device in that time. Writing machine-wide
+ * over it would widen it with nobody asked, so nothing is written.
+ */
+const CHANGED_WHILE_WAITING =
+  'this machine was attached as a personal device while this command waited, so it was not ' +
+  'changed to machine-wide. Nothing was changed; run the command again.';
+
+/** What a failed save says when the earlier credential file is back exactly as it was. */
+const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
+
+/**
+ * What a failed save says when it cannot promise that: the earlier credential
+ * file could not be written back, or could not be read in the first place, so
+ * there is nothing to compare what is on disk with.
+ */
+const NOT_CONFIRMED =
+  'could not save the attachment, and aka cannot confirm that the credential file this ' +
+  'machine had before is as it was. Run `aka attach` again.';
 
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
@@ -283,6 +357,56 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // THE MODE, DECIDED BEFORE ANY NETWORK CALL, beside the refusal above and for
+  // its reason: a machine whose administrator manages its connection attaches
+  // machine-wide only, and a run that cannot be told which mode to write must
+  // stop before a deployment approves a device or is shown a key. The refusal
+  // above comes first on purpose: it reports a machine held at standalone or
+  // pinned to another deployment as that, which the decision below does not
+  // know about. See decideAttachMode for the rules. The question it may call
+  // for is asked after verification, below.
+  //
+  // The WIDE read, no connection passed: the question is what this machine holds
+  // for THIS endpoint, which the decision compares by value. It is not the read
+  // the rollback restores. That one stays just before the writes (`previous`
+  // below), because a browser approval can wait up to fifteen minutes and a
+  // rollback must put back what was on disk immediately before the write.
+  //
+  // GUARDED, although the reader's docblock says it never throws: with a FILE
+  // where ~/.aka/settings should be, its lstat raises ENOTDIR (`throwIfNoEntry:
+  // false` covers a missing entry only), the case the dashboard's attach action
+  // already guards. Reported here, before anything is sent, rather than as a
+  // crash after a device approval.
+  let prior: CredentialFileRead;
+  try {
+    prior = readControlPlaneCredentialFile(settingsDirOf(base));
+  } catch {
+    io.err(
+      `could not read this machine's AKA settings in ${settingsDirOf(base)}; nothing was ` +
+        'changed. Check that it is a directory you own.',
+    );
+    exit(1);
+    return;
+  }
+  const scopedRefusal = managedScopedRefusal(base, deps.managedSettings);
+  const modeDecision = decideAttachMode({
+    flag: args.mode,
+    managed: scopedRefusal,
+    previous: prior,
+    endpoint,
+    interactive: io.isInteractive,
+  });
+  if (modeDecision.kind === 'refuse') {
+    io.err(
+      modeDecision.why === 'scoped-managed'
+        ? `${connectionRefusalMessage(scopedRefusal ?? { reason: 'scoped-managed' })} ` +
+            'Re-run without --scoped.'
+        : NEEDS_MODE_FLAG,
+    );
+    exit(2);
+    return;
+  }
+
   if (!args.keyStdin) {
     const outcome = await (deps.deviceAttach ?? runDeviceAttach)({
       io,
@@ -349,11 +473,87 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // THE MODE, SETTLED, by the history question's rule below: asked after
+  // verification, so nobody is asked about a deployment the machine turns out
+  // not to join, and answered before the writes. Asked ONCE. On the browser path
+  // its own confirmation has returned by now, so the two questions follow one
+  // another and neither repeats the other.
+  let mode: AttachmentMode;
+  if (modeDecision.kind === 'ask') {
+    const answered = await askAboutMode(io);
+    if (answered === undefined) {
+      io.err('not attaching: no answer to whether this is a personal device. Nothing was changed.');
+      exit(1);
+      return;
+    }
+    mode = answered;
+  } else {
+    mode = modeDecision.mode;
+    if (modeDecision.why === 'managed') {
+      // A MANAGED machine that was a personal device, attached to this
+      // deployment or to another: nobody is asked, because the administrator
+      // decided, and one line says why it attaches machine-wide now. `widening`
+      // is not read here: under management it is information, never a question.
+      // The write below clears the enrolled list either way. Another deployment
+      // is not named: its endpoint is read from disk, and no line here echoes a
+      // stored value.
+      if (prior.usable && attachmentModeOf(prior.credential) === 'scoped') {
+        const notice =
+          prior.credential.endpoint === endpoint
+            ? wideningNotice(endpoint)
+            : MANAGED_ELSEWHERE_NOTICE;
+        io.out(
+          `${connectionRefusalMessage(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`,
+        );
+      }
+    } else if (modeDecision.widening) {
+      // WIDENING by --machine over a scoped attachment to this deployment. The
+      // write below clears the enrolled list, so a later --scoped starts empty
+      // rather than reviving it, and that is said before it happens.
+      if (io.isInteractive) {
+        if (!(await confirmWidening(io, endpoint))) {
+          io.err('not attaching machine-wide. Nothing was changed.');
+          exit(1);
+          return;
+        }
+      } else {
+        // No terminal to ask on, and --machine was typed: the flag is the answer.
+        io.out(`Attaching machine-wide, as --machine asks. ${wideningNotice(endpoint)}\n`);
+      }
+    }
+  }
+  // Whether a personal device's attachment to THIS deployment was already in
+  // front of the decision and has been dealt with: confirmed on a terminal,
+  // taken from the flag, or announced because an administrator decided it.
+  const wideningHandled = modeDecision.kind === 'use' && modeDecision.widening;
+
   // ASKED AFTER VERIFICATION, ANSWERED BEFORE THE WRITES. After, so the machine
   // is never asked about a deployment it turns out not to join; before, so the
   // grant rides the same `applyOnboarding` call as the attachment itself and the
   // two either both land or both roll back.
-  const historyConsent = await askAboutHistory(io, args.syncHistory, base, endpoint, identity);
+  const historyConsent = await askAboutHistory(
+    io,
+    args.syncHistory,
+    base,
+    endpoint,
+    identity,
+    mode,
+  );
+
+  // A SCOPED WRITE IS RE-CHECKED against the administrator's overlay here, with
+  // nothing written yet. The decision above was made before a browser approval
+  // that can take minutes, and an overlay that arrived meanwhile makes this
+  // machine machine-only. It is also what lets the enrolled list below bind to
+  // `endpoint`: with no pin on the connection, the overlay leaves the descriptor
+  // this attach writes alone, so the endpoint written is the one every read sees.
+  if (mode === 'scoped') {
+    const lateRefusal = managedScopedRefusal(base, deps.managedSettings);
+    if (lateRefusal !== null) {
+      io.err(`${connectionRefusalMessage(lateRefusal)} Nothing was changed.`);
+      exit(1);
+      return;
+    }
+  }
 
   // What was there before, so a failed write can be put back. Re-attaching is
   // how a key is ROTATED, so this path routinely runs on a machine that is
@@ -364,6 +564,28 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // there. This runs in the CLI's own process; nothing here crosses to a
   // browser, which is the boundary the narrow state exists to protect.
   const previous = readControlPlaneCredentialFile(settingsDirOf(base));
+
+  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was decided from the file
+  // read before the key was verified. If another aka attached this machine as a
+  // personal device to THIS deployment since, a machine-wide write would widen
+  // it, and the confirmation that guards a widening was never asked, because
+  // the machine did not hold a personal device when the decision was made.
+  // Stop and say so; the next run decides again from what is on disk.
+  if (mode === 'machine' && !wideningHandled && holdsScopedFor(previous, endpoint)) {
+    io.err(CHANGED_WHILE_WAITING);
+    exit(1);
+    return;
+  }
+  // A file this build cannot parse may be a scoped credential a newer aka
+  // wrote; this attach goes ahead over it only because a flag or an answer
+  // chose the mode. Its BYTES are kept, so a failed write puts that file back
+  // instead of deleting it while saying the machine is left as it was. Only a
+  // regular file the reader opened and read qualifies: a symlink
+  // (`untrusted-file`) is never followed, and an `unreadable` one has no bytes.
+  const previousBytes =
+    !previous.usable && (previous.reason === 'malformed' || previous.reason === 'unsafe-endpoint')
+      ? credentialBytes(settingsDirOf(base))
+      : undefined;
 
   // ONE instant, used both as the descriptor's `attachedAt` and as the bound
   // `seedCaptureBacklog` marks owed up to. The two have to agree: the
@@ -384,15 +606,50 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // rather than to shorten it under whatever window the check uses. What
   // identifies an attachment on screen is the deployment and when it
   // happened, neither of which is secret.
-  const credential: AttachedCredential = {
-    specVersion: 1,
-    endpoint,
-    apiKey,
-    mintedAt: new Date().toISOString(),
-  };
+  //
+  // BY MODE. Machine-wide is the version-1 file every attach has always
+  // written: these four members, in this order, byte for byte. Scoped is
+  // version 2 with `mode: 'scoped'` LAST, where the reader's parse puts it
+  // (AttachedCredentialV2 extends v1, and the key it adds goes after v1's).
+  // The rollback below writes back what the reader returned, so this order is
+  // what lets a failed re-attach restore exactly the bytes written here.
+  const mintedAt = new Date().toISOString();
+  const credential: AttachedCredentialAny =
+    mode === 'scoped'
+      ? {
+          specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+          endpoint,
+          apiKey,
+          mintedAt,
+          mode: 'scoped',
+        }
+      : { specVersion: ATTACHED_CREDENTIAL_SPEC_VERSION, endpoint, apiKey, mintedAt };
   // What the attach committed, for the backfill's scope. Assigned in the try
   // below; its catch returns, so the backfill only ever reads a committed file.
   let committed: WorkspaceSettings | undefined;
+
+  // The enrolled list this attach writes, given the one on file. Machine-wide:
+  // none. Scoped: the list on file, RAW, when this machine was ALREADY a
+  // personal device attached to this exact endpoint and the list is bound to
+  // it and to the organization and account just verified, so a key rotation
+  // keeps every enrollment and whatever a newer build added survives.
+  // Otherwise a fresh empty one bound to them: a list for another endpoint,
+  // for someone else, or naming nobody cannot be shown to be this account's;
+  // and a bound list found beside a machine-wide credential, or none, was left
+  // by a writer that did not clear it (an older aka's re-attach or detach), so
+  // its enrollments belong to an attachment that has ended.
+  // `prior` is the credential the mode was decided from.
+  const keepScope = holdsScopedFor(prior, endpoint);
+  // How many entries this build can read in what was kept, for the success text.
+  const kept = { readableEntries: 0 };
+  const scopeToWrite = (stored: unknown): unknown => {
+    if (mode === 'machine') return undefined;
+    if (keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity)) {
+      kept.readableEntries = parseAttachmentScope(stored)?.entries.length ?? 0;
+      return stored;
+    }
+    return freshAttachmentScope(endpoint, identity);
+  };
 
   try {
     // The credential FIRST, then the descriptor. In the other order a machine
@@ -401,7 +658,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     // attachment rather than as one that never happened.
     writeControlPlaneCredential(settingsDirOf(base), credential);
     committed = applyOnboarding(
-      {
+      // The FUNCTION form, so the enrolled list is judged against the file this
+      // merge lands on, inside the settings lock: an `aka enroll` that lands just
+      // before is judged with it rather than overwritten by a stale copy.
+      (current) => ({
         runMode: 'attached',
         controlPlane: {
           endpoint,
@@ -415,7 +675,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         // key is rotated — so an omitted key would let a user who is asked again
         // and answers no keep sending, with their decline discarded.
         historySyncConsent: historyConsent,
-      },
+        // SPELLED on every attach, for the same reason. A machine attachment
+        // never holds an enrolled list, so a later --scoped cannot revive one,
+        // and a scoped one keeps the list only when it is this account's.
+        attachmentScope: scopeToWrite(current.attachmentScope),
+      }),
       base,
       // The same overlay the pre-flight read — injected or real — so the writer
       // and the pre-flight cannot disagree about who manages this machine.
@@ -425,20 +689,16 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     // Put back exactly what was there, rather than removing unconditionally.
     // On a first attach that is "no credential"; on a rotation it is the key
     // the machine was working with, and restoring it is what makes the message
-    // below true.
-    try {
-      if (previous.usable) writeControlPlaneCredential(settingsDirOf(base), previous.credential);
-      else removeControlPlaneCredential(settingsDirOf(base));
-    } catch {
-      // The rollback itself failed. Nothing further to try, and the message
-      // below is deliberately the weaker of the two — see its wording.
-    }
+    // below true. When it cannot be put back, the message says so instead.
+    const restored = restoreCredential(settingsDirOf(base), previous, previousBytes, credential);
     // An administrator can freeze `runMode`, and a machine they froze to
     // standalone is one this command must not talk around.
     io.err(
       err instanceof ManagedFieldError
         ? 'your organization manages this setting on this machine, so it cannot be attached here.'
-        : 'could not save the attachment; this machine is left as it was.',
+        : restored
+          ? LEFT_AS_IT_WAS
+          : NOT_CONFIRMED,
     );
     exit(1);
     return;
@@ -476,32 +736,163 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // what makes installing ahead of consent the cheaper failure mode.
   (deps.installBackgroundSync ?? installBackgroundSync)(base);
 
-  io.out(
-    [
-      `Attached to ${args.label ?? endpoint}.`,
-      `  organization  ${identity.tenantName}`,
-      `  you           ${identity.userEmail}`,
-      '',
-      // Said here, on the one path every successful attach ends on, because the
-      // forwarding they describe follows from the attachment and not from the
-      // history answer. The register a scan records is named with what it does
-      // and does not carry, since `aka scan` reads as a local verb.
-      'Activity from here on is sent to that deployment automatically.',
-      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
-      '',
-      'Policy arrives on the next session. Run `aka status` to see it.',
-      ...(historyConsent === undefined
-        ? []
-        : [
-            '',
-            'Your existing activity is sent in the background, a little at a time,',
-            'starting with your next session. Run `aka status` to watch it, or',
-            '`aka sync-history --off` to stop.',
-          ]),
-      '',
-    ].join('\n'),
+  // What attaching forwards depends on the MODE, and each block is true of its
+  // own. The scoped one borrows no sentence from the machine-wide one, which is
+  // unchanged.
+  const attachedLines =
+    mode === 'scoped'
+      ? [
+          `Attached to ${args.label ?? endpoint} as a personal device.`,
+          `  organization  ${identity.tenantName}`,
+          `  you           ${identity.userEmail}`,
+          '',
+          'Only activity from repositories you enroll is sent to that deployment, and',
+          'the Data Shares register a scan records goes only for an enrolled',
+          'repository — destinations and call sites, never source text. Activity',
+          'anywhere else stays on this machine. A command you run inside an enrolled',
+          "repository is sent as that repository's activity, even when it reads files",
+          'elsewhere.',
+          // Chosen by what was KEPT that this build can read, not by whether a
+          // record was kept: a bound record with no entries (a rotation before
+          // anything was enrolled), or one holding only a newer build's kinds,
+          // enrolls nothing here, and saying it was kept would read as done.
+          kept.readableEntries > 0
+            ? 'The repositories already enrolled here are kept: `aka enroll --list` shows them.'
+            : 'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+          '',
+          "This machine still fetches that deployment's policy and sends a short report",
+          'on this install: its host name, versions, detection packs and finding counts.',
+          // An older aka writes a version-1 credential on every attach, which is
+          // machine-wide. Said here because the reader is the one who would run it.
+          'An aka older than this one that re-attaches this machine makes it machine-wide.',
+          '',
+          'Policy arrives on the next session. Run `aka status` to see it.',
+          ...(historyConsent === undefined
+            ? []
+            : [
+                '',
+                'Unsent activity from the repositories you enroll is sent in the background,',
+                'a little at a time, starting with your next session. Run `aka status` to',
+                'watch it, or `aka sync-history --off` to stop.',
+              ]),
+          '',
+        ]
+      : [
+          `Attached to ${args.label ?? endpoint}.`,
+          `  organization  ${identity.tenantName}`,
+          `  you           ${identity.userEmail}`,
+          '',
+          // Said here, on the one path every successful attach ends on, because the
+          // forwarding they describe follows from the attachment and not from the
+          // history answer. The register a scan records is named with what it does
+          // and does not carry, since `aka scan` reads as a local verb.
+          'Activity from here on is sent to that deployment automatically.',
+          'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+          '',
+          'Policy arrives on the next session. Run `aka status` to see it.',
+          ...(historyConsent === undefined
+            ? []
+            : [
+                '',
+                'Your existing activity is sent in the background, a little at a time,',
+                'starting with your next session. Run `aka status` to watch it, or',
+                '`aka sync-history --off` to stop.',
+              ]),
+          '',
+        ];
+  io.out(attachedLines.join('\n'));
+}
+
+/**
+ * Whether `read` is a usable scoped credential for exactly `endpoint`. The
+ * endpoint is compared as typed, the comparison every endpoint binding makes,
+ * so another spelling of a deployment reads as another deployment.
+ */
+function holdsScopedFor(read: CredentialFileRead, endpoint: string): boolean {
+  return (
+    read.usable &&
+    read.credential.endpoint === endpoint &&
+    attachmentModeOf(read.credential) === 'scoped'
   );
 }
+
+/**
+ * Put the credential file back as it was before a failed save, and say whether
+ * that is certain: true only when what was there is on disk again, or when
+ * nothing was there and the file this attach wrote is gone. Never throws.
+ *
+ * - A credential this build could read is written back from the reader's own
+ *   parse, which is the same bytes (the scoped literal's key order exists for
+ *   this).
+ * - No earlier file: the one this attach wrote is removed.
+ * - A file the reader opened and could not parse: its raw bytes go back.
+ * - A file it could not open at all (a symlink, someone else's file, one that
+ *   would not read) has no bytes to put back. If the credential write replaced
+ *   it, the file now on disk is the one this attach wrote, and that is removed
+ *   rather than left beside a descriptor that never said it was attached;
+ *   the earlier state is gone either way, so this answers false. If the
+ *   credential write never got as far as replacing it, the file is left alone:
+ *   removing it would delete something this attach did not write.
+ */
+function restoreCredential(
+  settingsDir: string,
+  previous: CredentialFileRead,
+  previousBytes: string | undefined,
+  written: AttachedCredentialAny,
+): boolean {
+  try {
+    if (previous.usable) {
+      writeControlPlaneCredential(settingsDir, previous.credential);
+      return true;
+    }
+    if (previous.reason === 'absent') {
+      removeControlPlaneCredential(settingsDir);
+      return true;
+    }
+    if (previousBytes !== undefined) {
+      // Owner-only and atomic, as every credential write is; the bytes as read.
+      writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
+      return true;
+    }
+    const now = readControlPlaneCredentialFile(settingsDir);
+    if (now.usable && now.credential.apiKey === written.apiKey) {
+      removeControlPlaneCredential(settingsDir);
+    }
+    return false;
+  } catch {
+    // The rollback itself failed. Nothing further to try.
+    return false;
+  }
+}
+
+/** The credential file's bytes as text, or undefined when they cannot be read. Never throws. */
+function credentialBytes(settingsDir: string): string | undefined {
+  try {
+    return readFileSync(controlPlaneCredentialPath(settingsDir), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why no history question was asked, worded the same on both modes. */
+const NO_TERMINAL_FOR_HISTORY =
+  'Not asking about existing history: no terminal to prompt on. Nothing was sent.\n' +
+  'Run `aka sync-history --on` later to send it.';
+
+/**
+ * What is masked in a drained capture's text, said by both history questions.
+ * ONE copy, so the two cannot come to disagree about a rule that is the same
+ * for both: the masking follows the detection's policy, whatever the mode.
+ */
+const MASKING_RULE_LINES: readonly string[] = [
+  'prompt, an assistant reply or a tool result INCLUDES ITS TEXT. What is',
+  'masked in that text follows the policy assigned to the detection that',
+  'flagged the value: it is masked before it is stored or sent',
+  'only where that policy is redact or block. Under monitor or warn the',
+  'value goes as it was seen, and no detection ships on redact or block, so on',
+  'a default install nothing in that text is masked. Everything outside a',
+  'flagged span goes as written either way.',
+];
 
 /**
  * Whether this machine may also send the activity it recorded before attaching.
@@ -510,6 +901,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
  * the two numbers in the question, and no terminal costs the question itself.
  * Declining is the default everywhere — an empty answer, a non-TTY session, an
  * unreadable answer all decline, because sending cannot be undone.
+ *
+ * A SCOPED attachment is asked its own question. It forwards only what its
+ * enrolled repositories record, and a first scoped attach has none enrolled, so
+ * the whole machine's history would describe a backlog this grant never sends.
+ * The store is not read for it.
  */
 async function askAboutHistory(
   io: Prompter,
@@ -517,6 +913,7 @@ async function askAboutHistory(
   base: string,
   endpoint: string,
   identity: { tenantName: string },
+  mode: AttachmentMode,
 ): Promise<HistorySyncConsent | undefined> {
   const granted = (): HistorySyncConsent => ({
     acknowledgedAt: new Date().toISOString(),
@@ -526,6 +923,18 @@ async function askAboutHistory(
 
   if (flag === false) return undefined;
   if (flag === true) return granted();
+
+  if (mode === 'scoped') {
+    if (!io.isInteractive) {
+      io.err(NO_TERMINAL_FOR_HISTORY);
+      return undefined;
+    }
+    io.out(scopedHistoryQuestion(identity.tenantName));
+    const answer = (await io.ask('Send unsent activity from the repositories you enroll? [y/N]: '))
+      .trim()
+      .toLowerCase();
+    return answer === 'y' || answer === 'yes' ? granted() : undefined;
+  }
 
   const preview = readLocalHistoryPreview(dataDirOf(base));
   // NO EARLY RETURN ON AN EMPTY STORE, and that changed with payload v2.
@@ -544,10 +953,7 @@ async function askAboutHistory(
   // one an empty store now takes too.
 
   if (!io.isInteractive) {
-    io.err(
-      'Not asking about existing history: no terminal to prompt on. Nothing was sent.\n' +
-        'Run `aka sync-history --on` later to send it.',
-    );
+    io.err(NO_TERMINAL_FOR_HISTORY);
     return undefined;
   }
 
@@ -605,13 +1011,7 @@ async function askAboutHistory(
             'deliver — the deployment was unreachable, or refused the key — what',
             'was captured, which for a',
           ]),
-      'prompt, an assistant reply or a tool result INCLUDES ITS TEXT. What is',
-      'masked in that text follows the policy assigned to the detection that',
-      'flagged the value: it is masked before it is stored or sent',
-      'only where that policy is redact or block. Under monitor or warn the',
-      'value goes as it was seen, and no detection ships on redact or block, so on',
-      'a default install nothing in that text is masked. Everything outside a',
-      'flagged span goes as written either way.',
+      ...MASKING_RULE_LINES,
       '',
       'Saying no does not stop live sending — that is part of being attached.',
       'It means an undelivered item is dropped rather than kept and retried.',
@@ -627,6 +1027,128 @@ async function askAboutHistory(
     .toLowerCase();
   return answer === 'y' || answer === 'yes' ? granted() : undefined;
 }
+
+/**
+ * The history question on a SCOPED attachment.
+ *
+ * It names no count. The local preview counts every session this machine
+ * recorded, enrolled or not, and nothing here is enrolled yet, so a number would
+ * describe what this grant never sends. What the grant can send is said in
+ * terms of enrolled repositories: some of what one recorded before it was
+ * enrolled (whatever this machine still holds of it), and anything a live send
+ * from one fails to deliver.
+ */
+function scopedHistoryQuestion(tenantName: string): string {
+  return [
+    '',
+    `Verified against ${tenantName}.`,
+    '',
+    'This machine is attaching as a personal device: AKA sends the activity of',
+    'the repositories you enroll with `aka enroll`, and none from anywhere else.',
+    'It can also send some of what an enrolled repository recorded here before',
+    'you enrolled it, and keep anything a live send from one fails to deliver,',
+    'instead of dropping it.',
+    '',
+    'For an enrolled repository, that history is which sessions ran, when, in',
+    'which project, repo and git branch; token usage and model per call; which',
+    'tools were called, with their inputs truncated; what AKA detected in those',
+    'tool inputs; and the prompts, assistant replies and tool results themselves.',
+    '',
+    'For that history, and for anything a later live send could not',
+    'deliver — the deployment was unreachable, or refused the key — what',
+    'was captured, which for a',
+    ...MASKING_RULE_LINES,
+    '',
+    'Saying no does not stop live sending from enrolled repositories — that is',
+    'part of being attached. It means nothing an enrolled repository recorded',
+    'before you enrolled it is sent, and an undelivered item is dropped rather',
+    'than kept and retried.',
+    '',
+    'It runs in the background over your next few sessions. Anything sent',
+    'cannot be recalled.',
+    '',
+  ].join('\n');
+}
+
+/** How many times the personal-device question is put before the attach gives up. */
+const MODE_QUESTION_TRIES = 3;
+
+/**
+ * Whether this machine is a personal device, asked when nothing else decides
+ * the mode (see decideAttachMode): a terminal, no flag, and no usable
+ * credential for this endpoint.
+ *
+ * NO DEFAULT. Either wrong answer costs something: a personal device attached
+ * machine-wide sends what nothing can recall, and a machine the organization
+ * owns attached as a personal device reports nothing until someone notices.
+ * So only y/yes and n/no are answers, case-insensitive and trimmed; anything
+ * else, an empty line included, is asked again, up to MODE_QUESTION_TRIES
+ * times. `undefined` after the last means no answer, and the caller writes
+ * nothing.
+ */
+async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
+  io.out(
+    [
+      '',
+      'How much of this machine should AKA send?',
+      '',
+      '  A personal device sends only the activity of repositories you enroll',
+      '  with `aka enroll`, and none until you enroll one. It still fetches',
+      "  your organization's policy and sends a short report on this install",
+      '  (host name, versions, detection packs, finding counts).',
+      '  A machine your organization owns sends everything it records, from',
+      '  every repository.',
+      '',
+    ].join('\n'),
+  );
+  // One question at a time: each answer decides whether to ask again.
+  for (let attempt = 1; attempt <= MODE_QUESTION_TRIES; attempt += 1) {
+    const answer = (await io.ask('Is this a personal device? [y/n]: ')).trim().toLowerCase();
+    if (answer === 'y' || answer === 'yes') return 'scoped';
+    if (answer === 'n' || answer === 'no') return 'machine';
+    if (attempt < MODE_QUESTION_TRIES) {
+      io.out('Answer y for a personal device, or n for a machine your organization owns.\n');
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Confirm `--machine` over a scoped attachment to the same deployment, on a
+ * terminal. Declining is the default, for the history question's reason: what
+ * is sent cannot be recalled.
+ */
+async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean> {
+  io.out(
+    [
+      '',
+      `This machine is attached to ${endpoint} as a personal device: it sends only`,
+      'the repositories enrolled on it. With --machine it sends everything it',
+      'records, from every repository, and the enrolled list is cleared.',
+      '',
+    ].join('\n'),
+  );
+  const answer = (await io.ask('Send everything this machine records? [y/N]: '))
+    .trim()
+    .toLowerCase();
+  return answer === 'y' || answer === 'yes';
+}
+
+/** What a widening that is not asked about says it is doing. */
+function wideningNotice(endpoint: string): string {
+  return (
+    `This machine was attached to ${endpoint} as a personal device; ` +
+    'the repositories enrolled on it will be cleared.'
+  );
+}
+
+/**
+ * What a managed attach says when the personal-device attachment it replaces
+ * was to another deployment. That endpoint is not named: it is read from disk.
+ */
+const MANAGED_ELSEWHERE_NOTICE =
+  'This machine was attached to another deployment as a personal device; ' +
+  'the repositories enrolled on it will be cleared.';
 
 /** The real verification: one round trip that proves the key is accepted. */
 async function verifyWithControlPlane(
@@ -656,6 +1178,13 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   const args = parseAttachArgs(argv);
   if (isError(args)) {
     io.err(args.error);
+    exit(2);
+    return;
+  }
+  // The parser is shared with attach, so the mode flags parse here too. A detach
+  // has no mode to choose, and accepting one silently would read as if it did.
+  if (args.mode !== undefined) {
+    io.err('aka detach does not take --scoped or --machine.');
     exit(2);
     return;
   }
@@ -698,12 +1227,19 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     readEffectiveSettings(base, deps.managedSettings).settings.controlPlane?.attachedAt,
   );
   try {
-    // The history grant goes with the attachment it named. `undefined` on an
-    // optional key is how this writer records a REVOCATION, so the key leaves
-    // settings.json rather than lingering as a grant for a deployment this
-    // machine no longer talks to.
+    // The history grant and the enrolled list go with the attachment they
+    // named. `undefined` on an optional key is how this writer records a
+    // REVOCATION, so each key leaves settings.json rather than lingering for a
+    // deployment this machine no longer talks to. A list left behind would be
+    // kept by a later scoped attach as the same account, reviving enrollments
+    // made under an attachment that ended here.
     applyOnboarding(
-      { runMode: 'standalone', controlPlane: undefined, historySyncConsent: undefined },
+      {
+        runMode: 'standalone',
+        controlPlane: undefined,
+        historySyncConsent: undefined,
+        attachmentScope: undefined,
+      },
       base,
       deps.managedSettings,
     );
@@ -798,6 +1334,12 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   const args = parseAttachArgs(argv);
   if (isError(args)) {
     io.err(args.error);
+    (deps.exit ?? ((code: number) => process.exit(code)))(2);
+    return;
+  }
+  // Shared parser, as in runDetach: status reports the mode and never sets it.
+  if (args.mode !== undefined) {
+    io.err('aka status does not take --scoped or --machine.');
     (deps.exit ?? ((code: number) => process.exit(code)))(2);
     return;
   }

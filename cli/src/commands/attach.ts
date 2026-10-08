@@ -257,11 +257,15 @@ const CHANGED_WHILE_WAITING =
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
 /**
- * What a machine-wide attach over a personal device says when its settings
- * landed and its credential did not (see the order of the writes in runAttach).
- * The settings dropped the enrolled list; beside no list, the credential the
- * machine already had sends no repository's activity, and a file that cannot be
- * used, or one for another deployment, sends none either.
+ * What an attach says when its settings landed and its credential did not (see
+ * the order of the writes in runAttach): a machine-wide attach over a personal
+ * device's credential, a file that cannot be used or no file with a list or a
+ * grant stored, and a scoped attach that does not keep the list stored beside it.
+ * The settings dropped the enrolled list, or replaced it with an empty one, and
+ * carry no earlier grant. Beside that, what the machine already had sends no
+ * repository's activity: a scoped credential has no repository enrolled, a file
+ * that cannot be used or one for another deployment sends nothing, and with no
+ * credential file there is nothing to send with.
  */
 const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
@@ -306,7 +310,7 @@ const ROLLBACK_NOTE: Record<Exclude<CredentialRollback, 'restored'>, string> = {
     'The credential file changed while this attach was saving, so it was not put back and is ' +
     'left as it is now. Run `aka status` to see what this machine is attached to.',
   failed:
-    'The access key file on this machine could not be put back as it was before this attempt, ' +
+    'The credential file on this machine could not be put back as it was before this attempt, ' +
     'so it may differ from what it was. Run `aka attach` again.',
 };
 

@@ -1039,6 +1039,22 @@ describe('aka enroll — a list this version cannot read', () => {
     expect(io.output()).toContain(`Unenrolled ${WORK_REPO}.`);
     expect(storedScope()).toEqual({ ...UNREADABLE, entries: [] });
   });
+
+  // The usual tail says enrolling it again makes it sendable. Over a list this
+  // version cannot read that is not so: enrolling is refused, so the tail says
+  // that instead and keeps only what is still true.
+  it('says enrolling it again is refused, not that it makes it sendable, when it removes an entry', async () => {
+    attach({ scope: UNREADABLE });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+    expect(io.output()).toBe(
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.\n` +
+        'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
+        'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
+        'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
+    );
+    expect(io.output()).not.toContain('enrolling it again');
+  });
 });
 
 describe('aka enroll — what was recorded before', () => {
@@ -1157,6 +1173,8 @@ describe('aka unenroll', () => {
       'enrolling it again, or attaching this machine machine-wide to the same deployment,',
     );
     expect(shown).toContain('makes it sendable again.');
+    // The usual tail, for a list this version can read: enrolling it again works.
+    expect(shown).not.toContain('cannot read');
     expect(shown).not.toContain('no longer sent');
     // The promise is for what the user starts: work already under way, a
     // background sync included, may have read the scope before the edit.

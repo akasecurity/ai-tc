@@ -468,3 +468,84 @@ describe('the walk itself', () => {
     expect(opaque("await import('./x.ts'); process.getBuiltinModule('node:fs');")).toEqual([]);
   });
 });
+
+/**
+ * The top-level statements of a module that do something when it loads —
+ * anything but an import, an export, or a declaration — as `file:line: text`.
+ *
+ * A declaration's initializer is taken as pure, which is what
+ * `sideEffects` itself asserts: a bundler drops `const x = f()` with the
+ * module when nothing uses `x`. Flagging every top-level call would refuse
+ * each `new Set(...)` and schema builder in the package, so this guards the
+ * statement-shaped effects (`process.on(...)`, a bare registration call)
+ * that the list's audit is about.
+ */
+function loadTimeEffects(file: string, text: string): string[] {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest);
+  return source.statements
+    .filter(
+      (s) =>
+        !(
+          ts.isImportDeclaration(s) ||
+          ts.isImportEqualsDeclaration(s) ||
+          ts.isExportDeclaration(s) ||
+          (ts.isExportAssignment(s) && ts.isIdentifier(s.expression)) ||
+          ts.isFunctionDeclaration(s) ||
+          ts.isClassDeclaration(s) ||
+          ts.isInterfaceDeclaration(s) ||
+          ts.isTypeAliasDeclaration(s) ||
+          ts.isEnumDeclaration(s) ||
+          ts.isModuleDeclaration(s) ||
+          ts.isVariableStatement(s) ||
+          ts.isEmptyStatement(s)
+        ),
+    )
+    .map((s) => {
+      const line = source.getLineAndCharacterOfPosition(s.getStart(source)).line + 1;
+      return `${file}:${String(line)}: ${s.getText(source).split('\n')[0] ?? ''}`;
+    });
+}
+
+describe("plugin-sdk's sideEffects list", () => {
+  // The list declares every module it does not name free of load-time effects,
+  // and the bundlers that ship this package (esbuild for the plugins, webpack
+  // for the dashboard) drop such a module whenever nothing is imported from it
+  // by name. A top-level statement added to one then never runs in a shipped
+  // artifact, and every test stays green because vitest does not tree-shake.
+  // So the audit behind the list is re-run here rather than trusted.
+  const sdk = manifests.get('@akasecurity/plugin-sdk');
+  if (sdk === undefined) throw new Error('no manifest for @akasecurity/plugin-sdk');
+  const listed = Array.isArray(sdk.sideEffects) ? (sdk.sideEffects as unknown[]) : [];
+
+  it('names files that exist, each as one literal path', () => {
+    expect(listed.length).toBeGreaterThan(0);
+    for (const entry of listed) {
+      expect(typeof entry === 'string' && LITERAL_ENTRY.test(entry), String(entry)).toBe(true);
+      expect(existsSync(resolve(sdk.dir, String(entry))), String(entry)).toBe(true);
+    }
+  });
+
+  it('names every module that does something when it loads', () => {
+    const src = join(sdk.dir, 'src');
+    const unlisted = readdirSync(src, { recursive: true, encoding: 'utf8' })
+      .filter((f) => /\.[cm]?tsx?$/.test(f) && !f.endsWith('.d.ts'))
+      .map((f) => `./src/${f.split(sep).join('/')}`)
+      .filter((f) => !listed.includes(f));
+    const effects = unlisted.flatMap((f) =>
+      loadTimeEffects(f, readFileSync(resolve(sdk.dir, f), 'utf8')),
+    );
+    expect(effects).toEqual([]);
+  });
+
+  it('sees a load-time effect where there is one', () => {
+    // The positive controls: the reader flags a statement it should, and the
+    // one listed module really is listed for a reason.
+    expect(loadTimeEffects('m.ts', "export const a = 1;\nprocess.on('exit', () => {});\n")).toEqual(
+      ["m.ts:2: process.on('exit', () => {});"],
+    );
+    const worker = resolve(sdk.dir, 'src/scan-worker.ts');
+    expect(loadTimeEffects('scan-worker.ts', readFileSync(worker, 'utf8')).length).toBeGreaterThan(
+      0,
+    );
+  });
+});

@@ -142,6 +142,28 @@ const WIDE_COUNTS_NOTES: Record<'unmarked' | Exclude<AttachmentMode, 'scoped'>, 
     '             (counted while attached machine-wide, for everything recorded on this machine)',
 };
 
+/**
+ * The note under a MACHINE-WIDE attachment's history numbers when a scoped pass
+ * wrote them: a re-attach that made the machine machine-wide kept the file (only
+ * a detach removes it), so its totals cover only what was enrolled and would
+ * read as the whole machine's. It goes once a pass runs and counts everything.
+ */
+const SCOPED_COUNTS_NOTE: readonly string[] = [
+  '             (counted while attached as a personal device, for what was enrolled only;',
+  '             the next pass counts everything recorded on this machine)',
+];
+
+/**
+ * The note, if any, that goes under the history numbers: keyed on the live mode
+ * and on what the pass that wrote the file says it counted. A machine-wide
+ * attachment prints a note for one marker only, the scoped one; with none, or
+ * the machine-wide one, its lines are as they always were.
+ */
+function countsNote(scoped: boolean, countedAs: AttachmentMode | undefined): readonly string[] {
+  if (scoped) return countedAs === 'scoped' ? [] : [WIDE_COUNTS_NOTES[countedAs ?? 'unmarked']];
+  return countedAs === 'scoped' ? SCOPED_COUNTS_NOTE : [];
+}
+
 function ageLine(fromMs: number, nowMs: number): string {
   const deltaMs = Math.max(0, nowMs - fromMs);
   const minutes = Math.floor(deltaMs / 60_000);
@@ -498,7 +520,13 @@ function dropLines(dataDir: string, nowMs: number): string[] {
  * pass recorded still comes first: while the deployment refuses this machine's
  * key, enrolling resumes nothing, and re-attaching is the step that does.
  *
- * A machine-wide attachment prints none of this, whatever the file says.
+ * A machine-wide attachment prints none of this, with one exception: a file
+ * marked as counted through a scope, which a re-attach that made the machine
+ * machine-wide left behind. Its totals cover only what was enrolled, and read
+ * bare they would pass for the whole machine's until the next pass that runs
+ * rewrites the file, so each line with numbers carries a note saying so and
+ * that the next pass counts everything. A machine-wide file with the other
+ * marker, or none, prints exactly as it always has.
  */
 function historyLines(
   dataDir: string,
@@ -550,11 +578,9 @@ function historyLines(
   const sent = count(state.sentTotal);
   const total = count(state.sentTotal + state.pendingTotal);
   const skipped = state.skippedTotal > 0 ? `, ${count(state.skippedTotal)} could not be sent` : '';
-  // Only on a scoped attachment, and only when the pass that wrote the file did
-  // not count through the scope: see the docblock.
-  const countedAs = state.countsScope;
-  const caveat =
-    scoped && countedAs !== 'scoped' ? [WIDE_COUNTS_NOTES[countedAs ?? 'unmarked']] : [];
+  // Whether the population the pass counted is the one this attachment sends:
+  // see the docblock.
+  const caveat = countsNote(scoped, state.countsScope);
 
   if (state.lastOutcome === 'unreachable') {
     return [

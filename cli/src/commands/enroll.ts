@@ -22,7 +22,6 @@ import {
 import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type {
-  ConnectionRefusal,
   ControlPlaneConnection,
   CredentialUnusableReason,
   ManagedSettings,
@@ -32,7 +31,6 @@ import {
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   AttachmentScopeEntry,
-  connectionRefusalMessage,
   controlPlaneName,
   isAttached,
   isHistorySyncConsentValid,
@@ -42,6 +40,7 @@ import {
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
+import { refusalLine } from '../lib/refusal-line.ts';
 
 // `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories a
 // SCOPED attachment sends.
@@ -357,22 +356,23 @@ const CREDENTIAL_REASONS: Record<CredentialUnusableReason, string> = {
   'endpoint-mismatch': 'it is for another deployment',
 };
 
-/**
- * A refusal's sentence, with the organization's name stripped for the terminal:
- * it comes from an administrator's file, and nothing in the schema keeps control
- * characters out of it.
- */
-function refusalLine(refusal: ConnectionRefusal): string {
-  return connectionRefusalMessage(
-    refusal.organization === undefined
-      ? refusal
-      : { ...refusal, organization: printableForTerminal(refusal.organization) },
-  );
-}
-
 type Target =
   | { kind: 'scoped'; connection: ControlPlaneConnection; settings: WorkspaceSettings }
   | { kind: 'refused'; line: string };
+
+/**
+ * The command that attaches this machine to `endpoint` as a personal device, as
+ * it can be pasted, or the form of it when it cannot be.
+ *
+ * The command is built from the whole endpoint, quoted for a shell, so it runs
+ * as shown. An endpoint with control characters in it cannot be typed back as
+ * it would have to be shown, so it gets the form with a placeholder instead of
+ * a command that would not do what it says.
+ */
+function reattachCommand(endpoint: string): string {
+  const typable = printableForTerminal(endpoint, Infinity) === endpoint;
+  return `\`aka attach --url ${typable ? quotedForShell(endpoint) : '<url>'} --scoped\``;
+}
 
 /**
  * The attachment an enrollment edits, or why there is none.
@@ -406,7 +406,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
   }
   const connection = settings.controlPlane;
   const name = printableForTerminal(controlPlaneName(connection));
-  const url = printableForTerminal(connection.endpoint, 200);
+  const reattach = reattachCommand(connection.endpoint);
   const read = readControlPlaneCredentialFile(settingsDirOf(base), connection);
   if (!read.usable) {
     return {
@@ -415,7 +415,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `aka ${verb}: the stored credential for ${name} cannot be used ` +
         `(${CREDENTIAL_REASONS[read.reason]}).\n` +
         (governed === null
-          ? `Re-attach with \`aka attach --url ${url} --scoped\`, then ${verb} again.`
+          ? `Re-attach with ${reattach}, then ${verb} again.`
           : refusalLine(governed)),
     };
   }
@@ -426,7 +426,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `aka ${verb}: this machine is attached to ${name} machine-wide, so every repository's\n` +
         'activity is sent and nothing is enrolled. ' +
         (governed === null
-          ? `To send only the repositories you enroll, re-attach with\n\`aka attach --url ${url} --scoped\`.`
+          ? `To send activity only from the repositories you enroll, re-attach with\n${reattach}.`
           : refusalLine(governed)),
     };
   }

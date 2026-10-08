@@ -1760,3 +1760,200 @@ describe('what an attach says', () => {
     );
   });
 });
+
+// Strings someone else wrote reach the terminal only through the strip: the name
+// an administrator gives their organization, the endpoint they pin, and the
+// address or option the user typed. None of them is checked for control
+// characters when it is read, so an escape sequence in one must not repaint the
+// lines around it.
+describe('what an attach prints of strings it did not write', () => {
+  const ESC = String.fromCharCode(27);
+  const EVIL_ORG = `Example${ESC}[2J IT`;
+  const SHOWN_ORG = 'Example[2J IT';
+  const EVIL_ENDPOINT = `${OTHER_ENDPOINT}/gateway${ESC}[2J`;
+  const SHOWN_ENDPOINT = `${OTHER_ENDPOINT}/gateway[2J`;
+  const TYPED = `${ENDPOINT}/gateway${ESC}[2J`;
+  const SHOWN_TYPED = `${ENDPOINT}/gateway[2J`;
+
+  const governed = (organization = EVIL_ORG): ManagedSettings =>
+    ManagedSettings.parse({ organization, values: { controlPlane: { endpoint: ENDPOINT } } });
+
+  it('strips the organization from the refusal of --scoped', async () => {
+    const overlay = governed();
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.errors()).toContain(
+      `${connectionRefusalMessage({ reason: 'scoped-managed', organization: SHOWN_ORG })} ` +
+        'Re-run without --scoped.',
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips the organization from the line that says a managed attach widens a personal device', async () => {
+    attachedScoped(BOUND);
+    const overlay = governed();
+    const h = harness({ interactive: false, stdin: KEY_2, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `${connectionRefusalMessage({ reason: 'scoped-managed', organization: SHOWN_ORG })} ` +
+        `This machine was attached to ${ENDPOINT} as a personal device; ` +
+        'its enrolled list will be cleared.',
+    );
+    expect(h.output()).not.toContain(ESC);
+  });
+
+  it('strips the organization from the refusal of a scoped write that became managed while it waited', async () => {
+    let overlay: ManagedSettings | null = null;
+    const h = harness({
+      interactive: false,
+      stdin: KEY_1,
+      managed: () => overlay,
+      duringVerify: () => {
+        overlay = governed();
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(
+      `${connectionRefusalMessage({ reason: 'scoped-managed', organization: SHOWN_ORG })} ` +
+        'Nothing was changed on this machine.',
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips the organization and the pinned endpoint from the refusal of another deployment', async () => {
+    const overlay = ManagedSettings.parse({
+      organization: EVIL_ORG,
+      values: { controlPlane: { endpoint: EVIL_ENDPOINT } },
+    });
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.errors()).toContain(
+      connectionRefusalMessage({
+        reason: 'pinned-endpoint',
+        organization: SHOWN_ORG,
+        endpoint: SHOWN_ENDPOINT,
+      }),
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips the organization from the refusal of an attach that would drop the name', async () => {
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, label: 'Old', attachedAt: ISO } },
+      base,
+      null,
+    );
+    const overlay = ManagedSettings.parse({ organization: EVIL_ORG, lockedFields: ['runMode'] });
+    const h = harness({ interactive: false, stdin: KEY_1, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin'], h.deps);
+
+    expect(exits).toEqual([2]);
+    expect(h.errors()).toContain(
+      `${connectionRefusalMessage({ reason: 'label-required', organization: SHOWN_ORG })} ` +
+        'Attach with the --label it already has, as `aka status` shows it.',
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips the organization and the endpoint from the refusal of a detach', () => {
+    const overlay = ManagedSettings.parse({
+      organization: EVIL_ORG,
+      values: { runMode: 'attached', controlPlane: { endpoint: EVIL_ENDPOINT } },
+    });
+    const h = harness({ interactive: false, managed: () => overlay });
+
+    runDetach([], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(
+      connectionRefusalMessage({
+        reason: 'held-attached',
+        organization: SHOWN_ORG,
+        endpoint: SHOWN_ENDPOINT,
+      }),
+    );
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('shows an organization as long as the strip allows, whole', async () => {
+    const organization = 'o'.repeat(150);
+    const overlay = governed(organization);
+    const h = harness({ interactive: true, managed: () => overlay });
+
+    await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(h.errors()).toContain(`${organization} manages this machine`);
+  });
+
+  it('strips the typed address from the confirmation of a widening', async () => {
+    attachedScoped({ ...BOUND, endpoint: TYPED }, TYPED);
+    const h = harness({ interactive: true, answers: [KEY_2, 'y'] });
+
+    await runAttach(['--url', TYPED, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(h.output()).toContain(
+      `This machine is attached to ${SHOWN_TYPED} as a personal device: it sends only`,
+    );
+    expect(h.output()).not.toContain(ESC);
+  });
+
+  it('strips the typed address from the line that says a widening is going ahead', async () => {
+    attachedScoped({ ...BOUND, endpoint: TYPED }, TYPED);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', TYPED, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `Attaching machine-wide, as --machine asks. This machine was attached to ${SHOWN_TYPED} ` +
+        'as a personal device; its enrolled list will be cleared.',
+    );
+    expect(h.output()).not.toContain(ESC);
+  });
+
+  it('strips the typed address from the refusal of a key the deployment does not accept', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1, who: null });
+
+    await runAttach(['--url', TYPED, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(`could not verify that key against ${SHOWN_TYPED}.`);
+    expect(h.errors()).not.toContain(ESC);
+  });
+
+  it('strips an option it does not know from the usage error', () => {
+    expect(parseAttachArgs([`--bogus${ESC}[2J`])).toEqual({ error: 'unknown option --bogus[2J' });
+  });
+
+  it('strips the settings directory from the report that it cannot be read', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('a control character cannot be part of a Windows path');
+      return;
+    }
+    const odd = join(base, `home${ESC}[2J`);
+    mkdirSync(odd);
+    writeFileSync(settingsDirOf(odd), 'not a directory');
+    const h = harness({ interactive: true });
+
+    await runAttach(['--url', ENDPOINT], { ...h.deps, base: odd });
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain('home[2J');
+    expect(h.errors()).not.toContain(ESC);
+  });
+});

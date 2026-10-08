@@ -205,9 +205,10 @@ describe('SettingsClient and the mode', () => {
     'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
     "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
     'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
-    'packs, policy counts, and finding counts and dates for everything recorded on the machine. ' +
-    'Where a scan is available (the coding-agent plugins, not a browser chat), the same session ' +
-    'start also checks it for device commands. A scan you run from the Scan page sends the Data ' +
+    'packs, policy counts, finding counts and dates for everything recorded on the machine, and, ' +
+    'when the machine is attached as a personal device, the fact that it is one. Where a scan is ' +
+    'available (the coding-agent plugins, not a browser chat), the same session start also ' +
+    'checks it for device commands. A scan you run from the Scan page sends the Data ' +
     'Shares register only for an enrolled repository — destinations and call sites, never source ' +
     'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
     'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
@@ -217,10 +218,11 @@ describe('SettingsClient and the mode', () => {
     'to see. Whenever a session starts anywhere on this machine, in a repository or not (a ' +
     "browser chat included), the machine pulls that deployment's policy (at most every 15 " +
     'minutes) and sends it a device report (at most hourly): a device identifier, host name, ' +
-    'versions, detection packs, policy counts, and finding counts and dates for everything ' +
-    'recorded on the machine. Where a scan is available (the coding-agent plugins, not a browser ' +
-    'chat), the same session start also checks it for device commands. A scan you run from the ' +
-    'Scan page also sends the Data Shares register it records — destinations and call sites, ' +
+    'versions, detection packs, policy counts, finding counts and dates for everything recorded ' +
+    'on the machine, and, when the machine is attached as a personal device, the fact that it is ' +
+    'one. Where a scan is available (the coding-agent plugins, not a browser chat), the same ' +
+    'session start also checks it for device commands. A scan you run from the Scan page also ' +
+    'sends the Data Shares register it records — destinations and call sites, ' +
     'never source text. This page reads only your local store, so it cannot report what the ' +
     'deployment received. Detach to stop sending.';
 

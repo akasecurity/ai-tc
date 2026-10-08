@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { HistorySyncState } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
@@ -492,7 +493,7 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
       endpoint: ENDPOINT,
     },
   };
-  const progress = {
+  const progress: Omit<HistorySyncState, 'specVersion'> = {
     phase: 'filling',
     lastOutcome: 'ok',
     lastPassAtMs: Date.now(),
@@ -501,24 +502,116 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     skippedTotal: 0,
     startedAtMs: Date.now(),
     completedAtMs: null,
-  } as const;
+  };
+  // The three history lines that print numbers: what the file holds for each,
+  // and the line its numbers are printed on.
+  const numbered: [string, Partial<Omit<HistorySyncState, 'specVersion'>>, string][] = [
+    ['sending', {}, '  history    sending — 10 of 15 records sent'],
+    ['complete', { phase: 'complete', pendingTotal: 0 }, '  history    complete — 10 records sent'],
+    ['paused', { lastOutcome: 'unreachable' }, '             10 of 15 records sent'],
+  ];
+  const OLDER_VERSION_NOTE =
+    '             (counted by an older version of aka, for everything recorded on this machine)';
+  const MACHINE_WIDE_NOTE =
+    '             (counted while attached machine-wide, for everything recorded on this machine)';
+  // What a scoped pass writes when its scope sends nothing: zeros, and complete.
+  const emptyScopePass: Omit<HistorySyncState, 'specVersion'> = {
+    ...progress,
+    phase: 'complete',
+    sentTotal: 0,
+    pendingTotal: 0,
+    completedAtMs: Date.now(),
+    countsScope: 'scoped',
+  };
 
-  it('says the counts cover every repository, enrolled or not', () => {
+  it.each(numbered)(
+    'notes that an older version counted every repository under the %s line',
+    (_name, shape, line) => {
+      attach('scoped', bound([entry(WORK_REPO)]), consent);
+      // No marker: the file every drain before this one writes, in either mode.
+      writeHistorySyncState(dataDir, { ...progress, ...shape });
+      const out = status();
+      expect(out).toContain(`\n${line}\n${OLDER_VERSION_NOTE}`);
+      expect(out).not.toContain('enrolled or not');
+    },
+  );
+
+  it('notes counts taken while attached machine-wide', () => {
     attach('scoped', bound([entry(WORK_REPO)]), consent);
-    writeHistorySyncState(dataDir, progress);
+    // A machine-wide pass of this very version, kept by a re-attach that made the
+    // machine scoped: only a detach removes this file.
+    writeHistorySyncState(dataDir, { ...progress, countsScope: 'machine' });
     const out = status();
-    expect(out).toContain('  history    sending — 10 of 15 records sent\n');
-    expect(out).toContain(
-      '\n             (counts cover every repository on this machine, enrolled or not)',
-    );
+    expect(out).toContain(`\n  history    sending — 10 of 15 records sent\n${MACHINE_WIDE_NOTE}`);
+    expect(out).not.toContain('older version');
   });
 
-  it('adds no caveat on a machine-wide attachment', () => {
-    attach('machine', undefined, consent);
-    writeHistorySyncState(dataDir, progress);
+  it.each(numbered)(
+    'prints the %s line bare when the pass counted through the scope',
+    (_name, shape, line) => {
+      attach('scoped', bound([entry(WORK_REPO)]), consent);
+      writeHistorySyncState(dataDir, { ...progress, ...shape, countsScope: 'scoped' });
+      const out = status();
+      expect(out).toContain(`\n${line}`);
+      // No note, in any wording, directly under the numbers.
+      expect(out).not.toMatch(/records sent\n {13}\(/);
+    },
+  );
+
+  it.each(['unmarked', 'machine', 'scoped'] as const)(
+    'never notes the counts on a machine-wide attachment (marker %s)',
+    (marker) => {
+      attach('machine', undefined, consent);
+      writeHistorySyncState(dataDir, {
+        ...progress,
+        ...(marker === 'unmarked' ? {} : { countsScope: marker }),
+      });
+      const out = status();
+      expect(out).toMatch(/^ {2}history {4}sending — 10 of 15 records sent$/m);
+      expect(out).not.toMatch(/records sent\n {13}\(/);
+      expect(out).not.toContain('nothing to send');
+    },
+  );
+
+  it.each<[string, unknown]>([
+    ['no scope recorded', undefined],
+    ['a scope with nothing in it', bound()],
+    [
+      'a scope recorded for another deployment',
+      { endpoint: OLD_ENDPOINT, ...MEMBER, entries: [entry(WORK_REPO)] },
+    ],
+    ['a scope record this version cannot read', 'not-a-scope-record'],
+    [
+      'a scope whose binding fails',
+      { endpoint: ENDPOINT, tenantName: 'Acme', userEmail: 42, entries: [entry(WORK_REPO)] },
+    ],
+  ])('says nothing is sent, never complete, with %s', (_name, scope) => {
+    attach('scoped', scope, consent);
+    writeHistorySyncState(dataDir, emptyScopePass);
     const out = status();
-    expect(out).toContain('  history    sending — 10 of 15 records sent');
-    expect(out).not.toContain('counts cover every repository');
+    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).not.toContain('complete —');
+    expect(out).not.toMatch(/records sent/);
+  });
+
+  it('says nothing is sent before the first pass too, when nothing is enrolled', () => {
+    attach('scoped', bound(), consent);
+    const out = status();
+    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).not.toContain('waiting for the first pass');
+  });
+
+  // A refused key is the one thing enrolling cannot fix, so the nothing-to-send
+  // line must not hide it. The last pass was refused while a repository was
+  // still enrolled; everything has been unenrolled since.
+  it('still says the key is refused when nothing is enrolled', () => {
+    attach('scoped', bound(), consent);
+    writeHistorySyncState(dataDir, { ...progress, lastOutcome: 'refused', countsScope: 'scoped' });
+    const out = status();
+    expect(out).toContain(
+      "\n  history    stopped — that deployment refused this machine's key\n             re-attach to resume",
+    );
+    expect(out).not.toContain('nothing to send');
   });
 });
 

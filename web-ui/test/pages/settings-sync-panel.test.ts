@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   ATTACHED_FORWARD_STATE_FILENAME,
@@ -45,6 +46,23 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+// The page reads the credential's mode on its own, apart from the credential's
+// state, and hands the panel whatever that read answers. One file cannot make
+// the two reads disagree, and the disagreement is the case the page must not
+// paper over, so this seam lets a case make ONLY the mode read answer
+// `undefined`. Everything else, the state read included, stays the real one.
+const modeRead = vi.hoisted(() => ({ unread: false }));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    readControlPlaneAttachmentMode: (
+      ...args: Parameters<typeof actual.readControlPlaneAttachmentMode>
+    ): ReturnType<typeof actual.readControlPlaneAttachmentMode> =>
+      modeRead.unread ? undefined : actual.readControlPlaneAttachmentMode(...args),
+  };
+});
+
 const newHome = tempHomes('aka-sync-panel-');
 
 let home: string;
@@ -81,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  modeRead.unread = false;
   dropMemoisedDb();
 });
 
@@ -788,6 +807,23 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
     expectModeUnread(stateNow());
     grant();
     expectModeUnread(stateNow());
+  });
+
+  // The same disagreement through the PAGE, which is where a fallback would hide:
+  // a `?? 'machine'` on the mode the page passes down would hand the reader a
+  // mode it never read, and every case that calls the reader directly would stay
+  // green while the panel drew a personal device's whole store as its queue. The
+  // first render has the mode readable (the control: bars), the second has only
+  // that read answer `undefined` over the same usable key.
+  it('renders a usable key whose mode the page could not read as unusable, not as machine-wide', async () => {
+    attach();
+    grant();
+    seedSession('s-1');
+    expect((await panel()).state.status).toBe('ready');
+
+    modeRead.unread = true;
+
+    expectModeUnread((await panel()).state);
   });
 
   // A machine-wide attachment never reads the scope record, so one left in the

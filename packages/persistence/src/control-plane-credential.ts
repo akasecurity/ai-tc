@@ -167,7 +167,12 @@ function repairOrRefuseMode(file: string): CredentialGate {
  * Y — re-attach" rather than reporting a bare "not attached" that reads as a
  * lost file.
  *
- * Never throws. Every failure is a `usable: false` state.
+ * Every failure of the credential file itself is a `usable: false` state: absent,
+ * unreadable, malformed, untrusted, an unsafe endpoint, or a credential for
+ * another deployment. A settings directory path that is not a directory is not
+ * one of them: the stat raises ENOTDIR and this does not catch it. A caller that
+ * cannot afford a throw guards the call; `readControlPlaneAttachmentMode` is the
+ * variant that answers `undefined` instead of throwing.
  */
 export function readControlPlaneCredentialState(
   settingsDir: string,
@@ -228,7 +233,12 @@ function asReadableCredential(value: unknown): AttachedCredentialAny | null {
  * passed to a `'use client'` boundary is serialised into the payload the
  * browser receives. Surfaces take `readControlPlaneCredentialState`.
  *
- * Never throws. Every failure is a `usable: false` state.
+ * Every failure of the credential file itself is a `usable: false` state: absent,
+ * unreadable, malformed, untrusted, an unsafe endpoint, or a credential for
+ * another deployment. A settings directory path that is not a directory is not
+ * one of them: the stat raises ENOTDIR and this does not catch it. A caller that
+ * cannot afford a throw guards the call; `readControlPlaneAttachmentMode` is the
+ * variant that answers `undefined` instead of throwing.
  */
 export function readControlPlaneCredentialFile(
   settingsDir: string,
@@ -290,6 +300,10 @@ export function readControlPlaneCredentialFile(
  * endpoint the credential itself names — which is exactly the redirect the
  * endpoint binding exists to prevent, since this file and `settings.json` have
  * different writers and different protections.
+ *
+ * Null stands for every `usable: false` state of the credential file. A settings
+ * directory path that is not a directory is not one of them: the stat raises
+ * ENOTDIR from `readControlPlaneCredentialFile` and this does not catch it.
  */
 export function readControlPlaneCredential(
   settingsDir: string,

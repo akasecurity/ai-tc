@@ -14,6 +14,7 @@ import {
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
+  originOnly,
   parseAttachmentScope,
   resolveScope,
 } from '@akasecurity/schema';
@@ -97,22 +98,33 @@ const OUTCOME_LINES: Record<PolicySyncOutcome, string> = {
 };
 
 /**
- * How each attachment mode reads on the `mode` line: which repositories the
- * attachment covers, not a claim about everything the machine sends. An
- * exhaustive Record, so a mode added later fails typecheck here instead of
- * rendering a line with a hole in it.
+ * How each attachment mode reads on the `mode` line: which activity the
+ * attachment forwards, not everything the machine sends. The scoped line names
+ * no kind of entry, because an entry may name a repository or an account and the
+ * block under it lists whichever the record holds. An exhaustive Record, so a
+ * mode added later fails typecheck here instead of rendering a line with a hole
+ * in it.
  */
 const MODE_LINES: Record<AttachmentMode, string> = {
-  machine: 'machine (every repository)',
-  scoped: 'scoped (enrolled repositories only)',
+  machine: 'machine (activity from anywhere on this machine)',
+  scoped: 'scoped (activity only from what is enrolled)',
 };
 
 /**
- * What to do about a scope that sends nothing: printed under the "nothing
- * enrolled" line (no record) and the "nothing enrolled yet" line (a record with
- * no entries).
+ * What to do about a scope that forwards no activity: printed under the "nothing
+ * enrolled yet" line (a record with no entries). The lines for a list that is
+ * not stored spell out their own advice, and the lines for one this build cannot
+ * read carry none.
  */
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
+
+/**
+ * The last line of every scope block: what the record does not limit. A scoped
+ * attachment's record decides which activity is forwarded, not whether the
+ * machine pulls its deployment's policy or sends it a device report.
+ */
+const NOT_LIMITED_LINE =
+  '             the policy pull and the device report are not limited to what is enrolled';
 
 function ageLine(fromMs: number, nowMs: number): string {
   const deltaMs = Math.max(0, nowMs - fromMs);
@@ -156,6 +168,15 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     const mode: AttachmentMode | undefined = state.usable
       ? attachmentModeOf(state.credential)
       : undefined;
+    // The name is the label, or the endpoint when there is none. An endpoint is an
+    // address, and the settings one is checked when settings are saved through the
+    // product, not when the file is edited by hand or an overlay pins it, so it
+    // goes through endpointForTerminal, which also keeps userinfo, a query and a
+    // fragment off the screen. A label is free text and gets the plain strip.
+    const plane =
+      connection.label === undefined
+        ? endpointForTerminal(controlPlaneName(connection))
+        : printableForTerminal(controlPlaneName(connection));
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -180,7 +201,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       // off the credential file — and all of them land in a status block a user
       // reads to decide whether their machine is managed. An ANSI escape in any
       // of them can repaint that block or hide a line.
-      `  plane      ${printableForTerminal(controlPlaneName(connection))}`,
+      `  plane      ${plane}`,
       `  attached   ${printableForTerminal(connection.attachedAt, 40)}`,
     ];
     if (state.usable && state.credential.keyPrefix !== undefined) {
@@ -239,29 +260,57 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * that ever does must give this block the same entries, or a forward path would
  * send an identity the block does not list.
  *
- * Each state that sends nothing has its own line, because each has its own
- * cause: no record (never enrolled, an older settings writer dropped it, or the
- * record is damaged and reads as none), a record for another deployment, or a
- * record with nothing in it yet. Entries this version cannot read are counted and
- * never printed: one written by a newer build is not this build's to describe. A
- * record that names no account is said to be one, because the next scoped attach
- * cannot tell whose it is and starts it empty.
+ * Each state that forwards no activity has its own line, because each has its own
+ * cause: no list stored (an older settings writer dropped it, or an attach
+ * stopped before writing it), a list this version cannot read (damaged, or
+ * written by a newer build), a record for another deployment, or a record with
+ * nothing in it yet. The first two are told apart on purpose: the missing list
+ * says what to run, and the unreadable one deliberately gives no advice. Entries
+ * this version cannot read are counted and never printed: one written by a newer
+ * build is not this build's to describe. A record that names no account is said
+ * to be one, because the next scoped attach cannot tell whose it is and starts it
+ * empty.
+ *
+ * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
+ * activity is forwarded, not whether the machine pulls its deployment's policy or
+ * sends it a device report. So the last line says so in every state, and a block
+ * that says no activity is sent does not read as a machine that sends nothing.
  *
  * Every stored string goes through printableForTerminal. The schema already
  * refuses control characters in an identity or a label; the strip is the layer
- * that holds whatever a settings file actually carries.
+ * that holds whatever a settings file actually carries. The record's address
+ * goes through endpointForTerminal, which also keeps userinfo, a query or a
+ * fragment off the screen.
  *
  * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
  */
 export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
+  return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
+}
+
+/** The lines for the record's state, before the line every block ends with. */
+function scopeStateLines(raw: unknown, endpoint: string): string[] {
+  // No list at all and a list this build cannot read are told apart before
+  // anything is parsed: parseAttachmentScope answers undefined for both, and
+  // what to do about one is not what to do about the other.
+  if (raw === undefined || raw === null) {
+    return [
+      '  scope      no enrolled list is stored — no activity is sent',
+      '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
+      '             drops the list when it saves settings)',
+    ];
+  }
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
-    return ["  scope      nothing enrolled — no repository's activity is sent", ENROLL_HINT];
+    return [
+      '  scope      the enrolled list cannot be read by this aka — it sends no activity under it',
+      '             (it may have been written by a newer aka)',
+    ];
   }
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
-      `  scope      recorded for another deployment (${printableForTerminal(record.endpoint, 200)})`,
-      '             — nothing is sent here (run `aka enroll` to enroll for this one)',
+      `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
+      '             — no activity is sent here (run `aka enroll` to enroll for this one)',
     ];
   }
   const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;
@@ -278,7 +327,7 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   }
   const lines =
     rows.length === 0
-      ? ["  scope      nothing enrolled yet — no repository's activity is sent", ENROLL_HINT]
+      ? ['  scope      nothing enrolled yet — no activity is sent', ENROLL_HINT]
       : [
           `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
           ...rows,
@@ -613,6 +662,40 @@ function failOpenLines(dataDir: string, nowMs: number): string[] {
 export function printableForTerminal(value: string, max = 80): string {
   const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');
   return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** What endpointForTerminal prints in place of an address it will not echo. */
+const ENDPOINT_NOT_SHOWN = 'address not shown';
+
+/**
+ * A deployment address read back from a file, made safe to print in a terminal.
+ *
+ * The schema holds a stored address to no more than being a non-empty string,
+ * so it can carry what an address must never show: userinfo, a query, a
+ * fragment. An http or https address with none of them is printed as stored,
+ * through printableForTerminal, so a spelling that differs from another address
+ * (a trailing slash, the case of the host) stays visible. One that carries any
+ * of them is printed as its origin alone, with "rest not shown" after it.
+ * Anything else, a string that does not parse as a URL or one with another
+ * scheme, is printed as ENDPOINT_NOT_SHOWN. Never throws.
+ *
+ * Exported so a command that echoes an address it read from a file prints it
+ * with this one function rather than a copy that could drift.
+ */
+export function endpointForTerminal(endpoint: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return ENDPOINT_NOT_SHOWN;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return ENDPOINT_NOT_SHOWN;
+  // The serialized URL equals scheme, host and path exactly when the address
+  // carries no userinfo, query or fragment, an empty query or fragment included.
+  const bare = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  return parsed.href === bare
+    ? printableForTerminal(endpoint, 200)
+    : `${printableForTerminal(originOnly(endpoint), 200)}, rest not shown`;
 }
 
 /**

@@ -379,8 +379,10 @@ function isEnrollableKey(key: string): boolean {
  * neither, or names no repository.
  *
  * A clone URL (https, ssh://, scp-style, with or without `.git`) goes through
- * `canonicalRepoUrl`, the rule every producer of a key uses, so the key stored
- * is the one a checkout of that repository stamps on its events.
+ * `canonicalRepoUrl`, the rule every producer of a key uses, so a key stored
+ * from one is the one a checkout of that repository stamps on its events. Not
+ * every key a checkout stamps can be named here, though: the rules below refuse
+ * some, a key with one path segment among them.
  *
  * A typed key is accepted only when it is ALREADY canonical:
  * `canonicalRepoUrl('https://' + key)` must give back exactly the key. Keys are
@@ -396,8 +398,15 @@ function isEnrollableKey(key: string): boolean {
  *     trailing-dot host such as `github.com.` names the same host as
  *     `github.com` and would be a second key for it), or a label that begins or
  *     ends with a hyphen;
- *   - fewer than two path segments: `github.com/acme` names an owner, not a
- *     repository, and enrolling it would enroll nothing;
+ *   - fewer than two path segments, from a clone URL as well as from a typed
+ *     key. From the text alone a repository kept at the top of its host cannot
+ *     be told from an owner: `git@git.example.com:payments.git` keys as
+ *     `git.example.com/payments` and names a repository, while
+ *     `https://github.com/acme` keys as `github.com/acme` and names an owner.
+ *     Accepting the second would store a key no repository cloned from GitHub
+ *     carries, and report it as an enrollment. A caller enrolling a repository
+ *     kept at the top of its host takes the key its checkout resolves for
+ *     itself;
  *   - an empty, `.` or `..` path segment.
  *
  * An absolute path, a Windows path, a `file://` URL, a query or fragment, a

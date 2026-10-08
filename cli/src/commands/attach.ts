@@ -88,8 +88,8 @@ Registers this machine against your organization's AKA deployment.
              a device identifier, host name, versions, detection packs, policy
              counts, and finding counts and dates across every repository on
              this machine.
-  --machine  A machine your organization owns: send activity from every
-             project on this machine.
+  --machine  A machine your organization owns: send activity from anywhere on
+             this machine.
 
   With neither flag, a re-attach to the same deployment keeps the mode it has;
   otherwise a terminal is asked which, and a run with no terminal attaches
@@ -236,7 +236,7 @@ const NEEDS_MODE_FLAG =
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
   'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
-  '--machine to send activity from every project on this machine. Nothing was changed.';
+  '--machine to send activity from anywhere on this machine. Nothing was changed.';
 
 /**
  * Said when the credential on disk no longer fits the mode that was settled.
@@ -1186,8 +1186,8 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  sends a device report (at most hourly) with a device identifier, host',
       '  name, versions, detection packs, policy counts, and finding counts and',
       '  dates across every repository on this machine.',
-      '  A machine your organization owns sends activity from every project on',
-      '  this machine.',
+      '  A machine your organization owns sends activity from anywhere on this',
+      '  machine.',
       '',
     ].join('\n'),
   );
@@ -1214,11 +1214,11 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
       '',
       `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: activity is`,
       'sent only from the repositories enrolled on it. With --machine, activity from',
-      'every project on this machine is sent, and the enrolled list is cleared.',
+      'anywhere on this machine is sent, and the enrolled list is cleared.',
       '',
     ].join('\n'),
   );
-  const answer = (await io.ask('Send activity from every project on this machine? [y/N]: '))
+  const answer = (await io.ask('Send activity from anywhere on this machine? [y/N]: '))
     .trim()
     .toLowerCase();
   return answer === 'y' || answer === 'yes';

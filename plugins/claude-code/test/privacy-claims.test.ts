@@ -200,6 +200,13 @@ describe('scoped attachment claims', () => {
       expect(claim).toMatch(/policy/i);
     });
 
+    // A browser chat and a session outside any repository trigger them too, so
+    // a page cannot say they need a repository.
+    it('says the report goes from a session anywhere on the machine, not from a repository', () => {
+      expect(claim).toMatch(/when a session runs anywhere on the machine/i);
+      expect(claim).not.toMatch(/when a session runs in any repository/i);
+    });
+
     it('limits what is forwarded to activity, not to the repositories themselves', () => {
       expect(claim).toMatch(
         /only activity from the repositories you enroll|activity only from the repositories enrolled/i,
@@ -211,8 +218,13 @@ describe('scoped attachment claims', () => {
   it('says in SECURITY.md that the report, the policy pull and the command check go either way', () => {
     const section = (SECURITY_DATA_IN_TRANSIT ?? '').replace(/\s+/g, ' ');
     expect(section).toMatch(/device report/i);
-    expect(section).toMatch(/counted across every repository on it, enrolled or not/i);
-    expect(section).toMatch(/when a session runs on the machine, in any repository/i);
+    // What the count covers: findings on captured events, not every table.
+    expect(section).toMatch(
+      /findings detected in captured prompts, responses, code changes and tool uses/i,
+    );
+    expect(section).toMatch(/counted across every repository on the machine, enrolled or not/i);
+    expect(section).toMatch(/when any session runs on the machine, in a repository or not/i);
+    expect(section).not.toMatch(/findings recorded on the machine/i);
     expect(section).toMatch(/the exception: they go the same way on either kind of attachment/i);
     expect(section).not.toMatch(/\ball of the above\b/i);
   });

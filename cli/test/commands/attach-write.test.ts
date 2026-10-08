@@ -1786,10 +1786,43 @@ describe('a credential write that fails', () => {
       await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
 
       expect(exits).toEqual([1]);
-      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_UNTOUCHED}`);
+      // Another attach changed the file, so it is said to have changed rather
+      // than to be untouched.
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(NOTE_UNTOUCHED);
       expect(storedCredential()).toEqual({
         usable: true,
         credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2, mintedAt: ISO },
+      });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'says another attach changed the file, when it replaced the one this attach wrote over an unreadable one',
+    async () => {
+      plantUntrustedCredential();
+      // This attach's credential write lands over the link. Then, as its settings
+      // write is about to fail, another attach replaces that file with its own.
+      stand.beforeNextSettingsWrite = () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        throw new Error('settings write failed');
+      };
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(NOTE_UNTOUCHED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({
+        usable: true,
+        credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1, mintedAt: ISO },
       });
     },
   );

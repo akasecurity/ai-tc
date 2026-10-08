@@ -517,6 +517,46 @@ describe('settledDecisionHolds', () => {
       expect(put(quiet, null, 'machine')).toBe(true);
       expect(put({ ...quiet, flag: 'machine', managed: null }, MANAGED, 'machine')).toBe(true);
     });
+
+    // Under management a machine-wide flag over a personal device asks nobody:
+    // the administrator decided. That is an agreement to the widening only while
+    // they still manage the machine when the decision is put again.
+    describe('an agreement to widen that only the administrator gave', () => {
+      /** The decision settled from `before`, put again on a different file with the same administrator. */
+      const putOnFile = (before: Inputs, now: CredentialFileRead): boolean => {
+        const settled = decideAttachMode(before);
+        if (settled.kind === 'refuse') throw new Error('a refusal is never settled');
+        return settledDecisionHolds({ ...before, previous: now, settled, mode: 'machine' });
+      };
+      const widening: Inputs = { ...quiet, flag: 'machine', previous: SCOPED };
+
+      it('does not count once they stop managing the machine and a terminal would ask', () => {
+        expect(put({ ...widening, interactive: true }, null, 'machine')).toBe(false);
+        expect(
+          put({ ...widening, interactive: true, previous: SCOPED_TRAILING_SLASH }, null, 'machine'),
+        ).toBe(false);
+      });
+
+      it('counts while they still manage the machine', () => {
+        expect(put({ ...widening, interactive: true }, MANAGED, 'machine')).toBe(true);
+        expect(put(widening, MANAGED, 'machine')).toBe(true);
+      });
+
+      it('counts without a terminal once they stop, where the flag typed is the answer', () => {
+        expect(put(widening, null, 'machine')).toBe(true);
+      });
+
+      it('is not needed once the widening has gone away', () => {
+        expect(putOnFile({ ...widening, interactive: true }, ABSENT)).toBe(true);
+        expect(putOnFile({ ...widening, interactive: true }, MACHINE)).toBe(true);
+      });
+
+      it('leaves an agreement a person gave alone, whoever manages the machine now', () => {
+        const confirmed: Inputs = { ...widening, managed: null, interactive: true };
+        expect(put(confirmed, null, 'machine')).toBe(true);
+        expect(put(confirmed, MANAGED, 'machine')).toBe(true);
+      });
+    });
   });
 });
 

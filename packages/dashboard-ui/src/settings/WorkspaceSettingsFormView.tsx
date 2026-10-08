@@ -1129,8 +1129,9 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 //
 // What every attached machine sends whenever a session starts, the policy pull and
 // the device report and, where a scan is available, the check for device
-// commands, is said in the one sentence the terminal command and the README use,
-// so the three surfaces cannot describe it differently.
+// commands, is said in the one sentence the terminal command and the README use.
+// Each surface's own tests pin that text; nothing compares the surfaces with each
+// other, so a change to the sentence is made in all of them.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
   'to see. Whenever a session starts anywhere on this machine, in a repository or not (a ' +

@@ -1,4 +1,4 @@
-import type { StorePosturePlugin, StorePostureSnapshot } from '@akasecurity/schema';
+import type { AttachmentMode, StorePosturePlugin, StorePostureSnapshot } from '@akasecurity/schema';
 
 import type { ForwardFailureReason, ForwardResult } from './forward-policy.ts';
 import type { StoreReadout } from './posture-snapshot.ts';
@@ -29,6 +29,19 @@ export interface PostureReporterDeps {
   readStore(): StoreReadout; // () => readStorePosture(config.dbPath)
   hostname(): string; // os.hostname
   now(): number; // Date.now
+  /**
+   * The attachment's mode, as the gateway this reporter serves resolved it
+   * (`ResolvedAttachmentScope.mode`). A scoped attachment says so on its
+   * report, as the constant `scoped`; a machine one sends no mode at all, so
+   * its body is byte for byte what it was before the member existed.
+   *
+   * REQUIRED, for the reason the gateway's own `attachment` is: neither
+   * default is safe to reach by leaving a line out. Read as machine, a scoped
+   * device would report itself machine-wide; read as scoped, which is what
+   * `prepare` makes of anything but an exact `machine`, a machine attachment's
+   * bytes would change.
+   */
+  attachmentMode: AttachmentMode;
   /**
    * Where `send` records what the last send did, for `aka status` to render.
    * Optional because an embedder or a test may have nowhere to record it, and
@@ -171,6 +184,13 @@ export function createPostureReporter(deps: PostureReporterDeps): PostureReporte
         // exactOptionalPropertyTypes distinguishes the two, and the bridge in
         // factory.ts keys on presence.
         ...(plugin === undefined ? {} : { plugin }),
+        // LAST, and only for a scoped attachment. A machine attachment omits
+        // the key the same way, so its body is byte for byte the one it sent
+        // before the member existed. Anything but exactly `machine` reports the
+        // constant `scoped`, never the raw value: that is resolveScope's own
+        // fail direction, and a value outside the wire's vocabulary would fail
+        // the whole snapshot at the receiver, the wipe signal with it.
+        ...(deps.attachmentMode === 'machine' ? {} : { attachmentMode: 'scoped' as const }),
       };
     } catch {
       // fail-open: posture is telemetry; the session must never notice

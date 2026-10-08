@@ -292,24 +292,27 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    * the key its row holds in the local store, recorded per root (see
    * `rootVerdict`), not the key on the root event just handed in: roots are
    * first-write-wins in the store, so when two producers record a root for one
-   * session (the session-start hook, then a reconcile pass) the second leaves
-   * the stored row as it was, and the history drain decides that row, not this
-   * event. Whether this root EVENT is itself sent takes both keys: the stored
-   * one AND its own. The event's attributes (cwd, project, repo) describe where
-   * it was recorded from, so a root event keyed to a personal directory is never
-   * sent under an enrolled stored root, though the enrolled leaves still forward
-   * under it: the instance that wrote the stored root is expected to have
-   * forwarded it. If it did not (the root was written while standalone or under
-   * another attachment, or its forward failed), the plane refuses those leaves
-   * and the history drain ships the root first. Any other row with a root
-   * reference (`rootSessionId`, else `parentId`) forwards only when its own key
-   * is in scope AND this instance recorded an in-scope verdict for that root.
-   * The audit-event route has real foreign keys on both columns and stubs no
-   * missing root, so a leaf sent after its root was kept local is refused
-   * there, and a refused forward counts toward the breaker that guards every
-   * other one. A root this instance never recorded is therefore `'local'`: the
-   * only answer that cannot orphan a row. A row with no root reference at all
-   * has nothing to orphan, and is decided by its own key.
+   * session (the session-start hook, then a reconcile pass) the second leaves the
+   * stored row as it was. That stored row, not this event, is what a history
+   * drain pass would decide, if the root started before the attach; the drain
+   * never offers one that started after it (`started_at < backlogBefore`).
+   * Whether this root EVENT is itself sent takes both keys: the stored one AND
+   * its own. The event's attributes (cwd, project, repo) describe where it was
+   * recorded from, so a root event keyed to a personal directory is never sent
+   * under an enrolled stored root, though the enrolled leaves still forward under
+   * it: the instance that wrote the stored root is expected to have forwarded it.
+   * If it did not (the root was written while standalone or under another
+   * attachment, or its forward failed), the plane refuses those leaves. A root
+   * that started before the attach is shipped, ahead of its leaves, by the
+   * history drain; one that started after it is never offered by the drain. Any
+   * other row with a root reference (`rootSessionId`, else `parentId`) forwards
+   * only when its own key is in scope AND this instance recorded an in-scope
+   * verdict for that root. The audit-event route has real foreign keys on both
+   * columns and stubs no missing root, so a leaf sent after its root was kept
+   * local is refused there, and a refused forward counts toward the breaker that
+   * guards every other one. A root this instance never recorded is therefore
+   * `'local'`: the only answer that cannot orphan a row. A row with no root
+   * reference at all has nothing to orphan, and is decided by its own key.
    *
    * What this costs is stated rather than discovered. A session whose stored
    * root is not keyed to an enrolled repository keeps its token and tool
@@ -733,9 +736,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     await this.deps.local.recordAuditEvent(event);
     // The scope verdict, with the root rule on top (see `auditVerdict`). A
     // refusal returns before the stamp, deliberately: a stamp claims delivery.
-    // The history drain must make that decision itself, from the row's stored
-    // key; this call's verdict is held only in this instance's memory (a session
-    // root's, for the rows recorded after it), not on the row.
+    // This call's verdict is held only in this instance's memory (a session
+    // root's, for the rows recorded after it), not on the row. A refused row
+    // that started before the attach is offered again by the history drain,
+    // which decides it from the stored key; one that started after it is never
+    // offered by the drain (`started_at < backlogBefore`) and stays on this
+    // machine.
     if (this.auditVerdict(event) === 'local') return;
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),

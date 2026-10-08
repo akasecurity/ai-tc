@@ -20,7 +20,8 @@
  * keeps the plugin installed: everywhere on a machine-wide attachment, and only
  * in enrolled repositories on a scoped one. Each refusal is keyed from the
  * directory it was asked in, and a switch the policy does not govern there is
- * allowed and recorded like any other allowed switch.
+ * allowed, with no refusal row, and the session's model is recorded as for any
+ * other allowed switch.
  *
  * The prohibition list rides the policy bundle the gateway already serves, so
  * this hook touches the local store and never the network.

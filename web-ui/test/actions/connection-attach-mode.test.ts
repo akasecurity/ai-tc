@@ -734,7 +734,7 @@ describe('the history grant', () => {
     applyOnboarding({ historySyncConsent: grantFor(endpoint) }, akaHome(), null);
   };
 
-  it('is cleared when a personal device is widened to the whole machine', async () => {
+  it('is cleared when a personal device is widened to machine-wide', async () => {
     await attachScoped();
     grantHistory(deployment.origin);
 

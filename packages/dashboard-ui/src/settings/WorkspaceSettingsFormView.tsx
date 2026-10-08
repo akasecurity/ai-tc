@@ -1126,43 +1126,58 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 // this surface can speak for: what the plugin sends, and what a scan run here
 // sends. Naming only the plugin would leave a user reading this surface
 // believing a scan they run here stays on the machine.
+//
+// What every attached machine sends whenever a session starts, the policy pull and
+// the device report and, where a scan is available, the check for device
+// commands, is said in the one sentence the terminal command and the README use,
+// so the three surfaces cannot describe it differently.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
-  'to see and pulls the policy it sets. A scan you run from the Scan page also sends the Data ' +
-  'Shares register it records — destinations and call sites, never source text. This page reads ' +
-  'only your local store, so it cannot report what the deployment received. Detach to stop sending.';
+  'to see. Whenever a session starts anywhere on this machine, in a repository or not (a ' +
+  "browser chat included), the machine pulls that deployment's policy (at most every 15 " +
+  'minutes) and sends it a device report (at most hourly): a device identifier, host name, ' +
+  'versions, detection packs, policy counts, and finding counts and dates for everything ' +
+  'recorded on the machine. Where a scan is available (the coding-agent plugins, not a browser ' +
+  'chat), the same session start also checks it for device commands. A scan you run from the ' +
+  'Scan page also sends the Data Shares register it records — destinations and call sites, ' +
+  'never source text. This page reads only your local store, so it cannot report what the ' +
+  'deployment received. Detach to stop sending.';
 
 // The same notice for a SCOPED attachment, where the machine-wide one would
 // claim more than is sent. Every clause is a sender a scoped machine still has
 // or a line it does not cross:
 //
-//   - the plugin forwards activity only from enrolled repositories (the
+//   - the plugin forwards activity only from repositories you enroll (the
 //     forward paths decide by the enrolled scope before they send);
-//   - the policy pull, the check for commands the deployment has issued to this
-//     device, and the report on the install send without a scope verdict, by
-//     design, so they are named rather than hidden behind "only". The report is
-//     described as one that INCLUDES its members, not as consisting of them: it
-//     also carries a device identifier, policy counts and the dates of the first
-//     and latest finding (see StorePostureSnapshot);
+//   - the policy pull, the device report and the check for device commands are
+//     made whenever a session starts anywhere on the machine, in a repository
+//     or not, a browser chat included, with no scope verdict, by design, so they
+//     are named rather than hidden behind "only". They are said in the terms the
+//     terminal command and the README use for them, one sentence for all three:
+//     the report's finding counts and dates are for everything recorded on the
+//     machine, and the command check is made only where a scan is available (the
+//     coding-agent plugins, not a browser chat);
 //   - the Scan page sends the register only for an enrolled repository;
 //   - a build that predates scoped attachments, re-attaching, writes a
 //     machine-wide credential, and a user reading this is the one who would run
 //     it.
 export const CONNECTION_FORWARDING_NOTICE_SCOPED =
-  'While this machine is attached as a personal device, the plugin forwards activity only ' +
-  'from repositories enrolled with `aka enroll`; activity anywhere else stays on this machine. ' +
-  'It still pulls the policy that deployment sets and checks for commands it has issued to this ' +
-  'device (a rescan runs only in an enrolled repository). It also sends a report on this install ' +
-  'that includes a device identifier, the host name, versions, detection packs, policy counts, ' +
-  'finding counts and the dates of the first and latest finding. A scan you run from the Scan ' +
-  'page sends the Data Shares register only for an enrolled repository — destinations and call ' +
-  'sites, never source text. Re-attaching with a version of AKA older than this one would make ' +
-  'the attachment machine-wide. This page reads only your local store, so it cannot report ' +
-  'what the deployment received. Detach to stop sending.';
+  'While this machine is attached as a personal device, the plugin forwards activity only from ' +
+  'repositories you enroll with `aka enroll`; activity anywhere else stays on this machine. ' +
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+  "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
+  'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
+  'packs, policy counts, and finding counts and dates for everything recorded on the machine. ' +
+  'Where a scan is available (the coding-agent plugins, not a browser chat), the same session ' +
+  'start also checks it for device commands. A scan you run from the Scan page sends the Data ' +
+  'Shares register only for an enrolled repository — destinations and call sites, never source ' +
+  'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
+  'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
+  'received. Detach to stop sending.';
 
 // The mode line under an attached connection's name.
 export const CONNECTION_MODE_SCOPED =
-  'Scoped — a personal device. Activity is sent only from repositories enrolled with `aka enroll`.';
+  'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`.';
 export const CONNECTION_MODE_MACHINE =
   'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
 
@@ -1177,12 +1192,14 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
     value: 'scoped',
     label: 'Personal device',
     description:
-      'Activity is sent only from repositories you enroll with `aka enroll`. Activity anywhere ' +
-      'else stays on this machine. Any session on this machine, in an enrolled repository or ' +
-      'not, still fetches the policy and checks for device commands (at most every 15 ' +
-      'minutes), and sends a device report (at most hourly) with a device identifier, host ' +
-      'name, versions, detection packs, policy counts, and finding counts and dates across ' +
-      'every repository.',
+      'Activity is sent only from repositories you enroll with `aka enroll`; activity anywhere ' +
+      'else stays on this machine. Whenever a session starts anywhere on this machine, in a ' +
+      "repository or not (a browser chat included), the machine pulls your organization's " +
+      'policy (at most every 15 minutes) and sends it a device report (at most hourly): a ' +
+      'device identifier, host name, versions, detection packs, policy counts, and finding ' +
+      'counts and dates for everything recorded on the machine. Where a scan is available (the ' +
+      'coding-agent plugins, not a browser chat), the same session start also checks it for ' +
+      'device commands.',
   },
   {
     value: 'machine',

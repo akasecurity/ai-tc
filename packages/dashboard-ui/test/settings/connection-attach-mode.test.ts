@@ -22,14 +22,35 @@ import {
 // offers, the line an attached row shows, and the forwarding notice a scoped
 // machine gets instead of the machine-wide one. Copy on this section is a
 // consent surface, so each string is held to what a scoped machine actually
-// sends: activity only from enrolled repositories, and in every session on the
-// machine the policy pull, the check for device commands and a device report
-// whose counts cover every repository on it. The strings say that these happen
-// and name what the report holds, and none of them says "nothing else".
+// sends: activity only from enrolled repositories, and whenever a session starts
+// anywhere on the machine the policy pull and a device report whose finding counts
+// and dates are for everything recorded on it, plus the check for device commands
+// where a scan is available. The strings say that these happen, in the terms the
+// terminal command uses, and none of them says "nothing else".
 
 // The phrasings WorkspaceSettingsFormView.test.ts bans on every section, repeated
 // for the strings this file adds (that list is not exported; see its note).
 const ALWAYS_FALSE = [/next hook/i, /nothing is altered/i, /immediately/i, /right away/i];
+
+// The sentence about what every attached machine sends, as the terminal command and
+// the README word it. The two halves are pinned apart because only the owner of
+// the policy differs: the choice, a question, says "your organization's", and the
+// notices, a summary, say "that deployment's".
+const SESSION_START =
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat included), the machine pulls';
+const POLICY_AND_REPORT =
+  'policy (at most every 15 minutes) and sends it a device report (at most hourly): a device identifier, host name, versions, detection packs, policy counts, and finding counts and dates for everything recorded on the machine. Where a scan is available (the coding-agent plugins, not a browser chat), the same session start also checks it for device commands.';
+
+// What the strings used to say, and must not again: a count "across every
+// repository" reads as a limit to repositories, and "every project" leaves out a
+// session that belongs to none.
+const OLD_WORDING = [
+  /across every repositor/i,
+  /every project/i,
+  /all repositories/i,
+  /whole machine/i,
+  /nothing else/i,
+];
 
 const NEW_COPY: Record<string, string> = {
   ATTACH_MODE_LABEL,
@@ -74,6 +95,9 @@ const render = (props: Partial<WorkspaceSettingsFormViewProps> = {}): string =>
     }),
   );
 
+/** Text as the server render writes it: the sentences carry apostrophes, which it escapes. */
+const inMarkup = (text: string): string => text.replaceAll("'", '&#x27;');
+
 /** The markup between the mode group and the key hint that follows it. */
 function modeGroup(html: string): string {
   const start = html.indexOf('data-slot="attach-mode"');
@@ -87,12 +111,16 @@ describe('attach-mode copy', () => {
     for (const claim of ALWAYS_FALSE) expect(text).not.toMatch(claim);
   });
 
-  it.each(Object.entries(NEW_COPY))('%s never says "nothing else"', (_name, text) => {
-    // The header above holds every string to what is sent, and a session outside
-    // a repository or a browser chat is sent too, so "nothing else" would be false
-    // of the machine-wide mode and of the report in the scoped one.
-    expect(text).not.toMatch(/nothing else/i);
-  });
+  it.each(Object.entries({ ...NEW_COPY, CONNECTION_FORWARDING_NOTICE }))(
+    '%s uses none of the wording it replaced',
+    (_name, text) => {
+      // The header above holds every string to what is sent. A session outside a
+      // repository, or a browser chat, is sent too, so "every project" and "nothing
+      // else" would be false of the machine-wide mode and of the report in the
+      // scoped one, and a count "across every repository" reads as a limit.
+      for (const old of OLD_WORDING) expect(text).not.toMatch(old);
+    },
+  );
 
   it('describes machine-wide as activity from anywhere on the machine', () => {
     // A session outside a git repository, or a browser chat, is sent in this mode
@@ -120,12 +148,14 @@ describe('attach-mode copy', () => {
     // The report goes in both modes whatever the scope, so a person choosing
     // between them has to be told it is not limited to enrolled repositories.
     const description = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
-    expect(description).toMatch(/Any session on this machine, in an enrolled repository or not/);
-    expect(description).toMatch(/fetches the policy and checks for device commands/);
-    expect(description).toMatch(/at most every 15 minutes/);
-    expect(description).toMatch(/sends a device report \(at most hourly\)/);
-    expect(description).toMatch(/device identifier, host name, versions, detection packs/);
-    expect(description).toMatch(/finding counts and dates across every repository/);
+    expect(description).toContain(`${SESSION_START} your organization's ${POLICY_AND_REPORT}`);
+  });
+
+  it.each([
+    ['the machine-wide notice', CONNECTION_FORWARDING_NOTICE],
+    ['the scoped notice', CONNECTION_FORWARDING_NOTICE_SCOPED],
+  ])('says the same about the policy pull and the report in %s', (_name, notice) => {
+    expect(notice).toContain(`${SESSION_START} that deployment's ${POLICY_AND_REPORT}`);
   });
 
   it('words the personal-device choice and mode line so they cannot read as "nothing else is sent"', () => {
@@ -134,7 +164,7 @@ describe('attach-mode copy', () => {
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped');
     expect(scoped?.description).toMatch(/Activity is sent only from repositories you enroll/);
     expect(CONNECTION_MODE_SCOPED).toMatch(
-      /Activity is sent only from repositories enrolled with `aka enroll`/,
+      /Activity is sent only from repositories you enroll with `aka enroll`/,
     );
     expect(scoped?.description).not.toMatch(/Only activity/);
     expect(CONNECTION_MODE_SCOPED).not.toMatch(/Only activity/);
@@ -149,23 +179,15 @@ describe('attach-mode copy', () => {
   });
 
   it('says on a scoped machine what still goes, and what does not', () => {
-    // A scoped machine still pulls policy and sends a report on the install —
-    // both send without a scope verdict, by design — so a notice that said
-    // "nothing else is sent" would be false.
+    // A scoped machine still pulls policy and sends a device report whenever a
+    // session starts — both send without a scope verdict, by design, and the
+    // sentence saying so is pinned above — so a notice that said "nothing else is
+    // sent" would be false.
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/plugin forwards activity only from/i);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/aka enroll/);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/stays on this machine/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/policy/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/host name/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/finding counts/i);
-    // The report is introduced as including these, not as consisting of them:
-    // it also carries a device identifier, policy counts and the dates of the
-    // first and latest finding, and the machine checks for device commands.
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/report on this install that includes/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/device identifier/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/policy counts/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/first and latest finding/i);
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/checks for commands/i);
+    // The command check is where a scan is available, and a browser chat has none.
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/not a browser chat/i);
     // The Scan page's register goes only for an enrolled repository, and the
     // notice must not read as if every scan sends one.
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(
@@ -204,8 +226,8 @@ describe('an attached machine', () => {
     });
     expect(html).toContain('data-slot="connection-mode"');
     expect(html).toContain(CONNECTION_MODE_SCOPED);
-    expect(html).toContain(CONNECTION_FORWARDING_NOTICE_SCOPED);
-    expect(html).not.toContain(CONNECTION_FORWARDING_NOTICE);
+    expect(html).toContain(inMarkup(CONNECTION_FORWARDING_NOTICE_SCOPED));
+    expect(html).not.toContain(inMarkup(CONNECTION_FORWARDING_NOTICE));
   });
 
   it('names a machine-wide attachment and keeps the machine-wide notice', () => {
@@ -215,8 +237,8 @@ describe('an attached machine', () => {
       attachmentMode: 'machine',
     });
     expect(html).toContain(CONNECTION_MODE_MACHINE);
-    expect(html).toContain(CONNECTION_FORWARDING_NOTICE);
-    expect(html).not.toContain(CONNECTION_FORWARDING_NOTICE_SCOPED);
+    expect(html).toContain(inMarkup(CONNECTION_FORWARDING_NOTICE));
+    expect(html).not.toContain(inMarkup(CONNECTION_FORWARDING_NOTICE_SCOPED));
   });
 
   it('names no mode when the host reports none, and describes the wider case', () => {
@@ -224,7 +246,7 @@ describe('an attached machine', () => {
     // never less, so it is the one a row that cannot tell renders.
     const html = render({ settings: attached, onDetach: () => undefined });
     expect(html).not.toContain('data-slot="connection-mode"');
-    expect(html).toContain(CONNECTION_FORWARDING_NOTICE);
+    expect(html).toContain(inMarkup(CONNECTION_FORWARDING_NOTICE));
   });
 });
 

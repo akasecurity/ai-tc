@@ -496,7 +496,11 @@ describe('aka attach refuses before any network call', () => {
     });
   });
 
-  it('stops before any network call when a file sits where the settings directory should be', async () => {
+  it('stops before any network call when a file sits where the settings directory should be', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('lstat under a regular file reports ENOENT, not ENOTDIR, on Windows');
+      return;
+    }
     // The credential read's lstat throws ENOTDIR here: `throwIfNoEntry: false`
     // covers a missing entry only.
     writeFileSync(settingsDirOf(base), 'not a directory');
@@ -779,6 +783,9 @@ describe('widening a personal device with --machine', () => {
       ['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'],
       widen.deps,
     );
+    // Cleared by the machine-wide attach itself. The later scoped attach starts
+    // a fresh list whatever it finds, so only this assertion can fail for that.
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
 
     const narrow = harness({ interactive: false, stdin: KEY_1 });
     await runAttach(
@@ -1073,6 +1080,20 @@ describe('a settings write that fails after the credential was written', () => {
     expect(exits).toEqual([1]);
     expect(h.errors()).toContain(LEFT_AS_IT_WAS);
     expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+  });
+
+  it('puts that file back owner-only', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    plantUnreadableCredential();
+    stand.failSettingsWrite = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
     expect(statSync(credentialFile()).mode & 0o777).toBe(0o600);
   });
 
@@ -1148,7 +1169,11 @@ describe('what a scoped attach writes', () => {
     const bytes = readFileSync(credentialFile(), 'utf8');
     const read = storedCredential();
     if (!read.usable) throw new Error(`expected a usable credential, got ${read.reason}`);
-    expect(`${JSON.stringify(read.credential, null, 2)}\n`).toBe(bytes);
+    // Through the writer, as a rollback does, rather than a second statement of
+    // how it serialises.
+    const again = settingsDirOf(join(base, 'again'));
+    writeControlPlaneCredential(again, read.credential);
+    expect(readFileSync(controlPlaneCredentialPath(again), 'utf8')).toBe(bytes);
   });
 
   it('puts back the scoped credential byte for byte when the settings write fails', async () => {
@@ -1254,6 +1279,47 @@ describe('what an attach says', () => {
       'Unsent activity from the repositories you enroll is sent in the background,',
     );
     expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+  });
+
+  it('asks the scoped history question when the personal-device answer chose the mode', async () => {
+    // No --scoped here: the mode comes from the answer, so the history question
+    // has to be given the settled mode and not the flag.
+    stand.preview = { sessions: 40, days: 12 };
+    const h = harness({ interactive: true, answers: [KEY_1, 'y', 'y'] });
+
+    await runAttach(['--url', ENDPOINT], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE, SCOPED_HISTORY]);
+    expect(stand.previewReads).toBe(0);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(h.output()).not.toContain('12 days');
+    expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+  });
+
+  it('asks the machine-wide history question when the personal-device answer is no', async () => {
+    stand.preview = { sessions: 40, days: 12 };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n', 'n'] });
+
+    await runAttach(['--url', ENDPOINT], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, PERSONAL_DEVICE, MACHINE_HISTORY]);
+    expect(stand.previewReads).toBe(1);
+    expect(modeOnDisk()).toBe('machine');
+  });
+
+  it('says it did not ask about history on a personal device with no terminal', async () => {
+    stand.preview = { sessions: 40, days: 12 };
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([]);
+    expect(stand.previewReads).toBe(0);
+    expect(h.errors()).toContain('Not asking about existing history: no terminal to prompt on.');
+    expect(storedSettings()).not.toHaveProperty('historySyncConsent');
   });
 
   it('still counts the machine before a machine-wide history grant', async () => {

@@ -41,7 +41,8 @@ describe('no-process-narration', () => {
     ['a finding label', '// closes the F-04 race'],
     ['an invariant label', '// INV-8 forbids the host'],
     ['a commit SHA', '// pinned at oss@659b564e'],
-    ['a bare SHA', '// NARROWED at the 6178a86b bump'],
+    ['a bare SHA next to a commit cue', '// the tree at commit 659b564e carried it'],
+    ['a bare SHA before a bump cue', '// NARROWED at the 6178a86b bump'],
     ['a dated decision', '// by owner decision (2026-09-24)'],
     ['a dated bump', '// NARROWED at the 2026-08-19 bump'],
   ])('fires on %s', (_kind, code) => {
@@ -68,6 +69,9 @@ describe('no-process-narration', () => {
     ['a port number', '// the registry answers on 4100'],
     ['an ordinary number', '// 12 installed packs is the healthy floor'],
     ['a word that looks hex-ish', '// the decaffeinated path skips the worker'],
+    ['a fake bearer token', '// the suite sends AKA_LOCAL_TOKEN=test-token-abc123456789'],
+    ['a UUID prefix example', '// f1f1f1f1 is distinct from every other test file prefix'],
+    ['an illustrative id hash', '// 40fa387b proves the tenant-scoped id diverges from the mirror'],
     ['a dated model id', '// the vendor documents claude-haiku-4-5-20251001 as the versioned id'],
     ['a model id with an @ suffix', '// claude-3-5-sonnet@20240620 is the pinned alias'],
     [

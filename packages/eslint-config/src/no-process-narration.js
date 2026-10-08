@@ -43,9 +43,16 @@ const PROBES = [
     re: /\b(?:ai-tc|enterprise)\s?#\d+|\bPR\s\d+(?:\/\d+)?\b|(?<![\w#])#(?!(\d)\1{2}\b|\d{6}\b)\d{2,5}(?!\w)/,
   },
   { name: 'a decision or finding label', re: /\bD-?\d\d\b|\bF-\d\d\b|\bINV-\d+\b|\bE\d\d\b/ },
-  // A SHA must carry at least one hex LETTER. Without that this fires on every
-  // dated model-id suffix (`-20241022`) and every long decimal constant.
-  { name: 'a commit SHA', re: /\b(?:oss@)?(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b/ },
+  // A SHA must carry at least one hex LETTER, and — unless it is spelled
+  // `oss@<sha>` — sit next to a word that makes it a COMMIT. Hex-looking
+  // literals are everywhere in test prose: a fake bearer token
+  // (`test-token-abc123456789`), a UUID prefix (`f1f1f1f1…`), an illustrative
+  // tenant-id hash. Each of those is example DATA a reader needs, and the first
+  // sweep to use this rule hit all three.
+  {
+    name: 'a commit SHA',
+    re: /\boss@(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b|\b(?:commit|sha|pinned?|bump(?:ed)?|revision|rebased?|cherry-picked|merged)\b[^.;]{0,40}?\b(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b|\b(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b[^.;]{0,30}?\b(?:commit|bump|tree|revision)\b/,
+  },
   // A date is narration only next to a process cue. Bare dates describe fixture
   // data, retention windows and sample output far more often than decisions.
   {

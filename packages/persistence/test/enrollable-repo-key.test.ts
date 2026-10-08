@@ -58,7 +58,8 @@ const REFUSED: [string, string][] = [
   ['a typed key with a capitalised host', 'GitHub.com/Org/Repo'],
   ['a typed key with a trailing slash', `${KEY}/`],
   ['a typed key with a .git suffix', `${KEY}.git`],
-  // A host and one segment names an owner, not a repository.
+  // A host and one path segment is refused: on GitHub it names an owner, not a
+  // repository, and a host alone names nothing.
   ['a typed host and one path segment', 'github.com/org'],
   ['a clone URL with one path segment', 'https://github.com/org'],
   ['a host alone', 'github.com'],
@@ -107,6 +108,15 @@ describe('enrollableRepoKey', () => {
     // stamps this key on its events, and naming the URL by hand is refused.
     const url = 'git@git.example.com:payments.git';
     expect(canonicalRepoUrl(url)).toBe('git.example.com/payments');
+    expect(enrollableRepoKey(url)).toBeUndefined();
+  });
+
+  it('keys an owner URL like a repository, and refuses it by name all the same', () => {
+    // The other half of that trade: this key is well formed, but no repository
+    // cloned from GitHub carries it, so storing it would report an enrollment
+    // that matches nothing.
+    const url = 'https://github.com/acme';
+    expect(canonicalRepoUrl(url)).toBe('github.com/acme');
     expect(enrollableRepoKey(url)).toBeUndefined();
   });
 

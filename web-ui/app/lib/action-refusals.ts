@@ -129,6 +129,33 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
   'The access key could not be saved to ~/.aka/settings, so nothing was changed. Check that the directory exists and is writable.';
 
 /**
+ * An attach whose settings were saved ahead of its credential, and whose
+ * credential then could not be saved.
+ *
+ * The settings go first only where a stop between the two writes would pair the
+ * new credential with an enrolled list or a history grant the finished attach
+ * replaces (`writesSettingsFirst`, the rule `aka attach` uses): a machine-wide
+ * attach over a credential that is, or may be, a personal device's, or over no
+ * credential file beside settings that still carry a list or a grant; and a
+ * scoped attach that does not keep the list stored beside it, over settings that
+ * carry a list or a grant, and not over a usable machine-wide credential. The
+ * settings then hold no list (machine-wide) or an empty one (scoped), and they
+ * are not put back, because that would take another settings write that can fail
+ * too. Beside them, what the machine already had sends no repository's activity:
+ * a scoped credential has no repository enrolled (its device report still goes,
+ * as it did before), a file that cannot be used or a credential for another
+ * deployment sends nothing, and with no credential file there is nothing to send
+ * with.
+ *
+ * The last sentence is there because an earlier scoped key for this deployment
+ * survives the failed write, and enrolling a repository under it would send that
+ * repository. It names no command: a machine an administrator governs attaches
+ * too, from this page or a terminal.
+ */
+export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
+  "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.";
+
+/**
  * Added to a failed attach's refusal when the credential file could not be put
  * back as the machine held it before, so the refusal does not read as "nothing
  * changed". Neither names the key or anything the file held.

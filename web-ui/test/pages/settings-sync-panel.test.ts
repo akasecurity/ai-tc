@@ -9,15 +9,17 @@ import {
   dataDir,
   type LocalDatabase,
   openLocalDatabase,
+  readEffectiveSettings,
   settingsDir,
   writeControlPlaneCredential,
   writeHistorySyncState,
 } from '@akasecurity/persistence';
-import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import { type AttachmentScope, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SettingsPage from '../../app/(app)/settings/page.tsx';
+import { readSyncPanel } from '../../app/(app)/settings/sync-panel-data.ts';
 import { SyncPanel } from '../../app/(app)/settings/SyncPanel.tsx';
 import { emptyStore } from '../helpers/store-templates.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -54,6 +56,11 @@ const T0 = Date.parse(AT);
 // One character: the shape asks only for a non-empty string, and nothing here
 // authenticates against anything.
 const KEY = 'k';
+
+// Two repositories' keys, in the canonical form a producer stamps: one a scoped
+// attachment enrolls, one it does not.
+const WORK = 'github.com/acme/payments-api';
+const PERSONAL = 'github.com/someone/dotfiles';
 
 const akaHome = (): string => join(home, '.aka');
 
@@ -119,6 +126,35 @@ function attach(over: { endpoint?: string; label?: string } = {}): void {
   });
 }
 
+/** A scope record for `endpoint` that enrolls `identities` as repositories. */
+function scopeRecord(identities: readonly string[], endpoint = ENDPOINT): AttachmentScope {
+  return {
+    endpoint,
+    entries: identities.map((identity) => ({ kind: 'repo', identity, enrolledAt: AT })),
+  };
+}
+
+/**
+ * Attach as a personal device: a version-2 credential, which names the scoped
+ * mode, with `scope` stored as the settings' scope record (none when undefined).
+ */
+function attachScoped(scope?: unknown): void {
+  applyOnboarding(
+    {
+      runMode: 'attached',
+      controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+      ...(scope === undefined ? {} : { attachmentScope: scope }),
+    },
+    akaHome(),
+  );
+  writeControlPlaneCredential(settingsDir(akaHome()), {
+    specVersion: 2,
+    mode: 'scoped',
+    endpoint: ENDPOINT,
+    apiKey: KEY,
+  });
+}
+
 function grant(over: { endpoint?: string; payloadVersion?: number } = {}): void {
   applyOnboarding(
     {
@@ -163,6 +199,40 @@ function seedSession(sessionId: string): void {
   }
 }
 
+/**
+ * A session root with one structural leaf of each kind and one capture, every
+ * row stamped with `scopeKey`: the key a producer derives from the repository
+ * the activity was recorded in.
+ */
+function seedKeyedSession(sessionId: string, scopeKey: string): void {
+  const attributes = { scope_key: scopeKey };
+  const db = openLocalDatabase(dir);
+  try {
+    db.auditEvents.insertAuditEvent({
+      id: sessionId,
+      eventType: 'session',
+      startedAt: AT,
+      attributes,
+    });
+    for (const [suffix, eventType] of [
+      ['llm', 'llm_call'],
+      ['tool', 'tool_call'],
+      ['prompt', 'prompt'],
+    ] as const) {
+      db.auditEvents.insertAuditEvent({
+        id: `${sessionId}-${suffix}`,
+        eventType,
+        rootSessionId: sessionId,
+        parentId: sessionId,
+        startedAt: AT,
+        attributes,
+      });
+    }
+  } finally {
+    db.close();
+  }
+}
+
 /** Record a breaker that opened at `openedAtMs`, as the forward path would. */
 function openBreaker(openedAtMs: number): void {
   writeFileSync(
@@ -179,6 +249,32 @@ function withStore(fn: (db: LocalDatabase) => void): void {
   } finally {
     db.close();
   }
+}
+
+type PanelState = PanelProps['sync']['state'];
+
+/** The bars as [kind, synced, queued, notSent, total], failing unless the panel drew bars. */
+async function bars(): Promise<[string, number, number, number, number][]> {
+  const state = (await panel()).state;
+  if (state.status !== 'ready') throw new Error(`expected bars, got ${state.status}`);
+  return state.kinds.map((k): [string, number, number, number, number] => [
+    k.kind,
+    k.synced,
+    k.queued,
+    k.notSent,
+    k.total,
+  ]);
+}
+
+/** The state a usable key whose mode could not be read renders. */
+function expectModeUnread(state: PanelState | undefined): void {
+  if (state?.status !== 'credential-unusable') {
+    throw new Error(`expected credential-unusable, got ${String(state?.status)}`);
+  }
+  expect(state.detail).toContain(
+    'could not tell whether this machine is attached as a personal or an organization device',
+  );
+  expect(state.detail).toContain('Reload the page');
 }
 
 describe('the settings route — the sync panel', () => {
@@ -585,5 +681,129 @@ describe('the settings route — the sync panel', () => {
     if (props === null) throw new Error('the page rendered no sync panel');
     expect(props.renderedAt).toBeGreaterThanOrEqual(before);
     expect(props.renderedAt).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe('the settings route — the sync panel on a scoped attachment', () => {
+  // A scoped attachment sends only what its enrolled repositories recorded, and
+  // its history drain filters every pass by that scope. The bars are counted by
+  // the same scope, resolved from the same inputs, so they describe what this
+  // machine sends rather than everything its store holds. Each case writes a
+  // real credential file and a real settings record; only the store's rows are
+  // seeded by hand, and one case calls the reader directly to give it a mode
+  // the page could not read.
+
+  it('counts the enrolled repository and leaves a personal one out of every bar', async () => {
+    attachScoped(scopeRecord([WORK]));
+    grant();
+    seedKeyedSession('work-1', WORK);
+    seedKeyedSession('home-1', PERSONAL);
+    withStore((db) => {
+      db.historySync.markCaptureOwed('work-1-prompt');
+      db.historySync.markCaptureOwed('home-1-prompt');
+    });
+
+    // [kind, synced, queued, notSent, total]
+    expect(await bars()).toEqual([
+      ['session', 0, 1, 0, 1],
+      ['llm_call', 0, 1, 0, 1],
+      ['tool_call', 0, 1, 0, 1],
+      ['prompt', 0, 1, 0, 1],
+    ]);
+  });
+
+  // One population in every bucket, sent rows included: a repository that is
+  // unenrolled leaves the bars, and what it already sent leaves with it. The
+  // scope is read on every render, so the next one shows the change.
+  it('takes an unenrolled repository out of the bars at the next render, sent rows and all', async () => {
+    attachScoped(scopeRecord([WORK, PERSONAL]));
+    grant();
+    seedKeyedSession('work-1', WORK);
+    seedKeyedSession('home-1', PERSONAL);
+    withStore((db) => {
+      db.historySync.markSynced(['work-1-llm', 'home-1-llm'], T0);
+      db.historySync.markRefused(['home-1-tool'], T0);
+    });
+
+    expect(await bars()).toEqual([
+      ['session', 0, 2, 0, 2],
+      ['llm_call', 2, 0, 0, 2],
+      ['tool_call', 0, 1, 1, 2],
+    ]);
+
+    applyOnboarding({ attachmentScope: scopeRecord([WORK]) }, akaHome());
+
+    expect(await bars()).toEqual([
+      ['session', 0, 1, 0, 1],
+      ['llm_call', 1, 0, 0, 1],
+      ['tool_call', 0, 1, 0, 1],
+    ]);
+  });
+
+  // "Nothing recorded yet" over a full store would be false: the rows are there,
+  // and this scope sends none of them. Every way of enrolling nothing for this
+  // deployment reads the same, and the WORK session below is what a record bound
+  // to another deployment would count if its binding were skipped.
+  it.each<[string, unknown]>([
+    ['no scope is recorded', undefined],
+    ['the stored scope is not a record at all', 'not-a-scope-record'],
+    [
+      'the scope was recorded for another deployment',
+      scopeRecord([WORK], 'https://old.example.com'),
+    ],
+    ['the scope lists no repository yet', scopeRecord([])],
+  ])('says no repository is enrolled when %s, over a full store', async (_name, scope) => {
+    attachScoped(scope);
+    grant();
+    seedKeyedSession('work-1', WORK);
+    seedKeyedSession('home-1', PERSONAL);
+    seedSession('s-1');
+
+    expect((await panel()).state).toEqual({ status: 'nothing-in-scope', enrolled: 0 });
+  });
+
+  it('says nothing from an enrolled repository is counted yet, over a store full of other activity', async () => {
+    // Listed twice: the count is of the distinct identities the scope enrolls,
+    // not of entries in the file.
+    attachScoped(scopeRecord([WORK, WORK]));
+    grant();
+    seedKeyedSession('home-1', PERSONAL);
+    seedSession('s-1');
+
+    expect((await panel()).state).toEqual({ status: 'nothing-in-scope', enrolled: 1 });
+  });
+
+  // The page reads the credential twice, once for its state and once for its
+  // mode, and the two can disagree for a moment. Counted machine-wide, the bars
+  // would say a personal device owes its whole store; counted under an empty
+  // scope, that it owes nothing. Neither is known, so neither is drawn, and the
+  // question comes before the grant's so no other state hides it. Called
+  // directly, because one render of the page reads both halves from one file.
+  it('reads a usable key whose mode it could not read as unusable, granted or not', () => {
+    attach();
+    seedSession('s-1');
+    const stateNow = (): PanelState | undefined =>
+      readSyncPanel(readEffectiveSettings().settings, { usable: true }, T0, undefined)?.state;
+
+    expectModeUnread(stateNow());
+    grant();
+    expectModeUnread(stateNow());
+  });
+
+  // A machine-wide attachment never reads the scope record, so one left in the
+  // settings changes nothing: every repository is counted, as before.
+  it('counts every repository on a machine-wide attachment, whatever scope is recorded', async () => {
+    attach();
+    applyOnboarding({ attachmentScope: scopeRecord([WORK]) }, akaHome());
+    grant();
+    seedKeyedSession('work-1', WORK);
+    seedKeyedSession('home-1', PERSONAL);
+    seedSession('s-1');
+
+    expect(await bars()).toEqual([
+      ['session', 0, 3, 0, 3],
+      ['llm_call', 0, 3, 0, 3],
+      ['tool_call', 0, 3, 0, 3],
+    ]);
   });
 });

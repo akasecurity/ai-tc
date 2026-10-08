@@ -14,11 +14,13 @@ import {
   readForwardHealth,
   readHistorySyncState,
 } from '@akasecurity/persistence';
-import type { CredentialState, WorkspaceSettings } from '@akasecurity/schema';
+import type { AttachmentMode, CredentialState, WorkspaceSettings } from '@akasecurity/schema';
 import {
   isAttached,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
+  resolveScope,
+  scopeFilterOf,
 } from '@akasecurity/schema';
 
 import { db } from '../../lib/db.ts';
@@ -110,6 +112,17 @@ function credentialDetail(state: Extract<CredentialState, { usable: false }>): s
 }
 
 /**
+ * What the panel says when the key read as usable and its MODE did not.
+ *
+ * The page reads the credential twice, and this is the answer when the two
+ * reads disagree; panelState says why it is neither machine-wide counts nor an
+ * empty scope.
+ */
+const MODE_UNREAD_DETAIL =
+  'This page could not tell whether this machine is attached as a personal or an organization ' +
+  'device, so it cannot say what is sent. Reload the page, and re-attach if this persists.';
+
+/**
  * One counted lane as a row, or nothing.
  *
  * A kind the store reported but that holds no rows is dropped rather than
@@ -140,10 +153,24 @@ function toRow(p: HistorySyncKindPartition): SyncKindRow | null {
  * renders nothing at all.
  *
  * The order of the branches below is the order of the questions a reader would
- * ask, and it is load-bearing in one place: a machine with no history grant is
- * `not-shared` and shows NO bars, because the ledger counts a backlog nothing
- * has been told it may send. Bars there would promise delivery of rows that
- * will sit for ever.
+ * ask, and it is load-bearing in three places. The two questions about the key
+ * come first, in this order: does it authenticate, and can its mode be read. No
+ * state about sharing is drawn for a machine whose key, or whose kind of
+ * attachment, is unknown, because "not shared" read against that machine
+ * describes a decision the user never made. Within the grant, stale comes
+ * before absent, since only a stale grant can be resumed in place. And the
+ * grant comes before any count: a machine with no history grant is `not-shared`
+ * and shows NO bars, because the ledger counts a backlog nothing has been told
+ * it may send. Bars there would promise delivery of rows that will sit for ever.
+ *
+ * ON A SCOPED ATTACHMENT THE BARS COUNT WHAT ITS SCOPE COVERS, and nothing else.
+ * The scope is resolved from the credential's mode, the scope record in the
+ * settings in force and the connection's endpoint: the inputs the history drain
+ * resolves its own filter from, through the same two functions, so the bars and
+ * the drain filter by one list. Every bucket is filtered, sent rows included: a
+ * repository that is unenrolled leaves the bars at the next render, and what it
+ * already sent leaves with it. A machine-wide attachment resolves to no filter
+ * and runs the read it always ran.
  */
 export function readSyncPanel(
   settings: WorkspaceSettings,
@@ -155,6 +182,13 @@ export function readSyncPanel(
    * the way every other consumer on every other route does.
    */
   at: number,
+  /**
+   * The mode of the credential held for `settings.controlPlane`, as the page
+   * read it for the form, or undefined when that read found no usable
+   * credential. Passed in rather than read here, so this module makes no
+   * credential read of its own and the page reads the mode once.
+   */
+  attachmentMode: AttachmentMode | undefined,
 ): SyncPanelData | null {
   const connection = settings.controlPlane;
   if (!isAttached(settings) || connection === undefined) return null;
@@ -179,12 +213,16 @@ export function readSyncPanel(
         }),
   };
 
-  return { ...base, state: panelState(settings, credentialState, connection.endpoint, ledger) };
+  return {
+    ...base,
+    state: panelState(settings, credentialState, attachmentMode, connection.endpoint, ledger),
+  };
 }
 
 function panelState(
   settings: WorkspaceSettings,
   credentialState: CredentialState,
+  attachmentMode: AttachmentMode | undefined,
   endpoint: string,
   ledger: ReturnType<typeof db>['historySync'],
 ): SyncPanelState {
@@ -193,6 +231,17 @@ function panelState(
   // machine describes a decision the user never made.
   if (!credentialState.usable) {
     return { status: 'credential-unusable', detail: credentialDetail(credentialState) };
+  }
+  // A usable key whose MODE did not read. The page reads the credential twice,
+  // once for the state above and once for the mode, and the two can disagree:
+  // the file can be replaced or removed between the reads, and the mode read
+  // answers undefined for any failure. Counted machine-wide, the bars would say
+  // a personal device owes its whole store; counted under an empty scope, that
+  // it owes nothing. Neither is known, so the panel says so, and the next render
+  // reads both again. Asked before the consent branches, so no later state is
+  // drawn for a machine whose kind of attachment is unknown.
+  if (attachmentMode === undefined) {
+    return { status: 'credential-unusable', detail: MODE_UNREAD_DETAIL };
   }
   // Stale before absent: both fail isHistorySyncConsentValid, and only one of
   // them is a grant the user can resume in place.
@@ -203,12 +252,25 @@ function panelState(
     return { status: 'not-shared' };
   }
 
+  // The drain's filter, resolved the way the drain resolves it, on every render
+  // and never kept: an enroll or an unenroll shows at the next one. Undefined on
+  // a machine-wide attachment, which runs the ledger's machine read; on a scoped
+  // one the enrolled keys, possibly none, and an empty list counts nothing.
+  const scopeKeys = scopeFilterOf(
+    resolveScope({ mode: attachmentMode, scope: settings.attachmentScope, endpoint }),
+  );
   const kinds = ledger
-    .partitionByKind()
+    .partitionByKind(scopeKeys)
     .map(toRow)
     .filter(isRow)
     .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
-  return kinds.length === 0 ? { status: 'nothing-recorded' } : { status: 'ready', kinds };
+  if (kinds.length > 0) return { status: 'ready', kinds };
+  // Nothing counted means nothing recorded only when nothing was filtered out. A
+  // scoped attachment's store can be full of activity its scope does not cover,
+  // so it gets its own state, carrying how many identities the scope enrolls.
+  return scopeKeys === undefined
+    ? { status: 'nothing-recorded' }
+    : { status: 'nothing-in-scope', enrolled: scopeKeys.length };
 }
 
 function isRow(row: SyncKindRow | null): row is SyncKindRow {

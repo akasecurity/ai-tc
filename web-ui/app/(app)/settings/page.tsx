@@ -33,12 +33,15 @@ export default async function SettingsPage() {
   // same reason: a connection pinned with nothing locked governs the machine
   // all the same, and the form must not offer a choice the action refuses.
   const machineOnly = managedScopedRefusal() !== null;
+  const renderedAt = renderInstant();
   // NULL ON A STANDALONE MACHINE, and then nothing is rendered at all. The
   // panel describes a relationship with a deployment: a machine without one has
   // no lanes, no backlog and no button, and a card of zeros saying so is a
   // different claim from silence.
-  const renderedAt = renderInstant();
-  const sync = readSyncPanel(settings, credentialState, renderedAt);
+  //
+  // The panel is handed the mode the form is handed, so its bars count only what
+  // this attachment covers: on a scoped one, the enrolled repositories' rows.
+  const sync = readSyncPanel(settings, credentialState, renderedAt, attachmentMode);
   const locale = await renderLocale();
   return (
     // ONE width for the page: the heading, the form and the panel below it all

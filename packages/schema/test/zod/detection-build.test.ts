@@ -115,13 +115,14 @@ describe('rowToDetectionDetail', () => {
     }
   });
 
-  // `evidence` says whether the matched text is itself sensitive. A rule read for
-  // editing is rebuilt from this shape and written back, so a field the
-  // projection drops — or the wire parse strips — is lost from the stored rule
-  // on the next save.
+  // `evidence` says whether the matched text is itself sensitive. DetectionRule
+  // carries every field Rule declares but the pinned `specVersion`, so a Rule
+  // rebuilt from it loses nothing — including through the wire parse, which
+  // strips a key the schema does not name.
   it('carries evidence through the detail and back into a Rule', () => {
     const original: Rule = {
       ...rule('pack/code', { type: 'regex', pattern: 'eval\\(', flags: 'g' }),
+      category: 'code_flaw',
       examples: ['eval(x)'],
       evidence: 'code',
     };

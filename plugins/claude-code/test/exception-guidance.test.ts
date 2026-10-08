@@ -196,6 +196,18 @@ describe('withheldToolText', () => {
     expect(out).not.toContain('aka exception approve');
   });
 
+  it.each(['Agent', 'Task'])(
+    'never tells the model to re-run a %s call, whose subagent already did its work',
+    (tool) => {
+      const out = withheldToolText(tool, 'secrets/aws-access-key', 'content.0.text');
+      expect(out).toContain(`${tool} content.0.text withheld`);
+      expect(out).toContain('The subagent already ran');
+      expect(out).toContain('Do not start the subagent again');
+      expect(out).not.toContain('re-run this same tool call');
+      expect(out).toContain('Tell the user');
+    },
+  );
+
   it('marks itself as a placeholder that must never be written back', () => {
     // This text sits where file content was; a Read → edit → Write flow would
     // otherwise persist it to disk over the user's real file.

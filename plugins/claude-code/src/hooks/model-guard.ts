@@ -25,6 +25,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
 import { captureScopeKey } from './shared.ts';
+import { SUBAGENT_TOOLS } from './subagent-tools.ts';
 
 /**
  * The one arm of `PreToolUseOutput` this seam can produce.
@@ -207,22 +208,6 @@ export async function handleProhibitedTurn(
 // exactly the model a spawn overrides. So a session on an approved model could
 // run unbounded work on a prohibited one, refused nowhere.
 // ---------------------------------------------------------------------------
-
-/**
- * The tools that start a subagent.
- *
- * BOTH spellings, because the harness renamed this tool: older builds send
- * `Task`, current ones send `Agent`. Naming only one of them is how this
- * boundary came to be unguarded in the first place — the manifest matcher went
- * on listing `Task` long after the harness had stopped sending it, so the hook
- * never ran here at all and every check inside it was dead code.
- *
- * EXPORTED so the manifest test derives its spawn case from this set rather
- * than restating it. There are three places a rename has to reach — this set,
- * the field table and the manifest matcher — and a test that cross-checks only
- * two of them leaves the third to be noticed by a human.
- */
-export const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 
 /** A subagent_type safe to resolve as a filename. */
 const SAFE_SUBAGENT_TYPE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;

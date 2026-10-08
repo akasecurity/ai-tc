@@ -64,6 +64,21 @@ export function offersGovernanceScope<G extends object>(
  *                             on ignorance, and an answer that could not be had
  *                             is not knowledge.
  *
+ * THE TWO FAILURES POINT OPPOSITE WAYS, on purpose. A gateway with no
+ * capability is governed, so its absence de-enforces nothing. A gateway that
+ * offers the capability and cannot answer is not governed, so the prohibited
+ * model is allowed: a broken capability de-enforces everything this question
+ * covers, at every site that asks it, and nothing at the site records that the
+ * question could not be answered. The direction is chosen, not an oversight: an
+ * unreadable or empty scope governs nothing, and a refusal needs an answer that
+ * was actually had.
+ *
+ * The `catch` is unreachable with the attached gateway this package ships. Its
+ * `governanceAppliesTo` answers through `verdictFor`, whose own guard turns any
+ * fault into the not-governed answer, so that gateway returns a boolean and
+ * never throws. The path is open to a gateway another program builds over the
+ * same port.
+ *
  * Total: it never throws.
  */
 export function governanceApplies(gateway: object, scopeKey: string | undefined): boolean {
@@ -74,6 +89,7 @@ export function governanceApplies(gateway: object, scopeKey: string | undefined)
     const answer: unknown = gateway.governanceAppliesTo(scopeKey);
     return answer === true;
   } catch {
+    // Not governed, and unrecorded: the asymmetry the docblock names.
     return false;
   }
 }

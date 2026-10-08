@@ -57,6 +57,7 @@ const stand = vi.hoisted(() => ({
   failSettingsWrite: false,
   credentialWrites: 0,
   failCredentialWriteAt: undefined as number | undefined,
+  failCredentialRemoval: false,
   whenCredentialWriteFails: undefined as (() => void) | undefined,
   beforeNextSettingsWrite: undefined as (() => void) | undefined,
   preview: undefined as { sessions: number; days: number } | undefined,
@@ -87,6 +88,12 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
         throw new Error('credential write failed');
       }
       actual.writeControlPlaneCredential(...args);
+    },
+    removeControlPlaneCredential: (
+      ...args: Parameters<typeof actual.removeControlPlaneCredential>
+    ): ReturnType<typeof actual.removeControlPlaneCredential> => {
+      if (stand.failCredentialRemoval) throw new Error('credential removal failed');
+      return actual.removeControlPlaneCredential(...args);
     },
     readLocalHistoryPreview: (
       ...args: Parameters<typeof actual.readLocalHistoryPreview>
@@ -138,8 +145,8 @@ const NOTE_REPLACED =
 const NOTE_UNTOUCHED =
   'The credential file this machine had before could not be read; this attempt did not change it.';
 const NOTE_FAILED =
-  'The credential file this machine had before could not be put back, so it may differ ' +
-  'from what it was. Run `aka attach` again.';
+  'The access key file on this machine could not be put back as it was before this attempt, ' +
+  'so it may differ from what it was. Run `aka attach` again.';
 const NOTE_SUPERSEDED =
   'The credential file changed while this attach was saving, so it was not put back and is ' +
   'left as it is now. Run `aka status` to see what this machine is attached to.';
@@ -208,6 +215,7 @@ afterEach(() => {
   stand.failSettingsWrite = false;
   stand.credentialWrites = 0;
   stand.failCredentialWriteAt = undefined;
+  stand.failCredentialRemoval = false;
   stand.whenCredentialWriteFails = undefined;
   stand.beforeNextSettingsWrite = undefined;
   stand.preview = undefined;
@@ -1660,6 +1668,21 @@ describe('a save that fails puts the credential file back as it was, or says it 
     expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
     // What the line means: the file on disk is the attach's, not the earlier one.
     expect(storedCredential()).toMatchObject({ usable: true, credential: { apiKey: KEY_2 } });
+  });
+
+  it("says the file may differ, not that an earlier one was lost, when the attach's own file cannot be removed", async () => {
+    // No earlier file: the only thing to put back is "no file", and removing the
+    // one this attach wrote is what fails.
+    stand.failSettingsWrite = true;
+    stand.failCredentialRemoval = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_FAILED}`);
+    expect(h.errors()).not.toContain('had before');
+    expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
   });
 
   describe('when the administrator froze the mode after the checks', () => {

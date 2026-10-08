@@ -113,7 +113,8 @@ const MODE_LINES: Record<AttachmentMode, string> = {
 /**
  * What to do about a scope that forwards no activity: printed under the "nothing
  * enrolled yet" line (a record with no entries). The lines for a list that is
- * not stored, and for one this build cannot read, carry their own advice.
+ * not stored spell out their own advice, and the lines for one this build cannot
+ * read carry none.
  */
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
 
@@ -260,13 +261,15 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * send an identity the block does not list.
  *
  * Each state that forwards no activity has its own line, because each has its own
- * cause: no list stored (never enrolled, or an older settings writer dropped it),
- * a list this version cannot read (damaged, or written by a newer build), a record
- * for another deployment, or a record with nothing in it yet. The first two are
- * told apart on purpose, each with its own advice. Entries this version cannot
- * read are counted and never printed: one written by a newer build is not this
- * build's to describe. A record that names no account is said to be one, because
- * the next scoped attach cannot tell whose it is and starts it empty.
+ * cause: no list stored (an older settings writer dropped it, or an attach
+ * stopped before writing it), a list this version cannot read (damaged, or
+ * written by a newer build), a record for another deployment, or a record with
+ * nothing in it yet. The first two are told apart on purpose: the missing list
+ * says what to run, and the unreadable one deliberately gives no advice. Entries
+ * this version cannot read are counted and never printed: one written by a newer
+ * build is not this build's to describe. A record that names no account is said
+ * to be one, because the next scoped attach cannot tell whose it is and starts it
+ * empty.
  *
  * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
  * activity is forwarded, not whether the machine pulls its deployment's policy or

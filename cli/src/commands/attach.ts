@@ -40,6 +40,7 @@ import type {
   AttachmentMode,
   HistorySyncConsent,
   ManagedSettings,
+  PluginWhoami,
   UnsafeEndpointReason,
   WorkspaceSettings,
 } from '@akasecurity/schema';
@@ -256,20 +257,46 @@ const CHANGED_WHILE_WAITING =
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
 /**
+ * What an attach says when its settings landed and its credential did not (see
+ * the order of the writes in runAttach): a machine-wide attach over a personal
+ * device's credential, a file that cannot be used or no file with a list or a
+ * grant stored, and a scoped attach that does not keep the list stored beside
+ * it, over settings with a list or a grant, and not over a usable machine-wide
+ * credential (which writes the credential first and never prints this).
+ * The settings dropped the enrolled list, or replaced it with an empty one, and
+ * carry no earlier grant. Beside that, what the machine already had sends no
+ * repository's activity: a scoped credential has no repository enrolled, a file
+ * that cannot be used or one for another deployment sends nothing, and with no
+ * credential file there is nothing to send with. The last sentence is there
+ * because the earlier scoped key for this deployment can survive the failed
+ * write, and enrolling a repository under it would send that repository.
+ */
+const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
+  'could not save the attachment: the settings were saved but the credential was not. The ' +
+  "enrolled list is cleared, and no repository's activity is sent until this machine is " +
+  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
+
+/**
  * What a failed save left of the credential file the machine held before.
  *
- *   `restored`  — the earlier state is back: the credential or the raw bytes of
- *                 an unparseable file written again, or no earlier file existed
- *                 and the one this attach wrote is gone.
+ *   `restored`  — the earlier state is back, or was never disturbed (this
+ *                 attach's credential write did not land): the credential or the
+ *                 raw bytes of an unparseable file written again, or no earlier
+ *                 file existed and the one this attach wrote is gone.
  *   `replaced`  — the earlier file could not be read at all (a symlink, someone
  *                 else's file), so there were no bytes to put back, and this
  *                 attach's file had already replaced it. This attach's file is
  *                 removed; the earlier one is gone.
  *   `untouched` — the earlier file could not be read and this attempt never
  *                 replaced it.
+ *   `superseded` — the file no longer held what this attach wrote, nor what was
+ *                  there before: another attach, re-attach or detach changed it
+ *                  after this attach's write. It is left as it is. Where the
+ *                  earlier file could not be read, a usable credential from
+ *                  another attach in its place counts as the same.
  *   `failed`    — the earlier state could not be written back.
  */
-type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'failed';
+type CredentialRollback = 'restored' | 'replaced' | 'untouched' | 'superseded' | 'failed';
 
 /**
  * What is added to a failed save's message when the earlier credential file is
@@ -283,9 +310,12 @@ const ROLLBACK_NOTE: Record<Exclude<CredentialRollback, 'restored'>, string> = {
   untouched:
     'The credential file this machine had before could not be read; this attempt did not ' +
     'change it.',
+  superseded:
+    'The credential file changed while this attach was saving, so it was not put back and is ' +
+    'left as it is now. Run `aka status` to see what this machine is attached to.',
   failed:
-    'The credential file this machine had before could not be put back, so it may differ ' +
-    'from what it was. Run `aka attach` again.',
+    'The credential file on this machine could not be put back as it was before this attempt, ' +
+    'so it may differ from what it was. Run `aka attach` again.',
 };
 
 /** The one line a failed save prints, from what the rollback managed. */
@@ -537,16 +567,16 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // A MANAGED machine that was a personal device, attached to this
       // deployment or to another: nobody is asked, because the administrator
       // decided, and one line says why it attaches machine-wide now. `widening`
-      // is not read here: under management it is information, never a question.
-      // The write below clears the enrolled list either way. Another deployment
+      // is never asked about here: under management it is information, never a
+      // question, and it only picks which notice names the deployment. The write
+      // below clears the enrolled list either way. Another deployment
       // is not named: its endpoint is read from disk, so that notice says
       // nothing of it. The administrator's name in the refusal sentence is their
       // own, and refusalLine strips it for the terminal.
       if (prior.usable && attachmentModeOf(prior.credential) === 'scoped') {
-        const notice =
-          prior.credential.endpoint === endpoint
-            ? wideningNotice(endpoint)
-            : MANAGED_ELSEWHERE_NOTICE;
+        // The decision's own answer, so another spelling of this deployment is
+        // named as this one, the way the widening it is counts it.
+        const notice = modeDecision.widening ? wideningNotice(endpoint) : MANAGED_ELSEWHERE_NOTICE;
         io.out(`${refusalLine(scopedRefusal ?? { reason: 'scoped-managed' })} ${notice}\n`);
       }
     } else if (modeDecision.widening) {
@@ -701,22 +731,79 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   const keepScope = holdsScopedFor(previous, endpoint);
   // How many entries this build can read in what was kept, for the success text.
   const kept = { readableEntries: 0 };
+  // What a fresh list replaced, for the success text: how many entries this build
+  // could read in it, and why it was not kept.
+  const cleared: { readableEntries: number; because: ListClearedBecause | undefined } = {
+    readableEntries: 0,
+    because: undefined,
+  };
+  // Whether this attach keeps `stored` as the enrolled list: only a rotation of a
+  // personal device on this deployment, for the organization and account just
+  // verified. The one judgment, shared by what is written and by the order of the
+  // writes.
+  const keepsStoredList = (stored: unknown): boolean =>
+    mode === 'scoped' && keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity);
   const scopeToWrite = (stored: unknown): unknown => {
     if (mode === 'machine') return undefined;
-    if (keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity)) {
+    if (keepsStoredList(stored)) {
       kept.readableEntries = parseAttachmentScope(stored)?.entries.length ?? 0;
       return stored;
     }
+    cleared.because = whyListCleared(stored, endpoint, identity, keepScope);
+    cleared.readableEntries =
+      cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
     return freshAttachmentScope(endpoint, identity);
   };
 
-  try {
-    // The credential FIRST, then the descriptor. In the other order a machine
-    // that fails on the second write is left claiming an attachment it has no
-    // credential for — which reads to every later surface as a broken
-    // attachment rather than as one that never happened.
-    writeControlPlaneCredential(settingsDirOf(base), credential);
-    committed = applyOnboarding(
+  // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave.
+  //
+  // CREDENTIAL FIRST, then the descriptor, unless the rule below picks the other
+  // order. In the other order a machine that fails on the second write is left
+  // claiming an attachment it has no credential for, which reads to every later
+  // surface as a broken attachment rather than as one that never happened.
+  //
+  // SETTINGS FIRST (writesSettingsFirst) where the credential first would put the
+  // new credential beside an enrolled list or a history grant that the finished
+  // attach replaces, in a pairing of credential mode and stored list or grant that
+  // the machine did not have:
+  //   - a machine-wide attach over a credential that is, or may be, a personal
+  //     device's, or over no credential file beside settings that still carry a
+  //     list or a grant. The history drain would read a grant given for enrolled
+  //     repositories as one for the whole machine.
+  //   - a scoped attach that does not keep the list it finds (the key verified as
+  //     another organization or account, a list that names no account, a list for
+  //     another deployment, or a credential that is not a personal device's for
+  //     this one), over settings that carry a list or a grant. A list enrolled
+  //     under another account would forward under the new key.
+  // The settings write no list (machine-wide) or an empty one (scoped), and carry
+  // this run's history answer. In this order a stop leaves what the machine had
+  // before beside no list or an empty one and no earlier grant, which sends no
+  // repository's activity.
+  //
+  // So an attach is credential first only where a stop cannot leave the new
+  // credential in such a pairing, with one exception:
+  //   - a machine-wide attach replaces a machine-wide credential, or there is no
+  //     credential file and the settings hold neither a list nor a grant;
+  //   - a scoped attach finds settings that hold neither a list nor a grant, or
+  //     keeps the list it finds (a rotation), so a stop leaves the new credential
+  //     beside that same list;
+  //   - the exception is a scoped attach over a machine-wide credential. Settings
+  //     first there would leave the machine-wide credential beside this run's
+  //     answer about the repositories to be enrolled, and the drain would read
+  //     that as a grant for the whole machine. So a stop there leaves the new
+  //     scoped credential beside the list on file, which the finished attach would
+  //     have replaced and which may be another organization's or account's, and
+  //     beside the earlier grant, with this run's answer lost. If that list names
+  //     this deployment, its repositories forward under the new key, and their
+  //     history goes under the earlier grant, until `aka attach` is run again.
+  const settingsFirst = writesSettingsFirst(
+    mode,
+    previous,
+    readEffectiveSettings(base, deps.managedSettings).settings,
+    keepsStoredList,
+  );
+  const writeSettings = (): WorkspaceSettings =>
+    applyOnboarding(
       // The FUNCTION form, so the enrolled list is judged against the file this
       // merge lands on, inside the settings lock: an `aka enroll` that lands just
       // before is judged with it rather than overwritten by a stale copy.
@@ -744,11 +831,31 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // and the pre-flight cannot disagree about who manages this machine.
       deps.managedSettings,
     );
+  // Set once the settings have landed ahead of the credential, so a failure after
+  // that point is reported as what it left rather than rolled back: putting the
+  // list and the grant back would take another settings write that can fail too.
+  let settingsSaved = false;
+  try {
+    if (settingsFirst) {
+      committed = writeSettings();
+      settingsSaved = true;
+      writeControlPlaneCredential(settingsDirOf(base), credential);
+    } else {
+      writeControlPlaneCredential(settingsDirOf(base), credential);
+      committed = writeSettings();
+    }
   } catch (err) {
-    // Put back exactly what was there, rather than removing unconditionally.
-    // On a first attach that is "no credential"; on a rotation it is the key
-    // the machine was working with, and restoring it is what makes the message
-    // below true. When it cannot be put back, the message says so instead.
+    if (settingsSaved) {
+      io.err(CREDENTIAL_NOT_SAVED_AFTER_SETTINGS);
+      exit(1);
+      return;
+    }
+    // Put back exactly what was there, rather than removing unconditionally,
+    // and only while the file still holds what this attach wrote (see
+    // restoreCredential): another aka may have attached or detached this machine
+    // after that write. On a first attach that is "no credential"; on a rotation
+    // it is the key the machine was working with. When it cannot be put back, or
+    // must not be, the message below says so instead.
     const rollback = restoreCredential(settingsDirOf(base), previous, previousBytes, credential);
     io.err(saveFailedMessage(err, rollback));
     exit(1);
@@ -806,6 +913,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'anywhere else stays on this machine. A command you run inside an enrolled',
           "repository is sent as that repository's activity, even when it reads files",
           'elsewhere.',
+          // A fresh list that replaced one holding entries this build can read
+          // says how many and why they were not kept, so a re-attach that
+          // verified as someone else does not empty the list unannounced.
+          ...(cleared.because === undefined
+            ? []
+            : [clearedListLine(cleared.readableEntries), LIST_CLEARED_BECAUSE[cleared.because]]),
           // Chosen by what was KEPT that this build can read, not by whether a
           // record was kept: a bound record with no entries (a rotation before
           // anything was enrolled), or one holding only a newer build's kinds,
@@ -826,9 +939,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'finding counts and dates for everything recorded on the machine. Where a',
           'scan is available (the coding-agent plugins, not a browser chat), the same',
           'session start also checks it for device commands.',
-          // An older aka writes a version-1 credential on every attach, which is
-          // machine-wide. Said here because the reader is the one who would run it.
-          'An aka older than this one that re-attaches this machine makes it machine-wide.',
+          // An aka older than this one writes a version-1 credential on every
+          // attach, from its command line and from its dashboard alike, and
+          // version 1 is machine-wide. Said here because the reader is the one
+          // who would run it.
+          'Re-attaching with an aka older than this one, from its command line or its',
+          'dashboard, makes this machine machine-wide.',
           '',
           'Policy arrives on the next session. Run `aka status` to see it.',
           ...(historyConsent === undefined
@@ -842,11 +958,12 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           '',
         ]
       : [
-          // The address is whatever was typed, so it goes through the strip, as
-          // the scoped block's does.
+          // The label, the address and the verified identity come from outside this
+          // process, so each goes through the one shared terminal strip, as in the
+          // scoped block.
           `Attached to ${printableForTerminal(args.label ?? endpoint, 200)}.`,
-          `  organization  ${identity.tenantName}`,
-          `  you           ${identity.userEmail}`,
+          `  organization  ${printableForTerminal(identity.tenantName, 200)}`,
+          `  you           ${printableForTerminal(identity.userEmail, 320)}`,
           '',
           // Said here, on the one path every successful attach ends on, because the
           // forwarding they describe follows from the attachment and not from the
@@ -892,6 +1009,48 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
   }
 }
 
+/**
+ * Whether a credential read is a personal device's, or could be: a usable scoped
+ * credential, for this endpoint or any other, or a file that is there but cannot
+ * be used, which may be a scoped credential a newer aka wrote. No file at all is
+ * not, and neither is a usable machine-wide credential.
+ */
+function mayBePersonalDevice(read: CredentialFileRead): boolean {
+  return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
+}
+
+/**
+ * Whether the settings are written before the credential (see the order of the
+ * writes in runAttach). Two cases, and nothing else.
+ *
+ * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
+ * personal device's (mayBePersonalDevice), or when there is no credential file
+ * but the stored settings still carry an enrolled list or a history grant, which
+ * this attach replaces. A deleted credential file leaves the settings so, and so
+ * does a rollback that reports a file it could not read as gone.
+ *
+ * A SCOPED attach, when the settings carry a list or a grant for it to replace
+ * and it does not keep the list (`keepsList` answers for the stored one), unless
+ * the credential being replaced is a usable machine-wide one.
+ *
+ * Pure.
+ */
+function writesSettingsFirst(
+  mode: AttachmentMode,
+  previous: CredentialFileRead,
+  stored: WorkspaceSettings,
+  keepsList: (stored: unknown) => boolean,
+): boolean {
+  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
+  if (mode === 'machine') {
+    return (
+      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
+    );
+  }
+  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
+  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
+}
+
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */
 function sameCredential(a: AttachedCredentialAny, b: AttachedCredentialAny): boolean {
   return (
@@ -922,6 +1081,15 @@ function sameCredential(a: AttachedCredentialAny, b: AttachedCredentialAny): boo
  *   gone either way. If the credential write never got as far as replacing it,
  *   the file is left alone: removing it would delete something this attach did
  *   not write.
+ *
+ * Each of those writes or removals happens only while the file still holds what
+ * this attach wrote, every member of it (see sameCredential). Otherwise the file
+ * is left alone: `restored` when it is still what was there before (this attach's
+ * write never landed), `superseded` when something else changed it after that
+ * write, since putting the earlier credential back would pair it with the
+ * settings that other change wrote. None of the credential helpers takes a lock,
+ * so this narrows the window between the read here and the write-back rather
+ * than closing it.
  */
 function restoreCredential(
   settingsDir: string,
@@ -930,25 +1098,41 @@ function restoreCredential(
   written: AttachedCredentialAny,
 ): CredentialRollback {
   try {
+    const now = readControlPlaneCredentialFile(settingsDir);
+    const holdsWritten = now.usable && sameCredential(now.credential, written);
     if (previous.usable) {
-      writeControlPlaneCredential(settingsDir, previous.credential);
-      return 'restored';
+      if (holdsWritten) {
+        writeControlPlaneCredential(settingsDir, previous.credential);
+        return 'restored';
+      }
+      return now.usable && sameCredential(now.credential, previous.credential)
+        ? 'restored'
+        : 'superseded';
     }
     if (previous.reason === 'absent') {
-      removeControlPlaneCredential(settingsDir);
-      return 'restored';
+      if (holdsWritten) {
+        removeControlPlaneCredential(settingsDir);
+        return 'restored';
+      }
+      return !now.usable && now.reason === 'absent' ? 'restored' : 'superseded';
     }
     if (previousBytes !== undefined) {
-      // Owner-only and atomic, as every credential write is; the bytes as read.
-      writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
-      return 'restored';
+      if (holdsWritten) {
+        // Owner-only and atomic, as every credential write is; the bytes as read.
+        writeOwnerOnlyFileSync(controlPlaneCredentialPath(settingsDir), previousBytes);
+        return 'restored';
+      }
+      return credentialBytes(settingsDir) === previousBytes ? 'restored' : 'superseded';
     }
-    const now = readControlPlaneCredentialFile(settingsDir);
-    if (now.usable && sameCredential(now.credential, written)) {
+    if (holdsWritten) {
       removeControlPlaneCredential(settingsDir);
       return 'replaced';
     }
-    return 'untouched';
+    // Neither the earlier file, which could not be read, nor this attach's: a
+    // usable credential is another attach's, whether it replaced this attach's
+    // file or the unreadable one this attach never got to replace. A file that is
+    // still unusable is the earlier one, which this attempt did not change.
+    return now.usable ? 'superseded' : 'untouched';
   } catch {
     // The rollback itself failed. Nothing further to try.
     return 'failed';
@@ -1065,7 +1249,7 @@ async function askAboutHistory(
   io.out(
     [
       '',
-      `Verified against ${identity.tenantName}.`,
+      `Verified against ${printableForTerminal(identity.tenantName, 200)}.`,
       '',
       ...(backlog === undefined ? [] : [backlog]),
       `AKA can ${backlog === undefined ? '' : 'also '}keep anything a live send fails to deliver, instead of`,
@@ -1237,6 +1421,62 @@ function wideningNotice(endpoint: string): string {
     `This machine was attached to ${printableForTerminal(endpoint, 200)} as a personal device; ` +
     'its enrolled list will be cleared.'
   );
+}
+
+/**
+ * Why a scoped attach started a fresh enrolled list instead of keeping the one
+ * on file, for the line that says so. An exhaustive Record keys the wording, so
+ * a reason added later cannot print a line with a hole in it.
+ */
+type ListClearedBecause = 'deployment' | 'replaced' | 'unbound' | 'organization' | 'account';
+
+const LIST_CLEARED_BECAUSE: Record<ListClearedBecause, string> = {
+  deployment: 'it was made for another deployment.',
+  replaced: 'this attach does not continue a personal-device attachment to this deployment.',
+  unbound: 'it names no account, so whose it is could not be checked.',
+  organization: 'it names an organization other than the one this key verified as.',
+  account: 'it names an account other than the one this key verified as.',
+};
+
+/**
+ * Why a scoped attach to `endpoint` as `who` does not keep `stored`, or
+ * undefined when the list holds no entry this build can read, which leaves
+ * nothing to report. `continues` is whether the credential being replaced is a
+ * personal device's for exactly this endpoint (holdsScopedFor). Judged by the
+ * rules the keep decision uses, in its order: the endpoint as an exact string,
+ * then whether this attach continues one, then the binding, each field byte for
+ * byte. Pure; never throws.
+ */
+function whyListCleared(
+  stored: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+  continues: boolean,
+): ListClearedBecause | undefined {
+  const record = parseAttachmentScope(stored);
+  if (record === undefined || record.entries.length === 0) return undefined;
+  if (record.endpoint !== endpoint) return 'deployment';
+  if (!continues) return 'replaced';
+  const { tenantName, userEmail } = record;
+  if (
+    tenantName === undefined ||
+    tenantName === '' ||
+    userEmail === undefined ||
+    userEmail === ''
+  ) {
+    return 'unbound';
+  }
+  if (tenantName !== who.tenantName) return 'organization';
+  if (userEmail !== who.userEmail) return 'account';
+  return undefined;
+}
+
+/** The line that opens the report of a list a scoped attach did not keep. */
+function clearedListLine(readableEntries: number): string {
+  return readableEntries === 1
+    ? 'The list on this machine held 1 enrollment; it was cleared because'
+    : `The list on this machine held ${readableEntries.toLocaleString('en-US')} enrollments; ` +
+        'they were cleared because';
 }
 
 /**

@@ -16,13 +16,21 @@ import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   controlPlaneCredentialPath,
+  dataDir as dataDirOf,
+  openLocalDatabase,
   readControlPlaneCredentialFile,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { AttachmentMode } from '@akasecurity/schema';
-import { attachmentModeOf, connectionRefusalMessage, ManagedSettings } from '@akasecurity/schema';
+import {
+  attachmentModeOf,
+  connectionRefusalMessage,
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  ManagedSettings,
+  resolveScope,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -44,15 +52,19 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // reset, so a case can fail the write-back of a rollback and let the first
 // write through), after running a hook that can change the disk first. Armed,
 // the history preview answers with counts a case can look for, and every read
-// of it is counted.
+// of it is counted. Every settings write is counted, and every call that marks
+// the capture backlog owed is recorded with its arguments.
 const stand = vi.hoisted(() => ({
   failSettingsWrite: false,
   credentialWrites: 0,
   failCredentialWriteAt: undefined as number | undefined,
+  failCredentialRemoval: false,
   whenCredentialWriteFails: undefined as (() => void) | undefined,
   beforeNextSettingsWrite: undefined as (() => void) | undefined,
   preview: undefined as { sessions: number; days: number } | undefined,
   previewReads: 0,
+  settingsWrites: 0,
+  seedCalls: [] as unknown[][],
 }));
 
 vi.mock('@akasecurity/persistence', async (importActual) => {
@@ -62,6 +74,7 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     applyOnboarding: (
       ...args: Parameters<typeof actual.applyOnboarding>
     ): ReturnType<typeof actual.applyOnboarding> => {
+      stand.settingsWrites += 1;
       if (stand.failSettingsWrite) throw new Error('settings write failed');
       // One shot, cleared before it runs, so the write it makes reaches the
       // real function and the call it precedes is the only one it races.
@@ -79,6 +92,18 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
         throw new Error('credential write failed');
       }
       actual.writeControlPlaneCredential(...args);
+    },
+    seedCaptureBacklogOwed: (
+      ...args: Parameters<typeof actual.seedCaptureBacklogOwed>
+    ): ReturnType<typeof actual.seedCaptureBacklogOwed> => {
+      stand.seedCalls.push(args);
+      actual.seedCaptureBacklogOwed(...args);
+    },
+    removeControlPlaneCredential: (
+      ...args: Parameters<typeof actual.removeControlPlaneCredential>
+    ): ReturnType<typeof actual.removeControlPlaneCredential> => {
+      if (stand.failCredentialRemoval) throw new Error('credential removal failed');
+      return actual.removeControlPlaneCredential(...args);
     },
     readLocalHistoryPreview: (
       ...args: Parameters<typeof actual.readLocalHistoryPreview>
@@ -130,8 +155,11 @@ const NOTE_REPLACED =
 const NOTE_UNTOUCHED =
   'The credential file this machine had before could not be read; this attempt did not change it.';
 const NOTE_FAILED =
-  'The credential file this machine had before could not be put back, so it may differ ' +
-  'from what it was. Run `aka attach` again.';
+  'The credential file on this machine could not be put back as it was before this attempt, ' +
+  'so it may differ from what it was. Run `aka attach` again.';
+const NOTE_SUPERSEDED =
+  'The credential file changed while this attach was saving, so it was not put back and is ' +
+  'left as it is now. Run `aka status` to see what this machine is attached to.';
 const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
@@ -197,10 +225,13 @@ afterEach(() => {
   stand.failSettingsWrite = false;
   stand.credentialWrites = 0;
   stand.failCredentialWriteAt = undefined;
+  stand.failCredentialRemoval = false;
   stand.whenCredentialWriteFails = undefined;
   stand.beforeNextSettingsWrite = undefined;
   stand.preview = undefined;
   stand.previewReads = 0;
+  stand.settingsWrites = 0;
+  stand.seedCalls = [];
   vi.useRealTimers();
   removeTree(base);
 });
@@ -337,6 +368,100 @@ function plantUntrustedCredential(): void {
     `${JSON.stringify({ specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1 })}\n`,
   );
   symlinkSync(target, credentialFile());
+}
+
+/** Captures recorded before any attach: one per enrolled key, one for a key nobody enrolled, one with none. */
+function seedCaptures(): void {
+  const db = openLocalDatabase(dataDirOf(base));
+  try {
+    db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+    for (const [id, key] of [
+      ['cap-repo', REPO],
+      ['cap-ledger', LEDGER],
+      ['cap-new', NEW_REPO],
+      ['cap-unkeyed', undefined],
+    ] as const) {
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2026-08-01T00:01:00.000Z',
+        content: `text of ${id}`,
+        ...(key === undefined ? {} : { attributes: { scope_key: key } }),
+      });
+    }
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Every capture marked to send, read WITHOUT a scope: a scoped writer that
+ * marked too much shows up here, where a scoped read would hide it.
+ */
+function owedCaptures(): string[] {
+  const db = openLocalDatabase(dataDirOf(base));
+  try {
+    return db.historySync
+      .pendingCaptureRows(10, Date.now() + 1)
+      .map((row) => row.id)
+      .sort();
+  } finally {
+    db.close();
+  }
+}
+
+/** A history grant for ENDPOINT, as a settings file holds one. */
+const GRANT = {
+  acknowledgedAt: ISO,
+  payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+  endpoint: ENDPOINT,
+};
+/** What a failed credential write says after the settings had already landed. */
+const CREDENTIAL_NOT_SAVED =
+  'could not save the attachment: the settings were saved but the credential was not. The ' +
+  "enrolled list is cleared, and no repository's activity is sent until this machine is " +
+  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
+
+/** Settings that say attached to ENDPOINT, with `extra` beside them and no credential file written. */
+function attachedSettings(extra: Record<string, unknown>): void {
+  applyOnboarding(
+    { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO }, ...extra },
+    base,
+    null,
+  );
+}
+
+/** The credential file's text, or undefined when there is no file. */
+function credentialText(): string | undefined {
+  return existsSync(credentialFile()) ? readFileSync(credentialFile(), 'utf8') : undefined;
+}
+
+/**
+ * Watches the credential file at the moment the settings write comes. `text()` is
+ * the file's text then, or undefined when there was none; `ran()` says the
+ * settings write happened at all.
+ */
+function watchCredentialAtSettingsWrite(): { ran: () => boolean; text: () => string | undefined } {
+  let ran = false;
+  let text: string | undefined;
+  stand.beforeNextSettingsWrite = () => {
+    ran = true;
+    text = credentialText();
+  };
+  return { ran: () => ran, text: () => text };
+}
+
+/** The key in the credential file at the moment the settings write comes, or undefined. */
+function keyAtSettingsWrite(): { get: () => string | undefined } {
+  const watch = watchCredentialAtSettingsWrite();
+  return {
+    get: () => {
+      const text = watch.text();
+      return text === undefined ? undefined : (JSON.parse(text) as { apiKey: string }).apiKey;
+    },
+  };
 }
 
 const fixture = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -681,6 +806,10 @@ describe('the personal-device question', () => {
       credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_2, mode: 'scoped' },
     });
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'it was made for another deployment.\n',
+    );
   });
 });
 
@@ -711,6 +840,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
     // RAW: the envelope key and the entry this build cannot read survive.
     expect(storedSettings().attachmentScope).toEqual(BOUND_AND_NEWER);
     expect(h.output()).toContain('The repositories already enrolled here are kept');
+    expect(h.output()).not.toContain('cleared because');
   });
 
   it('through --key-stdin, with no terminal', async () => {
@@ -756,6 +886,7 @@ describe('a key rotation on a personal device keeps the mode and every enrollmen
       'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
     );
     expect(h.output()).not.toContain('already enrolled here are kept');
+    expect(h.output()).not.toContain('cleared because');
   });
 
   it('judges the list inside the settings lock, so an enrollment that lands first is kept', async () => {
@@ -886,6 +1017,38 @@ describe('widening a personal device with --machine', () => {
       credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
     });
     expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('asks first when --machine names the deployment with a trailing slash', async () => {
+    attachedScoped(BOUND);
+    const h = harness({ interactive: true, answers: [KEY_2, 'y'] });
+
+    await runAttach(['--url', `${ENDPOINT}/`, '--machine', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, WIDEN]);
+    expect(h.output()).toContain(
+      `This machine is attached to ${ENDPOINT}/ as a personal device: activity is`,
+    );
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, endpoint: `${ENDPOINT}/`, apiKey: KEY_2 },
+    });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('says what it does without a terminal when --machine names the host in another case', async () => {
+    attachedScoped(BOUND);
+    const typed = 'https://AKA.example.com';
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', typed, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `Attaching machine-wide, as --machine asks. This machine was attached to ${typed} ` +
+        'as a personal device; its enrolled list will be cleared.',
+    );
   });
 });
 
@@ -1060,27 +1223,41 @@ describe('an attach is not written over what changed while it waited', () => {
 });
 
 describe('the enrolled list is kept only for the organization and account that built it', () => {
-  it.each([
-    ['another organization', { ...ANA, tenantName: 'Other Org' }],
-    ['another account', { ...ANA, userEmail: 'member-18' }],
-  ])('starts empty when the key verifies as %s', async (_label, who) => {
-    attachedScoped(BOUND);
-    const h = harness({ interactive: false, stdin: KEY_2, who });
+  it.each<[string, { tenantName: string; userEmail: string }, string]>([
+    [
+      'another organization',
+      { ...ANA, tenantName: 'Other Org' },
+      'it names an organization other than the one this key verified as.',
+    ],
+    [
+      'another account',
+      { ...ANA, userEmail: 'member-18' },
+      'it names an account other than the one this key verified as.',
+    ],
+  ])(
+    'starts empty when the key verifies as %s, and says how many were cleared',
+    async (_label, who, because) => {
+      attachedScoped(BOUND);
+      const h = harness({ interactive: false, stdin: KEY_2, who });
 
-    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+      await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
 
-    expect(exits).toEqual([]);
-    expect(modeOnDisk()).toBe('scoped');
-    expect(storedSettings().attachmentScope).toEqual({
-      endpoint: ENDPOINT,
-      tenantName: who.tenantName,
-      userEmail: who.userEmail,
-      entries: [],
-    });
-    expect(h.output()).toContain(
-      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
-    );
-  });
+      expect(exits).toEqual([]);
+      expect(modeOnDisk()).toBe('scoped');
+      expect(storedSettings().attachmentScope).toEqual({
+        endpoint: ENDPOINT,
+        tenantName: who.tenantName,
+        userEmail: who.userEmail,
+        entries: [],
+      });
+      expect(h.output()).toContain(
+        `The list on this machine held 2 enrollments; they were cleared because\n${because}\n`,
+      );
+      expect(h.output()).toContain(
+        'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+      );
+    },
+  );
 
   it('starts empty over a list that names nobody, which cannot be checked', async () => {
     attachedScoped(UNBOUND);
@@ -1090,6 +1267,10 @@ describe('the enrolled list is kept only for the organization and account that b
 
     expect(exits).toEqual([]);
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 1 enrollment; it was cleared because\n' +
+        'it names no account, so whose it is could not be checked.\n',
+    );
   });
 
   it.each<[string, () => void]>([
@@ -1128,6 +1309,28 @@ describe('the enrolled list is kept only for the organization and account that b
     expect(exits).toEqual([]);
     expect(modeOnDisk()).toBe('scoped');
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).toContain(
+      'The list on this machine held 2 enrollments; they were cleared because\n' +
+        'this attach does not continue a personal-device attachment to this deployment.\n',
+    );
+  });
+
+  it('says nothing was cleared when the list it replaced held nothing this build can read', async () => {
+    attachedScoped({
+      ...BOUND,
+      tenantName: 'Other Org',
+      entries: [{ kind: 'org', identity: 'example-org', enrolledAt: ISO }],
+    });
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(h.output()).not.toContain('cleared because');
+    expect(h.output()).toContain(
+      'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
+    );
   });
 });
 
@@ -1212,6 +1415,21 @@ describe('a machine an administrator manages attaches machine-wide', () => {
       credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2 },
     });
     expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('names the widening of a personal device attached to another spelling of this deployment', async () => {
+    attachedScoped(BOUND);
+    const overlay = ManagedSettings.parse({ organization: ADMIN, values: { runMode: 'attached' } });
+    const h = harness({ interactive: false, stdin: KEY_2, managed: () => overlay });
+
+    await runAttach(['--url', `${ENDPOINT}/`, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(
+      `${SCOPED_MANAGED} This machine was attached to ${ENDPOINT}/ as a personal device; ` +
+        'its enrolled list will be cleared.',
+    );
+    expect(h.output()).not.toContain('another deployment');
   });
 
   it('refuses a scoped write on a machine that became managed while it waited', async () => {
@@ -1353,7 +1571,7 @@ describe('a save that fails puts the credential file back as it was, or says it 
       // The credential write cannot replace a directory, so it fails before the
       // settings write is reached, and the directory is as it was.
       name: 'a directory where the file should be',
-      flags: ['--machine'],
+      flags: ['--scoped'],
       posixOnly: true,
       plant: () => {
         mkdirSync(credentialFile(), { recursive: true });
@@ -1367,8 +1585,8 @@ describe('a save that fails puts the credential file back as it was, or says it 
     {
       // A symlink is never followed, so there are no bytes to put back, and the
       // new credential replaced the link itself.
-      name: 'a symlink where the file should be',
-      flags: ['--machine'],
+      name: 'a symlink where the file should be, on a personal-device attach',
+      flags: ['--scoped'],
       posixOnly: true,
       plant: () => {
         plantUntrustedCredential();
@@ -1378,6 +1596,21 @@ describe('a save that fails puts the credential file back as it was, or says it 
         expect(lstatSync(credentialFile(), { throwIfNoEntry: false })).toBeUndefined();
       },
       says: `${SAVE_FAILED}${NOTE_REPLACED}`,
+    },
+    {
+      // Settings first on a machine-wide attach over a file that may be a personal
+      // device's: the settings write fails before the link is ever replaced.
+      name: 'a symlink where the file should be, on a machine-wide attach',
+      flags: ['--machine'],
+      posixOnly: true,
+      plant: () => {
+        plantUntrustedCredential();
+        return undefined;
+      },
+      onDisk: () => {
+        expect(lstatSync(credentialFile()).isSymbolicLink()).toBe(true);
+      },
+      says: `${SAVE_FAILED}${NOTE_UNTOUCHED}`,
     },
   ];
 
@@ -1396,6 +1629,76 @@ describe('a save that fails puts the credential file back as it was, or says it 
     expect(h.errors()).toContain(row.says);
     if (row.says !== LEFT_AS_IT_WAS) expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
     row.onDisk(planted);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      'a machine-wide credential',
+      () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        applyOnboarding(
+          { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO } },
+          base,
+          null,
+        );
+      },
+    ],
+    ['no credential', () => undefined],
+  ])(
+    'leaves a personal device another attach made while this one was saving, over %s',
+    async (_name, arrange) => {
+      arrange();
+      // Lands after this attach wrote its credential and just before its settings
+      // write, which then fails: a second attach that won the race.
+      stand.beforeNextSettingsWrite = () => {
+        attachedScoped(BOUND);
+        throw new Error('settings write failed');
+      };
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({
+        usable: true,
+        credential: {
+          specVersion: 2,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+          mode: 'scoped',
+        },
+      });
+      expect(storedSettings().attachmentScope).toEqual(BOUND);
+    },
+  );
+
+  it('writes nothing back, and says the machine is as it was, when its own credential write never landed', async () => {
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: KEY_1,
+      mintedAt: ISO,
+    });
+    const before = readFileSync(credentialFile(), 'utf8');
+    stand.credentialWrites = 0;
+    stand.failCredentialWriteAt = 1;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+    // The failed write was the only one: the file already held the earlier credential.
+    expect(stand.credentialWrites).toBe(1);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
   });
 
   it('puts an unreadable credential file back owner-only', async (ctx) => {
@@ -1429,6 +1732,21 @@ describe('a save that fails puts the credential file back as it was, or says it 
     expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
     // What the line means: the file on disk is the attach's, not the earlier one.
     expect(storedCredential()).toMatchObject({ usable: true, credential: { apiKey: KEY_2 } });
+  });
+
+  it("says the file may differ, not that an earlier one was lost, when the attach's own file cannot be removed", async () => {
+    // No earlier file: the only thing to put back is "no file", and removing the
+    // one this attach wrote is what fails.
+    stand.failSettingsWrite = true;
+    stand.failCredentialRemoval = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_FAILED}`);
+    expect(h.errors()).not.toContain('had before');
+    expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
   });
 
   describe('when the administrator froze the mode after the checks', () => {
@@ -1501,7 +1819,7 @@ describe('a credential write that fails', () => {
       stand.failCredentialWriteAt = 1;
       const h = harness({ interactive: false, stdin: KEY_2 });
 
-      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+      await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
 
       expect(exits).toEqual([1]);
       expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_UNTOUCHED}`);
@@ -1529,16 +1847,506 @@ describe('a credential write that fails', () => {
       stand.failCredentialWriteAt = 1;
       const h = harness({ interactive: false, stdin: KEY_2 });
 
-      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+      await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
 
       expect(exits).toEqual([1]);
-      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_UNTOUCHED}`);
+      // Another attach changed the file, so it is said to have changed rather
+      // than to be untouched.
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(NOTE_UNTOUCHED);
       expect(storedCredential()).toEqual({
         usable: true,
         credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_2, mintedAt: ISO },
       });
     },
   );
+
+  it.skipIf(process.platform === 'win32')(
+    'says another attach changed the file, when it replaced the one this attach wrote over an unreadable one',
+    async () => {
+      plantUntrustedCredential();
+      // This attach's credential write lands over the link. Then, as its settings
+      // write is about to fail, another attach replaces that file with its own.
+      stand.beforeNextSettingsWrite = () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: KEY_1,
+          mintedAt: ISO,
+        });
+        throw new Error('settings write failed');
+      };
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(`${SAVE_FAILED}${NOTE_SUPERSEDED}`);
+      expect(h.errors()).not.toContain(NOTE_UNTOUCHED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({
+        usable: true,
+        credential: { specVersion: 1, endpoint: ENDPOINT, apiKey: KEY_1, mintedAt: ISO },
+      });
+    },
+  );
+});
+
+describe('a machine-wide attach over a personal device writes the settings first', () => {
+  // The settings drop the enrolled list and carry this run's history answer; the
+  // credential that follows makes the machine machine-wide. A stop between the
+  // two must leave the personal device's credential beside no list and no earlier
+  // grant, never a machine-wide credential beside them.
+  it('finds the personal device credential still in place when it writes the settings', async () => {
+    attachedScoped(BOUND);
+    applyOnboarding({ historySyncConsent: GRANT }, base, null);
+    let atSettingsWrite: AttachmentMode | undefined;
+    stand.beforeNextSettingsWrite = () => {
+      atSettingsWrite = modeOnDisk();
+    };
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(atSettingsWrite).toBe('scoped');
+    expect(modeOnDisk()).toBe('machine');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+  });
+
+  it('leaves the personal device sending no repository activity, and says so, when the credential write fails after the settings', async () => {
+    attachedScoped(BOUND);
+    applyOnboarding({ historySyncConsent: GRANT }, base, null);
+    const before = readFileSync(credentialFile(), 'utf8');
+    stand.credentialWrites = 0;
+    stand.failCredentialWriteAt = 1;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+    expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(before);
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+    // The forward verdict's own read of what is left: a scoped credential and no list.
+    expect(
+      resolveScope({ mode: 'scoped', scope: storedSettings().attachmentScope, endpoint: ENDPOINT }),
+    ).toEqual({ mode: 'scoped', keys: new Set() });
+  });
+
+  it('leaves a credential file it cannot read in place, and says so, when the credential write fails after the settings', async () => {
+    const planted = plantUnreadableCredential();
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+        attachmentScope: BOUND,
+        historySyncConsent: GRANT,
+      },
+      base,
+      null,
+    );
+    stand.credentialWrites = 0;
+    stand.failCredentialWriteAt = 1;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(planted);
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+  });
+
+  it('leaves the machine as it was when the settings write fails first', async () => {
+    attachedScoped(BOUND);
+    applyOnboarding({ historySyncConsent: GRANT }, base, null);
+    const credentialBefore = readFileSync(credentialFile(), 'utf8');
+    const settingsBefore = readFileSync(settingsFile(), 'utf8');
+    stand.credentialWrites = 0;
+    stand.failSettingsWrite = true;
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+    // The settings come first, so no credential was written to be put back.
+    expect(stand.credentialWrites).toBe(0);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(credentialBefore);
+    expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+  });
+
+  // The credential file is gone but the settings still say attached to this
+  // endpoint, with a list or a history grant given for a personal device's
+  // repositories: a deleted credential file leaves them so, and so does the
+  // rollback that reports a file it could not read as gone. The credential
+  // written first would sit beside them as a machine-wide one, and this run's
+  // answer would not be on disk.
+  describe('over settings that still carry a list or a grant, with no credential file', () => {
+    const STALE = [
+      ['a list and a grant', { attachmentScope: BOUND, historySyncConsent: GRANT }],
+      ['a list alone', { attachmentScope: BOUND }],
+      ['a grant alone', { historySyncConsent: GRANT }],
+    ] as const;
+
+    it.each(STALE)(
+      'finds no credential file yet when it writes the settings, with %s',
+      async (_name, stale) => {
+        attachedSettings(stale);
+        let atSettingsWrite: ReturnType<typeof storedCredential> | undefined;
+        stand.beforeNextSettingsWrite = () => {
+          atSettingsWrite = storedCredential();
+        };
+        const h = harness({ interactive: false, stdin: KEY_2 });
+
+        await runAttach(
+          ['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'],
+          h.deps,
+        );
+
+        expect(exits).toEqual([]);
+        expect(atSettingsWrite).toEqual({ usable: false, reason: 'absent' });
+        expect(modeOnDisk()).toBe('machine');
+        expect(storedSettings()).not.toHaveProperty('attachmentScope');
+        expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+      },
+    );
+
+    it('leaves no list and no grant, and says so, when the credential write fails after the settings', async () => {
+      attachedSettings({ attachmentScope: BOUND, historySyncConsent: GRANT });
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(storedSettings()).not.toHaveProperty('attachmentScope');
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+    });
+
+    it('leaves everything untouched, and says the machine is as it was, when the settings write fails first', async () => {
+      attachedSettings({ attachmentScope: BOUND, historySyncConsent: GRANT });
+      const settingsBefore = readFileSync(settingsFile(), 'utf8');
+      stand.credentialWrites = 0;
+      stand.failSettingsWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+      expect(stand.credentialWrites).toBe(0);
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+    });
+  });
+
+  // The order changes only where a stop between the writes could put a
+  // machine-wide credential beside a list or grant given for a personal device.
+  describe('and keeps the credential first everywhere else', () => {
+    it('writes the credential first on a machine that was always machine-wide, grant and all', async () => {
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: KEY_1,
+        mintedAt: ISO,
+      });
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+          historySyncConsent: {
+            acknowledgedAt: ISO,
+            payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+            endpoint: ENDPOINT,
+          },
+        },
+        base,
+        null,
+      );
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(modeOnDisk()).toBe('machine');
+    });
+
+    it('writes the credential first on a first attach to a clean machine', async () => {
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    it('writes the credential first when settings that carry nothing are all that is left', async () => {
+      applyOnboarding(
+        { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO } },
+        base,
+        null,
+      );
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+  });
+});
+
+// A scoped attach keeps the list it finds only on a rotation: the same
+// deployment, the same organization and account. Any other scoped attach writes
+// a fresh empty list over whatever is stored, and the credential written first
+// would sit beside the old list and the old grant until the settings follow.
+describe('a scoped attach that will not keep the stored list writes the settings first', () => {
+  const ANOTHER_ACCOUNT = { ...ANA, userEmail: 'member-18' };
+  const SCOPED_ARGS = ['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'];
+  const STALE_SETTINGS = { attachmentScope: BOUND, historySyncConsent: GRANT };
+
+  interface NotKept {
+    name: string;
+    /** Puts the machine in a state whose stored list this attach will not keep. */
+    arrange: () => void;
+    /** Who the key verifies as. */
+    who: { tenantName: string; userEmail: string };
+  }
+  const NOT_KEPT: NotKept[] = [
+    {
+      name: 'a credential for this deployment, with the key verified as another account',
+      arrange: () => {
+        attachedScoped(BOUND);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANOTHER_ACCOUNT,
+    },
+    {
+      name: 'a credential for another deployment',
+      arrange: () => {
+        attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANA,
+    },
+    {
+      name: 'a list that names no account',
+      arrange: () => {
+        attachedScoped(UNBOUND);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANA,
+    },
+    {
+      name: 'no credential file',
+      arrange: () => {
+        attachedSettings(STALE_SETTINGS);
+      },
+      who: ANA,
+    },
+    {
+      name: 'a credential file this build cannot read',
+      arrange: () => {
+        plantUnreadableCredential();
+        attachedSettings(STALE_SETTINGS);
+      },
+      who: ANA,
+    },
+  ];
+
+  it.for(NOT_KEPT)(
+    'finds the earlier credential still in place when it writes the settings, over $name',
+    async (row) => {
+      row.arrange();
+      const before = credentialText();
+      const watch = watchCredentialAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(watch.ran()).toBe(true);
+      expect(watch.text()).toBe(before);
+      expect(modeOnDisk()).toBe('scoped');
+      expect(storedSettings().attachmentScope).toEqual({
+        endpoint: ENDPOINT,
+        tenantName: row.who.tenantName,
+        userEmail: row.who.userEmail,
+        entries: [],
+      });
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+    },
+  );
+
+  it.for(NOT_KEPT)(
+    'leaves the earlier credential beside an empty list and no grant, and says so, when the credential write fails after the settings, over $name',
+    async (row) => {
+      row.arrange();
+      const before = credentialText();
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(credentialText()).toBe(before);
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+      // The forward verdict's own read of what is left: no repository is enrolled.
+      expect(
+        resolveScope({
+          mode: 'scoped',
+          scope: storedSettings().attachmentScope,
+          endpoint: ENDPOINT,
+        }),
+      ).toEqual({ mode: 'scoped', keys: new Set() });
+    },
+  );
+
+  it.for(NOT_KEPT)(
+    'leaves the machine as it was when the settings write fails first, over $name',
+    async (row) => {
+      row.arrange();
+      const credentialBefore = credentialText();
+      const settingsBefore = readFileSync(settingsFile(), 'utf8');
+      stand.credentialWrites = 0;
+      stand.failSettingsWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+      expect(stand.credentialWrites).toBe(0);
+      expect(credentialText()).toBe(credentialBefore);
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+    },
+  );
+
+  // The history question answered yes: this run's grant is written by the same
+  // single settings write as the empty list, and the capture backlog is marked
+  // only once the credential has landed too.
+  describe('with the history question answered yes', () => {
+    const SCOPED_YES_ARGS = ['--url', ENDPOINT, '--scoped', '--key-stdin', '--sync-history'];
+    const NOW = '2026-10-02T00:00:00.000Z';
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'], now: new Date(NOW) });
+      attachedSettings(STALE_SETTINGS);
+      stand.settingsWrites = 0;
+    });
+
+    const writtenTogether = (): void => {
+      expect(stand.settingsWrites).toBe(1);
+      expect(storedSettings().historySyncConsent).toEqual({
+        acknowledgedAt: NOW,
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+        endpoint: ENDPOINT,
+      });
+      expect(storedSettings().attachmentScope).toEqual(FRESH);
+    };
+
+    it('writes the grant with the empty list in one settings write, and marks nothing when the credential write then fails', async () => {
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_YES_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      writtenTogether();
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(stand.seedCalls).toEqual([]);
+    });
+
+    it('marks the capture backlog once, from the empty list, when both writes succeed', async () => {
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_YES_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      writtenTogether();
+      expect(modeOnDisk()).toBe('scoped');
+      expect(stand.seedCalls).toHaveLength(1);
+      // The scope it is handed is the one just written: nothing is enrolled.
+      const scope = stand.seedCalls[0]?.[2];
+      expect(typeof scope).toBe('function');
+      expect((scope as () => readonly string[] | undefined)()).toEqual([]);
+    });
+  });
+
+  describe('and keeps the credential first everywhere else', () => {
+    it('writes the credential first on a rotation that keeps the list', async () => {
+      attachedScoped(BOUND);
+      applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(storedSettings().attachmentScope).toEqual(BOUND);
+    });
+
+    it('writes the credential first on a first scoped attach with nothing stored', async () => {
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    it('writes the credential first when the settings that are left carry neither a list nor a grant', async () => {
+      attachedSettings({});
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    // Settings first here would leave the machine-wide credential beside this
+    // run's answer about the repositories to be enrolled.
+    it('writes the credential first over a machine-wide credential, whatever settings are stored', async () => {
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: KEY_1,
+        mintedAt: ISO,
+      });
+      attachedSettings(STALE_SETTINGS);
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(storedSettings().attachmentScope).toEqual(FRESH);
+    });
+  });
 });
 
 describe('what a scoped attach writes', () => {
@@ -1589,6 +2397,43 @@ describe('what a scoped attach writes', () => {
   });
 });
 
+describe('what an attach granted --sync-history marks to send of what was recorded before it', () => {
+  it('marks nothing on a first attach as a personal device, since nothing is enrolled', async () => {
+    seedCaptures();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
+    expect(owedCaptures()).toEqual([]);
+  });
+
+  it('marks only the enrolled repositories on a key rotation of a personal device', async () => {
+    seedCaptures();
+    attachedScoped(BOUND);
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(owedCaptures()).toEqual(['cap-ledger', 'cap-repo']);
+  });
+
+  // The control: the unscoped read sees every mark a machine-wide grant makes,
+  // so the empty answer above is not a read that sees nothing.
+  it('marks every capture on a machine-wide attach', async () => {
+    seedCaptures();
+    const h = harness({ interactive: false, stdin: KEY_1 });
+
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(owedCaptures()).toEqual(['cap-ledger', 'cap-new', 'cap-repo', 'cap-unkeyed']);
+  });
+});
+
 describe('aka detach', () => {
   it('clears the enrolled list, so a later scoped attach as the same account starts empty', async () => {
     attachedScoped(BOUND);
@@ -1636,8 +2481,10 @@ describe('what an attach says', () => {
     expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
     expect(said).toContain(
-      'An aka older than this one that re-attaches this machine makes it machine-wide.',
+      'Re-attaching with an aka older than this one, from its command line or its\n' +
+        'dashboard, makes this machine machine-wide.',
     );
+    expect(said).not.toContain('An aka older than this one that re-attaches');
     expect(said).not.toContain('Activity from here on is sent to that deployment automatically.');
   });
 
@@ -1667,7 +2514,8 @@ describe('what an attach says', () => {
         'finding counts and dates for everything recorded on the machine. Where a',
         'scan is available (the coding-agent plugins, not a browser chat), the same',
         'session start also checks it for device commands.',
-        'An aka older than this one that re-attaches this machine makes it machine-wide.',
+        'Re-attaching with an aka older than this one, from its command line or its',
+        'dashboard, makes this machine machine-wide.',
         '',
         'Policy arrives on the next session. Run `aka status` to see it.',
         '',
@@ -1697,6 +2545,33 @@ describe('what an attach says', () => {
     const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
 
     await runAttach(['--url', ENDPOINT, '--scoped'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.output()).toContain(`Verified against ${who.tenantName}.`);
+    expect(h.output()).toContain(`  organization  ${who.tenantName}\n`);
+    expect(h.output()).toContain(`  you           ${who.userEmail}\n`);
+  });
+
+  it('prints nothing from the deployment that could repaint a terminal on a machine-wide attach', async () => {
+    const ESC = String.fromCharCode(27);
+    const who = { tenantName: `Example${ESC}[31m Org`, userEmail: `member${ESC}[2J-17` };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
+
+    await runAttach(['--url', ENDPOINT, '--machine'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY, MACHINE_HISTORY]);
+    expect(h.output()).not.toContain(ESC);
+    expect(h.output()).toContain('Verified against Example[31m Org.');
+    expect(h.output()).toContain('  organization  Example[31m Org');
+    expect(h.output()).toContain('  you           member[2J-17');
+  });
+
+  it('shows an organization and an account as long as the schema allows, whole, on a machine-wide attach', async () => {
+    const who = { tenantName: 'o'.repeat(200), userEmail: `${'u'.repeat(308)}@example.com` };
+    const h = harness({ interactive: true, answers: [KEY_1, 'n'], who });
+
+    await runAttach(['--url', ENDPOINT, '--machine'], h.deps);
 
     expect(exits).toEqual([]);
     expect(h.output()).toContain(`Verified against ${who.tenantName}.`);

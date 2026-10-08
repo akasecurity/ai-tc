@@ -11,6 +11,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { attachmentScopeLines } from '@akasecurity/plugin-runtime';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
@@ -664,6 +665,61 @@ describe('aka enroll --repo', () => {
     expect(storedScope()).toEqual(fresh());
   });
 
+  // A repository kept at the top of its host cannot be enrolled by naming its
+  // clone URL, since from the text alone it cannot be told from an owner. Its
+  // checkout resolves the key for itself, so that is where it is enrolled, and
+  // the refusal says so instead of asking for the clone URL that was just given.
+  describe('given a clone URL for a repository at the top of its host', () => {
+    const CHECKOUT_ROUTE = 'is enrolled from inside its checkout';
+
+    it.each([
+      ['an scp clone URL', 'git@git.example.test:payments.git'],
+      ['an ssh:// clone URL', 'ssh://git@git.example.test:29418/payments'],
+      ['an https clone URL ending in .git', 'https://git.example.test/payments.git'],
+    ])('sends %s to the checkout', async (_name, typed) => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
+      expect(exits).toEqual([1]);
+      expect(io.errors()).toContain(
+        `aka enroll: ${typed} names a repository kept at the top of its host. Such a repository ${CHECKOUT_ROUTE}:\n` +
+          'run `aka enroll` there, which stores the key the checkout itself resolves.\n',
+      );
+      expect(io.errors()).not.toContain('Give its clone');
+      expect(io.output()).not.toContain('Enrolled.');
+      expect(storedScope()).toEqual(fresh());
+    });
+
+    it('is true: the checkout of that repository enrolls under its own key', async () => {
+      attach({ scope: fresh() });
+      const repo = gitRepo(join(work, 'payments'), 'git@git.example.test:payments.git');
+      const io = recorder();
+      expect(await runEnroll([repo], deps(io))).toBe(0);
+      expect(identities()).toEqual(['git.example.test/payments']);
+    });
+
+    it.each([
+      ['an owner URL', 'https://github.com/acme'],
+      ['an owner URL with a trailing slash', 'https://github.com/acme/'],
+      [
+        'an https URL with one path segment and no .git, which may be an owner',
+        'https://git.example.test/payments',
+      ],
+      ['a path with a dot-dot segment', 'ssh://git@git.example.test/a/../b.git'],
+      ['a path with an empty segment', 'git@git.example.test:a//b.git'],
+    ])('keeps the old refusal for %s', async (_name, typed) => {
+      attach({ scope: fresh() });
+      const io = recorder();
+      expect(await runEnroll(['--repo', typed], deps(io))).toBe(1);
+      expect(io.errors()).toBe(
+        `aka enroll: ${typed} does not name a repository that can be enrolled. Give its clone\n` +
+          'URL, or its key, as in github.com/acme/payments-api.\n',
+      );
+      expect(io.errors()).not.toContain(CHECKOUT_ROUTE);
+      expect(storedScope()).toEqual(fresh());
+    });
+  });
+
   // A relative path such as `src/acme/payments-api` reads as a key whose host
   // has no dot, and the key check alone would store it as a repository that
   // matches nothing. A name that is a directory here is a path, so it is sent
@@ -932,6 +988,75 @@ describe('aka enroll — the stored record', () => {
   });
 });
 
+// A record whose binding this version cannot read: the organization's name is
+// longer than the schema allows, as a newer version might write it. Adding to it
+// would start a new record over the entries already there, so enrolling refuses;
+// removing from it loses nothing, so unenrolling still works.
+describe('aka enroll — a list this version cannot read', () => {
+  const UNREADABLE = { ...fresh([enrolled()]), tenantName: 't'.repeat(201) };
+  const FIRST_LINE =
+    'aka enroll: this version of aka cannot read the list of repositories enrolled with Acme, ' +
+    'so nothing was enrolled and the list was left as it is.';
+
+  it('refuses to enroll into it, names how to start the list again, and leaves it as written', async () => {
+    attach({ scope: UNREADABLE, extra: consent() });
+    const io = recorder();
+    expect(await runEnroll(['--repo', SECOND_REPO], deps(io))).toBe(1);
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toBe(
+      `${FIRST_LINE}\n` +
+        'A newer version of aka may have written it. Enroll with that version, or start the ' +
+        `list again with \`aka attach --url ${ENDPOINT} --scoped\`, which leaves it empty.\n`,
+    );
+    expect(io.errors()).not.toContain('Could not save that');
+    expect(io.output()).not.toContain('Enrolled.');
+    expect(storedScope()).toEqual(UNREADABLE);
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('names no scoped attach on a governed machine, and says what governs it instead', async () => {
+    attach({ scope: UNREADABLE, extra: consent() });
+    const io = recorder();
+    expect(
+      await runEnroll(['--repo', SECOND_REPO], deps(io, { managedSettings: governedBy() })),
+    ).toBe(1);
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toBe(
+      `${FIRST_LINE}\n` +
+        `${connectionRefusalMessage({ reason: 'scoped-managed', organization: 'Acme IT' })}\n`,
+    );
+    expect(io.errors()).not.toContain('--scoped');
+    expect(io.output()).not.toContain('Enrolled.');
+    expect(storedScope()).toEqual(UNREADABLE);
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('still removes an entry from it, and keeps the binding as written', async () => {
+    attach({ scope: UNREADABLE });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain(`Unenrolled ${WORK_REPO}.`);
+    expect(storedScope()).toEqual({ ...UNREADABLE, entries: [] });
+  });
+
+  // The usual tail says enrolling it again makes it sendable. Over a list this
+  // version cannot read that is not so: enrolling is refused, so the tail says
+  // that instead and keeps only what is still true.
+  it('says enrolling it again is refused, not that it makes it sendable, when it removes an entry', async () => {
+    attach({ scope: UNREADABLE });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
+    expect(io.output()).toBe(
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.\n` +
+        'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
+        'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
+        'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
+    );
+    expect(io.output()).not.toContain('enrolling it again');
+  });
+});
+
 describe('aka enroll — what was recorded before', () => {
   it('queues the earlier captures of exactly the repository it added, under a grant', async () => {
     attach({ scope: fresh([enrolled(SECOND_REPO, null)]), extra: consent() });
@@ -1048,6 +1173,8 @@ describe('aka unenroll', () => {
       'enrolling it again, or attaching this machine machine-wide to the same deployment,',
     );
     expect(shown).toContain('makes it sendable again.');
+    // The usual tail, for a list this version can read: enrolling it again works.
+    expect(shown).not.toContain('cannot read');
     expect(shown).not.toContain('no longer sent');
     // The promise is for what the user starts: work already under way, a
     // background sync included, may have read the scope before the edit.
@@ -1155,6 +1282,20 @@ describe('aka enroll --list', () => {
     expect(shown).toContain('2 enrolled — activity anywhere else stays on this machine');
     expect(shown).toContain(`             ${WORK_REPO} (payments-api), enrolled 2026-10-07`);
     expect(shown).toContain(`             ${SECOND_REPO}, enrolled 2026-10-07`);
+    expect(settingsWrite.calls).toBe(0);
+  });
+
+  // A build before the enrolled list existed rewrites settings through a schema
+  // that drops `attachmentScope`, so a scoped machine can be left with no list at
+  // all. The list command prints the status block's lines for that state, which
+  // differ from the lines for an empty list, and writes nothing.
+  it('shows a missing list the way aka status does, not as an empty one', async () => {
+    attach();
+    const io = recorder();
+    expect(await runEnroll(['--list'], deps(io))).toBe(0);
+    const missing = attachmentScopeLines(undefined, ENDPOINT);
+    expect(io.output()).toBe(`Enrolled with Acme:\n${missing.join('\n')}\n`);
+    expect(missing).not.toEqual(attachmentScopeLines(fresh(), ENDPOINT));
     expect(settingsWrite.calls).toBe(0);
   });
 

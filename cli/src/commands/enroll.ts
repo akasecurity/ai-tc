@@ -18,6 +18,7 @@ import {
   removeAttachmentScopeEntries,
   seedEnrolledCapturesOwed,
   settingsDir as settingsDirOf,
+  UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
 import { attachmentScopeLines, printableForTerminal } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
@@ -33,6 +34,7 @@ import {
   AttachmentScopeEntry,
   controlPlaneName,
   isAttached,
+  isAttachmentScopeValid,
   isHistorySyncConsentValid,
   parseAttachmentScope,
 } from '@akasecurity/schema';
@@ -173,6 +175,10 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     const { next, added } = addAttachmentScopeEntries(raw, connection.endpoint, [entry]);
     return { next, changed: added };
   });
+  if (edit.kind === 'unreadable') {
+    io.err(unreadableListRefusal(base, managed, connection.endpoint, name));
+    return fail(1);
+  }
   if (edit.kind !== 'saved') {
     io.err(EDIT_FAILURES[edit.kind]('enrolled'));
     return fail(1);
@@ -208,7 +214,9 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     return { next, changed: removed };
   });
   if (edit.kind !== 'saved') {
-    io.err(EDIT_FAILURES[edit.kind]('unenrolled'));
+    // Taking an entry out never raises the unreadable-list refusal, so that kind
+    // cannot reach here; the generic failure is the safe reading if it ever did.
+    io.err(EDIT_FAILURES[edit.kind === 'unreadable' ? 'failed' : edit.kind]('unenrolled'));
     return fail(1);
   }
   const keyText = (key: string): string =>
@@ -228,11 +236,20 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   // so an unenroll is not mistaken for erasing anything, or for a promise that
   // they stay unsent. Nothing is promised about work already under way (a scan
   // that is running, a background sync that was already started) either.
+  //
+  // The removal also edits a list this version cannot read (it only takes an
+  // entry out), and enrolling is refused into such a list, so for that list the
+  // tail does not offer enrolling again.
+  const unreadable = !isAttachmentScopeValid(edit.committed.attachmentScope, connection.endpoint);
   io.out(
     `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n` +
-      'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
-      'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
-      'makes it sendable again.\n',
+      (unreadable
+        ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
+          'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
+          'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n'
+        : 'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
+          'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
+          'makes it sendable again.\n'),
   );
   return 0;
 }
@@ -604,12 +621,38 @@ function identityFromInput(input: string, cwd: string): Identity {
       line: `aka enroll: ${shownInput} is not how that repository is keyed; its key is ${canonical}.`,
     };
   }
+  if (namesTopOfHostRepository(typed)) {
+    return {
+      kind: 'refused',
+      line:
+        `aka enroll: ${shownInput} names a repository kept at the top of its host. Such a repository is enrolled from inside its checkout:\n` +
+        'run `aka enroll` there, which stores the key the checkout itself resolves.',
+    };
+  }
   return {
     kind: 'refused',
     line:
       `aka enroll: ${shownInput} does not name a repository that can be enrolled. Give its clone\n` +
       'URL, or its key, as in github.com/acme/payments-api.',
   };
+}
+
+/**
+ * Whether `typed` is a clone URL for a repository kept at the top of its host:
+ * one path segment after the host, as in `git@git.example.com:payments.git`.
+ *
+ * The two-segment rule refuses such a key by name, because from the text alone
+ * it cannot be told from an owner (`https://github.com/acme` keys the same way).
+ * So this answers only where the text cannot be an owner's page: an scp, ssh://
+ * or other non-web address, or an http(s) address that ends in `.git`. A bare
+ * http(s) address with one path segment may be an owner and is not taken for a
+ * repository. The checkout of such a repository resolves its key for itself,
+ * which is where it is enrolled. Pure.
+ */
+function namesTopOfHostRepository(typed: string): boolean {
+  const key = canonicalRepoUrl(typed);
+  if (key?.split('/').length !== 2) return false;
+  return !/^https?:\/\//i.test(typed) || /\.git\/?$/i.test(typed);
 }
 
 /**
@@ -671,6 +714,7 @@ class AttachmentMoved extends Error {}
 
 type ScopeEdit =
   | { kind: 'saved'; changed: readonly string[]; committed: WorkspaceSettings }
+  | { kind: 'unreadable' }
   | { kind: 'moved' }
   | { kind: 'failed' };
 
@@ -682,6 +726,31 @@ const EDIT_FAILURES: Record<'moved' | 'failed', (done: string) => string> = {
     `Could not save that, so nothing was ${done}. If another program is changing AKA's\n` +
     'settings right now, run the command again.\n',
 };
+
+/**
+ * What `aka enroll` says when the stored list names this deployment but this
+ * version cannot read it, so adding to it would start a new list over the
+ * entries already there. Nothing was enrolled and the list was left as it is;
+ * the way to start it again is the scoped attach, which writes an empty list,
+ * except where an administrator governs the connection and no scoped attach is
+ * on offer, so that machine is told what governs it instead.
+ */
+function unreadableListRefusal(
+  base: string,
+  managed: ManagedSettings | null,
+  endpoint: string,
+  name: string,
+): string {
+  const governed = managedScopedRefusal(base, managed);
+  const first =
+    `aka enroll: this version of aka cannot read the list of repositories enrolled with ${name}, ` +
+    'so nothing was enrolled and the list was left as it is.';
+  return governed === null
+    ? `${first}\n` +
+        'A newer version of aka may have written it. Enroll with that version, or start the ' +
+        `list again with ${reattachCommand(endpoint)}, which leaves it empty.\n`
+    : `${first}\n${refusalLine(governed)}\n`;
+}
 
 /**
  * One raw edit of the stored scope record, inside the settings lock.
@@ -696,6 +765,10 @@ const EDIT_FAILURES: Record<'moved' | 'failed', (done: string) => string> = {
  * The credential is read again there too, and must still be usable and scoped:
  * a machine-wide re-attach to the same endpoint changes nothing the endpoint
  * check can see.
+ *
+ * A list that names this endpoint but that this version cannot read is not
+ * added to (see UnreadableAttachmentScopeError): the check is the updater's own,
+ * inside the lock, because the record can change before the lock is taken.
  *
  * Returns the identities the edit changed and the settings as written, overlay
  * applied, or why nothing was written. Never throws.
@@ -727,6 +800,7 @@ function editScope(
     );
     return { kind: 'saved', changed, committed: overlayManagedSettings(written, managed) };
   } catch (err) {
+    if (err instanceof UnreadableAttachmentScopeError) return { kind: 'unreadable' };
     return { kind: err instanceof AttachmentMoved ? 'moved' : 'failed' };
   }
 }

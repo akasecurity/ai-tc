@@ -384,9 +384,9 @@ describe('aka sync-history --on — the capture backfill and the attachment scop
 
   // The grant is already recorded when the seed runs, so a credential read that
   // throws while the seed works out its scope must not turn it into a failure:
-  // the seed falls back to marking every capture, which is safe because marking
-  // is not sending.
-  it('still records the grant, and marks every capture, when the credential read throws', async () => {
+  // the seed marks no capture then, because marking every capture would make a
+  // scoped attachment's retention hold bodies of repositories it does not cover.
+  it('still records the grant, and marks no capture, when the credential read throws', async () => {
     attach();
     enroll([WORK]);
     seedCaptures({ 'work-prompt': WORK, 'personal-prompt': PERSONAL });
@@ -396,6 +396,6 @@ describe('aka sync-history --on — the capture backfill and the attachment scop
 
     expect(exits).toEqual([]);
     expect(readWorkspaceSettings(base).historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
-    expect(owedIds()).toEqual(['personal-prompt', 'work-prompt']);
+    expect(owedIds()).toEqual([]);
   });
 });

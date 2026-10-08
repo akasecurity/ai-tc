@@ -48,6 +48,10 @@ const MISMATCHED: CredentialFileRead = {
   settingsEndpoint: ENDPOINT,
 };
 const MANAGED: ConnectionRefusal = { reason: 'scoped-managed', organization: ORG };
+const scopedFor = (endpoint: string): CredentialFileRead => ({
+  usable: true,
+  credential: { specVersion: 2, mode: 'scoped', endpoint, apiKey: KEY },
+});
 
 const decide = (over: Partial<Parameters<typeof decideAttachMode>[0]>) =>
   decideAttachMode({
@@ -296,9 +300,9 @@ describe('holdsScopedFor', () => {
     expect(holdsScopedFor(previous, ENDPOINT)).toBe(false);
   });
 
-  it('is the same fact the decision calls a widening, for every credential', () => {
-    // The decision's `widening` and this predicate are one definition: a
-    // machine-wide write over a credential widens exactly when it holds.
+  it('is the fact the decision calls a widening, for every credential spelled as the endpoint is', () => {
+    // A machine-wide write over one of these widens exactly where this holds.
+    // The decision also counts another spelling of the endpoint: see below.
     const credentials = [
       ABSENT,
       UNREADABLE,
@@ -307,14 +311,58 @@ describe('holdsScopedFor', () => {
       MACHINE_ELSEWHERE,
       SCOPED,
       SCOPED_ELSEWHERE,
-      SCOPED_TRAILING_SLASH,
-      SCOPED_UPPER_CASE_HOST,
     ];
     for (const previous of credentials) {
       expect(decide({ flag: 'machine', previous })).toMatchObject({
         widening: holdsScopedFor(previous, ENDPOINT),
       });
     }
+  });
+});
+
+describe('decideAttachMode: a widening over another spelling of the endpoint', () => {
+  it.each<[string, string, string]>([
+    ['a trailing slash on the endpoint typed', ENDPOINT, `${ENDPOINT}/`],
+    ['a trailing slash on the endpoint held', `${ENDPOINT}/`, ENDPOINT],
+    ['a host in another case', 'https://AKA.example.com', ENDPOINT],
+    ['a host with a trailing dot', 'https://aka.example.com.', ENDPOINT],
+    ['the default port spelled out', 'https://aka.example.com:443', ENDPOINT],
+    [
+      'a path in another case, with a trailing slash',
+      `${ENDPOINT}/Gateway/`,
+      `${ENDPOINT}/gateway`,
+    ],
+  ])('calls --machine a widening over %s, which holdsScopedFor does not', (_name, held, typed) => {
+    const previous = scopedFor(held);
+    expect(decide({ flag: 'machine', previous, endpoint: typed })).toEqual({
+      kind: 'use',
+      mode: 'machine',
+      widening: true,
+      why: 'flag',
+    });
+    expect(decide({ managed: MANAGED, previous, endpoint: typed })).toMatchObject({
+      widening: true,
+    });
+    expect(holdsScopedFor(previous, typed)).toBe(false);
+  });
+
+  it.each<[string, string]>([
+    ['another port', 'https://aka.example.com:8443'],
+    ['another path', `${ENDPOINT}/other`],
+    ['another scheme', 'http://aka.example.com'],
+    ['another host', OTHER_ENDPOINT],
+  ])('does not call --machine a widening over a personal device on %s', (_name, held) => {
+    expect(decide({ flag: 'machine', previous: scopedFor(held) })).toMatchObject({
+      widening: false,
+    });
+  });
+
+  it('does not take a machine-wide credential in another spelling for a widening', () => {
+    const previous: CredentialFileRead = {
+      usable: true,
+      credential: { specVersion: 1, endpoint: `${ENDPOINT}/`, apiKey: KEY },
+    };
+    expect(decide({ flag: 'machine', previous })).toMatchObject({ widening: false });
   });
 });
 
@@ -410,6 +458,10 @@ describe('settledDecisionHolds', () => {
     it('does not hold if a personal device for this endpoint appeared where none was agreed to', () => {
       expect(holdsAfter({ flag: 'machine', previous: ABSENT }, SCOPED)).toBe(false);
       expect(holdsAfter({ flag: 'machine', previous: MACHINE }, SCOPED)).toBe(false);
+    });
+
+    it('does not hold if a personal device for another spelling of this endpoint appeared where none was agreed to', () => {
+      expect(holdsAfter({ flag: 'machine', previous: ABSENT }, SCOPED_TRAILING_SLASH)).toBe(false);
     });
 
     it('does not hold under an administrator either, where it asks nobody', () => {

@@ -10,11 +10,33 @@
 // these append to, or filter, the stored `entries` list and copy every other key
 // as found.
 //
+// A record that names the deployment but that this build cannot read (a binding
+// field a newer build's bounds allow, say) is not replaced either: enrolling into
+// it throws UnreadableAttachmentScopeError, so the caller writes nothing, and
+// unenrolling from it filters its stored entries like any other record's.
+//
 // Pure: no I/O. Run them inside applyOnboarding's updater, which hands over the
 // file the merge is about to land on, so two writers cannot lose each other's
 // edit.
 import type { AttachmentScope, PluginWhoami } from '@akasecurity/schema';
 import { AttachmentScopeEntry, isAttachmentScopeValid } from '@akasecurity/schema';
+
+/**
+ * Thrown by addAttachmentScopeEntries for a scope record that names the
+ * endpoint but that this build cannot read, so that nothing is written over it.
+ * The message is fixed text and repeats nothing from the record.
+ */
+export class UnreadableAttachmentScopeError extends Error {
+  constructor() {
+    super('refusing to enroll into a scope record this build cannot read');
+    this.name = 'UnreadableAttachmentScopeError';
+  }
+}
+
+/** Whether a raw record names `endpoint` as its deployment, whatever else it holds. */
+function namesEndpoint(raw: unknown, endpoint: string): boolean {
+  return typeof raw === 'object' && raw !== null && 'endpoint' in raw && raw.endpoint === endpoint;
+}
 
 /** The stored `entries` list of a raw record, or none. */
 function storedEntries(raw: unknown): readonly unknown[] {
@@ -63,16 +85,28 @@ export function freshAttachmentScope(
  * a silent no-op for an identity it was asked to add. An identity repeated
  * within `entries` is appended once, the first time.
  *
- * With no record that counts for `endpoint` — none at all, as an older settings
- * writer leaves it, a damaged one, or one for another deployment — the result is
- * a NEW record holding just these entries, and UNBOUND: it names no
- * organization or account, so isAttachmentScopeBoundTo answers false for it. It
- * forwards what it lists, as any record that counts for its endpoint does: the
- * binding takes no part in the forwarding verdict. Another deployment's record
- * is not carried along; it counted for nothing here.
+ * With no record for `endpoint` — none at all, as an older settings writer
+ * leaves it, a value that is not a record, a record that names no endpoint, or
+ * one for another deployment — the result is a NEW record holding just these
+ * entries, and UNBOUND: it names no organization or account, so
+ * isAttachmentScopeBoundTo answers false for it. It forwards what it lists, as
+ * any record that counts for its endpoint does: the binding takes no part in the
+ * forwarding verdict. Another deployment's record is not carried along; it
+ * counted for nothing here.
+ *
+ * A record that names `endpoint` but does not count for it — a binding field
+ * outside this build's bounds (a newer build may allow more), entries that are
+ * not a list — is neither replaced nor repaired. Its entries may be another
+ * build's, read and forwarded there, and a new record in its place would delete
+ * them for good. Dropping the binding instead would make this build forward
+ * every entry the record holds, which nobody asked for here, and the binding
+ * cannot be worked out again without asking the deployment. So this THROWS
+ * UnreadableAttachmentScopeError, and nothing should be written.
  *
  * `added` lists the identities appended, in order. When it is empty, `next` is
- * `raw` itself, so a caller can skip a write that would change nothing.
+ * `raw` itself, so a caller can skip a write that would change nothing. That
+ * includes a call with nothing to add on a record this build cannot read, which
+ * is not refused.
  *
  * THROWS for an entry the schema would drop on read (an empty or unprintable
  * identity, a label over 80 characters, a bad timestamp) rather than store an
@@ -104,6 +138,7 @@ export function addAttachmentScopeEntries(
   }
   const added = appended.map((entry) => entry.identity);
   if (appended.length === 0) return { next: raw, added };
+  if (!counts && namesEndpoint(raw, endpoint)) throw new UnreadableAttachmentScopeError();
   if (!counts) return { next: { endpoint, entries: appended }, added };
   return { next: withEntries(raw, [...stored, ...appended]), added };
 }
@@ -118,17 +153,21 @@ export function addAttachmentScopeEntries(
  * behind to keep forwarding it there. Everything else the record carries is
  * copied as found.
  *
- * With no record that counts for `endpoint`, nothing is removed: another
- * deployment's record is not this function's to edit. `removed` lists each
- * identity that matched at least one stored entry, once, in the order asked.
- * When it is empty, `next` is `raw` itself. Never mutates `raw`.
+ * The record need only name `endpoint`. One this build cannot otherwise read (a
+ * binding field outside its bounds, say) is edited the same way, for the same
+ * reason as an entry it cannot read: a build that reads the record would go on
+ * forwarding what was asked to stop. Without a record that names `endpoint` —
+ * none, or another deployment's — nothing is removed: another deployment's
+ * record is not this function's to edit. `removed` lists each identity that
+ * matched at least one stored entry, once, in the order asked. When it is
+ * empty, `next` is `raw` itself. Never mutates `raw`.
  */
 export function removeAttachmentScopeEntries(
   raw: unknown,
   endpoint: string,
   identities: readonly string[],
 ): { next: unknown; removed: readonly string[] } {
-  if (!isAttachmentScopeValid(raw, endpoint)) return { next: raw, removed: [] };
+  if (!namesEndpoint(raw, endpoint)) return { next: raw, removed: [] };
   const asked = new Set(identities);
   const matched = new Set<string>();
   const kept = storedEntries(raw).filter((entry) => {

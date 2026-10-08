@@ -160,7 +160,7 @@ export function renderForwardLine(outcome: ReportedForward): string {
     case 'not-enrolled':
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
-        'project not enrolled; its scans stay on this machine ' +
+        'the project or a repository nested in it is not enrolled; its scans stay on this machine ' +
         '(`aka enroll --list` shows what is sent; ' +
         '`aka enroll` adds a repository with a code-host remote)'
       );

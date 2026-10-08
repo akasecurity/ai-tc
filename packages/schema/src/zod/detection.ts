@@ -6,9 +6,17 @@ import { DetectionCategory, Severity } from './finding.ts';
 import { Namespace, PackId, PublisherKind, SemVer } from './registry.ts';
 // Matcher (the keyword|regex|validator union) + RegexMatcher already defined in
 // rule.ts — import rather than redefine to avoid collision. AppliesTo /
-// PostValidatorRef / RequiresNearby come from there for the same reason: they are
-// the rule's own field shapes, and DetectionRule reports them verbatim.
-import { AppliesTo, Matcher, PostValidatorRef, RegexMatcher, RequiresNearby } from './rule.ts';
+// PostValidatorRef / RequiresNearby / RuleEvidence come from there for the same
+// reason: they are the rule's own field shapes, and DetectionRule reports them
+// verbatim.
+import {
+  AppliesTo,
+  Matcher,
+  PostValidatorRef,
+  RegexMatcher,
+  RequiresNearby,
+  RuleEvidence,
+} from './rule.ts';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -136,7 +144,7 @@ export { Matcher, RegexMatcher };
 // rule inspector renders regex, keyword, and validator matchers alike, so a pack
 // with keyword/validator rules exposes all of them (not just its regex rules).
 //
-// The four optional fields below are the rest of what actually decides whether a
+// The first four optional fields below are the rest of what actually decides whether a
 // rule fires. They are already stored — `rules_json` holds parsed `Rule` objects
 // in both the local SQLite store and the tenant Postgres one — and were simply
 // projected away here, which made this shape a description of a rule the engine
@@ -173,6 +181,8 @@ export const DetectionRule = z
     // cheapest honest answer to "show me what this rule catches" — every bundled
     // rule has them, and they are already in the stored snapshot.
     examples: z.array(z.string()).optional(),
+    // Whether the matched text is itself sensitive. Absent means 'value'.
+    evidence: RuleEvidence.optional(),
   })
   .meta({ id: 'DetectionRule' });
 export type DetectionRule = z.infer<typeof DetectionRule>;

@@ -14,7 +14,14 @@ import type {
   ListDetectionsResponse,
   OriginEnum,
 } from './detection.ts';
-import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from './rule.ts';
+import {
+  AppliesTo,
+  Matcher,
+  PostValidatorRef,
+  RequiresNearby,
+  type Rule,
+  RuleEvidence,
+} from './rule.ts';
 
 /**
  * Spread-able single entry for an optional DetectionRule field: `{ key: value }`
@@ -190,6 +197,7 @@ export function rowToDetectionDetail(
           { success: isStringArray(r.examples), data: r.examples },
           r.examples,
         ),
+        ...optional('evidence', RuleEvidence.safeParse(r.evidence), r.evidence),
       },
     ];
   });

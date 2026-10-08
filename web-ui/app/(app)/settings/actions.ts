@@ -3,6 +3,7 @@
 import { triggerHistorySyncRun, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
+  type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
   type CredentialFileRead,
@@ -10,6 +11,7 @@ import {
   decideAttachMode,
   defaultDataDir,
   freshAttachmentScope,
+  holdsScopedFor,
   isForwardPaused,
   isSafeEndpoint,
   managedAttachRefusal,
@@ -24,6 +26,7 @@ import {
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir,
+  settledDecisionHolds,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -40,7 +43,6 @@ import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   AttachInput,
-  attachmentModeOf,
   BodyRetention,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -64,6 +66,7 @@ import {
 import { revalidatePath } from 'next/cache';
 
 import {
+  ATTACH_CHANGED_WHILE_WAITING,
   ATTACH_CREDENTIAL_UNWRITABLE,
   ATTACH_ENDPOINT_INSECURE,
   ATTACH_ENDPOINT_UNPARSEABLE,
@@ -421,6 +424,16 @@ function nextWebChatCapture(
  * machine-wide credential is the v1 file this action has always written, byte
  * for byte.
  *
+ * THE DECISION IS PUT AGAIN AFTER THE ROUND TRIP, ON THE CREDENTIAL AS IT IS THEN.
+ * The mode was settled from a read made before the key went out, and another
+ * process can attach, re-attach or detach the machine while the reply is awaited.
+ * So the credential is read once more just before the write and the same decision
+ * is made on it (`settledDecisionHolds`). If it no longer agrees, nothing is
+ * written and the answer says the connection changed. What is kept of the stored
+ * scope record follows that later read as well (`holdsScopedFor`), so a personal
+ * device attached meanwhile keeps its enrolled list and one widened meanwhile by
+ * an older build does not get the record it left behind revived.
+ *
  * The key reaches `writeControlPlaneCredential` and nothing else. It is not
  * logged, not returned, and never enters settings.json, which keeps carrying the
  * public half alone (see ControlPlaneConnection). No refusal below interpolates
@@ -505,7 +518,8 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   const governed = managedScopedRefusal();
   const decided = modeForAttach(parsed.data.mode, governed, prior, endpoint);
   if (!decided.ok) return { ok: false, error: decided.error };
-  const mode = decided.mode;
+  const { settled } = decided;
+  const mode = settled.mode;
 
   const accessKey = parsed.data.accessKey.trim();
   if (accessKey === '') return { ok: false, error: ATTACH_KEY_MISSING };
@@ -529,6 +543,52 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     if (late !== null) return { ok: false, error: connectionRefusal(late) };
   }
 
+  // What was there before, so a failed write can be put back, and so the decision
+  // can be put again on the machine as it is now. Re-attaching is how a key is
+  // ROTATED, so this routinely runs on a machine that is already attached and
+  // working; an unconditional rollback would take that machine from
+  // attached-and-forwarding to attached-and-broken.
+  //
+  // GUARDED like the early read. Its read looks total — `throwIfNoEntry: false`
+  // covers a missing file — but that flag answers ENOENT and nothing else: with a
+  // FILE where ~/.aka/settings should be a directory, lstat raises ENOTDIR. A
+  // file can take the directory's place during the round trip, and outside a try
+  // that rejects the whole Server Action and replaces the page with a framework
+  // error, which is precisely the failure every action in this file is written to
+  // return instead of raise.
+  //
+  // The FULL read, not the narrow state, and this is one of the two callers that
+  // is entitled to it: rolling a credential back means writing the exact bytes
+  // that were there. A Server Action runs only on the server, so nothing here
+  // crosses to a browser.
+  let previous: CredentialFileRead;
+  try {
+    previous = readControlPlaneCredentialFile(dir);
+  } catch {
+    return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
+  }
+
+  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was settled from `prior`,
+  // read before the key went out, and another process can attach, re-attach or
+  // detach this machine while the reply is awaited. The same decision is put
+  // again on `previous`, with the same flag, administrator's answer and endpoint;
+  // if it no longer agrees (see settledDecisionHolds) writing what was settled
+  // could widen a personal device, narrow a machine-wide attachment, or overwrite
+  // a credential a newer build wrote, so nothing is written.
+  if (
+    !settledDecisionHolds({
+      flag: parsed.data.mode,
+      managed: governed,
+      previous,
+      endpoint,
+      interactive: false,
+      settled,
+      mode,
+    })
+  ) {
+    return { ok: false, error: ATTACH_CHANGED_WHILE_WAITING };
+  }
+
   // Who the key belongs to, for a SCOPED attach only: the scope record is bound
   // to these two fields, so a key for another organization or account starts
   // with nothing enrolled. Nothing else from the answer is kept.
@@ -536,20 +596,13 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     mode === 'scoped'
       ? { tenantName: identity.tenantName, userEmail: identity.userEmail }
       : undefined;
-  // The stored record can be kept only on a scoped → scoped re-attach: the
-  // machine already held a usable SCOPED credential for this exact endpoint. A
+  // The stored record can be kept only on a scoped → scoped re-attach, judged on
+  // the credential as it is NOW (`previous`, not the read the mode was settled
+  // from): another process may have attached or widened this machine since. A
   // record beside a machine-wide credential, or beside none, was left by a
   // writer that did not clear it (an older build's re-attach or detach).
-  const keepScope =
-    prior.usable &&
-    prior.credential.endpoint === endpoint &&
-    attachmentModeOf(prior.credential) === 'scoped';
+  const keepScope = holdsScopedFor(previous, endpoint);
 
-  // What was there before, so a failed write can be put back. Re-attaching is
-  // how a key is ROTATED, so this routinely runs on a machine that is already
-  // attached and working; an unconditional rollback would take that machine from
-  // attached-and-forwarding to attached-and-broken.
-  //
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
   // its own account — ensureDataDirSync failing, EACCES on ~/.aka/settings, a
@@ -560,20 +613,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   //
   // Nothing to roll back here: this is the first write, so failing it leaves the
   // machine exactly as it was.
-  let previous;
   try {
-    // The snapshot is INSIDE this try, not above it. Its read looks total —
-    // `throwIfNoEntry: false` covers a missing file — but that flag answers
-    // ENOENT and nothing else: with a FILE where ~/.aka/settings should be a
-    // directory, lstat raises ENOTDIR and this throws. Outside a try that
-    // rejects the whole Server Action and replaces the page with a framework
-    // error, which is precisely the failure every action in this file is written
-    // to return instead of raise.
-    // The FULL read, not the narrow state, and this is one of the two callers
-    // that is entitled to it: rolling a credential back means writing the exact
-    // bytes that were there. A Server Action runs only on the server, so
-    // nothing here crosses to a browser.
-    previous = readControlPlaneCredentialFile(dir);
     writeControlPlaneCredential(dir, credentialFor(mode, endpoint, accessKey));
   } catch {
     return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
@@ -820,8 +860,9 @@ function closeHistoryWindow(attachedAt: string | undefined): void {
 }
 
 /**
- * The mode an attach writes, or the refusal to answer with when it cannot be
- * chosen for the caller.
+ * The mode an attach writes together with the decision it came from, or the
+ * refusal to answer with when it cannot be chosen for the caller. The decision
+ * is returned so that it can be put again after the key is verified.
  *
  * The decision is `decideAttachMode`'s, asked as a run with no terminal to ask
  * on and with the caller's `mode` as the flag. Its answers map to this surface
@@ -841,7 +882,9 @@ function modeForAttach(
   governed: ConnectionRefusal | null,
   prior: CredentialFileRead,
   endpoint: string,
-): { ok: true; mode: AttachmentMode } | { ok: false; error: string } {
+):
+  | { ok: true; settled: Extract<AttachModeDecision, { kind: 'use' }> }
+  | { ok: false; error: string } {
   const decision = decideAttachMode({
     flag: requested,
     managed: governed,
@@ -851,7 +894,7 @@ function modeForAttach(
   });
   switch (decision.kind) {
     case 'use':
-      return { ok: true, mode: decision.mode };
+      return { ok: true, settled: decision };
     case 'refuse':
       // The decision refuses `scoped-managed` only when `governed` is non-null.
       return {
@@ -870,7 +913,8 @@ function modeForAttach(
  * The credential an attach writes. Machine-wide is the v1 literal this action
  * has always written, the same keys in the same order, so a machine attachment
  * stays byte-identical; scoped is v2 with its mode last, the order the schema's
- * own parse gives.
+ * own parse gives and the terminal command's captured file has. The suite
+ * compares the written bytes with that file, so the two cannot drift apart.
  */
 function credentialFor(
   mode: AttachmentMode,

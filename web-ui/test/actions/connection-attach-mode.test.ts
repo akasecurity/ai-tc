@@ -1,13 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
+  applyOnboarding,
   controlPlaneCredentialPath,
   readWorkspaceSettings,
   SETTINGS_FILENAME,
   settingsDir,
+  writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { ManagedSettings } from '@akasecurity/schema';
 import { connectionRefusalMessage, MANAGED_SETTINGS_FILENAME } from '@akasecurity/schema';
@@ -16,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../packages/persistence/src/managed-settings.ts';
 import { attachToControlPlane, detachFromControlPlane } from '../../app/(app)/settings/actions.ts';
 import {
+  ATTACH_CHANGED_WHILE_WAITING,
   ATTACH_CREDENTIAL_UNWRITABLE,
   ATTACH_MODE_REQUIRED,
 } from '../../app/lib/action-refusals.ts';
@@ -47,6 +51,21 @@ const newHome = tempHomes('aka-web-attach-mode-');
 /** High-entropy keys made at run time, so no key-shaped literal sits in the tree. */
 const KEY = randomBytes(24).toString('base64url');
 const ROTATED_KEY = randomBytes(24).toString('base64url');
+/** The key another aka on the same machine attaches with. */
+const OTHER_AKA_KEY = randomBytes(24).toString('base64url');
+
+/** The scoped credential the terminal command writes, as captured by the frozen-reader suite. */
+const CLI_SCOPED_CREDENTIAL = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'packages',
+  'plugin-sdk',
+  'test',
+  'fixtures',
+  'cli-scoped-credential-v2.json',
+);
 
 const ORGANIZATION = 'Example Org';
 const ACCOUNT = 'operator';
@@ -65,9 +84,19 @@ const akaHome = (): string => join(home, '.aka');
 const credentialFile = (): string => controlPlaneCredentialPath(settingsDir(akaHome()));
 const settingsFile = (): string => join(settingsDir(akaHome()), SETTINGS_FILENAME);
 
-/** Answer every whoami as `account` of `organization`. */
-function answerAs(server: LoopbackServer, account: string, organization = ORGANIZATION): void {
+/**
+ * Answer every whoami as `account` of `organization`. `during` runs as the reply
+ * is made, which is the key being verified: the moment another process on this
+ * machine can change what the attach decided from.
+ */
+function answerAs(
+  server: LoopbackServer,
+  account: string,
+  organization = ORGANIZATION,
+  during?: () => void,
+): void {
   server.reply((_req, res) => {
+    during?.();
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({
@@ -162,15 +191,21 @@ describe('a first attach', () => {
     await attachScoped();
 
     const credential = storedCredential();
-    // Exactly these keys; their order on disk is the writer's, and no reader
-    // depends on it for v2.
-    expect(Object.keys(credential).sort()).toEqual([
-      'apiKey',
-      'endpoint',
-      'mintedAt',
-      'mode',
-      'specVersion',
-    ]);
+    // Exactly these keys, in the order the terminal command writes them with
+    // `mode` last, where the schema's own parse puts it: a rollback by either
+    // surface then restores the same bytes.
+    const bytes = readFileSync(credentialFile(), 'utf8');
+    const { mintedAt } = credential as { mintedAt: string };
+    expect(bytes).toBe(
+      `${JSON.stringify(
+        { specVersion: 2, endpoint: deployment.origin, apiKey: KEY, mintedAt, mode: 'scoped' },
+        null,
+        2,
+      )}\n`,
+    );
+    expect(Object.keys(credential)).toEqual(
+      Object.keys(JSON.parse(readFileSync(CLI_SCOPED_CREDENTIAL, 'utf8')) as object),
+    );
     expect(credential).toMatchObject({
       specVersion: 2,
       mode: 'scoped',
@@ -519,10 +554,15 @@ describe('a credential file this build cannot read', () => {
 describe('a settings directory the earlier credential cannot be read from', () => {
   // A regular FILE where ~/.aka/settings should be a directory: the read of the
   // credential on file raises rather than answering, and the write that would
-  // follow fails on the same fault.
-  it.each([undefined, 'machine', 'scoped'] as const)(
+  // follow fails on the same fault. Windows reports a path through a file
+  // differently, so these cases are POSIX-only.
+  it.for([undefined, 'machine', 'scoped'] as const)(
     'refuses before the key is sent, with the mode %s',
-    async (mode) => {
+    async (mode, ctx) => {
+      if (process.platform === 'win32') {
+        ctx.skip('A file where the settings directory belongs reads as ENOTDIR on POSIX only');
+        return;
+      }
       mkdirSync(akaHome(), { recursive: true });
       writeFileSync(settingsDir(akaHome()), 'not a directory');
 
@@ -537,6 +577,139 @@ describe('a settings directory the earlier credential cannot be read from', () =
       expect(deployment.received).toEqual([]);
     },
   );
+});
+
+describe('another aka changes the machine while the key is verified', () => {
+  // The mode was decided from the credential read before the key went out, and
+  // the reply can take seconds. A terminal `aka attach` landing in that wait must
+  // not be widened, narrowed or emptied by a decision made about the machine as
+  // it was.
+  const anotherAkaAttachesScoped = (): void => {
+    writeControlPlaneCredential(settingsDir(akaHome()), {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: deployment.origin,
+      apiKey: OTHER_AKA_KEY,
+      mintedAt: '2026-10-07T00:00:00.000Z',
+    });
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: deployment.origin, attachedAt: '2026-10-07T00:00:00.000Z' },
+        attachmentScope: enrolledFor(deployment.origin),
+      },
+      akaHome(),
+      null,
+    );
+  };
+
+  /** What an older aka does to a personal device: a machine-wide key, the record left behind. */
+  const olderAkaReattachesMachineWide = (): void => {
+    writeControlPlaneCredential(settingsDir(akaHome()), {
+      specVersion: 1,
+      endpoint: deployment.origin,
+      apiKey: OTHER_AKA_KEY,
+      mintedAt: '2026-10-07T00:00:00.000Z',
+    });
+  };
+
+  it.each([undefined, 'machine'] as const)(
+    'writes nothing over a scoped credential another aka wrote, with the mode %s',
+    async (mode) => {
+      answerAs(deployment, ACCOUNT, ORGANIZATION, anotherAkaAttachesScoped);
+
+      const res = await attachToControlPlane({
+        endpoint: deployment.origin,
+        accessKey: KEY,
+        ...(mode === undefined ? {} : { mode }),
+      });
+
+      expect(res).toEqual({ ok: false, error: ATTACH_CHANGED_WHILE_WAITING });
+      expectNoEchoOf(res.error, KEY);
+      expect(deployment.received).toHaveLength(1);
+      // Its credential and its enrolled list are exactly what it wrote.
+      expect(storedCredential()).toMatchObject({
+        specVersion: 2,
+        mode: 'scoped',
+        apiKey: OTHER_AKA_KEY,
+      });
+      expect(storedSettings().attachmentScope).toEqual(enrolledFor(deployment.origin));
+    },
+  );
+
+  it('writes nothing when an older aka widens a personal device and no mode was named', async () => {
+    await attachScoped();
+    writeScope(enrolledFor(deployment.origin));
+    answerAs(deployment, ACCOUNT, ORGANIZATION, olderAkaReattachesMachineWide);
+
+    const res = await attachToControlPlane({ endpoint: deployment.origin, accessKey: ROTATED_KEY });
+
+    // Kept mode was scoped when decided; the file now says machine-wide, so
+    // neither mode can be written without somebody choosing it.
+    expect(res).toEqual({ ok: false, error: ATTACH_CHANGED_WHILE_WAITING });
+    expect(storedCredential()).toMatchObject({ specVersion: 1, apiKey: OTHER_AKA_KEY });
+  });
+
+  it('keeps the enrollments another aka made while the scoped mode was being attached', async () => {
+    answerAs(deployment, ACCOUNT, ORGANIZATION, anotherAkaAttachesScoped);
+
+    const res = await attachToControlPlane({
+      endpoint: deployment.origin,
+      accessKey: KEY,
+      mode: 'scoped',
+    });
+
+    // Scoped over scoped for the same deployment is a key rotation, judged on the
+    // file as it is when written: the list it holds is not replaced by an empty one.
+    expect(res).toEqual({ ok: true });
+    expect(storedCredential()).toMatchObject({ specVersion: 2, mode: 'scoped', apiKey: KEY });
+    expect(storedSettings().attachmentScope).toEqual(enrolledFor(deployment.origin));
+  });
+
+  it('does not keep a bound record an older aka left beside its machine-wide key', async () => {
+    await attachScoped();
+    writeScope(enrolledFor(deployment.origin));
+    answerAs(deployment, ACCOUNT, ORGANIZATION, olderAkaReattachesMachineWide);
+
+    const res = await attachToControlPlane({
+      endpoint: deployment.origin,
+      accessKey: ROTATED_KEY,
+      mode: 'scoped',
+    });
+
+    // The machine held a scoped credential when the key went out and a
+    // machine-wide one when this wrote, so what is on file belongs to an
+    // attachment that ended.
+    expect(res).toEqual({ ok: true });
+    expect(storedCredential()).toMatchObject({
+      specVersion: 2,
+      mode: 'scoped',
+      apiKey: ROTATED_KEY,
+    });
+    expect(storedSettings().attachmentScope).toEqual(freshFor(deployment.origin));
+  });
+
+  it('reports a settings directory that became a file in the wait, and writes nothing', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('A file where the settings directory belongs reads as ENOTDIR on POSIX only');
+      return;
+    }
+    answerAs(deployment, ACCOUNT, ORGANIZATION, () => {
+      mkdirSync(akaHome(), { recursive: true });
+      writeFileSync(settingsDir(akaHome()), 'not a directory');
+    });
+
+    const res = await attachToControlPlane({ endpoint: deployment.origin, accessKey: KEY });
+
+    expect(res).toEqual({ ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE });
+    expect(readFileSync(settingsDir(akaHome()), 'utf8')).toBe('not a directory');
+  });
+
+  it('words the refusal so a person knows nothing was written and what to do', () => {
+    expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/changed while/i);
+    expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/nothing was written/i);
+    expect(ATTACH_CHANGED_WHILE_WAITING).toMatch(/reload the page/i);
+  });
 });
 
 describe('the refusal that asks for a mode', () => {

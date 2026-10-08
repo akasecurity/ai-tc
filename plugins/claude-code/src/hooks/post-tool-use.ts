@@ -11,10 +11,10 @@
  *   no output → pass through
  *
  * tool_response arrives in the tool's native shape (Read: file.content, Bash:
- * stdout/stderr, WebFetch: result, Grep: content, mcp__*: text content blocks
- * — see tool-response.ts), and updatedToolOutput must be emitted in that same
- * shape: Claude Code validates it against the tool's output schema and falls
- * back to the original output on mismatch.
+ * stdout/stderr, WebFetch: result, Grep: content, WebSearch: results, Agent/Task
+ * and mcp__*: text content blocks — see tool-response.ts), and updatedToolOutput
+ * must be emitted in that same shape: Claude Code validates it against the
+ * tool's output schema and falls back to the original output on mismatch.
  * Fail-open: any error → no output, exit 0.
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';

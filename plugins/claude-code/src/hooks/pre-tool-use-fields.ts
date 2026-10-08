@@ -66,6 +66,9 @@ const STATIC_FIELDS: Record<string, readonly ScannableField[]> = {
     { path: ['url'], executable: true },
     { path: ['prompt'], executable: false },
   ],
+  // A search query is sent to the search provider, so like a fetched URL it
+  // leaves the machine before any post-hook runs; redact escalates to deny.
+  WebSearch: [{ path: ['query'], executable: true }],
   // The replacement cell body. `old_string`'s NotebookEdit counterpart does not
   // exist — the cell is addressed by id — so there is no match text to protect
   // here the way MultiEdit needs.

@@ -50,6 +50,23 @@ describe('PolicyDetailView', () => {
     expect(html).not.toContain('Applied by');
   });
 
+  it('counts one rule in the singular and several in the plural', () => {
+    const html = renderToStaticMarkup(
+      <PolicyDetailView
+        policy={{
+          ...DETAIL,
+          usedBy: [
+            { id: 'secrets', name: 'Secrets', ruleCount: 4, enabled: true },
+            { id: 'pii', name: 'PII', ruleCount: 1, enabled: true },
+          ],
+        }}
+      />,
+    );
+
+    expect(html).toContain('>4 rules<');
+    expect(html).toContain('>1 rule<');
+  });
+
   it('says no detection is assigned the policy when none is', () => {
     const html = renderToStaticMarkup(<PolicyDetailView policy={{ ...DETAIL, usedBy: [] }} />);
 

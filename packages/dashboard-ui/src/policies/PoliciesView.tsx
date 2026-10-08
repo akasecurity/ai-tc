@@ -232,7 +232,9 @@ export function PolicyDetailView({ policy }: { policy: PolicyDetail }) {
                   dot={d.enabled ? 'var(--color-ok)' : 'var(--color-border-strong)'}
                 >
                   {d.name}
-                  <span className="font-mono text-text-3">{d.ruleCount} rules</span>
+                  <span className="font-mono text-text-3">
+                    {d.ruleCount} rule{d.ruleCount === 1 ? '' : 's'}
+                  </span>
                 </Tag>
               ))}
             </div>

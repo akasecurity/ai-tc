@@ -98,14 +98,16 @@ const OUTCOME_LINES: Record<PolicySyncOutcome, string> = {
 };
 
 /**
- * How each attachment mode reads on the `mode` line: which repositories the
- * attachment covers, not a claim about everything the machine sends. An
- * exhaustive Record, so a mode added later fails typecheck here instead of
- * rendering a line with a hole in it.
+ * How each attachment mode reads on the `mode` line: which activity the
+ * attachment forwards, not everything the machine sends. The scoped line names
+ * no kind of entry, because an entry may name a repository or an account and the
+ * block under it lists whichever the record holds. An exhaustive Record, so a
+ * mode added later fails typecheck here instead of rendering a line with a hole
+ * in it.
  */
 const MODE_LINES: Record<AttachmentMode, string> = {
-  machine: 'machine (every repository)',
-  scoped: 'scoped (enrolled repositories only)',
+  machine: 'machine (activity from anywhere on this machine)',
+  scoped: 'scoped (activity only from what is enrolled)',
 };
 
 /**
@@ -277,7 +279,7 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
 function scopeStateLines(raw: unknown, endpoint: string): string[] {
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
-    return ["  scope      nothing enrolled — no repository's activity is sent", ENROLL_HINT];
+    return ['  scope      nothing enrolled — no activity is sent', ENROLL_HINT];
   }
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
@@ -299,7 +301,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   }
   const lines =
     rows.length === 0
-      ? ["  scope      nothing enrolled yet — no repository's activity is sent", ENROLL_HINT]
+      ? ['  scope      nothing enrolled yet — no activity is sent', ENROLL_HINT]
       : [
           `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
           ...rows,

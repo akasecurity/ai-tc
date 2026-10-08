@@ -342,6 +342,42 @@ describe('reconcileHistory — cached input', () => {
       expect(report?.estimatedCostUsd).toBeCloseTo(billed(usage), 12);
     });
   }
+
+  it('leaves a mostly-cached prompt over the long-context line unpriced', async () => {
+    // 300K prompt, 95% cached. Only 15K is uncached, but the band is chosen by
+    // the whole prompt, and above 272K this price has no published rate.
+    const overLine: CodexTokenUsage = {
+      input_tokens: 300_000,
+      cached_input_tokens: 285_000,
+      cache_write_input_tokens: 0,
+      output_tokens: 500,
+      reasoning_output_tokens: 100,
+      total_tokens: 300_500,
+    };
+    const banded = tokenPrice(1.25, 10, {
+      cacheRead: 0.125,
+      longContext: { thresholdInputTokens: 272_000, input: null, output: null },
+    });
+    const priceBanded: CostModel = {
+      costFor: ({ usage }) => costOf(banded, usage),
+      normalizeModelId: (provider, model) => ({ provider, model }),
+    };
+    seed(
+      transcripts,
+      [sessionMeta, turnContext, rawTokenCount('2026-06-20T10:00:05.000Z', overLine)].join('\n'),
+    );
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    const attrs = rows(dataDir).attrsByOrdinal[0] as LlmCallAttributes;
+    expect(attrs).toMatchObject({ input_tokens: 15_000, cache_read_input_tokens: 285_000 });
+    const leaves = [{ sessionId: SESSION, attributes: attrs }];
+    expect(buildTokenReports(leaves, priceBanded)[0]?.estimatedCostUsd).toBeNull();
+    // Not vacuous: the same row prices under a flat rate.
+    expect(buildTokenReports(leaves, priceAll)[0]?.estimatedCostUsd).toBeCloseTo(
+      billed(overLine),
+      12,
+    );
+  });
 });
 
 describe('reconcileHistory — tool calls', () => {

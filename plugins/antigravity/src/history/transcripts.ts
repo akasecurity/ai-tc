@@ -188,8 +188,10 @@ export function parseTranscript(
 
 // The usage bag this parser surfaces, shaped to match the fields
 // `buildAttributes` in usage.ts already knows how to promote (input_tokens /
-// output_tokens / cache_read_input_tokens / …). Codex's `input_tokens` is the
-// whole prompt and INCLUDES `cached_input_tokens` (its own TokenUsage derives
+// output_tokens / cache_read_input_tokens / …). This parser assumes the Codex
+// `token_count` shape described above, so the field semantics below are
+// Codex's. Codex's `input_tokens` is the whole prompt and INCLUDES
+// `cached_input_tokens` (its own TokenUsage derives
 // non-cached input as `input_tokens - cached_input_tokens`), while the stored
 // `input_tokens` is UNCACHED input billed at the full rate, with cache reads
 // billed separately. So the parser stores `input_tokens - cached_input_tokens`

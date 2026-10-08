@@ -149,8 +149,11 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
  *
  * The last sentence is there because an earlier scoped key for this deployment
  * survives the failed write, and enrolling a repository under it would send that
- * repository. It names no command: a machine an administrator governs attaches
- * too, from this page or a terminal.
+ * repository. It names no command, as this page's other "Attach it again"
+ * notices (the stored key missing, or unusable) name none: the settings read
+ * attached now, so the page shows no attach form, and on a machine an
+ * administrator governs a detach is refused as well, so no step on this page is
+ * the way back for every machine.
  */
 export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
   "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.";

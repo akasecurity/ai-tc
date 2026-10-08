@@ -426,6 +426,9 @@ describe('a machine-wide attach over a personal device writes the settings first
       const res = await attachMachine();
 
       expect(res).toEqual({ ok: false, error: managedRefusal(['runMode']) });
+      // The key was written first, before the settings refused, and is gone again:
+      // without the count, an attach that never wrote one would pass as well.
+      expect(stand.credentialWrites).toBe(1);
       expect(existsSync(credentialFile())).toBe(false);
     });
   });

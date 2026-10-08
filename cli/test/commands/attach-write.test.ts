@@ -96,6 +96,8 @@ const PATHED = `${ENDPOINT}/gateway/`;
 const PATHED_NO_SLASH = `${ENDPOINT}/gateway`;
 const KEY_1 = 'key-1';
 const KEY_2 = 'key-2';
+// The key an older aka's machine-wide re-attach leaves behind in a case below.
+const OLDER_AKA = 'older-aka';
 const ISO = '2026-10-01T09:00:00.000Z';
 const ADMIN = 'Example IT';
 // whoami's answer. The binding compares both fields byte for byte, so any
@@ -876,6 +878,143 @@ describe('an attach is not written over what changed while it waited', () => {
       credential: { specVersion: 2, endpoint: ENDPOINT, apiKey: KEY_1, mode: 'scoped' },
     });
     expect(storedSettings().attachmentScope).toEqual(BOUND);
+  });
+
+  it('a credential file this build cannot read appeared, on a run with no terminal', async () => {
+    // A newer build's file, possibly a scoped attachment: the run had no flag to
+    // say it should be written over, and decided machine-wide when there was none.
+    let planted = '';
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      duringVerify: () => {
+        planted = plantUnreadableCredential();
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CHANGED_WHILE_WAITING);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(planted);
+    expect(existsSync(settingsFile())).toBe(false);
+  });
+
+  it('a machine-wide credential became one this build cannot read, on a terminal with no flag', async () => {
+    // Settled as a rotation that needs no question; what is on disk now is a
+    // file the decision would ask about, so the answer to a question nobody was
+    // asked cannot be assumed.
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: KEY_1,
+      mintedAt: ISO,
+    });
+    let planted = '';
+    const h = harness({
+      interactive: true,
+      answers: [KEY_2],
+      duringVerify: () => {
+        planted = plantUnreadableCredential();
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(h.errors()).toContain(CHANGED_WHILE_WAITING);
+    expect(readFileSync(credentialFile(), 'utf8')).toBe(planted);
+  });
+
+  it('an older aka re-attached the machine machine-wide, on a rotation of a personal device', async () => {
+    attachedScoped(BOUND);
+    // An older aka writes a version-1 credential and leaves the list beside it.
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      duringVerify: () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: OLDER_AKA,
+          mintedAt: ISO,
+        });
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CHANGED_WHILE_WAITING);
+    expect(storedCredential()).toMatchObject({
+      usable: true,
+      credential: { specVersion: 1, apiKey: OLDER_AKA },
+    });
+    expect(storedSettings().attachmentScope).toEqual(BOUND);
+  });
+
+  it('an older aka re-attached the machine machine-wide, on a --scoped attach: the list is not kept', async () => {
+    attachedScoped(BOUND);
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      duringVerify: () => {
+        writeControlPlaneCredential(settingsDirOf(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: OLDER_AKA,
+          mintedAt: ISO,
+        });
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    // --scoped narrows, so it goes ahead; but the list beside a machine-wide
+    // credential belongs to an attachment that has ended, so it starts empty.
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it('the personal device was detached, on a rotation of it', async () => {
+    attachedScoped(BOUND);
+    const h = harness({
+      interactive: false,
+      stdin: KEY_2,
+      duringVerify: () => {
+        rmSync(credentialFile());
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.errors()).toContain(CHANGED_WHILE_WAITING);
+    expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+  });
+
+  it('a file took the settings directory place', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('lstat under a regular file reports ENOENT, not ENOTDIR, on Windows');
+      return;
+    }
+    // The early read passed; the read just before the writes meets the file.
+    const h = harness({
+      interactive: false,
+      stdin: KEY_1,
+      duringVerify: () => {
+        writeFileSync(settingsDirOf(base), 'not a directory');
+      },
+    });
+
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([1]);
+    expect(h.calls).toEqual(['verify']);
+    expect(h.errors()).toContain('nothing was changed on this machine');
+    expect(existsSync(credentialFile())).toBe(false);
   });
 });
 

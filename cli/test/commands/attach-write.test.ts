@@ -1893,6 +1893,151 @@ describe('a machine-wide attach over a personal device writes the settings first
     expect(readFileSync(credentialFile(), 'utf8')).toBe(credentialBefore);
     expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
   });
+
+  // The credential file is gone but the settings still say attached to this
+  // endpoint, with a list or a history grant given for a personal device's
+  // repositories: a deleted credential file leaves them so, and so does the
+  // rollback that reports a file it could not read as gone. The credential
+  // written first would sit beside them as a machine-wide one, and this run's
+  // answer would not be on disk.
+  describe('over settings that still carry a list or a grant, with no credential file', () => {
+    const attachedSettings = (extra: Record<string, unknown>): void => {
+      applyOnboarding(
+        { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO }, ...extra },
+        base,
+        null,
+      );
+    };
+    const STALE = [
+      ['a list and a grant', { attachmentScope: BOUND, historySyncConsent: GRANT }],
+      ['a list alone', { attachmentScope: BOUND }],
+      ['a grant alone', { historySyncConsent: GRANT }],
+    ] as const;
+
+    it.each(STALE)(
+      'finds no credential file yet when it writes the settings, with %s',
+      async (_name, stale) => {
+        attachedSettings(stale);
+        let atSettingsWrite: ReturnType<typeof storedCredential> | undefined;
+        stand.beforeNextSettingsWrite = () => {
+          atSettingsWrite = storedCredential();
+        };
+        const h = harness({ interactive: false, stdin: KEY_2 });
+
+        await runAttach(
+          ['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'],
+          h.deps,
+        );
+
+        expect(exits).toEqual([]);
+        expect(atSettingsWrite).toEqual({ usable: false, reason: 'absent' });
+        expect(modeOnDisk()).toBe('machine');
+        expect(storedSettings()).not.toHaveProperty('attachmentScope');
+        expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+      },
+    );
+
+    it('leaves no list and no grant, and says so, when the credential write fails after the settings', async () => {
+      attachedSettings({ attachmentScope: BOUND, historySyncConsent: GRANT });
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(storedSettings()).not.toHaveProperty('attachmentScope');
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+    });
+
+    it('leaves everything untouched, and says the machine is as it was, when the settings write fails first', async () => {
+      attachedSettings({ attachmentScope: BOUND, historySyncConsent: GRANT });
+      const settingsBefore = readFileSync(settingsFile(), 'utf8');
+      stand.credentialWrites = 0;
+      stand.failSettingsWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+      expect(stand.credentialWrites).toBe(0);
+      expect(storedCredential()).toEqual({ usable: false, reason: 'absent' });
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+    });
+  });
+
+  // The order changes only where a stop between the writes could put a
+  // machine-wide credential beside a list or grant given for a personal device.
+  describe('and keeps the credential first everywhere else', () => {
+    /** The key in the credential file when the settings write comes, or undefined. */
+    function keyAtSettingsWrite(): { get: () => string | undefined } {
+      let seen: string | undefined;
+      stand.beforeNextSettingsWrite = () => {
+        const read = storedCredential();
+        seen = read.usable ? read.credential.apiKey : undefined;
+      };
+      return { get: () => seen };
+    }
+
+    it('writes the credential first on a machine that was always machine-wide, grant and all', async () => {
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: KEY_1,
+        mintedAt: ISO,
+      });
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+          historySyncConsent: {
+            acknowledgedAt: ISO,
+            payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+            endpoint: ENDPOINT,
+          },
+        },
+        base,
+        null,
+      );
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(modeOnDisk()).toBe('machine');
+    });
+
+    it('writes the credential first on a first attach to a clean machine', async () => {
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    it('writes the credential first when settings that carry nothing are all that is left', async () => {
+      applyOnboarding(
+        { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO } },
+        base,
+        null,
+      );
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+  });
 });
 
 describe('what a scoped attach writes', () => {

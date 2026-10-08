@@ -740,23 +740,30 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
 
   // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave.
   //
-  // CREDENTIAL FIRST, then the descriptor, on most attaches. In the other order a
-  // machine that fails on the second write is left claiming an attachment it has
-  // no credential for, which reads to every later surface as a broken attachment
-  // rather than as one that never happened. A stop between them leaves the new
-  // credential beside the settings it was replacing, which send no more than
-  // those settings already let through.
+  // CREDENTIAL FIRST, then the descriptor, unless the rule below picks the other
+  // order. In the other order a machine that fails on the second write is left
+  // claiming an attachment it has no credential for, which reads to every later
+  // surface as a broken attachment rather than as one that never happened.
   //
-  // SETTINGS FIRST for a machine-wide attach over a credential that is, or may
-  // be, a personal device's (mayBePersonalDevice). The settings drop the enrolled
-  // list and carry this run's history answer; the credential that follows makes
-  // the machine machine-wide. In the other order a stop between them would leave
-  // a machine-wide credential beside the grant and the list the personal device
+  // SETTINGS FIRST for a machine-wide attach that replaces what may be a personal
+  // device's attachment (writesSettingsFirst): a credential that is, or may be, a
+  // personal device's, or no credential file beside settings that still carry an
+  // enrolled list or a history grant. The settings drop the list and carry this
+  // run's history answer; the credential that follows makes the machine
+  // machine-wide. In the other order a stop between them would leave a
+  // machine-wide credential beside the grant and the list the personal device
   // had, and the history drain would read a grant given for enrolled
-  // repositories as one for the whole machine. In this order a stop leaves the
-  // personal device's credential beside no list, which sends no repository's
-  // activity.
-  const settingsFirst = mode === 'machine' && mayBePersonalDevice(previous);
+  // repositories as one for the whole machine. In this order a stop leaves what
+  // the machine had before beside no list and no earlier grant, which sends no
+  // repository's activity.
+  //
+  // So a machine-wide attach is credential first only where a stop cannot newly
+  // leave a machine-wide credential beside a list or a grant: it replaces a
+  // machine-wide credential, or there is no credential file and the settings
+  // hold neither a list nor a grant.
+  const settingsFirst =
+    mode === 'machine' &&
+    writesSettingsFirst(previous, readEffectiveSettings(base, deps.managedSettings).settings);
   const writeSettings = (): WorkspaceSettings =>
     applyOnboarding(
       // The FUNCTION form, so the enrolled list is judged against the file this
@@ -972,6 +979,25 @@ function readCredentialGuarded(base: string, io: Prompter): CredentialFileRead |
  */
 function mayBePersonalDevice(read: CredentialFileRead): boolean {
   return read.usable ? attachmentModeOf(read.credential) === 'scoped' : read.reason !== 'absent';
+}
+
+/**
+ * Whether a machine-wide attach writes the settings before the credential: when
+ * the credential being replaced is, or may be, a personal device's
+ * (mayBePersonalDevice), or when there is no credential file but the stored
+ * settings still carry an enrolled list or a history grant, which this attach
+ * replaces. A deleted credential file leaves the settings so, and so does a
+ * rollback that reports a file it could not read as gone. Every other
+ * machine-wide attach, and every scoped one, writes the credential first.
+ * Pure.
+ */
+function writesSettingsFirst(previous: CredentialFileRead, stored: WorkspaceSettings): boolean {
+  if (mayBePersonalDevice(previous)) return true;
+  return (
+    !previous.usable &&
+    previous.reason === 'absent' &&
+    (stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined)
+  );
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */

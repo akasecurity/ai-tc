@@ -296,8 +296,11 @@ function deploymentKey(endpoint: string): string | undefined {
  * machine in that time. Writing what was settled over a different state could
  * widen a personal device, narrow a machine-wide attachment, or overwrite a file
  * a newer build wrote, with nobody asked about any of it. So the decision is put
- * again, with the same flag, administrator's answer, endpoint and terminal, on
- * the file as it is now (`previous`), and compared with the one that was settled.
+ * again, with the same flag, endpoint and terminal, on the file as it is now
+ * (`previous`), and compared with the one that was settled. The administrator's
+ * answer is the caller's to pass: the one the decision was made with, so that
+ * only the file is measured, or one read again after the wait, so that the
+ * decision is also put under the overlay as it is then.
  *
  * It does not hold when the new decision:
  *   - refuses (the file became one that needs a flag this run did not get);

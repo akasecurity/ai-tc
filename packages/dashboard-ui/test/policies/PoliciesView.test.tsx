@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 import { PolicyDetailView, PolicyListView } from '../../src/policies/PoliciesView.tsx';
 
-// Static-render coverage for the Policies list and detail copy. A detection with
-// no policy of its own follows its category's policy, so the counts on this page
-// are of detections EXPLICITLY assigned a policy, and the copy says so.
+// Static-render coverage for the Policies list and detail copy. What the counts
+// mean is the host's: one that counts only explicit assignments gets copy that
+// says "assigned" (the default), and one whose counts also hold the detections
+// with no policy of their own, under the policy they run at, passes
+// `countsUnassigned` and gets copy that does not. The local store is the second
+// kind; web-ui's policies-page suite renders this copy over it.
 
 const ITEM: PolicyListItem = {
   id: 'block',
@@ -38,6 +41,20 @@ describe('PolicyListView', () => {
     expect(html).toContain('>3 assigned<');
     expect(html).toContain('>1 assigned<');
     expect(html).not.toContain('detection');
+  });
+
+  it('counts detections rather than assignments when the host counts unassigned ones', () => {
+    const html = renderToStaticMarkup(
+      <PolicyListView
+        items={[ITEM, { ...ITEM, id: 'warn', name: 'Warn', usedByCount: 1 }]}
+        onSelect={() => undefined}
+        countsUnassigned
+      />,
+    );
+
+    expect(html).toContain('>3 detections<');
+    expect(html).toContain('>1 detection<');
+    expect(html).not.toContain('assigned');
   });
 });
 
@@ -71,5 +88,17 @@ describe('PolicyDetailView', () => {
     const html = renderToStaticMarkup(<PolicyDetailView policy={{ ...DETAIL, usedBy: [] }} />);
 
     expect(html).toContain('>No detections are assigned this policy yet.<');
+  });
+
+  it('speaks of the detections using the policy when the host counts unassigned ones', () => {
+    const html = renderToStaticMarkup(<PolicyDetailView policy={DETAIL} countsUnassigned />);
+    const empty = renderToStaticMarkup(
+      <PolicyDetailView policy={{ ...DETAIL, usedBy: [] }} countsUnassigned />,
+    );
+
+    expect(html).toContain('>Applied by<');
+    expect(html).toContain('>Secrets<');
+    expect(empty).toContain('>No detections use this policy yet.<');
+    for (const markup of [html, empty]) expect(markup).not.toContain('assigned');
   });
 });

@@ -97,6 +97,19 @@ describe('PolicyStatsView', () => {
     expect(count(html, SKELETON)).toBe(4);
   });
 
+  it('says governed, not assigned, when the host counts unassigned detections', () => {
+    // A host whose count also holds the detections with no policy of their own,
+    // under the policy they run at, counts every detection it has: each one is
+    // governed by some policy, but not every one was assigned it.
+    const html = renderToStaticMarkup(
+      <PolicyStatsView locale="en-US" stats={STATS} countsUnassigned />,
+    );
+
+    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, '7')).toBe(1);
+    expect(html).not.toContain('assigned');
+  });
+
   it('carries the shared gap by default, and lets a caller replace it', () => {
     // The gap under the strip is what a page and its skeleton must agree on
     // exactly, so it is a default they share rather than a literal each spells.

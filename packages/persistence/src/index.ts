@@ -1,5 +1,5 @@
 export type { AttachModeDecision } from './attach-mode.ts';
-export { decideAttachMode } from './attach-mode.ts';
+export { decideAttachMode, holdsScopedFor, settledDecisionHolds } from './attach-mode.ts';
 export {
   ATTACHED_DERIVED_FILENAMES,
   ATTACHED_FORWARD_DROPS_FILENAME,

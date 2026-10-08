@@ -127,6 +127,24 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
   'The access key could not be saved to ~/.aka/settings, so nothing was changed. Check that the directory exists and is writable.';
 
 /**
+ * Added to a failed attach's refusal when the credential file the machine held
+ * before could not be put back, so the refusal does not read as "nothing
+ * changed". Neither names the key or anything the file held.
+ *
+ * ATTACH_ROLLBACK_LOST: the earlier file could not be read at all (a symbolic
+ * link, or a file that would not open), so there were no bytes to put back, and
+ * the key this attach saved had already replaced it. That key is removed as
+ * well, so the machine is left with no credential file.
+ *
+ * ATTACH_ROLLBACK_FAILED: putting the earlier file back failed part-way.
+ */
+export const ATTACH_ROLLBACK_LOST =
+  'The access key file this machine had before could not be read, so it could not be put back, and it is gone.';
+
+export const ATTACH_ROLLBACK_FAILED =
+  'The access key file this machine had before could not be put back, so it may differ from what it was.';
+
+/**
  * The endpoint is not a URL at all — a different fault from an insecure one.
  *
  * `isSafeEndpoint` answers false for both, so without this split the likeliest

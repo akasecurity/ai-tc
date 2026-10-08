@@ -1,11 +1,14 @@
 'use server';
 
+import { readFileSync } from 'node:fs';
+
 import { triggerHistorySyncRun, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  controlPlaneCredentialPath,
   type CredentialFileRead,
   dataDir,
   decideAttachMode,
@@ -28,6 +31,7 @@ import {
   settingsDir,
   settledDecisionHolds,
   writeControlPlaneCredential,
+  writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type {
@@ -74,6 +78,8 @@ import {
   ATTACH_KEY_MISSING,
   ATTACH_LABEL_INVALID,
   ATTACH_MODE_REQUIRED,
+  ATTACH_ROLLBACK_FAILED,
+  ATTACH_ROLLBACK_LOST,
   ATTACH_VERIFY_FAILED,
   connectionRefusal,
   DETACH_CREDENTIAL_STUCK,
@@ -621,6 +627,16 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // writer that did not clear it (an older build's re-attach or detach).
   const keepScope = holdsScopedFor(previous, endpoint);
   const clearsHistoryGrant = replacesPersonalDevice(mode, prior, previous);
+  // A file this build cannot parse may be a personal device's credential a newer
+  // build wrote, and this attach goes ahead over it only because the caller named
+  // the mode. Its BYTES are kept, so a failed settings write below puts that file
+  // back instead of deleting it. Only a regular file the reader opened and read
+  // qualifies: a symbolic link (`untrusted-file`) is never followed, and an
+  // `unreadable` one has no bytes to keep.
+  const previousBytes =
+    !previous.usable && (previous.reason === 'malformed' || previous.reason === 'unsafe-endpoint')
+      ? credentialBytes(dir)
+      : undefined;
 
   // The credential write gets its OWN try, for the reason detach's does one
   // paragraph down and in the mirror image. writeControlPlaneCredential throws on
@@ -656,32 +672,13 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       ...(clearsHistoryGrant ? { historySyncConsent: undefined } : {}),
     }));
   } catch (error) {
-    try {
-      // Restore only if the file still holds what WE wrote. None of the
-      // credential helpers takes a lock (settings.json does, through
-      // applyOnboarding), so a second process sharing this ~/.aka — `aka attach`
-      // in a terminal, another dashboard — can have committed its own credential
-      // between our write and this rollback. Blindly restoring `previous` there
-      // would clobber a working attachment with a stale key and produce exactly
-      // the attached-but-unusable state this action exists to stop creating.
-      //
-      // This narrows that window rather than closing it. Closing it means
-      // locking the credential transaction inside @akasecurity/persistence so
-      // the CLI is covered too; a lock taken only here would leave the CLI
-      // racing and read as a fix. Flagged on the PR rather than half-done.
-      const current = readControlPlaneCredentialFile(dir);
-      const ours = current.usable && current.credential.apiKey === accessKey;
-      if (ours) {
-        if (previous.usable) writeControlPlaneCredential(dir, previous.credential);
-        else removeControlPlaneCredential(dir);
-      }
-    } catch {
-      // The rollback itself failed. Nothing further to try, and the message
-      // below is the weaker of the two on purpose.
-    }
-    if (error instanceof ManagedFieldError)
-      return { ok: false, error: managedRefusal(error.fields) };
-    return { ok: false, error: SETTINGS_WRITE_ERROR };
+    // The refusal names why the write failed, and adds what the rollback could
+    // not put back. With nothing added, the credential file holds what it held
+    // before this attach, or what another process has written to it since.
+    const note = restoreCredential(dir, previous, previousBytes, accessKey);
+    const reason =
+      error instanceof ManagedFieldError ? managedRefusal(error.fields) : SETTINGS_WRITE_ERROR;
+    return { ok: false, error: note === undefined ? reason : `${reason} ${note}` };
   }
   revalidatePath('/settings');
   return { ok: true };
@@ -1005,4 +1002,68 @@ function scopeRecordFor(
   return keep && isAttachmentScopeBoundTo(raw, endpoint, who)
     ? raw
     : freshAttachmentScope(endpoint, who);
+}
+
+/**
+ * Put the credential file back as it was before this attach wrote over it, once
+ * the settings write has failed, and return the sentence the refusal adds when
+ * that could not be done: undefined when nothing needs adding. Never throws.
+ *
+ * ONLY WHILE THE FILE STILL HOLDS THE KEY THIS ATTACH WROTE. None of the
+ * credential helpers takes a lock (settings.json does, through
+ * applyOnboarding), so a second process sharing this ~/.aka, `aka attach` in a
+ * terminal or another dashboard, can have committed its own credential between
+ * this attach's write and the rollback. Restoring over it would replace a
+ * working attachment with a stale key, so that file is left as it is. This
+ * narrows the window rather than closing it: closing it means locking the
+ * credential transaction inside @akasecurity/persistence, so that the terminal
+ * command is covered too.
+ *
+ * Otherwise, by what was there before:
+ *   - a credential this build could read is written back from the reader's own
+ *     parse;
+ *   - no file: the one this attach wrote is removed;
+ *   - a file the reader opened and could not use (`previousBytes`): its raw
+ *     bytes go back, owner-only and atomic like every credential write;
+ *   - a file it could not open at all (a symbolic link, a file that would not
+ *     read) has no bytes to put back. This attach's file is removed too: its
+ *     settings were never written, so its key left on disk would be half an
+ *     attachment. The earlier file is gone, and ATTACH_ROLLBACK_LOST says so.
+ * A rollback that fails part-way is ATTACH_ROLLBACK_FAILED.
+ */
+function restoreCredential(
+  dir: string,
+  previous: CredentialFileRead,
+  previousBytes: string | undefined,
+  accessKey: string,
+): string | undefined {
+  try {
+    const current = readControlPlaneCredentialFile(dir);
+    if (!current.usable || current.credential.apiKey !== accessKey) return undefined;
+    if (previous.usable) {
+      writeControlPlaneCredential(dir, previous.credential);
+      return undefined;
+    }
+    if (previous.reason === 'absent') {
+      removeControlPlaneCredential(dir);
+      return undefined;
+    }
+    if (previousBytes !== undefined) {
+      writeOwnerOnlyFileSync(controlPlaneCredentialPath(dir), previousBytes);
+      return undefined;
+    }
+    removeControlPlaneCredential(dir);
+    return ATTACH_ROLLBACK_LOST;
+  } catch {
+    return ATTACH_ROLLBACK_FAILED;
+  }
+}
+
+/** The credential file's bytes as text, or undefined when they cannot be read. Never throws. */
+function credentialBytes(dir: string): string | undefined {
+  try {
+    return readFileSync(controlPlaneCredentialPath(dir), 'utf8');
+  } catch {
+    return undefined;
+  }
 }

@@ -206,7 +206,7 @@ export function readSyncPanel(
     // all unless this page reads the same file the pass would.
     paused: isForwardPaused(readForwardHealth(dir, at), at),
     localOnly: LOCAL_ONLY,
-    // A personal device sends only what its enrolled repositories record, and
+    // A personal device sends activity only from its enrolled repositories, and
     // the not-shared line says what is sent from now on. Present only on one,
     // so a machine-wide attachment's props are what they were.
     ...(attachmentMode === 'scoped' ? { scoped: true } : {}),

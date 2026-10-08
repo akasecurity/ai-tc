@@ -417,6 +417,8 @@ describe('isHistorySyncConsentValid', () => {
 // describes what the new payload sends, and then update the number here.
 //
 //   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
+//   cli/src/commands/enroll.ts        earlierActivity — what enrolling a
+//                                     repository queues and sends under a grant
 //   cli/src/commands/sync-history.ts  grant/revoke/describe output and the
 //                                     help, each in its machine-wide and
 //                                     its personal-device wording

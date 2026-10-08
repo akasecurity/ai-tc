@@ -492,6 +492,32 @@ describe('settledDecisionHolds', () => {
       expect(holdsAfter({ flag: 'machine', previous: SCOPED_ELSEWHERE }, SCOPED)).toBe(false);
     });
   });
+
+  describe('with the administrator answer read again after the wait', () => {
+    const put = (before: Inputs, managedNow: ConnectionRefusal | null, mode: AttachmentMode) => {
+      const settled = decideAttachMode(before);
+      if (settled.kind === 'refuse') throw new Error('a refusal is never settled');
+      return settledDecisionHolds({ ...before, managed: managedNow, settled, mode });
+    };
+    const quiet: Inputs = {
+      flag: undefined,
+      managed: MANAGED,
+      previous: ABSENT,
+      endpoint: ENDPOINT,
+      interactive: false,
+    };
+
+    it('does not hold for a mode only the administrator settled, once they stop managing the machine', () => {
+      expect(put({ ...quiet, previous: SCOPED }, MANAGED, 'machine')).toBe(true);
+      expect(put({ ...quiet, previous: SCOPED }, null, 'machine')).toBe(false);
+      expect(put({ ...quiet, interactive: true }, null, 'machine')).toBe(false);
+    });
+
+    it('holds where the decision is the same whoever manages the machine now', () => {
+      expect(put(quiet, null, 'machine')).toBe(true);
+      expect(put({ ...quiet, flag: 'machine', managed: null }, MANAGED, 'machine')).toBe(true);
+    });
+  });
 });
 
 // The order of an attach's two writes, shared by every surface that attaches a

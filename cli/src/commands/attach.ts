@@ -39,6 +39,7 @@ import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
   AttachmentMode,
+  ConnectionRefusal,
   HistorySyncConsent,
   ManagedSettings,
   PluginWhoami,
@@ -254,6 +255,19 @@ const CHANGED_WHILE_WAITING =
   "this machine's attachment changed while this command waited, so it was not written over. " +
   'Nothing was changed on this machine; run the command again.';
 
+/**
+ * Said when the settled decision, put again with the administrator's answer as it
+ * is after the wait, no longer holds, although it holds with the answer read
+ * before it: whether an administrator manages this machine's connection changed
+ * while this command waited. A machine they stopped managing is the user's to
+ * decide again, so what was settled is not written. Nothing has been written when
+ * this is said.
+ */
+const MANAGEMENT_CHANGED_WHILE_WAITING =
+  "whether an administrator manages this machine's connection changed while this command " +
+  'waited, so the attachment was not written. Nothing was changed on this machine; run the ' +
+  'command again.';
+
 /** What a failed save says when the earlier credential file is back exactly as it was. */
 const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as it was.';
 
@@ -331,6 +345,18 @@ function saveFailedMessage(err: unknown, rollback: CredentialRollback): string {
     );
   }
   return note === undefined ? LEFT_AS_IT_WAS : `could not save the attachment. ${note}`;
+}
+
+/**
+ * The line an attach refused by the administrator's overlay prints, whether the
+ * refusal came before the round trip or after it. Leaving --label off is refused
+ * as the rename it amounts to, and the flag that keeps the name is this
+ * surface's to name.
+ */
+function attachRefusalLine(refusal: ConnectionRefusal): string {
+  return refusal.reason === 'label-required'
+    ? `${refusalLine(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
+    : refusalLine(refusal);
 }
 
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
@@ -427,13 +453,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // with the dashboard's attach action, so the two surfaces cannot disagree.
   const refusal = managedAttachRefusal({ endpoint, label: args.label }, base, deps.managedSettings);
   if (refusal !== null) {
-    // Leaving --label off is refused as the rename it amounts to, and the flag
-    // that keeps the name is this surface's to name.
-    io.err(
-      refusal.reason === 'label-required'
-        ? `${refusalLine(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
-        : refusalLine(refusal),
-    );
+    io.err(attachRefusalLine(refusal));
     exit(2);
     return;
   }
@@ -609,19 +629,41 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     mode,
   );
 
-  // A SCOPED WRITE IS RE-CHECKED against the administrator's overlay here, with
-  // nothing written yet. The decision above was made before a browser approval
-  // that can take minutes, and an overlay that arrived meanwhile makes this
-  // machine machine-only. It is also what lets the enrolled list below bind to
-  // `endpoint`: with no pin on the connection, the overlay leaves the descriptor
-  // this attach writes alone, so the endpoint written is the one every read sees.
-  if (mode === 'scoped') {
-    const lateRefusal = managedScopedRefusal(base, deps.managedSettings);
-    if (lateRefusal !== null) {
-      io.err(`${refusalLine(lateRefusal)} Nothing was changed on this machine.`);
-      exit(1);
-      return;
-    }
+  // THE ADMINISTRATOR'S OVERLAY, READ AGAIN for every attach, with nothing written
+  // yet. The answers above were read before a browser approval or a key
+  // verification that can take minutes, and an overlay may have arrived, changed or
+  // gone since.
+  //
+  // First the refusals no mode gets past, worded as the check above words them: a
+  // machine held at standalone, a connection pinned to another deployment, a name
+  // the administrator gives or a lock keeps. The settings writer refuses a change to
+  // a LOCKED pair but writes a PINNED one through, and the next read overlays the pin
+  // back over it, so without this a machine-wide attach could store a credential for
+  // a deployment the settings no longer name.
+  //
+  // Then a scoped write on a machine that has become machine-only. That check is
+  // also what lets the enrolled list below bind to `endpoint`: with no pin on the
+  // connection, the overlay leaves the descriptor this attach writes alone, so the
+  // endpoint written is the one every read sees.
+  //
+  // This narrows the window rather than closing it: an overlay can still arrive
+  // between here and the settings write, and there the writer refuses a lock but
+  // not a pin.
+  const lateRefusal = managedAttachRefusal(
+    { endpoint, label: args.label },
+    base,
+    deps.managedSettings,
+  );
+  if (lateRefusal !== null) {
+    io.err(`${attachRefusalLine(lateRefusal)} Nothing was changed on this machine.`);
+    exit(1);
+    return;
+  }
+  const lateScopedRefusal = managedScopedRefusal(base, deps.managedSettings);
+  if (mode === 'scoped' && lateScopedRefusal !== null) {
+    io.err(`${refusalLine(lateScopedRefusal)} Nothing was changed on this machine.`);
+    exit(1);
+    return;
   }
 
   // What was there before, so a failed write can be put back. Re-attaching is
@@ -641,26 +683,38 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
-  // THE LOST UPDATE THE DECISION CANNOT SEE. The mode was settled from the file
-  // read before the key was verified, and on the browser path that can be
-  // minutes ago. The same decision is put again on what is on disk now, with the
-  // same flag, overlay and terminal. If it no longer agrees (see
-  // settledDecisionHolds) another aka has attached, re-attached or detached
-  // this machine in between, and writing what was settled could widen a personal
-  // device, narrow a machine-wide attachment, or overwrite a newer build's file
-  // that the confirmation in front of the user never covered. Stop and say so;
-  // the next run decides again from what is on disk.
-  const holds = settledDecisionHolds({
+  // THE LOST UPDATE THE DECISION CANNOT SEE, put twice. The mode was settled from
+  // the file read before the key was verified, and on the browser path that can be
+  // minutes ago.
+  //
+  // First with the administrator's answer the decision was made with, so that what
+  // it measures is the file. If the decision no longer agrees (see
+  // settledDecisionHolds) another aka has attached, re-attached or detached this
+  // machine in between, and writing what was settled could widen a personal device,
+  // narrow a machine-wide attachment, or overwrite a newer build's file that the
+  // confirmation in front of the user never covered.
+  //
+  // Then with the answer read again above. The two can disagree only where an
+  // administrator began or stopped managing the connection during the wait, and a
+  // machine they stopped managing is the user's to decide again: a mode the
+  // administrator alone settled could widen what it sends.
+  //
+  // Either way, stop and say which; the next run decides again from what is there.
+  const putAgain = {
     flag: args.mode,
-    managed: scopedRefusal,
     previous,
     endpoint,
     interactive: io.isInteractive,
     settled: modeDecision,
     mode,
-  });
-  if (!holds) {
+  };
+  if (!settledDecisionHolds({ ...putAgain, managed: scopedRefusal })) {
     io.err(CHANGED_WHILE_WAITING);
+    exit(1);
+    return;
+  }
+  if (!settledDecisionHolds({ ...putAgain, managed: lateScopedRefusal })) {
+    io.err(MANAGEMENT_CHANGED_WHILE_WAITING);
     exit(1);
     return;
   }

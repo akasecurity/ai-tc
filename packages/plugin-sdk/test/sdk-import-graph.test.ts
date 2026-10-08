@@ -34,6 +34,9 @@ const SQLITE_SPECIFIERS = new Set(['node:sqlite', 'sqlite']);
 //     defined in it or re-exported through it.
 // A kept module keeps ALL of its value imports, with no statement-level
 // dead-code removal, so an edge a bundler would prune still counts here.
+// What it cannot read it refuses rather than guesses: a `sideEffects` entry
+// that is not one literal path, and an `@akasecurity/*` package with no
+// manifest, both throw; a load whose name it cannot read is pinned below.
 // `import type` and type-only specifiers are erased. Under
 // `verbatimModuleSyntax`, `import { type A } from 'x'` still loads `x`, so
 // that form is an edge with no names.
@@ -69,13 +72,28 @@ function manifestOf(file: string): Manifest | undefined {
 
 function isSideEffectFree(file: string): boolean {
   const m = manifestOf(file);
-  if (m === undefined) return false;
+  return m !== undefined && sideEffectFreeUnder(m, file);
+}
+
+// Bundlers read each `sideEffects` entry as a GLOB, and one with no `/` as
+// `**/<entry>`. This walk compares paths, so it accepts only an entry that is
+// one literal `./` path and refuses anything else: a glob compared as a
+// literal matches nothing, which turns "these keep their effects" into
+// "nothing does" — the one direction this walk must never err in.
+const LITERAL_ENTRY = /^\.\/[^*?[\]{}()!\\]+$/;
+
+function sideEffectFreeUnder(m: Manifest, file: string): boolean {
   if (m.sideEffects === false) return true;
-  if (Array.isArray(m.sideEffects)) {
-    const own = `./${relative(m.dir, file).split(sep).join('/')}`;
-    return !m.sideEffects.includes(own);
+  if (!Array.isArray(m.sideEffects)) return false;
+  for (const entry of m.sideEffects as unknown[]) {
+    if (typeof entry !== 'string' || !LITERAL_ENTRY.test(entry)) {
+      throw new Error(
+        `${m.dir}: sideEffects entry ${JSON.stringify(entry)} is not one literal ./ path`,
+      );
+    }
   }
-  return false;
+  const own = `./${relative(m.dir, file).split(sep).join('/')}`;
+  return !m.sideEffects.includes(own);
 }
 
 type Target =
@@ -91,8 +109,11 @@ function resolveSpecifier(from: string, specifier: string): Target {
   }
   if (isBuiltin(specifier)) return { kind: 'external', specifier };
   const scoped = /^(@akasecurity\/[^/]+)(\/.*)?$/.exec(specifier);
-  const m = scoped ? manifests.get(scoped[1] ?? '') : undefined;
-  if (scoped === null || m === undefined) return { kind: 'external', specifier };
+  if (scoped === null) return { kind: 'external', specifier };
+  // Read as external, a package of ours would be a leaf whose imports nobody
+  // walks — the under-report this walk exists to rule out.
+  const m = manifests.get(scoped[1] ?? '');
+  if (m === undefined) throw new Error(`${from}: ${specifier} has no workspace manifest`);
   const subpath = `.${scoped[2] ?? ''}`;
   const target = m.exports[subpath];
   if (target === undefined) throw new Error(`${from}: ${specifier} is not exported`);
@@ -109,20 +130,45 @@ interface ModuleFacts {
   // Files that hand 'node:sqlite' to a call — a builtin resolved at call time,
   // which no import graph shows and no bundler follows.
   lazySqlite: boolean;
+  // Calls that load a module whose name the walk cannot read: a loader given a
+  // non-literal argument, or a `require` minted by `createRequire`, whose later
+  // calls no binding-blind reader can follow.
+  opaqueLoads: string[];
 }
+
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : bindingNames(el.name)));
+}
+
+function calleeName(call: ts.CallExpression): string | undefined {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  return undefined;
+}
+
+const LOADERS = new Set(['require', 'getBuiltinModule']);
 
 const factsCache = new Map<string, ModuleFacts>();
 
 function factsOf(file: string): ModuleFacts {
   const cached = factsCache.get(file);
   if (cached) return cached;
-  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest);
+  const facts = readFacts(file, readFileSync(file, 'utf8'));
+  factsCache.set(file, facts);
+  return facts;
+}
+
+function readFacts(file: string, text: string): ModuleFacts {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest);
   const facts: ModuleFacts = {
     imports: [],
     reexports: [],
     stars: [],
     localExports: new Set(),
     lazySqlite: false,
+    opaqueLoads: [],
   };
   for (const s of source.statements) {
     if (ts.isImportDeclaration(s) && ts.isStringLiteral(s.moduleSpecifier)) {
@@ -173,7 +219,7 @@ function factsOf(file: string): ModuleFacts {
     ) {
       if (ts.isVariableStatement(s)) {
         for (const d of s.declarationList.declarations) {
-          if (ts.isIdentifier(d.name)) facts.localExports.add(d.name.text);
+          for (const n of bindingNames(d.name)) facts.localExports.add(n);
         }
       } else if (
         (ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s) || ts.isEnumDeclaration(s)) &&
@@ -186,40 +232,59 @@ function factsOf(file: string): ModuleFacts {
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const [first] = node.arguments;
+      const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      const name = calleeName(node);
       if (first && ts.isStringLiteralLike(first)) {
-        const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-        const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
         if (isImport || isRequire) facts.imports.push({ specifier: first.text, names: 'all' });
         else if (SQLITE_SPECIFIERS.has(first.text)) facts.lazySqlite = true;
+      } else if (isImport || (name !== undefined && LOADERS.has(name))) {
+        facts.opaqueLoads.push(node.getText(source));
       }
+      if (name === 'createRequire') facts.opaqueLoads.push(node.getText(source));
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  factsCache.set(file, facts);
   return facts;
 }
 
 const exportedCache = new Map<string, Set<string>>();
 
-/** Every value name a module exports, through `export *` chains. */
+/**
+ * Every value name a module exports, through `export *` chains.
+ *
+ * Each call walks the star graph from its own module and caches only the
+ * finished set. A memo filled while recursing would hand a module met inside
+ * a star cycle the partial set its caller had so far, and cache that.
+ */
 function exportedNames(file: string): Set<string> {
   const cached = exportedCache.get(file);
   if (cached) return cached;
   const names = new Set<string>();
-  exportedCache.set(file, names);
-  const facts = factsOf(file);
-  for (const n of facts.localExports) names.add(n);
-  for (const r of facts.reexports) for (const p of r.pairs) names.add(p.exported);
-  for (const star of facts.stars) {
-    if (star.as !== undefined) {
-      names.add(star.as);
-      continue;
+  const seen = new Set<string>();
+  const collect = (current: string): void => {
+    if (seen.has(current)) return;
+    seen.add(current);
+    // `export *` never forwards a default, so only the module asked about
+    // contributes one.
+    const add = (n: string): void => {
+      if (current === file || n !== 'default') names.add(n);
+    };
+    const facts = factsOf(current);
+    for (const n of facts.localExports) add(n);
+    for (const r of facts.reexports) for (const p of r.pairs) add(p.exported);
+    for (const star of facts.stars) {
+      if (star.as !== undefined) {
+        add(star.as);
+        continue;
+      }
+      const target = resolveSpecifier(current, star.specifier);
+      if (target.kind === 'module') collect(target.file);
     }
-    const target = resolveSpecifier(file, star.specifier);
-    if (target.kind !== 'module') continue;
-    for (const n of exportedNames(target.file)) if (n !== 'default') names.add(n);
-  }
+  };
+  collect(file);
+  exportedCache.set(file, names);
   return names;
 }
 
@@ -328,6 +393,18 @@ describe("the SDK's value imports from the root entry", () => {
     expect(lazy).toEqual(['packages/persistence/src/fingerprint.ts']);
   });
 
+  it('load no module at call time through a name the walk cannot read', () => {
+    // The pin above sees only a literal 'node:sqlite'. A loader handed a
+    // computed name, or a `require` minted by `createRequire`, can load the
+    // builtin with neither an import edge nor that literal, so the checks
+    // above would stay green. None is reachable today, and one that arrives
+    // has to be read and justified here rather than slip past them.
+    const opaque = [...sdk.modules].flatMap((f) =>
+      factsOf(resolve(REPO_ROOT, f)).opaqueLoads.map((call) => `${f}: ${call}`),
+    );
+    expect(opaque).toEqual([]);
+  });
+
   it('still reach persistence, so the checks above are not describing an empty graph', () => {
     expect(sdk.modules).toContain('packages/plugin-sdk/src/runtime.ts');
     expect(sdk.modules).toContain('packages/persistence/src/fingerprint.ts');
@@ -342,5 +419,52 @@ describe('the walk itself', () => {
     // cases above assert is absent.
     const vault = reach(['createVaultGlue']);
     expect(sqliteImporters(vault)).toContain('packages/persistence/src/database.ts');
+  });
+
+  it('refuses a sideEffects entry it cannot read as one literal path', () => {
+    // Bundlers read each entry as a glob, and one with no `/` as `**/<entry>`.
+    // Compared as a literal, `./src/*.ts` matches no file, so every module
+    // would read as side-effect-free while a bundler keeps them all.
+    const dir = join(REPO_ROOT, 'pkg');
+    const file = join(dir, 'src', 'a.ts');
+    for (const entry of ['./src/*.ts', 'a.ts', 'src/a.ts', './src/{a,b}.ts', './src/[ab].ts']) {
+      const m: Manifest = { dir, exports: {}, sideEffects: [entry] };
+      expect(() => sideEffectFreeUnder(m, file), entry).toThrow(/not one literal/);
+    }
+    const literal: Manifest = { dir, exports: {}, sideEffects: ['./src/a.ts'] };
+    expect(sideEffectFreeUnder(literal, file)).toBe(false);
+    expect(sideEffectFreeUnder(literal, join(dir, 'src', 'b.ts'))).toBe(true);
+  });
+
+  it('refuses an @akasecurity package it has no manifest for', () => {
+    // Read as external, the walk would never see what that package imports.
+    expect(() =>
+      resolveSpecifier(join(REPO_ROOT, 'entry.ts'), '@akasecurity/no-such-package'),
+    ).toThrow(/no workspace manifest/);
+  });
+
+  it('reads every name a destructured export binds', () => {
+    const facts = readFacts('m.ts', 'export const { a, b: [c, , ...d], e = 1, ...f } = source;');
+    expect([...facts.localExports].sort()).toEqual(['a', 'c', 'd', 'e', 'f']);
+  });
+
+  it('gives every module in a star-export cycle its whole export set', () => {
+    const at = (name: string): string =>
+      resolve(import.meta.dirname, 'helpers/import-graph', `star-cycle-${name}.ts`);
+    // Asking for a first is what used to leave b cached mid-cycle, before a
+    // had reached c.
+    expect([...exportedNames(at('a'))].sort()).toEqual(['fromB', 'fromC']);
+    expect([...exportedNames(at('b'))].sort()).toEqual(['fromB', 'fromC']);
+  });
+
+  it('records a loader whose specifier it cannot read', () => {
+    const opaque = (text: string): string[] => readFacts('m.ts', text).opaqueLoads;
+    expect(opaque("const ID = 'node:sqlite'; process.getBuiltinModule(ID);")).toHaveLength(1);
+    expect(opaque('await import(url);')).toHaveLength(1);
+    expect(opaque('require(name);')).toHaveLength(1);
+    expect(opaque('module.require(name);')).toHaveLength(1);
+    expect(opaque('createRequire(import.meta.url);')).toHaveLength(1);
+    // A literal specifier is an edge the walk follows, not an opaque load.
+    expect(opaque("await import('./x.ts'); process.getBuiltinModule('node:fs');")).toEqual([]);
   });
 });

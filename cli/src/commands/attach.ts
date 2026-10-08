@@ -729,9 +729,15 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     readableEntries: 0,
     because: undefined,
   };
+  // Whether this attach keeps `stored` as the enrolled list: only a rotation of a
+  // personal device on this deployment, for the organization and account just
+  // verified. The one judgment, shared by what is written and by the order of the
+  // writes.
+  const keepsStoredList = (stored: unknown): boolean =>
+    mode === 'scoped' && keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity);
   const scopeToWrite = (stored: unknown): unknown => {
     if (mode === 'machine') return undefined;
-    if (keepScope && isAttachmentScopeBoundTo(stored, endpoint, identity)) {
+    if (keepsStoredList(stored)) {
       kept.readableEntries = parseAttachmentScope(stored)?.entries.length ?? 0;
       return stored;
     }
@@ -748,25 +754,41 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // claiming an attachment it has no credential for, which reads to every later
   // surface as a broken attachment rather than as one that never happened.
   //
-  // SETTINGS FIRST for a machine-wide attach that replaces what may be a personal
-  // device's attachment (writesSettingsFirst): a credential that is, or may be, a
-  // personal device's, or no credential file beside settings that still carry an
-  // enrolled list or a history grant. The settings drop the list and carry this
-  // run's history answer; the credential that follows makes the machine
-  // machine-wide. In the other order a stop between them would leave a
-  // machine-wide credential beside the grant and the list the personal device
-  // had, and the history drain would read a grant given for enrolled
-  // repositories as one for the whole machine. In this order a stop leaves what
-  // the machine had before beside no list and no earlier grant, which sends no
+  // SETTINGS FIRST (writesSettingsFirst) where the credential first would put the
+  // new credential beside an enrolled list or a history grant that the finished
+  // attach replaces, in a pairing the machine did not have:
+  //   - a machine-wide attach over a credential that is, or may be, a personal
+  //     device's, or over no credential file beside settings that still carry a
+  //     list or a grant. The history drain would read a grant given for enrolled
+  //     repositories as one for the whole machine.
+  //   - a scoped attach that does not keep the list it finds (the key verified as
+  //     another organization or account, a list that names no account, a list for
+  //     another deployment, or a credential that is not a personal device's for
+  //     this one), over settings that carry a list or a grant. A list enrolled
+  //     under another account would forward under the new key.
+  // The settings write no list (machine-wide) or an empty one (scoped), and carry
+  // this run's history answer. In this order a stop leaves what the machine had
+  // before beside no list or an empty one and no earlier grant, which sends no
   // repository's activity.
   //
-  // So a machine-wide attach is credential first only where a stop cannot newly
-  // leave a machine-wide credential beside a list or a grant: it replaces a
-  // machine-wide credential, or there is no credential file and the settings
-  // hold neither a list nor a grant.
-  const settingsFirst =
-    mode === 'machine' &&
-    writesSettingsFirst(previous, readEffectiveSettings(base, deps.managedSettings).settings);
+  // So an attach is credential first only where a stop cannot leave the new
+  // credential in a pairing the machine did not already have, with one exception:
+  //   - a machine-wide attach replaces a machine-wide credential, or there is no
+  //     credential file and the settings hold neither a list nor a grant;
+  //   - a scoped attach finds settings that hold neither a list nor a grant, or
+  //     keeps the list it finds (a rotation), so a stop leaves the new credential
+  //     beside that same list;
+  //   - the exception is a scoped attach over a machine-wide credential. Settings
+  //     first there would leave the machine-wide credential beside this run's
+  //     answer about the repositories to be enrolled, and the drain would read
+  //     that as a grant for the whole machine. So a stop there can leave the new
+  //     scoped credential beside a list the finished attach would have replaced.
+  const settingsFirst = writesSettingsFirst(
+    mode,
+    previous,
+    readEffectiveSettings(base, deps.managedSettings).settings,
+    keepsStoredList,
+  );
   const writeSettings = (): WorkspaceSettings =>
     applyOnboarding(
       // The FUNCTION form, so the enrolled list is judged against the file this
@@ -985,22 +1007,35 @@ function mayBePersonalDevice(read: CredentialFileRead): boolean {
 }
 
 /**
- * Whether a machine-wide attach writes the settings before the credential: when
- * the credential being replaced is, or may be, a personal device's
- * (mayBePersonalDevice), or when there is no credential file but the stored
- * settings still carry an enrolled list or a history grant, which this attach
- * replaces. A deleted credential file leaves the settings so, and so does a
- * rollback that reports a file it could not read as gone. Every other
- * machine-wide attach, and every scoped one, writes the credential first.
+ * Whether the settings are written before the credential (see the order of the
+ * writes in runAttach). Two cases, and nothing else.
+ *
+ * A MACHINE-WIDE attach, when the credential being replaced is, or may be, a
+ * personal device's (mayBePersonalDevice), or when there is no credential file
+ * but the stored settings still carry an enrolled list or a history grant, which
+ * this attach replaces. A deleted credential file leaves the settings so, and so
+ * does a rollback that reports a file it could not read as gone.
+ *
+ * A SCOPED attach, when the settings carry a list or a grant for it to replace
+ * and it does not keep the list (`keepsList` answers for the stored one), unless
+ * the credential being replaced is a usable machine-wide one.
+ *
  * Pure.
  */
-function writesSettingsFirst(previous: CredentialFileRead, stored: WorkspaceSettings): boolean {
-  if (mayBePersonalDevice(previous)) return true;
-  return (
-    !previous.usable &&
-    previous.reason === 'absent' &&
-    (stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined)
-  );
+function writesSettingsFirst(
+  mode: AttachmentMode,
+  previous: CredentialFileRead,
+  stored: WorkspaceSettings,
+  keepsList: (stored: unknown) => boolean,
+): boolean {
+  const carries = stored.attachmentScope !== undefined || stored.historySyncConsent !== undefined;
+  if (mode === 'machine') {
+    return (
+      mayBePersonalDevice(previous) || (!previous.usable && previous.reason === 'absent' && carries)
+    );
+  }
+  const overMachineWide = previous.usable && attachmentModeOf(previous.credential) === 'machine';
+  return carries && !overMachineWide && !keepsList(stored.attachmentScope);
 }
 
 /** Whether `a` and `b` are the same credential: every member this attach writes, and its mode. */

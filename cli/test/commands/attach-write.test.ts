@@ -400,6 +400,58 @@ function owedCaptures(): string[] {
   }
 }
 
+/** A history grant for ENDPOINT, as a settings file holds one. */
+const GRANT = {
+  acknowledgedAt: ISO,
+  payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+  endpoint: ENDPOINT,
+};
+/** What a failed credential write says after the settings had already landed. */
+const CREDENTIAL_NOT_SAVED =
+  'could not save the attachment: the settings were saved but the credential was not. The ' +
+  "enrolled list is cleared, and no repository's activity is sent until this machine is " +
+  'attached again with `aka attach`.';
+
+/** Settings that say attached to ENDPOINT, with `extra` beside them and no credential file written. */
+function attachedSettings(extra: Record<string, unknown>): void {
+  applyOnboarding(
+    { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO }, ...extra },
+    base,
+    null,
+  );
+}
+
+/** The credential file's text, or undefined when there is no file. */
+function credentialText(): string | undefined {
+  return existsSync(credentialFile()) ? readFileSync(credentialFile(), 'utf8') : undefined;
+}
+
+/**
+ * Watches the credential file at the moment the settings write comes. `text()` is
+ * the file's text then, or undefined when there was none; `ran()` says the
+ * settings write happened at all.
+ */
+function watchCredentialAtSettingsWrite(): { ran: () => boolean; text: () => string | undefined } {
+  let ran = false;
+  let text: string | undefined;
+  stand.beforeNextSettingsWrite = () => {
+    ran = true;
+    text = credentialText();
+  };
+  return { ran: () => ran, text: () => text };
+}
+
+/** The key in the credential file at the moment the settings write comes, or undefined. */
+function keyAtSettingsWrite(): { get: () => string | undefined } {
+  const watch = watchCredentialAtSettingsWrite();
+  return {
+    get: () => {
+      const text = watch.text();
+      return text === undefined ? undefined : (JSON.parse(text) as { apiKey: string }).apiKey;
+    },
+  };
+}
+
 const fixture = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 describe('parseAttachArgs: the mode flags', () => {
@@ -1833,16 +1885,6 @@ describe('a machine-wide attach over a personal device writes the settings first
   // credential that follows makes the machine machine-wide. A stop between the
   // two must leave the personal device's credential beside no list and no earlier
   // grant, never a machine-wide credential beside them.
-  const GRANT = {
-    acknowledgedAt: ISO,
-    payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
-    endpoint: ENDPOINT,
-  };
-  const CREDENTIAL_NOT_SAVED =
-    'could not save the attachment: the settings were saved but the credential was not. The ' +
-    "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-    'attached again with `aka attach`.';
-
   it('finds the personal device credential still in place when it writes the settings', async () => {
     attachedScoped(BOUND);
     applyOnboarding({ historySyncConsent: GRANT }, base, null);
@@ -1934,13 +1976,6 @@ describe('a machine-wide attach over a personal device writes the settings first
   // written first would sit beside them as a machine-wide one, and this run's
   // answer would not be on disk.
   describe('over settings that still carry a list or a grant, with no credential file', () => {
-    const attachedSettings = (extra: Record<string, unknown>): void => {
-      applyOnboarding(
-        { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: ISO }, ...extra },
-        base,
-        null,
-      );
-    };
     const STALE = [
       ['a list and a grant', { attachmentScope: BOUND, historySyncConsent: GRANT }],
       ['a list alone', { attachmentScope: BOUND }],
@@ -2006,16 +2041,6 @@ describe('a machine-wide attach over a personal device writes the settings first
   // The order changes only where a stop between the writes could put a
   // machine-wide credential beside a list or grant given for a personal device.
   describe('and keeps the credential first everywhere else', () => {
-    /** The key in the credential file when the settings write comes, or undefined. */
-    function keyAtSettingsWrite(): { get: () => string | undefined } {
-      let seen: string | undefined;
-      stand.beforeNextSettingsWrite = () => {
-        const read = storedCredential();
-        seen = read.usable ? read.credential.apiKey : undefined;
-      };
-      return { get: () => seen };
-    }
-
     it('writes the credential first on a machine that was always machine-wide, grant and all', async () => {
       writeControlPlaneCredential(settingsDirOf(base), {
         specVersion: 1,
@@ -2069,6 +2094,192 @@ describe('a machine-wide attach over a personal device writes the settings first
 
       expect(exits).toEqual([]);
       expect(seen.get()).toBe(KEY_2);
+    });
+  });
+});
+
+// A scoped attach keeps the list it finds only on a rotation: the same
+// deployment, the same organization and account. Any other scoped attach writes
+// a fresh empty list over whatever is stored, and the credential written first
+// would sit beside the old list and the old grant until the settings follow.
+describe('a scoped attach that will not keep the stored list writes the settings first', () => {
+  const ANOTHER_ACCOUNT = { ...ANA, userEmail: 'member-18' };
+  const SCOPED_ARGS = ['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'];
+  const STALE_SETTINGS = { attachmentScope: BOUND, historySyncConsent: GRANT };
+
+  interface NotKept {
+    name: string;
+    /** Puts the machine in a state whose stored list this attach will not keep. */
+    arrange: () => void;
+    /** Who the key verifies as. */
+    who: { tenantName: string; userEmail: string };
+  }
+  const NOT_KEPT: NotKept[] = [
+    {
+      name: 'a credential for this deployment, with the key verified as another account',
+      arrange: () => {
+        attachedScoped(BOUND);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANOTHER_ACCOUNT,
+    },
+    {
+      name: 'a credential for another deployment',
+      arrange: () => {
+        attachedScoped({ ...BOUND, endpoint: OTHER_ENDPOINT }, OTHER_ENDPOINT);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANA,
+    },
+    {
+      name: 'a list that names no account',
+      arrange: () => {
+        attachedScoped(UNBOUND);
+        applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      },
+      who: ANA,
+    },
+    {
+      name: 'no credential file',
+      arrange: () => {
+        attachedSettings(STALE_SETTINGS);
+      },
+      who: ANA,
+    },
+    {
+      name: 'a credential file this build cannot read',
+      arrange: () => {
+        plantUnreadableCredential();
+        attachedSettings(STALE_SETTINGS);
+      },
+      who: ANA,
+    },
+  ];
+
+  it.for(NOT_KEPT)(
+    'finds the earlier credential still in place when it writes the settings, over $name',
+    async (row) => {
+      row.arrange();
+      const before = credentialText();
+      const watch = watchCredentialAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(watch.ran()).toBe(true);
+      expect(watch.text()).toBe(before);
+      expect(modeOnDisk()).toBe('scoped');
+      expect(storedSettings().attachmentScope).toEqual({
+        endpoint: ENDPOINT,
+        tenantName: row.who.tenantName,
+        userEmail: row.who.userEmail,
+        entries: [],
+      });
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+    },
+  );
+
+  it.for(NOT_KEPT)(
+    'leaves the earlier credential beside an empty list and no grant, and says so, when the credential write fails after the settings, over $name',
+    async (row) => {
+      row.arrange();
+      const before = credentialText();
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(CREDENTIAL_NOT_SAVED);
+      expect(h.errors()).not.toContain(LEFT_AS_IT_WAS);
+      expect(credentialText()).toBe(before);
+      expect(storedSettings()).not.toHaveProperty('historySyncConsent');
+      // The forward verdict's own read of what is left: no repository is enrolled.
+      expect(
+        resolveScope({
+          mode: 'scoped',
+          scope: storedSettings().attachmentScope,
+          endpoint: ENDPOINT,
+        }),
+      ).toEqual({ mode: 'scoped', keys: new Set() });
+    },
+  );
+
+  it.for(NOT_KEPT)(
+    'leaves the machine as it was when the settings write fails first, over $name',
+    async (row) => {
+      row.arrange();
+      const credentialBefore = credentialText();
+      const settingsBefore = readFileSync(settingsFile(), 'utf8');
+      stand.credentialWrites = 0;
+      stand.failSettingsWrite = true;
+      const h = harness({ interactive: false, stdin: KEY_2, who: row.who });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(LEFT_AS_IT_WAS);
+      expect(stand.credentialWrites).toBe(0);
+      expect(credentialText()).toBe(credentialBefore);
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(settingsBefore);
+    },
+  );
+
+  describe('and keeps the credential first everywhere else', () => {
+    it('writes the credential first on a rotation that keeps the list', async () => {
+      attachedScoped(BOUND);
+      applyOnboarding({ historySyncConsent: GRANT }, base, null);
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(storedSettings().attachmentScope).toEqual(BOUND);
+    });
+
+    it('writes the credential first on a first scoped attach with nothing stored', async () => {
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    it('writes the credential first when the settings that are left carry neither a list nor a grant', async () => {
+      attachedSettings({});
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+    });
+
+    // Settings first here would leave the machine-wide credential beside this
+    // run's answer about the repositories to be enrolled.
+    it('writes the credential first over a machine-wide credential, whatever settings are stored', async () => {
+      writeControlPlaneCredential(settingsDirOf(base), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: KEY_1,
+        mintedAt: ISO,
+      });
+      attachedSettings(STALE_SETTINGS);
+      const seen = keyAtSettingsWrite();
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(SCOPED_ARGS, h.deps);
+
+      expect(exits).toEqual([]);
+      expect(seen.get()).toBe(KEY_2);
+      expect(storedSettings().attachmentScope).toEqual(FRESH);
     });
   });
 });

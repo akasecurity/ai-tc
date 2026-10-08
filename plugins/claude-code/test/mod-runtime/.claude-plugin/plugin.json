@@ -1,0 +1,5 @@
+{
+  "name": "aka-engine-parity",
+  "version": "0.0.0",
+  "description": "Test-only plugin: runs the built detection engine inside the Claude Code mod runtime"
+}

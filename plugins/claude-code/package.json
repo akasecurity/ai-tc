@@ -21,14 +21,16 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node build/engine.mjs",
     "dev": "tsup --watch",
     "lint": "eslint src test eval *.config.*",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepack": "tsup"
+    "prepack": "pnpm run build",
+    "test:mod-runtime": "node test/mod-runtime/prepare.mjs && claude plugin test test/mod-runtime"
   },
   "devDependencies": {
+    "@akasecurity/detections": "workspace:*",
     "@akasecurity/eslint-config": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/plugin-runtime": "workspace:*",
@@ -38,6 +40,7 @@
     "@akasecurity/setup-wizard": "workspace:*",
     "@types/node": "^25.9.9",
     "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",

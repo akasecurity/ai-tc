@@ -2,6 +2,7 @@
 import { base, noDrizzleImports, rootConfigFiles } from '@akasecurity/eslint-config';
 
 export default [
+  { ignores: ['test/mod-runtime/**'] },
   ...base,
   ...noDrizzleImports,
   {

@@ -1,0 +1,5 @@
+
+# Built by build/engine.mjs from the bundled rule packs; never hand-edited.
+/hooks/engine.js
+/test/mod-runtime/engine.js
+/test/mod-runtime/cases.generated.js

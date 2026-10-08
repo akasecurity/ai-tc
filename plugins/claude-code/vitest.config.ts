@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
 
@@ -29,6 +29,8 @@ export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard, noManagedSettingsGuard],
     coverage: coverageOptions(import.meta.url),
+    // test/mod-runtime runs under `claude plugin test`, not vitest.
+    exclude: [...configDefaults.exclude, 'test/mod-runtime/**'],
     environment: 'node',
     globalSetup: ['./test/journey/global-setup.ts'],
     testTimeout: 20_000,

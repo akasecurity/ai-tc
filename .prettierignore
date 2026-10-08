@@ -31,6 +31,10 @@ plugins/copilot/test/fixtures/**/*.json
 # scoped attachments existed. A test compares the writer's output with these
 # bytes, so a reformatted fixture would no longer be the thing it pins.
 packages/persistence/test/fixtures/*.json
+# The credential `aka attach --scoped` writes, byte for byte. The CLI's suite
+# compares its output with these bytes and the frozen-reader suite reads them,
+# so a reformatted fixture would no longer be the CLI's output.
+packages/plugin-sdk/test/fixtures/*.json
 
 .wolf/
 .gitattributes

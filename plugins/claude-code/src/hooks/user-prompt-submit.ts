@@ -114,45 +114,50 @@ async function main(): Promise<void> {
   }
 
   // A prompt the mod's helper already rewrote and recorded (its event and
-  // findings are in the store; this hook is seeing pointers or markers): capture
-  // nothing, or one prompt would appear in Activity twice. The mod only rewrites
-  // a redact verdict, so there is no decision left to make either.
-  if (!consumeModHandoff(config.dataDir, prompt)) {
-    const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
-    let result: CaptureResult;
-    try {
-      result = await runtime.capture({
-        kind: 'prompt',
-        sourceTool: SOURCE_TOOL.ClaudeCode,
-        text: prompt,
-        metadata,
-        scopeKey,
-      });
-    } finally {
-      await runtime.close();
-    }
-
-    // Consent is resolved HERE rather than inside the decision: an absent
-    // tokenizer is what makes "no consent → the vault is never touched" a
-    // structural property instead of a flag the decision could forget to read.
-    const decision = await decideUserPromptSubmit(prompt, result, {
-      tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
-        ? (text, findings, reversible) =>
-            createVaultGlue().tokenizeText(text, {
-              findings,
-              // Per-finding custody, exactly as the tool-call paths pass it.
-              // Omitting it means "keep all", which would vault a value whose
-              // detection chose one-way Redact.
-              reversible,
-              sighting: { location: 'prompt', kind: 'prompt' },
-            })
-        : undefined,
-      writeClipboard,
+  // findings are in the store; this hook is seeing pointers or markers): record
+  // nothing, or one prompt would appear in Activity twice. Only the RECORDING is
+  // skipped. The prompt this hook is handed is still scanned and decided, as a
+  // second check on what the mod produced: the rewrite is normally clean and
+  // decides to nothing, but a value the mod left (a warn-level one beside a redacted
+  // one, which keeps its warning) or a note planted for a raw prompt is judged
+  // here exactly as a prompt with no mod would be.
+  const handedOff = consumeModHandoff(config.dataDir, prompt);
+  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  let result: CaptureResult;
+  try {
+    const decided = await runtime.captureDeferred({
+      kind: 'prompt',
+      sourceTool: SOURCE_TOOL.ClaudeCode,
+      text: prompt,
+      metadata,
+      scopeKey,
     });
-    if (decision !== null) {
-      await emit(decision);
-      return;
-    }
+    if (!handedOff) await decided.record();
+    result = decided.result;
+  } finally {
+    await runtime.close();
+  }
+
+  // Consent is resolved HERE rather than inside the decision: an absent
+  // tokenizer is what makes "no consent → the vault is never touched" a
+  // structural property instead of a flag the decision could forget to read.
+  const decision = await decideUserPromptSubmit(prompt, result, {
+    tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
+      ? (text, findings, reversible) =>
+          createVaultGlue().tokenizeText(text, {
+            findings,
+            // Per-finding custody, exactly as the tool-call paths pass it.
+            // Omitting it means "keep all", which would vault a value whose
+            // detection chose one-way Redact.
+            reversible,
+            sighting: { location: 'prompt', kind: 'prompt' },
+          })
+      : undefined,
+    writeClipboard,
+  });
+  if (decision !== null) {
+    await emit(decision);
+    return;
   }
 
   // Not enforced this prompt (action was monitor/log or allow — possibly WITH

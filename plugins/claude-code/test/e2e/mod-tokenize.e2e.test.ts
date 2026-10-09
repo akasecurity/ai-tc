@@ -19,6 +19,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { POINTER_TOKEN_ANCHORED, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { recordModHandoff } from '../../src/mod/handoff.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
@@ -201,6 +202,72 @@ describe('mod-tokenize helper', () => {
       );
       expect(rows(home).events).toBe(before.events + 1);
     }, 'aka-mod-tokenize-hook-');
+  });
+
+  it('a note planted for a raw prompt does not let it through: the hook still decides it', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'vault');
+      settings(home, true);
+      // What a stray or hostile writer of the data directory could leave: a note
+      // naming the RAW prompt, as the helper's would name a rewritten one.
+      recordModHandoff(join(home, '.aka', 'data'), PROMPT);
+
+      const hook = runHook(
+        'user-prompt-submit',
+        JSON.stringify({
+          prompt: PROMPT,
+          session_id: SESSION_ID,
+          cwd: join(home, 'project'),
+          hook_event_name: 'UserPromptSubmit',
+        }),
+        { env: env(home) },
+      );
+
+      expect((JSON.parse(hook.stdout) as { decision?: string }).decision).toBe('block');
+      // The note still covers the recording: it vouches for a row, not a verdict.
+      expect(rows(home).events).toBe(0);
+      expectNoEchoOf(hook.stderr, SECRET);
+    }, 'aka-mod-tokenize-planted-');
+  });
+
+  it('a redacted prompt that keeps a warn-level value still gets the hook’s warning, unrecorded', () => {
+    withTempHome((home) => {
+      const email = ['user1', 'example.com'].join('@');
+      const emailPack = bundledDetections().find((p) =>
+        p.rules.some((r) => r.id === 'core-pii/email'),
+      );
+      if (emailPack === undefined) throw new Error('no pack carries core-pii/email');
+      seedPolicy(home, 'redact');
+      settings(home, false);
+      const db = openLocalDatabase(join(home, '.aka', 'data'));
+      try {
+        db.installedPacks.setPolicy(emailPack.namespace, emailPack.packId, 'warn');
+      } finally {
+        db.close();
+      }
+      const prompt = `${PROMPT} and mail ${email}`;
+      const answer = answerOf(helper(home, prompt));
+      expect(answer.text).not.toContain(SECRET);
+      expect(answer.text).toContain(email);
+      const before = rows(home);
+
+      const hook = runHook(
+        'user-prompt-submit',
+        JSON.stringify({
+          prompt: answer.text,
+          session_id: SESSION_ID,
+          cwd: join(home, 'project'),
+          hook_event_name: 'UserPromptSubmit',
+        }),
+        { env: env(home) },
+      );
+
+      expect(hook.status).toBe(0);
+      expect((JSON.parse(hook.stdout) as { systemMessage?: string }).systemMessage).toContain(
+        'AKA flagged sensitive content',
+      );
+      expect(rows(home)).toEqual(before);
+    }, 'aka-mod-tokenize-mixed-');
   });
 
   it('control: without the helper the hook still blocks the raw prompt and records it', () => {

@@ -16,14 +16,18 @@
  *
  * Unless it denied, it leaves a note (src/mod/handoff.ts) naming the input the
  * tool will run with, so the command hook, shown that input next, does not
- * record or decide the call a second time. Nothing is written to stderr.
+ * record the call a second time or ask for a grant already spent. The hook still
+ * looks again at the executable fields (pre-tool-use-run.ts, noteStillHolds); the
+ * note names the values this helper let through there. Nothing is written to
+ * stderr.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import { isSyntheticField } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../hooks/shared.ts';
 import { countFailOpen, getString, parseJson, readStdin } from '../hooks/shared.ts';
-import { recordToolHandoff } from './handoff.ts';
+import { authorizeValues, recordToolHandoff } from './handoff.ts';
 import { answerFromOutputs } from './tool-call-answer.ts';
 
 async function main(): Promise<void> {
@@ -42,6 +46,11 @@ async function main(): Promise<void> {
   }
 
   const outputs: HookOutput[] = [];
+  // What was detected in the fields that execute. A call this helper lets through
+  // carries those values in the clear (a granted pointer dereferenced, a value an
+  // exception covers, a fallback that only warns), and the hook, which cannot see
+  // the grants now spent, takes them from the note rather than judging them again.
+  const executableValues: string[] = [];
   const run = await runPreToolUse(
     {
       tool_name: tool,
@@ -53,14 +62,29 @@ async function main(): Promise<void> {
       outputs.push(output);
       return Promise.resolve();
     },
-    { mode: 'mod' },
+    {
+      mode: 'mod',
+      onScanned: (scanned) => {
+        for (const { spec, result } of scanned) {
+          if (!spec.executable && !isSyntheticField(spec)) continue;
+          for (const finding of result.findings) executableValues.push(finding.rawMatch);
+        }
+      },
+    },
   );
   // No store, or nothing in the call to scan: the hook is the one to say so.
   if (run !== 'finished') process.exit(1);
 
   const answer = answerFromOutputs(outputs);
   if (answer.deny === null) {
-    recordToolHandoff(loadConfig().dataDir, tool, answer.input ?? toolInput);
+    const { dataDir } = loadConfig();
+    recordToolHandoff(
+      dataDir,
+      tool,
+      answer.input ?? toolInput,
+      Date.now(),
+      authorizeValues(dataDir, executableValues),
+    );
   }
   process.stdout.write(`${JSON.stringify(answer)}\n`);
 }

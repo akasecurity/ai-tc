@@ -22,6 +22,7 @@ import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { recordToolHandoff } from '../../src/mod/handoff.ts';
 import { runHook, tempHomeEnv } from '../helpers/run-hook.ts';
 import type { Outcome, Scenario, Values } from '../mod/tool-call-scenarios.ts';
 import { fill, RULE_IDS, SCENARIOS } from '../mod/tool-call-scenarios.ts';
@@ -311,6 +312,75 @@ describe('mod-tool-call helper and PreToolUse', () => {
       });
     });
   }
+
+  // A note is a file in the data directory, so anything able to write there could
+  // leave one for a call the helper never saw. The hook keeps judging the fields
+  // that execute: a raw value it would block, or a pointer nothing decided, is
+  // still refused with a note in place.
+  describe.each([
+    'a block on a Bash command denies',
+    'an ungranted pointer in a Bash command denies',
+  ])('a planted note for %s', (name) => {
+    it('does not let the call through', async () => {
+      const scenario = SCENARIOS.find((s) => s.name === name);
+      if (scenario === undefined) throw new Error(`no scenario named ${name}`);
+      await inHome(async (home) => {
+        const values = await seed(home, scenario);
+        const input = fill(scenario.input, values);
+        recordToolHandoff(join(home, '.aka', 'data'), scenario.tool, input);
+
+        expectOutcome(hook(home, scenario.tool, input), filled(scenario, values));
+      });
+    });
+  });
+
+  it('a note the helper left vouches for the raw value it let through, and only that', async () => {
+    const scenario = SCENARIOS.find(
+      (s) =>
+        s.name ===
+        'a redact on a Bash command goes through unmasked under the shipped warn fallback',
+    );
+    if (scenario === undefined) throw new Error('no warn-fallback Bash scenario');
+    await inHome(async (home) => {
+      const values = await seed(home, scenario);
+      const input = fill(scenario.input, values);
+      const answer = helper(home, scenario.tool, input);
+      expect(answer).not.toBe('no-decision');
+      const cwd = join(home, 'project');
+
+      // The helper warned and recorded; the hook, shown the same input, says nothing.
+      const same = runHook(
+        'pre-tool-use',
+        JSON.stringify({
+          tool_name: scenario.tool,
+          tool_input: input,
+          session_id: SESSION_ID,
+          cwd,
+          hook_event_name: 'PreToolUse',
+        }),
+        { env: env(home) },
+      );
+      expect(same.status).toBe(0);
+      expect(same.stdout).toBe('');
+
+      // Another command with a blocked-by-policy value was never vouched for.
+      const other = { command: `${String(input.command)} && echo ${values.IP}2` };
+      recordToolHandoff(join(home, '.aka', 'data'), scenario.tool, other);
+      const planted = runHook(
+        'pre-tool-use',
+        JSON.stringify({
+          tool_name: scenario.tool,
+          tool_input: other,
+          session_id: SESSION_ID,
+          cwd,
+          hook_event_name: 'PreToolUse',
+        }),
+        { env: env(home) },
+      );
+      expect(planted.status).toBe(0);
+      expect(planted.stdout).not.toBe('');
+    });
+  });
 
   it('without the helper having run, the hook decides a call as ever', async () => {
     const scenario = SCENARIOS.find((s) => s.tool === 'Write' && s.outcome.kind === 'rewrite');

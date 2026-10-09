@@ -104,7 +104,7 @@ describe('concurrent helpers', () => {
   let script: string;
   beforeAll(async () => {
     // A script that records through the real module, bundled so a plain `node`
-    // can run it (the module's one workspace import is its two file modes).
+    // can run it (the module's one workspace import is stubbed: two file modes and the fingerprint key functions, which the concurrent notes never reach).
     const out = mkdtempSync(join(tmpdir(), 'aka-handoff-bundle-'));
     script = join(out, 'record.mjs');
     await build({
@@ -137,7 +137,11 @@ describe('concurrent helpers', () => {
               namespace: 'stub',
             }));
             b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
-              contents: 'export const DATA_DIR_MODE = 0o700; export const DATA_FILE_MODE = 0o600;',
+              contents: [
+                'export const DATA_DIR_MODE = 0o700; export const DATA_FILE_MODE = 0o600;',
+                'export const fingerprintValue = () => ""; export const loadOrCreateFingerprintKey = () => null;',
+                'export const readFingerprintKey = () => null;',
+              ].join('\n'),
               loader: 'js',
             }));
           },

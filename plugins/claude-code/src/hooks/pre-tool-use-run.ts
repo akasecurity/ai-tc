@@ -10,7 +10,8 @@ import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { consumeToolHandoff } from '../mod/handoff.ts';
+import type { HandoffNote } from '../mod/handoff.ts';
+import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
@@ -53,6 +54,12 @@ export interface PreToolUseRunOptions {
    * about an unavailable store (the hook says it).
    */
   mode: 'hook' | 'mod';
+  /**
+   * Called with every scanned field once the decision is made, for a caller that
+   * needs what was found beside what was decided (the mod's helper names the
+   * detections it let through in a note). Never throws into the run.
+   */
+  onScanned?: (scanned: readonly ScannedField[]) => void;
 }
 
 export async function runPreToolUse(
@@ -115,10 +122,15 @@ export async function runPreToolUse(
   // A call the tool.call mod's helper already decided, whose input this hook is
   // being shown after the mod's rewrite: its events and findings are recorded and
   // any grant it needed is spent, so a second pass would record twice and could
-  // refuse for a use already consumed. Consumed once. A missing or unmatched
-  // note leaves this pass to decide as it always did.
-  if (options.mode === 'hook' && consumeToolHandoff(config.dataDir, toolName, toolInput)) {
-    return 'finished';
+  // refuse for a use already consumed. The note is consumed once, and then it is
+  // only trusted for what it can still vouch for: the hook does not take a note's
+  // word that an executable field is clean (see noteStillHolds). A missing,
+  // unmatched or no longer holding note leaves this pass to decide as it always did.
+  if (options.mode === 'hook') {
+    const note = takeToolHandoff(config.dataDir, toolName, toolInput);
+    if (note !== null && (await noteStillHolds(config, note, toolName, toolInput, fields))) {
+      return 'finished';
+    }
   }
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
@@ -296,6 +308,11 @@ export async function runPreToolUse(
   } finally {
     await runtime.close();
   }
+  try {
+    options.onScanned?.(scanned);
+  } catch {
+    // A note about what was found never changes what was decided.
+  }
 
   // Collapse the per-field runtime results into the hook payload (pure module),
   // then flush it. With consent, redact fields rewrite to vault pointers and
@@ -361,6 +378,58 @@ export async function runPreToolUse(
     });
   }
   return 'finished';
+}
+
+// Whether a handoff note still vouches for the call the hook is shown. The note
+// stands in for a decision the helper made and a grant it spent, neither of which
+// can be repeated, but a note is only a file: anything able to write the data
+// directory could plant one for a call the helper never saw. So an EXECUTABLE field
+// (one whose text runs, where a value cannot be masked in place) is looked at
+// again, writing and spending nothing:
+//   - a vault pointer left in it was never decided (the helper denies an ungranted
+//     one and dereferences a granted one), so the note does not hold;
+//   - a value the policy enforces (block or redact) may be there only if the note
+//     names it among those the helper let through, as a keyed fingerprint that
+//     only a holder of the store's key can produce.
+// Data fields are not re-judged: the helper rewrote them and what it spent on them
+// is its record. A fault in the re-check trusts the note (fail open): the helper
+// did decide the call.
+async function noteStillHolds(
+  config: PluginConfig,
+  note: HandoffNote,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  fields: readonly ReturnType<typeof scannableInputFields>[number][],
+): Promise<boolean> {
+  try {
+    const texts: string[] = [];
+    for (const spec of fields) {
+      if (!spec.executable && !isSyntheticField(spec)) continue;
+      const text = fieldText(spec, toolInput);
+      if (text === undefined || text === '') continue;
+      if (text.matchAll(pointerTokenScanner()).next().done !== true) return false;
+      texts.push(text);
+    }
+    if (texts.length === 0) return true;
+    const opened = openGateway(config);
+    if (opened.gateway === null) return true;
+    const runtime = createPluginRuntime(opened.gateway, config.settings, {
+      dataDir: config.dataDir,
+    });
+    try {
+      const context = { filePath: inputFilePath(toolInput), eventKind: inputEventKind(toolName) };
+      for (const text of texts) {
+        for (const finding of await runtime.enforcedIn(text, context)) {
+          if (!isAuthorizedValue(config.dataDir, note, finding.rawMatch)) return false;
+        }
+      }
+    } finally {
+      await runtime.close();
+    }
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 // Attach the model note and extend the user disclosure on a tokenized allow

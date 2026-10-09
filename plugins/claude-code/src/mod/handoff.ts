@@ -39,7 +39,13 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
+import {
+  DATA_DIR_MODE,
+  DATA_FILE_MODE,
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+  readFingerprintKey,
+} from '@akasecurity/plugin-sdk';
 
 const HANDOFF_DIR = 'mod-handoff';
 // The single shared file earlier builds kept every note in; no longer read.
@@ -60,14 +66,35 @@ function hashOf(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
-// A note's content: when it was written, by the writer's clock.
-function isFresh(path: string, now: number): boolean {
+/**
+ * What a note holds. `at` is when it was written, by the writer's clock.
+ * `authorized` is for a tool note: keyed fingerprints (never values) of the
+ * detections the helper let through in the call's executable fields, which the
+ * hook may not re-judge because the grants that allowed them are spent.
+ */
+export interface HandoffNote {
+  at: number;
+  authorized: string[];
+}
+
+// The note in a file, or null when it is unreadable, malformed, past the TTL or
+// dated ahead of the clock.
+function readNote(path: string, now: number): HandoffNote | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    const at = (parsed as { at?: unknown } | null)?.at;
-    return typeof at === 'number' && at <= now + HANDOFF_SKEW_MS && now - at < HANDOFF_TTL_MS;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      at?: unknown;
+      authorized?: unknown;
+    } | null;
+    const at = parsed?.at;
+    if (typeof at !== 'number' || at > now + HANDOFF_SKEW_MS || now - at >= HANDOFF_TTL_MS) {
+      return null;
+    }
+    const authorized = Array.isArray(parsed?.authorized)
+      ? parsed.authorized.filter((v): v is string => typeof v === 'string')
+      : [];
+    return { at, authorized };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -92,7 +119,7 @@ function sweep(dir: string, dataDir: string, names: readonly string[]): void {
   rmSync(join(dataDir, LEGACY_FILE), { force: true });
 }
 
-function record(dataDir: string, hash: string, now: number): void {
+function record(dataDir: string, hash: string, now: number, authorized: readonly string[]): void {
   try {
     const dir = join(dataDir, HANDOFF_DIR);
     mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
@@ -101,43 +128,44 @@ function record(dataDir: string, hash: string, now: number): void {
     if (names.length >= MAX_NOTES) return;
     const nonce = `${String(process.pid)}-${randomBytes(6).toString('hex')}`;
     const tmp = join(dir, `.${nonce}.tmp`);
-    writeFileSync(tmp, JSON.stringify({ at: now }), { mode: DATA_FILE_MODE, flag: 'wx' });
+    const content = authorized.length === 0 ? { at: now } : { at: now, authorized };
+    writeFileSync(tmp, JSON.stringify(content), { mode: DATA_FILE_MODE, flag: 'wx' });
     renameSync(tmp, join(dir, `${hash}.${nonce}.json`));
   } catch {
     // The hook captures too: a duplicate row, never a missing one.
   }
 }
 
-function consume(dataDir: string, hash: string, now: number): boolean {
+function consume(dataDir: string, hash: string, now: number): HandoffNote | null {
   try {
     const dir = join(dataDir, HANDOFF_DIR);
     const prefix = `${hash}.`;
     for (const name of readdirSync(dir)) {
       if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
       const path = join(dir, name);
-      const fresh = isFresh(path, now);
+      const note = readNote(path, now);
       try {
         unlinkSync(path);
       } catch {
         // Another hook spent it first.
         continue;
       }
-      if (fresh) return true;
+      if (note !== null) return note;
     }
-    return false;
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /** Leaves a note that `rewritten` is a prompt whose event is already recorded. */
 export function recordModHandoff(dataDir: string, rewritten: string, now = Date.now()): void {
-  record(dataDir, hashOf(rewritten), now);
+  record(dataDir, hashOf(rewritten), now, []);
 }
 
 /** True once per note: the prompt is one the mod's helper already recorded. */
 export function consumeModHandoff(dataDir: string, prompt: string, now = Date.now()): boolean {
-  return consume(dataDir, hashOf(prompt), now);
+  return consume(dataDir, hashOf(prompt), now) !== null;
 }
 
 // A tool call is named by its tool and its input, with object keys in a fixed
@@ -159,15 +187,28 @@ function toolKey(toolName: string, toolInput: unknown): string {
 /**
  * Leaves a note that the call (`toolName`, `toolInput`) was decided by the
  * tool.call mod's helper, which recorded its findings and spent any grant it
- * needed. `toolInput` is the input the tool will run with.
+ * needed. `toolInput` is the input the tool will run with; `authorized` is what
+ * `authorizeValues` returned for the detections the helper let through in its
+ * executable fields.
  */
 export function recordToolHandoff(
   dataDir: string,
   toolName: string,
   toolInput: unknown,
   now = Date.now(),
+  authorized: readonly string[] = [],
 ): void {
-  record(dataDir, toolKey(toolName, toolInput), now);
+  record(dataDir, toolKey(toolName, toolInput), now, authorized);
+}
+
+/** The note for this call, spent by taking it, or null: not one the helper decided. */
+export function takeToolHandoff(
+  dataDir: string,
+  toolName: string,
+  toolInput: unknown,
+  now = Date.now(),
+): HandoffNote | null {
+  return consume(dataDir, toolKey(toolName, toolInput), now);
 }
 
 /** True once per note: this call is one the mod's helper already decided. */
@@ -177,5 +218,31 @@ export function consumeToolHandoff(
   toolInput: unknown,
   now = Date.now(),
 ): boolean {
-  return consume(dataDir, toolKey(toolName, toolInput), now);
+  return takeToolHandoff(dataDir, toolName, toolInput, now) !== null;
+}
+
+/**
+ * Keyed fingerprints of raw values, under the store's fingerprint key, so a note
+ * can say which detections were let through without holding any of them. Empty
+ * when there is nothing to name or no key can be had.
+ */
+export function authorizeValues(dataDir: string, values: readonly string[]): string[] {
+  if (values.length === 0) return [];
+  try {
+    const key = loadOrCreateFingerprintKey(dataDir);
+    return [...new Set(values.map((value) => fingerprintValue(key, value)))];
+  } catch {
+    return [];
+  }
+}
+
+/** True when `note` names `value` among the detections the helper let through. */
+export function isAuthorizedValue(dataDir: string, note: HandoffNote, value: string): boolean {
+  if (note.authorized.length === 0) return false;
+  try {
+    const key = readFingerprintKey(dataDir);
+    return key !== null && note.authorized.includes(fingerprintValue(key, value));
+  } catch {
+    return false;
+  }
 }

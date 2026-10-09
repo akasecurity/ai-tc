@@ -101,6 +101,27 @@ for (const surface of SURFACES) {
     });
   }
 
+  test(`${surface}: a revealed value is never written to $.state, which any plugin can read`, async ($, on) => {
+    const clock = mock.clock(on);
+    engineRow(on);
+    answering(on, 'full');
+    // Every write to the host's state, as a plugin hooking state.set would see it.
+    const written: string[] = [];
+    on('state.set', (_$, e, next) => {
+      written.push(JSON.stringify(e));
+      return next(e);
+    });
+
+    const ui = await mountRow($, surface, 'AssistantMessage', `key ${pointer(0)} end`);
+    await clock.settle();
+    expect(await shown(ui)).toBe(`key ${value(0)} end`);
+
+    expect(written.length).toBeGreaterThan(0);
+    const all = written.join('\n');
+    expect(all).not.toContain('VALUE-0');
+    expect(all).not.toContain('scrubbed');
+  });
+
   test(`${surface}: masked mode draws the badge, never a value`, async ($, on) => {
     const clock = mock.clock(on);
     engineRow(on);

@@ -1,26 +1,17 @@
 // The state contract of the aka mod (hooks/mod.ts). It adds no noun to `$`; it
-// declares the one named value the display rewrite draws from, so a reload of the
-// session redraws it. Read it with `$.state.get`, never write it from a render.
+// declares the one named value the display rewrite subscribes to, so that a
+// resolved pointer redraws the messages that show it. Read it with `$.state.get`,
+// never write it from a render.
 
 /**
- * What the screen shows for one complete vault pointer, resolved once by the
- * `aka` helper and held for the session. Keyed by the pointer text.
- *
- * `badge` is the masked form (`[scrubbed:...]`); null means the pointer is not
- * to be rewritten at all (no vault consent, or inline reveal is off). `revealed`
- * is the complete replacement for a revealed pointer: undefined until a reveal
- * was asked for, null once the vault declined or the mode is masked. `failedAt`
- * (a `$.clock.now()` time) marks a helper that did not answer, so a redraw does
- * not spawn it again until a retry interval has passed.
+ * `$.state` is readable by every installed plugin, so nothing a vault holds may
+ * be written to it. This is a bare counter: the mod bumps it each time a helper
+ * run settles, and a render hook reads it only to be drawn again. What the screen
+ * shows for a pointer (the badge and any revealed value) is held in the mod's
+ * own module memory and never reaches `$.state`.
  */
-export type AkaRevealEntry = {
-  badge: string | null;
-  revealed?: string | null;
-  failedAt?: number;
-};
-
 declare module 'claude-code' {
   interface PluginState {
-    aka: { reveals: Record<string, AkaRevealEntry> };
+    aka: { reveals: number };
   }
 }

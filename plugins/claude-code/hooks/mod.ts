@@ -1,4 +1,4 @@
-import type { Hook, Register, StateValue } from 'claude-code';
+import type { Hook, Register } from 'claude-code';
 import { update } from 'claude-code';
 
 import {
@@ -241,11 +241,18 @@ async function noteModRunning($: Dollar): Promise<void> {
 // The vault and the settings are out of reach of a mod, so the `aka` helper
 // (scripts/mod-reveal.js, run with $.process.run) resolves pointers. A message
 // redraws about every 50 ms while it streams, so the render hook never spawns
-// per draw: it reads the answers held in $.state, draws from them, and for a
+// per draw: it draws from the answers held in this module's memory, and for a
 // pointer it has none for starts one helper run (once per distinct pointer, kept
-// in `inflight` until it settles) whose answer is written to $.state, which
-// redraws the readers. Until then, and wherever the helper cannot answer, the
-// pointer is shown as written. A trailing partial pointer or a garbled one never
+// in `inflight` until it settles) whose answer is stored there.
+//
+// A revealed value is NEVER written to $.state: any installed plugin may read
+// every value in it, so a vault value there would be readable by all of them.
+// The values (and badges) live in a module variable that only this mod can reach;
+// $.state holds a bare version counter and nothing else, which is read while
+// drawing so that bumping it redraws the readers. A hot reload that loses the
+// module's memory costs one more helper run per pointer, never a wrong drawing.
+// Until an answer is held, and wherever the helper cannot answer, the pointer is
+// shown as written. A trailing partial pointer or a garbled one never
 // matches the pointer grammar and is left alone. The markdown regions where a
 // pointer stays masked are the MessageDisplay command hook's own, which stays
 // registered for surfaces where mods do not draw; on a surface where both run,
@@ -253,10 +260,26 @@ async function noteModRunning($: Dollar): Promise<void> {
 
 type RenderArgs = Parameters<Hook<'ui.render'>>;
 type RenderDollar = RenderArgs[0];
-type RevealEntry = StateValue<'aka', 'reveals'>[string];
+
+// What the screen shows for one complete vault pointer, resolved once by the
+// helper. `badge` is the masked form; null means the pointer is not to be
+// rewritten at all (no vault consent, or inline reveal is off). `revealed` is the
+// complete replacement for a revealed pointer: undefined until a reveal was asked
+// for, null once the vault declined or the mode is masked. `failedAt` (a
+// `$.clock.now()` time) marks a helper that did not answer, so a redraw does not
+// spawn it again until a retry interval has passed.
+interface RevealEntry {
+  badge: string | null;
+  revealed?: string | null;
+  failedAt?: number;
+}
 
 // Typed literally and used for nothing but $.state calls, as the host requires.
+// Its value is a version counter that carries no pointer and no value.
 const reveals = { plugin: 'aka', key: 'reveals' } as const;
+
+// The answers, keyed by pointer text. Module memory on purpose: see above.
+const held = new Map<string, RevealEntry>();
 
 // What the helper may take before the pointers stay as written.
 const REVEAL_HELPER_TIMEOUT_MS = 3000;
@@ -388,12 +411,8 @@ function isRetryable(entry: RevealEntry, now: number): boolean {
 }
 
 // What to draw for a pointer, or null when the helper is to be asked.
-function drawPointer(
-  held: Readonly<Record<string, RevealEntry>>,
-  now: number,
-  want: PointerWant,
-): { text: string; revealed: boolean } | null {
-  const entry = held[want.token];
+function drawPointer(now: number, want: PointerWant): { text: string; revealed: boolean } | null {
+  const entry = held.get(want.token);
   if (entry === undefined) return null;
   if (entry.badge === null) {
     // Not to be rewritten (no consent, or reveal off), or a helper that failed.
@@ -408,33 +427,36 @@ function drawPointer(
 }
 
 function mergeReveals(
-  held: Readonly<Record<string, RevealEntry>>,
   asked: { token: string; reveal: boolean }[],
   answer: RevealAnswer | null,
   now: number,
-): Record<string, RevealEntry> {
-  const next: Record<string, RevealEntry> = { ...held };
+): void {
   for (const { token, reveal } of asked) {
-    const prior = held[token];
+    const prior = held.get(token);
     const got = answer?.items.get(token);
     if (answer === null || (got === undefined && !answer.isOff)) {
-      next[token] = { badge: prior?.badge ?? null, failedAt: now };
-      if (prior?.revealed !== undefined)
-        next[token] = { ...next[token]!, revealed: prior.revealed };
+      held.set(token, {
+        badge: prior?.badge ?? null,
+        failedAt: now,
+        ...(prior?.revealed === undefined ? {} : { revealed: prior.revealed }),
+      });
     } else if (got === undefined) {
-      next[token] = { badge: null };
+      held.set(token, { badge: null });
     } else {
-      next[token] = reveal
-        ? { badge: got.badge, revealed: got.revealed }
-        : {
-            badge: got.badge,
-            ...(prior?.revealed === undefined ? {} : { revealed: prior.revealed }),
-          };
+      held.set(
+        token,
+        reveal
+          ? { badge: got.badge, revealed: got.revealed }
+          : {
+              badge: got.badge,
+              ...(prior?.revealed === undefined ? {} : { revealed: prior.revealed }),
+            },
+      );
     }
   }
-  const keys = Object.keys(next);
-  for (const stale of keys.slice(0, Math.max(0, keys.length - REVEAL_MAX_HELD))) delete next[stale];
-  return next;
+  // The oldest go first.
+  for (const stale of [...held.keys()].slice(0, Math.max(0, held.size - REVEAL_MAX_HELD)))
+    held.delete(stale);
 }
 
 // Resolves pointers the render hook found no answer for, once each, and writes
@@ -458,7 +480,9 @@ async function resolvePointers($: RenderDollar, wanted: PointerWant[]): Promise<
     } catch {
       now = 0;
     }
-    await update($, reveals, (held) => mergeReveals(held ?? {}, asked, answer, now));
+    mergeReveals(asked, answer, now);
+    // The readers redraw on a new version; the counter says nothing about what changed.
+    await update($, reveals, (version) => (version ?? 0) + 1);
   } catch {
     // The pointers stay as written; the next redraw asks again.
   } finally {
@@ -471,14 +495,15 @@ async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[
     const props = e.props as { text?: unknown };
     // The cheap exit for nearly every message: no pointer opening, nothing to do.
     if (typeof props.text !== 'string' || !props.text.includes('[[aka:')) return next(e);
-    const { value: held = {} } = await $.state.get(reveals);
+    // Read for its subscription only: a new version redraws this instance.
+    await $.state.get(reveals);
     let now = 0;
     try {
       now = await $.clock.now();
     } catch {
       now = 0;
     }
-    const drawn = revealPointers(props.text, (want) => drawPointer(held, now, want));
+    const drawn = revealPointers(props.text, (want) => drawPointer(now, want));
     if (drawn.wanted.length > 0) void resolvePointers($, drawn.wanted);
     if (drawn.text === props.text) return next(e);
     return next({ ...e, props: { ...e.props, text: drawn.text } } as typeof e);

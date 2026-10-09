@@ -151,8 +151,40 @@ async function backstopRow(
   return changed ? { ...row, message: { ...row.message, content } } : null;
 }
 
+// The mod is zod-free and Node-free, so it spells the note's location and shape
+// itself; the reader is packages/plugin-sdk/src/mod-host-mode.ts.
+const NOTE_RENEW_MS = 60 * 1000;
+let lastNote: { sessionId: string; at: number } | undefined;
+
+// Leaves a note under ~/.aka/data/mod-sessions that this session's mod is
+// running; `aka status` and /aka:health read it to say prompts are redacted in
+// place. Renewed at most once a minute. Any failure leaves no note.
+async function noteModRunning($: Dollar): Promise<void> {
+  try {
+    const now = await $.clock.now();
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
+    if (home === undefined || home === '') return;
+    const sessionId = await $.session.id();
+    if (sessionId === '') return;
+    if (lastNote?.sessionId === sessionId && now - lastNote.at < NOTE_RENEW_MS) return;
+    const sep = home.includes('\\') ? '\\' : '/';
+    const root = home.endsWith('/') || home.endsWith('\\') ? home.slice(0, -1) : home;
+    const path = [root, '.aka', 'data', 'mod-sessions', `${encodeURIComponent(sessionId)}.json`];
+    await $.fs.write(path.join(sep), JSON.stringify({ v: 1, sessionId, at: now }));
+    lastNote = { sessionId, at: now };
+  } catch {
+    // No note: the session reports as blocking, which is the safe reading.
+  }
+}
+
 export const register: Register = (on) => {
+  on('session.start', async ($, e, next) => {
+    await noteModRunning($);
+    return next(e);
+  });
+
   on('prompt.submit', async ($, e, next) => {
+    await noteModRunning($);
     // Nothing to redact: nothing is spawned.
     const plan = planPromptWith(e.text, await loadPolicy($));
     if (plan.values.length === 0) return next(e);

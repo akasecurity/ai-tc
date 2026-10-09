@@ -98,6 +98,8 @@ export {
 } from './isolated-scan.ts';
 export type { LocatedScanFinding, ScanFinding } from './mask.ts';
 export { bundledMaskingRules, maskText, scanText } from './mask.ts';
+export type { PromptRedactionMode } from './mod-host-mode.ts';
+export { promptRedactionLines, promptRedactionMode } from './mod-host-mode.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
   buildModelRefusalEvent,

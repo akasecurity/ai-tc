@@ -22,7 +22,11 @@ import {
   renderAttachedStatus,
   renderPolicyLine,
 } from '@akasecurity/plugin-runtime';
-import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
+import {
+  hostCompatibilityLines,
+  promptRedactionLines,
+  readHostVersionCache,
+} from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredential,
@@ -818,7 +822,11 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // which this template would turn into a bare newline. That is the COMMON case,
   // not an edge one: a CLI-only install, a Codex-only install, and any Claude
   // Code install before its first completed turn all have no cache to read.
-  const hostLines = hostCompatibilityLines(readHostVersionCache(dataDir));
+  const hostCache = readHostVersionCache(dataDir);
+  const hostLines = [
+    ...hostCompatibilityLines(hostCache),
+    ...promptRedactionLines(dataDir, hostCache !== null),
+  ];
   if (hostLines.length > 0) io.out(`${hostLines.join('\n')}\n`);
 }
 

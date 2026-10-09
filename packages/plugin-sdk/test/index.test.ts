@@ -173,6 +173,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'offersCaptureStatusReader',
   'offersMaintenance',
   'prohibitedModelMessage',
+  'promptRedactionLines',
+  'promptRedactionMode',
   'providerFromModelId',
   'quarantineRule',
   'readFingerprintKey',

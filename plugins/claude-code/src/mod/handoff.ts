@@ -19,8 +19,9 @@
 // temporary name (created exclusively) and renamed into place, so it is never seen
 // half written; consuming a note is unlinking exactly that file, and the unlink
 // that succeeds is the one consumption, so a note is spent once however many hooks
-// race for it. A note expires by its age: past the TTL it is spent without
-// being honoured. Stale files are swept a bounded
+// race for it. A note expires by its age: past the TTL, or dated ahead of this
+// machine's clock by more than a small skew (a future date must not make a note
+// immortal), it is spent without being honoured. Stale files are swept a bounded
 // number at a time as notes are recorded.
 //
 // Best effort throughout: a missing, unreadable or corrupt note means the hook
@@ -46,8 +47,8 @@ const LEGACY_FILE = 'mod-handoff.json';
 // A hook runs within a second or two of the mod; this is only the bound on a
 // note nobody consumed (the host was not running the hook).
 export const HANDOFF_TTL_MS = 2 * 60 * 1000;
-// How far ahead of this machine's clock a file's mtime may be before it is swept.
-const SWEEP_SKEW_MS = 5 * 1000;
+// How far ahead of this machine's clock a note may be dated and still be fresh.
+export const HANDOFF_SKEW_MS = 5 * 1000;
 // A directory this full is not written to (the hook then captures, as ever).
 const MAX_NOTES = 512;
 // What one sweep may look at and remove, so recording stays cheap however much
@@ -64,7 +65,7 @@ function isFresh(path: string, now: number): boolean {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
     const at = (parsed as { at?: unknown } | null)?.at;
-    return typeof at === 'number' && now - at < HANDOFF_TTL_MS;
+    return typeof at === 'number' && at <= now + HANDOFF_SKEW_MS && now - at < HANDOFF_TTL_MS;
   } catch {
     return false;
   }
@@ -80,7 +81,7 @@ function sweep(dir: string, dataDir: string, names: readonly string[]): void {
     if (removed >= SWEEP_REMOVE) break;
     try {
       const { mtimeMs } = statSync(join(dir, name));
-      if (mtimeMs < clock - HANDOFF_TTL_MS || mtimeMs > clock + SWEEP_SKEW_MS) {
+      if (mtimeMs < clock - HANDOFF_TTL_MS || mtimeMs > clock + HANDOFF_SKEW_MS) {
         unlinkSync(join(dir, name));
         removed += 1;
       }

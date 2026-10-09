@@ -12,8 +12,10 @@ import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
   consumeModHandoff,
   consumeToolHandoff,
+  HANDOFF_SKEW_MS,
   HANDOFF_TTL_MS,
   recordModHandoff,
+  recordToolHandoff,
 } from '../../src/mod/handoff.ts';
 
 let dir: string;
@@ -42,6 +44,26 @@ describe('expiry', () => {
     recordModHandoff(dir, 'rewritten', 10_000);
     expect(consumeModHandoff(dir, 'rewritten', 10_000 + HANDOFF_TTL_MS)).toBe(false);
     expect(notes()).toEqual([]);
+  });
+
+  it('does not honour a note dated ahead of the clock, however far', () => {
+    const now = 1_000_000;
+    recordModHandoff(dir, 'rewritten', now + 365 * 24 * 60 * 60 * 1000);
+    recordToolHandoff(dir, 'Bash', { command: 'x' }, Number.MAX_SAFE_INTEGER);
+    expect(consumeModHandoff(dir, 'rewritten', now)).toBe(false);
+    expect(consumeToolHandoff(dir, 'Bash', { command: 'x' }, now)).toBe(false);
+  });
+
+  it('does not honour a note just past the skew', () => {
+    const now = 1_000_000;
+    recordModHandoff(dir, 'rewritten', now + HANDOFF_SKEW_MS + 1);
+    expect(consumeModHandoff(dir, 'rewritten', now)).toBe(false);
+  });
+
+  it('allows a small skew between the writer and the reader', () => {
+    const now = 1_000_000;
+    recordModHandoff(dir, 'rewritten', now + HANDOFF_SKEW_MS);
+    expect(consumeModHandoff(dir, 'rewritten', now)).toBe(true);
   });
 
   it('treats a corrupt note as no note and removes it', () => {

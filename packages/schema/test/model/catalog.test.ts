@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   anthropicPrice,
   buildModelIndex,
+  costOf,
   defaultCostModel,
   hostingFor,
   isFirstParty,
+  LONG_CONTEXT_THRESHOLDS,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
@@ -14,6 +16,7 @@ import {
   resolveModel,
   resolveTrainsOnData,
   stripPlatformDecorations,
+  tokenPrice,
   UNDECLARED_TRAINING,
   UNPRICEABLE_PROVIDERS,
   vendor,
@@ -433,5 +436,54 @@ describe('long-context pricing', () => {
         usage: { inputTokens: 100_000 },
       }),
     ).toBeCloseTo(0.5, 10);
+  });
+
+  it('counts cached prompt tokens toward the band threshold', () => {
+    // 15K uncached + 285K read from cache is a 300K prompt: over the 272K line,
+    // where the rate is unpublished.
+    const usage = { inputTokens: 15_000, cacheReadTokens: 285_000 };
+    expect(defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage })).toBeNull();
+    // With a published band rate, a mostly-cached prompt over the line takes it.
+    const banded = tokenPrice(1, 10, {
+      cacheRead: 0.1,
+      longContext: { thresholdInputTokens: 200_000, input: 2, output: 20 },
+    });
+    expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 200_000 })).toBeCloseTo(0.12, 10);
+    expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 100_000 })).toBeCloseTo(0.06, 10);
+    // Not vacuous: the same split under the line prices.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.4',
+        usage: { inputTokens: 15_000, cacheReadTokens: 200_000 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('takes the band from promptTokens when a caller prices a sum of requests', () => {
+    // Two 150K requests summed: 300K of input, but no single request crossed 272K.
+    const summed = { inputTokens: 20_000, cacheReadTokens: 280_000 };
+    expect(
+      defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage: summed }),
+    ).toBeNull();
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.4',
+        usage: { ...summed, promptTokens: 150_000 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('lists every declared band threshold once, ascending', () => {
+    const declared = new Set<number>();
+    for (const entry of MODEL_ENTRIES) {
+      for (const offering of entry.platforms.values()) {
+        const band = offering.price?.longContext;
+        if (band) declared.add(band.thresholdInputTokens);
+      }
+    }
+    expect(declared.size).toBeGreaterThan(0);
+    expect(LONG_CONTEXT_THRESHOLDS).toEqual([...declared].sort((a, b) => a - b));
   });
 });

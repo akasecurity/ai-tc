@@ -17,6 +17,7 @@ import type { CostUsage } from '../token/cost-usage.ts';
 
 /**
  * A second rate band that applies once a request's INPUT crosses `thresholdInputTokens`.
+ * The input counted is the whole prompt, cached tokens included.
  *
  * Verified to apply to the whole request, not just the tokens above the line:
  * "For GPT-5.6, prompts with more than 272,000 input tokens use long-context
@@ -136,6 +137,17 @@ export function serviceTierMultiplier(tier: string | undefined): number {
  * undercounted — a partial sum reported as a total is a number nobody checked.
  * A column the usage does not touch contributes nothing either way.
  */
+/** The prompt size that selects a long-context band (see `CostUsage.promptTokens`). */
+export function promptTokensOf(usage: CostUsage): number {
+  return (
+    usage.promptTokens ??
+    (usage.inputTokens ?? 0) +
+      (usage.cacheReadTokens ?? 0) +
+      (usage.cacheWrite1hTokens ?? 0) +
+      (usage.cacheWrite5mTokens ?? 0)
+  );
+}
+
 export function costOf(price: ModelPrice, usage: CostUsage): number | null {
   const metered: readonly (readonly [number, number | null])[] = [
     [usage.cacheWrite1hTokens ?? 0, price.cacheWrite1h],
@@ -146,9 +158,10 @@ export function costOf(price: ModelPrice, usage: CostUsage): number | null {
   // Above the threshold the band rate applies to the WHOLE request, not just
   // the tokens past it, so input and output are re-priced rather than split.
   // A null band rate is an unread rate: the request bills at a price we do not
-  // have, so the cost is unknown rather than the sub-threshold figure.
+  // have, so the cost is unknown rather than the sub-threshold figure. The
+  // threshold is on the whole prompt, so cached tokens count toward it.
   const band =
-    price.longContext !== null && (usage.inputTokens ?? 0) > price.longContext.thresholdInputTokens
+    price.longContext !== null && promptTokensOf(usage) > price.longContext.thresholdInputTokens
       ? price.longContext
       : null;
   if (band !== null && (band.input === null || band.output === null)) return null;

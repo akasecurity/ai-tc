@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { readModPolicySnapshot } from '@akasecurity/persistence';
+import { readModPolicySnapshot, regexProbeKey } from '@akasecurity/persistence';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { modPolicyInputFromBundle, syncModPolicySnapshot } from '../src/mod-policy-sync.ts';
+import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
 let dir: string;
 
@@ -126,5 +128,93 @@ describe('syncModPolicySnapshot', () => {
     ).resolves.toBeUndefined();
 
     expect(readModPolicySnapshot(dir)).toEqual(before);
+  });
+});
+
+describe('only rules safe to run unguarded reach the snapshot', () => {
+  const rule = (id: string, pattern: string): Rule => ({
+    specVersion: 1,
+    id,
+    name: id,
+    category: 'custom',
+    severity: 'high',
+    matcher: { type: 'regex', pattern, flags: 'g', captureGroup: undefined },
+  });
+
+  // A custom pack is an installed row the available mirror does not hold.
+  function gatewayWithCustom(rules: Rule[]): StandaloneDataGateway {
+    const gateway = new StandaloneDataGateway(dir, bundledDetections());
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+           VALUES ('c1', 'acme', 'custom', '1.0.0', 'custom', :rulesJson, 1, NULL, 1, 1)`,
+        )
+        .run({ rulesJson: JSON.stringify(rules) });
+    } finally {
+      raw.close();
+    }
+    return gateway;
+  }
+
+  const ids = (): string[] => (readModPolicySnapshot(dir)?.rules ?? []).map((r) => r.id);
+
+  it('derives the probe key the SDK derives', () => {
+    const r = rule('acme/one', 'ACME-[0-9]{6}');
+    expect(regexProbeKey({ pattern: 'ACME-[0-9]{6}', flags: 'g' })).toBe(ruleProbeKey(r));
+  });
+
+  it('never carries a catastrophic custom regex, and carries a safe one once timed', async () => {
+    const gateway = gatewayWithCustom([
+      rule('acme/redos', '(a+)+$'),
+      rule('acme/ticket', 'ACME-[0-9]{6}'),
+    ]);
+    try {
+      await syncModPolicySnapshot(gateway, dir);
+    } finally {
+      await gateway.close();
+    }
+
+    expect(ids()).toContain('acme/ticket');
+    expect(ids()).not.toContain('acme/redos');
+    // The bundled packs the binary ships are all still there.
+    expect(ids()).toContain('secrets/twilio-key');
+  });
+
+  it('never carries a rule the quarantine cache holds', async () => {
+    const gateway = gatewayWithCustom([rule('acme/ticket', 'ACME-[0-9]{6}')]);
+    await gateway.setRuleProbeVerdict(
+      regexProbeKey({ pattern: 'ACME-[0-9]{6}', flags: 'g' }),
+      'quarantined',
+      5000,
+    );
+    try {
+      await syncModPolicySnapshot(gateway, dir);
+    } finally {
+      await gateway.close();
+    }
+
+    expect(ids()).not.toContain('acme/ticket');
+  });
+
+  it('never carries a shipped rule that has been quarantined', async () => {
+    const gateway = new StandaloneDataGateway(dir, bundledDetections());
+    const twilio = bundledDetections()
+      .flatMap((p) => p.rules)
+      .find((r) => r.id === 'secrets/twilio-key');
+    if (twilio?.matcher.type !== 'regex') throw new Error('expected a regex rule');
+    await gateway.setRuleProbeVerdict(
+      regexProbeKey({ pattern: twilio.matcher.pattern, flags: twilio.matcher.flags }),
+      'quarantined',
+      5000,
+    );
+    try {
+      await syncModPolicySnapshot(gateway, dir);
+    } finally {
+      await gateway.close();
+    }
+
+    expect(ids()).not.toContain('secrets/twilio-key');
   });
 });

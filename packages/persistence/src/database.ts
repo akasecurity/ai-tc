@@ -469,6 +469,7 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     // SqliteInstalledPacksRepository's constructor for why it is optional there
     // and threaded from here.
     const installedPacks = new SqliteInstalledPacksRepository(db, base, onPolicyStateChange);
+    const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
     const exceptions = new SqliteExceptionsRepository(db, undefined, onPolicyStateChange);
     const repositories = {
       events: new SqliteEventsRepository(db),
@@ -480,7 +481,7 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       secretVault: new SqliteSecretVaultRepository(db),
       exceptions,
       resolutions: new SqliteResolutionsRepository(db),
-      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      ruleProbeCache,
       bodyRetention: new SqliteBodyRetentionRepository(db),
       security: new SqliteSecurityRepository(db),
       detections: new SqliteDetectionsRepository(db),
@@ -502,6 +503,8 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       installedRuleset: () => installedPacks.installedRuleset(),
       readPolicies: () => policies.listPolicies(),
       activeExceptionRuleIds: () => exceptions.activeRuleIds(),
+      probeVerdict: (key) => ruleProbeCache.getVerdict(key)?.verdict,
+      bundledRegexMatchers: () => installedPacks.availableRegexMatchers(),
     };
     policies.seedDefaults();
     return { db, ...repositories };

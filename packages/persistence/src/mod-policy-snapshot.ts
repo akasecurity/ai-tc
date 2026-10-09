@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -134,6 +135,44 @@ export interface ModPolicySources {
   };
   readPolicies(): Pick<Policy, 'target' | 'action' | 'enabled'>[];
   activeExceptionRuleIds(): string[];
+  /** The cached timing verdict for a regex rule's probe key, if one was recorded. */
+  probeVerdict(ruleKey: string): 'safe' | 'quarantined' | undefined;
+  /** The regex matchers the running binary ships, which CI has timed. */
+  bundledRegexMatchers(): { pattern: string; flags: string }[];
+}
+
+/**
+ * The cache key of a regex rule's timing verdict: the sha256 of its pattern and
+ * flags. It is the same key the plugin SDK's `ruleProbeKey` derives (a test in
+ * plugin-runtime holds the two equal), spelled here because this package sits
+ * below the SDK.
+ */
+export function regexProbeKey(matcher: { pattern: string; flags: string }): string {
+  return createHash('sha256').update(`${matcher.pattern} ${matcher.flags}`).digest('hex');
+}
+
+/**
+ * The rules safe to run unguarded in the mod. The mod scans on the host's own
+ * thread, where a runaway pattern cannot be interrupted, so a regex rule enters
+ * the snapshot only on evidence it is fast: it is one the binary ships (timed in
+ * CI), the quarantine cache holds a `safe` verdict for it, or an earlier snapshot
+ * already vetted it. A quarantined pattern never does. A keyword rule cannot
+ * backtrack. A rule left out is still enforced by the command hook, which scans
+ * in a worker under a deadline.
+ */
+export function vetRulesForMod(
+  rules: readonly Rule[],
+  sources: Pick<ModPolicySources, 'probeVerdict' | 'bundledRegexMatchers'>,
+  previouslyVetted: ReadonlySet<string> = new Set(),
+): Rule[] {
+  const bundled = new Set(sources.bundledRegexMatchers().map(regexProbeKey));
+  return rules.filter((rule) => {
+    if (rule.matcher.type !== 'regex') return true;
+    const key = regexProbeKey(rule.matcher);
+    const verdict = sources.probeVerdict(key);
+    if (verdict === 'quarantined') return false;
+    return verdict === 'safe' || bundled.has(key) || previouslyVetted.has(key);
+  });
 }
 
 /**
@@ -142,7 +181,10 @@ export interface ModPolicySources {
  * empty one all leave the bundled packs in force (`rules` absent, no per-pack
  * actions); every pack disabled is a complete, empty ruleset.
  */
-export function modPolicyInputFromStore(sources: ModPolicySources): ModPolicyInput {
+export function modPolicyInputFromStore(
+  sources: ModPolicySources,
+  previouslyVetted: ReadonlySet<string> = new Set(),
+): ModPolicyInput {
   const policies = sources.readPolicies();
   const snapshot = sources.installedRuleset();
   const usable =
@@ -150,7 +192,9 @@ export function modPolicyInputFromStore(sources: ModPolicySources): ModPolicyInp
     (snapshot.enabledPacks === 0 || (snapshot.invalidRules === 0 && snapshot.rules.length > 0));
   const empty = snapshot.installedPacks > 0 && snapshot.enabledPacks === 0;
   return {
-    ...(usable ? { rules: empty ? [] : snapshot.rules } : {}),
+    ...(usable
+      ? { rules: empty ? [] : vetRulesForMod(snapshot.rules, sources, previouslyVetted) }
+      : {}),
     policies: [...policies, ...(usable && !empty ? assignedRuleActionPolicies(snapshot) : [])],
     exceptionRuleIds: sources.activeExceptionRuleIds(),
   };

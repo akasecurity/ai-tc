@@ -609,6 +609,36 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   }
 
   /**
+   * The regex pattern and flags of every rule in the available mirror — what the
+   * running binary ships, which the CI timing battery has cleared. Tolerant: an
+   * unreadable mirror row contributes nothing.
+   */
+  availableRegexMatchers(): { pattern: string; flags: string }[] {
+    const rows = allRows<{ rulesJson: string }>(
+      this.db.prepare(`SELECT rules_json AS rulesJson FROM available_packs`),
+    );
+    const out: { pattern: string; flags: string }[] = [];
+    for (const row of rows) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(row.rulesJson);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(raw)) continue;
+      for (const entry of raw as {
+        matcher?: { type?: unknown; pattern?: unknown; flags?: unknown };
+      }[]) {
+        const m = entry.matcher;
+        if (m?.type === 'regex' && typeof m.pattern === 'string' && typeof m.flags === 'string') {
+          out.push({ pattern: m.pattern, flags: m.flags });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * The newest binary that ever changed the available mirror, parsed from the
    * `recorded_by` stamps (`<binary>@<version>`). Powers the stale-session
    * notice: a session whose plugin is older than this learns a newer binary

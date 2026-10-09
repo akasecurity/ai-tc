@@ -16,6 +16,7 @@ import {
   MOD_POLICY_SNAPSHOT_FILENAME,
   modPolicySnapshotPath,
   readModPolicySnapshot,
+  regexProbeKey,
   writeModPolicySnapshot,
 } from '../src/mod-policy-snapshot.ts';
 import { useTempStore } from './helpers/temp-store.ts';
@@ -302,5 +303,85 @@ describe('the store keeps the snapshot current', () => {
     expect(text).not.toContain('f'.repeat(64));
     expect(text).not.toContain('masked-preview-text');
     expect(text).not.toContain('justification text');
+  });
+});
+
+describe('only rules safe to run unguarded reach the snapshot', () => {
+  const CATASTROPHIC = { pattern: '(a+)+$', flags: 'g' };
+  const SAFE = { pattern: 'ACME-[0-9]{6}', flags: 'g' };
+
+  const regexRule = (id: string, m: { pattern: string; flags: string }): Rule =>
+    packRule(id, { matcher: { type: 'regex', ...m } });
+
+  // A custom pack arrives as an installed row only; the available mirror holds
+  // what the binary ships.
+  function installCustom(rules: Rule[]): void {
+    const raw = store.openRaw();
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+         VALUES ('c1', 'acme', 'custom', '1.0.0', 'custom', :rulesJson, 1, NULL, 1, 1)`,
+      )
+      .run({ rulesJson: JSON.stringify(rules) });
+  }
+
+  const ids = (): string[] =>
+    (readModPolicySnapshot(store.dataDir)?.rules ?? []).map((r) => r.id).sort();
+
+  it('keeps a catastrophic custom regex out, and keeps a keyword rule in', () => {
+    const db = store.open();
+    installCustom([regexRule('acme/redos', CATASTROPHIC), packRule('acme/keyword')]);
+
+    db.installedPacks.setPolicy('acme', 'custom', 'redact');
+
+    expect(ids()).toEqual(['acme/keyword']);
+  });
+
+  it('keeps a regex with no verdict out until a safe verdict is cached', () => {
+    const db = store.open();
+    installCustom([regexRule('acme/ticket', SAFE)]);
+    db.installedPacks.setPolicy('acme', 'custom', 'redact');
+    expect(ids()).toEqual([]);
+
+    db.ruleProbeCache.setVerdict(regexProbeKey(SAFE), 'safe', 1);
+    db.installedPacks.setPolicy('acme', 'custom', 'warn');
+
+    expect(ids()).toEqual(['acme/ticket']);
+  });
+
+  it('keeps a quarantined rule out, even one an earlier snapshot carried', () => {
+    const db = store.open();
+    installCustom([regexRule('acme/ticket', SAFE)]);
+    db.ruleProbeCache.setVerdict(regexProbeKey(SAFE), 'safe', 1);
+    db.installedPacks.setPolicy('acme', 'custom', 'redact');
+    expect(ids()).toEqual(['acme/ticket']);
+
+    db.ruleProbeCache.setVerdict(regexProbeKey(SAFE), 'quarantined', 5000);
+    db.installedPacks.setPolicy('acme', 'custom', 'warn');
+
+    expect(ids()).toEqual([]);
+  });
+
+  it('carries a rule an earlier snapshot vetted through a later write', () => {
+    const db = store.open();
+    installCustom([regexRule('acme/ticket', SAFE)]);
+    db.ruleProbeCache.setVerdict(regexProbeKey(SAFE), 'safe', 1);
+    db.installedPacks.setPolicy('acme', 'custom', 'redact');
+
+    db.policies.upsertCategoryAction('pii', 'redact');
+
+    expect(ids()).toEqual(['acme/ticket']);
+  });
+
+  it('keeps a regex the binary ships, which CI has timed', () => {
+    const db = store.open();
+    const shipped = regexRule('aka/shipped', SAFE);
+    db.installedPacks.recordInventory([
+      { namespace: 'aka', packId: 'shipped', version: '1.0.0', name: 'shipped', rules: [shipped] },
+    ]);
+
+    db.installedPacks.setPolicy('aka', 'shipped', 'redact');
+
+    expect(ids()).toEqual(['aka/shipped']);
   });
 });

@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -9,7 +10,11 @@ import {
   openLocalDatabase,
   readModPolicySnapshot,
 } from '@akasecurity/persistence';
-import { modPolicyInputFromBundle, StandaloneDataGateway } from '@akasecurity/plugin-runtime';
+import {
+  modPolicyInputFromBundle,
+  StandaloneDataGateway,
+  syncModPolicySnapshot,
+} from '@akasecurity/plugin-runtime';
 import { bundledDetections, createPluginRuntime } from '@akasecurity/plugin-sdk';
 import type { InstalledPackInput } from '@akasecurity/schema';
 import { Rule, SOURCE_TOOL, WorkspaceSettings } from '@akasecurity/schema';
@@ -68,6 +73,29 @@ const TICKET_PACK: InstalledPackInput = {
   ],
 };
 
+// A custom pack arrives as an installed row only: the available mirror holds
+// what the binary ships and nothing else.
+function installCustomPack(): void {
+  const raw = new DatabaseSync(join(dir, 'aka.db'));
+  try {
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+         VALUES (:id, :namespace, :packId, :version, :name, :rulesJson, 1, NULL, 1, 1)`,
+      )
+      .run({
+        id: 'custom-tickets',
+        namespace: TICKET_PACK.namespace,
+        packId: TICKET_PACK.packId,
+        version: TICKET_PACK.version,
+        name: TICKET_PACK.name,
+        rulesJson: JSON.stringify(TICKET_PACK.rules),
+      });
+  } finally {
+    raw.close();
+  }
+}
+
 const PROMPTS = [
   `deploy with ${SECRET} please`,
   `mail ${EMAIL} about the rollout`,
@@ -123,14 +151,14 @@ const CASES: PolicyCase[] = [
   {
     name: 'a custom pack under a redact policy',
     apply: (db) => {
-      db.installedPacks.recordInventory([...bundledDetections(), TICKET_PACK]);
+      installCustomPack();
       db.installedPacks.setPolicy('acme', 'tickets', 'redact');
     },
   },
   {
     name: 'a custom pack under a block policy beside a redacting category',
     apply: (db) => {
-      db.installedPacks.recordInventory([...bundledDetections(), TICKET_PACK]);
+      installCustomPack();
       db.installedPacks.setPolicy('acme', 'tickets', 'block');
       db.policies.upsertCategoryAction('secret', 'redact');
     },
@@ -184,6 +212,12 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
       db.close();
     }
 
+    // SessionStart vets the rules a custom pack adds (timed where it can be
+    // killed) and writes the snapshot from the effective bundle.
+    const session = new StandaloneDataGateway(dir, bundledDetections());
+    await syncModPolicySnapshot(session, dir);
+    await session.close();
+
     const engine = await loadEngine();
     const policy = engine.parseModPolicy(readFileSync(modPolicySnapshotPath(dir), 'utf8'));
     expect(policy).not.toBeNull();
@@ -192,23 +226,48 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
     }
   });
 
-  it.each(CASES)('$name: the store and the gateway write the same snapshot', async ({ apply }) => {
+  it('a custom rule not yet vetted stays out of the mod, and the command hook still enforces it', async () => {
     const gateway = new StandaloneDataGateway(dir, bundledDetections());
+    await gateway.close();
     const db = openLocalDatabase(dir);
     try {
-      apply(db);
+      installCustomPack();
+      db.installedPacks.setPolicy('acme', 'tickets', 'redact');
     } finally {
       db.close();
     }
-    const fromStore = readModPolicySnapshot(dir);
-    const fromGateway = buildModPolicySnapshot(
-      modPolicyInputFromBundle(await gateway.getPolicyBundle()),
-    );
-    await gateway.close();
 
-    expect(fromStore).not.toBeNull();
-    expect({ ...fromStore, generatedAt: '' }).toEqual({ ...fromGateway, generatedAt: '' });
+    const engine = await loadEngine();
+    const policy = engine.parseModPolicy(readFileSync(modPolicySnapshotPath(dir), 'utf8'));
+    const prompt = `see ${TICKET}`;
+
+    // The store wrote the snapshot without the unvetted pattern, so the mod leaves
+    // the prompt as typed ...
+    expect(engine.redactPromptWith(prompt, policy)).toBe(prompt);
+    // ... and the hook, which scans under a deadline, still redacts (blocks) it.
+    expect(await hookText(prompt)).not.toContain(TICKET);
   });
+
+  it.each(CASES.filter((c) => !c.name.startsWith('a custom pack')))(
+    '$name: the store and the gateway write the same snapshot',
+    async ({ apply }) => {
+      const gateway = new StandaloneDataGateway(dir, bundledDetections());
+      const db = openLocalDatabase(dir);
+      try {
+        apply(db);
+      } finally {
+        db.close();
+      }
+      const fromStore = readModPolicySnapshot(dir);
+      const fromGateway = buildModPolicySnapshot(
+        modPolicyInputFromBundle(await gateway.getPolicyBundle()),
+      );
+      await gateway.close();
+
+      expect(fromStore).not.toBeNull();
+      expect({ ...fromStore, generatedAt: '' }).toEqual({ ...fromGateway, generatedAt: '' });
+    },
+  );
 
   it('some case redacts, so the comparison is not vacuous', async () => {
     const gateway = new StandaloneDataGateway(dir, bundledDetections());

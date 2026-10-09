@@ -111,6 +111,8 @@ export {
   modPolicySnapshotPath,
   readModPolicySnapshot,
   refreshModPolicySnapshot,
+  regexProbeKey,
+  vetRulesForMod,
   writeModPolicySnapshot,
 } from './mod-policy-snapshot.ts';
 export {

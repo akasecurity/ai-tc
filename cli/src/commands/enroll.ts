@@ -13,6 +13,7 @@ import {
   managedScopedRefusal,
   overlayManagedSettings,
   readControlPlaneCredentialFile,
+  readDetectedWebAccounts,
   readEffectiveSettings,
   readManagedSettings,
   removeAttachmentScopeEntries,
@@ -30,6 +31,7 @@ import type {
   ControlPlaneConnection,
   CredentialUnusableReason,
   ManagedSettings,
+  WebAccountProvider,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -40,8 +42,15 @@ import {
   isAttached,
   isAttachmentScopeValid,
   isHistorySyncConsentValid,
+  isScopeKeyEnrolled,
+  isWebChatAccountGrantValid,
+  isWebChatCaptureConsentValid,
+  normalizeWebAccountKey,
   parseAttachmentScope,
+  parseWebAccountKey,
   unsafeEndpointReason,
+  WEB_ACCOUNT_PROVIDER,
+  webChatCaptureOf,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -49,8 +58,8 @@ import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
 import { refusalLine } from '../lib/refusal-line.ts';
 
-// `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories a
-// SCOPED attachment sends.
+// `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories and
+// web chat accounts a SCOPED attachment sends.
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
@@ -76,29 +85,36 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // command that attaches.
 const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --repo <clone-url | host/owner/repo>
+       aka enroll --account <claude:organization-id>
        aka enroll --list
+       aka enroll --list-detected
 
 On a machine attached in the scoped mode, activity is sent to the deployment
-only from the repositories enrolled here; activity anywhere else stays on this
-machine. The policy pull and the device report are not limited to them: the
-report's finding counts and dates are for everything recorded on the machine.
+only from the repositories and web chat accounts enrolled here; activity
+anywhere else stays on this machine. The policy pull and the device report are
+not limited to them: the report's finding counts and dates are for everything
+recorded on the machine.
 
-  [path]         Enroll the repository this directory is in (default: .).
-  --repo <repo>  Enroll by clone URL, or by key, as in github.com/acme/payments-api.
-  --list         Show what is enrolled.
-  --home <dir>   Use an alternate AKA home instead of ~/.aka.
+  [path]           Enroll the repository this directory is in (default: .).
+  --repo <repo>    Enroll by clone URL, or by key, as in github.com/acme/payments-api.
+  --account <key>  Enroll a claude.ai account by its key, as --list-detected shows it.
+  --list           Show what is enrolled.
+  --list-detected  Show the web chat accounts the browser extension has seen here.
+  --home <dir>     Use an alternate AKA home instead of ~/.aka.
 
 Enrolling changes this machine's settings and contacts nothing.`;
 
 const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --repo <clone-url | host/owner/repo>
+       aka unenroll --account <claude:organization-id>
 
-Stops sending a repository from a scoped attachment: sessions and scans you
-start afterwards keep its activity on this machine.
+Stops sending a repository or a web chat account from a scoped attachment:
+sessions, scans and chats started afterwards keep its activity on this machine.
 
-  [path]         The repository this directory is in (default: .).
-  --repo <repo>  A clone URL, or a key, as in github.com/acme/payments-api.
-  --home <dir>   Use an alternate AKA home instead of ~/.aka.
+  [path]           The repository this directory is in (default: .).
+  --repo <repo>    A clone URL, or a key, as in github.com/acme/payments-api.
+  --account <key>  A web chat account's key, as aka enroll --list shows it.
+  --home <dir>     Use an alternate AKA home instead of ~/.aka.
 
 Unenrolling changes this machine's settings and contacts nothing.`;
 
@@ -160,6 +176,10 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     io.out(`Enrolled with ${name}:\n${lines.join('\n')}\n`);
     return 0;
   }
+  if (ready.args.listDetected) {
+    io.out(detectedAccountLines(base, ready.settings, name));
+    return 0;
+  }
   const identity = namedRepository('enroll', ready);
   if (typeof identity === 'number') return identity;
   // Checked here, before the settings lock is taken: the raw edit throws for an
@@ -168,7 +188,7 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   const entry = enrollmentOf(identity, (deps.now ?? (() => new Date()))());
   if (entry === undefined) {
     io.err(
-      'aka enroll: could not record that repository (its key or the date was not valid),\n' +
+      `aka enroll: could not record that ${NOUN[identity.kind]} (its key or the date was not valid),\n` +
         'so nothing was enrolled.\n',
     );
     return fail(1);
@@ -192,15 +212,23 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     io.out(`Already enrolled with ${name}; nothing changed.\n`);
     return 0;
   }
-  io.out(`Enrolled. Activity in this repository is sent to ${name} from now on.\n`);
+  io.out(
+    identity.kind === 'account'
+      ? accountEnrolledLines(edit.committed, name)
+      : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
+  );
   const record = parseAttachmentScope(edit.committed.attachmentScope);
   if (record !== undefined && (!named(record.tenantName) || !named(record.userEmail))) {
     io.out(
       "Note: this machine's enrollment list is not tied to the account it attached as, so the\n" +
-        'next `aka attach` starts it empty and the repositories would be enrolled again.\n',
+        'next `aka attach` starts it empty and what is enrolled would be enrolled again.\n',
     );
   }
-  io.out(earlierActivity(base, edit.committed, edit.changed));
+  io.out(
+    identity.kind === 'account'
+      ? earlierAccountActivity(base, edit.committed, edit.changed)
+      : earlierActivity(base, edit.committed, edit.changed),
+  );
   return 0;
 }
 
@@ -247,7 +275,9 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   // tail does not offer enrolling again.
   const unreadable = !isAttachmentScopeValid(edit.committed.attachmentScope, connection.endpoint);
   io.out(
-    `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n` +
+    (identity.kind === 'account'
+      ? `Unenrolled ${repository}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -332,8 +362,8 @@ function deploymentNameForTerminal(connection: ControlPlaneConnection): string {
     : printableForTerminal(controlPlaneName(connection));
 }
 
-/** The repository the command names, or the exit code after saying why it names none. */
-function namedRepository(verb: Verb, ready: Prepared): RepoIdentity | number {
+/** The repository or account the command names, or the exit code after saying why it names none. */
+function namedRepository(verb: Verb, ready: Prepared): NamedIdentity | number {
   const identity = identityOf(verb, ready.args, ready.cwd());
   if (identity.kind === 'refused') {
     ready.io.err(`${identity.line}\n`);
@@ -358,17 +388,31 @@ function failingWith(exit: ((code: number) => void) | undefined): (code: number)
 interface EnrollArgs {
   home?: string | undefined;
   repo?: string | undefined;
+  account?: string | undefined;
   path?: string | undefined;
   list: boolean;
+  listDetected: boolean;
 }
 
 function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { error: string } {
-  let values: { home?: string | undefined; repo?: string | undefined; list?: boolean | undefined };
+  let values: {
+    home?: string | undefined;
+    repo?: string | undefined;
+    account?: string | undefined;
+    list?: boolean | undefined;
+    'list-detected'?: boolean | undefined;
+  };
   let positionals: string[];
   try {
     ({ values, positionals } = parseArgs({
       args: [...argv],
-      options: { ...HOME_OPTION, repo: { type: 'string' }, list: { type: 'boolean' } },
+      options: {
+        ...HOME_OPTION,
+        repo: { type: 'string' },
+        account: { type: 'string' },
+        list: { type: 'boolean' },
+        'list-detected': { type: 'boolean' },
+      },
       allowPositionals: true,
     }));
   } catch {
@@ -377,18 +421,37 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
   if (verb === 'unenroll' && values.list !== undefined) {
     return { error: 'aka unenroll takes no --list.' };
   }
+  if (verb === 'unenroll' && values['list-detected'] !== undefined) {
+    return { error: 'aka unenroll takes no --list-detected.' };
+  }
   if (positionals.length > 1) return { error: `aka ${verb} takes one path.` };
   const [path] = positionals;
-  if (values.repo !== undefined && path !== undefined) {
-    return { error: `aka ${verb} takes a path or --repo, not both.` };
+  const targets = [path, values.repo, values.account].filter((value) => value !== undefined);
+  if (targets.length > 1) {
+    return { error: `aka ${verb} takes one of a path, --repo or --account.` };
   }
   if (values.repo?.trim() === '') {
     return { error: '--repo needs a clone URL or a key, as in github.com/acme/payments-api.' };
   }
-  if (values.list === true && (values.repo !== undefined || path !== undefined)) {
-    return { error: 'aka enroll --list takes no repository.' };
+  if (values.account?.trim() === '') {
+    return { error: '--account needs an account key, as `aka enroll --list-detected` shows it.' };
   }
-  return { home: values.home, repo: values.repo, path, list: values.list === true };
+  const list = values.list === true;
+  const listDetected = values['list-detected'] === true;
+  if (list && listDetected) {
+    return { error: 'aka enroll takes --list or --list-detected, not both.' };
+  }
+  if ((list || listDetected) && targets.length > 0) {
+    return { error: `aka enroll ${list ? '--list' : '--list-detected'} takes nothing to enroll.` };
+  }
+  return {
+    home: values.home,
+    repo: values.repo,
+    account: values.account,
+    path,
+    list,
+    listDetected,
+  };
 }
 
 /**
@@ -490,21 +553,73 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
 }
 
 /**
- * The repository a command names. `key` is what it echoes; `matches` is every
- * stored identity it stands for, compared byte for byte (one key, except for
- * `aka unenroll --repo`).
+ * The repository or web chat account a command names: the entry kind it is
+ * stored as. `key` is what it echoes; `matches` is every stored identity it
+ * stands for, compared byte for byte (one key, except for `aka unenroll`'s
+ * typed forms).
  */
-interface RepoIdentity {
-  kind: 'repo';
+interface NamedIdentity {
+  kind: AttachmentScopeEntry['kind'];
   key: string;
   label: string | undefined;
   matches: readonly string[];
 }
-type Identity = RepoIdentity | { kind: 'refused'; line: string };
+type Identity = NamedIdentity | { kind: 'refused'; line: string };
+
+/** What each entry kind is called in a sentence. */
+const NOUN: Record<AttachmentScopeEntry['kind'], string> = {
+  repo: 'repository',
+  account: 'account',
+};
 
 function identityOf(verb: Verb, args: EnrollArgs, cwd: string): Identity {
+  if (args.account !== undefined) return accountIdentity(verb, args.account);
   if (args.repo === undefined) return identityFromPath(verb, args.path, cwd);
   return verb === 'unenroll' ? storedIdentity(args.repo) : identityFromInput(args.repo, cwd);
+}
+
+/**
+ * The label an account entry carries: the site it signs in to. Total over the
+ * providers, so one added to the schema fails to compile here until it is named.
+ */
+const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
+  [WEB_ACCOUNT_PROVIDER.Claude]: 'claude.ai account',
+};
+
+/**
+ * The web chat account `--account` names.
+ *
+ * Normalized to the stored form (normalizeWebAccountKey): the id lower-cased and
+ * the whitespace around it dropped, so a key copied in another case enrolls the
+ * account the extension stamps. Anything that is not an account key is refused
+ * by name, never stored: a key the host can never stamp would enroll nothing.
+ *
+ * `aka unenroll --account` also matches the text exactly as typed, the rule
+ * storedIdentity gives `--repo`: an entry a newer build stored under another
+ * rule must still be removable.
+ */
+function accountIdentity(verb: Verb, input: string): Identity {
+  const typed = input.trim();
+  const key = normalizeWebAccountKey(typed);
+  if (key === undefined) {
+    if (verb === 'unenroll') {
+      return { kind: 'account', key: typed, label: undefined, matches: [typed] };
+    }
+    const shownInput = printableForTerminal(typed, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+    return {
+      kind: 'refused',
+      line:
+        `aka ${verb}: ${shownInput} is not a web chat account key. A claude.ai account is keyed\n` +
+        '`claude:<organization id>`; `aka enroll --list-detected` lists the ones seen here.',
+    };
+  }
+  const provider = parseWebAccountKey(key)?.provider;
+  return {
+    kind: 'account',
+    key,
+    label: provider === undefined ? undefined : ACCOUNT_LABELS[provider],
+    matches: key === typed ? [key] : [typed, key],
+  };
 }
 
 /**
@@ -717,11 +832,11 @@ export function defaultLabel(slug: string | undefined): string | undefined {
  * case is handed to the schema as an empty time instead.
  */
 function enrollmentOf(
-  identity: { key: string; label: string | undefined },
+  identity: { kind: AttachmentScopeEntry['kind']; key: string; label: string | undefined },
   when: Date,
 ): AttachmentScopeEntry | undefined {
   const parsed = AttachmentScopeEntry.safeParse({
-    kind: 'repo',
+    kind: identity.kind,
     identity: identity.key,
     ...(identity.label === undefined ? {} : { label: identity.label }),
     enrolledAt: Number.isNaN(when.getTime()) ? '' : when.toISOString(),
@@ -897,4 +1012,90 @@ function earlierActivity(
     '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
     'attaching and enrolling, other than those captures, stays on this machine.\n'
   );
+}
+
+/**
+ * What an account's enrollment does from now on, said only as far as it is true.
+ *
+ * On a personal device the browser extension records an exchange in a web chat
+ * only when its account is enrolled: the reply, its tool calls and its token
+ * usage. A prompt typed into the chat is checked and enforced and never recorded,
+ * enrolled or not. Recording also needs the web-chat capture consent, which only
+ * the dashboard grants, so when it is missing the line says nothing is recorded
+ * yet and where to turn it on.
+ */
+function accountEnrolledLines(committed: WorkspaceSettings, name: string): string {
+  const recorded = isWebChatCaptureConsentValid(webChatCaptureOf(committed).consent);
+  return (
+    `Enrolled. Replies in this account's chats, with their tool calls and token usage, are\n` +
+    `recorded and sent to ${name} from now on. Prompts typed in it are still checked, and not recorded.\n` +
+    (recorded
+      ? ''
+      : 'Web-chat capture is off on this machine, so nothing is recorded yet. Turn it on under\n' +
+        'Settings in `aka dashboard`.\n')
+  );
+}
+
+/**
+ * What becomes of what was recorded in an account before it was enrolled.
+ *
+ * A personal device records nothing from an account that is not enrolled, so
+ * anything earlier was recorded while this machine was not one. Under a
+ * history-sync grant for this deployment, the captures still kept for the
+ * account are marked to send, as a repository's are. Unlike a repository's, no
+ * line here promises its sessions or other activity: an account's earlier
+ * session was opened with no account on it, so only its captures carry the key.
+ */
+function earlierAccountActivity(
+  base: string,
+  committed: WorkspaceSettings,
+  added: readonly string[],
+): string {
+  if (!isHistorySyncConsentValid(committed.historySyncConsent, committed.controlPlane?.endpoint)) {
+    return (
+      'Nothing recorded in it before now is sent. To send its earlier replies as well,\n' +
+      'run `aka sync-history --on`.\n'
+    );
+  }
+  const queued = seedEnrolledCapturesOwed(dataDirOf(base), added);
+  if (queued === undefined) {
+    return existsSync(join(dataDirOf(base), DB_FILENAME))
+      ? 'Earlier captures from it were not queued: the local store could not be read.\n' +
+          'The enrollment itself is saved.\n'
+      : 'Earlier captures from it were not queued: nothing was recorded on this machine before now.\n' +
+          'The enrollment itself is saved.\n';
+  }
+  return queuedLines(queued);
+}
+
+/**
+ * `aka enroll --list-detected`: the web chat accounts the browser extension has
+ * seen on this machine, newest first, each marked enrolled or not, with the
+ * command that enrolls the ones that are not.
+ *
+ * The record is written only under the account grant, so with the grant off the
+ * list says so instead of showing an empty or a stale one. Each stored string is
+ * printed through printableForTerminal: the schema already holds an identity to
+ * the account-key grammar, and the strip holds whatever the file carries.
+ */
+function detectedAccountLines(base: string, settings: WorkspaceSettings, name: string): string {
+  if (!isWebChatAccountGrantValid(webChatCaptureOf(settings))) {
+    return (
+      'This machine does not record which web chat accounts it sees, so there is nothing to list.\n' +
+      'Turn that on with `aka extension account --on`. The extension popup names the account\n' +
+      'a claude.ai tab is signed in to either way.\n'
+    );
+  }
+  const accounts = readDetectedWebAccounts(dataDirOf(base));
+  if (accounts.length === 0) {
+    return 'No web chat account has been seen here yet. Open a claude.ai chat, then run this again.\n';
+  }
+  const rows = accounts.map((account) => {
+    const key = printableForTerminal(account.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+    const seen = printableForTerminal(account.lastSeenAt.slice(0, 10));
+    return isScopeKeyEnrolled(settings, account.identity)
+      ? `  ${key}, last seen ${seen} — enrolled\n`
+      : `  ${key}, last seen ${seen} — not enrolled: \`aka enroll --account ${key}\`\n`;
+  });
+  return `Web chat accounts seen on this machine, for ${name}:\n${rows.join('')}`;
 }

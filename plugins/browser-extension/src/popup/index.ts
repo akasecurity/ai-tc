@@ -62,15 +62,33 @@ const ENFORCEMENT_NOTES: Record<EnforcementFault, string> = {
   unattached: 'not enforcing — composer and send button not found',
 };
 
-// Why nothing from a chat is recorded on this machine, in words. Total over the
+// Why this machine records less from a chat than usual, or nothing, in words. Total over the
 // vocabulary, so a reason added to the schema fails to compile until it is
 // worded here.
 export const WITHHELD_NOTES: Record<WebChatWithholding, string> = {
   'personal-device':
-    'personal device — chats are checked, and nothing from them is recorded or sent',
+    'personal device — chats are checked, and only replies in an enrolled account are recorded or sent',
   'unreadable-attachment':
     'attachment unreadable — chats are checked, and nothing from them is recorded or sent; run aka status',
 };
+
+/**
+ * The line naming the account a site's requests were last seen in, on a machine
+ * that withholds web chats: whether replies in it are recorded and sent, and if
+ * not, why, with the command that would enroll it.
+ */
+export function accountNote(account: {
+  identity: string;
+  enrolled: boolean;
+  recorded: boolean;
+}): string {
+  if (account.recorded)
+    return `${account.identity} — enrolled; replies in it are recorded and sent`;
+  if (account.enrolled) {
+    return `${account.identity} — enrolled, but web-chat capture is off, so nothing is recorded`;
+  }
+  return `${account.identity} — not enrolled; to send its replies, run aka enroll --account ${account.identity}`;
+}
 
 // Read through a widened ALIAS rather than a cast at the lookup: the table is
 // total over the faults, and this is the one place a full-vocabulary state
@@ -97,12 +115,23 @@ export function renderCaptureSites(response: CaptureStateResponse): void {
     notEnabled.hidden = true;
     sitesEl.replaceChildren(
       ...response.sites.flatMap((site) => {
+        const rows: HTMLElement[] = [];
+        // The account first: it is what decides whether anything is recorded,
+        // and the line carries the command that enrolls it.
+        if (site.account !== undefined) {
+          const accountRow = document.createElement('div');
+          accountRow.className = 'row muted';
+          accountRow.textContent = `${SITE_LABELS[site.tool]}: ${accountNote(site.account)}`;
+          rows.push(accountRow);
+        }
         const note = site.enforcement === undefined ? undefined : NOTE_FOR[site.enforcement];
-        if (note === undefined) return [];
-        const row = document.createElement('div');
-        row.className = 'row tone-error';
-        row.textContent = `${SITE_LABELS[site.tool]}: ${note}`;
-        return [row];
+        if (note !== undefined) {
+          const row = document.createElement('div');
+          row.className = 'row tone-error';
+          row.textContent = `${SITE_LABELS[site.tool]}: ${note}`;
+          rows.push(row);
+        }
+        return rows;
       }),
     );
     return;

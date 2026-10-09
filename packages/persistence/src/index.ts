@@ -41,6 +41,13 @@ export {
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
 export {
+  clearDetectedWebAccounts,
+  DETECTED_WEB_ACCOUNT_RESIGHT_MS,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
+  readDetectedWebAccounts,
+  recordDetectedWebAccount,
+} from './detected-web-accounts.ts';
+export {
   canonicalRepoUrl,
   enrollableRepoKey,
   hashProjectKey,

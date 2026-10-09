@@ -57,6 +57,13 @@ export interface ExchangeRequest {
   sessionId: string;
   tool: WebSourceTool;
   exchange: WebExchange;
+  // The workspace the request's own URL named (ProviderAdapter.workspaceOf), raw.
+  // The host turns it into the account key with `webAccountKey`, which refuses
+  // anything that is not one of the site's workspace ids, so it is not checked
+  // here: a value that names no workspace makes no key, and the exchange is
+  // judged as one with no account. Absent from a route that names none, and from
+  // an extension older than the field.
+  workspace?: string;
 }
 
 // What one tab's interception is actually doing. Reported so a tap that
@@ -123,8 +130,9 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
-  // 'out-of-scope': this machine records nothing from a web chat (a personal
-  // device, or a credential it cannot read).
+  // 'out-of-scope': this machine does not record this chat: a personal device,
+  // where only an enrolled account's chats are recorded, or a credential it
+  // cannot read, where none are.
   accepted: boolean;
   skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
@@ -158,8 +166,8 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
-  // Why this machine records nothing from a web chat, whatever `consented`
-  // says. Absent when it records as usual, and from a host older than the
+  // Why this machine records less from a web chat than `consented` says, or
+  // nothing. Absent when it records as usual, and from a host older than the
   // field. Chats are still checked; each site's `state` is then unreported,
   // and its `enforcement` is this host process's own report, so a site that
   // is not being checked still shows.
@@ -174,6 +182,14 @@ export interface CaptureStateResponse {
     enforcement?: WebEnforcementState;
     // Absent when this site has never reported.
     observedAt?: string;
+    // The account this host process last saw the site's own requests name
+    // (`claude:<organization-id>`); whether it is enrolled on this machine's
+    // scoped attachment; and whether this machine records chats in it: capture
+    // is consented to, and the machine either records web chats or is a
+    // personal device with the account enrolled. Held in memory only, so the
+    // popup can show what to enroll without anything being stored. Absent when
+    // no request has named one, and from a host older than the field.
+    account?: { identity: string; enrolled: boolean; recorded: boolean };
   }[];
 }
 

@@ -181,7 +181,10 @@ disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`; activity in any other repository stays on the machine. Under the
+`aka enroll` and, from the browser extension, the replies in a claude.ai account
+enrolled with `aka enroll --account`, with their tool calls and token usage (a
+prompt typed into a web chat is not recorded there at all); activity in any
+other repository stays on the machine. Under the
 `aka sync-history` grant, enrolling a repository also queues the captures still
 kept for it, including those it recorded between attaching and enrolling. The
 policy pull, the command check and the device report are the exception: they go

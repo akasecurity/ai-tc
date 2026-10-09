@@ -121,3 +121,28 @@ describe("the key's last segment is resolveRepo's slug on the keyed checkout", (
     expect(withScopedRepo(EVENT, canonicalRepoUrl(url) ?? '').metadata?.repo).toBe(fromKey);
   });
 });
+
+// A web chat account key names no repository. Taken as a key, its last segment
+// would be the whole key, and the account's id would leave as the slug.
+describe('an account key', () => {
+  const ACCOUNT = 'claude:0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b';
+  const WEB: IngestEvent = { ...EVENT, sourceTool: 'claude-ai' };
+
+  it('sends no slug and does not echo the key', () => {
+    const sent = withScopedRepo(WEB, ACCOUNT);
+    expect(sent.metadata?.repo).toBeUndefined();
+    expect(JSON.stringify(sent)).not.toContain('0f1e2d3c');
+  });
+
+  it("drops a producer's slug rather than sending it under the account", () => {
+    const sent = withScopedRepo({ ...WEB, metadata: { repo: 'side-project' } }, ACCOUNT);
+    expect(sent.metadata?.repo).toBeUndefined();
+  });
+
+  // The control: a repository key still names its repository.
+  it('leaves a repository key naming its repository', () => {
+    expect(withScopedRepo(EVENT, 'github.com/acme/payments-api').metadata?.repo).toBe(
+      'payments-api',
+    );
+  });
+});

@@ -214,6 +214,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'severityFloorPosture',
   'severityWeight',
   'shieldPointers',
+  'shippedRegexMatchers',
   'substituteModelPointers',
   'throttled',
   'toPosix',

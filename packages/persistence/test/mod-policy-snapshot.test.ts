@@ -373,15 +373,46 @@ describe('only rules safe to run unguarded reach the snapshot', () => {
     expect(ids()).toEqual(['acme/ticket']);
   });
 
-  it('keeps a regex the binary ships, which CI has timed', () => {
-    const db = store.open();
-    const shipped = regexRule('aka/shipped', SAFE);
+  const shipped = (): Rule => regexRule('aka/shipped', SAFE);
+  const record = (db: ReturnType<typeof store.open>): void => {
     db.installedPacks.recordInventory([
-      { namespace: 'aka', packId: 'shipped', version: '1.0.0', name: 'shipped', rules: [shipped] },
+      {
+        namespace: 'aka',
+        packId: 'shipped',
+        version: '1.0.0',
+        name: 'shipped',
+        rules: [shipped()],
+      },
     ]);
+  };
+
+  it('keeps a regex the running binary says it ships, which CI has timed', () => {
+    const db = store.open({ shippedRegexMatchers: [SAFE] });
+    record(db);
 
     db.installedPacks.setPolicy('aka', 'shipped', 'redact');
 
     expect(ids()).toEqual(['aka/shipped']);
+  });
+
+  it('does not take a regex for shipped because available_packs holds it', () => {
+    // The mirror is a table any binary or legacy writer can fill, so what is in
+    // it proves nothing about what this build ships; with no shipped set passed
+    // in (the CLI, the web-ui) only a cached safe verdict admits a regex.
+    const db = store.open();
+    record(db);
+
+    db.installedPacks.setPolicy('aka', 'shipped', 'redact');
+
+    expect(ids()).toEqual([]);
+  });
+
+  it('does not take a pattern for shipped that the running binary did not pass in', () => {
+    const db = store.open({ shippedRegexMatchers: [{ pattern: 'OTHER-[0-9]+', flags: 'g' }] });
+    record(db);
+
+    db.installedPacks.setPolicy('aka', 'shipped', 'redact');
+
+    expect(ids()).toEqual([]);
   });
 });

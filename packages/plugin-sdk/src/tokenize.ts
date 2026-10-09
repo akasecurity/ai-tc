@@ -39,7 +39,7 @@ import { isActionAtLeast, isVaultConsentValid, pointerTokenScanner } from '@akas
 import { dataDir } from './data-dir.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
-import { registerBundledPacks } from './rule-packs.ts';
+import { registerBundledPacks, shippedRegexMatchers } from './rule-packs.ts';
 
 // The one-way placeholder for a span that could not (or must not) be vaulted —
 // identical to the engine's redact() form so a degraded field is
@@ -612,7 +612,7 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
   const base = options?.base ?? defaultDataDir();
   try {
     const dir = dataDir(base);
-    const db = openLocalDatabase(dir);
+    const db = openLocalDatabase(dir, { shippedRegexMatchers: shippedRegexMatchers() });
     const settings = readWorkspaceSettings(base);
     // Resolved before the vault so the grant verifier below can close over it.
     // An injected provider replaces the user-grant one wholesale, and the vault

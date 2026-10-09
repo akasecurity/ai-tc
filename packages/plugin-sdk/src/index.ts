@@ -166,6 +166,7 @@ export {
   bundledDetections,
   registerBundledPacks,
   registerRulePack,
+  shippedRegexMatchers,
   uniqueRuleIds,
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';

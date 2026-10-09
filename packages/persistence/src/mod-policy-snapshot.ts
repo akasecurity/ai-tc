@@ -137,8 +137,12 @@ export interface ModPolicySources {
   activeExceptionRuleIds(): string[];
   /** The cached timing verdict for a regex rule's probe key, if one was recorded. */
   probeVerdict(ruleKey: string): 'safe' | 'quarantined' | undefined;
-  /** The regex matchers the running binary ships, which CI has timed. */
-  bundledRegexMatchers(): { pattern: string; flags: string }[];
+  /**
+   * The regex matchers the running binary ships, which CI has timed. Supplied by
+   * the caller from its own build, never read from the store: `available_packs` is
+   * writable by any binary, so a pattern found there proves nothing.
+   */
+  bundledRegexMatchers(): readonly { pattern: string; flags: string }[];
 }
 
 /**

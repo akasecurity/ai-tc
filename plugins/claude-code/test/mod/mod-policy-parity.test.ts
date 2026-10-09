@@ -15,7 +15,11 @@ import {
   StandaloneDataGateway,
   syncModPolicySnapshot,
 } from '@akasecurity/plugin-runtime';
-import { bundledDetections, createPluginRuntime } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  createPluginRuntime,
+  shippedRegexMatchers,
+} from '@akasecurity/plugin-sdk';
 import type { InstalledPackInput } from '@akasecurity/schema';
 import { Rule, SOURCE_TOOL, WorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -106,6 +110,10 @@ const PROMPTS = [
 ];
 
 type Store = ReturnType<typeof openLocalDatabase>;
+
+// The store as the plugin opens it: told which patterns this build ships, which is
+// what lets the snapshot carry the bundled regex rules without a timing verdict.
+const SHIPPED = { shippedRegexMatchers: shippedRegexMatchers() };
 
 interface PolicyCase {
   name: string;
@@ -205,7 +213,7 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
     // Opening the gateway records the inventory, as every hook does.
     const gateway = new StandaloneDataGateway(dir, bundledDetections());
     await gateway.close();
-    const db = openLocalDatabase(dir);
+    const db = openLocalDatabase(dir, SHIPPED);
     try {
       apply(db);
     } finally {
@@ -229,7 +237,7 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
   it('a custom rule not yet vetted stays out of the mod, and the command hook still enforces it', async () => {
     const gateway = new StandaloneDataGateway(dir, bundledDetections());
     await gateway.close();
-    const db = openLocalDatabase(dir);
+    const db = openLocalDatabase(dir, SHIPPED);
     try {
       installCustomPack();
       db.installedPacks.setPolicy('acme', 'tickets', 'redact');
@@ -252,7 +260,7 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
     '$name: the store and the gateway write the same snapshot',
     async ({ apply }) => {
       const gateway = new StandaloneDataGateway(dir, bundledDetections());
-      const db = openLocalDatabase(dir);
+      const db = openLocalDatabase(dir, SHIPPED);
       try {
         apply(db);
       } finally {
@@ -272,7 +280,7 @@ describe('the mod reaches the command hook verdict from the snapshot', () => {
   it('some case redacts, so the comparison is not vacuous', async () => {
     const gateway = new StandaloneDataGateway(dir, bundledDetections());
     await gateway.close();
-    const db = openLocalDatabase(dir);
+    const db = openLocalDatabase(dir, SHIPPED);
     try {
       db.installedPacks.setPolicy('aka', 'secrets', 'redact');
     } finally {

@@ -72,9 +72,11 @@ async function main(): Promise<void> {
   // config.provider), but SessionStart is the one place that snapshots it
   // onto the session root, so it must pass the Codex resolver explicitly.
   const config = loadConfig(undefined, resolveCodexProvider);
-  // A symlinked store path redirects the corpus without failing anything;
-  // say so once per session (stderr, so the stdout contract is untouched).
-  warnIfStoreRedirected(config, sessionId);
+  // A symlinked store path redirects the corpus without failing anything; say
+  // so once per session. Collected rather than written to stderr: on this hook
+  // it rides the systemMessage below with the other notices.
+  const redirected: string[] = [];
+  warnIfStoreRedirected(config, sessionId, (message) => redirected.push(message));
   // One version value feeds both the inventory stamp and the posture
   // identity, so the two can never disagree about which build is running:
   // argv's manifest when the hook command passes one, else the manifest
@@ -91,12 +93,13 @@ async function main(): Promise<void> {
     },
     config,
   );
-  // What the user sees at session start, once per session (both ride the
-  // SessionStart claim): where this session's activity goes, and the
-  // stale-session notice. Shown as systemMessage, which Codex renders as a hook
-  // line in the TUI once the first turn starts; it ignores a SessionStart hook's
-  // stderr. `codex exec` shows neither.
-  const shown = sessionStartNotice(result);
+  // What the user sees at session start, once per session (each rides its own
+  // once-per-session claim): where this session's activity goes, the
+  // stale-session notice, the warn-era notice, and the store-redirect warning.
+  // Shown as systemMessage, which Codex renders as a hook line in the TUI once
+  // the first turn starts; it ignores a SessionStart hook's stderr. `codex exec`
+  // shows neither.
+  const shown = sessionStartNotice(result, redirected);
 
   // Token-usage catch-up (safety net): after the inventory pass, trigger
   // the SAME throttled, detached reconcile for the just-opened session so a final

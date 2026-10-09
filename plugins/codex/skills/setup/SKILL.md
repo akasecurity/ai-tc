@@ -874,9 +874,12 @@ enrolled repository, or
 `AKA: local-only (not enrolled); work in an enrolled repository is still forwarded`
 on a personal device outside one. Codex shows it as a hook line once the first
 turn starts rather than when the session opens, and `codex exec` shows nothing.
-The notice that a newer AKA is installed than the one this session started with
-takes the same route. The line is decided by where the session started, which is
-why the local-only form says what it does: a file written into an enrolled
-repository from a local-only session is still sent, because each capture is
-decided by the repository it lands in. `aka status` gives the attachment, its
-mode and the enrolled repositories at any time.
+The session start's other notices take the same route: that a newer AKA is
+installed than the one this session started with, that a store left on the
+retired "warn only" handling was kept at warn, and that a store path is a
+symlink. The line is decided by the session's root, recorded where the session
+started, which is why the local-only form says what it does: a file written into
+an enrolled repository from a local-only session is still sent, because each
+capture is decided by the repository it lands in. A resumed session shows no
+line, so no line never means nothing is forwarded; `aka status` gives the
+attachment, its mode and the enrolled repositories at any time.

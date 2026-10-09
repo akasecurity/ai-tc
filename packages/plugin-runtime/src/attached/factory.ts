@@ -4,11 +4,6 @@ import { readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
-import type {
-  AttachedCredentialAny,
-  ControlPlaneConnection,
-  ResolvedAttachmentScope,
-} from '@akasecurity/schema';
 import { attachmentModeOf, isAttached, resolveScope } from '@akasecurity/schema';
 
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
@@ -20,6 +15,7 @@ import { writePostureReportState } from './posture-report-state.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
+import { deploymentNameForTerminal } from './status.ts';
 
 /**
  * What a resolving caller knows about itself, threaded to every gateway
@@ -37,54 +33,6 @@ import { createPostureStore } from './posture-store.ts';
 export interface GatewayMeta {
   recordedBy?: string;
   pluginBuild?: PluginBuildInfo | undefined;
-}
-
-/** Both halves of a usable attachment, and what it may forward. */
-export interface ConfiguredAttachment {
-  connection: ControlPlaneConnection;
-  credential: AttachedCredentialAny;
-  attachment: ResolvedAttachmentScope;
-}
-
-/**
- * The attachment a configuration describes, or null when the machine forwards
- * nothing: not attached, no descriptor, or no usable credential for it.
- *
- * The one place that decision is made. `resolveGatewayForConfig` builds its
- * gateway from this answer, and the session-start forwarding line reads the
- * same answer, so the line cannot say a session forwards when the gateway
- * would not, or the reverse. Never throws: a fault reads as null, the same
- * local-only answer the gateway falls back to.
- */
-export function resolveAttachmentForConfig(config: PluginConfig): ConfiguredAttachment | null {
-  try {
-    if (!isAttached(config.settings)) return null;
-    const connection = config.settings.controlPlane;
-    if (connection === undefined) return null;
-
-    // The transport's door: one value, no reasons, nothing to branch on. A
-    // gateway that could not build a client falls back to the local one either
-    // way, so the reason is of no use here — and asking for the credential by
-    // name is what keeps the narrow state the default everywhere else.
-    const credential = readControlPlaneCredential(config.settingsDir, connection);
-    if (credential === null) return null;
-
-    // WHAT THIS ATTACHMENT MAY FORWARD, resolved from its two halves. The MODE
-    // comes from the credential: a machine credential carries none, and means
-    // machine. The enrolled keys come from the settings this config was loaded
-    // with, and are valid only for the endpoint the connection names. Resolved
-    // per call and never cached, so an enrollment change reaches the next one.
-    const attachment = resolveScope({
-      mode: attachmentModeOf(credential),
-      scope: config.settings.attachmentScope,
-      endpoint: connection.endpoint,
-    });
-    return { connection, credential, attachment };
-  } catch {
-    // A throw while resolving is a scoping fault, and the safe direction for
-    // one is local: nothing forwards.
-    return null;
-  }
 }
 
 /**
@@ -114,12 +62,32 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
   const local = new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
 
   try {
-    // Resolved once per gateway, by the function the session-start line also
-    // reads. Null is every reason this machine forwards nothing, and returns
-    // the LOCAL gateway before any client is built.
-    const configured = resolveAttachmentForConfig(config);
-    if (configured === null) return local;
-    const { connection, credential, attachment } = configured;
+    if (!isAttached(config.settings)) return local;
+    const connection = config.settings.controlPlane;
+    if (connection === undefined) return local;
+
+    // The transport's door: one value, no reasons, nothing to branch on. A
+    // gateway that could not build a client falls back to the local one either
+    // way, so the reason is of no use here — and asking for the credential by
+    // name is what keeps the narrow state the default everywhere else.
+    const credential = readControlPlaneCredential(config.settingsDir, connection);
+    if (credential === null) return local;
+
+    // WHAT THIS GATEWAY MAY FORWARD, resolved once, here, from the two halves of
+    // the attachment this function already holds. The MODE comes from the
+    // credential: a machine credential carries none, and means machine. The
+    // enrolled keys come from the settings this config was loaded with, and are
+    // valid only for the endpoint the connection names. Resolved per gateway
+    // and never cached, so an enrollment change reaches the next resolve.
+    //
+    // Inside the `try` on purpose: a throw while resolving lands in the catch
+    // below and returns the LOCAL gateway, which forwards nothing. That is the
+    // safe direction for a scoping fault, and no client has been built yet.
+    const attachment = resolveScope({
+      mode: attachmentModeOf(credential),
+      scope: config.settings.attachmentScope,
+      endpoint: connection.endpoint,
+    });
 
     const client = createRemoteClient({
       endpoint: connection.endpoint,
@@ -143,6 +111,9 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
       attachment,
+      // What the session-start line names the deployment, read from the
+      // connection this gateway forwards to, never from the credential.
+      deploymentName: deploymentNameForTerminal(connection),
       posture: createPostureReporter({
         // THROUGH THE BREAKER, and wrapped HERE rather than around
         // `PostureReporter.send`. The reporter swallows every error by

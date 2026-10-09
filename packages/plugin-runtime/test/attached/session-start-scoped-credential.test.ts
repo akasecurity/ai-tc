@@ -33,6 +33,7 @@ import { createPostureStore } from '../../src/attached/posture-store.ts';
 import type * as SyncTriggerModule from '../../src/attached/sync-trigger.ts';
 import { CONTENT_RETENTION_MARKER_NAME } from '../../src/content-retention-trigger.ts';
 import { handleSessionStart } from '../../src/handle-session-start.ts';
+import { setDefaultGatewayFactory, standaloneGatewayFactory } from '../../src/resolve.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
@@ -546,6 +547,42 @@ describe('the forwarding line a session start returns', () => {
     expect(await line('l-mismatch', work, configFor([WORK_KEY]))).toBeNull();
     expect(sent.audit).toEqual([]);
     expect(sent.posture).toEqual([]);
+  });
+
+  // Roots are first-write-wins. A root another writer recorded first, with no
+  // key, is the one the gateway decides the session's records by, so they stay
+  // local though this start is in the enrolled repository, and the line says so.
+  it('says local-only for a session whose root was first written without a key', async () => {
+    const config = attach('scoped');
+    const local = new StandaloneDataGateway(dataDirOf(home));
+    try {
+      await local.recordAuditEvent({
+        id: 'l-older',
+        eventType: 'session',
+        startedAt: AT,
+        attributes: { cwd: work },
+      });
+    } finally {
+      await local.close();
+    }
+
+    expect(await line('l-older', work, config)).toBe(LOCAL_ONLY_LINE);
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual([]);
+  });
+
+  // An embedder's gateway is what the session start writes through, so the line
+  // follows it, whatever the configuration says.
+  it('shows nothing when an embedder installed a local gateway on an attached machine', async () => {
+    const config = attach('machine');
+    const restore = setDefaultGatewayFactory(standaloneGatewayFactory);
+    try {
+      expect(await line('l-embedder', work, config)).toBeNull();
+    } finally {
+      restore();
+    }
+    expect(sent.audit).toEqual([]);
   });
 
   it('shows nothing a second time for a session that already started', async () => {

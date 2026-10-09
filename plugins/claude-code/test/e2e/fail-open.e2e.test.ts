@@ -403,6 +403,19 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
     return realpathSync(victim);
   }
 
+  // Where a hook's once-per-session warning lands. SessionStart puts it on its
+  // systemMessage, the one channel its host shows the user; every other hook
+  // writes it to stderr, because its stdout carries at most one decision object.
+  function warningChannel(hookName: string, result: { stdout: string; stderr: string }): string {
+    if (hookName !== 'session-start') return result.stderr;
+    try {
+      const message = (JSON.parse(result.stdout) as { systemMessage?: unknown }).systemMessage;
+      return typeof message === 'string' ? message : '';
+    } catch {
+      return '';
+    }
+  }
+
   for (const hook of HOOKS) {
     describe(hook.name, () => {
       it('valid input, symlinked ~/.aka → exit 0 AND the redirection is surfaced', (ctx) => {
@@ -422,10 +435,13 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           // …and the warning is really there. Without this the row would pass
           // just as happily against the silence this behaviour replaced, which
           // is the whole defect: exit 0 and no output IS the broken state here.
-          expect(result.stderr).toContain('is a symlink');
-          expect(result.stderr).toContain(victim);
+          const warning = warningChannel(hook.name, result);
+          expect(warning).toContain('is a symlink');
+          expect(warning).toContain(victim);
           // The mode the store inherits is the half a reader can act on.
-          expect(result.stderr).toContain('NOT owner-only');
+          expect(warning).toContain('NOT owner-only');
+          // Said once: SessionStart's warning moved off stderr, not beside it.
+          if (hook.name === 'session-start') expect(result.stderr).not.toContain('is a symlink');
 
           // The harm the warning is about, pinned so the row cannot go quiet
           // because the redirection stopped rather than because it is now said.
@@ -456,7 +472,7 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           expectNoActionKey(result.stdout);
           // Reported rather than swallowed: a link to nothing is exactly the
           // state where staying quiet reads as a healthy home.
-          expect(result.stderr).toContain('does not exist');
+          expect(warningChannel(hook.name, result)).toContain('does not exist');
         });
       }, 35_000);
     });

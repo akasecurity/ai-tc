@@ -103,13 +103,19 @@ async function main(): Promise<void> {
     // as a terminal session.
     harnessInterface: harnessInterface(),
   });
-  // What the user sees at session start, once per session (both ride the
-  // SessionStart claim): where this session's activity goes, and the
+  // A symlinked store path redirects the corpus without failing anything; say
+  // so once per session. Collected rather than written to stderr: on this hook
+  // it rides the systemMessage below with the other notices.
+  const redirected: string[] = [];
+  warnIfStoreRedirected(config, sessionId, (message) => redirected.push(message));
+  // What the user sees at session start, once per session (each rides its own
+  // once-per-session claim): where this session's activity goes, the
   // stale-session notice (a newer binary recorded the mirror, so this session's
-  // plugin generation is outdated and its installed-pack writes are gated).
-  // Shown as systemMessage, the one SessionStart channel the host puts in front
-  // of the user: stderr from a hook that exits 0 goes only to the debug log.
-  const shown = sessionStartNotice(result);
+  // plugin generation is outdated and its installed-pack writes are gated), the
+  // warn-era notice, and the store-redirect warning. Shown as systemMessage,
+  // the one SessionStart channel the host puts in front of the user: stderr
+  // from a hook that exits 0 goes only to the debug log.
+  const shown = sessionStartNotice(result, redirected);
 
   // Token-usage catch-up (safety net): after the inventory pass, trigger
   // the SAME throttled, detached reconcile for the just-opened session so a final
@@ -118,9 +124,6 @@ async function main(): Promise<void> {
   // reconcile throttle (so it never piles onto a recent Stop spawn) and fully
   // best-effort — a missing path or any error just skips it, the Stop path covers it.
   const transcriptPath = input ? getString(input, 'transcript_path') : undefined;
-  // A symlinked store path redirects the corpus without failing anything;
-  // say so once per session (stderr, so the stdout contract is untouched).
-  warnIfStoreRedirected(config, sessionId);
   if (sessionId !== undefined && transcriptPath !== undefined) {
     triggerReconcile(config.dataDir, sessionId, transcriptPath);
   }

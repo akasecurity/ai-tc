@@ -183,7 +183,10 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
  *
  * ONE sentence says it on every page, so the pages cannot drift apart.
  */
-const SCOPED_READMES = READMES.filter((r) => r.text.includes('--scoped'));
+// Selected by what a page claims, not by how it spells the flag: "scoped mode"
+// and "personal device" make the same promise as `--scoped` does.
+const SCOPED_CLAIM = /\bscoped\b|personal device/i;
+const SCOPED_READMES = READMES.filter((r) => SCOPED_CLAIM.test(r.text));
 const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
   .split(/^## /m)
   .find((section) => section.startsWith('Data in transit'));
@@ -216,16 +219,19 @@ const REPORT_OLD_PHRASES = [
 
 describe('scoped attachment claims', () => {
   it('covers the pages that describe it, and the security page', () => {
-    expect(SCOPED_READMES.map((r) => r.name)).toEqual(['README.md', 'cli/README.md']);
+    expect(SCOPED_READMES.map((r) => r.name)).toEqual([
+      'README.md',
+      'cli/README.md',
+      'plugins/claude-code/README.md',
+    ]);
     expect(SECURITY_DATA_IN_TRANSIT).toBeDefined();
   });
 
   describe.each(SCOPED_READMES)('$name', ({ text }) => {
-    const claim = flat(
-      paragraphs(text)
-        .filter((p) => p.includes('--scoped'))
-        .join('\n'),
-    );
+    // Where the page makes the claim: its body paragraphs, or its egress
+    // footnote when that is the only place it says it, as the plugin page does.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
 
     it('says a personal device still sends the report and pulls the policy, in the one sentence', () => {
       expect(claim).toContain(REPORT_SENTENCE);

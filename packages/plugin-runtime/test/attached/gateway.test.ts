@@ -390,6 +390,7 @@ function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
     forward: overrides.forward ?? passthroughForward(calls),
     attachment: overrides.attachment ?? MACHINE,
     ...(overrides.posture ? { posture: overrides.posture } : {}),
+    ...(overrides.deploymentName !== undefined ? { deploymentName: overrides.deploymentName } : {}),
   });
   return { gateway, local, client, calls, dataDir };
 }
@@ -3811,5 +3812,96 @@ describe('posture reporting stays strictly after inventory settles', () => {
     };
     const { gateway } = build({ posture: posture });
     await expect(gateway.ensureInventory({})).resolves.toEqual({});
+  });
+});
+
+// What the session-start line reads. The gateway answers from its own
+// attachment and the store, so the line says what this object forwards.
+describe('forwardingScope', () => {
+  it('offers no scope when built without a deployment name', () => {
+    const { gateway } = build({ attachment: MACHINE });
+    expect(gateway.forwardingScope('s1')).toBeNull();
+  });
+
+  it('answers machine without reading the store', () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
+    const local = makeLocal(calls, { readSessionScopeKey: read });
+    const { gateway } = build({ attachment: MACHINE, local, deploymentName: 'Acme' });
+    expect(gateway.forwardingScope('s1')).toEqual({ deploymentName: 'Acme', mode: 'machine' });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('answers a scoped root by the key the store holds for it', async () => {
+    const { gateway } = build({ attachment: SCOPED, deploymentName: 'Acme' });
+    await gateway.recordAuditEvent(rootRow('in', IN));
+    await gateway.recordAuditEvent(rootRow('out', OUT));
+    await gateway.recordAuditEvent(rootRow('none', undefined));
+
+    expect(gateway.forwardingScope('in')).toEqual({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: IN,
+      rootForwards: true,
+    });
+    expect(gateway.forwardingScope('out')).toEqual({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: OUT,
+      rootForwards: false,
+    });
+    expect(gateway.forwardingScope('none')).toEqual({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: undefined,
+      rootForwards: false,
+    });
+  });
+
+  // Roots are first-write-wins: a later root event carrying an enrolled key
+  // does not move the stored one, and the answer follows the stored one.
+  it('follows the first root written, not a later root event', async () => {
+    const { gateway } = build({ attachment: SCOPED, deploymentName: 'Acme' });
+    await gateway.recordAuditEvent(rootRow('s1', OUT));
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    expect(gateway.forwardingScope('s1')).toMatchObject({ rootKey: OUT, rootForwards: false });
+  });
+
+  it('answers local-only when the store cannot answer', () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      readSessionScopeKey: () => {
+        throw new Error('store unreadable');
+      },
+    });
+    const { gateway } = build({ attachment: SCOPED, local, deploymentName: 'Acme' });
+    expect(gateway.forwardingScope('s1')).toEqual({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: undefined,
+      rootForwards: false,
+    });
+  });
+
+  // Asking before the root exists answers local-only, and must not record that
+  // answer as the root's verdict: the root's records would then never forward.
+  it('asking before the root is written does not hold the root local', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls);
+    const { gateway } = build({
+      attachment: SCOPED,
+      local,
+      client: makeClient(calls),
+      forward: passthroughForward(calls),
+      deploymentName: 'Acme',
+    });
+    expect(gateway.forwardingScope('s1')).toMatchObject({ rootForwards: false });
+
+    await gateway.recordAuditEvent(rootRow('s1', IN));
+    await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);
+
+    expect(calls.delivered).toContain('s1');
+    expect(calls.delivered).toContain(llmCallId('s1', 'm1'));
+    expect(gateway.forwardingScope('s1')).toMatchObject({ rootKey: IN, rootForwards: true });
   });
 });

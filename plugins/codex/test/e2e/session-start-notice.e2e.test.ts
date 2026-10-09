@@ -4,17 +4,17 @@
 //
 // The peer of plugins/claude-code/test/e2e/session-start-notice.e2e.test.ts.
 //
-// The stale-session notice is the line driven here because it needs no
-// attachment: a newer binary recorded the pack mirror, and this session runs
-// an older plugin generation. The forwarding line takes the same route —
-// sessionStartNotice joins both into the one systemMessage — and its three
-// states are covered against the runtime in plugin-runtime's
-// session-start-scoped-credential suite, without a hook process that would
-// try to reach a control plane.
+// Two notices are driven. The stale-session notice needs no attachment: a
+// newer binary recorded the pack mirror, and this session runs an older plugin
+// generation. The forwarding line needs one, so its cases attach the temp home
+// to a closed loopback port: the line is read from the gateway and the local
+// store, so nothing has to answer there, and every send the session start
+// attempts is refused on the machine itself.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { StandaloneDataGateway } from '@akasecurity/plugin-runtime';
+import { writeControlPlaneCredential } from '@akasecurity/persistence';
+import { StandaloneDataGateway, SYNC_MARKER_NAME } from '@akasecurity/plugin-runtime';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -113,6 +113,101 @@ describe('session-start user notice', () => {
       expect(result.status).toBe(0);
       const output = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(Object.keys(output)).toEqual(['hookSpecificOutput']);
+    });
+  });
+});
+
+// A deployment on a loopback port nothing listens on. Loopback is the one
+// address an http endpoint may name, so the attachment is accepted, and a
+// connect to it is refused at once rather than timing out.
+const ENDPOINT = 'http://127.0.0.1:9';
+const AT = '2026-10-01T09:00:00.000Z';
+const WORK_KEY = 'github.com/acme/payments-api';
+
+/**
+ * The temp home attached to ENDPOINT, labelled Acme: the settings half and the
+ * credential half, for `mode`, enrolling the work repository. The policy pull's
+ * throttle marker is fresh, so the session start spawns no detached sync child
+ * to outlive the test.
+ */
+function attachHome(home: string, mode: 'machine' | 'scoped'): void {
+  const settingsDir = join(home, '.aka', 'settings');
+  const dataDir = join(home, '.aka', 'data');
+  mkdirSync(settingsDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    join(settingsDir, 'settings.json'),
+    JSON.stringify({
+      runMode: 'attached',
+      controlPlane: { endpoint: ENDPOINT, label: 'Acme', attachedAt: AT },
+      attachmentScope: {
+        endpoint: ENDPOINT,
+        entries: [{ kind: 'repo', identity: WORK_KEY, enrolledAt: AT }],
+      },
+    }),
+  );
+  writeControlPlaneCredential(
+    settingsDir,
+    mode === 'scoped'
+      ? { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: 'placeholder', mintedAt: AT }
+      : { specVersion: 1, endpoint: ENDPOINT, apiKey: 'placeholder', mintedAt: AT },
+  );
+  writeFileSync(join(dataDir, SYNC_MARKER_NAME), String(Date.now()));
+}
+
+/** A SessionStart payload in `cwd`, a checkout whose origin is `origin` when given. */
+function startIn(home: string, sessionId: string, origin?: string): string {
+  const cwd = join(home, 'checkout');
+  mkdirSync(join(cwd, '.git'), { recursive: true });
+  if (origin !== undefined) {
+    writeFileSync(
+      join(cwd, '.git', 'config'),
+      `[core]\n\tbare = false\n[remote "origin"]\n\turl = ${origin}\n`,
+    );
+  }
+  return JSON.stringify({
+    session_id: sessionId,
+    cwd,
+    hook_event_name: 'SessionStart',
+    source: 'startup',
+  });
+}
+
+function shownBy(stdout: string): unknown {
+  return (JSON.parse(stdout) as Record<string, unknown>).systemMessage;
+}
+
+describe('session-start forwarding line', () => {
+  it('says everything forwards on a machine attachment', () => {
+    withTempHome((home) => {
+      attachHome(home, 'machine');
+      const stdin = startIn(home, 'line-machine');
+      const result = runHook('session-start', stdin, { env: tempHomeEnv(home) });
+      expect(result.status).toBe(0);
+      expect(shownBy(result.stdout)).toBe('AKA: forwarding everything to Acme (machine-wide)');
+      expect(result.stderr).not.toContain('AKA: forwarding');
+    });
+  });
+
+  it('names the enrolled repository a scoped session starts in', () => {
+    withTempHome((home) => {
+      attachHome(home, 'scoped');
+      const stdin = startIn(home, 'line-enrolled', 'https://github.com/acme/payments-api.git');
+      const result = runHook('session-start', stdin, { env: tempHomeEnv(home) });
+      expect(result.status).toBe(0);
+      expect(shownBy(result.stdout)).toBe(`AKA: forwarding to Acme (${WORK_KEY})`);
+    });
+  });
+
+  it('says local-only for a scoped session in a repository nobody enrolled', () => {
+    withTempHome((home) => {
+      attachHome(home, 'scoped');
+      const stdin = startIn(home, 'line-personal', 'https://github.com/someone/side-project.git');
+      const result = runHook('session-start', stdin, { env: tempHomeEnv(home) });
+      expect(result.status).toBe(0);
+      expect(shownBy(result.stdout)).toBe(
+        'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded',
+      );
     });
   });
 });

@@ -74,24 +74,34 @@ export interface SessionStartInput {
  *
  * `forwardingLine` says where this session's activity goes (see
  * `forwardingLine`); `staleBinaryNotice` says a newer AKA binary is on the
- * machine than this session's plugin.
+ * machine than this session's plugin; `warnEraNotice` says this session start
+ * capped a warn-era store's block and redact categories to warn.
  */
 export interface SessionStartResult {
   staleBinaryNotice: string | null;
   forwardingLine: string | null;
+  warnEraNotice: string | null;
 }
 
 /**
- * What a session start shows the user, one line per notice, or undefined when
+ * What a session start shows the user, one notice per line, or undefined when
  * there is nothing to show. The forwarding line comes first; the stale-session
- * notice keeps its `[aka]` prefix. Adapters put it on the host's user-facing
- * channel, never stderr, which a SessionStart hook's host does not show.
+ * notice keeps its `[aka]` prefix; the warn-era notice follows, then
+ * `adapterNotices`, the adapter's own once-per-session notices (the
+ * store-redirect warning), each with any trailing newline trimmed. Adapters put
+ * it on the host's user-facing channel, never stderr, which a SessionStart
+ * hook's host does not show.
  */
-export function sessionStartNotice(result: SessionStartResult): string | undefined {
+export function sessionStartNotice(
+  result: SessionStartResult,
+  adapterNotices: readonly string[] = [],
+): string | undefined {
   const lines = [
     result.forwardingLine,
     result.staleBinaryNotice === null ? null : `[aka] ${result.staleBinaryNotice}`,
-  ].filter((line): line is string => line !== null);
+    result.warnEraNotice,
+    ...adapterNotices.map((notice) => notice.trimEnd()),
+  ].filter((line): line is string => line !== null && line !== '');
   return lines.length === 0 ? undefined : lines.join('\n');
 }
 
@@ -110,9 +120,13 @@ export async function handleSessionStart(
   input: SessionStartInput,
   config: PluginConfig = loadConfig(),
 ): Promise<SessionStartResult> {
-  // The stale-session notice and the forwarding line, surfaced by the adapter
-  // once per session; every guarded/early path stays silent.
-  const silent: SessionStartResult = { staleBinaryNotice: null, forwardingLine: null };
+  // What the adapter shows once per session; every guarded/early path stays
+  // silent.
+  const silent: SessionStartResult = {
+    staleBinaryNotice: null,
+    forwardingLine: null,
+    warnEraNotice: null,
+  };
   try {
     // No session id → nothing to key the root on or dedupe against.
     if (!input.sessionId) return silent;
@@ -130,6 +144,9 @@ export async function handleSessionStart(
       ...(input.pluginBuild !== undefined ? { pluginBuild: input.pluginBuild } : {}),
     };
     const gateway = resolveDataGateway(config, meta);
+    let line: string | null = null;
+    let staleBinaryNotice: string | null = null;
+    let warnEraNotice: string | null = null;
     try {
       // Machine/repo facts only; the writer adds the local user account.
       const ctx = resolveInventoryContext({
@@ -171,11 +188,10 @@ export async function handleSessionStart(
         try {
           const { capped } = gateway.capWarnEraEnforcement(config.settings.policy);
           if (capped > 0) {
-            process.stderr.write(
+            warnEraNotice =
               'AKA: the global "warn only" handling was retired; your existing ' +
-                'block/redact categories were kept at warn. Re-run /aka:setup to ' +
-                'adopt per-category enforcement.\n',
-            );
+              'block/redact categories were kept at warn. Re-run /aka:setup to ' +
+              'adopt per-category enforcement.';
           }
         } catch {
           // Fail-open: a failed cap drops the migration, never the session.
@@ -231,21 +247,33 @@ export async function handleSessionStart(
       // default, so on most machines this returns without spawning anything.
       // Never throws, never awaited: see triggerContentRetention.
       triggerContentRetention(config);
-      // Where this session's activity goes, from the attachment the gateway
-      // above was built from and the key the root was stamped with. Never
-      // throws.
-      const line = forwardingLine(config, sessionRootKeyOf(input));
-      // The stale-session check (P2): only meaningful when this session
-      // knows its own version; a failing check here falls through to the
-      // outer fail-open.
-      const staleBinaryNotice =
-        input.harnessVersion !== undefined && offersMaintenance(gateway, 'staleBinaryNotice')
-          ? gateway.staleBinaryNotice(input.harnessVersion)
-          : null;
-      return { staleBinaryNotice, forwardingLine: line };
+      // The stale-session check: only meaningful when this session knows its
+      // own version. Its own guard, so a throw costs this notice alone.
+      try {
+        if (input.harnessVersion !== undefined && offersMaintenance(gateway, 'staleBinaryNotice')) {
+          staleBinaryNotice = gateway.staleBinaryNotice(input.harnessVersion);
+        }
+      } catch {
+        staleBinaryNotice = null;
+      }
+    } catch {
+      // Fail-open: a fault in the pass drops its telemetry and any notice it
+      // had not reached yet, never the forwarding line below.
     } finally {
-      await gateway.close();
+      // Where this session's activity goes, from the gateway this session start
+      // wrote through, after the pass whatever it reached: the root, if the pass
+      // wrote one, is in the store now, and the line reads the gateway's verdict
+      // on it. A pass that faulted before the root leaves none, and the line
+      // says local-only, which is what the session's records then are. Never
+      // throws, and read before the store handle closes.
+      line = forwardingLine(gateway, input.sessionId);
+      try {
+        await gateway.close();
+      } catch {
+        // A failing close cannot take back what was already computed.
+      }
     }
+    return { staleBinaryNotice, forwardingLine: line, warnEraNotice };
   } catch {
     // Fail-open: SessionStart inventory must never break a session.
   }
@@ -305,8 +333,7 @@ function buildConfigScanEvent(sessionId: string, scan: ConfigScanResult): AuditE
 
 // The repository key a session root is stamped with, or undefined: a web chat
 // session's root is never keyed (sessionToolIsKeyed), and a cwd in no
-// repository with a usable remote yields none. One function, so the forwarding
-// line reads exactly the key the root carries.
+// repository with a usable remote yields none.
 function sessionRootKeyOf(input: SessionStartInput): string | undefined {
   return sessionToolIsKeyed(input.tool) ? sessionRootScopeKey(input.cwd) : undefined;
 }

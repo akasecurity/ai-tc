@@ -101,12 +101,16 @@ async function main(): Promise<unknown> {
     },
     config,
   );
-  // Stale-session notice (once per session — it rides the SessionStart claim):
-  // a newer binary recorded the mirror, so this session's plugin generation is
-  // outdated and its installed-pack writes are gated. stderr, not a decision.
+  // The session start's notices (once per session — they ride the SessionStart
+  // claim): the stale-session notice (a newer binary recorded the mirror, so
+  // this session's plugin generation is outdated and its installed-pack writes
+  // are gated) and the warn-era notice. stderr, not a decision: PreInvocation
+  // has no user-facing field, so this host shows neither, and `aka status` is
+  // where a user reads both. The forwarding line is not written at all.
   if (result.staleBinaryNotice !== null) {
     process.stderr.write(`[aka] ${result.staleBinaryNotice}\n`);
   }
+  if (result.warnEraNotice !== null) process.stderr.write(`${result.warnEraNotice}\n`);
 
   // The prompt-capture path. The transcript is the only place this host exposes
   // the user's message, so the throttled background pass over its tail is what

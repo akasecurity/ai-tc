@@ -99,6 +99,27 @@ describe('buildTokenReports', () => {
     expect(report.rollups).toHaveLength(2);
   });
 
+  it('one model priced for some calls and not others: priced sum, costIsPartial true', () => {
+    // A model priced under its long-context threshold and unpriced over it.
+    const banded: CostModel = {
+      normalizeModelId: (provider, model) => ({ provider, model }),
+      costFor: ({ usage }) => ((usage.inputTokens ?? 0) > 272_000 ? null : 1),
+    };
+    const report = only(
+      buildTokenReports(
+        [
+          leaf('s1', { provider: 'openai', model: 'gpt-5.4', input_tokens: 100_000 }),
+          leaf('s1', { provider: 'openai', model: 'gpt-5.4', input_tokens: 300_000 }),
+        ],
+        banded,
+      ),
+    );
+    expect(only(report.rollups).estimatedCostUsd).toBe(1);
+    expect(report.estimatedCostUsd).toBe(1);
+    expect(report.costIsPartial).toBe(true);
+    expect(aggregateTokenUsage([report]).costIsPartial).toBe(true);
+  });
+
   it('defaults a missing provider/model to "unknown" (and prices it null)', () => {
     const reports = buildTokenReports([leaf('s1', { input_tokens: 10 })], fakeCost);
     const rollup = only(only(reports).rollups);

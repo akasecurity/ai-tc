@@ -17,13 +17,16 @@
 // padding removed, so a clean and a padded occurrence of one secret share a key) used for detection
 // exceptions / blocked_detections (see fingerprint.ts's fingerprintValue) —
 // callers fall back to the masked match when no fingerprint key is available
-// (no dataDir), so a key is still produced.
+// (no dataDir), so a key is still produced. maskMatch ignores the same
+// invisible padding the fingerprint does, so the fallback also keys a clean
+// and a padded occurrence alike.
 //
-// Upgrade note: a padded secret's identity fingerprint changed when invisible
-// padding started to be ignored, so its key changes too. Re-scanning an
-// unchanged file inserts a new row for it and leaves the one keyed the old way;
-// rows for values without such a character keep their key. Re-keying the old
-// rows would need the raw value, which is never stored.
+// Upgrade note: a padded secret's identity fingerprint, and its masked match,
+// change whenever the set of ignored padding characters grows, so its key
+// changes too. Re-scanning an unchanged file inserts a new row for it and
+// leaves the one keyed the old way; rows for values without such a character
+// keep their key. Re-keying the old rows would need the raw value, which is
+// never stored.
 import { createHash } from 'node:crypto';
 
 export interface FindingKeyInput {

@@ -1,6 +1,7 @@
 import type { MatchResult } from '@akasecurity/detections';
 import { maskMatch, redact } from '@akasecurity/detections';
 import type { Span } from '@akasecurity/schema';
+import { stripInvisiblePadding } from '@akasecurity/schema';
 
 // The single boundary-crossing validator for raw secret text leaving an
 // isolated scan/judge process toward the interactive session or a persisted
@@ -224,6 +225,9 @@ export function maskContextSlice(
 // maskMatch, guaranteed to never equal or contain the raw value. maskMatch's
 // short-local-email pass-through (e.g. "a@b.com") is the one documented case
 // where its output can still equal the raw value; fall back to '***' there.
+// maskMatch reads past invisible padding, so for a padded copy of such an
+// address the output equals the VISIBLE value instead; comparing against the
+// visible value covers both, since it is the raw value itself when unpadded.
 //
 // DELIBERATELY WHOLE-VALUE, unlike its two siblings above and below. They scrub
 // text that must carry NO trace of a raw value; this one verifies a preview that
@@ -238,7 +242,10 @@ export function maskContextSlice(
 // margin that reasoning spends is pinned in `cli/test/helpers/no-echo.test.ts`.
 export function safeMaskedMatch(rawMatch: string): string {
   const masked = maskMatch(rawMatch);
-  if (masked === rawMatch || (rawMatch.length >= MIN_RAW_LEN && masked.includes(rawMatch))) {
+  if (
+    masked === stripInvisiblePadding(rawMatch) ||
+    (rawMatch.length >= MIN_RAW_LEN && masked.includes(rawMatch))
+  ) {
     return '***';
   }
   return masked;

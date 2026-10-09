@@ -838,6 +838,8 @@ export function createPluginRuntime(
                 // exceptions/blocked_detections when a key is available;
                 // falls back to the masked match so at-rest findings still get
                 // a stable (if weaker) identity on a workspace with no dataDir.
+                // Both ignore the same invisible padding, so a clean and a
+                // padded occurrence of one secret key alike on either path.
                 valueFingerprint: findingKeyFingerprintKey
                   ? fingerprintOf(findingKeyFingerprintKey, match, findingKeyFpCache)
                   : maskedMatch,

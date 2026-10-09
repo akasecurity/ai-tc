@@ -145,6 +145,12 @@ describe('safeMaskedMatch', () => {
     expect(safeMaskedMatch('a@b.com')).toBe('***');
   });
 
+  it('falls back to *** for a short-local-part email padded with an invisible character', () => {
+    // maskMatch reads past the padding, so its preview of this value is the
+    // whole visible address; the padded raw differs from it only by the padding.
+    expect(safeMaskedMatch('a\u200B@b.com')).toBe('***');
+  });
+
   it('still masks an ordinary secret', () => {
     const masked = safeMaskedMatch('SECRET1234');
     expect(masked).not.toBe('SECRET1234');

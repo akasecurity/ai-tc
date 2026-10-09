@@ -130,8 +130,9 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
-  // 'out-of-scope': this machine records nothing from a web chat (a personal
-  // device, or a credential it cannot read).
+  // 'out-of-scope': this machine does not record this chat: a personal device,
+  // where only an enrolled account's chats are recorded, or a credential it
+  // cannot read, where none are.
   accepted: boolean;
   skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
@@ -165,8 +166,8 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
-  // Why this machine records nothing from a web chat, whatever `consented`
-  // says. Absent when it records as usual, and from a host older than the
+  // Why this machine records less from a web chat than `consented` says, or
+  // nothing. Absent when it records as usual, and from a host older than the
   // field. Chats are still checked; each site's `state` is then unreported,
   // and its `enforcement` is this host process's own report, so a site that
   // is not being checked still shows.

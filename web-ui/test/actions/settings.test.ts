@@ -1,17 +1,25 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
-import { readWorkspaceSettings } from '@akasecurity/persistence';
+import {
+  DETECTED_WEB_ACCOUNTS_FILENAME,
+  readDetectedWebAccounts,
+  readWorkspaceSettings,
+  recordDetectedWebAccount,
+} from '@akasecurity/persistence';
 import type {
   AttachedCredentialV2,
   SaveSettingsInput,
+  WebChatAccountConsentChoice,
   WebChatCaptureConsentChoice,
 } from '@akasecurity/schema';
 import {
   HISTORY_SYNC_PAYLOAD_VERSION,
+  SOURCE_TOOL,
   VAULT_CONSENT_VERSION,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -119,6 +127,7 @@ describe('saveSettings — the redact fallback', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: value,
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -139,6 +148,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'block',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -150,6 +160,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'redact',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -170,6 +181,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 7,
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -194,6 +206,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -226,6 +239,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -271,6 +285,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, or the save proves nothing.
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -315,6 +330,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // never had cause to make.
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -377,6 +393,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -414,6 +431,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -429,6 +447,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -449,6 +468,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // second save proves nothing about a re-stamp it never had cause to make.
       vaultInlineReveal: 'off',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -467,6 +487,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -479,6 +500,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -500,6 +522,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -512,6 +535,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -531,6 +555,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -619,6 +644,7 @@ describe('saveSettings — the capture backfill and the attachment scope', () =>
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -698,6 +724,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -715,6 +742,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: true, retainDays: 7 },
     });
@@ -744,6 +772,7 @@ describe('stale-grant re-consent and inline reveal', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: true, retainDays },
       });
@@ -762,6 +791,7 @@ describe('stale-grant re-consent and inline reveal', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         bodyRetention,
       });
       expect(res.ok).toBe(false);
@@ -777,6 +807,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -790,6 +821,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -819,6 +851,7 @@ describe('saveSettings — the web-chat capture grant', () => {
     vaultConsent: 'off',
     vaultInlineReveal: 'masked',
     webChatCaptureConsent,
+    webChatAccountConsent: 'unchanged',
     redactFallback: 'warn',
     bodyRetention: { enabled: false, retainDays: 30 },
     ...overrides,
@@ -1069,6 +1102,7 @@ describe('saveSettings derives the web-chat grant inside the write lock', () => 
     vaultConsent: 'off',
     vaultInlineReveal: 'masked',
     webChatCaptureConsent,
+    webChatAccountConsent: 'unchanged',
     redactFallback: 'warn',
     bodyRetention: { enabled: false, retainDays: 30 },
   });
@@ -1126,5 +1160,126 @@ describe('saveSettings derives the web-chat grant inside the write lock', () => 
     const res = await saveSettings(payload('unchanged'));
     expect(res.ok).toBe(true);
     expect(readWorkspaceSettings().webChatCapture?.consent).toEqual(consent);
+  });
+});
+
+// The account grant: whether the browser extension's host records which web
+// chat accounts it sees, for `aka enroll --list-detected`. Its own answer beside
+// the capture grant, and each must survive a save that answers only the other.
+describe('saveSettings — the web chat account grant', () => {
+  const payload = (
+    webChatAccountConsent: WebChatAccountConsentChoice,
+    webChatCaptureConsent: WebChatCaptureConsentChoice = 'unchanged',
+    overrides: Partial<Record<string, unknown>> = {},
+  ): Record<string, unknown> => ({
+    historicalAccess: 'session-only',
+    modelJudgeConsent: 'unchanged',
+    historySyncConsent: 'unchanged',
+    vaultConsent: 'off',
+    vaultInlineReveal: 'masked',
+    webChatCaptureConsent,
+    webChatAccountConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...overrides,
+  });
+
+  const seed = async (block: unknown): Promise<void> => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding({ webChatCapture: block as never }, join(home, '.aka'));
+  };
+
+  const capture = {
+    acknowledgedAt: '2020-01-01T00:00:00.000Z',
+    version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  };
+  const accountGrant = {
+    acknowledgedAt: '2020-02-02T00:00:00.000Z',
+    version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+  };
+  const dataDir = (): string => join(home, '.aka', 'data');
+  const ACCOUNT = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+
+  it("'granted' turns it on at the current version, and grants nothing else", async () => {
+    const res = await saveSettings(payload('granted'));
+    expect(res).toEqual({ ok: true });
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.account).toBe(true);
+    expect(block?.accountConsent?.version).toBe(WEB_CHAT_ACCOUNT_CONSENT_VERSION);
+    expect(block?.consent).toBeUndefined();
+  });
+
+  it("'granted' over a grant in force keeps its acknowledgedAt", async () => {
+    await seed({ responses: 'with-findings', account: true, accountConsent: accountGrant });
+    expect((await saveSettings(payload('granted'))).ok).toBe(true);
+    expect(readWorkspaceSettings().webChatCapture?.accountConsent).toEqual(accountGrant);
+  });
+
+  it('survives a save that answers only the capture grant', async () => {
+    await seed({ responses: 'always', account: true, accountConsent: accountGrant });
+    const res = await saveSettings(payload('unchanged', 'granted'));
+    // The positive control: the capture answer really was written.
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().webChatCapture).toEqual({
+      responses: 'always',
+      account: true,
+      accountConsent: accountGrant,
+      consent: expect.objectContaining({ version: WEB_CHAT_CAPTURE_CONSENT_VERSION }) as unknown,
+    });
+  });
+
+  it('survives a capture revoke too', async () => {
+    await seed({
+      responses: 'always',
+      account: true,
+      consent: capture,
+      accountConsent: accountGrant,
+    });
+    expect((await saveSettings(payload('unchanged', 'revoked'))).ok).toBe(true);
+    expect(readWorkspaceSettings().webChatCapture).toEqual({
+      responses: 'always',
+      account: true,
+      accountConsent: accountGrant,
+    });
+  });
+
+  it("'revoked' drops it, deletes the record, and leaves the capture grant", async () => {
+    await seed({
+      responses: 'always',
+      account: true,
+      consent: capture,
+      accountConsent: accountGrant,
+    });
+    recordDetectedWebAccount(dataDir(), ACCOUNT, SOURCE_TOOL.ClaudeAi);
+    expect(readDetectedWebAccounts(dataDir())).toHaveLength(1);
+
+    const res = await saveSettings(payload('revoked'));
+    expect(res).toEqual({ ok: true });
+    expect(readWorkspaceSettings().webChatCapture).toEqual({
+      responses: 'always',
+      account: false,
+      consent: capture,
+    });
+    expect(existsSync(join(dataDir(), DETECTED_WEB_ACCOUNTS_FILENAME))).toBe(false);
+  });
+
+  it("'unchanged' on both writes no block on a machine that never answered", async () => {
+    const res = await saveSettings(
+      payload('unchanged', 'unchanged', { vaultInlineReveal: 'full' }),
+    );
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+    expect('webChatCapture' in (JSON.parse(rawSettings()) as object)).toBe(false);
+  });
+
+  it('refuses a payload that omits the answer, rather than reading it as a revocation', async () => {
+    await seed({ responses: 'always', account: true, accountConsent: accountGrant });
+    const before = rawSettings();
+    const withoutTheAnswer = { ...payload('granted') };
+    delete withoutTheAnswer.webChatAccountConsent;
+    const res = await saveSettings(withoutTheAnswer);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('webChatAccountConsent');
+    expect(rawSettings()).toBe(before);
   });
 });

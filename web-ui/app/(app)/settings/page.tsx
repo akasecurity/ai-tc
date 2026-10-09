@@ -34,8 +34,9 @@ export default async function SettingsPage() {
   // same reason: a connection pinned with nothing locked governs the machine
   // all the same, and the form must not offer a choice the action refuses.
   const machineOnly = managedScopedRefusal() !== null;
-  // Why the browser extension records nothing from a web chat here whatever
-  // the web-chat consent says, or null. The same reading the native host makes.
+  // Why the browser extension records less from a web chat here than the
+  // web-chat consent says, or nothing, or null. The same reading the native
+  // host makes.
   const webChatWithheld = webChatWithholding(settingsDir(), settings);
   const renderedAt = renderInstant();
   // NULL ON A STANDALONE MACHINE, and then nothing is rendered at all. The

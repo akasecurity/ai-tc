@@ -62,7 +62,7 @@ const ENFORCEMENT_NOTES: Record<EnforcementFault, string> = {
   unattached: 'not enforcing — composer and send button not found',
 };
 
-// Why nothing from a chat is recorded on this machine, in words. Total over the
+// Why this machine records less from a chat than usual, or nothing, in words. Total over the
 // vocabulary, so a reason added to the schema fails to compile until it is
 // worded here.
 export const WITHHELD_NOTES: Record<WebChatWithholding, string> = {

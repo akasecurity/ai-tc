@@ -498,11 +498,13 @@ export function isWebChatAccountGrantValid(webChat: WebChatCapture | undefined):
   );
 }
 
-// Why a machine records nothing from a web chat, whatever its consent says.
-// 'personal-device': it is attached with `aka attach --scoped`, where no web
-// chat is in scope. 'unreadable-attachment': it holds a control-plane
-// credential this build cannot read, so what it was attached as is unknown and
-// the answer is the one that records less.
+// Why a machine records less from a web chat than its consent says, or nothing.
+// 'personal-device': it is attached with `aka attach --scoped`, where a web chat
+// is in scope only in an account enrolled with `aka enroll --account`
+// (isScopeKeyEnrolled), and a typed prompt never is. 'unreadable-attachment': it
+// holds a control-plane credential this build cannot read, so what it was
+// attached as is unknown, the answer is the one that records less, and nothing
+// is recorded.
 export const WebChatWithholding = z.enum(['personal-device', 'unreadable-attachment']);
 export type WebChatWithholding = z.infer<typeof WebChatWithholding>;
 

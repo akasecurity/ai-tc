@@ -8,6 +8,7 @@ import {
   type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearDetectedWebAccounts,
   controlPlaneCredentialPath,
   type CredentialFileRead,
   dataDir,
@@ -57,6 +58,7 @@ import {
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
@@ -64,7 +66,9 @@ import {
   SaveSettingsInput,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  type WebChatAccountConsentChoice,
   type WebChatCapture,
   type WebChatCaptureConsentChoice,
   webChatCaptureOf,
@@ -94,6 +98,7 @@ import {
   SYNC_NOT_GRANTED,
   SYNC_PAUSED,
   SYNC_SPAWN_FAILED,
+  WEB_CHAT_ACCOUNTS_NOT_CLEARED,
 } from '../../lib/action-refusals';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
@@ -278,7 +283,11 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         // Deriving it from `current` inside the lock is what keeps both true at
         // once: the modes survive, and the grant is judged against the file this
         // write is about to land on rather than the one the page rendered.
-        webChatCapture: nextWebChatCapture(current, data.webChatCaptureConsent),
+        webChatCapture: nextWebChatCapture(
+          current,
+          data.webChatCaptureConsent,
+          data.webChatAccountConsent,
+        ),
       };
     });
   } catch (error) {
@@ -310,6 +319,14 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       );
     });
   }
+  // A revoked account grant takes the record it allowed with it, as
+  // `aka extension account --off` does. After the write, so the host stops
+  // adding to it first; a record that could not be deleted is reported rather
+  // than left for the user to find, though the grant itself is already off.
+  if (data.webChatAccountConsent === 'revoked' && !clearDetectedWebAccounts(dataDir())) {
+    revalidatePath('/settings');
+    return { ok: false, error: WEB_CHAT_ACCOUNTS_NOT_CLEARED };
+  }
   revalidatePath('/settings');
   return { ok: true };
 }
@@ -324,8 +341,10 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
  * be CALLED from inside applyOnboarding's updater — `current` is the file under
  * the lock, and reading it out beforehand puts the read back outside.
  *
- * `responses` and `account` have no control on this page and are carried
- * forward. The grant is stamped here and never accepted from the client: the
+ * `responses` has no control on this page and is carried forward. The two
+ * grants, capture and account, are each answered on their own row and resolved
+ * on their own, so an answer to one never moves the other: a capture save keeps
+ * the account grant's record as it was, and the reverse. Each grant is stamped here and never accepted from the client: the
  * input is the bare answer, so a caller-supplied acknowledgedAt or version has
  * no path in. 'granted' records the current time at the current version, unless
  * a still-valid grant is already on file, which is kept as-is so its
@@ -343,6 +362,7 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
 function nextWebChatCapture(
   current: WorkspaceSettings,
   choice: WebChatCaptureConsentChoice,
+  accountChoice: WebChatAccountConsentChoice,
 ): WebChatCapture | undefined {
   // 'unchanged' is what every UNRELATED save sends, and it is answered from the
   // file rather than from the defaults. `webChatCaptureOf` falls back to the
@@ -355,29 +375,50 @@ function nextWebChatCapture(
   //
   // Returning the file's own value also keeps the rebuild-whole property below
   // intact: there is nothing to rebuild when the answer is "no change".
-  if (choice === 'unchanged') return current.webChatCapture;
+  if (choice === 'unchanged' && accountChoice === 'unchanged') return current.webChatCapture;
   // The same holds for a revoke on a machine that never answered: there is no
   // grant to drop, and falling through would write that defaulted block with no
   // consent in it. The page sends 'revoked' for a row toggled on and back off
   // before saving, so this is reachable. Only 'granted' creates the block.
-  if (choice !== 'granted' && current.webChatCapture === undefined) return undefined;
+  if (choice !== 'granted' && accountChoice !== 'granted' && current.webChatCapture === undefined) {
+    return undefined;
+  }
   const block = webChatCaptureOf(current);
   const consent =
-    choice === 'granted'
-      ? isWebChatCaptureConsentValid(block.consent)
-        ? block.consent
-        : {
-            acknowledgedAt: new Date().toISOString(),
-            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
-          }
-      : undefined;
+    choice === 'unchanged'
+      ? block.consent
+      : choice === 'granted'
+        ? isWebChatCaptureConsentValid(block.consent)
+          ? block.consent
+          : {
+              acknowledgedAt: new Date().toISOString(),
+              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+            }
+        : undefined;
+  // The account grant, by the same rules: kept as it is for 'unchanged', a
+  // still-valid one kept as-is for 'granted' so its acknowledgedAt survives,
+  // stamped fresh otherwise, and dropped for anything else.
+  const accountConsent =
+    accountChoice === 'unchanged'
+      ? block.accountConsent
+      : accountChoice === 'granted'
+        ? isWebChatAccountGrantValid(block)
+          ? block.accountConsent
+          : {
+              acknowledgedAt: new Date().toISOString(),
+              version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+            }
+        : undefined;
+  const account =
+    accountChoice === 'unchanged' ? block.account : accountChoice === 'granted';
   // Spread conditionally rather than assigning `undefined`: an explicit
   // undefined is a present key under exactOptionalPropertyTypes, and the absence
   // of this key is what "not granted" means to every reader of the file.
   return {
     responses: block.responses,
-    account: block.account,
+    account,
     ...(consent === undefined ? {} : { consent }),
+    ...(accountConsent === undefined ? {} : { accountConsent }),
   };
 }
 

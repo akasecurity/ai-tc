@@ -170,7 +170,7 @@ export {
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
-export type { CaptureOptions, DecisionOptions, PluginRuntime } from './runtime.ts';
+export type { CaptureOptions, DecisionOptions, DeferredCapture, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';

@@ -1575,3 +1575,56 @@ describe('capture — where each finding sits', () => {
     expect(redacted).not.toContain('innerHTML =');
   });
 });
+
+// captureDeferred is `capture` in two steps: the decision first, the write only
+// when the caller records it. A caller that declines the outcome writes nothing.
+describe('createPluginRuntime — captureDeferred', () => {
+  const INPUT = {
+    kind: 'prompt' as const,
+    sourceTool: 'claude-code' as const,
+    text: 'deploy with SECRET_MARKER now',
+  };
+
+  it('decides without writing, and writes the same record capture would on record()', async () => {
+    const eager = fakeGateway(bundle());
+    const eagerRt = createPluginRuntime(eager, settings());
+    const decided = await eagerRt.capture(INPUT);
+    await eagerRt.close();
+
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(INPUT);
+    expect(deferred.result).toEqual(decided);
+    expect(gw.records).toHaveLength(0);
+
+    await deferred.record();
+    await deferred.record();
+    await rt.close();
+
+    expect(gw.records).toHaveLength(1);
+    const [got] = gw.records;
+    const [want] = eager.records;
+    expect(got?.findings.map((f) => f.ruleId)).toEqual(want?.findings.map((f) => f.ruleId));
+    expect(got?.event.content).toBe(want?.event.content);
+  });
+
+  it('writes nothing when the caller never records', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.captureDeferred(INPUT);
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+
+  it("keeps persist: 'with-findings' on record(): a clean text writes nothing", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(
+      { ...INPUT, text: 'nothing to see here' },
+      { persist: 'with-findings' },
+    );
+    await deferred.record();
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+});

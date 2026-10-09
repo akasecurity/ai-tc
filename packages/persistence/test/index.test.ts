@@ -21,6 +21,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'DATA_DIR_MODE',
   'DATA_FILE_MODE',
   'DB_FILENAME',
+  'DETECTED_WEB_ACCOUNTS_FILENAME',
+  'DETECTED_WEB_ACCOUNT_RESIGHT_MS',
   'DuplicateActiveExceptionError',
   'EXCEPTION_KEY_FILENAME',
   'FileKeyProvider',
@@ -80,6 +82,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'captureWireId',
   'classifiedDataId',
   'clearAttachmentDerivedState',
+  'clearDetectedWebAccounts',
   'compareBinaryVersions',
   'computeFindingKey',
   'controlPlaneCredentialPath',
@@ -136,11 +139,9 @@ const PUBLIC_VALUE_EXPORTS = [
   'readCachedPolicyBundle',
   'readControlPlaneAttachmentMode',
   'readControlPlaneCredential',
-  // The WIDE read. Exported deliberately and named so it cannot be reached by
-  // accident: it returns a bearer credential, unlike the state reader beside
-  // it, and belongs only to server-side callers.
   'readControlPlaneCredentialFile',
   'readControlPlaneCredentialState',
+  'readDetectedWebAccounts',
   'readEffectiveSettings',
   'readFingerprintKey',
   'readForwardHealth',
@@ -148,6 +149,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'readLocalHistoryPreview',
   'readManagedSettings',
   'readWorkspaceSettings',
+  'recordDetectedWebAccount',
   'removeAttachmentScopeEntries',
   'removeControlPlaneCredential',
   'rotateFingerprintKey',

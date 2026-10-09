@@ -707,6 +707,17 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // earlier grant. If that list names this deployment, its repositories forward
   // under the new key, and their history goes under the earlier grant, until the
   // machine is attached again.
+  //
+  // WHAT THE RULE READS. `readWorkspaceSettings()` is the settings in force, the
+  // user's file with an administrator's overlay applied, which is the same read
+  // `aka attach` passes the rule (`readEffectiveSettings(...).settings`). The
+  // settings write below merges over the user's own file instead (the updater's
+  // `current`, read inside the lock). The two agree on the only fields the rule
+  // reads, `attachmentScope` and `historySyncConsent`, because the overlay has no
+  // way to carry either: neither is a `ManagedSettingKey`. A test pins that
+  // (connection-attach-overlay-fields.test.ts). If the overlay ever grows one of
+  // them, the order and the write could judge different values: decide which the
+  // order should follow, and change this call together with `aka attach`'s.
   const settingsFirst = writesSettingsFirst(
     mode,
     previous,

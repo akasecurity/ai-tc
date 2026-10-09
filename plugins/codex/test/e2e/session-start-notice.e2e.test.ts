@@ -13,10 +13,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { writeControlPlaneCredential } from '@akasecurity/persistence';
+import {
+  managedSettingsPaths,
+  readManagedSettings,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
 import { StandaloneDataGateway, SYNC_MARKER_NAME } from '@akasecurity/plugin-runtime';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import type { TestContext } from 'vitest';
 import { describe, expect, it } from 'vitest';
 
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
@@ -177,8 +182,34 @@ function shownBy(stdout: string): unknown {
   return (JSON.parse(stdout) as Record<string, unknown>).systemMessage;
 }
 
+/**
+ * The attachment this machine's administrator pins, if any: the settings the
+ * built hook acts on, whatever a case writes to settings.json. Read by EXPLICIT
+ * path, because the no-managed-settings setup file moves only the default, so a
+ * bare read here would report an unmanaged machine rather than the one the child
+ * process runs on.
+ */
+const machinePin = readManagedSettings(managedSettingsPaths())?.values;
+
+/**
+ * Skip a case whose attachment this machine's administrator overrides. The built
+ * hook applies the managed file inside its own process, from absolute system
+ * paths a redirected home does not move, so on such a machine the attachment a
+ * case writes is replaced and the hook reads a different deployment. CI carries
+ * no managed file, so there every case runs.
+ */
+function skipIfAttachmentPinned(ctx: TestContext): void {
+  if (machinePin?.runMode !== undefined || machinePin?.controlPlane !== undefined) {
+    ctx.skip(
+      "this machine's managed settings pin the attachment, and the built hook applies " +
+        'that file in its own process, so it cannot observe the attachment this case writes',
+    );
+  }
+}
+
 describe('session-start forwarding line', () => {
-  it('says everything forwards on a machine attachment', () => {
+  it('says everything forwards on a machine attachment', (ctx) => {
+    skipIfAttachmentPinned(ctx);
     withTempHome((home) => {
       attachHome(home, 'machine');
       const stdin = startIn(home, 'line-machine');
@@ -189,7 +220,8 @@ describe('session-start forwarding line', () => {
     });
   });
 
-  it('names the enrolled repository a scoped session starts in', () => {
+  it('names the enrolled repository a scoped session starts in', (ctx) => {
+    skipIfAttachmentPinned(ctx);
     withTempHome((home) => {
       attachHome(home, 'scoped');
       const stdin = startIn(home, 'line-enrolled', 'https://github.com/acme/payments-api.git');
@@ -199,7 +231,8 @@ describe('session-start forwarding line', () => {
     });
   });
 
-  it('says local-only for a scoped session in a repository nobody enrolled', () => {
+  it('says local-only for a scoped session in a repository nobody enrolled', (ctx) => {
+    skipIfAttachmentPinned(ctx);
     withTempHome((home) => {
       attachHome(home, 'scoped');
       const stdin = startIn(home, 'line-personal', 'https://github.com/someone/side-project.git');

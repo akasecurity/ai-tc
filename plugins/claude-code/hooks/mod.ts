@@ -115,14 +115,36 @@ async function rewriteWithHelper(
   }
 }
 
-// The doors the row backstop leaves alone. The user's own prompt row was already
-// handled by prompt.submit (which also records it); a tool's result is the
-// tool-result door's own backstop.
-const SKIPPED_DOORS: ReadonlySet<string> = new Set(['prompt', 'tool-result']);
+// The one door the row backstop leaves alone on the main conversation: the
+// user's own prompt row, already handled (and recorded) by prompt.submit. A
+// subagent's prompt row has no prompt.submit, so it is scanned.
+function isHandledElsewhere(e: Parameters<Hook<'session.append'>>[1]): boolean {
+  return e.door === 'prompt' && e.agentId === undefined;
+}
 
-// A row's text blocks with each one's helper rewrite. Only `text` blocks are
-// rewritable by the host, so no other block is read. A block the helper cannot
-// answer for (or answers with a value still in it) stays as made.
+// The helper's rewrite of one piece of row text, or null when it stays as made:
+// nothing to redact, no answer, or an answer that still holds the value. A value
+// PostToolUse already pointerized or marked is not a finding here (the planner
+// skips pointers and the one-way marker is no match), so on a tool result only
+// what PostToolUse left raw is rewritten and recorded.
+async function rewriteRowText(
+  $: Dollar,
+  policy: ModPolicy | null,
+  text: string,
+  door: string,
+): Promise<string | null> {
+  if (text === '') return null;
+  const plan = planRowWith(text, policy);
+  if (plan.values.length === 0) return null;
+  const answer = await rewriteWithHelper($, text, door);
+  if (answer === null || plan.values.some((value) => answer.text.includes(value))) return null;
+  return answer.text;
+}
+
+// A row's text blocks, and the text inside its tool_result blocks (a string or a
+// list of blocks), each with its helper rewrite. Only `text` and `tool_result`
+// content are rewritable by the host, so no other block is read. A piece the
+// helper cannot answer for stays as made.
 async function backstopRow(
   $: Dollar,
   row: Parameters<Hook<'session.append'>>[1],
@@ -131,22 +153,42 @@ async function backstopRow(
   let changed = false;
   const content = [];
   for (const block of row.message.content) {
-    if (block.type !== 'text' || block.text === '') {
-      content.push(block);
-      continue;
-    }
-    const plan = planRowWith(block.text, policy);
-    if (plan.values.length === 0) {
-      content.push(block);
-      continue;
-    }
-    const answer = await rewriteWithHelper($, block.text, row.door);
-    if (answer === null || plan.values.some((value) => answer.text.includes(value))) {
-      content.push(block);
-      continue;
-    }
-    content.push({ ...block, text: answer.text });
-    changed = true;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      const text = await rewriteRowText($, policy, block.text, row.door);
+      if (text === null) content.push(block);
+      else {
+        content.push({ ...block, text });
+        changed = true;
+      }
+    } else if (block.type === 'tool_result' && row.door === 'tool-result') {
+      const inner = block.content;
+      if (typeof inner === 'string') {
+        const text = await rewriteRowText($, policy, inner, row.door);
+        if (text === null) content.push(block);
+        else {
+          content.push({ ...block, content: text });
+          changed = true;
+        }
+      } else if (Array.isArray(inner)) {
+        const parts = [];
+        let blockChanged = false;
+        for (const part of inner as { type?: unknown; text?: unknown }[]) {
+          const text =
+            part.type === 'text' && typeof part.text === 'string'
+              ? await rewriteRowText($, policy, part.text, row.door)
+              : null;
+          if (text === null) parts.push(part);
+          else {
+            parts.push({ ...part, text });
+            blockChanged = true;
+          }
+        }
+        if (blockChanged) {
+          content.push({ ...block, content: parts });
+          changed = true;
+        } else content.push(block);
+      } else content.push(block);
+    } else content.push(block);
   }
   return changed ? { ...row, message: { ...row.message, content } } : null;
 }
@@ -205,9 +247,12 @@ export const register: Register = (on) => {
   // subagent rows, notes, response blocks). A prompt.mention hook cannot see or
   // rewrite the file's text, so the file is scanned here, as the row that holds
   // it is stored. A row with nothing to redact is passed on with nothing spawned.
+  // The tool-result door is the same shape for every tool: PostToolUse runs first
+  // for the same call and may have rewritten the output, so only what it left raw
+  // is scanned here (its pointers and one-way markers are never findings), and
+  // only that is recorded: a value it handled is never recorded a second time.
   on('session.append', async ($, e, next) => {
-    if (SKIPPED_DOORS.has(e.door) && e.agentId === undefined) return next(e);
-    if (e.door === 'tool-result') return next(e);
+    if (isHandledElsewhere(e)) return next(e);
     const rewritten = await backstopRow($, e);
     return next(rewritten ?? e);
   });

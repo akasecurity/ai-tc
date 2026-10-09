@@ -89,19 +89,6 @@ test('a subagent prompt row is scanned though a main prompt row is not', async (
   expect(asked).toHaveLength(1);
 });
 
-test('the tool-result door is left to its own backstop', async ($, on) => {
-  redactSecrets(on);
-  const appended = store(on);
-  const asked = helper(on, pointerReply);
-
-  await $.session.append(
-    row('tool-result', `key=${SECRET}`, { origin: { kind: 'tool', tool: 'Read' } }),
-  );
-
-  expect(textOf(appended()[0])).toEqual([`key=${SECRET}`]);
-  expect(asked).toEqual([]);
-});
-
 test('an existing pointer is never re-tokenized', async ($, on) => {
   redactSecrets(on);
   const appended = store(on);

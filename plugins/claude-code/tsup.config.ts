@@ -61,6 +61,9 @@ export default defineConfig({
     // the one place a vault pointer is minted for a mod-rewritten prompt, so the
     // key stays out of the mod. Lands flat in scripts/ beside the hook scripts.
     'mod-tokenize': 'src/mod/tokenize-entry.ts',
+    // The ui.render mod's helper: resolves vault pointers to what the screen
+    // shows, so the vault stays out of the mod.
+    'mod-reveal': 'src/mod/reveal-entry.ts',
     // The isolated scan's worker thread. hooks.json never names it — the plugin
     // SDK starts it by path from whichever hook is running, and every hook
     // script lands in this same directory. See src/scan-worker.ts.

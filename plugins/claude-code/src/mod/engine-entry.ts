@@ -2,6 +2,9 @@ import { getLoadedRules, redact, registerPack, scan } from '@akasecurity/detecti
 import type { ActionTaken, Rule } from '@akasecurity/schema';
 import { PARSED_DATA } from 'aka:parsed-packs';
 
+import type { RegionState } from '../display/regions.ts';
+import { advanceRegions } from '../display/regions.ts';
+
 // Entry of hooks/engine.js, the detection engine a Claude Code mod imports. A
 // mod runs with no Node, so this file and everything it reaches must stay
 // free of node: built-ins, require and import(); build/engine.mjs fails the
@@ -193,5 +196,66 @@ export function redactPromptWith(text: string, policy: ModPolicy | null): string
 
 /** The prompt rewrite under the bundled packs' default policies. */
 export const redactPrompt = (text: string): string => redactPromptWith(text, null);
+
+/** What the display rewrite wants for one complete pointer it met. */
+export interface PointerWant {
+  token: string;
+  /** In a code, quote or capped position: only the masked badge may be drawn. */
+  shielded: boolean;
+}
+
+/**
+ * The text a screen shows for `text`: each COMPLETE vault pointer swapped for
+ * what `draw` answers (the revealed value, or the masked badge), a pointer `draw`
+ * has no answer for (null) left as written. A trailing partial pointer or a
+ * garbled one never matches the grammar and stays plain text. The markdown
+ * regions are the MessageDisplay hook's own (src/display/regions.ts): a pointer
+ * in a fenced block, an inline code span or a quoted line is `shielded`, and so
+ * is any past the per-message reveal cap, counted over what `draw` returns when
+ * it was handed `shielded: false` and answered `revealed: true`.
+ *
+ * Pure and synchronous; it spawns and reads nothing, so it is cheap on every
+ * redraw. `wanted` lists the pointers `draw` could not answer, for the caller to
+ * resolve once each.
+ */
+export function revealPointers(
+  text: string,
+  draw: (want: PointerWant) => { text: string; revealed: boolean } | null,
+  cap: number = PARSED_DATA.revealCap,
+): { text: string; wanted: PointerWant[] } {
+  pointerScanner ??= new RegExp(PARSED_DATA.pointerPattern, 'g');
+  const state: RegionState = {
+    fence: null,
+    tickOpen: false,
+    lineQuoted: false,
+    lineSeen: false,
+    lineIndent: 0,
+  };
+  const wanted: PointerWant[] = [];
+  let out = '';
+  let pos = 0;
+  let revealed = 0;
+  for (const match of text.matchAll(pointerScanner)) {
+    const literal = text.slice(pos, match.index);
+    advanceRegions(state, literal);
+    out += literal;
+    const token = match[0];
+    const shielded = state.fence !== null || state.tickOpen || state.lineQuoted || revealed >= cap;
+    const want: PointerWant = { token, shielded };
+    const drawn = draw(want);
+    let shown = token;
+    if (drawn === null) {
+      wanted.push(want);
+    } else {
+      shown = drawn.text;
+      if (drawn.revealed) revealed += 1;
+    }
+    advanceRegions(state, shown);
+    out += shown;
+    pos = match.index + token.length;
+  }
+  out += text.slice(pos);
+  return { text: out, wanted };
+}
 
 export { getLoadedRules, redact, scan };

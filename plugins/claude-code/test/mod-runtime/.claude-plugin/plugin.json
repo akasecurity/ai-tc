@@ -1,5 +1,6 @@
 {
-  "name": "aka-engine-parity",
+  "name": "aka",
   "version": "0.0.0",
-  "description": "Test-only plugin: runs the built detection engine inside the Claude Code mod runtime"
+  "description": "Test-only plugin: runs the shipped mod (built engine, state contract) inside the Claude Code mod runtime",
+  "types": "./types/index.d.ts"
 }

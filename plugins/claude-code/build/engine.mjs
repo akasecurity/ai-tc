@@ -18,7 +18,13 @@ const PARSED_ID = 'aka:parsed-packs';
 // to the category rows the local store seeds at Monitor ('log'). The mod ships
 // that answer as data, so it never carries a second policy model.
 const PROBE = `
-import { DEFAULT_ACTIONS, POINTER_TOKEN_PATTERN, Rule, builtinPolicyToAction } from '@akasecurity/schema';
+import {
+  DEFAULT_ACTIONS,
+  POINTER_TOKEN_PATTERN,
+  Rule,
+  VAULT_INLINE_REVEAL_MAX_PER_MESSAGE,
+  builtinPolicyToAction,
+} from '@akasecurity/schema';
 import { BUNDLED_PACKS } from '../../packages/plugin-sdk/src/bundled-packs.generated.ts';
 import {
   assignedRulePolicies,
@@ -60,6 +66,7 @@ export default {
   packs: packs.map((p) => ({ packId: p.packId, rules: p.rules })),
   actions,
   pointerPattern: POINTER_TOKEN_PATTERN.source,
+  revealCap: VAULT_INLINE_REVEAL_MAX_PER_MESSAGE,
 };
 `;
 

@@ -7,5 +7,7 @@ declare module 'aka:parsed-packs' {
     actions: Readonly<Record<string, ActionTaken>>;
     // The source of the vault pointer pattern, from @akasecurity/schema.
     pointerPattern: string;
+    // The most values one message reveals, from @akasecurity/schema.
+    revealCap: number;
   };
 }

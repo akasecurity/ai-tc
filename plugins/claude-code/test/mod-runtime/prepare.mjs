@@ -30,6 +30,10 @@ const ENGINE = join(PLUGIN_ROOT, 'hooks', 'engine.js');
 
 if (!existsSync(ENGINE)) throw new Error('hooks/engine.js is missing; run `pnpm build` first');
 copyFileSync(join(PLUGIN_ROOT, 'hooks', 'mod.ts'), join(HERE, 'mod.ts'));
+// The state contract the plugin ships (plugin.json "types"), staged where the fixture's
+// own plugin.json names it.
+mkdirSync(join(HERE, 'types'), { recursive: true });
+copyFileSync(join(PLUGIN_ROOT, 'types', 'index.d.ts'), join(HERE, 'types', 'index.d.ts'));
 
 const TEST_ENGINE = `
   import { planPromptWith as realPlanPromptWith } from './src/mod/engine-entry.ts';

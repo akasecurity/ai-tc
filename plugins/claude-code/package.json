@@ -13,6 +13,7 @@
   "files": [
     ".claude-plugin",
     "hooks",
+    "types",
     "commands",
     "scripts"
   ],

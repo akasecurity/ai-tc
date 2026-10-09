@@ -171,8 +171,8 @@ describe('the mod module', () => {
 
   it('imports only the built engine, statically, and attaches no catch', () => {
     const src = readFileSync(join(HOOKS_DIR, 'mod.ts'), 'utf8');
-    const imports = [...src.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1]);
-    expect(imports.filter((i) => i !== 'claude-code')).toEqual(['./engine.js']);
+    const imports = [...src.matchAll(/^import [^;]* from '([^']+)';$/gm)].map((m) => m[1]);
+    expect([...new Set(imports.filter((i) => i !== 'claude-code'))]).toEqual(['./engine.js']);
     expect(src).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
     expect(src).not.toMatch(/\)\.catch\s*\(/);
     expect(existsSync(join(HOOKS_DIR, 'engine.js'))).toBe(true);

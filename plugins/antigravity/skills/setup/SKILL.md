@@ -981,6 +981,11 @@ directory rather than a marketplace, so after updating the `aka` CLI, reinstall
 this plugin at the same version. For the second, re-running this setup sets the
 per-category enforcement.
 
+This plugin's hooks also warn, on the same unseen stderr, when a path in the
+AKA store (`~/.aka`) is a symlink that sends what is recorded somewhere else.
+That warning is not seen on this host either. `aka init` reports the same
+symlinks, so run it if the store may have been redirected.
+
 **The model-judge step needs an `agy` with the streaming stdin interface.** It
 runs `agy --input-format stream-json --output-format stream-json` and writes the
 prompt to the CLI's standard input, rather than putting it on the command line.

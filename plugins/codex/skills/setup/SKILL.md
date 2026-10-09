@@ -881,5 +881,9 @@ symlink. The line is decided by the session's root, recorded where the session
 started, which is why the local-only form says what it does: a file written into
 an enrolled repository from a local-only session is still sent, because each
 capture is decided by the repository it lands in. A resumed session shows no
-line, so no line never means nothing is forwarded; `aka status` gives the
-attachment, its mode and the enrolled repositories at any time.
+line, and neither does a session whose start stopped before it recorded the
+session, so no line never means nothing is forwarded; `aka status` gives the
+attachment, its mode and the enrolled repositories at any time. The line names
+the deployment, by its label or by its address with no credential, and Codex
+keeps hook output in the session's context and transcript: the model sees that
+name, and a transcript you share carries it.

@@ -421,7 +421,8 @@ export function isAttachmentScopeBoundTo(
 // and the reply's own text under the stored `responses` mode — in which a
 // detected value is masked only where the detection that flagged it resolves to
 // redact or stronger, exactly as on every other capture path. Account and quota
-// snapshots are NOT in it.
+// snapshots are NOT in it; the account data the extension records is covered by
+// its own grant (WEB_CHAT_ACCOUNT_CONSENT_VERSION).
 export const WEB_CHAT_CAPTURE_CONSENT_VERSION = 1;
 
 // A recorded consent to that, carrying the version it was given against. Same
@@ -446,18 +447,32 @@ export type WebChatCaptureConsent = z.infer<typeof WebChatCaptureConsent>;
 export const WebChatResponseCapture = z.enum(['with-findings', 'always', 'never']);
 export type WebChatResponseCapture = z.infer<typeof WebChatResponseCapture>;
 
-// What the browser extension may record from a web chat, and the grant that
-// authorizes it.
+// The account data the user consented to the browser extension recording, with
+// its own version so it re-asks on its own. Separate from
+// WEB_CHAT_CAPTURE_CONSENT_VERSION because it authorizes a separate thing: a
+// capture grant given for v1 stays valid when this one is added.
 //
-// `account` covers account, plan and quota snapshots. It defaults to false
-// because nothing collects them yet; it is stored here so the answer has one
-// home rather than arriving as a second block later.
+// v1 covers the detected-account record: for each web chat account a site's own
+// requests named, its key (`claude:<organization-id>`), the site, and when it was
+// first and last seen. No account name, email, plan, quota, conversation or text.
+// It is written only on this machine, and the key is never sent to a deployment.
+export const WEB_CHAT_ACCOUNT_CONSENT_VERSION = 1;
+
+// What the browser extension may record from a web chat, and the grants that
+// authorize it.
+//
+// `account` is the user's switch for account data, and `accountConsent` the
+// grant behind it; both must agree (isWebChatAccountGrantValid). It defaults to
+// false.
 export const WebChatCapture = z.object({
   responses: WebChatResponseCapture.default('with-findings'),
   account: z.boolean().default(false),
   // Absent until granted. Presence alone does not authorize anything — see
   // isWebChatCaptureConsentValid.
   consent: WebChatCaptureConsent.optional(),
+  // Absent until granted — see isWebChatAccountGrantValid. The same two fields as
+  // `consent`, carrying WEB_CHAT_ACCOUNT_CONSENT_VERSION.
+  accountConsent: WebChatCaptureConsent.optional(),
 });
 export type WebChatCapture = z.infer<typeof WebChatCapture>;
 
@@ -469,6 +484,18 @@ export type WebChatCapture = z.infer<typeof WebChatCapture>;
 // bundler-agnostic dashboard views, can import it.
 export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | undefined): boolean {
   return consent?.version === WEB_CHAT_CAPTURE_CONSENT_VERSION;
+}
+
+// The one definition of "the user has agreed to account data being recorded
+// TODAY": the switch is on AND the grant was given at the current version. Either
+// alone authorizes nothing, so a switch left on beside a revoked or stale grant
+// records nothing. Independent of the capture grant: neither implies the other.
+// Pure logic over the schema, no I/O.
+export function isWebChatAccountGrantValid(webChat: WebChatCapture | undefined): boolean {
+  return (
+    webChat?.account === true &&
+    webChat.accountConsent?.version === WEB_CHAT_ACCOUNT_CONSENT_VERSION
+  );
 }
 
 // Why a machine records nothing from a web chat, whatever its consent says.
@@ -714,6 +741,32 @@ export function scopeVerdict(
     return resolved.keys.has(key) ? 'forward' : 'local';
   } catch {
     return 'local';
+  }
+}
+
+/**
+ * Whether `key` is enrolled on this machine's scoped attachment: one of the
+ * entries the stored scope record holds for the endpoint in force. A record for
+ * another endpoint, or none, enrolls nothing; so does an empty or missing key.
+ *
+ * Says nothing about the mode: a machine-wide attachment forwards whatever is
+ * enrolled, and a caller deciding what to SEND asks scopeVerdict instead. This
+ * answers "did the user enroll it here", which is what the browser extension's
+ * host decides an account's chats by on a personal device. Pure; never throws.
+ */
+export function isScopeKeyEnrolled(
+  settings: Pick<WorkspaceSettings, 'controlPlane' | 'attachmentScope'>,
+  key: string | undefined,
+): boolean {
+  try {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: settings.attachmentScope,
+      endpoint: settings.controlPlane?.endpoint,
+    });
+    return scopeVerdict(resolved, key) === 'forward';
+  } catch {
+    return false;
   }
 }
 

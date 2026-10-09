@@ -16,6 +16,8 @@ import {
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
+  isScopeKeyEnrolled,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseAttachmentScope,
@@ -26,6 +28,7 @@ import {
   toCaptureAttributes,
   toEventRow,
   toFindingRow,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
   WebChatCapture,
   webChatCaptureOf,
@@ -571,6 +574,53 @@ describe('webChatCaptureOf', () => {
   it('returns the stored block untouched when there is one', () => {
     const block = { responses: 'never' as const, account: false };
     expect(webChatCaptureOf(WorkspaceSettings.parse({ webChatCapture: block }))).toEqual(block);
+  });
+});
+
+describe('isWebChatAccountGrantValid', () => {
+  const grantAt = (version: number) => ({ acknowledgedAt: ISO, version });
+  const block = (account: boolean, accountConsent?: { acknowledgedAt: string; version: number }) =>
+    WorkspaceSettings.parse({
+      webChatCapture: { account, ...(accountConsent === undefined ? {} : { accountConsent }) },
+    }).webChatCapture;
+
+  it('is true when the switch is on and the grant is at the current version', () => {
+    expect(isWebChatAccountGrantValid(block(true, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION)))).toBe(
+      true,
+    );
+  });
+
+  it('is false with no block, no grant, or the switch off', () => {
+    expect(isWebChatAccountGrantValid(undefined)).toBe(false);
+    expect(isWebChatAccountGrantValid(block(true))).toBe(false);
+    expect(
+      isWebChatAccountGrantValid(block(false, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION))),
+    ).toBe(false);
+  });
+
+  it('is false for a grant at another version', () => {
+    expect(
+      isWebChatAccountGrantValid(block(true, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION + 1))),
+    ).toBe(false);
+  });
+
+  // Separate grants: the capture grant does not stand in for the account one,
+  // and adding the account one leaves a capture grant valid.
+  it('is independent of the capture grant', () => {
+    const capture = { acknowledgedAt: ISO, version: WEB_CHAT_CAPTURE_CONSENT_VERSION };
+    const onlyCapture = WorkspaceSettings.parse({
+      webChatCapture: { account: true, consent: capture },
+    }).webChatCapture;
+    expect(isWebChatAccountGrantValid(onlyCapture)).toBe(false);
+    const both = WorkspaceSettings.parse({
+      webChatCapture: {
+        account: true,
+        consent: capture,
+        accountConsent: grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION),
+      },
+    }).webChatCapture;
+    expect(isWebChatAccountGrantValid(both)).toBe(true);
+    expect(isWebChatCaptureConsentValid(both?.consent)).toBe(true);
   });
 });
 
@@ -1337,4 +1387,34 @@ describe('syncLaneRetentionOf', () => {
       expect(syncLaneRetentionOf(settings, throwingKeys())).toEqual({ kind: 'hold-all' });
     },
   );
+});
+
+describe('isScopeKeyEnrolled', () => {
+  const ENDPOINT = 'https://cp.example';
+  const KEY = 'claude:0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b';
+  const settings = (entries: string[], endpoint = ENDPOINT) => ({
+    controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+    attachmentScope: {
+      endpoint,
+      entries: entries.map((identity) => ({ kind: 'account' as const, identity, enrolledAt: ISO })),
+    },
+  });
+
+  it('is true for a key the record enrolls for the endpoint in force', () => {
+    expect(isScopeKeyEnrolled(settings([KEY]), KEY)).toBe(true);
+  });
+
+  it('is false for a key not enrolled, or no key', () => {
+    expect(isScopeKeyEnrolled(settings(['github.com/acme/api']), KEY)).toBe(false);
+    expect(isScopeKeyEnrolled(settings([KEY]), undefined)).toBe(false);
+    expect(isScopeKeyEnrolled(settings([KEY]), '')).toBe(false);
+  });
+
+  // Bound by value: a record for another deployment enrolls nothing here.
+  it('is false for a record bound to another endpoint, or none at all', () => {
+    expect(isScopeKeyEnrolled(settings([KEY], 'https://other.example'), KEY)).toBe(false);
+    expect(isScopeKeyEnrolled({ controlPlane: undefined, attachmentScope: undefined }, KEY)).toBe(
+      false,
+    );
+  });
 });

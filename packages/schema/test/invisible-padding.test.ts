@@ -17,6 +17,7 @@ describe('stripInvisiblePadding', () => {
     ['tag letter', 0xe0041],
     ['left-to-right mark', 0x200e],
     ['right-to-left mark', 0x200f],
+    ['Arabic letter mark', 0x061c],
     ['Mongolian vowel separator', 0x180e],
     ['interlinear annotation anchor', 0xfff9],
     ['interlinear annotation separator', 0xfffa],

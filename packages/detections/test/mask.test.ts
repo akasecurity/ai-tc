@@ -68,6 +68,7 @@ describe('maskMatch — invisible padding', () => {
     ['zero width space', '\u200B'],
     ['left-to-right mark', '\u200E'],
     ['right-to-left mark', '\u200F'],
+    ['Arabic letter mark', '\u061C'],
     ['Mongolian vowel separator', '\u180E'],
     ['interlinear annotation anchor', '\uFFF9'],
   ] as const;

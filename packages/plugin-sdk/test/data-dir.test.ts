@@ -70,6 +70,6 @@ describe('data-dir re-export', () => {
   it('declares no mode of its own', () => {
     const source = readFileSync(new URL('../src/data-dir.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/0o[0-7]+/);
-    expect(source).toContain("from '@akasecurity/persistence'");
+    expect(source).toContain("from '@akasecurity/persistence/sqlite-free'");
   });
 });

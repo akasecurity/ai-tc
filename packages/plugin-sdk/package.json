@@ -3,6 +3,9 @@
   "version": "0.8.0",
   "private": true,
   "type": "module",
+  "sideEffects": [
+    "./src/scan-worker.ts"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./scan-worker": "./src/scan-worker.ts",

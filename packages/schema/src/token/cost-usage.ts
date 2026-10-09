@@ -18,6 +18,13 @@ export interface CostUsage {
   cacheWrite5mTokens?: number;
   /** Tokens read from cache (`cache_read_input_tokens`) — priced far below input. */
   cacheReadTokens?: number;
+  /**
+   * Prompt size of the largest single request this bag covers, which is what
+   * selects a long-context band. Defaults to the bag's own prompt: input plus
+   * cache reads plus cache writes. A caller pricing the SUM of several requests
+   * sets it, since the summed prompt says nothing about any one request's size.
+   */
+  promptTokens?: number;
   /** Server-side web-search requests (`server_tool_use.web_search_requests`) — billed per request. */
   webSearchRequests?: number;
   /**

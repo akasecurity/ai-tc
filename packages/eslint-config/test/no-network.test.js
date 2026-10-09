@@ -302,9 +302,39 @@ describe('no-network dynamic imports and require', () => {
     expect(messages).toHaveLength(0);
   });
 
+  // A third way to load a builtin, and the one `@akasecurity/persistence`'s
+  // fingerprint floor read uses for `node:sqlite`: it takes a specifier like
+  // `import()` does, so a network one must be refused the same way.
+  it.each(EXPECTED_MODULES)("flags a process.getBuiltinModule('%s')", (mod) => {
+    const messages = lintNetwork(`process.getBuiltinModule('${mod}');`);
+    expect(messages.map((m) => m.ruleId)).toContain('no-restricted-syntax');
+    expect(messages[0].message).toContain('local-first');
+  });
+
+  it.each([
+    "globalThis.process.getBuiltinModule('node:https');",
+    "process.getBuiltinModule?.('node:https');",
+    "process['getBuiltinModule']('node:https');",
+    "const { getBuiltinModule } = process; getBuiltinModule('node:https');",
+  ])('flags getBuiltinModule however it is reached: %s', (code) => {
+    expect(lintNetwork(code).map((m) => m.ruleId)).toContain('no-restricted-syntax');
+  });
+
+  it.each([
+    // The store's own lazy load, which is what made this form appear.
+    "process.getBuiltinModule('node:sqlite');",
+    // A non-literal specifier, the same documented gap as import(url).
+    'process.getBuiltinModule(id);',
+  ])('does NOT flag %s', (code) => {
+    expect(lintNetwork(code)).toHaveLength(0);
+  });
+
   it('opt-out is symmetric: allowing node:net clears the dynamic form too', () => {
     expect(lintNetwork("await import('node:net');", { allow: ['node:net'] })).toHaveLength(0);
     expect(lintNetwork("require('node:net');", { allow: ['node:net'] })).toHaveLength(0);
+    expect(
+      lintNetwork("process.getBuiltinModule('node:net');", { allow: ['node:net'] }),
+    ).toHaveLength(0);
     // but a different module stays banned under the same opt-out
     expect(lintNetwork("await import('node:http');", { allow: ['node:net'] })).toHaveLength(1);
   });

@@ -127,7 +127,7 @@ anthropic.model('claude-haiku-4-5', {
   name: 'Claude Haiku 4.5',
   ctx: 200_000,
   maxOut: 64_000,
-  // Reviewed: fast/cheap tier, no flagged reasoning or code specialisation.
+  // Reviewed: fast/cheap general-purpose tier, not a reasoning or code model.
   capability: null,
   price: anthropicPrice(1, 5, 0.1),
   // The vendor documents `claude-haiku-4-5-20251001` as the versioned id and

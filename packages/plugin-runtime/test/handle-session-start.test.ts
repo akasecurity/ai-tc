@@ -288,6 +288,7 @@ describe('handleSessionStart (standalone)', () => {
     writeFileSync(filePath, 'x');
     await expect(handleSessionStart(start('s1'), config(filePath))).resolves.toEqual({
       staleBinaryNotice: null,
+      forwardingLine: null,
     });
   });
 
@@ -516,6 +517,7 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     try {
       await expect(handleSessionStart(start('s1'), warnConfig(dir))).resolves.toEqual({
         staleBinaryNotice: null,
+        forwardingLine: null,
       });
       expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
 

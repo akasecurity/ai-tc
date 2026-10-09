@@ -25,6 +25,7 @@ import type {
 } from '@akasecurity/schema';
 import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
+import { forwardingLine } from './attached/forwarding-line.ts';
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
@@ -68,6 +69,33 @@ export interface SessionStartInput {
 }
 
 /**
+ * What a session start hands back for its adapter to show the user, once per
+ * session. Each is null when there is nothing to say.
+ *
+ * `forwardingLine` says where this session's activity goes (see
+ * `forwardingLine`); `staleBinaryNotice` says a newer AKA binary is on the
+ * machine than this session's plugin.
+ */
+export interface SessionStartResult {
+  staleBinaryNotice: string | null;
+  forwardingLine: string | null;
+}
+
+/**
+ * What a session start shows the user, one line per notice, or undefined when
+ * there is nothing to show. The forwarding line comes first; the stale-session
+ * notice keeps its `[aka]` prefix. Adapters put it on the host's user-facing
+ * channel, never stderr, which a SessionStart hook's host does not show.
+ */
+export function sessionStartNotice(result: SessionStartResult): string | undefined {
+  const lines = [
+    result.forwardingLine,
+    result.staleBinaryNotice === null ? null : `[aka] ${result.staleBinaryNotice}`,
+  ].filter((line): line is string => line !== null);
+  return lines.length === 0 ? undefined : lines.join('\n');
+}
+
+/**
  * The once-per-session inventory pass: resolve this session's host / harness /
  * account / project, upsert them (idempotent, content-addressed), and open the
  * Session audit-event root that descendant events will hang off via
@@ -81,10 +109,10 @@ export interface SessionStartInput {
 export async function handleSessionStart(
   input: SessionStartInput,
   config: PluginConfig = loadConfig(),
-): Promise<{ staleBinaryNotice: string | null }> {
-  // The stale-session notice (prevention P2), surfaced by the adapter once
-  // per session; every guarded/early path stays silent.
-  const silent = { staleBinaryNotice: null };
+): Promise<SessionStartResult> {
+  // The stale-session notice and the forwarding line, surfaced by the adapter
+  // once per session; every guarded/early path stays silent.
+  const silent: SessionStartResult = { staleBinaryNotice: null, forwardingLine: null };
   try {
     // No session id → nothing to key the root on or dedupe against.
     if (!input.sessionId) return silent;
@@ -203,12 +231,18 @@ export async function handleSessionStart(
       // default, so on most machines this returns without spawning anything.
       // Never throws, never awaited: see triggerContentRetention.
       triggerContentRetention(config);
+      // Where this session's activity goes, from the attachment the gateway
+      // above was built from and the key the root was stamped with. Never
+      // throws.
+      const line = forwardingLine(config, sessionRootKeyOf(input));
       // The stale-session check (P2): only meaningful when this session
       // knows its own version; a failing check here falls through to the
       // outer fail-open.
-      if (input.harnessVersion !== undefined && offersMaintenance(gateway, 'staleBinaryNotice')) {
-        return { staleBinaryNotice: gateway.staleBinaryNotice(input.harnessVersion) };
-      }
+      const staleBinaryNotice =
+        input.harnessVersion !== undefined && offersMaintenance(gateway, 'staleBinaryNotice')
+          ? gateway.staleBinaryNotice(input.harnessVersion)
+          : null;
+      return { staleBinaryNotice, forwardingLine: line };
     } finally {
       await gateway.close();
     }
@@ -267,6 +301,14 @@ function buildConfigScanEvent(sessionId: string, scan: ConfigScanResult): AuditE
       ...(scan.errors.length > 0 ? { error_sources: scan.errors } : {}),
     },
   };
+}
+
+// The repository key a session root is stamped with, or undefined: a web chat
+// session's root is never keyed (sessionToolIsKeyed), and a cwd in no
+// repository with a usable remote yields none. One function, so the forwarding
+// line reads exactly the key the root carries.
+function sessionRootKeyOf(input: SessionStartInput): string | undefined {
+  return sessionToolIsKeyed(input.tool) ? sessionRootScopeKey(input.cwd) : undefined;
 }
 
 // The Session root audit event: keyed on the Claude Code session id (so a repeat
@@ -342,7 +384,7 @@ function buildSessionRoot(
   // resolve one, and the root would then carry that repository's key though the
   // session is not in it. Only the key is withheld; every other attribute
   // resolves as before.
-  const scopeKey = sessionToolIsKeyed(input.tool) ? sessionRootScopeKey(input.cwd) : undefined;
+  const scopeKey = sessionRootKeyOf(input);
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {

@@ -11,9 +11,11 @@
  * and the project, upsert them, and open the Session audit-event root. All the
  * logic lives in @akasecurity/plugin-runtime; this script is just Codex CLI stdio glue.
  *
- * Emits nothing (SessionStart has no decision to make) — except when the user
- * has granted vault consent, in which case it injects the standing vault
- * protocol brief as additionalContext, same as Claude Code's sibling hook.
+ * Emits nothing on a standalone machine without vault consent (SessionStart
+ * has no decision to make). On an attached machine it shows the user, as
+ * systemMessage, the line saying where this session's activity goes; with
+ * vault consent it also injects the standing vault protocol brief as
+ * additionalContext, same as Claude Code's sibling hook.
  * This plugin has no vault wiring of its own (see pre-tool-use-decision.ts) —
  * it never MINTS a pointer — but `~/.aka` is one home shared by every AKA
  * surface on the machine, so a pointer minted by the Claude Code plugin's
@@ -24,7 +26,7 @@
  */
 import { readFileSync } from 'node:fs';
 
-import { handleSessionStart } from '@akasecurity/plugin-runtime';
+import { handleSessionStart, sessionStartNotice } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCodexProvider } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
@@ -89,12 +91,12 @@ async function main(): Promise<void> {
     },
     config,
   );
-  // Stale-session notice (once per session — it rides the SessionStart claim):
-  // a newer binary recorded the mirror, so this session's plugin generation is
-  // outdated and its installed-pack writes are gated. stderr, not a decision.
-  if (result.staleBinaryNotice !== null) {
-    process.stderr.write(`[aka] ${result.staleBinaryNotice}\n`);
-  }
+  // What the user sees at session start, once per session (both ride the
+  // SessionStart claim): where this session's activity goes, and the
+  // stale-session notice. Shown as systemMessage, which Codex renders as a hook
+  // line in the TUI once the first turn starts; it ignores a SessionStart hook's
+  // stderr. `codex exec` shows neither.
+  const shown = sessionStartNotice(result);
 
   // Token-usage catch-up (safety net): after the inventory pass, trigger
   // the SAME throttled, detached reconcile for the just-opened session so a final
@@ -106,9 +108,10 @@ async function main(): Promise<void> {
   }
 
   // Standing vault-protocol brief: only when the user has granted vault
-  // consent does this hook emit anything at all — the brief teaches the model
-  // what a pointer is and carries a per-session authenticity marker.
-  // Without consent the vault is inert and SessionStart stays silent.
+  // consent does this hook give the model anything — the brief teaches the
+  // model what a pointer is and carries a per-session authenticity marker.
+  // Without consent the vault is inert, and only the user notice (if any) goes
+  // out.
   //
   // The marker is minted with `sessionId` deliberately OMITTED, so it is
   // never persisted to the shared `protocol-marker` file: that file is keyed
@@ -129,7 +132,10 @@ async function main(): Promise<void> {
           inlineReveal: config.settings.vaultInlineReveal,
         }),
       },
+      ...(shown === undefined ? {} : { systemMessage: shown }),
     });
+  } else if (shown !== undefined) {
+    await emit({ systemMessage: shown });
   }
 }
 

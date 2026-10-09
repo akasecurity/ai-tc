@@ -476,3 +476,80 @@ describe('the posture report across an unenroll', () => {
     expect(childMarkers()).toEqual(NO_CHILD);
   });
 });
+
+describe('the forwarding line a session start returns', () => {
+  /** One session start in `cwd`, returning what the adapter would show. */
+  async function line(
+    sessionId: string,
+    cwd: string,
+    config: PluginConfig,
+  ): Promise<string | null> {
+    const result = await handleSessionStart(
+      { sessionId, cwd, tool: SOURCE_TOOL.ClaudeCode, homeDir: userHome },
+      config,
+    );
+    return result.forwardingLine;
+  }
+
+  it('names the enrolled repository for a work session, and says local-only for the rest, as the root is sent', async () => {
+    const config = attach('scoped');
+
+    expect(await line('l-work', work, config)).toBe(`AKA: forwarding to ${ENDPOINT} (${WORK_KEY})`);
+    expect(await line('l-personal', personal, config)).toBe('AKA: local-only (not enrolled)');
+    expect(await line('l-scratch', scratch, config)).toBe('AKA: local-only (not enrolled)');
+    // The line agrees with what the gateway did: only the root it named as
+    // forwarding was sent.
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual(['l-work']);
+  });
+
+  it('says everything forwards on a machine credential, in a repository nobody enrolled', async () => {
+    expect(await line('l-machine', personal, attach('machine'))).toBe(
+      `AKA: forwarding everything to ${ENDPOINT} (machine-wide)`,
+    );
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual(['l-machine']);
+  });
+
+  it('says local-only for the same repository once it is unenrolled', async () => {
+    attach('scoped');
+
+    expect(await line('l-unenrolled', work, configFor([]))).toBe('AKA: local-only (not enrolled)');
+    expect(sent.audit).toEqual([]);
+  });
+
+  it('names the attachment by its label, with control characters removed', async () => {
+    const config = attach('machine');
+    const controlPlane = config.settings.controlPlane;
+    if (controlPlane === undefined) throw new Error('the fixture is not attached');
+    config.settings.controlPlane = { ...controlPlane, label: 'Acme\u001b[31m prod' };
+
+    expect(await line('l-label', personal, config)).toBe(
+      'AKA: forwarding everything to Acme[31m prod (machine-wide)',
+    );
+  });
+
+  it('shows nothing when the credential is for another deployment, as the gateway forwards nothing', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint: 'https://elsewhere.example.com',
+      apiKey: TEST_KEY,
+      mintedAt: AT,
+    });
+
+    expect(await line('l-mismatch', work, configFor([WORK_KEY]))).toBeNull();
+    expect(sent.audit).toEqual([]);
+    expect(sent.posture).toEqual([]);
+  });
+
+  it('shows nothing a second time for a session that already started', async () => {
+    const config = attach('scoped');
+
+    expect(await line('l-again', work, config)).toBe(
+      `AKA: forwarding to ${ENDPOINT} (${WORK_KEY})`,
+    );
+    expect(await line('l-again', work, config)).toBeNull();
+  });
+});

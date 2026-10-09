@@ -864,3 +864,17 @@ never to fabricate or alter one, and where the human can resolve it
 gap used to cause — a Codex session encountering a pointer with no idea what
 it was looking at — without claiming this plugin can mint or resolve one
 itself; it still cannot.
+
+**The line saying where a session's activity goes appears late, and not at
+all under `codex exec`.** On a machine attached to the organization's control
+plane, SessionStart says where this session's activity goes:
+`AKA: forwarding everything to <deployment> (machine-wide)`,
+`AKA: forwarding to <deployment> (<repository>)` when the session starts in an
+enrolled repository, or `AKA: local-only (not enrolled)` on a personal device
+outside one. Codex shows it as a hook line once the first turn starts rather
+than when the session opens, and `codex exec` shows nothing. The notice that a
+newer AKA is installed than the one this session started with takes the same
+route. The line describes the session as a whole: a file written into an
+enrolled repository from a local-only session is still sent, because each
+capture is decided by the repository it lands in. `aka status` gives the
+attachment, its mode and the enrolled repositories at any time.

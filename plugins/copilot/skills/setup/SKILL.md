@@ -80,6 +80,14 @@ you, which makes a warn hard to tell from `monitor` on this host. Set
 It reads `.github/hooks/*.json` on the **default branch** and nowhere else, and
 it has no local store of its own.
 
+**Nothing in the session says where its activity goes.** On a machine attached
+to the organization's control plane, the Claude Code and Codex plugins print one
+line at session start: forwarding everything, forwarding for the enrolled
+repository the session is in, or local-only. This adapter wires no
+session-start event, so no such line is printed on any surface here. `aka
+status` shows whether this machine is attached, whether it sends everything or
+only enrolled repositories, and which repositories are enrolled.
+
 ### Capability matrix
 
 | Surface | Event               | Subject                 | Channel | Verified | Why                                                                                                                                                                                   |

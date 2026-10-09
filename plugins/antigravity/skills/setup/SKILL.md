@@ -961,6 +961,16 @@ If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
 
+**Nothing in the session says where its activity goes.** On a machine attached
+to the organization's control plane, the Claude Code and Codex plugins print one
+line at session start: forwarding everything, forwarding for the enrolled
+repository the session is in, or local-only. This host has no SessionStart
+event, and `PreInvocation`, which AKA uses in its place, can only add steps for
+the model; it has no field for a message to the user, so no such line is
+printed here. `aka status` shows whether this machine is attached, whether it
+sends everything or only enrolled repositories, and which repositories are
+enrolled.
+
 **The model-judge step needs an `agy` with the streaming stdin interface.** It
 runs `agy --input-format stream-json --output-format stream-json` and writes the
 prompt to the CLI's standard input, rather than putting it on the command line.

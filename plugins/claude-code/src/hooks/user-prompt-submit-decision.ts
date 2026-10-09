@@ -10,8 +10,11 @@
 //     PreToolUse's `hookSpecificOutput.permissionDecision`. UserPromptSubmit
 //     reads a different field, so borrowing the sibling's shape is silently a
 //     no-opinion (allow).
-//   - A `redact` policy BLOCKS here. Claude Code exposes no prompt-rewrite
-//     channel on this event, so warning and passing the prompt through would
+//   - A `redact` policy BLOCKS here. A command hook has no prompt-rewrite
+//     channel on this event (the prompt.submit mod in hooks/mod.ts does, and
+//     runs first where the host loads it: this hook then sees the placeholder
+//     and allows it; where it does not, this block stands), so warning and
+//     passing the prompt through would
 //     send the raw value to the model under a message claiming it was masked.
 //     Blocking is the only outcome that is at least as strong as the policy.
 //     True in-place redaction happens in pre-tool-use via updatedInput.

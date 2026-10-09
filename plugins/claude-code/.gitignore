@@ -3,3 +3,5 @@
 /hooks/engine.js
 /test/mod-runtime/engine.js
 /test/mod-runtime/cases.generated.js
+/test/mod-runtime/mod.ts
+/test/mod-runtime/samples.generated.js

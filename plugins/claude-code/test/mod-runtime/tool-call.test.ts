@@ -32,7 +32,14 @@ type Args = Record<string, unknown>;
 function endOfChain(on: Hooks): Args[] {
   const seen: Args[] = [];
   on('tool.call', (_$, e) => {
-    const { tool: _tool, tool_use_id: _id, agentId: _agent, ...args } = e as Args;
+    // The engine strips what it carries beside the arguments before the tool runs.
+    const {
+      tool: _tool,
+      tool_use_id: _id,
+      consent: _consent,
+      agentId: _agent,
+      ...args
+    } = e as Args;
     seen.push(args);
     return { result: {}, text: 'ran' } as never;
   });
@@ -93,6 +100,33 @@ for (const scenario of SCENARIOS) {
     }
   });
 }
+
+// The keys the host carries beside a call's arguments are not the tool's: `consent`
+// (the words of the press that raised the call), `tool_use_id` and `agentId`. The
+// helper decides the call the tool will run, and PreToolUse is shown that input,
+// so the note the helper leaves is named by the arguments alone.
+test('the reserved keys are never part of the input the helper decides', async ($, on) => {
+  useSnapshot(on, {});
+  const seen = endOfChain(on);
+  const asked = helper(on, {
+    stdout: ANSWER({ input: { command: 'deploy --token [REDACTED:SECRET]' } }),
+  });
+
+  const result = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'toolu_1',
+    consent: 'The user pressed "1: Yes" on the grant',
+    command: `deploy --token ${POINTER}`,
+  } as never);
+
+  expect(asked).toHaveLength(1);
+  const sent = asked[0]?.stdin as unknown as { tool: string; input: Args };
+  expect(sent.tool).toBe('Bash');
+  expect(sent.input).toEqual({ command: `deploy --token ${POINTER}` });
+  expect(JSON.stringify(asked[0]?.stdin)).not.toContain('pressed');
+  expect(result.deny).toBeUndefined();
+  expect(seen).toEqual([{ command: 'deploy --token [REDACTED:SECRET]' }]);
+});
 
 // A failure at any point leaves the call exactly as it came, to the layer beneath
 // (the PreToolUse command hook), which denies an ungranted pointer in an executable

@@ -1,4 +1,4 @@
-import type { Hook, Register } from 'claude-code';
+import type { AgentLoop, Hook, Register, ToolCallReserved } from 'claude-code';
 import { update } from 'claude-code';
 
 import {
@@ -512,9 +512,26 @@ async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[
   }
 }
 
-// What the host spreads beside `tool` is the tool's own arguments.
+// What the host spreads beside `tool` is the tool's own arguments, and the keys
+// it carries beside them are the types' documented set: `ToolCallReserved`
+// (`tool`, `tool_use_id`, `consent`) and `AgentLoop` (`agentId`). None of them
+// reaches the tool (the engine strips them before it runs), so none belongs in the
+// input handed to the helper or in the name of the handoff note the helper leaves
+// for PreToolUse, which is shown the stripped input. The list is spelled once, and
+// the check below fails to compile if the types grow a key it does not name.
+const RESERVED_KEYS = ['tool', 'tool_use_id', 'consent', 'agentId'] as const;
+type UnlistedReservedKey = Exclude<
+  keyof ToolCallReserved<string> | keyof AgentLoop,
+  (typeof RESERVED_KEYS)[number]
+>;
+const allReservedKeysListed: UnlistedReservedKey extends never ? true : never = true;
+void allReservedKeysListed;
+
 function toolArguments(e: Record<string, unknown>): Record<string, unknown> {
-  const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(e)) {
+    if (!(RESERVED_KEYS as readonly string[]).includes(key)) input[key] = value;
+  }
   return input;
 }
 

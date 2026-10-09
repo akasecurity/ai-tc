@@ -933,15 +933,19 @@ design-doc/section/ADR/PR citations, team-member names, or other internal narrat
 Keep prose factual and reader-facing; if you need to record rationale, put it in a commit
 message — not in shipped comments or strings.
 
-This is enforced, not merely stated: `comment-narration/no-process-narration` in
-`@akasecurity/eslint-config` walks the comment table and refuses plan and spec paths, LLD
-references, unit and task numbers, `§` section refs, PR/issue and review-response numbers,
-commit SHAs and dated decisions. It is spread per package (like `noDrizzleImports`) rather than
-folded into `base`, so a package adopts it in the change that clears its own backlog. Three
+This is available to each package, and adopted per package: `comment-narration/no-process-narration`
+in `@akasecurity/eslint-config` walks the comment table and refuses plan and spec paths, LLD
+references, unit and task numbers, `§` section refs beside a plan cue, PR/issue and
+review-response numbers, commit SHAs and dated decisions. Nothing consumes it yet — an adopting
+package spreads it in its own `eslint.config.mjs` and passes `conventionsFile: 'CLAUDE.md'`, since
+the rule's message names `AGENTS.md` by default and this repo's conventions live here. It is spread per package (like `noDrizzleImports`) rather than
+folded into `base`, so a package adopts it in the change that clears its own backlog. Four
 probes are deliberately narrow, because a ban that cries wolf gets a disable directive: a SHA must
-carry a hex letter (a dated model-id suffix such as `-20241022` is not a SHA), a date must sit
-next to a process cue (a fixture or retention date is not a decision), and `§` pointing at a
-conventions file or README is a live cross-reference, not narration. Where a package has a
+carry a hex letter (a dated model-id suffix such as `-20241022` is not a SHA) and is skipped on a
+frozen-artifact banner, where the SHA is the identity of what is pinned; a date must sit next to a
+process cue (a fixture or retention date is not a decision); and a `§` must sit beside a plan cue,
+because the shorthand inside a repo is the bare section number — an exemption list of standard
+names left 40 false positives against 5 true ones over 1,812 files. Where a package has a
 standing reason, `allowPatterns` exempts a comment and `disableProbes` switches off one probe —
 both review-visible.
 

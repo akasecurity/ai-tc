@@ -18,7 +18,7 @@
  * date) and on "what CLAUDE.md §4 promises" (a pointer at the live conventions
  * file, which is exactly where this rule sends people). A ban that cries wolf
  * gets a disable directive, and then it means nothing.
- * @type {ReadonlyArray<{ name: string, re: RegExp, unless?: RegExp }>}
+ * @type {ReadonlyArray<{ name: string, re: RegExp, unless?: RegExp, requires?: RegExp }>}
  */
 const PROBES = [
   { name: 'a plan or spec path', re: /[\w/-]*plans\/20\d\d-[\w.-]+/ },
@@ -26,17 +26,16 @@ const PROBES = [
   { name: 'a unit number', re: /\bUnits?\s\d+(?:\.\d+)?\b/ },
   { name: 'a task number', re: /\btasks?\s\d+\.\d+\b/ },
   {
-    // A `§` into the repo's own conventions, a README, or an EXTERNAL standard is a
-    // live cross-reference a reader can follow — only a `§` into a plan is narration.
-    // Three sweeps found three kinds the earlier list missed: RFC 9110, RFC 2045, and
-    // the WAI-ARIA accname computation. Precision matters more than reach here: a ban
-    // that fires on a correct comment earns a disable directive, and then it is nothing.
+    // A `§` is narration only beside a PLAN cue, the same way a date is narration
+    // only beside a process cue. An exemption list of standard names was the wrong
+    // shape: the shorthand inside a repo IS the bare section number — nobody writes
+    // `CLAUDE.md §1` in the repo whose conventions those are, they write `§1` — and a
+    // case-sensitive list also missed `per semver §11`. Measured over 1,812 tracked
+    // files, that list left 40 false positives and 5 true ones. A ban at that rate
+    // earns a disable directive, and then it means nothing.
     name: 'a document section number',
     re: /§+\s?[\d.]+/,
-    // A § belonging to a conventions file, a README, or an EXTERNAL standard is a
-    // live cross-reference a reader can follow — only a § into a plan is narration.
-    unless:
-      /\b(?:AGENTS|CLAUDE|GEMINI|CONTRIBUTING|README|INTERNALS)(?:\.md)?\b|\b(?:RFC|ISO|IEC|ECMA(?:-262)?|ECMAScript|IETF|W3C|WHATWG|WAI-ARIA|ARIA|accname|WCAG|Unicode|TC39|POSIX|NIST|OWASP|SemVer|OAuth|OIDC|JWT|HTML|DOM|CSS|Postgres|PostgreSQL|SQLite)\b/,
+    requires: /\b(?:plans?|spec|LLD|design\sdoc|design\.md|\bdoc\b)\b|plans\//i,
   },
   { name: 'a review-response number', re: /\breview\sresponses?\s?\d*|\brr\d\b/i },
   // A numeric-only `#nnn` is an issue ref; `#000`-style repeats and `#nnnnnn`
@@ -53,7 +52,12 @@ const PROBES = [
   // tenant-id hash. Each of those is example DATA a reader needs, and the first
   // sweep to use this rule hit all three.
   {
+    // A frozen fixture or vendored reader is meaningless without the commit it was
+    // frozen at: there the SHA is the identity of the artifact, not provenance for a
+    // decision. Keyed on the banner's own words rather than on an allowPatterns entry
+    // a later reader would have to rediscover.
     name: 'a commit SHA',
+    unless: /\bfroze[n]?\b|\bas it stood at\b|\bvendored\b/i,
     re: /\boss@(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b|\b(?:commit|sha|pinned?|bump(?:ed)?|revision|rebased?|cherry-picked|merged)\b[^.;]{0,40}?\b(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b|\b(?=[0-9a-f]{8,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b[^.;]{0,30}?\b(?:commit|bump|tree|revision)\b/,
   },
   // A date is narration only next to a process cue. Bare dates describe fixture
@@ -118,6 +122,7 @@ export const noProcessNarration = {
           if (MACHINE_READ.test(text) || allow.some((re) => re.test(text))) continue;
           for (const probe of probes) {
             if (probe.unless?.test(text)) continue;
+            if (probe.requires && !probe.requires.test(text)) continue;
             const m = probe.re.exec(text);
             if (!m) continue;
             context.report({

@@ -31,7 +31,8 @@ describe('no-process-narration', () => {
     ['a unit number', '// Unit 8 ships the gateway'],
     ['a unit number with a minor', '// Unit 10.1 fills in the request table'],
     ['a task number', '// task 9.2 widened this'],
-    ['a section number', '// §3.1 names the order'],
+    ['a section number beside a plan cue', '// the plan\u2019s §3.1 names the order'],
+    ['a section number beside a spec cue', '// spec §2.2 fixes the budget'],
     ['a review response', '// review response 4 corrected this'],
     ['an rr shorthand', '// rr2 reopened it'],
     ['an issue ref', '// ai-tc #540 is on the pin'],
@@ -85,6 +86,13 @@ describe('no-process-narration', () => {
       '// authorizes the send, which is what CLAUDE.md §4 promises',
     ],
     ['a section of a README', '// §2 of the README names the seam'],
+    ['a bare section number with no plan cue', '// §1 forbids a hook that breaks the session'],
+    ['a lower-case external standard', '// per semver §11, a pre-release sorts below its release'],
+    [
+      'a frozen-artifact banner',
+      '// the credential reader as it stood at 8bfc99c4, a commit from before scoped attachments',
+    ],
+    ['a vendored-artifact banner', '// vendored from installed-packs.ts at 93fc55f0e1a2b3c4'],
     [
       'a section of an external standard',
       "// RFC 9110 §5.5's own leading and trailing whitespace set",

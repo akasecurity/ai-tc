@@ -129,8 +129,9 @@ as your policy says, but nothing from the chat is recorded: not the prompt,
 not the reply, not a record of the session, so none of it can be sent, then or
 by a later attachment. The one exception is a
 value it blocks or masks, which leaves a masked entry, kept for a day, so that
-`aka exception` can approve it. Opening a chat still counts as a session start
-for the policy pull and device report described above. A machine holding a
+`aka exception` can approve it. Opening a chat still counts as a session start,
+so the machine still pulls the organization's policy and sends its device
+report. A machine holding a
 control-plane credential AKA cannot read records nothing from a chat either,
 since what it was attached as is unknown. The extension's popup, `aka
 extension status` and the dashboard's Settings page say when either is the

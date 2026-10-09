@@ -139,16 +139,30 @@ describe('handleCapture capture options', () => {
     expect(captureRowCount()).toBe(1);
   });
 
-  it("forwards 'never', so a capture that found something persists no row either", async () => {
+  it("forwards 'never', so a capture that found something persists no row", async () => {
     const hit = await handleCapture(
-      { kind: 'response', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
+      { kind: 'prompt', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
       config(dir),
       { persist: 'never' },
     );
-    // The finding is what 'with-findings' would have kept, so the zero is the
-    // option's doing.
+    // The precondition: this is a capture 'with-findings' would have recorded,
+    // so the absence below is 'never' and not a text that detected nothing.
     expect(hit.findings.length).toBeGreaterThan(0);
+    // Without the pass-through the option is dropped, capture() takes its
+    // default 'always' path, and the prompt lands as a row.
     expect(captureRowCount()).toBe(0);
+  });
+
+  it("persists the same capture when no option is passed, unlike 'never'", async () => {
+    // The positive control for the case above: the same text, kind and tool
+    // leave a row unless 'never' keeps it out, so that case does not pass for a
+    // handleCapture that persists nothing at all.
+    const hit = await handleCapture(
+      { kind: 'prompt', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
+      config(dir),
+    );
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(captureRowCount()).toBe(1);
   });
 
   it('defaults to persisting every capture when no option is passed', async () => {

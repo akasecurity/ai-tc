@@ -111,6 +111,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'isHistorySyncLeaseLive',
   'isParseableBinaryVersion',
   'isSafeEndpoint',
+  'isScopedAttachment',
   'keyStateOf',
   'keysDir',
   'linkTarget',

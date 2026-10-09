@@ -20,7 +20,7 @@ import {
 } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, maskMatch } from '@akasecurity/plugin-sdk';
 import type {
   AttachedCredentialAny,
   ControlPlaneConnection,
@@ -68,7 +68,19 @@ const MARKER = 'qzv7Lw3kXr9Tn2Pm';
 // bundled pack so no secret-shaped literal is written here.
 const RULE_ID = 'secrets/twilio-key';
 const SECRET_PACK = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
-const SECRET_EXAMPLE = SECRET_PACK?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
+const RULE_EXAMPLE = SECRET_PACK?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
+
+// The value a prompt carries. Blocking needs the pack inventory in the store,
+// and that inventory holds each rule's own examples, so the example itself is
+// at rest by design and a byte scan for it would always find it. Reversing the
+// body after the two-letter prefix gives a value the same rule matches and no
+// file holds.
+function liveValue(): string {
+  if (RULE_EXAMPLE === undefined) throw new Error(`bundled rule ${RULE_ID} has no example`);
+  const value = RULE_EXAMPLE.slice(0, 2) + RULE_EXAMPLE.slice(2).split('').reverse().join('');
+  if (value === RULE_EXAMPLE) throw new Error(`bundled rule ${RULE_ID} has a palindromic example`);
+  return value;
+}
 
 let dir: string;
 let restoreGateway: () => void;
@@ -137,6 +149,26 @@ function rowCount(where: string): number {
   }
 }
 
+interface LedgerRow {
+  reference: string;
+  rule_id: string;
+  masked_value: string;
+}
+
+// The blocked-detections ledger `aka exception` approves from. It records the
+// rule, a keyed fingerprint and a masked preview of a value an enforcing
+// policy stopped; it is the one thing a personal device still writes.
+function ledgerRows(): LedgerRow[] {
+  const db = new DatabaseSync(join(dir, DB_FILENAME));
+  try {
+    return db
+      .prepare('SELECT reference, rule_id, masked_value FROM blocked_detections')
+      .all() as unknown as LedgerRow[];
+  } finally {
+    db.close();
+  }
+}
+
 // Every byte under the data dir, walked rather than listed, so a copy that
 // landed anywhere is seen.
 function storeBytes(): string {
@@ -191,7 +223,7 @@ const STATUS: WebCaptureStatus = {
 
 describe('a prompt on a personal device', () => {
   it('is checked and enforced, and recorded nowhere', async () => {
-    if (SECRET_EXAMPLE === undefined) throw new Error(`bundled rule ${RULE_ID} has no example`);
+    const value = liveValue();
     blockTheSecretPack();
     attachAs('scoped');
     const response = await handleRequest(
@@ -201,7 +233,7 @@ describe('a prompt on a personal device', () => {
         sessionId: 'browser-pd-capture',
         tool: SOURCE_TOOL.ChatGpt,
         kind: 'prompt',
-        text: `${MARKER} deploy with ${SECRET_EXAMPLE} now`,
+        text: `${MARKER} deploy with ${value} now`,
       },
       config,
     );
@@ -211,10 +243,34 @@ describe('a prompt on a personal device', () => {
     expect(response.ruleIds).toContain(RULE_ID);
     expect(rowCount(CAPTURE_KINDS)).toBe(0);
     expect(storeBytes()).not.toContain(MARKER);
+
+    // The one thing a block still leaves: a masked ledger entry, handed back
+    // to the page as the reference `aka exception` approves from. The mask is
+    // the product's own, never a hand-written one, and it must differ from the
+    // value or the absence checks below prove nothing.
+    const masked = maskMatch(value);
+    expect(masked).not.toBe(value);
+    expect(response.blockedReferences).toHaveLength(1);
+    expect(response.blockedReferences?.[0]).toMatchObject({
+      ruleId: RULE_ID,
+      maskedValue: masked,
+    });
+    const ledger = ledgerRows();
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({
+      reference: response.blockedReferences?.[0]?.reference,
+      rule_id: RULE_ID,
+      masked_value: masked,
+    });
+    // Nothing else holds the value: not the ledger, not any file under the
+    // data dir. The machine-wide control below stores the benign marker, so
+    // this absence is a gate's doing and not a store that keeps nothing.
+    expect(ledger[0]?.masked_value).not.toBe(value);
+    expect(storeBytes()).not.toContain(value);
   });
 
   it('is recorded on a machine-wide attachment, with the same decision', async () => {
-    if (SECRET_EXAMPLE === undefined) throw new Error(`bundled rule ${RULE_ID} has no example`);
+    const value = liveValue();
     blockTheSecretPack();
     attachAs('machine');
     const response = await handleRequest(
@@ -224,7 +280,7 @@ describe('a prompt on a personal device', () => {
         sessionId: 'browser-md-capture',
         tool: SOURCE_TOOL.ChatGpt,
         kind: 'prompt',
-        text: `${MARKER} deploy with ${SECRET_EXAMPLE} now`,
+        text: `${MARKER} deploy with ${value} now`,
       },
       config,
     );
@@ -232,6 +288,23 @@ describe('a prompt on a personal device', () => {
     expect(response.action).toBe('block');
     expect(rowCount(CAPTURE_KINDS)).toBe(1);
     expect(storeBytes()).toContain(MARKER);
+
+    // The ledger entry is the same on both attachments: a personal device
+    // loses the recorded event, not the approve flow.
+    const masked = maskMatch(value);
+    expect(response.blockedReferences).toHaveLength(1);
+    expect(response.blockedReferences?.[0]).toMatchObject({
+      ruleId: RULE_ID,
+      maskedValue: masked,
+    });
+    const ledger = ledgerRows();
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({
+      reference: response.blockedReferences?.[0]?.reference,
+      rule_id: RULE_ID,
+      masked_value: masked,
+    });
+    expect(storeBytes()).not.toContain(value);
   });
 });
 

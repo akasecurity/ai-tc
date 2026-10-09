@@ -399,11 +399,12 @@ const LAUNCHER_REMEDY = [
 
 // The network-capture block on a machine that records nothing from a web chat.
 // It does not say chats are being checked: whether each site is, is a report
-// the native host keeps in memory there, which only the extension's popup reads.
+// the native host keeps in memory there, which only the extension's popup reads,
+// and the popup names a site only when its messages are not being checked.
 const WITHHELD_BLOCKS: Record<WebChatWithholding, string> = {
   'personal-device':
     '\nnetwork capture: off on a personal device\n' +
-    '  nothing from a chat is recorded or sent; the extension popup shows whether each site is being checked\n',
+    '  nothing from a chat is recorded or sent; the extension popup names any site whose messages are not being checked\n',
   'unreadable-attachment':
     '\nnetwork capture: off\n' +
     '  this machine holds a control-plane credential AKA cannot read, so nothing from a chat is recorded or sent\n' +

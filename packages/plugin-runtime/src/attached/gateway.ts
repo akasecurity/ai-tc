@@ -1386,22 +1386,26 @@ export class AttachedDataGateway
    * `rootId` with this gateway's verdict on it. Null when the gateway was built
    * without a name. No credential, nothing sent.
    *
-   * The verdict is the one the root's records are forwarded by: the recorded one
-   * when this instance has already decided the root, and otherwise the same
-   * decision made from the store as it stands. Never recorded from here, so
-   * asking before the root is written cannot hold the root's records local.
+   * On a scoped attachment the verdict is the one this instance RECORDED when the
+   * root was written through it, and null when it recorded none. A session start
+   * whose pass stopped before the root has no answer to give: the history
+   * reconcile writes a missing root later, keyed the same way, and forwards the
+   * session's records under it, so saying local-only there would be wrong as
+   * often as right. Never recorded from here, so asking before the root is
+   * written cannot hold the root's records local either.
    */
   forwardingScope(rootId: string): ForwardingScope | null {
     const { deploymentName, attachment } = this.deps;
     if (deploymentName === undefined) return null;
     if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const verdict = this.rootVerdicts.get(rootId);
+    if (verdict === undefined) return null;
     let rootKey: string | undefined;
     try {
       rootKey = this.deps.local.readSessionScopeKey(rootId);
     } catch {
       rootKey = undefined;
     }
-    const verdict = this.rootVerdicts.get(rootId) ?? this.verdictFor(() => rootKey);
     return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
   }
 

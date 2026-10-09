@@ -3867,7 +3867,7 @@ describe('forwardingScope', () => {
     expect(gateway.forwardingScope('s1')).toMatchObject({ rootKey: OUT, rootForwards: false });
   });
 
-  it('answers local-only when the store cannot answer', () => {
+  it('answers local-only when the store cannot answer', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       readSessionScopeKey: () => {
@@ -3875,6 +3875,8 @@ describe('forwardingScope', () => {
       },
     });
     const { gateway } = build({ attachment: SCOPED, local, deploymentName: 'Acme' });
+    // The root is recorded, and its verdict read from a store that cannot answer.
+    await gateway.recordAuditEvent(rootRow('s1', IN));
     expect(gateway.forwardingScope('s1')).toEqual({
       deploymentName: 'Acme',
       mode: 'scoped',
@@ -3883,7 +3885,16 @@ describe('forwardingScope', () => {
     });
   });
 
-  // Asking before the root exists answers local-only, and must not record that
+  // A root this instance did not write has no verdict here, whatever the store
+  // holds for it: the session start that asks has to have written it.
+  it('offers no scope for a root this instance never recorded', () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, { readSessionScopeKey: () => IN });
+    const { gateway } = build({ attachment: SCOPED, local, deploymentName: 'Acme' });
+    expect(gateway.forwardingScope('s1')).toBeNull();
+  });
+
+  // Asking before the root exists answers nothing, and must not record an
   // answer as the root's verdict: the root's records would then never forward.
   it('asking before the root is written does not hold the root local', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
@@ -3895,7 +3906,7 @@ describe('forwardingScope', () => {
       forward: passthroughForward(calls),
       deploymentName: 'Acme',
     });
-    expect(gateway.forwardingScope('s1')).toMatchObject({ rootForwards: false });
+    expect(gateway.forwardingScope('s1')).toBeNull();
 
     await gateway.recordAuditEvent(rootRow('s1', IN));
     await gateway.recordLlmCalls([llmLeaf('m1', 's1', IN)]);

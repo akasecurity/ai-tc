@@ -33,7 +33,11 @@ import { createPostureStore } from '../../src/attached/posture-store.ts';
 import type * as SyncTriggerModule from '../../src/attached/sync-trigger.ts';
 import { CONTENT_RETENTION_MARKER_NAME } from '../../src/content-retention-trigger.ts';
 import { handleSessionStart } from '../../src/handle-session-start.ts';
-import { setDefaultGatewayFactory, standaloneGatewayFactory } from '../../src/resolve.ts';
+import {
+  configuredGatewayFactory,
+  setDefaultGatewayFactory,
+  standaloneGatewayFactory,
+} from '../../src/resolve.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
@@ -582,6 +586,30 @@ describe('the forwarding line a session start returns', () => {
     } finally {
       restore();
     }
+    expect(sent.audit).toEqual([]);
+  });
+
+  // A pass that stops before the root leaves the attached gateway no verdict on
+  // it, and the history reconcile may write that root later and forward under
+  // it. Neither answer is known, so the line is not printed. The machine-wide
+  // control beside it keeps its line, since that answer does not depend on the
+  // root.
+  it('shows nothing on a scoped attachment when the pass stops before the root', async () => {
+    const restore = setDefaultGatewayFactory((config, meta) => {
+      const real = configuredGatewayFactory(config, meta);
+      return Object.assign(Object.create(real) as typeof real, {
+        ensureInventory: () => Promise.reject(new Error('inventory failed')),
+      });
+    });
+    try {
+      expect(await line('l-early-scoped', work, attach('scoped'))).toBeNull();
+      expect(await line('l-early-machine', work, attach('machine'))).toBe(
+        `AKA: forwarding everything to ${ENDPOINT} (machine-wide)`,
+      );
+    } finally {
+      restore();
+    }
+    // The pass really did stop before either root.
     expect(sent.audit).toEqual([]);
   });
 

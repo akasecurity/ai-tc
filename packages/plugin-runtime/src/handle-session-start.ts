@@ -262,10 +262,12 @@ export async function handleSessionStart(
     } finally {
       // Where this session's activity goes, from the gateway this session start
       // wrote through, after the pass whatever it reached: the root, if the pass
-      // wrote one, is in the store now, and the line reads the gateway's verdict
-      // on it. A pass that faulted before the root leaves none, and the line
-      // says local-only, which is what the session's records then are. Never
-      // throws, and read before the store handle closes.
+      // wrote one, was decided by that gateway, and the line reads its verdict.
+      // A pass that faulted before the root leaves no verdict on a scoped
+      // attachment and prints no line: the history reconcile writes a missing
+      // root later and may forward the session's records under it, so neither
+      // answer would be known to be true. Never throws, and read before the store
+      // handle closes.
       line = forwardingLine(gateway, input.sessionId);
       try {
         await gateway.close();

@@ -16,7 +16,10 @@ export type ForwardingScope =
        * session start resolved, is the key the gateway decides the root by.
        */
       rootKey: string | undefined;
-      /** The gateway's own verdict on that root: whether its records are sent. */
+      /**
+       * The verdict the gateway recorded on that root when it was written through
+       * it: whether its records are sent.
+       */
       rootForwards: boolean;
     };
 
@@ -52,12 +55,13 @@ function offersForwardingScope<G extends object>(gateway: G): gateway is G & For
  * a half attachment, an unusable credential and a gateway an embedder swapped in
  * all print nothing, because none of them offers a forwarding scope.
  *
- * The scoped verdict is the session ROOT's, read from the root the store holds,
- * which decides whether the session's own records (its token usage and tool-call
- * records) are sent. A capture is decided by the key it carries, so a local-only
- * session that edits a file in an enrolled repository still sends that capture,
- * which is why the local-only line says so. Read it after the session root is
- * written: before that the store holds no root, and the answer is local-only.
+ * The scoped verdict is the session ROOT's, the one the gateway recorded when the
+ * root was written through it, which decides whether the session's own records
+ * (its token usage and tool-call records) are sent. A capture is decided by the
+ * key it carries, so a local-only session that edits a file in an enrolled
+ * repository still sends that capture, which is why the local-only line says so.
+ * Read it after the session root is written: a gateway that recorded no root has
+ * no verdict, and the line is not printed.
  *
  * Never throws: a fault prints nothing.
  */

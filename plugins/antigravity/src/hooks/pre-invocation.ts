@@ -105,8 +105,10 @@ async function main(): Promise<unknown> {
   // claim): the stale-session notice (a newer binary recorded the mirror, so
   // this session's plugin generation is outdated and its installed-pack writes
   // are gated) and the warn-era notice. stderr, not a decision: PreInvocation
-  // has no user-facing field, so this host shows neither, and `aka status` is
-  // where a user reads both. The forwarding line is not written at all.
+  // has no user-facing field, so this host shows neither, and no command reports
+  // them either. The setup skill says what to do instead: reinstall this plugin
+  // at the CLI's version for the first, re-run setup for the second. The
+  // forwarding line is not written at all.
   if (result.staleBinaryNotice !== null) {
     process.stderr.write(`[aka] ${result.staleBinaryNotice}\n`);
   }

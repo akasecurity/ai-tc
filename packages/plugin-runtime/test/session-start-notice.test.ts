@@ -10,12 +10,12 @@ describe('sessionStartNotice', () => {
   });
 
   it('is the forwarding line alone, unprefixed', () => {
-    expect(
-      sessionStartNotice({
-        staleBinaryNotice: null,
-        forwardingLine: 'AKA: local-only (not enrolled)',
-      }),
-    ).toBe('AKA: local-only (not enrolled)');
+    const localOnly =
+      'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
+
+    expect(sessionStartNotice({ staleBinaryNotice: null, forwardingLine: localOnly })).toBe(
+      localOnly,
+    );
   });
 
   it('is the stale-session notice alone, with its [aka] prefix', () => {

@@ -11,8 +11,8 @@ import { isSea } from '@akasecurity/local-ops';
 import {
   DATA_FILE_MODE,
   dataDir,
+  isScopedAttachment,
   openLocalDatabase,
-  readControlPlaneAttachmentMode,
   readEffectiveSettings,
   settingsDir,
 } from '@akasecurity/persistence';
@@ -411,12 +411,9 @@ function captureBlock(home: string): string {
     // Ahead of the consent answer, as in the extension's popup: on a machine
     // attached as a personal device the native host records nothing from a
     // chat whether or not capture was consented to, so the stored site states
-    // would describe reports it no longer keeps. The same reading the host
-    // makes, and it never throws.
-    if (
-      readControlPlaneAttachmentMode(settingsDir(home), effective.settings.controlPlane) ===
-      'scoped'
-    ) {
+    // would describe reports it no longer keeps. The same predicate the host
+    // asks, and it never throws.
+    if (isScopedAttachment(settingsDir(home), effective.settings.controlPlane)) {
       return (
         '\nnetwork capture: off on a personal device\n' +
         '  chats are checked here, and nothing from them is recorded or sent\n'

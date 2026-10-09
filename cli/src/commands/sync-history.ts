@@ -4,7 +4,7 @@ import {
   applyOnboarding,
   captureBackfillScope,
   dataDir as dataDirOf,
-  readControlPlaneAttachmentMode,
+  isScopedAttachment,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
   seedCaptureBacklogOwed,
@@ -85,13 +85,12 @@ grant covers, and turning it off does not stop it.`;
  * Whether the machine at `base` is attached as a personal device: the credential
  * it holds for the connection `settings` names is scoped.
  *
- * `readControlPlaneAttachmentMode` never throws. It answers `undefined` for no
- * connection, no usable credential, or a credential for another endpoint, and
- * each of those keeps the machine-wide wording, which says more is sent, never
- * less.
+ * `isScopedAttachment` never throws. It answers false for no connection, no
+ * usable credential, or a credential for another endpoint, and each of those
+ * keeps the machine-wide wording, which says more is sent, never less.
  */
 function isPersonalDevice(base: string, settings: WorkspaceSettings): boolean {
-  return readControlPlaneAttachmentMode(settingsDirOf(base), settings.controlPlane) === 'scoped';
+  return isScopedAttachment(settingsDirOf(base), settings.controlPlane);
 }
 
 /** The help, worded for the machine at `base`. `readWorkspaceSettings` is fail-open. */

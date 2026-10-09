@@ -30,6 +30,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  isScopedAttachment,
   readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,

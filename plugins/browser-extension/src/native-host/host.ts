@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
-import { readControlPlaneAttachmentMode } from '@akasecurity/persistence';
+import { isScopedAttachment } from '@akasecurity/persistence';
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
   PluginConfig,
@@ -203,16 +203,15 @@ function resolveWebProvider(
  * later either, including by a history sync after the machine is attached
  * again machine-wide.
  *
- * The same reading `aka sync-history` makes. It does not also ask whether the
- * settings say attached, so a half attachment that still holds a scoped
- * credential counts as a personal device, which records less, never more.
- * Read per request, since `aka attach` and `aka detach` change it under this
- * long-lived process. `readControlPlaneAttachmentMode` never throws.
+ * Decided by `isScopedAttachment`, the predicate `aka sync-history` and
+ * `aka extension status` ask as well. It does not also ask whether the settings
+ * say attached, so a half attachment that still holds a scoped credential
+ * counts as a personal device, which records less, never more. Read per
+ * request, since `aka attach` and `aka detach` change it under this long-lived
+ * process. `isScopedAttachment` never throws.
  */
 function isPersonalDevice(config: PluginConfig): boolean {
-  return (
-    readControlPlaneAttachmentMode(config.settingsDir, config.settings.controlPlane) === 'scoped'
-  );
+  return isScopedAttachment(config.settingsDir, config.settings.controlPlane);
 }
 
 // Injectable so tests can point at a scratch dataDir instead of the real

@@ -345,6 +345,26 @@ export function readControlPlaneAttachmentMode(
 }
 
 /**
+ * Whether this machine is attached as a personal device: it holds a scoped
+ * credential for `connection`'s deployment.
+ *
+ * This is the one definition every surface that treats a personal device
+ * differently asks, so the browser extension's native host, `aka extension
+ * status` and `aka sync-history` cannot disagree about which machine counts.
+ * It reads only the credential and not whether the settings say attached, so a
+ * half attachment that still holds a scoped credential counts, which records
+ * less, never more. False for no connection, no usable credential, a credential
+ * bound to another endpoint, and a settings directory that cannot be read.
+ * Never throws.
+ */
+export function isScopedAttachment(
+  settingsDir: string,
+  connection: ControlPlaneConnection | undefined,
+): boolean {
+  return readControlPlaneAttachmentMode(settingsDir, connection) === 'scoped';
+}
+
+/**
  * The plain-language reason `writeControlPlaneCredential` refused an endpoint,
  * beneath `refusing to store a control-plane credential for <origin>:` — never
  * the raw endpoint, since the `userinfo` case exists to keep a password

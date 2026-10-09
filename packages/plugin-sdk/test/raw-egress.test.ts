@@ -315,6 +315,32 @@ describe('assertRawFree', () => {
     expect(refuses(short, [short, long])).toBe(true);
   });
 
+  // A value padded so densely that every window of it holds a padding character
+  // shares no window with text carrying it WITHOUT the padding, which is how a
+  // model quotes it back. The visible form is checked as well as the raw one.
+  it('refuses the visible form of a value padded inside every window', () => {
+    const padded = RAW.replace(/(.{7})/g, '$1\u200B');
+    expect(padded).not.toBe(RAW);
+    for (let i = 0; i + 8 <= padded.length; i += 1) {
+      expect(padded.slice(i, i + 8)).toContain('\u200B');
+    }
+
+    expect(refuses(`quoted back: ${RAW}`, [padded])).toBe(true);
+    expect(refuses(`near ${RAW.slice(3, 11)}`, [padded])).toBe(true);
+    // Padded past one window, but shorter than one once the padding is gone: the
+    // visible form is checked whole.
+    expect(refuses('short ab12cd', ['ab\u200B12\u200Bcd\u200B'])).toBe(true);
+    expect(wholeValueRejects(`quoted back: ${RAW}`, padded)).toBe(false); // control
+  });
+
+  // The visible form keeps the exemption its preview grants: the domain of a
+  // padded email is accepted, its local part quoted without padding is not.
+  it('applies the preview exemption to the visible form of a padded value', () => {
+    const email = 'deploy\u200B@example.com';
+    expect(refuses('see example.com/docs for the runbook', [email])).toBe(false);
+    expect(refuses('audit trail for deploy@exa', [email])).toBe(true);
+  });
+
   // The floor itself, kept: below MIN_RAW_LEN a substring match is not
   // significant enough to act on, and tightening did not move that.
   it('ignores a value below the MIN_RAW_LEN floor', () => {

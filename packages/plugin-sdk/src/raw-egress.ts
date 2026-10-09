@@ -80,14 +80,27 @@ const RAW_RUN_LEN = 8;
 // whole value, its local part, and a connection string's password are all caught.
 // The preview is computed only once a window has already matched, so a clean run
 // pays for no masking at all.
+//
+// A value carrying invisible padding is checked in its VISIBLE form as well. If
+// the padding is dense enough that every window of the raw bytes holds some,
+// text carrying the value without it shares no window with them. The visible
+// form's preview is the padded value's own: `safeMaskedMatch` reads past the
+// padding.
 function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
   let windows: Set<string> | null = null;
   // Deduped: callers build this as `hits.map((h) => h.rawMatch)`, and one
   // credential detected across many messages puts the same value in it many
   // times. The answer is a boolean over the whole list, so collapsing repeats
   // cannot change it — it only stops the window walk and the preview being
-  // recomputed per copy, inside a function already called once per hit.
-  for (const raw of new Set(rawValues)) {
+  // recomputed per copy, inside a function already called once per hit. A
+  // visible form equal to its raw value, or to another value in the list, is
+  // collapsed the same way.
+  const values = new Set<string>();
+  for (const raw of rawValues) {
+    values.add(raw);
+    values.add(stripInvisiblePadding(raw));
+  }
+  for (const raw of values) {
     if (raw.length < MIN_RAW_LEN) continue;
     // Shorter than one window: checked whole, exactly as before.
     if (raw.length < RAW_RUN_LEN) {

@@ -1,6 +1,6 @@
 import type { ModPolicyInput } from '@akasecurity/persistence';
 import { buildModPolicySnapshot, writeModPolicySnapshot } from '@akasecurity/persistence';
-import type { DataGateway } from '@akasecurity/plugin-sdk';
+import type { DataGateway, RuleProber } from '@akasecurity/plugin-sdk';
 import {
   bundledDetections,
   createIsolatedScanner,
@@ -37,10 +37,14 @@ export function modPolicyInputFromBundle(bundle: PolicyBundle): ModPolicyInput {
  * not quarantined, or it passes the existing timing gate (`filterUnsafeRules`,
  * measured in a thread that can be killed, with the verdict cached for every
  * later process). A rule left out is still enforced by the command hook.
+ *
+ * `prober` replaces the isolated-thread prober, for a test that must not depend
+ * on how fast the machine is running; it is never closed here.
  */
 export async function vetRulesForModFromGateway(
   rules: readonly Rule[],
   gateway: DataGateway,
+  prober?: RuleProber,
 ): Promise<Rule[]> {
   const bundledKeys = new Set(
     bundledDetections()
@@ -57,18 +61,18 @@ export async function vetRulesForModFromGateway(
       if (verdict?.verdict !== 'quarantined') shipped.push(rule);
     } else unproven.push(rule);
   }
-  let prober: ReturnType<typeof createIsolatedScanner> | undefined;
+  let isolated: ReturnType<typeof createIsolatedScanner> | undefined;
   const passed = new Set(
     await filterUnsafeRules(unproven, gateway, {
-      prober: {
+      prober: prober ?? {
         probe: (rule) => {
-          prober ??= createIsolatedScanner({ verified: [], unverified: [] });
-          return prober.probe(rule);
+          isolated ??= createIsolatedScanner({ verified: [], unverified: [] });
+          return isolated.probe(rule);
         },
       },
     }),
   );
-  await prober?.close();
+  await isolated?.close();
   const keep = new Set<Rule>([...shipped, ...passed]);
   return rules.filter((rule) => keep.has(rule));
 }
@@ -81,11 +85,17 @@ export async function vetRulesForModFromGateway(
  * pulled organization policy reaches it. Leaves the file alone when nothing
  * changed. Never throws.
  */
-export async function syncModPolicySnapshot(gateway: DataGateway, dataDir: string): Promise<void> {
+export async function syncModPolicySnapshot(
+  gateway: DataGateway,
+  dataDir: string,
+  prober?: RuleProber,
+): Promise<void> {
   try {
     const input = modPolicyInputFromBundle(await gateway.getPolicyBundle());
     const rules =
-      input.rules === undefined ? undefined : await vetRulesForModFromGateway(input.rules, gateway);
+      input.rules === undefined
+        ? undefined
+        : await vetRulesForModFromGateway(input.rules, gateway, prober);
     writeModPolicySnapshot(dataDir, buildModPolicySnapshot({ ...input, rules }));
   } catch {
     // Fail-open: the mod keeps the snapshot it has, or its bundled defaults.

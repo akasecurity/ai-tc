@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { readModPolicySnapshot, regexProbeKey } from '@akasecurity/persistence';
-import type { DataGateway } from '@akasecurity/plugin-sdk';
+import type { DataGateway, RuleProber } from '@akasecurity/plugin-sdk';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -165,7 +165,10 @@ describe('only rules safe to run unguarded reach the snapshot', () => {
     expect(regexProbeKey({ pattern: 'ACME-[0-9]{6}', flags: 'g' })).toBe(ruleProbeKey(r));
   });
 
-  it('never carries a catastrophic custom regex, and carries a safe one once timed', async () => {
+  // The one assertion that needs the real prober: a catastrophic pattern is
+  // measured in a thread that is killed at its deadline, and no amount of CPU
+  // contention can make it look fast, so this holds on a loaded machine.
+  it('never carries a catastrophic custom regex', async () => {
     const gateway = gatewayWithCustom([
       rule('acme/redos', '(a+)+$'),
       rule('acme/ticket', 'ACME-[0-9]{6}'),
@@ -176,10 +179,62 @@ describe('only rules safe to run unguarded reach the snapshot', () => {
       await gateway.close();
     }
 
-    expect(ids()).toContain('acme/ticket');
     expect(ids()).not.toContain('acme/redos');
     // The bundled packs the binary ships are all still there.
     expect(ids()).toContain('secrets/twilio-key');
+  });
+
+  // The safe half is not left to a wall clock: how long the real prober's battery
+  // takes depends on how busy the machine is, and a pattern it times slow under
+  // load is excluded (correctly) and then absent from the snapshot. A prober that
+  // reports the timing the test chooses makes "carries a safe one once timed"
+  // about what the sync does with a verdict and nothing else.
+  it('carries a custom regex the prober times safe, and caches that verdict', async () => {
+    const probed: string[] = [];
+    const prober: RuleProber = {
+      probe: (r) => {
+        probed.push(r.id);
+        return Promise.resolve({ status: 'ok', verdict: 'safe', worstMs: 1, corroboratedMs: 1 });
+      },
+    };
+    const gateway = gatewayWithCustom([rule('acme/ticket', 'ACME-[0-9]{6}')]);
+    try {
+      await syncModPolicySnapshot(gateway, dir, prober);
+      expect(
+        await gateway.getRuleProbeVerdict(ruleProbeKey(rule('x', 'ACME-[0-9]{6}')) ?? ''),
+      ).toMatchObject({
+        verdict: 'safe',
+      });
+    } finally {
+      await gateway.close();
+    }
+
+    expect(probed).toEqual(['acme/ticket']);
+    expect(ids()).toContain('acme/ticket');
+    expect(ids()).toContain('secrets/twilio-key');
+  });
+
+  it('leaves out a custom regex the prober times over budget, and one it could not time', async () => {
+    const prober: RuleProber = {
+      probe: (r) =>
+        Promise.resolve(
+          r.id === 'acme/slow'
+            ? { status: 'ok', verdict: 'over-budget', worstMs: 9000, corroboratedMs: 9000 }
+            : { status: 'unavailable', reason: 'worker could not start' },
+        ),
+    };
+    const gateway = gatewayWithCustom([
+      rule('acme/slow', 'SLOW-[0-9]{6}'),
+      rule('acme/unknown', 'UNKNOWN-[0-9]{6}'),
+    ]);
+    try {
+      await syncModPolicySnapshot(gateway, dir, prober);
+    } finally {
+      await gateway.close();
+    }
+
+    expect(ids()).not.toContain('acme/slow');
+    expect(ids()).not.toContain('acme/unknown');
   });
 
   it('never carries a rule the quarantine cache holds', async () => {

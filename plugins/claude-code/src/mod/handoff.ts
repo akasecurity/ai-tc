@@ -7,6 +7,11 @@
 // prompt's hash there, skips its capture once. The hash is of the rewritten text
 // (pointers and markers), so it names no raw value and cannot be reversed to one.
 //
+// The tool.call mod's helper leaves the same kind of note for a tool call, named by
+// the tool and the input it will run with, and the PreToolUse command hook consumes
+// it the same way. There the note carries more weight than a missing row: the
+// helper may have spent a single-use grant, which a second pass could not.
+//
 // Best effort throughout: a missing, unreadable or corrupt file means the hook
 // captures as it always did, which can only add a row, never lose one.
 import { createHash } from 'node:crypto';
@@ -54,22 +59,69 @@ function write(dataDir: string, path: string, entries: Entry[]): void {
   renameSync(tmp, path);
 }
 
-/** Leaves a note that `rewritten` is a prompt whose event is already recorded. */
-export function recordModHandoff(dataDir: string, rewritten: string, now = Date.now()): void {
+function record(dataDir: string, hash: string, now: number): void {
   try {
     const path = join(dataDir, HANDOFF_FILE);
-    write(dataDir, path, [...read(path, now), { hash: hashOf(rewritten), at: now }]);
+    write(dataDir, path, [...read(path, now), { hash, at: now }]);
   } catch {
     // The hook captures too: a duplicate row, never a missing one.
   }
 }
 
+/** Leaves a note that `rewritten` is a prompt whose event is already recorded. */
+export function recordModHandoff(dataDir: string, rewritten: string, now = Date.now()): void {
+  record(dataDir, hashOf(rewritten), now);
+}
+
 /** True once per note: the prompt is one the mod's helper already recorded. */
 export function consumeModHandoff(dataDir: string, prompt: string, now = Date.now()): boolean {
+  return consume(dataDir, hashOf(prompt), now);
+}
+
+// A tool call is named by its tool and its input, with object keys in a fixed
+// order so the host re-serialising the input cannot change the name. The
+// `tool:` prefix keeps it apart from a prompt's hash.
+function toolKey(toolName: string, toolInput: unknown): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (typeof value !== 'object' || value === null) return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, canonical(v)]),
+    );
+  };
+  return hashOf(`tool:${toolName}\0${JSON.stringify(canonical(toolInput))}`);
+}
+
+/**
+ * Leaves a note that the call (`toolName`, `toolInput`) was decided by the
+ * tool.call mod's helper, which recorded its findings and spent any grant it
+ * needed. `toolInput` is the input the tool will run with.
+ */
+export function recordToolHandoff(
+  dataDir: string,
+  toolName: string,
+  toolInput: unknown,
+  now = Date.now(),
+): void {
+  record(dataDir, toolKey(toolName, toolInput), now);
+}
+
+/** True once per note: this call is one the mod's helper already decided. */
+export function consumeToolHandoff(
+  dataDir: string,
+  toolName: string,
+  toolInput: unknown,
+  now = Date.now(),
+): boolean {
+  return consume(dataDir, toolKey(toolName, toolInput), now);
+}
+
+function consume(dataDir: string, hash: string, now: number): boolean {
   try {
     const path = join(dataDir, HANDOFF_FILE);
     const entries = read(path, now);
-    const hash = hashOf(prompt);
     const at = entries.findIndex((e) => e.hash === hash);
     if (at === -1) return false;
     entries.splice(at, 1);

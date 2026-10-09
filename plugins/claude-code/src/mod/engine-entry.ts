@@ -4,6 +4,12 @@ import { PARSED_DATA } from 'aka:parsed-packs';
 
 import type { RegionState } from '../display/regions.ts';
 import { advanceRegions } from '../display/regions.ts';
+import {
+  fieldText,
+  inputEventKind,
+  inputFilePath,
+  scannableInputFields,
+} from '../hooks/pre-tool-use-fields.ts';
 
 // Entry of hooks/engine.js, the detection engine a Claude Code mod imports. A
 // mod runs with no Node, so this file and everything it reaches must stay
@@ -256,6 +262,49 @@ export function revealPointers(
   }
   out += text.slice(pos);
   return { text: out, wanted };
+}
+
+/**
+ * Whether a tool call holds anything the tool.call mod would act on, so that only
+ * such a call is handed to the helper: a vault pointer in a field PreToolUse
+ * scans, or a value its policy says to redact or block. The fields are the
+ * command hook's own (pre-tool-use-fields.ts), so the two read a call the same
+ * way. A call this passes over is not left unchecked: PreToolUse runs after the
+ * mod and applies today's rules to it. Throws on a fault; the caller lets it
+ * propagate.
+ */
+export function toolCallNeedsHelper(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  policy: ModPolicy | null,
+): boolean {
+  const fields = scannableInputFields(toolName, toolInput);
+  if (fields.length === 0) return false;
+  if (policy?.rules === undefined && !registered) registerBundledPacks();
+  const eventKind = inputEventKind(toolName);
+  const filePath = inputFilePath(toolInput);
+  const actionFor = (ruleId: string, category: string): ActionTaken =>
+    policy === null
+      ? bundledActionFor(ruleId)
+      : (policy.ruleActions.get(ruleId) ?? policy.categoryActions.get(category) ?? 'log');
+  for (const spec of fields) {
+    const text = fieldText(spec, toolInput);
+    if (text === undefined || text === '') continue;
+    if (pointerSpans(text).length > 0) return true;
+    const findings = scan(text, policy?.rules, {
+      eventKind,
+      ...(filePath === undefined ? {} : { filePath }),
+    });
+    for (const f of findings) {
+      const action = actionFor(f.ruleId, f.category);
+      if (action !== 'redact' && action !== 'block') continue;
+      // A rule with an active exception is the hook's to honour: matching a
+      // keyed fingerprint and consuming a use happen only there.
+      if (policy?.exceptionRuleIds.has(f.ruleId) === true) continue;
+      return true;
+    }
+  }
+  return false;
 }
 
 export { getLoadedRules, redact, scan };

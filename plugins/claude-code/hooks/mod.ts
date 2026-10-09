@@ -8,6 +8,7 @@ import {
   planRowWith,
   type PointerWant,
   revealPointers,
+  toolCallNeedsHelper,
 } from './engine.js';
 
 // The mod half of AKA's prompt redaction. When the user's policy says `redact`
@@ -71,6 +72,12 @@ async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   }
 }
 
+// A helper script's path under the plugin root, in the root's own separator.
+function helperScript(root: string, name: string): string {
+  const sep = root.includes('\\') ? '\\' : '/';
+  return [root.replace(/[\\/]+$/, ''), 'scripts', name].join(sep);
+}
+
 // What the helper may take before the prompt goes on without it.
 const HELPER_TIMEOUT_MS = 3000;
 
@@ -100,8 +107,7 @@ async function rewriteWithHelper(
   door?: string,
 ): Promise<HelperAnswer | null> {
   try {
-    const sep = $.plugin.root.includes('\\') ? '\\' : '/';
-    const script = [$.plugin.root.replace(/[\\/]+$/, ''), 'scripts', 'mod-tokenize.js'].join(sep);
+    const script = helperScript($.plugin.root, 'mod-tokenize.js');
     let sessionId: string | undefined;
     try {
       sessionId = await $.session.id();
@@ -295,6 +301,49 @@ function parseRevealAnswer(stdout: string): RevealAnswer | null {
   }
 }
 
+// The tool.call half. A call that carries a vault pointer, or a value the user's
+// policy says to redact or block, is handed to the `aka` helper
+// (scripts/mod-tool-call.js), which runs the PreToolUse pipeline on it and answers
+// what it decided: refuse the call, or run it with this input (a granted pointer
+// dereferenced into a data field, a secret redacted). Everything else goes on
+// untouched without spawning anything.
+//
+// The mod is never the only thing between a pointer and an executable field. On
+// any failure (no helper, a bad answer, a timeout, a fault here) the call goes on
+// exactly as it came and the PreToolUse command hook, which runs after the last
+// mod, applies today's rules: it denies an ungranted pointer in an executable
+// field and redacts what the policy says to. The mod and the hook do not decide a
+// call twice: the helper leaves a note naming the input the tool will run with,
+// and the hook steps aside for a call it matches (src/mod/handoff.ts).
+
+interface ToolCallAnswer {
+  deny: string | null;
+  input: Record<string, unknown> | null;
+  context: string | null;
+  message: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// The helper's stdout, or null for anything that is not exactly its answer.
+function parseToolCallAnswer(stdout: string): ToolCallAnswer | null {
+  try {
+    const raw: unknown = JSON.parse(stdout);
+    if (!isRecord(raw) || raw.v !== 1) return null;
+    const { deny, input, context, message } = raw;
+    if (deny !== null && (typeof deny !== 'string' || deny === '')) return null;
+    if (input !== null && !isRecord(input)) return null;
+    if (context !== null && typeof context !== 'string') return null;
+    if (message !== null && typeof message !== 'string') return null;
+    if (deny !== null && (input !== null || context !== null)) return null;
+    return { deny, input, context, message };
+  } catch {
+    return null;
+  }
+}
+
 async function runRevealHelper(
   $: RenderDollar,
   items: { token: string; reveal: boolean }[],
@@ -305,6 +354,30 @@ async function runRevealHelper(
       timeoutMs: REVEAL_HELPER_TIMEOUT_MS,
     });
     return run.exitCode === 0 ? parseRevealAnswer(run.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The helper's decision for the call, or null for any reason there is none.
+async function decideToolCallWithHelper(
+  $: Dollar,
+  tool: string,
+  input: Record<string, unknown>,
+): Promise<ToolCallAnswer | null> {
+  try {
+    const script = helperScript($.plugin.root, 'mod-tool-call.js');
+    let sessionId: string | undefined;
+    try {
+      sessionId = await $.session.id();
+    } catch {
+      sessionId = undefined;
+    }
+    const run = await $.process.run(['node', script], {
+      stdin: JSON.stringify({ v: 1, tool, input, sessionId }),
+      timeoutMs: HELPER_TIMEOUT_MS,
+    });
+    return run.exitCode === 0 ? parseToolCallAnswer(run.stdout) : null;
   } catch {
     return null;
   }
@@ -414,6 +487,21 @@ async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[
   }
 }
 
+// What the host spreads beside `tool` is the tool's own arguments.
+function toolArguments(e: Record<string, unknown>): Record<string, unknown> {
+  const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
+  return input;
+}
+
+function tell($: Dollar, message: string | null): void {
+  if (message === null) return;
+  try {
+    $.ui.toast(message);
+  } catch {
+    // The line is a courtesy; the decision stands without it.
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await noteModRunning($);
@@ -454,4 +542,17 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AssistantMessage' }, revealRender);
   on('ui.render', { component: 'UserMessage' }, revealRender);
+
+  on('tool.call', async ($, e, next) => {
+    const input = toolArguments(e);
+    const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
+    if (!needsHelper) return next(e);
+    const answer = await decideToolCallWithHelper($, e.tool, input);
+    if (answer === null) return next(e);
+    if (answer.deny !== null) return { deny: answer.deny };
+    tell($, answer.message);
+    const result = await next(answer.input === null ? e : ({ ...e, ...answer.input } as typeof e));
+    if (answer.context === null || result.deny !== undefined) return result;
+    return { ...result, context: [...(result.context ?? []), answer.context] };
+  });
 };

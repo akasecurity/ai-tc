@@ -20,8 +20,8 @@ import { buildEngine } from '../../build/engine.mjs';
 // outputs are git-ignored.
 //
 // The fixture runs the shipped hooks/mod.ts verbatim. Only the engine beside it
-// is a test build: it wraps the real entry's prompt rewrite to raise the fault
-// the fail-open case needs. The product module carries no such switch, and the
+// is a test build: it wraps the real entry's prompt rewrite and tool-call check
+// to raise the faults the fail-open cases need. The product module carries no such switch, and the
 // policy is the one the test answers from beneath, as the user's own would be.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(HERE, '..', '..');
@@ -43,8 +43,29 @@ const TEST_ENGINE = `
     if (text.includes('__ENGINE_THROWS__')) throw new Error('injected engine fault');
     return realPlanPromptWith(text, policy);
   }
+  import { toolCallNeedsHelper as realToolCallNeedsHelper } from './src/mod/engine-entry.ts';
+  export function toolCallNeedsHelper(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    policy: ModPolicy | null,
+  ): boolean {
+    if (JSON.stringify(toolInput).includes('__ENGINE_THROWS__')) throw new Error('injected engine fault');
+    return realToolCallNeedsHelper(toolName, toolInput, policy);
+  }
 `;
 await buildEngine({ stdin: TEST_ENGINE, outFile: join(HERE, 'engine.js') });
+
+// The tool-call cases the PreToolUse e2e test also drives (test/mod/), as a module
+// the in-runtime tests can import.
+await build({
+  entryPoints: [join(PLUGIN_ROOT, 'test', 'mod', 'tool-call-scenarios.ts')],
+  outfile: join(HERE, 'scenarios.generated.js'),
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  target: 'es2022',
+  logLevel: 'silent',
+});
 
 const probe = await build({
   stdin: {

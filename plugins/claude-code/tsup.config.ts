@@ -64,6 +64,8 @@ export default defineConfig({
     // The ui.render mod's helper: resolves vault pointers to what the screen
     // shows, so the vault stays out of the mod.
     'mod-reveal': 'src/mod/reveal-entry.ts',
+    // The tool.call mod's helper: the vault and the store, for a tool call.
+    'mod-tool-call': 'src/mod/tool-call-entry.ts',
     // The isolated scan's worker thread. hooks.json never names it — the plugin
     // SDK starts it by path from whichever hook is running, and every hook
     // script lands in this same directory. See src/scan-worker.ts.

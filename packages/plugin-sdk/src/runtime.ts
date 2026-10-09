@@ -899,6 +899,26 @@ export function createPluginRuntime(
     }
   }
 
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written: no exception is consumed, no ledger row or event
+  // recorded. For a caller re-checking text that something else has already
+  // decided and recorded. An error yields none (the same fail-open the decision
+  // paths have): this answers "is anything enforced here", never a verdict.
+  async function enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]> {
+    try {
+      await ensureInitialized();
+      if (!scanner) return [];
+      const shielded = shieldPointers(text);
+      const matched = await scanner.scan(shielded.text, context);
+      return dropShieldedFindings(matched, shielded.spans).filter((finding) => {
+        const action = resolveAction(finding.ruleId, finding.category);
+        return action === 'block' || action === 'redact';
+      });
+    } catch {
+      return [];
+    }
+  }
+
   async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
     const evaluated = await evaluateCapture(input, opts);
     await persistCapture(input, opts, evaluated);
@@ -962,6 +982,7 @@ export function createPluginRuntime(
     processText,
     capture,
     captureDeferred,
+    enforcedIn,
     rulesetFingerprint,
     scanIsolationDegraded,
     close,
@@ -1032,6 +1053,9 @@ export interface PluginRuntime {
   // outcome may be "not mine to record" (a helper that declines the prompt and
   // leaves it to the hook) decides first and records only what it acts on.
   captureDeferred(input: CaptureInput, opts?: CaptureOptions): Promise<DeferredCapture>;
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written (no exception consumed, no ledger row, no event).
+  enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
   // True once the pulled/custom-pack regex rules were dropped mid-process

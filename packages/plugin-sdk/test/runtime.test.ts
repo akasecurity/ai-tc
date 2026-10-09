@@ -1628,3 +1628,45 @@ describe('createPluginRuntime — captureDeferred', () => {
     expect(gw.records).toHaveLength(0);
   });
 });
+
+// enforcedIn answers "is anything enforced here" and touches nothing.
+describe('createPluginRuntime — enforcedIn', () => {
+  const blockSecrets: PolicyBundle['policies'] = [
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { category: 'secret' },
+      action: 'block',
+      enabled: true,
+    },
+  ];
+
+  it('lists the detections whose policy blocks or redacts, and writes nothing', async () => {
+    const gw = fakeGateway({ ...bundle(), policies: blockSecrets });
+    let consumed = 0;
+    gw.consumeException = () => {
+      consumed += 1;
+      return Promise.resolve(true);
+    };
+    let ledger = 0;
+    gw.recordBlockedDetection = () => {
+      ledger += 1;
+      return Promise.resolve();
+    };
+    const rt = createPluginRuntime(gw, settings());
+
+    const found = await rt.enforcedIn('SECRET_MARKER and PII_MARKER');
+    await rt.close();
+
+    expect(found.map((f) => f.ruleId)).toEqual(['test/secret-marker']);
+    expect(gw.records).toHaveLength(0);
+    expect(consumed).toBe(0);
+    expect(ledger).toBe(0);
+  });
+
+  it('finds nothing in text whose detections are only warned or logged', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.enforcedIn('contact PII_MARKER please')).toEqual([]);
+    await rt.close();
+  });
+});

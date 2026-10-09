@@ -1854,6 +1854,49 @@ describe('the administrator overlay is read again after the round trip, for ever
     });
   });
 
+  // The overlay names no administrator that can be checked, so a widening the first one agreed
+  // to stands under the next one's management; what the next could change that matters here is
+  // refused before the decision is put again.
+  it('keeps a widening the administrator agreed to when a different administrator manages the machine at the re-read', async () => {
+    attachedScoped(BOUND);
+    const different = ManagedSettings.parse({
+      organization: 'Other IT',
+      values: { controlPlane: { endpoint: ENDPOINT } },
+    });
+
+    const h = await attachWhileOverlayChanges(['--machine'], planeOnly(), different, {
+      interactive: true,
+      answers: [KEY_2],
+    });
+
+    expect(exits).toEqual([]);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(modeOnDisk()).toBe('machine');
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+  });
+
+  it('refuses a widening the administrator agreed to when a different administrator pinned another deployment', async () => {
+    attachedScoped(BOUND);
+    const before = onDisk();
+    stand.credentialWrites = 0;
+    stand.settingsWrites = 0;
+    const different = ManagedSettings.parse({
+      organization: 'Other IT',
+      values: { controlPlane: { endpoint: OTHER_ENDPOINT } },
+    });
+
+    const h = await attachWhileOverlayChanges(['--machine'], planeOnly(), different, {
+      interactive: true,
+      answers: [KEY_2],
+    });
+
+    expectNothingWritten(h, before);
+    expect(h.asked).toEqual([ACCESS_KEY]);
+    expect(h.errors()).toContain(
+      `${connectionRefusalMessage({ reason: 'pinned-endpoint', organization: 'Other IT', endpoint: OTHER_ENDPOINT })}${NOTHING_CHANGED}`,
+    );
+  });
+
   it('still writes what was settled when the administrator stops managing it and the decision stands', async () => {
     const h = await attachWhileOverlayChanges(['--key-stdin'], planeOnly(), null);
 

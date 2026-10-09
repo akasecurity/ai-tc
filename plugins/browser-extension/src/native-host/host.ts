@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
-import { readControlPlaneAttachmentMode } from '@akasecurity/persistence';
+import { webChatWithholding } from '@akasecurity/persistence';
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
   PluginConfig,
@@ -34,7 +34,12 @@ import {
   reportedCaptureDocumentForSite,
   scanText,
 } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, ReportedCaptureDocument, SourceTool } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  ReportedCaptureDocument,
+  SourceTool,
+  WebChatWithholding,
+} from '@akasecurity/schema';
 import {
   isWebChatCaptureConsentValid,
   pickReportedCaptureStatus,
@@ -190,29 +195,28 @@ function resolveWebProvider(
 }
 
 /**
- * Whether this machine is attached as a personal device: the credential it
- * holds for the connection its settings name is scoped.
+ * Why this host keeps nothing from a web chat, or null when it records one.
  *
- * On such a machine a web chat is never in scope. What a scoped attachment
+ * On a personal device a web chat is never in scope. What a scoped attachment
  * forwards is decided per enrolled repository, a chat belongs to none, and
- * nothing yet recognizes a work account in a chat. So this host keeps nothing
- * from a chat there. A prompt is still checked and its decision enforced, but
- * no event is recorded (a value it blocks or masks still leaves the masked,
- * day-long ledger entry `aka exception` approves from); an exchange and a
- * capture status are dropped on arrival. What is never recorded cannot be sent
+ * nothing yet recognizes a work account in a chat. A machine whose credential
+ * cannot be read withholds too, since what it was attached as is unknown (see
+ * `webChatWithholding`, the one reading every surface makes).
+ *
+ * Withheld, a prompt is still checked and its decision enforced, but no event
+ * is recorded (a value it blocks or masks still leaves the masked, day-long
+ * ledger entry `aka exception` approves from). An exchange is dropped on
+ * arrival. A capture status is kept in this process's memory only, so the
+ * popup can still say when a site is not being checked, and is never stored.
+ * A session start opens no session root. What is never recorded cannot be sent
  * later either, including by a history sync after the machine is attached
  * again machine-wide.
  *
- * The same reading `aka sync-history` makes. It does not also ask whether the
- * settings say attached, so a half attachment that still holds a scoped
- * credential counts as a personal device, which records less, never more.
  * Read per request, since `aka attach` and `aka detach` change it under this
- * long-lived process. `readControlPlaneAttachmentMode` never throws.
+ * long-lived process. Never throws.
  */
-function isPersonalDevice(config: PluginConfig): boolean {
-  return (
-    readControlPlaneAttachmentMode(config.settingsDir, config.settings.controlPlane) === 'scoped'
-  );
+function withheld(config: PluginConfig): WebChatWithholding | null {
+  return webChatWithholding(config.settingsDir, config.settings);
 }
 
 // Injectable so tests can point at a scratch dataDir instead of the real
@@ -240,10 +244,10 @@ export async function handleRequest(
     }
     case 'session_start': {
       const config = configForTool(request.tool);
-      // Not gated on a personal device. There the root it opens carries no
-      // chat content and no repository key, so it is never forwarded, and the
-      // session start is what refreshes the organization's policy and sends
-      // the device report for someone who only uses web chat.
+      // Run even when chats are withheld, because the session start is what
+      // refreshes the organization's policy and sends the device report for
+      // someone who only uses web chat. Withheld, it records no session root
+      // (see withheld).
       // Browser sessions have no cwd/git repo to resolve a project from;
       // os.homedir() stands in so resolveInventoryContext's
       // resolveRepoIdentity(cwd) simply finds nothing and ctx.project stays
@@ -260,6 +264,7 @@ export async function handleRequest(
           tool: WEB_TOOL_TO_SOURCE[request.tool],
           harnessInterface: request.hostname,
           pluginBuild: PLUGIN_BUILD,
+          recordSession: withheld(config) === null,
         },
         config,
       );
@@ -283,8 +288,8 @@ export async function handleRequest(
     }
     case 'capture': {
       const config = configForTool(request.tool);
-      // On a personal device the prompt is checked and enforced exactly as
-      // anywhere else, and recorded nowhere (see isPersonalDevice).
+      // Withheld, the prompt is checked and enforced exactly as anywhere else,
+      // and recorded nowhere (see withheld).
       const result = await handleCapture(
         {
           kind: request.kind,
@@ -293,7 +298,7 @@ export async function handleRequest(
           metadata: { sessionId: request.sessionId },
         },
         config,
-        isPersonalDevice(config) ? { persist: 'never' } : {},
+        withheld(config) === null ? {} : { persist: 'never' },
       );
       const ruleIds = [...new Set(result.findings.map((f) => f.ruleId))];
       // `text` rides back only when the content script needs it (see
@@ -337,10 +342,10 @@ export async function handleRequest(
           ruleIds: [],
         };
       }
-      // Dropped on arrival on a personal device, before the payload is even
-      // parsed: no leaf, no reply scan, nothing written (see isPersonalDevice).
-      // Read live for the same reason as the consent check above.
-      if (isPersonalDevice(config)) {
+      // Dropped on arrival when chats are withheld, before the payload is even
+      // parsed: no leaf, no reply scan, nothing written (see withheld). Read
+      // live for the same reason as the consent check above.
+      if (withheld(config) !== null) {
         return {
           type: 'exchange',
           requestId: request.requestId,
@@ -496,16 +501,6 @@ export async function handleRequest(
           skipped: 'no-consent',
         };
       }
-      // Neither stored nor kept in memory on a personal device.
-      if (isPersonalDevice(config)) {
-        return {
-          type: 'capture_status',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'out-of-scope',
-        };
-      }
       const parsed = WebCaptureStatus.safeParse(request.status);
       if (!parsed.success) {
         return {
@@ -521,6 +516,18 @@ export async function handleRequest(
         status: parsed.data,
         observedAt,
       });
+      // Withheld, the report stays in this process's memory and goes no
+      // further: the popup reads it to say when a site is not being checked,
+      // and nothing stores or sends it (see withheld).
+      if (withheld(config) !== null) {
+        return {
+          type: 'capture_status',
+          requestId: request.requestId,
+          ok: true,
+          accepted: false,
+          skipped: 'out-of-scope',
+        };
+      }
       // The durable home: a `capture_status` audit_events row, so a restarted
       // host and a separate process (`aka extension status`) both have
       // somewhere to read the same answer from. No explicit session-root stub
@@ -548,6 +555,7 @@ export async function handleRequest(
     case 'capture_state': {
       const config = configForTool(undefined);
       const webChat = webChatCaptureOf(config.settings);
+      const withholding = withheld(config);
       let stored: ReportedCaptureDocument[] = [];
       // Resolved INSIDE the try for the reason the exchange case gives:
       // opening the store runs the migrations, so an unopenable home throws
@@ -556,8 +564,13 @@ export async function handleRequest(
       // failure when this process's own in-memory map could have answered it.
       let gateway: ReturnType<typeof resolveDataGateway> | undefined;
       try {
-        gateway = resolveDataGateway(config);
-        if (offersCaptureStatusReader(gateway)) stored = await gateway.readCaptureStatuses();
+        // Withheld, only this process's own reports answer: a stored row was
+        // written before the machine stopped recording and describes reports it
+        // no longer keeps.
+        gateway = withholding === null ? resolveDataGateway(config) : undefined;
+        if (gateway !== undefined && offersCaptureStatusReader(gateway)) {
+          stored = await gateway.readCaptureStatuses();
+        }
       } catch {
         stored = [];
       } finally {
@@ -587,7 +600,7 @@ export async function handleRequest(
         requestId: request.requestId,
         ok: true,
         consented: isWebChatCaptureConsentValid(webChat.consent),
-        personalDevice: isPersonalDevice(config),
+        ...(withholding === null ? {} : { withheld: withholding }),
         sites,
       };
     }

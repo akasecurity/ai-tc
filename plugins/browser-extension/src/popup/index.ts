@@ -9,6 +9,7 @@ import type { BackgroundRequest, BackgroundResponse } from '../messaging.ts';
 import type {
   CaptureStateResponse,
   WebCaptureState,
+  WebChatWithholding,
   WebEnforcementState,
   WebSourceTool,
 } from '../native-host/protocol.ts';
@@ -61,6 +62,16 @@ const ENFORCEMENT_NOTES: Record<EnforcementFault, string> = {
   unattached: 'not enforcing — composer and send button not found',
 };
 
+// Why nothing from a chat is recorded on this machine, in words. Total over the
+// vocabulary, so a reason added to the schema fails to compile until it is
+// worded here.
+export const WITHHELD_NOTES: Record<WebChatWithholding, string> = {
+  'personal-device':
+    'personal device — chats are checked, and nothing from them is recorded or sent',
+  'unreadable-attachment':
+    'attachment unreadable — chats are checked, and nothing from them is recorded or sent; run aka status',
+};
+
 // Read through a widened ALIAS rather than a cast at the lookup: the table is
 // total over the faults, and this is the one place a full-vocabulary state
 // indexes it. Assignment, not assertion — so the widening is checked.
@@ -70,18 +81,30 @@ const NOTE_FOR: Readonly<Partial<Record<WebEnforcementState, string>>> = ENFORCE
 export function renderCaptureSites(response: CaptureStateResponse): void {
   const section = document.getElementById('capture-section');
   const notEnabled = document.getElementById('capture-not-enabled');
-  const personalDevice = document.getElementById('capture-personal-device');
+  const withheldEl = document.getElementById('capture-withheld');
   const sitesEl = document.getElementById('capture-sites');
-  if (!section || !notEnabled || !personalDevice || !sitesEl) return;
+  if (!section || !notEnabled || !withheldEl || !sitesEl) return;
   section.hidden = false;
-  // Ahead of the consent answer: on a personal device nothing from a chat is
-  // recorded whether or not capture was consented to, and the per-site states
-  // would describe reports the host no longer keeps. An older host's reply
-  // lacks the field, and reads as not a personal device.
-  personalDevice.hidden = response.personalDevice !== true;
-  if (response.personalDevice === true) {
+  // Ahead of the consent answer: a machine that withholds records nothing from
+  // a chat whether or not capture was consented to, so the network states would
+  // describe recording that is not happening. What still matters there is
+  // whether each site is being CHECKED, so its enforcement faults are shown
+  // beneath the line. An older host's reply lacks the field and reads as not
+  // withheld.
+  withheldEl.hidden = response.withheld === undefined;
+  if (response.withheld !== undefined) {
+    withheldEl.textContent = WITHHELD_NOTES[response.withheld];
     notEnabled.hidden = true;
-    sitesEl.replaceChildren();
+    sitesEl.replaceChildren(
+      ...response.sites.flatMap((site) => {
+        const note = site.enforcement === undefined ? undefined : NOTE_FOR[site.enforcement];
+        if (note === undefined) return [];
+        const row = document.createElement('div');
+        row.className = 'row tone-error';
+        row.textContent = `${SITE_LABELS[site.tool]}: ${note}`;
+        return [row];
+      }),
+    );
     return;
   }
   if (!response.consented) {

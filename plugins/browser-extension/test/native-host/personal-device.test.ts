@@ -1,15 +1,18 @@
-// On a machine attached as a personal device the native host keeps nothing
-// from a web chat: a prompt is still checked and enforced, but recorded
-// nowhere, and an exchange or capture status is dropped on arrival. Every case
-// here runs the same request on a machine-wide attachment as its control, so
-// an absence below is the gate's doing rather than a request that would have
-// written nothing anyway.
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+// On a machine that withholds web chats (a personal device, or one whose
+// credential cannot be read) the native host keeps nothing from a chat: a
+// prompt is still checked and enforced but recorded nowhere, an exchange is
+// dropped on arrival, a capture status stays in this process's memory only,
+// and a session start opens no root. Every case runs the same request on a
+// machine that records as its control, so an absence below is the gate's doing
+// rather than a request that would have written nothing anyway.
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
+  controlPlaneCredentialPath,
+  DATA_FILE_MODE,
   DB_FILENAME,
   openLocalDatabase,
   writeControlPlaneCredential,
@@ -293,7 +296,7 @@ describe('an exchange on a personal device', () => {
 });
 
 describe('a capture status on a personal device', () => {
-  it('is neither stored nor kept in memory', async () => {
+  it('is kept in memory for the popup, and never stored', async () => {
     attachAs('scoped');
     const response = await handleRequest(
       {
@@ -312,7 +315,8 @@ describe('a capture status on a personal device', () => {
       accepted: false,
       skipped: 'out-of-scope',
     });
-    expect(readCaptureStatus('browser-pd-status')).toBeUndefined();
+    // The popup's source for an enforcement fault on this machine.
+    expect(readCaptureStatus('browser-pd-status')?.status).toEqual(STATUS);
     expect(rowCount("event_type = 'capture_status'")).toBe(0);
   });
 
@@ -334,47 +338,82 @@ describe('a capture status on a personal device', () => {
   });
 });
 
-describe('capture_state on a personal device', () => {
-  it('says the machine is one', async () => {
+describe('capture_state says why chats are withheld', () => {
+  it('on a personal device', async () => {
     attachAs('scoped');
     const response = await handleRequest({ type: 'capture_state', requestId: 'pd-state' }, config);
-    expect(response).toMatchObject({ type: 'capture_state', personalDevice: true });
+    expect(response).toMatchObject({ type: 'capture_state', withheld: 'personal-device' });
   });
 
-  it('says a machine-wide attachment is not one', async () => {
+  it('on a credential it cannot read', async () => {
+    writeFileSync(controlPlaneCredentialPath(dir), '{ not json', { mode: DATA_FILE_MODE });
+    const response = await handleRequest({ type: 'capture_state', requestId: 'ur-state' }, config);
+    expect(response).toMatchObject({ type: 'capture_state', withheld: 'unreadable-attachment' });
+  });
+
+  it('and not at all on a machine-wide attachment', async () => {
     attachAs('machine');
     const response = await handleRequest({ type: 'capture_state', requestId: 'md-state' }, config);
-    expect(response).toMatchObject({ type: 'capture_state', personalDevice: false });
+    expect(response).toMatchObject({ type: 'capture_state' });
+    expect(response).not.toHaveProperty('withheld');
   });
 
-  it('says a machine with no credential is not one', async () => {
+  it('and not at all on a machine with no credential', async () => {
     const response = await handleRequest({ type: 'capture_state', requestId: 'no-state' }, config);
-    expect(response).toMatchObject({ type: 'capture_state', personalDevice: false });
+    expect(response).not.toHaveProperty('withheld');
   });
 });
 
-describe('a half attachment that still holds a scoped credential', () => {
-  // The settings no longer say attached, so the gateway forwards nothing, and
-  // no detached sync child is started by the session start below.
-  const halfAttached = (tool: WebSourceTool | undefined): PluginConfig =>
-    config(tool, 'standalone');
-
-  it('counts as a personal device, which records less', async () => {
-    attachAs('scoped');
+describe('a machine that cannot tell what it was attached as', () => {
+  it('records no exchange when its credential cannot be read', async () => {
+    writeFileSync(controlPlaneCredentialPath(dir), '{ not json', { mode: DATA_FILE_MODE });
     const response = await handleRequest(
       {
         type: 'exchange',
-        requestId: 'half-exchange',
-        sessionId: 'browser-half',
-        tool: 'claude-ai',
+        requestId: 'ur-exchange',
+        sessionId: 'browser-ur-exchange',
+        tool: 'chatgpt',
         exchange: exchange(),
       },
-      halfAttached,
+      config,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('records no exchange beside a stored scope, whatever the credential says', async () => {
+    // What a scoped attach over a machine-wide one leaves between its two
+    // writes: the scope it wrote, beside the machine credential it replaces.
+    attachAs('machine');
+    const scoped = (tool: WebSourceTool | undefined): PluginConfig => {
+      const base = config(tool);
+      return {
+        ...base,
+        settings: { ...base.settings, attachmentScope: { endpoint: ENDPOINT, entries: [] } },
+      };
+    };
+    const response = await handleRequest(
+      {
+        type: 'exchange',
+        requestId: 'scope-exchange',
+        sessionId: 'browser-scope-exchange',
+        tool: 'chatgpt',
+        exchange: exchange(),
+      },
+      scoped,
     );
     expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
   });
+});
 
-  it('still opens the session root, which carries no chat content', async () => {
+describe('a session start on a machine that withholds web chats', () => {
+  // The settings do not say attached, so the gateway forwards nothing and no
+  // detached sync child is started; the scoped credential beside them is what
+  // withholds. A half attachment like this one counts as a personal device.
+  const halfAttached = (tool: WebSourceTool | undefined): PluginConfig =>
+    config(tool, 'standalone');
+
+  it('opens no session root', async () => {
     attachAs('scoped');
     const response = await handleRequest(
       {
@@ -387,6 +426,37 @@ describe('a half attachment that still holds a scoped credential', () => {
       halfAttached,
     );
     expect(response).toEqual({ type: 'session_start', requestId: 'half-start', ok: true });
-    expect(rowCount("event_type = 'session' AND id = 'browser-half-start'")).toBe(1);
+    expect(rowCount("event_type IN ('session', 'config_scan')")).toBe(0);
+  });
+
+  it('opens one on a machine with no credential', async () => {
+    // The control: the same request, recorded.
+    const response = await handleRequest(
+      {
+        type: 'session_start',
+        requestId: 'plain-start',
+        sessionId: 'browser-plain-start',
+        tool: 'claude-ai',
+        hostname: 'claude.ai',
+      },
+      halfAttached,
+    );
+    expect(response).toEqual({ type: 'session_start', requestId: 'plain-start', ok: true });
+    expect(rowCount("event_type = 'session' AND id = 'browser-plain-start'")).toBe(1);
+  });
+
+  it('drops an exchange too', async () => {
+    attachAs('scoped');
+    const response = await handleRequest(
+      {
+        type: 'exchange',
+        requestId: 'half-exchange',
+        sessionId: 'browser-half',
+        tool: 'claude-ai',
+        exchange: exchange(),
+      },
+      halfAttached,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
   });
 });

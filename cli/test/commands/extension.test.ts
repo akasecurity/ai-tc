@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  controlPlaneCredentialPath,
   dataDir,
   openLocalDatabase,
   settingsDir,
@@ -821,9 +822,18 @@ describe('runStatus — the network-capture block', () => {
     });
     const out = run();
     expect(out).toContain('network capture: off on a personal device');
-    expect(out).toContain('nothing from them is recorded or sent');
+    expect(out).toContain('nothing from a chat is recorded or sent');
     expect(out).not.toContain('chatgpt');
     expect(out).not.toContain('claude-ai');
+  });
+
+  it('prints the unreadable-attachment block on a credential it cannot read', () => {
+    writeSettings(consentedSettings(), CONNECTION);
+    writeFileSync(controlPlaneCredentialPath(settingsDir(home)), '{ not json', { mode: 0o600 });
+    const out = run();
+    expect(out).toContain('network capture: off');
+    expect(out).toContain('control-plane credential AKA cannot read');
+    expect(out).not.toContain('chatgpt');
   });
 
   it('prints the site lines on a machine-wide attachment', () => {

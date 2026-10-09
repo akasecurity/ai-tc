@@ -6,6 +6,7 @@ import {
   readControlPlaneCredentialState,
   readEffectiveSettings,
   settingsDir,
+  webChatWithholding,
 } from '@akasecurity/persistence';
 
 import { renderLocale } from '../../lib/render-locale.ts';
@@ -33,6 +34,9 @@ export default async function SettingsPage() {
   // same reason: a connection pinned with nothing locked governs the machine
   // all the same, and the form must not offer a choice the action refuses.
   const machineOnly = managedScopedRefusal() !== null;
+  // Why the browser extension records nothing from a web chat here whatever
+  // the web-chat consent says, or null. The same reading the native host makes.
+  const webChatWithheld = webChatWithholding(settingsDir(), settings);
   const renderedAt = renderInstant();
   // NULL ON A STANDALONE MACHINE, and then nothing is rendered at all. The
   // panel describes a relationship with a deployment: a machine without one has
@@ -66,6 +70,7 @@ export default async function SettingsPage() {
         connectionHeld={connectionHeld}
         attachmentMode={attachmentMode}
         machineOnly={machineOnly}
+        webChatWithheld={webChatWithheld ?? undefined}
       />
       {/* BELOW the form, and the panel's own copy depends on it: a stale grant
           reads "Review it above to resume", which names the control in the

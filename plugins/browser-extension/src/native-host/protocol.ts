@@ -1,5 +1,10 @@
 import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  WebChatWithholding,
+  WebEnforcementState,
+  WebSourceTool,
+} from '@akasecurity/schema';
 import {
   EventKind,
   WebCaptureStatus,
@@ -11,7 +16,7 @@ import {
 // @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
 // status surface enumerates the same sites without a second copy of the list.
 const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
-export type { WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+export type { WebChatWithholding, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
 // Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
 // browser bundle — can still type its own state handling against the real
 // vocabulary. A type import erases, so this costs the bundle nothing.
@@ -118,8 +123,8 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
-  // 'out-of-scope': the machine is attached as a personal device, where no
-  // web chat is recorded.
+  // 'out-of-scope': this machine records nothing from a web chat (a personal
+  // device, or a credential it cannot read).
   accepted: boolean;
   skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
@@ -140,6 +145,8 @@ export interface CaptureStatusResponse {
   type: 'capture_status';
   requestId: string;
   ok: true;
+  // False when nothing was stored. 'out-of-scope' still keeps the report in
+  // the host's memory for the popup, and nowhere else.
   accepted: boolean;
   skipped?: 'no-consent' | 'out-of-scope';
 }
@@ -151,10 +158,11 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
-  // True when the machine is attached as a personal device: chats are still
-  // checked, and nothing from them is recorded or sent. This host always sets
-  // it; it is optional because a host older than the field omits it.
-  personalDevice?: boolean;
+  // Why this machine records nothing from a web chat, whatever `consented`
+  // says. Absent when it records as usual, and from a host older than the
+  // field. Chats are still checked; `sites` then carries only this host
+  // process's own reports, so an enforcement fault still shows.
+  withheld?: WebChatWithholding;
   sites: {
     tool: WebSourceTool;
     state: WebCaptureState;

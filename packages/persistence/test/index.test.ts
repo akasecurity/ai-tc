@@ -167,6 +167,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'toEgressIngestRequest',
   'toolCallId',
   'verifyPointerTag',
+  'webChatWithholding',
   'withFileLock',
   'withoutDroppedFiles',
   'writeControlPlaneCredential',

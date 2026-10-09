@@ -471,6 +471,14 @@ export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | un
   return consent?.version === WEB_CHAT_CAPTURE_CONSENT_VERSION;
 }
 
+// Why a machine records nothing from a web chat, whatever its consent says.
+// 'personal-device': it is attached with `aka attach --scoped`, where no web
+// chat is in scope. 'unreadable-attachment': it holds a control-plane
+// credential this build cannot read, so what it was attached as is unknown and
+// the answer is the one that records less.
+export const WebChatWithholding = z.enum(['personal-device', 'unreadable-attachment']);
+export type WebChatWithholding = z.infer<typeof WebChatWithholding>;
+
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
 // Versioned and default-filled so future config steps are additive: a
 // settings.json written by an older plugin still parses, with any missing key

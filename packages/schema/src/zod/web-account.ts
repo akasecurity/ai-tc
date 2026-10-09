@@ -87,15 +87,21 @@ export function isWebAccountKey(key: unknown): boolean {
 
 /**
  * The account key a user typed, normalized to the stored form, or `undefined`
- * when it names no web account. Surrounding whitespace is dropped and the id is
- * lower-cased, so a key copied with different case enrolls the same account.
+ * when it names no web account. Both halves are trimmed and lower-cased, so a
+ * key copied with different case or spacing enrolls the account the extension
+ * stamps. Only case and surrounding space are forgiven: a lookalike character
+ * still names no provider or no id.
  */
 export function normalizeWebAccountKey(input: unknown): string | undefined {
   if (typeof input !== 'string') return undefined;
-  const typed = input.trim();
-  const at = typed.indexOf(':');
+  const at = input.indexOf(':');
   if (at === -1) return undefined;
-  const key = `${typed.slice(0, at)}:${typed.slice(at + 1).toLowerCase()}`;
+  const provider = input.slice(0, at).trim().toLowerCase();
+  const id = input
+    .slice(at + 1)
+    .trim()
+    .toLowerCase();
+  const key = `${provider}:${id}`;
   return isWebAccountKey(key) ? key : undefined;
 }
 

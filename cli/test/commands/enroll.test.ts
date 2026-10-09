@@ -1623,7 +1623,7 @@ describe('aka enroll --account', () => {
   it('stores the key the extension stamps, however it was typed', async () => {
     attach({ scope: fresh(), extra: webChat() });
     const io = recorder();
-    expect(await runEnroll(['--account', `  claude:${ORG.toUpperCase()} `], deps(io))).toBe(0);
+    expect(await runEnroll(['--account', `  CLAUDE:${ORG.toUpperCase()} `], deps(io))).toBe(0);
     expect(identities()).toEqual([ACCOUNT]);
   });
 

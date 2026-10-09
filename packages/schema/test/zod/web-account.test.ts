@@ -84,10 +84,27 @@ describe('normalizeWebAccountKey', () => {
     expect(normalizeWebAccountKey(`  claude:${ORG.toUpperCase()}  `)).toBe(KEY);
   });
 
+  // The provider is forgiven the same way, so a key copied from somewhere that
+  // capitalises it still enrolls the account the extension stamps.
+  it('trims and lower-cases the provider too, on either side of the colon', () => {
+    expect(normalizeWebAccountKey(`CLAUDE:${ORG}`)).toBe(KEY);
+    expect(normalizeWebAccountKey(`  Claude:${ORG}  `)).toBe(KEY);
+    expect(normalizeWebAccountKey(`claude : ${ORG}`)).toBe(KEY);
+  });
+
   it('refuses anything that names no account', () => {
-    expect(normalizeWebAccountKey(`CLAUDE:${ORG}`)).toBeUndefined();
     expect(normalizeWebAccountKey('github.com/acme/payments-api')).toBeUndefined();
+    expect(normalizeWebAccountKey(`chatgpt:${ORG}`)).toBeUndefined();
+    expect(normalizeWebAccountKey(`claude:${ORG}:extra`)).toBeUndefined();
+    expect(normalizeWebAccountKey(ORG)).toBeUndefined();
     expect(normalizeWebAccountKey(undefined)).toBeUndefined();
+  });
+
+  // Only case and surrounding space are forgiven. A provider spelled with a
+  // Cyrillic "а" lower-cases to itself and still names no provider.
+  it('forgives no lookalike', () => {
+    expect(normalizeWebAccountKey(`cl\u0430ude:${ORG}`)).toBeUndefined();
+    expect(normalizeWebAccountKey(`claude:${ORG.slice(0, -1)}`)).toBeUndefined();
   });
 });
 

@@ -13,8 +13,7 @@ import { z } from 'zod';
  * A curated category tag for what kind of model this is, or `null` for a
  * general-purpose text model. It describes the model and flags nothing: no
  * member is a governance concern on its own. `null` is a curated statement
- * ("reviewed, general-purpose"), not an unfilled field — entries carry a note
- * saying so.
+ * ("reviewed, general-purpose"), not an unfilled field.
  *
  *   reasoning — a model the vendor positions for multi-step reasoning
  *   code      — a model the vendor positions for code generation

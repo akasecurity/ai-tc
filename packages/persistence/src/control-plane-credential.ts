@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import type {
   AttachedCredentialAny,
+  AttachmentMode,
   ControlPlaneConnection,
   CredentialState,
   CredentialUnusableReason,
@@ -166,7 +167,12 @@ function repairOrRefuseMode(file: string): CredentialGate {
  * Y — re-attach" rather than reporting a bare "not attached" that reads as a
  * lost file.
  *
- * Never throws. Every failure is a `usable: false` state.
+ * Every failure of the credential file itself is a `usable: false` state: absent,
+ * unreadable, malformed, untrusted, an unsafe endpoint, or a credential for
+ * another deployment. A settings directory path that is not a directory is not
+ * one of them: the stat raises ENOTDIR and this does not catch it. A caller that
+ * cannot afford a throw guards the call; `readControlPlaneAttachmentMode` is the
+ * variant that answers `undefined` instead of throwing.
  */
 export function readControlPlaneCredentialState(
   settingsDir: string,
@@ -181,6 +187,44 @@ export function readControlPlaneCredentialState(
 }
 
 /**
+ * `value` as a credential, when this module's reader would read it back as one,
+ * else null. The ONE rule both halves of this module apply: the reader refuses
+ * a file by it, and the writer refuses an object by it, so the writer cannot
+ * emit a file its own reader calls malformed.
+ *
+ * BOTH versions, keyed on `specVersion`: v1, a machine-wide attachment read
+ * exactly as it always has been, and v2, a scoped attachment carrying
+ * `mode: 'scoped'`. Accepting v2 is what switches scoped forwarding on, and it
+ * is safe only because every path that forwards what this machine recorded
+ * (captured activity, history, the Data Shares register, a device command's
+ * scan) consults the scope verdict before it sends. The policy pull, the posture
+ * report and the command poll and ack send without a verdict, by design. A build
+ * that predates scoped attachments parses `specVersion` as the literal 1, reads
+ * v2 as malformed, and forwards nothing. So a version is accepted here only once
+ * every forwarder knows what it means.
+ *
+ * VERSION 1 NAMES NO MODE, and a value that says otherwise is refused. The v1
+ * shape is not strict, so the parse DROPS a `mode` key it does not declare:
+ * `{ specVersion: 1, mode: 'scoped', … }` would come out as a plain machine-wide
+ * credential and send everything. The check is on the raw value because the
+ * parsed one no longer carries the key. No writer emits one, and the writer now
+ * refuses to.
+ */
+function asReadableCredential(value: unknown): AttachedCredentialAny | null {
+  const result = CredentialSchema.safeParse(value);
+  if (!result.success) return null;
+  if (
+    attachmentModeOf(result.data) === 'machine' &&
+    typeof value === 'object' &&
+    value !== null &&
+    Object.hasOwn(value, 'mode')
+  ) {
+    return null;
+  }
+  return result.data;
+}
+
+/**
  * The full read, credential included.
  *
  * SERVER-SIDE CALLERS ONLY. Everything this returns on the usable branch is a
@@ -189,7 +233,12 @@ export function readControlPlaneCredentialState(
  * passed to a `'use client'` boundary is serialised into the payload the
  * browser receives. Surfaces take `readControlPlaneCredentialState`.
  *
- * Never throws. Every failure is a `usable: false` state.
+ * Every failure of the credential file itself is a `usable: false` state: absent,
+ * unreadable, malformed, untrusted, an unsafe endpoint, or a credential for
+ * another deployment. A settings directory path that is not a directory is not
+ * one of them: the stat raises ENOTDIR and this does not catch it. A caller that
+ * cannot afford a throw guards the call; `readControlPlaneAttachmentMode` is the
+ * variant that answers `undefined` instead of throwing.
  */
 export function readControlPlaneCredentialFile(
   settingsDir: string,
@@ -218,50 +267,26 @@ export function readControlPlaneCredentialFile(
     return { usable: false, reason: 'malformed' };
   }
 
-  // BOTH versions, keyed on `specVersion`: v1, a machine-wide attachment read
-  // exactly as it always has been, and v2, a scoped attachment carrying
-  // `mode: 'scoped'`. Accepting v2 here is what switches scoped forwarding on,
-  // and it is safe only because every path that forwards what this machine
-  // recorded (captured activity, history, the Data Shares register, a device
-  // command's scan) consults the scope verdict before it sends. The policy
-  // pull, the posture report and the command poll and ack send without a
-  // verdict, by design. A build that predates scoped attachments parses
-  // `specVersion` as the literal 1, reads v2 as malformed, and forwards nothing.
-  // So a version is accepted here only once every forwarder knows what it means.
-  const result = CredentialSchema.safeParse(parsed);
-  if (!result.success) return { usable: false, reason: 'malformed' };
+  // Either version, by asReadableCredential's rule — which also refuses a
+  // version-1 file that names a mode. Every reader in this module goes through
+  // this function, so none of them can return such a file as usable.
+  const credential = asReadableCredential(parsed);
+  if (credential === null) return { usable: false, reason: 'malformed' };
 
-  // VERSION 1 NAMES NO MODE, and a file that says otherwise is refused. The v1
-  // shape is not strict, so the parse above DROPS a `mode` key it does not
-  // declare: `{ specVersion: 1, mode: 'scoped', … }` would arrive here as a
-  // plain machine-wide credential and send everything. The check is on the raw
-  // parsed object because the parsed one no longer carries the key. Every
-  // reader in this module goes through this function, so none of them can
-  // return such a file as usable. No writer emits one, so refusing it costs
-  // nothing.
-  if (
-    attachmentModeOf(result.data) === 'machine' &&
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    Object.hasOwn(parsed, 'mode')
-  ) {
-    return { usable: false, reason: 'malformed' };
-  }
-
-  if (!isSafeEndpoint(result.data.endpoint)) {
+  if (!isSafeEndpoint(credential.endpoint)) {
     return { usable: false, reason: 'unsafe-endpoint' };
   }
 
-  if (connection !== undefined && connection.endpoint !== result.data.endpoint) {
+  if (connection !== undefined && connection.endpoint !== credential.endpoint) {
     return {
       usable: false,
       reason: 'endpoint-mismatch',
-      credentialEndpoint: result.data.endpoint,
+      credentialEndpoint: credential.endpoint,
       settingsEndpoint: connection.endpoint,
     };
   }
 
-  return { usable: true, credential: result.data };
+  return { usable: true, credential };
 }
 
 /**
@@ -275,6 +300,10 @@ export function readControlPlaneCredentialFile(
  * endpoint the credential itself names — which is exactly the redirect the
  * endpoint binding exists to prevent, since this file and `settings.json` have
  * different writers and different protections.
+ *
+ * Null stands for every `usable: false` state of the credential file. A settings
+ * directory path that is not a directory is not one of them: the stat raises
+ * ENOTDIR from `readControlPlaneCredentialFile` and this does not catch it.
  */
 export function readControlPlaneCredential(
   settingsDir: string,
@@ -282,6 +311,37 @@ export function readControlPlaneCredential(
 ): AttachedCredentialAny | null {
   const read = readControlPlaneCredentialFile(settingsDir, connection);
   return read.usable ? read.credential : null;
+}
+
+/**
+ * The attachment mode of the credential this machine holds for `connection`'s
+ * deployment, or `undefined`: no connection, no usable credential, or a
+ * credential bound to another endpoint.
+ *
+ * The mode is not secret; the key is. This takes the wide read and returns the
+ * mode alone, so a caller that needs only "machine" or "scoped" is handed a
+ * word, never the credential, and `CredentialState` keeps carrying no payload. A
+ * credential bound to another endpoint answers `undefined` rather than its own
+ * mode, because it is not the attachment `connection` describes. Never throws:
+ * every read failure is `undefined`.
+ *
+ * THE TRY/CATCH IS LOAD-BEARING. The wide read describes every failure it
+ * expects as a state, but its file checks can still throw: looking inside a path
+ * whose settings directory is really a regular file raises ENOTDIR from the
+ * stat. Without the catch that error would reach every caller as a throw rather
+ * than as an attachment with no known mode.
+ */
+export function readControlPlaneAttachmentMode(
+  settingsDir: string,
+  connection: ControlPlaneConnection | undefined,
+): AttachmentMode | undefined {
+  if (connection === undefined) return undefined;
+  try {
+    const read = readControlPlaneCredentialFile(settingsDir, connection);
+    return read.usable ? attachmentModeOf(read.credential) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -322,6 +382,16 @@ function unsafeEndpointRefusal(reason: UnsafeEndpointReason): string {
  * machine-wide attach writes v1 byte for byte as it always has, and a scoped
  * one writes v2. The version on disk is the caller's choice, and it is what a
  * reader that predates scoped attachments keys its refusal on.
+ *
+ * REFUSED BEFORE ANYTHING IS WRITTEN: an endpoint a key must not be stored for,
+ * and any object this module's reader would read back as malformed
+ * (asReadableCredential) — a member the schema rejects, a version no build
+ * writes, a v2 without `mode: 'scoped'`, a v1 that names a mode. A credential
+ * the reader refuses forwards nothing, so writing one would turn a mistake in a
+ * caller into a machine that silently stops reporting. The check validates and
+ * the write serialises what it was handed, never the parse's output, so a valid
+ * credential's bytes do not depend on the schema's key order. Neither refusal
+ * names the key.
  */
 export function writeControlPlaneCredential(
   settingsDir: string,
@@ -332,6 +402,12 @@ export function writeControlPlaneCredential(
     throw new Error(
       `refusing to store a control-plane credential for ${originOnly(credential.endpoint)}: ` +
         unsafeEndpointRefusal(reason),
+    );
+  }
+  if (asReadableCredential(credential) === null) {
+    throw new Error(
+      `refusing to store a control-plane credential for ${originOnly(credential.endpoint)}: ` +
+        'it is not a credential this build would read back.',
     );
   }
   ensureDataDirSync(settingsDir);

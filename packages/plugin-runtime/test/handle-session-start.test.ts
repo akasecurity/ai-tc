@@ -731,9 +731,11 @@ describe('handleSessionStart — gateway resolution meta', () => {
       config(dir),
     );
 
-    // toStrictEqual: toEqual ignores an explicit-undefined member, and "the
-    // key is absent" vs "the key is undefined" is the exactOptionalPropertyTypes
-    // distinction the factory's presence-keyed spread depends on.
+    // toStrictEqual: toEqual ignores an explicit-undefined member, so this is
+    // what fails if the entry starts handing over a key that holds `undefined`.
+    // The factory tests the value (`meta?.pluginBuild === undefined`) and
+    // `GatewayMeta.pluginBuild` admits `| undefined`, so the factory would read
+    // either form alike: what this pins is the entry's own spread.
     expect(captured).toStrictEqual({
       recordedBy: 'plugin@0.9.8',
       pluginBuild: { package: '@akasecurity/ai-tc-claude-code', version: '0.9.8' },

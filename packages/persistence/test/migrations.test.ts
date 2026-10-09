@@ -16,6 +16,7 @@ import {
   ensureScanLedgerScopeKeyColumn,
   ensureScanLedgerScopeRootColumn,
   ensureScopeKeyColumn,
+  ensureScopeOwedIndex,
   LEGACY_BACKFILL_BATCH_SIZE,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
@@ -23,10 +24,12 @@ import {
   SCAN_LEDGER_SCOPE_KEY_DDL,
   SCAN_LEDGER_SCOPE_ROOT_DDL,
   SCOPE_KEY_COLUMN_DDL,
+  SCOPE_OWED_INDEX_DDL,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
 import { SqliteScanLedgerRepository } from '../src/repositories/scan-ledger.ts';
 import { SYNC_FAILURE_REASONS } from '../src/sync-failure.ts';
+import { captureEvent } from './helpers/capture-fixtures.ts';
 import { withTempStore } from './helpers/temp-store.ts';
 import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
@@ -698,6 +701,9 @@ describe('the local scope_key column', () => {
       ).run('old', 'prompt', 1, JSON.stringify({ scope_key: 'github.com/acme/work' }));
       // Walked back rather than hand-built, as the delivery-failure cases below
       // do: a hand-written old schema would drift from what those stores hold.
+      // The index over the column goes first: SQLite refuses to drop an indexed
+      // column, and a store from before the column had neither.
+      db.exec('DROP INDEX idx_audit_scope_owed');
       db.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
       expect(scopeKeyColumns(db)).toEqual([]);
 
@@ -758,6 +764,7 @@ describe('the local scope_key column', () => {
     const db = new DatabaseSync(':memory:');
     try {
       applyMigrations(db);
+      db.exec('DROP INDEX idx_audit_scope_owed');
       db.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
       const realPrepare = db.prepare.bind(db);
       let raced = false;
@@ -821,6 +828,7 @@ describe('the local scope_key column', () => {
       expect(journal.journal_mode).toBe('wal');
       opener.exec('PRAGMA busy_timeout = 0');
       applyMigrations(opener);
+      opener.exec('DROP INDEX idx_audit_scope_owed');
       opener.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
       const other = store.openRaw();
       other.exec('PRAGMA busy_timeout = 0');
@@ -880,6 +888,378 @@ describe('the local scope_key column', () => {
       }).not.toThrow();
       expect(scopeKeyColumns(other)).toEqual(['scope_key']);
     });
+  });
+});
+
+// ─── The scoped owed-capture index ───────────────────────────────────────────
+
+describe('the scoped owed-capture index', () => {
+  const WORK = 'github.com/acme/work';
+
+  /** A prompt stamped with `scopeKey`, written straight into a migrated table. */
+  const insertPrompt = (
+    db: DatabaseSync,
+    id: string,
+    startedAt: number,
+    scopeKey: string,
+  ): void => {
+    db.prepare(
+      'INSERT INTO audit_events (id, event_type, started_at, attributes) VALUES (?, ?, ?, ?)',
+    ).run(id, 'prompt', startedAt, JSON.stringify({ scope_key: scopeKey }));
+  };
+
+  /** The index's CREATE statement as SQLite keeps it, or undefined when there is none. */
+  const indexSql = (db: DatabaseSync): string | undefined =>
+    (
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_audit_scope_owed'",
+        )
+        .get() as { sql: string } | undefined
+    )?.sql;
+
+  /**
+   * How many entries the index holds, counted on its own pages. A query through
+   * the index re-tests its WHERE on every row it fetches, so it could not tell an
+   * index that kept settled rows from one that dropped them; dbstat reads what
+   * the pages hold.
+   */
+  const entryCount = (db: DatabaseSync): number =>
+    (
+      db
+        .prepare(
+          "SELECT coalesce(sum(ncell), 0) AS n FROM dbstat WHERE name = 'idx_audit_scope_owed'",
+        )
+        .get() as { n: number }
+    ).n;
+
+  /**
+   * The keys of the rows the index holds, NULL included, in index order. Read
+   * through the index itself: INDEXED BY fails to prepare rather than fall back
+   * to the table, so this throws on a store without the index.
+   */
+  const entryKeys = (db: DatabaseSync): (string | null)[] =>
+    (
+      db
+        .prepare(
+          `SELECT scope_key FROM audit_events INDEXED BY idx_audit_scope_owed
+            WHERE outbox_owed = 1 AND synced_at IS NULL
+            ORDER BY scope_key, event_type, started_at`,
+        )
+        .all() as { scope_key: string | null }[]
+    ).map((row) => row.scope_key);
+
+  it('is built on a fresh store: scope key, kind and time, over owed and unsettled rows only', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+
+      expect(indexColumns(db, 'idx_audit_scope_owed')).toEqual([
+        'scope_key',
+        'event_type',
+        'started_at',
+      ]);
+      // index_info cannot show a predicate, and the predicate is what bounds the
+      // index. SQLite keeps the statement as written, less IF NOT EXISTS.
+      expect(indexSql(db)).toBe(SCOPE_OWED_INDEX_DDL.replace('IF NOT EXISTS ', ''));
+      expect(indexSql(db)).toContain('WHERE outbox_owed = 1 AND synced_at IS NULL');
+      expect(entryCount(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Every store an earlier build opened has the column and never had the index.
+  // The install must not sit behind the column's early return, or not one of
+  // them would ever get it.
+  it('reaches a store that has the column but not the index, and indexes its owed backlog', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      insertPrompt(db, 'owed', 1, WORK);
+      insertPrompt(db, 'unowed', 2, WORK);
+      db.exec("UPDATE audit_events SET outbox_owed = 1 WHERE id = 'owed'");
+      db.exec('DROP INDEX idx_audit_scope_owed');
+      expect(columnNames(db, 'audit_events', { includeGenerated: true })).toContain('scope_key');
+      expect(indexExists(db, 'idx_audit_scope_owed')).toBe(false);
+
+      applyMigrations(db);
+
+      expect(indexExists(db, 'idx_audit_scope_owed')).toBe(true);
+      expect(entryCount(db)).toBe(1);
+      expect(entryKeys(db)).toEqual([WORK]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reaches a store from before the column: the column first, then the index over it', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      insertPrompt(db, 'old', 1, WORK);
+      db.exec("UPDATE audit_events SET outbox_owed = 1 WHERE id = 'old'");
+      // SQLite refuses to drop an indexed column, and a store from before the
+      // column had neither, so the walk back takes the index first.
+      db.exec('DROP INDEX idx_audit_scope_owed');
+      db.exec('ALTER TABLE audit_events DROP COLUMN scope_key');
+
+      applyMigrations(db);
+
+      expect(columnNames(db, 'audit_events', { includeGenerated: true })).toContain('scope_key');
+      expect(entryKeys(db)).toEqual([WORK]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is installed once: a second open neither throws nor builds it again', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      // Recorded, as the sync index's no-rebuild case does: a rebuilt index looks
+      // identical to one left alone.
+      const statements: string[] = [];
+      const realExec = db.exec.bind(db);
+      Object.defineProperty(db, 'exec', {
+        configurable: true,
+        value: (sql: string) => {
+          statements.push(sql);
+          realExec(sql);
+        },
+      });
+      try {
+        expect(() => {
+          applyMigrations(db);
+        }).not.toThrow();
+      } finally {
+        Object.defineProperty(db, 'exec', { configurable: true, value: realExec });
+      }
+
+      // One CREATE … IF NOT EXISTS, which finds the index and does nothing.
+      expect(statements.filter((sql) => sql.includes('idx_audit_scope_owed'))).toEqual([
+        SCOPE_OWED_INDEX_DDL,
+      ]);
+      expect(
+        db
+          .prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'idx_audit_scope_owed'")
+          .get(),
+      ).toEqual({ n: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  // Two openers on one file, in WAL as the product opens it. The other opener's
+  // build commits after this one has read the schema to probe for the column,
+  // so this one's CREATE is compiled against a schema without the index. SQLite
+  // sees the schema change when the statement runs and compiles it again, and
+  // IF NOT EXISTS then finds the index, rather than this open failing on
+  // `already exists`. The interleaving is fixed, not raced, as in the column's
+  // cases above: the other opener builds from inside this one's column probe.
+  it('is a no-op for an opener whose store another opener indexed after its probe', () => {
+    type HostMethod = (...args: unknown[]) => unknown;
+    withTempStore((store) => {
+      const opener = store.openRaw();
+      const journal = opener.prepare('PRAGMA journal_mode = WAL').get() as { journal_mode: string };
+      expect(journal.journal_mode).toBe('wal');
+      applyMigrations(opener);
+      opener.exec('DROP INDEX idx_audit_scope_owed');
+      const other = store.openRaw();
+
+      const realPrepare = opener.prepare.bind(opener);
+      let interleaved = false;
+      Object.defineProperty(opener, 'prepare', {
+        configurable: true,
+        value: (sql: string) => {
+          const stmt = realPrepare(sql);
+          if (interleaved || !sql.startsWith('PRAGMA table_xinfo')) return stmt;
+          return new Proxy(stmt, {
+            get(target, prop) {
+              const value: unknown = Reflect.get(target, prop, target);
+              if (typeof value !== 'function') return value;
+              if (prop !== 'all') return (value as HostMethod).bind(target);
+              return (...args: unknown[]): unknown => {
+                const rows = (value as HostMethod).apply(target, args);
+                interleaved = true;
+                other.exec(SCOPE_OWED_INDEX_DDL);
+                return rows;
+              };
+            },
+          });
+        },
+      });
+      try {
+        expect(() => {
+          ensureScopeOwedIndex(opener);
+        }).not.toThrow();
+      } finally {
+        Object.defineProperty(opener, 'prepare', { configurable: true, value: realPrepare });
+      }
+
+      // Without this the case passes on an implementation that never probed.
+      expect(interleaved).toBe(true);
+      expect(
+        opener
+          .prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'idx_audit_scope_owed'")
+          .get(),
+      ).toEqual({ n: 1 });
+    });
+  });
+
+  it('builds over a bag that is not JSON, and indexes that row under no key', () => {
+    // Built the way the column's own damaged-bag case is: the rows are on disk
+    // before the column and the index arrive (a migrated table refuses a
+    // malformed bag at the write), in a table with only the columns the two read.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(
+        `CREATE TABLE audit_events (
+           id text PRIMARY KEY NOT NULL, event_type text NOT NULL, started_at integer NOT NULL,
+           attributes text, synced_at integer, outbox_owed integer)`,
+      );
+      const insert = db.prepare(
+        'INSERT INTO audit_events (id, event_type, started_at, attributes, outbox_owed) VALUES (?, ?, ?, ?, 1)',
+      );
+      // Truncated mid-write, and still spelling an enrolled key.
+      insert.run('damaged', 'prompt', 1, '{"scope_key": "github.com/acme/work"');
+      insert.run('keyed', 'prompt', 2, JSON.stringify({ scope_key: WORK }));
+      ensureScopeKeyColumn(db);
+
+      expect(() => {
+        ensureScopeOwedIndex(db);
+      }).not.toThrow();
+
+      expect(entryCount(db)).toBe(2);
+      expect(entryKeys(db)).toEqual([null, WORK]);
+      // The scoped read's filter, through the index: the damaged row is in no scope.
+      expect(
+        db
+          .prepare(
+            `SELECT id FROM audit_events INDEXED BY idx_audit_scope_owed
+              WHERE outbox_owed = 1 AND synced_at IS NULL
+                AND scope_key IN (SELECT value FROM json_each(?))`,
+          )
+          .all(JSON.stringify([WORK])),
+      ).toEqual([{ id: 'keyed' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('holds only owed, unsettled captures, so a store that never attached holds none', () => {
+    withTempStore((store) => {
+      const db = store.open();
+      const raw = store.openRaw();
+      const AT = Date.parse('2026-08-01T00:00:00.000Z');
+
+      // The capture path every store takes, attached or not: recorded, never
+      // marked owed. On a store that never attached, an empty index is all this
+      // index adds to what is stored.
+      db.recordCapture(captureEvent(), []);
+      expect(
+        raw.prepare("SELECT count(*) AS n FROM audit_events WHERE event_type = 'prompt'").get(),
+      ).toEqual({ n: 1 });
+      expect(entryCount(raw)).toBe(0);
+
+      // What an attached forward marks: four owed captures of an enrolled
+      // repository. Then one is claimed, one delivered and one skipped.
+      db.auditEvents.ensureSessionRoot('s-1', new Date(AT).toISOString());
+      for (const id of ['owed', 'claimed', 'sent', 'skipped']) {
+        db.auditEvents.insertAuditEvent({
+          id,
+          eventType: 'prompt',
+          rootSessionId: 's-1',
+          parentId: 's-1',
+          startedAt: new Date(AT + 60_000).toISOString(),
+          content: `text of ${id}`,
+          attributes: { scope_key: WORK },
+        });
+        db.historySync.markCaptureOwed(id);
+      }
+      expect(entryCount(raw)).toBe(4);
+      db.historySync.claimRows(['claimed'], AT);
+      db.historySync.markSynced(['sent'], AT);
+      db.historySync.markSkipped(['skipped'], AT);
+
+      // A claim settles nothing, so the claimed row stays. The delivered and the
+      // skipped rows leave, though both keep their marker.
+      expect(entryCount(raw)).toBe(2);
+      expect(entryKeys(raw)).toEqual([WORK, WORK]);
+      expect(
+        raw.prepare('SELECT id FROM audit_events WHERE outbox_owed = 1 ORDER BY id').all(),
+      ).toEqual([{ id: 'claimed' }, { id: 'owed' }, { id: 'sent' }, { id: 'skipped' }]);
+    });
+  });
+
+  it('leaves a store alone when audit_events is missing, is a view, or lacks the column', () => {
+    const empty = new DatabaseSync(':memory:');
+    try {
+      expect(() => {
+        ensureScopeOwedIndex(empty);
+      }).not.toThrow();
+      expect(indexExists(empty, 'idx_audit_scope_owed')).toBe(false);
+    } finally {
+      empty.close();
+    }
+    const noColumn = new DatabaseSync(':memory:');
+    try {
+      noColumn.exec(
+        `CREATE TABLE audit_events (
+           id text PRIMARY KEY NOT NULL, event_type text NOT NULL, started_at integer NOT NULL,
+           attributes text, synced_at integer, outbox_owed integer)`,
+      );
+      expect(() => {
+        ensureScopeOwedIndex(noColumn);
+      }).not.toThrow();
+      expect(indexExists(noColumn, 'idx_audit_scope_owed')).toBe(false);
+    } finally {
+      noColumn.close();
+    }
+    // The case that needs the table guard. PRAGMA table_xinfo lists a view's
+    // columns, scope_key among them, so the column guard alone would hand this to
+    // CREATE INDEX, which refuses a view. A missing table cannot show that:
+    // table_xinfo lists nothing for it, so the column guard already returns.
+    const view = new DatabaseSync(':memory:');
+    try {
+      view.exec(
+        "CREATE VIEW audit_events AS SELECT 'github.com/acme/work' AS scope_key, 'prompt' AS event_type, 1 AS started_at, 1 AS outbox_owed, NULL AS synced_at",
+      );
+      expect(() => {
+        ensureScopeOwedIndex(view);
+      }).not.toThrow();
+      expect(indexExists(view, 'idx_audit_scope_owed')).toBe(false);
+    } finally {
+      view.close();
+    }
+  });
+
+  // The index's predicate names two columns besides its key, so the function
+  // checks them too and is total on its own, rather than leaning on
+  // applyMigrations having added them first. Each table here carries scope_key,
+  // so the key guard passes and only the predicate's column can stop the build.
+  it.each([
+    ['outbox_owed', 'synced_at integer'],
+    ['synced_at', 'outbox_owed integer'],
+  ])('leaves a store alone that has scope_key but not %s', (missing, kept) => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(
+        `CREATE TABLE audit_events (
+           id text PRIMARY KEY NOT NULL, event_type text NOT NULL, started_at integer NOT NULL,
+           attributes text, scope_key text, ${kept})`,
+      );
+      const columns = columnNames(db, 'audit_events', { includeGenerated: true });
+      expect(columns).toContain('scope_key');
+      expect(columns).not.toContain(missing);
+
+      expect(() => {
+        ensureScopeOwedIndex(db);
+      }).not.toThrow();
+      expect(indexExists(db, 'idx_audit_scope_owed')).toBe(false);
+    } finally {
+      db.close();
+    }
   });
 });
 

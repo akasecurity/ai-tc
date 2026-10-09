@@ -1,3 +1,4 @@
+import type { StorePosturePlugin } from '@akasecurity/schema';
 import { StorePostureSnapshot } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -102,6 +103,9 @@ function makeDeps(overrides: Partial<PostureReporterDeps> = {}): PostureReporter
     readStore: () => fixtureReadout(),
     hostname: () => 'DevMac-01',
     now: () => nowMs,
+    // Machine-wide unless a case says otherwise, so every case written before
+    // the mode existed still describes the report it always described.
+    attachmentMode: 'machine',
   };
   return Object.assign(defaults, overrides);
 }
@@ -370,9 +374,9 @@ describe('createPostureReporter', () => {
   }, 10_000);
 
   it('omits the plugin KEY without a producer — never an explicit undefined', async () => {
-    // The wire shape is `.optional()`, and downstream bridges key on presence:
-    // a spread `plugin: undefined` is a different object from an absent key
-    // under exactOptionalPropertyTypes.
+    // Pins that the key is absent from the object, not present with an
+    // `undefined` value. The serialised bytes are the same either way, so only
+    // a presence check can tell the two apart.
     const report = mockReport();
     await run(createPostureReporter(makeDeps({ report })));
     const sent = report.mock.calls[0]?.[0];
@@ -459,5 +463,88 @@ describe('createPostureReporter', () => {
       },
     });
     await expect(run(createPostureReporter(deps))).resolves.toBeUndefined();
+  });
+});
+
+// What makeDeps() reports from a machine attachment: the body the reporter
+// sent before the attachment mode existed, frozen as the string the transport
+// puts on the wire. A string and not an object, because key order is exactly
+// what a deep-equal forgives and a byte comparison does not.
+const MACHINE_POSTURE_WIRE =
+  '{"deviceId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","hostname":"DevMac-01",' +
+  '"capturedAt":1780000000000,"storePresent":true,"schemaVersion":14,"findingsTotal":5,' +
+  '"findingsFirstAt":1700000000000,"findingsLastAt":1779000000000,' +
+  '"packs":[{"packId":"aka/secrets","version":"1.4.0","enabled":true,' +
+  '"updatedAt":"1779000000000"},{"packId":"aka/pii","version":"0.9.0","enabled":false,' +
+  '"updatedAt":null}],"policyCounts":{"total":3,"disabled":1,' +
+  '"byAction":{"warn":2,"redact":0,"block":1,"allow":0,"log":0}}}';
+
+/** The plugin block the earlier plugin case supplies. */
+const pluginBlock = (): Promise<StorePosturePlugin> =>
+  Promise.resolve({
+    package: '@akasecurity/ai-tc-claude-code',
+    version: '0.9.8',
+    ossVersion: null,
+    policyBundleVersion: 'sha256:abc123',
+    policyFetchedAt: 1_779_500_000_000,
+  });
+
+/** That block as the transport serialises it. */
+const PLUGIN_WIRE =
+  '"plugin":{"package":"@akasecurity/ai-tc-claude-code","version":"0.9.8","ossVersion":null,' +
+  '"policyBundleVersion":"sha256:abc123","policyFetchedAt":1779500000000}';
+
+/** The machine body with serialised members appended after its last one. */
+const machineWireWith = (...members: string[]): string =>
+  `${MACHINE_POSTURE_WIRE.slice(0, -1)},${members.join(',')}}`;
+
+describe('createPostureReporter — the attachment mode on the wire', () => {
+  async function sentBody(
+    overrides: Partial<PostureReporterDeps> = {},
+  ): Promise<StorePostureSnapshot> {
+    const report = mockReport();
+    await run(createPostureReporter(makeDeps({ ...overrides, report })));
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    return sent;
+  }
+
+  it("sends a machine attachment's body byte for byte as it was before the mode existed", async () => {
+    const sent = await sentBody();
+    expect(JSON.stringify(sent)).toBe(MACHINE_POSTURE_WIRE);
+    expect(sent).not.toHaveProperty('attachmentMode');
+  });
+
+  it('puts the plugin block last on a machine attachment, with no mode', async () => {
+    const sent = await sentBody({ pluginBlock });
+    expect(JSON.stringify(sent)).toBe(machineWireWith(PLUGIN_WIRE));
+  });
+
+  it("appends attachmentMode scoped to a scoped attachment's body, after every other member", async () => {
+    const sent = await sentBody({ attachmentMode: 'scoped' });
+    expect(JSON.stringify(sent)).toBe(machineWireWith('"attachmentMode":"scoped"'));
+    // Schema-valid: a receiver validates the whole body with this schema.
+    expect(StorePostureSnapshot.parse(sent)).toEqual(sent);
+  });
+
+  it('puts the mode after the plugin block', async () => {
+    const sent = await sentBody({ attachmentMode: 'scoped', pluginBlock });
+    expect(JSON.stringify(sent)).toBe(machineWireWith(PLUGIN_WIRE, '"attachmentMode":"scoped"'));
+  });
+
+  it('reports the constant scoped for any mode but exactly machine, never the raw value', async () => {
+    // A cast or a damaged value must not reach the wire: a receiver's enum
+    // would refuse the whole snapshot, the wipe signal with it.
+    const sent = await sentBody({ attachmentMode: 'account' as never });
+    expect(sent.attachmentMode).toBe('scoped');
+    expect(StorePostureSnapshot.safeParse(sent).success).toBe(true);
+  });
+
+  it('omits the mode KEY on a machine attachment — never an explicit undefined', async () => {
+    // The bytes cannot tell the two apart (JSON.stringify drops an undefined
+    // member), and neither can the type: the schema's optional member admits
+    // `undefined`. Only a presence check can.
+    const sent = await sentBody({ attachmentMode: 'machine' });
+    expect(Object.keys(sent)).not.toContain('attachmentMode');
   });
 });

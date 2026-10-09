@@ -36,10 +36,15 @@ import {
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
   HISTORY_SYNC_CHOICES,
+  HISTORY_SYNC_CHOICES_SCOPED,
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_DESCRIPTION,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_LABEL,
   HISTORY_SYNC_STALE_BADGE,
   HISTORY_SYNC_STALE_NOTICE,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
   managedUnrecognizedNotice,
@@ -132,6 +137,16 @@ const FORM_COPY: Record<string, string> = {
     HISTORY_SYNC_CHOICES.flatMap((c) => [
       [`HISTORY_SYNC_CHOICES.${c.value}.label`, c.label],
       [`HISTORY_SYNC_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
+  ...Object.fromEntries(
+    HISTORY_SYNC_CHOICES_SCOPED.flatMap((c) => [
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.label`, c.label],
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.description`, c.description],
     ]),
   ),
   ...Object.fromEntries(
@@ -758,7 +773,7 @@ describe('the connection section', () => {
     // the form stays on screen with the key still in it.
     const order: string[] = [];
     const clearKey = () => order.push('cleared');
-    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+    const onAttach = (...args: (string | undefined)[]) => order.push(`sent:${args.join('|')}`);
 
     submitAttach(
       { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },

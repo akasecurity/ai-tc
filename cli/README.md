@@ -128,10 +128,10 @@ extension still checks each message before it is sent and blocks or masks it
 as your policy says, but nothing from the chat is recorded or sent: not the
 prompt, not the reply, not the extension's capture status. The one exception
 is a value it blocks or masks, which leaves a masked entry, kept for a day, so
-that `aka exception` can approve it. Opening a chat
-still counts as a session start for the policy pull and device report
-described above. The extension's popup and `aka extension status` both say
-when a machine is one.
+that `aka exception` can approve it. Opening a chat still counts as a session
+start, so the machine still pulls the organization's policy and sends its
+device report. The extension's popup and `aka extension status` both say when
+a machine is one.
 
 The registration names `aka` through the link your package manager keeps
 pointed at the current version (Homebrew's `opt/aka`, the installers' and

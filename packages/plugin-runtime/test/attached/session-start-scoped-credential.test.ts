@@ -129,6 +129,10 @@ const WORK_KEY = 'github.com/acme/payments-api';
 const PERSONAL_ORIGIN = 'https://github.com/someone/side-project.git';
 const PERSONAL_KEY = 'github.com/someone/side-project';
 
+// The line a scoped session shows when its own repository is not enrolled.
+const LOCAL_ONLY_LINE =
+  'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
+
 // A posture report's members, in the order the reporter writes them, with no
 // plugin block: what a machine attachment reported before any mode existed.
 const MACHINE_POSTURE_KEYS = [
@@ -495,8 +499,8 @@ describe('the forwarding line a session start returns', () => {
     const config = attach('scoped');
 
     expect(await line('l-work', work, config)).toBe(`AKA: forwarding to ${ENDPOINT} (${WORK_KEY})`);
-    expect(await line('l-personal', personal, config)).toBe('AKA: local-only (not enrolled)');
-    expect(await line('l-scratch', scratch, config)).toBe('AKA: local-only (not enrolled)');
+    expect(await line('l-personal', personal, config)).toBe(LOCAL_ONLY_LINE);
+    expect(await line('l-scratch', scratch, config)).toBe(LOCAL_ONLY_LINE);
     // The line agrees with what the gateway did: only the root it named as
     // forwarding was sent.
     expect(
@@ -516,7 +520,7 @@ describe('the forwarding line a session start returns', () => {
   it('says local-only for the same repository once it is unenrolled', async () => {
     attach('scoped');
 
-    expect(await line('l-unenrolled', work, configFor([]))).toBe('AKA: local-only (not enrolled)');
+    expect(await line('l-unenrolled', work, configFor([]))).toBe(LOCAL_ONLY_LINE);
     expect(sent.audit).toEqual([]);
   });
 

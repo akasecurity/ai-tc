@@ -13,7 +13,7 @@ import { printableForTerminal } from './status.ts';
  *
  *   machine         `AKA: forwarding everything to <name> (machine-wide)`
  *   scoped, in      `AKA: forwarding to <name> (<enrolled repository>)`
- *   scoped, out     `AKA: local-only (not enrolled)`
+ *   scoped, out     `AKA: local-only (not enrolled); work in an enrolled repository is still forwarded`
  *
  * A standalone machine, a half attachment, and an attachment whose credential
  * cannot be used print nothing: the gateway is local for all of them, so no
@@ -23,7 +23,8 @@ import { printableForTerminal } from './status.ts';
  * The scoped verdict is the session ROOT's, which is what decides whether the
  * session's own records (its token usage and tool-call records) are sent. A
  * capture is decided by the key it carries, so a local-only session that edits
- * a file in an enrolled repository still sends that capture.
+ * a file in an enrolled repository still sends that capture, which is why the
+ * local-only line says so.
  *
  * Never throws: a fault prints nothing, the same answer as a local gateway.
  */
@@ -44,7 +45,7 @@ export function forwardingLine(
     ) {
       return `AKA: forwarding to ${name} (${printableForTerminal(rootScopeKey, 200)})`;
     }
-    return 'AKA: local-only (not enrolled)';
+    return 'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
   } catch {
     return null;
   }

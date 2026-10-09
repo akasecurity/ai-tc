@@ -169,6 +169,119 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
   });
 });
 
+/**
+ * A page that tells a reader a personal device keeps other repositories local
+ * has to say, in the same breath, what that device still sends. The policy pull
+ * and the device report are not limited to the repositories a user enrolls: a
+ * session that starts anywhere on the machine, outside any repository or in a
+ * browser chat, triggers them, and the report's finding counts and dates are for
+ * everything recorded on the machine. A personal device's report also says that
+ * it is one; a machine-wide attachment's report carries no such mark. The check
+ * for device commands runs only where a scan is available, which a browser chat
+ * is not. A page that stops at "stays local" reads as if nothing derived from
+ * the other repositories leaves.
+ *
+ * ONE sentence says it on every page, so the pages cannot drift apart.
+ */
+const SCOPED_READMES = READMES.filter((r) => r.text.includes('--scoped'));
+const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
+  .split(/^## /m)
+  .find((section) => section.startsWith('Data in transit'));
+
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+const REPORT_SENTENCE =
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+  "included), the machine pulls the deployment's policy (at most every 15 minutes) and sends it " +
+  'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
+  'policy counts, finding counts and dates for everything recorded on the machine, and, when the ' +
+  'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
+  '(the coding-agent plugins, not a browser chat), the same session start also checks it for ' +
+  'device commands.';
+// The sentence as it stood before the report said whether the machine is a personal device.
+// A page that kept it beside the new one would say two different things about the report.
+const PREVIOUS_REPORT_SENTENCE =
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+  "included), the machine pulls the deployment's policy (at most every 15 minutes) and sends it " +
+  'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
+  'policy counts, and finding counts and dates for everything recorded on the machine. Where a ' +
+  'scan is available (the coding-agent plugins, not a browser chat), the same session start also ' +
+  'checks it for device commands.';
+// What the sentence replaced, each of which said less than what is sent.
+const REPORT_OLD_PHRASES = [
+  /across every repository/i,
+  /when a session runs/i,
+  /when any session runs/i,
+  /findings recorded on the machine/i,
+];
+
+describe('scoped attachment claims', () => {
+  it('covers the pages that describe it, and the security page', () => {
+    expect(SCOPED_READMES.map((r) => r.name)).toEqual(['README.md', 'cli/README.md']);
+    expect(SECURITY_DATA_IN_TRANSIT).toBeDefined();
+  });
+
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    const claim = flat(
+      paragraphs(text)
+        .filter((p) => p.includes('--scoped'))
+        .join('\n'),
+    );
+
+    it('says a personal device still sends the report and pulls the policy, in the one sentence', () => {
+      expect(claim).toContain(REPORT_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(REPORT_SENTENCE);
+    });
+
+    it('does not use the wording that said less', () => {
+      for (const old of REPORT_OLD_PHRASES) {
+        expect(claim).not.toMatch(old);
+        expect(flat(footnoteOf(text))).not.toMatch(old);
+      }
+    });
+
+    it('keeps no copy of the sentence that left the personal-device mark out', () => {
+      expect(flat(text)).not.toContain(PREVIOUS_REPORT_SENTENCE);
+    });
+
+    it('limits what is forwarded to activity, not to the repositories themselves', () => {
+      expect(claim).toMatch(
+        /only activity from the repositories you enroll|activity only from the repositories enrolled/i,
+      );
+      expect(claim).not.toMatch(/forwards only the repositories you enroll/i);
+    });
+  });
+
+  it('says in SECURITY.md that the report, the policy pull and the command check go either way', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(REPORT_SENTENCE);
+    for (const old of REPORT_OLD_PHRASES) expect(section).not.toMatch(old);
+    // What the count covers: findings on captured events, from every session.
+    expect(section).toMatch(
+      /findings detected in captured prompts, responses, code changes and tool uses, from every session/i,
+    );
+    expect(section).not.toContain(PREVIOUS_REPORT_SENTENCE);
+    // They go on either kind, but the report is not the same on both: a scoped
+    // machine's says that it is attached as a personal device.
+    expect(section).toContain(
+      'The policy pull, the command check and the device report are the exception: they go ' +
+        "on either kind of attachment, whatever is enrolled, and a scoped machine's report also " +
+        'says that it is attached as a personal device.',
+    );
+    expect(section).not.toMatch(/the same way on either kind of attachment/i);
+    // What enrolling queues under the history grant is said where the scoped mode is
+    // introduced, not in the paragraph on what the grant covers on any attachment.
+    expect(section).toContain(
+      'activity in any other repository stays on the machine. Under the `aka sync-history` ' +
+        'grant, enrolling a repository also queues the captures still kept for it, including ' +
+        'those it recorded between attaching and enrolling.',
+    );
+    expect(section).not.toMatch(/\ball of the above\b/i);
+  });
+});
+
 describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   const footnote = footnoteOf(text);
 

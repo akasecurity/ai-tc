@@ -12,7 +12,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { FingerprintKeyState } from '@akasecurity/schema';
 import { isMatchableUnder, stripInvisiblePadding } from '@akasecurity/schema';
@@ -92,6 +92,24 @@ const SQLITE_ERROR = 1;
 // default 2s, taken twice, is a quarter-minute of a user's session.
 const FLOOR_BUSY_TIMEOUT_MS = 250;
 
+// The floor read is this module's only use of the store, so the builtin is
+// resolved when that read runs rather than when the module loads. Loading this
+// module therefore never loads `node:sqlite`, which keeps it usable by a
+// bundle that ships the plugin runtime without the store layer.
+//
+// `@types/node` types the lookup as always present and always answering, and
+// neither holds everywhere: Node before 22.3 has no `getBuiltinModule`, and a
+// Node without the builtin answers `undefined` rather than throwing. Both are
+// named here, so the floor read still fails secure but its error points at the
+// runtime instead of a damaged store.
+function openReadOnly(file: string): DatabaseSync {
+  const host = process as { getBuiltinModule?: (id: string) => unknown };
+  const sqlite = host.getBuiltinModule?.('node:sqlite') as
+    { DatabaseSync: typeof DatabaseSync } | undefined;
+  if (sqlite === undefined) throw new Error('this Node runtime cannot load node:sqlite');
+  return new sqlite.DatabaseSync(file, { readOnly: true });
+}
+
 /** Raised when the store exists but cannot answer which key versions it holds. */
 class FloorUnreadableError extends Error {
   readonly code = 'floor-unreadable';
@@ -138,7 +156,7 @@ function storedKeyVersionFloor(dataDir: string): number {
   if (!existsSync(file)) return 0;
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(file, { readOnly: true });
+    db = openReadOnly(file);
     db.exec(`PRAGMA busy_timeout = ${String(FLOOR_BUSY_TIMEOUT_MS)}`);
     let floor = 0;
     for (const [table, column] of Object.entries(KEY_VERSION_COLUMNS)) {

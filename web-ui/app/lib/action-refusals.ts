@@ -51,8 +51,10 @@ export function managedRefusal(fields: readonly ManagedSettingKey[]): string {
 const ATTACH_KEEP_NAME_HINT = 'Attach with the name it already has, as this page shows it.';
 
 /**
- * An attach or detach refused before anything was sent or written, because an
- * administrator locked or pinned where this machine's connection stays.
+ * An attach or detach refused before anything was written, because an
+ * administrator locked or pinned where this machine's connection stays. An attach
+ * asks again once its key is verified, so the same refusal can follow that check,
+ * which sends the key to the deployment and nothing else.
  *
  * The decision is worded by `connectionRefusalMessage`, the same sentence
  * `aka attach` and `aka detach` refuse with. The one addition is this page's own:
@@ -127,6 +129,55 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
   'The access key could not be saved to ~/.aka/settings, so nothing was changed. Check that the directory exists and is writable.';
 
 /**
+ * An attach whose settings were saved ahead of its credential, and whose
+ * credential then could not be saved.
+ *
+ * The settings go first only where a stop between the two writes would pair the
+ * new credential with an enrolled list or a history grant the finished attach
+ * replaces (`writesSettingsFirst`, the rule `aka attach` uses): a machine-wide
+ * attach over a credential that is, or may be, a personal device's, or over no
+ * credential file beside settings that still carry a list or a grant; and a
+ * scoped attach that does not keep the list stored beside it, over settings that
+ * carry a list or a grant, and not over a usable machine-wide credential. The
+ * settings then hold no list (machine-wide) or an empty one (scoped), and they
+ * are not put back, because that would take another settings write that can fail
+ * too. Beside them, what the machine already had sends no repository's activity:
+ * a scoped credential has no repository enrolled (its device report still goes,
+ * as it did before), a file that cannot be used or a credential for another
+ * deployment sends nothing, and with no credential file there is nothing to send
+ * with.
+ *
+ * The last sentence is there because an earlier scoped key for this deployment
+ * survives the failed write, and enrolling a repository under it would send that
+ * repository. It names no command, as this page's other "Attach it again"
+ * notices (the stored key missing, or unusable) name none: the settings read
+ * attached now, so the page shows no attach form, and on a machine an
+ * administrator governs a detach is refused as well, so no step on this page is
+ * the way back for every machine.
+ */
+export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
+  "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.";
+
+/**
+ * Added to a failed attach's refusal when the credential file could not be put
+ * back as the machine held it before, so the refusal does not read as "nothing
+ * changed". Neither names the key or anything the file held.
+ *
+ * ATTACH_ROLLBACK_LOST: the earlier file could not be read at all (a symbolic
+ * link, or a file that would not open), so there were no bytes to put back, and
+ * the key this attach saved had already replaced it. That key is removed as
+ * well, so the machine is left with no credential file.
+ *
+ * ATTACH_ROLLBACK_FAILED: putting the earlier file back failed part-way, or, when
+ * the machine held none, removing the one this attach wrote did.
+ */
+export const ATTACH_ROLLBACK_LOST =
+  'The access key file this machine had before could not be read, so it could not be put back, and it is gone.';
+
+export const ATTACH_ROLLBACK_FAILED =
+  'The access key file on this machine could not be put back as it was before this attempt, so it may differ from what it was.';
+
+/**
  * The endpoint is not a URL at all — a different fault from an insecure one.
  *
  * `isSafeEndpoint` answers false for both, so without this split the likeliest
@@ -147,6 +198,48 @@ export const ATTACH_ENDPOINT_UNPARSEABLE =
  */
 export const ATTACH_LABEL_INVALID =
   'That name cannot be used: it must be under 200 characters and contain no control characters. It is shown in `aka status`, where an escape sequence could hide part of what that reports.';
+
+/**
+ * An attach that names no mode, on a machine holding a credential this build
+ * cannot settle the mode from.
+ *
+ * That credential is either a file this build cannot read, which may be a scoped
+ * credential a newer build wrote, or a scoped credential for another deployment.
+ * Attaching machine-wide over either because nobody named a mode would widen
+ * what the machine sends without anyone deciding to.
+ *
+ * ONLY THERE. With no mode named, a machine with no credential file, or with a
+ * usable machine-wide one, attaches machine-wide, as every attach did before the
+ * choice existed, and, on a machine no administrator governs, a personal device
+ * re-attaching to the same deployment stays one. The form is what asks a user to
+ * choose; this action refuses only where a machine-wide write could widen a
+ * machine that may be scoped.
+ *
+ * Two callers can meet it on such a machine. A client that predates the choice
+ * sends no mode. And the form sends none on a machine an administrator governs,
+ * where it offers no choice: if that hold lifted before the form was submitted,
+ * the page still on screen has no choice to make and cannot follow the refusal
+ * until it is reloaded, so the copy says to reload.
+ */
+export const ATTACH_MODE_REQUIRED =
+  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
+
+/**
+ * An attach whose key was verified, and then found the machine's credential
+ * changed.
+ *
+ * The mode is decided from the credential read before the key goes out, and the
+ * reply can take seconds. If a terminal `aka attach` (or another dashboard)
+ * attached, re-attached or detached this machine in that time, writing what was
+ * decided could widen a personal device, narrow a machine-wide attachment, or
+ * replace its enrolled list with an empty one, with nobody asked about any of
+ * it. It is also the answer when an administrator's hold that settled the mode
+ * lifted in that time: the page that sent no mode was rendered under the hold and
+ * offered no choice. Nothing is written; reloading shows the machine as it stands
+ * now.
+ */
+export const ATTACH_CHANGED_WHILE_WAITING =
+  "This machine's connection changed while your key was being checked, so nothing was written over it. Reload the page to see how it stands now, then attach again if you still want to.";
 
 /**
  * The four refusals `syncNow` adds.

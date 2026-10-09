@@ -681,5 +681,22 @@ export const MODEL_ENTRIES: readonly ModelEntry[] = Object.freeze([
   ...amazon.models(),
 ]);
 
+/**
+ * Every distinct long-context threshold any declared price carries, ascending.
+ * A read that sums several requests before pricing them groups by which of
+ * these each request's prompt crossed, so a sum never decides a band.
+ */
+export const LONG_CONTEXT_THRESHOLDS: readonly number[] = Object.freeze(
+  [
+    ...new Set(
+      MODEL_ENTRIES.flatMap((entry) =>
+        [...entry.platforms.values()].flatMap((offering) =>
+          offering.price?.longContext ? [offering.price.longContext.thresholdInputTokens] : [],
+        ),
+      ),
+    ),
+  ].sort((a, b) => a - b),
+);
+
 /** The lookup index over `MODEL_ENTRIES`, keyed by canonical id and alias. */
 export const MODEL_INDEX = buildModelIndex(MODEL_ENTRIES);

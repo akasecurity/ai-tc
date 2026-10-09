@@ -284,7 +284,7 @@ describe('commandScanFor', () => {
     const { commandScanFor } = await import('../../src/attached/command-sync.ts');
 
     const scan = commandScanFor(
-      { dataDir: dataDirOf(base) } as never,
+      () => ({ dataDir: dataDirOf(base) }) as never,
       scanWorktree,
       SOURCE_TOOL.ClaudeCode,
     );
@@ -305,10 +305,14 @@ describe('commandScanFor', () => {
     const found: WorktreeScan = () => Promise.resolve({ scanned: 1 });
     const empty: WorktreeScan = () => Promise.resolve({ scanned: 0 });
 
-    await expect(commandScanFor(config, found, SOURCE_TOOL.ClaudeCode).run()).resolves.toEqual({
+    await expect(
+      commandScanFor(() => config, found, SOURCE_TOOL.ClaudeCode).run(),
+    ).resolves.toEqual({
       projects: 1,
     });
-    await expect(commandScanFor(config, empty, SOURCE_TOOL.ClaudeCode).run()).resolves.toEqual({
+    await expect(
+      commandScanFor(() => config, empty, SOURCE_TOOL.ClaudeCode).run(),
+    ).resolves.toEqual({
       projects: 0,
     });
   });
@@ -331,7 +335,7 @@ describe('commandScanFor', () => {
       const { commandScanFor } = await import('../../src/attached/command-sync.ts');
 
       await commandScanFor(
-        { dataDir: dataDirOf(base) } as never,
+        () => ({ dataDir: dataDirOf(base) }) as never,
         scanWorktree,
         SOURCE_TOOL.ClaudeCode,
       ).run();
@@ -365,7 +369,7 @@ describe('commandScanFor', () => {
     const scan = (() => {
       try {
         return commandScanFor(
-          { dataDir: dataDirOf(base) } as never,
+          () => ({ dataDir: dataDirOf(base) }) as never,
           scanWorktree,
           SOURCE_TOOL.ClaudeCode,
         );
@@ -394,7 +398,7 @@ describe('commandScanFor', () => {
       const spy = vi.spyOn(process, 'cwd').mockReturnValue(dir);
       try {
         const scan = commandScanFor(
-          { dataDir: dataDirOf(base) } as never,
+          () => ({ dataDir: dataDirOf(base) }) as never,
           scanWorktree,
           SOURCE_TOOL.ClaudeCode,
         );

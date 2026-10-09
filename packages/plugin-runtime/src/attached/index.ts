@@ -84,7 +84,13 @@ export type { PostureState, PostureStore } from './posture-store.ts';
 export { readDeviceIdentity } from './posture-store.ts';
 export { createPostureStore } from './posture-store.ts';
 export type { RenderAttachedStatusDeps } from './status.ts';
-export { renderAttachedStatus, renderPolicyLine } from './status.ts';
+export {
+  attachmentScopeLines,
+  endpointForTerminal,
+  printableForTerminal,
+  renderAttachedStatus,
+  renderPolicyLine,
+} from './status.ts';
 export { runAttachedSync } from './sync-entry.ts';
 export { readSyncState, SYNC_STATE_FILENAME, syncStatePath, writeSyncState } from './sync-state.ts';
 export type { SyncTriggerDeps } from './sync-trigger.ts';

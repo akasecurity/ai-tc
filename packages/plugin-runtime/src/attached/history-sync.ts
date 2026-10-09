@@ -11,6 +11,7 @@ import {
 import { createRemoteClient } from '@akasecurity/remote';
 import type { RecordAuditEventRequest } from '@akasecurity/schema';
 import type {
+  AttachmentMode,
   AuditEventRow,
   IngestEvent,
   ResolvedAttachmentScope,
@@ -223,8 +224,22 @@ export interface HistorySyncResult {
    * Returned rather than left for the caller to re-read, because the caller
    * writes the state file after the store handle has closed, and a count taken
    * from a second open could disagree with the pass that produced it.
+   *
+   * Counted through the pass's own scope. On a scoped attachment every bucket
+   * holds only rows of that scope's population, by the drain's own rule: a
+   * structural row when it and its session root carry an enrolled key, a
+   * capture when it does. So a personal repository's rows are in none of them,
+   * and an unenroll takes that repository's delivered rows out of `sent` too.
    */
   counts: HistorySyncCounts;
+  /**
+   * Which population `counts` describes: `'machine'` for everything recorded on
+   * this machine, `'scoped'` for the rows this pass's scope covers. Named by
+   * the filter the counts ran through rather than read again, so the two
+   * cannot disagree. The state file records it, which is how `aka status` tells
+   * these numbers from those an older build counted for the whole machine.
+   */
+  countsScope: AttachmentMode;
   atMs: number;
 }
 
@@ -637,13 +652,14 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
 
   /**
    * Whether any capture is owed IN SCOPE, as one LIMIT 1 probe through the
-   * live scope, so the probe and the capture lane agree about what is
-   * outstanding.
+   * filter the caller resolved, so the probe and the capture lane agree about
+   * what is outstanding. Before the second structural run the caller resolves
+   * it from the live scope; at the end of the pass, from the one reading every
+   * reported number shares. A required parameter, not a default one: a default
+   * would fire on `undefined`, which is the machine filter.
    */
-  const capturesOwed = (): boolean => {
-    const filter = scopeFilterOf(d.liveScope());
-    return d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS, filter).length > 0;
-  };
+  const capturesOwed = (filter: readonly string[] | undefined): boolean =>
+    d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS, filter).length > 0;
 
   // The structural phase runs TWICE at most: once against its reserved slice, and
   // again against the full deadline if the capture lane finished early. See the
@@ -758,11 +774,26 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   // that STOPPED — refused, unreachable, or out of time — has left work owed, and
   // spending the remainder on the other lane would be the starvation this whole
   // arrangement exists to prevent, inverted.
-  if (outcome === 'ok' && d.now() < deadline && !capturesOwed()) {
+  if (outcome === 'ok' && d.now() < deadline && !capturesOwed(scopeFilterOf(d.liveScope()))) {
     outcome = await drainStructural(deadline);
   }
 
-  if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {
+  // ONE READING OF THE SCOPE for everything this pass reports, taken here at its
+  // end: the outcome check, the counts and the capture probe all go through
+  // `filter`. Read separately, an enroll or an unenroll landing between them
+  // would build `done` from two different scopes. On a machine attachment
+  // `liveScope` reads nothing and the filter is `undefined`, which runs the
+  // machine statements exactly as before.
+  const filter = scopeFilterOf(d.liveScope());
+  // ONE count, for the outcome check and the result alike.
+  const counts = d.ledger.counts(d.backlogBefore, filter);
+  const countsScope: AttachmentMode = filter === undefined ? 'machine' : 'scoped';
+  // Only what this scope will send counts as left over. A scoped pass that runs
+  // out of time with nothing reachable left (every pending row personal,
+  // recorded with no key, or under a session root that is not enrolled) has
+  // done all it can, and calling it interrupted would ask a user to run it again
+  // for rows no pass of this scope will ever send.
+  if (outcome === 'ok' && d.now() >= deadline && counts.pending > 0) {
     outcome = 'interrupted';
   }
   return {
@@ -771,14 +802,12 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     sent,
     skipped,
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
-    // pay for a count over the capture grain on every pass. It asks only about
-    // in-scope captures, so a marker on a capture the scope excludes no longer
-    // holds `capturesPending` true. The structural `counts()` just below is NOT
-    // scoped: on a scoped attachment `phase` can stay `filling`, and
-    // `pendingTotal` includes rows the scope excludes. That is a display
-    // limitation; nothing is sent because of it.
-    capturesPending: capturesOwed(),
-    counts: d.ledger.counts(d.backlogBefore),
+    // pay for a count over the capture grain on every pass. Through the same
+    // filter as `counts`, so a marker on a capture outside the scope does not
+    // hold `capturesPending` true, and both halves of `done` describe one scope.
+    capturesPending: capturesOwed(filter),
+    counts,
+    countsScope,
     atMs: d.now(),
   };
 }

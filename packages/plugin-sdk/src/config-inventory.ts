@@ -347,7 +347,7 @@ function collectUserClaudeJson(
 // server for the session.
 function projectEntryFor(projects: Record<string, unknown>, cwd: string): unknown {
   const candidates = new Set<string>([cwd]);
-  const trimmed = cwd.replace(/\/+$/, '');
+  const trimmed = withoutTrailingSlashes(cwd);
   if (trimmed.length > 0) candidates.add(trimmed);
   try {
     candidates.add(realpathSync(cwd));
@@ -359,6 +359,18 @@ function projectEntryFor(projects: Record<string, unknown>, cwd: string): unknow
     if (typeof entry === 'object' && entry !== null) return entry;
   }
   return undefined;
+}
+
+const SLASH = '/'.charCodeAt(0);
+
+// A scan back from the end rather than `replace(/\/+$/, '')`, which is
+// quadratic on a long run of slashes that does not end the string: the engine
+// retries `\/+$` from each slash of the run and every attempt walks to the end
+// of it. The cwd is whatever the session was launched with.
+function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === SLASH) end -= 1;
+  return path.slice(0, end);
 }
 
 // A plugin manifest's `mcpServers` field: an inline servers object, or a

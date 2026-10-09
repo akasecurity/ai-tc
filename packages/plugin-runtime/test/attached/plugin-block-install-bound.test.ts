@@ -208,6 +208,7 @@ describe('the posture reporter with a stalled install record read', () => {
       }),
       hostname: () => 'DevMac-01',
       now: () => 1_780_000_000_000,
+      attachmentMode: 'machine',
       pluginBlock: createPluginBlock(build, cache),
     });
 

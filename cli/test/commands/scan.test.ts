@@ -207,17 +207,19 @@ describe('renderEgressLine', () => {
 });
 
 describe('renderForwardLine', () => {
-  it('says an unenrolled project stayed on this machine, and names no command', () => {
+  it('says an unenrolled project stayed on this machine, and points at the enroll verb', () => {
     // A scoped attachment declining to send is not a failure, but the person
-    // who ran the scan still has to be told nothing left. The line names no
-    // remedy: this build has no command that enrolls a repository, and a line
-    // that named one would send the reader looking for it.
+    // who ran the scan still has to be told nothing left. The pointer is true
+    // whichever reason kept the project local (not enrolled, no code-host
+    // remote, a nested repository not enrolled): the list shows what is sent,
+    // and the enroll verb is named with the remote it needs.
     const line = renderForwardLine({ status: 'not-enrolled', endpoint: 'Acme Security' });
     expect(line).toBe(
-      'Data shares: not forwarded to Acme Security — project not enrolled; ' +
-        'its scans stay on this machine',
+      'Data shares: not forwarded to Acme Security — the project or a repository nested in it is not enrolled; ' +
+        'its scans stay on this machine (`aka enroll --list` shows what is sent; ' +
+        '`aka enroll` adds a repository with a code-host remote)',
     );
-    expect(line).not.toContain('aka enroll');
+    expect(line).toContain('aka enroll --list');
   });
 });
 

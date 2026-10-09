@@ -1,3 +1,11 @@
+export type { AttachModeDecision } from './attach-mode.ts';
+export {
+  decideAttachMode,
+  holdsScopedFor,
+  mayBePersonalDevice,
+  settledDecisionHolds,
+  writesSettingsFirst,
+} from './attach-mode.ts';
 export {
   ATTACHED_DERIVED_FILENAMES,
   ATTACHED_FORWARD_DROPS_FILENAME,
@@ -8,6 +16,12 @@ export {
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
+export {
+  addAttachmentScopeEntries,
+  freshAttachmentScope,
+  removeAttachmentScopeEntries,
+  UnreadableAttachmentScopeError,
+} from './attachment-scope-edit.ts';
 export type {
   CredentialFileRead,
   CredentialState,
@@ -16,6 +30,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
@@ -26,6 +41,7 @@ export type { InventoryContext, LocalDatabase, ResolvedInventory } from './datab
 export { openLocalDatabase } from './database.ts';
 export {
   canonicalRepoUrl,
+  enrollableRepoKey,
   hashProjectKey,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
@@ -53,7 +69,11 @@ export {
   parseForwardHealth,
   readForwardHealth,
 } from './forward-health.ts';
-export { captureBackfillScope, seedCaptureBacklogOwed } from './history-backfill.ts';
+export {
+  captureBackfillScope,
+  seedCaptureBacklogOwed,
+  seedEnrolledCapturesOwed,
+} from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
 export {
@@ -95,6 +115,7 @@ export {
   managedAttachRefusal,
   managedConnectionHold,
   managedDetachRefusal,
+  managedScopedRefusal,
 } from './managed-connection.ts';
 export {
   lockedAmong,

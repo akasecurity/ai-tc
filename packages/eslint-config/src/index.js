@@ -152,12 +152,15 @@ export function noNetworkImports(opts = {}) {
 
 /**
  * The `no-restricted-syntax` rule value that bans *dynamic* access to the
- * network modules — `import('node:http')` and `require('axios')`, plus any npm-
- * client subpath (`import('axios/lib/adapters/http.js')`) — which the static
+ * network modules — `import('node:http')`, `require('axios')` and
+ * `process.getBuiltinModule('node:https')` (however the method is reached: off
+ * `process`, computed, optional or destructured), plus any npm-client subpath
+ * (`import('axios/lib/adapters/http.js')`) — which the static
  * `no-restricted-imports` rule cannot see. Intentionally NOT matched, since an
  * esquery selector cannot follow a binding and the ban targets accidents rather
- * than deliberate evasion: a non-literal specifier (`import(url)`, a template
- * literal), `require.resolve(...)`, and an aliased/indirected require
+ * than deliberate evasion: a non-literal specifier (`import(url)`,
+ * `getBuiltinModule(id)`, a template literal), `require.resolve(...)`, and an
+ * aliased/indirected require or loader
  * (`const req = createRequire(...); req('node:http')`). `allow` drops specific
  * specifiers, symmetric with `noNetworkImports`, so a file that opts out of a
  * static import can opt out of the dynamic form too.
@@ -198,6 +201,10 @@ function networkSyntaxSelectors(opts = {}) {
     },
     {
       selector: `CallExpression[callee.name='require'] > Literal[value=/^(${pattern})$/]`,
+      message: NO_NETWORK_MESSAGE,
+    },
+    {
+      selector: `CallExpression:matches([callee.name='getBuiltinModule'], [callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule']) > Literal[value=/^(${pattern})$/]`,
       message: NO_NETWORK_MESSAGE,
     },
   ];

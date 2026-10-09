@@ -21,7 +21,9 @@
  * across three plugin trees. It owns the scan root's scope key too: on a scoped
  * attachment the command channel reads that key before it scans, and a root
  * that is not enrolled is left unscanned and unacknowledged, so the command
- * waits for a session that is in an enrolled checkout.
+ * waits for a session that is in an enrolled checkout. It is handed a LOADER,
+ * not a loaded config: the configuration, the enrolled scope included, is read
+ * when a command is serviced, not when this child spawned.
  *
  * Fully fail-open, and it never throws: `runAttachedSync` records an outcome
  * for `/aka:status` to render and swallows everything else. Always exits 0.
@@ -33,7 +35,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 
 try {
   await runAttachedSync(undefined, {
-    scan: commandScanFor(loadConfig(), scanWorktree, SOURCE_TOOL.ClaudeCode),
+    scan: commandScanFor(() => loadConfig(), scanWorktree, SOURCE_TOOL.ClaudeCode),
   });
 } catch {
   // Nothing to report to — this process is detached with stdio ignored.

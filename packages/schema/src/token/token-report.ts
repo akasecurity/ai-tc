@@ -19,6 +19,11 @@ import type { CostModel, CostUsage } from './cost-model.ts';
 export interface LlmCallLeaf {
   sessionId: string;
   attributes: LlmCallAttributes;
+  /**
+   * Set when the leaf stands for several calls: the largest single call's
+   * prompt, which selects the long-context band (see `CostUsage.promptTokens`).
+   */
+  promptTokens?: number;
 }
 
 interface RollupAcc {
@@ -29,16 +34,19 @@ interface RollupAcc {
   cacheCreation: number;
   cacheRead: number;
   costUsd: number;
-  // A known `(provider, model)` price was found for at least one leaf. A rollup is
-  // single-(provider, model), so in practice this is all-or-nothing across its
-  // leaves; `false` means the pair is unknown → cost renders as null, never a guess.
+  // A known `(provider, model)` price was found for at least one leaf; `false`
+  // means the pair is unknown → cost renders as null, never a guess.
   priced: boolean;
+  // At least one leaf priced to null. Not the negation of `priced`: one model can
+  // price a call under its long-context threshold and leave one over it unpriced,
+  // so a rollup can be priced and still understate its cost.
+  partial: boolean;
 }
 
 const num = (value: number | undefined): number => value ?? 0;
 
 // Map a leaf's stored attribute names onto the cost model's `CostUsage` shape.
-function costUsageOf(a: LlmCallAttributes): CostUsage {
+function costUsageOf(a: LlmCallAttributes, promptTokens: number | undefined): CostUsage {
   const usage: CostUsage = {
     inputTokens: num(a.input_tokens),
     outputTokens: num(a.output_tokens),
@@ -49,6 +57,7 @@ function costUsageOf(a: LlmCallAttributes): CostUsage {
   };
   // `?: string` under exactOptionalPropertyTypes — only set when present.
   if (a.service_tier !== undefined) usage.serviceTier = a.service_tier;
+  if (promptTokens !== undefined) usage.promptTokens = promptTokens;
   return usage;
 }
 
@@ -61,7 +70,7 @@ export function buildTokenReports(
 ): SessionTokenReport[] {
   const bySession = new Map<string, Map<string, RollupAcc>>();
 
-  for (const { sessionId, attributes } of leaves) {
+  for (const { sessionId, attributes, promptTokens } of leaves) {
     const provider = attributes.provider ?? 'unknown';
     const model = attributes.model ?? 'unknown';
     const key = `${provider} ${model}`;
@@ -82,6 +91,7 @@ export function buildTokenReports(
         cacheRead: 0,
         costUsd: 0,
         priced: false,
+        partial: false,
       };
       rollups.set(key, acc);
     }
@@ -91,8 +101,14 @@ export function buildTokenReports(
     acc.cacheCreation += num(attributes.cache_creation_input_tokens);
     acc.cacheRead += num(attributes.cache_read_input_tokens);
 
-    const leafCost = costModel.costFor({ provider, model, usage: costUsageOf(attributes) });
-    if (leafCost !== null) {
+    const leafCost = costModel.costFor({
+      provider,
+      model,
+      usage: costUsageOf(attributes, promptTokens),
+    });
+    if (leafCost === null) {
+      acc.partial = true;
+    } else {
       acc.costUsd += leafCost;
       acc.priced = true;
     }
@@ -110,9 +126,8 @@ export function buildTokenReports(
       const rollupTotal = acc.input + acc.output + acc.cacheCreation + acc.cacheRead;
       totalTokens += rollupTotal;
       const estimatedCostUsd = acc.priced ? acc.costUsd : null;
-      if (estimatedCostUsd === null) {
-        anyUnpriced = true;
-      } else {
+      if (acc.partial) anyUnpriced = true;
+      if (estimatedCostUsd !== null) {
         anyPriced = true;
         costUsd += estimatedCostUsd;
       }
@@ -136,7 +151,7 @@ export function buildTokenReports(
       totalTokens,
       // Σ of the PRICED rollups; null when none had a known price.
       estimatedCostUsd: anyPriced ? costUsd : null,
-      // Any unknown (provider, model) means the total understates real spend.
+      // Any call priced to null means the total understates real spend.
       costIsPartial: anyUnpriced,
     });
   }

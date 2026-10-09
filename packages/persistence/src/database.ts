@@ -97,9 +97,10 @@ export type { InventoryContext, InventoryFacets, ResolvedInventory } from '@akas
  * Three properties are load-bearing:
  *
  * - **Symbol-keyed and NOT re-exported from `src/index.ts`.** The package's
- *   `exports` map is `"." -> "./src/index.ts"` and nothing else, so no other
- *   package can reach `database.ts` to name this. Test-only is structural here,
- *   not a request.
+ *   `exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"`, which
+ *   serves a subset of the root's bindings and never loads this module (both
+ *   held by `test/sqlite-free-entry.test.ts`), so no other package can reach
+ *   `database.ts` to name this. Test-only is structural here, not a request.
  * - **A plain enumerable data property, never a getter.** Test helpers hand out
  *   `{ ...db, close }` wrappers (`test/helpers/temp-store.ts`), and object
  *   spread copies own enumerable properties — symbol keys included. Make it

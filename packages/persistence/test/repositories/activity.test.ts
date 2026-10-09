@@ -746,13 +746,28 @@ describe('tokenReports', () => {
     });
     leaf('X5', 'X', NOW + 5, { model: 'mystery-model', provider: 'mystery', input_tokens: 500 });
     leaf('X6', 'X', NOW + 6, { input_tokens: 5 });
-    leaf('Y1', 'Y', NOW + 7, { ...base, input_tokens: 40, output_tokens: 4 });
+    // GPT-5.4 bands at 272K on ONE request's whole prompt, cached tokens included.
+    // Three mostly-cached 100K calls sum past the line while no call crosses it;
+    // a 250K call crosses only the catalog's lower threshold; a 300K call
+    // crosses the line and is unpriced.
+    const gpt = { model: 'gpt-5.4', provider: 'openai' };
+    for (const n of [7, 8, 9]) {
+      leaf(`X${String(n)}`, 'X', NOW + n, {
+        ...gpt,
+        input_tokens: 2_000,
+        cache_read_input_tokens: 98_000,
+        output_tokens: 300,
+      });
+    }
+    leaf('X10', 'X', NOW + 10, { ...gpt, input_tokens: 10_000, cache_read_input_tokens: 240_000 });
+    leaf('X11', 'X', NOW + 11, { ...gpt, input_tokens: 15_000, cache_read_input_tokens: 285_000 });
+    leaf('Y1', 'Y', NOW + 12, { ...base, input_tokens: 40, output_tokens: 4 });
     raw
       .prepare(
         `INSERT INTO audit_events (id, root_session_id, event_type, started_at, attributes)
          VALUES ('Y-null', 'Y', 'llm_call', ?, NULL)`,
       )
-      .run(NOW + 8);
+      .run(NOW + 13);
 
     // The per-call fold, straight off the bags, as the read used to do it.
     const bags = raw
@@ -798,6 +813,12 @@ describe('tokenReports', () => {
         else expect(gotRoll?.estimatedCostUsd).toBeCloseTo(roll.estimatedCostUsd, 9);
       }
     }
+    // Not vacuous: the GPT-5.4 calls under the line are priced, so the equality
+    // above compared a number, not two nulls.
+    const gptRollup = actual
+      .find((r) => r.sessionId === 'X')
+      ?.rollups.find((r) => r.model === 'gpt-5.4');
+    expect(gptRollup?.estimatedCostUsd).toBeGreaterThan(0);
     // The same rows, one session at a time, agree with the cross-session read.
     for (const report of actual) {
       expect(await activity().tokenReportForSession(report.sessionId)).toEqual(report);

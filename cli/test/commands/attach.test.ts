@@ -135,13 +135,13 @@ describe('the key never travels in argv', () => {
     // A mistyped flag that is silently dropped is how a key ends up somewhere
     // nobody looked.
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--kee-stdin'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--kee-stdin'], deps(io));
     expect(exits).toEqual([2]);
   });
 
   it('never echoes the key it was given', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
     // Positive control first: the command really did say something on success,
     // so the absence assertions below cannot pass on an empty string.
     expect(io.output()).toContain('Attached to');
@@ -154,7 +154,7 @@ describe('what attach writes', () => {
   it('stores the credential beside settings, and never in settings', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(
-      ['--url', ENDPOINT, '--label', 'Example Org production', '--no-sync-history'],
+      ['--url', ENDPOINT, '--machine', '--label', 'Example Org production', '--no-sync-history'],
       deps(io),
     );
 
@@ -176,7 +176,7 @@ describe('what attach writes', () => {
 
   it('takes the key from stdin when asked, for an unattended enrolment', async () => {
     const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
-    await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin'], deps(io));
     expect(exits).toEqual([]);
     const credential: unknown = JSON.parse(
       readFileSync(controlPlaneCredentialPath(settingsDirOf(base)), 'utf8'),
@@ -222,7 +222,7 @@ describe('what attach refuses', () => {
   it('a plaintext endpoint, before the key is ever put on a wire', async () => {
     let verified = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', 'http://aka.example-org.internal'], {
+    await runAttach(['--url', 'http://aka.example-org.internal', '--machine'], {
       ...deps(io),
       verify: () => {
         verified = true;
@@ -238,13 +238,16 @@ describe('what attach refuses', () => {
   it('an endpoint carrying a password, before the key is ever put on a wire', async () => {
     let verified = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', 'https://svc:SUPER-SECRET-PASSWORD@aka.example-org.internal'], {
-      ...deps(io),
-      verify: () => {
-        verified = true;
-        return verify();
+    await runAttach(
+      ['--url', 'https://svc:SUPER-SECRET-PASSWORD@aka.example-org.internal', '--machine'],
+      {
+        ...deps(io),
+        verify: () => {
+          verified = true;
+          return verify();
+        },
       },
-    });
+    );
 
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
@@ -260,7 +263,7 @@ describe('what attach refuses', () => {
     // to something that will refuse every request from now on" — which would
     // otherwise be silent, because every later failure is swallowed by design.
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], {
+    await runAttach(['--url', ENDPOINT, '--machine'], {
       ...deps(io),
       verify: () => Promise.reject(new Error('401')),
     });
@@ -272,7 +275,7 @@ describe('what attach refuses', () => {
 
   it('an empty key', async () => {
     const io = scriptedPrompter({ interactive: true, answers: ['   '] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(exits).toEqual([2]);
   });
 });
@@ -311,7 +314,7 @@ describe('the --home flag every other command honours', () => {
     };
 
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
+    await runAttach(['--url', ENDPOINT, '--machine', '--home', base, '--no-sync-history'], {
       ...stubbed,
       prompter: io,
       verify,
@@ -339,7 +342,7 @@ describe('the --home flag every other command honours', () => {
 describe('output', () => {
   it('ends every verb with a newline, like every other command', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
     expect(io.output().endsWith('\n')).toBe(true);
 
     const st = scriptedPrompter({ interactive: true });
@@ -355,7 +358,7 @@ describe('output', () => {
 describe('detach', () => {
   it('clears both halves and everything derived from them', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
 
     // The cached bundle and the recorded outcome, as the sync child leaves them.
     const dataDir = dataDirOf(base);
@@ -410,7 +413,7 @@ describe('detach', () => {
   it('passes the RESOLVED --home to installBackgroundSync on attach, the same way', async () => {
     const seen: string[] = [];
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
+    await runAttach(['--url', ENDPOINT, '--machine', '--home', base, '--no-sync-history'], {
       deviceAttach: notOffered,
       managedSettings: null,
       verify,
@@ -477,7 +480,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
 
   it('still attaches to the pinned endpoint — that is the enrolment path', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', PINNED, '--no-sync-history'], pinnedDeps(io));
+    await runAttach(['--url', PINNED, '--machine', '--no-sync-history'], pinnedDeps(io));
     expect(exits).toEqual([]);
     expect(io.output()).toContain('Attached to');
     expect(credential()).toMatchObject({ endpoint: PINNED });
@@ -496,7 +499,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     async (_how, named) => {
       const before = Date.now();
       await runAttach(
-        ['--url', PINNED, ...named, '--no-sync-history'],
+        ['--url', PINNED, '--machine', ...named, '--no-sync-history'],
         pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
       );
       const after = Date.now();
@@ -519,7 +522,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     let verified = false;
     let granted = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', OTHER, '--no-sync-history'], {
+    await runAttach(['--url', OTHER, '--machine', '--no-sync-history'], {
       ...pinnedDeps(io),
       verify: () => {
         verified = true;
@@ -547,7 +550,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     // `--key-stdin` sailed past it to the write — which under a pin lands.
     let verified = false;
     const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
-    await runAttach(['--url', OTHER, '--key-stdin'], {
+    await runAttach(['--url', OTHER, '--machine', '--key-stdin'], {
       ...pinnedDeps(io),
       verify: () => {
         verified = true;
@@ -563,7 +566,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
 
   it('refuses to detach, naming who pinned it and to what, and leaves both halves in place', async () => {
     await runAttach(
-      ['--url', PINNED, '--no-sync-history'],
+      ['--url', PINNED, '--machine', '--no-sync-history'],
       pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     const before = readWorkspaceSettings(base);
@@ -592,7 +595,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
 
   it('refuses before the history boundary is released, so a refused detach changes nothing', async () => {
     await runAttach(
-      ['--url', PINNED, '--sync-history'],
+      ['--url', PINNED, '--machine', '--sync-history'],
       pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     freezeBoundary();
@@ -615,7 +618,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
       lockedFields: ['runMode'],
     };
     await runAttach(
-      ['--url', ENDPOINT, '--sync-history'],
+      ['--url', ENDPOINT, '--machine', '--sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     freezeBoundary();
@@ -641,7 +644,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
       values: { controlPlane: { endpoint: PINNED, label: 'example-prod' } },
       lockedFields: [],
     };
-    await runAttach(['--url', PINNED, '--no-sync-history'], {
+    await runAttach(['--url', PINNED, '--machine', '--no-sync-history'], {
       ...deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
       managedSettings: planeOnly,
     });
@@ -676,7 +679,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
       let verified = false;
       let granted = false;
       const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-      await runAttach(['--url', PINNED, '--no-sync-history'], {
+      await runAttach(['--url', PINNED, '--machine', '--no-sync-history'], {
         ...deps(io),
         managedSettings: standalone,
         verify: () => {
@@ -705,17 +708,20 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     let verified = false;
     let granted = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', PINNED, '--label', 'renamed-here', '--no-sync-history'], {
-      ...pinnedDeps(io),
-      verify: () => {
-        verified = true;
-        return verify();
+    await runAttach(
+      ['--url', PINNED, '--machine', '--label', 'renamed-here', '--no-sync-history'],
+      {
+        ...pinnedDeps(io),
+        verify: () => {
+          verified = true;
+          return verify();
+        },
+        deviceAttach: () => {
+          granted = true;
+          return notOffered();
+        },
       },
-      deviceAttach: () => {
-        granted = true;
-        return notOffered();
-      },
-    });
+    );
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
     expect(granted).toBe(false);
@@ -729,7 +735,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
   it('accepts a --label equal to the pinned one — the refusal is about the difference', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(
-      ['--url', PINNED, '--label', 'example-prod', '--no-sync-history'],
+      ['--url', PINNED, '--machine', '--label', 'example-prod', '--no-sync-history'],
       pinnedDeps(io),
     );
     expect(exits).toEqual([]);
@@ -751,7 +757,10 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
 
     it('shows the name --label gave it, as `aka attach` said it would', async () => {
       const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-      await runAttach(['--url', PINNED, '--label', 'MyBox', '--no-sync-history'], unnamedDeps(io));
+      await runAttach(
+        ['--url', PINNED, '--machine', '--label', 'MyBox', '--no-sync-history'],
+        unnamedDeps(io),
+      );
       expect(exits).toEqual([]);
       expect(io.output()).toContain('Attached to MyBox.');
       // What status and the dashboard read: the overlay applied.
@@ -763,12 +772,12 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
       // it would refuse every rename. Only a name the administrator pinned is
       // one the next read would put back.
       await runAttach(
-        ['--url', PINNED, '--label', 'MyBox', '--no-sync-history'],
+        ['--url', PINNED, '--machine', '--label', 'MyBox', '--no-sync-history'],
         unnamedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
       );
       const io = scriptedPrompter({ interactive: true, answers: [KEY] });
       await runAttach(
-        ['--url', PINNED, '--label', 'Renamed', '--no-sync-history'],
+        ['--url', PINNED, '--machine', '--label', 'Renamed', '--no-sync-history'],
         unnamedDeps(io),
       );
       expect(exits).toEqual([]);
@@ -798,11 +807,11 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     // The positive control: the pre-flight reads the overlay, not the user's
     // own descriptor, so moving between deployments stays the user's to do.
     await runAttach(
-      ['--url', ENDPOINT, '--no-sync-history'],
+      ['--url', ENDPOINT, '--machine', '--no-sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', OTHER, '--no-sync-history'], deps(io));
+    await runAttach(['--url', OTHER, '--machine', '--no-sync-history'], deps(io));
     expect(exits).toEqual([]);
     expect(io.output()).toContain('Attached to');
     expect(readWorkspaceSettings(base).controlPlane?.endpoint).toBe(OTHER);
@@ -826,7 +835,7 @@ describe('a lock on the connection, and the name it freezes', () => {
   // whatever the user last chose.
   const attachNamed = () =>
     runAttach(
-      ['--url', ENDPOINT, '--label', 'Old', '--no-sync-history'],
+      ['--url', ENDPOINT, '--machine', '--label', 'Old', '--no-sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
   const attachUnder = async (managedSettings: ManagedSettings, argv: string[]) => {
@@ -848,6 +857,7 @@ describe('a lock on the connection, and the name it freezes', () => {
     const { io, verified } = await attachUnder(locked, [
       '--url',
       ENDPOINT,
+      '--machine',
       '--label',
       'New',
       '--no-sync-history',
@@ -864,7 +874,12 @@ describe('a lock on the connection, and the name it freezes', () => {
     // lock it refuses — after the browser approval and the key round trip, if
     // nothing refused it sooner.
     await attachNamed();
-    const { io, verified } = await attachUnder(locked, ['--url', ENDPOINT, '--no-sync-history']);
+    const { io, verified } = await attachUnder(locked, [
+      '--url',
+      ENDPOINT,
+      '--machine',
+      '--no-sync-history',
+    ]);
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
     expect(io.errors()).toContain('--label');
@@ -879,6 +894,7 @@ describe('a lock on the connection, and the name it freezes', () => {
     const { io, verified } = await attachUnder(locked, [
       '--url',
       ENDPOINT,
+      '--machine',
       '--label',
       '',
       '--no-sync-history',
@@ -897,7 +913,12 @@ describe('a lock on the connection, and the name it freezes', () => {
       values: { controlPlane: { endpoint: ENDPOINT } },
     };
     await attachNamed();
-    const { verified } = await attachUnder(lockedPin, ['--url', ENDPOINT, '--no-sync-history']);
+    const { verified } = await attachUnder(lockedPin, [
+      '--url',
+      ENDPOINT,
+      '--machine',
+      '--no-sync-history',
+    ]);
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
     expect(readEffectiveSettings(base, lockedPin).settings.controlPlane?.label).toBe('Old');
@@ -916,7 +937,7 @@ describe('status', () => {
     // async while the connection block is sync and total. Without it the
     // command advertises an answer it never prints.
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
 
     const out = scriptedPrompter({ interactive: true });
     await runStatus([], deps(out));
@@ -969,7 +990,7 @@ describe('status', () => {
 
   it('names the deployment once attached, and never the key', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
 
     const out = scriptedPrompter({ interactive: true });
     await runStatus([], deps(out));
@@ -1025,7 +1046,7 @@ describe('existing-history consent', () => {
   it('backfills a pre-existing capture as owed when the user grants consent', async () => {
     seedCapture();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
 
     const db = openLocalDatabase(dataDirOf(base));
@@ -1043,7 +1064,7 @@ describe('existing-history consent', () => {
   it('does not backfill a pre-existing capture when the user declines', async () => {
     seedCapture();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toBeUndefined();
 
     const db = openLocalDatabase(dataDirOf(base));
@@ -1077,7 +1098,7 @@ describe('existing-history consent', () => {
       null,
     );
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
 
     const db = openLocalDatabase(dataDirOf(base));
     try {
@@ -1100,7 +1121,7 @@ describe('existing-history consent', () => {
   // permanently ungranted and silently drop that traffic.
   it('still asks on a machine with no store, but offers no history numbers', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(exits).toEqual([]);
     expect(consentOf()).toBeUndefined();
     const shown = io.output();
@@ -1113,20 +1134,20 @@ describe('existing-history consent', () => {
 
   it('records the grant on a fresh machine when the user says yes', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
   });
 
   it('records no grant when the flag declines, and asks nothing', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
     expect(exits).toEqual([]);
     expect(consentOf()).toBeUndefined();
   });
 
   it('records a grant when the flag consents, and asks nothing', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--sync-history'], deps(io));
     expect(exits).toEqual([]);
     expect(consentOf()).toMatchObject({
       endpoint: ENDPOINT,
@@ -1152,14 +1173,14 @@ describe('existing-history consent', () => {
   it('grants on an explicit yes', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'Y'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
   });
 
   it('declines on no', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toBeUndefined();
   });
 
@@ -1168,7 +1189,7 @@ describe('existing-history consent', () => {
   it('declines on an empty answer', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, ''] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(consentOf()).toBeUndefined();
   });
 
@@ -1181,7 +1202,7 @@ describe('existing-history consent', () => {
   it('says what it is asking about before it asks', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     const shown = io.output();
     expect(shown).toContain('What that history sends:');
     // The v2 widening, stated where the user is deciding.
@@ -1206,7 +1227,7 @@ describe('existing-history consent', () => {
   it('attaches without asking or granting when there is no terminal', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
-    await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin'], deps(io));
     expect(exits).toEqual([]);
     expect(readWorkspaceSettings(base).runMode).toBe('attached');
     expect(consentOf()).toBeUndefined();
@@ -1219,14 +1240,14 @@ describe('existing-history consent', () => {
   // already on file, so the user's explicit no would be discarded.
   it('clears an existing grant when the user declines on a re-attach', async () => {
     await runAttach(
-      ['--url', ENDPOINT, '--sync-history'],
+      ['--url', ENDPOINT, '--machine', '--sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     expect(consentOf()).toBeDefined();
 
     seedHistory();
     await runAttach(
-      ['--url', ENDPOINT],
+      ['--url', ENDPOINT, '--machine'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY, 'n'] })),
     );
     expect(consentOf()).toBeUndefined();
@@ -1234,11 +1255,11 @@ describe('existing-history consent', () => {
 
   it('clears an existing grant when the decline comes from a flag', async () => {
     await runAttach(
-      ['--url', ENDPOINT, '--sync-history'],
+      ['--url', ENDPOINT, '--machine', '--sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     await runAttach(
-      ['--url', ENDPOINT, '--no-sync-history'],
+      ['--url', ENDPOINT, '--machine', '--no-sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     expect(consentOf()).toBeUndefined();
@@ -1250,7 +1271,7 @@ describe('existing-history consent', () => {
   // boundary is never re-frozen.
   it('releases the history boundary on detach so a re-attach can set a new one', async () => {
     await runAttach(
-      ['--url', ENDPOINT, '--sync-history'],
+      ['--url', ENDPOINT, '--machine', '--sync-history'],
       deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
     );
     const db = openLocalDatabase(dataDirOf(base));
@@ -1276,7 +1297,7 @@ describe('existing-history consent', () => {
   // whatever this machine attaches to next.
   it('is cleared by detach', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--sync-history'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--sync-history'], deps(io));
     expect(consentOf()).toBeDefined();
 
     runDetach([], deps(scriptedPrompter({ interactive: true })));
@@ -1299,7 +1320,7 @@ describe('what a finished attach says it forwards', () => {
     'says each once on an attach driven by %s, which asks nothing',
     async (flag) => {
       const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-      await runAttach(['--url', ENDPOINT, flag], deps(io));
+      await runAttach(['--url', ENDPOINT, '--machine', flag], deps(io));
       expect(exits).toEqual([]);
       expect(readWorkspaceSettings(base).runMode).toBe('attached');
       // The question was skipped, so nothing it prints can be what satisfied
@@ -1311,7 +1332,7 @@ describe('what a finished attach says it forwards', () => {
 
   it('says each once on an attach with no terminal to ask on', async () => {
     const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
-    await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine', '--key-stdin'], deps(io));
     expect(exits).toEqual([]);
     expect(readWorkspaceSettings(base).runMode).toBe('attached');
     // The skip is what this case is about, so pin that it happened.
@@ -1321,7 +1342,7 @@ describe('what a finished attach says it forwards', () => {
 
   it('says each once on the interactive path, which also asks the question', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(exits).toEqual([]);
     // The question really was shown, so a copy of either sentence left inside
     // it would be counted here.
@@ -1335,7 +1356,7 @@ describe('what a finished attach says it forwards', () => {
     // the question would claim forwarding that never starts.
     mkdirSync(join(settingsDirOf(base), 'settings.json', 'occupied'), { recursive: true });
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--machine'], deps(io));
     expect(exits).toEqual([1]);
     expect(io.errors()).toContain('could not save the attachment');
     expect(io.output()).toContain('Saying no does not stop live sending');

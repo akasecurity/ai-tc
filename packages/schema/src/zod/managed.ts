@@ -218,7 +218,7 @@ export function managedByLabel(context: ManagedContext): string {
 
 /**
  * Why an attach or a detach is refused because an administrator decides where
- * this machine's connection stays.
+ * this machine's connection stays, or how much of the machine it reports.
  *
  * A LOCK on `runMode` makes the settings writer refuse any change to the
  * connection. A PINNED `runMode` or `controlPlane` with no lock does not: the
@@ -242,7 +242,15 @@ export type ConnectionRefusal =
    */
   | { reason: 'label-required'; organization?: string }
   /** The mode is locked or pinned, and the machine reads as attached. */
-  | { reason: 'held-attached'; organization?: string; endpoint: string };
+  | { reason: 'held-attached'; organization?: string; endpoint: string }
+  /**
+   * A SCOPED attach was asked for, on a machine whose administrator locks
+   * `runMode` or pins `runMode` or `controlPlane`. A scoped attach would narrow a
+   * device the organization manages to the repositories its user enrolls, so it
+   * is refused. Worded without a flag or a control, so one sentence reads the
+   * same in a terminal and on a page.
+   */
+  | { reason: 'scoped-managed'; organization?: string };
 
 /**
  * The sentence a connection refusal is reported with. One function for the
@@ -269,6 +277,11 @@ export function connectionRefusalMessage(refusal: ConnectionRefusal): string {
       return (
         `${who} manages this machine's attachment to ${refusal.endpoint}, ` +
         'so it cannot be detached here. Ask them to change it.'
+      );
+    case 'scoped-managed':
+      return (
+        `${who} manages this machine, so it attaches machine-wide ` +
+        'and cannot be limited to the repositories you enroll.'
       );
   }
 }

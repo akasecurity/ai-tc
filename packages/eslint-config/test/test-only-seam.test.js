@@ -118,7 +118,8 @@ describe(`the ${SEAM} test-only seam`, () => {
     const entry = readFileSync(join(REPO_ROOT, ENTRY), 'utf8');
 
     // What makes "test-only" structural rather than a request. The manifest
-    // below exposes `.` alone, so `src/database.ts` is unreachable from another
+    // below exposes only `.` and `./sqlite-free`, and neither re-exports
+    // `src/database.ts`'s seam, so it is unreachable from another
     // package — re-export the symbol here and every consumer of
     // `@akasecurity/persistence` can name it, at which point the rule above is
     // the only thing left and it is a rule about this repo, not about a
@@ -193,8 +194,8 @@ describe(`the ${MANAGED_SEAM} test-only seam`, () => {
 
   it('is not re-exported from the package entry point', () => {
     // The same structural property the raw handle has, and available here for
-    // the same reason: the manifest exposes `.` alone, so `src/*.ts` is
-    // unreachable from another PACKAGE. Re-export it here and every consumer of
+    // the same reason: the manifest exposes only `.` and `./sqlite-free`, so the
+    // rest of `src/*.ts` is unreachable from another PACKAGE. Re-export it here and every consumer of
     // @akasecurity/persistence could name it, leaving the walk above as the
     // whole guarantee rather than a second line of defence.
     expect(readFileSync(join(REPO_ROOT, ENTRY), 'utf8')).not.toContain(MANAGED_SEAM);

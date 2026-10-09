@@ -29,7 +29,7 @@ const STATS: PolicyStatsResponse = {
 
 const STAT = 'data-slot="summary-stat"';
 const SKELETON = 'data-slot="skeleton"';
-const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections governed'];
+const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections assigned'];
 
 function count(html: string, needle: string): number {
   return html.split(needle).length - 1;
@@ -75,7 +75,7 @@ describe('PolicyStatsView', () => {
     expect(count(html, STAT)).toBe(4);
     expect(values(html, '—')).toBe(4);
     // Settled, not loading: the labels are still there to say WHAT is unknown.
-    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, 'Detections assigned')).toBe(1);
     expect(count(html, SKELETON)).toBe(0);
   });
 
@@ -95,6 +95,19 @@ describe('PolicyStatsView', () => {
     // truncation point inside one still can, since the placeholder is a fixed
     // width and the value it stands in for is not.
     expect(count(html, SKELETON)).toBe(4);
+  });
+
+  it('says governed, not assigned, when the host counts unassigned detections', () => {
+    // A host whose count also holds the detections with no policy of their own,
+    // under the policy they run at, counts every detection it has: each one is
+    // governed by some policy, but not every one was assigned it.
+    const html = renderToStaticMarkup(
+      <PolicyStatsView locale="en-US" stats={STATS} countsUnassigned />,
+    );
+
+    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, '7')).toBe(1);
+    expect(html).not.toContain('assigned');
   });
 
   it('carries the shared gap by default, and lets a caller replace it', () => {

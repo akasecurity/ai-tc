@@ -637,8 +637,9 @@ export const SessionTokenReport = z.object({
   totalTokens: z.number().int().nonnegative(),
   // Σ of the PRICED rollups only; null when no rollup had a known price.
   estimatedCostUsd: z.number().nullable(),
-  // True whenever any rollup has a null cost (unknown provider/model), so the
-  // total understates real spend — the UI renders `≥ $X` instead of a falsely
+  // True whenever any call priced to null (an unknown provider/model, or a call
+  // over a long-context threshold whose rate is unpublished), so the total
+  // understates real spend — the UI renders `≥ $X` instead of a falsely
   // precise figure rather than silently dropping the unpriced calls.
   costIsPartial: z.boolean(),
 });

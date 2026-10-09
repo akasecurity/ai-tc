@@ -38,7 +38,9 @@ import {
 // `RemoteFailureKind`: a device-side vocabulary nothing sends, so it carries NO
 // id — an id registers the shape in Zod's global registry, and a consumer
 // walking that registry would publish it into a generated document as a
-// component no route uses.
+// component no route uses. `AttachmentMode` is a third no-id shape: a
+// credential vocabulary that the device report carries inline, as a member of
+// `StorePostureSnapshot`, and never as a component of its own.
 
 // ─── The credential file ─────────────────────────────────────────────────────
 
@@ -100,7 +102,12 @@ export type AttachedCredential = z.infer<typeof AttachedCredential>;
 // them, and with an absent mode meaning machine-wide, each drop would widen what
 // is sent.
 //
-// NO `.meta({ id })`: nothing on any wire names it, and an id would publish it.
+// NO `.meta({ id })`, though one wire does carry it now: a scoped attachment's
+// device report sends `StorePostureSnapshot.attachmentMode`. There it is a
+// member of that request body, published INLINE as its two strings, and not
+// one of the body's components. An id would register it as a component of its
+// own, and this vocabulary belongs to the credential file, whose shapes never
+// enter the registry.
 export const AttachmentMode = z.enum(['machine', 'scoped']);
 export type AttachmentMode = z.infer<typeof AttachmentMode>;
 
@@ -501,6 +508,14 @@ export const StorePostureSnapshot = z
     // OPTIONAL, not nullable: a reporter that predates this member keeps
     // getting its 200 without a payload change.
     plugin: StorePosturePlugin.optional(),
+    // OPTIONAL, and sent only by a scoped attachment, always as `scoped`. A
+    // machine attachment omits it, so its body is byte for byte the one it
+    // sent before this member existed. Absent therefore means machine-wide OR
+    // a reporter older than this member, never "scoped". Both values parse, so
+    // a sender that one day spells `machine` breaks no receiver; any other
+    // value fails the whole snapshot, which is why the reporter sends a
+    // constant and never the raw mode.
+    attachmentMode: AttachmentMode.optional(),
   })
   .meta({ id: 'StorePostureSnapshot' });
 export type StorePostureSnapshot = z.infer<typeof StorePostureSnapshot>;

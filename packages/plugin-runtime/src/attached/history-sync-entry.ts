@@ -77,9 +77,9 @@ export async function runHistorySyncPass(
     // would report the drain finished — and pin completedAtMs for the life of
     // the install — while the capture lane still owed thousands of rows.
     //
-    // On a SCOPED attachment the structural counts are not scoped, so `phase` can
-    // stay `filling` and `pendingTotal` includes rows the scope excludes. Both are
-    // display only: nothing is sent because of them.
+    // Both halves come from one reading of the scope at the end of the pass, so
+    // on a SCOPED attachment `done` means nothing that scope will send is left,
+    // in either lane.
     const done = result.counts.pending === 0 && !result.capturesPending;
     writeHistorySyncState(dir, {
       phase: done ? 'complete' : 'filling',
@@ -122,16 +122,25 @@ export async function runHistorySyncPass(
       // genuinely finishes. The capture lane does not: its subject grows with
       // every live session that fails to forward, so `phase` can go back to
       // 'filling' after reading 'complete'. This keeps its original meaning
-      // either way — the first moment this machine owed the deployment nothing —
-      // which is why it is pinned rather than recomputed.
+      // either way — the first moment this machine owed the deployment nothing
+      // its scope would send — which is why it is pinned rather than recomputed.
       // WRITTEN ONCE, on the false→true transition, and never cleared. Under v1
-      // this was monotone because the structural lane only ever drained; the
-      // capture lane is what makes `done` flap, and clearing on every flap would
-      // erase the pin and re-stamp it on the next catch-up — so a consumer
-      // reading "when this machine first caught up" would get the most recent
-      // one instead. Carrying the previous value through the false case is what
-      // keeps the original meaning.
+      // this was monotone because the structural lane only ever drained. The
+      // capture lane makes `done` flap, and on a SCOPED attachment so does an
+      // enroll: the counts cover only that scope's rows, so enrolling a
+      // repository with unsent history can turn `done` false again, and an
+      // unenroll can turn it true. Clearing on every flap would erase the pin and
+      // re-stamp it on the next catch-up — so a consumer reading "when this
+      // machine first caught up" would get the most recent one instead. Carrying
+      // the previous value through the false case is what keeps the original
+      // meaning.
       completedAtMs: previous?.completedAtMs ?? (done ? result.atMs : null),
+      // Which population the totals above describe. Every pass from this build
+      // on writes it, taken from THIS pass's own counts and never carried over
+      // from the file read at the start of the pass, so `aka status` can tell a
+      // scoped pass's numbers from those a build before it counted for
+      // everything recorded on this machine, whose file has no such field.
+      countsScope: result.countsScope,
     });
     return result.outcome;
   } catch {

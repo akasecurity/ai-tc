@@ -53,8 +53,11 @@ describe('describeForward', () => {
 
   it('notes a project a scoped machine keeps local, with no remedy this page cannot offer', () => {
     const line = describeForward({ status: 'not-enrolled', endpoint: ENDPOINT });
+    // One outcome covers the project and any repository nested in it that the
+    // scan walked into: the server answers the same for either, so the line
+    // names both rather than blaming the project when a nested one is the cause.
     expect(line).toEqual({
-      text: 'Not forwarded to Acme Prod: project not enrolled — its scans stay on this machine.',
+      text: 'Not forwarded to Acme Prod: the project or a repository nested in it is not enrolled — its scans stay on this machine.',
       tone: 'note',
     });
     // Enrolling is a terminal verb with no control on this page, and a note is

@@ -23,8 +23,11 @@
  * exposes no model-switch event, so unlike Claude Code there is no point at
  * which the switch itself can be denied — this is the only seam, and it acts a
  * turn later than the switch it is reacting to. It blocks no LLM API call
- * either; what it enforces is that a governed session does not keep running on
- * a prohibited model.
+ * either; what it enforces is that a session does not keep running on a
+ * prohibited model where the organization's model policy governs it: everywhere
+ * on a machine-wide attachment, and only in enrolled repositories on a scoped
+ * one, keyed from the directory each turn runs in. A turn the policy does not
+ * govern is scanned like any other.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed setup, surface a one-line pointer to it. And it is the

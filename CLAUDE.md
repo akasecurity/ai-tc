@@ -218,7 +218,7 @@ The product is **standalone by default**: it runs on Node + the SQLite store und
 ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
 
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
-- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
+- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`/`process.getBuiltinModule()`) form.
 
 Ten files carry a genuine local-only opt-out:
 
@@ -326,12 +326,12 @@ Sigstore.
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                          |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                         |
-| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                        |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()` or `getBuiltinModule()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                                                  |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                                                |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -932,6 +932,22 @@ design-doc/section/ADR/PR citations, team-member names, or other internal narrat
 **Comments explain _what_ the code does, never the _why_ behind an internal decision.**
 Keep prose factual and reader-facing; if you need to record rationale, put it in a commit
 message — not in shipped comments or strings.
+
+This is available to each package, and adopted per package: `comment-narration/no-process-narration`
+in `@akasecurity/eslint-config` walks the comment table and refuses plan and spec paths, LLD
+references, unit and task numbers, `§` section refs beside a plan cue, PR/issue and
+review-response numbers, commit SHAs and dated decisions. Nothing consumes it yet — an adopting
+package spreads it in its own `eslint.config.mjs` and passes `conventionsFile: 'CLAUDE.md'`, since
+the rule's message names `AGENTS.md` by default and this repo's conventions live here. It is spread per package (like `noDrizzleImports`) rather than
+folded into `base`, so a package adopts it in the change that clears its own backlog. Four
+probes are deliberately narrow, because a ban that cries wolf gets a disable directive: a SHA must
+carry a hex letter (a dated model-id suffix such as `-20241022` is not a SHA) and is skipped on a
+frozen-artifact banner, where the SHA is the identity of what is pinned; a date must sit next to a
+process cue (a fixture or retention date is not a decision); and a `§` must sit beside a plan cue,
+because the shorthand inside a repo is the bare section number — an exemption list of standard
+names left 40 false positives against 5 true ones over 1,812 files. Where a package has a
+standing reason, `allowPatterns` exempts a comment and `disableProbes` switches off one probe —
+both review-visible.
 
 ## Frontend UI components
 
@@ -2580,8 +2596,10 @@ opposite.
 
 **Outside `packages/persistence` the harness is deliberately NOT available, and the
 decision is not "nobody got round to it".** It lives under `test/`, and the package's
-`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
-`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+`exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"` (the store-free modules the
+plugin-sdk runtime path needs: a subset of the root entry's bindings that never loads
+`database.ts`, both held by `packages/persistence/test/sqlite-free-entry.test.ts`) — which is exactly
+what makes `UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
 that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
 package would gain a supported route to the raw `DatabaseSync`, and
 `test-only-seam.test.js` would stay green throughout because the new callers are tests.
@@ -2668,8 +2686,10 @@ not reach for a `./testing` export instead.
   through, exported from `src/database.ts`, and the only test-only seam in shipped
   source. It is
   symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
-  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
-  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  is `"." -> "./src/index.ts"` plus `"./sqlite-free"` — a subset of the root entry's
+  bindings that never loads `database.ts`, both held by
+  `packages/persistence/test/sqlite-free-entry.test.ts` — so no other package can reach the
+  module that defines it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
   property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
   enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
   the **real** connection, so `close()` reaches it.

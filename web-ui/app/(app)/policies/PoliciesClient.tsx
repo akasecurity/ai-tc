@@ -34,12 +34,16 @@ export function PoliciesClient({
         isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
       )}
     >
+      {/* The local store counts a pack with no policy of its own under Monitor,
+          so the list and the detail say what uses a policy, not what was
+          assigned it. */}
       <PolicyListView
         items={items}
         activeId={selectedId}
         onSelect={(id) => {
           push(`${pathname}?id=${encodeURIComponent(id)}`);
         }}
+        countsUnassigned
       />
 
       {/* flex-col so the empty state below can center itself: capped to the
@@ -50,7 +54,7 @@ export function PoliciesClient({
             defaults the selection to the first, so `detail` is present in
             practice; this single generic fallback only covers the type's null. */}
         {detail ? (
-          <PolicyDetailView policy={detail} />
+          <PolicyDetailView policy={detail} countsUnassigned />
         ) : (
           <div className="grid flex-1 place-items-center p-6 text-center text-sm text-text-3">
             Select a policy to view its detail.

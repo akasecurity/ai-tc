@@ -8,6 +8,7 @@ import {
   planRowWith,
   type PointerWant,
   revealPointers,
+  revealSlots,
   toolCallNeedsHelper,
 } from './engine.js';
 
@@ -490,6 +491,53 @@ async function resolvePointers($: RenderDollar, wanted: PointerWant[]): Promise<
   }
 }
 
+// The reveal cap is per MESSAGE, but a reply is drawn as several blocks, each its
+// own render with its own text. `requestId` names the drawing (one per block), and
+// the one thing that groups blocks is `isFirstOfReply`, true on the block that
+// opens a reply. So a block this module has not met opens a new reply when it is
+// first of one, and otherwise joins the latest; a block it has met keeps its
+// reply on every redraw. A user message is one block, its own reply. Module memory
+// like `held`, for the same reason; the oldest replies are forgotten past the
+// bound, which can only unmask a long-gone message on a redraw that never comes.
+const REPLY_MAX_HELD = 256;
+const REPLY_BLOCKS_MAX_HELD = 2048;
+const replyOfBlock = new Map<string, string>();
+const slotsOfReply = new Map<string, (token: string) => boolean>();
+let latestReply: string | null = null;
+let repliesStarted = 0;
+
+function slotsFor(e: RenderArgs[1]): (token: string) => boolean {
+  const block = `${e.component}:${e.requestId}`;
+  let reply = replyOfBlock.get(block);
+  if (reply === undefined) {
+    const first = (e.props as { isFirstOfReply?: unknown }).isFirstOfReply === true;
+    if (e.component === 'AssistantMessage' && !first && latestReply !== null) {
+      reply = latestReply;
+    } else {
+      repliesStarted += 1;
+      reply = `${e.component}:${String(repliesStarted)}`;
+      latestReply = reply;
+    }
+    replyOfBlock.set(block, reply);
+    for (const stale of [...replyOfBlock.keys()].slice(
+      0,
+      Math.max(0, replyOfBlock.size - REPLY_BLOCKS_MAX_HELD),
+    ))
+      replyOfBlock.delete(stale);
+  }
+  let slots = slotsOfReply.get(reply);
+  if (slots === undefined) {
+    slots = revealSlots();
+    slotsOfReply.set(reply, slots);
+    for (const stale of [...slotsOfReply.keys()].slice(
+      0,
+      Math.max(0, slotsOfReply.size - REPLY_MAX_HELD),
+    ))
+      slotsOfReply.delete(stale);
+  }
+  return slots;
+}
+
 async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[2]) {
   try {
     const props = e.props as { text?: unknown };
@@ -503,7 +551,7 @@ async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[
     } catch {
       now = 0;
     }
-    const drawn = revealPointers(props.text, (want) => drawPointer(now, want));
+    const drawn = revealPointers(props.text, (want) => drawPointer(now, want), slotsFor(e));
     if (drawn.wanted.length > 0) void resolvePointers($, drawn.wanted);
     if (drawn.text === props.text) return next(e);
     return next({ ...e, props: { ...e.props, text: drawn.text } } as typeof e);

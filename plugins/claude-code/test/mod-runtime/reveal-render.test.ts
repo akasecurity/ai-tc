@@ -55,9 +55,9 @@ function engineRow(on: Hooks): void {
   }));
 }
 
-function props(row: Row, text: string) {
+function props(row: Row, text: string, isFirstOfReply = true) {
   return row === 'AssistantMessage'
-    ? { text, isFirstOfReply: true }
+    ? { text, isFirstOfReply }
     : { text, origin: { kind: 'user' as const }, isExpanded: true };
 }
 
@@ -66,12 +66,13 @@ async function mountRow(
   surface: Surface,
   row: Row,
   text: string,
+  isFirstOfReply = true,
 ) {
   return $.ui.mount({
     plugin: 'aka',
     surface,
     component: row,
-    props: props(row, text) as never,
+    props: props(row, text, isFirstOfReply) as never,
   } as never) as unknown as Mounted;
 }
 
@@ -346,6 +347,37 @@ for (const surface of SURFACES) {
     await clock.settle();
 
     expect(await shown(ui)).toBe(`${value(0)} ${value(1)} ${badge(2)}`);
+  });
+
+  test(`${surface}: the reveal cap holds across the blocks of one message and across redraws`, async ($, on) => {
+    const clock = mock.clock(on);
+    engineRow(on);
+    answering(on, 'full');
+
+    // cap + 1 distinct pointers, split over two blocks of one reply.
+    const first = await mountRow($, surface, 'AssistantMessage', `${pointer(0)} ${pointer(1)}`);
+    const second = await mountRow($, surface, 'AssistantMessage', `${pointer(2)}`, false);
+    await clock.settle();
+    await first.redraw();
+    await second.redraw();
+    await clock.settle();
+    for (let i = 0; i < 3; i += 1) {
+      await second.redraw();
+      await first.redraw();
+    }
+
+    expect(await shown(first)).toBe(`${value(0)} ${value(1)}`);
+    expect(await shown(second)).toBe(badge(2));
+
+    // The same pointer keeps its choice when a later block repeats it.
+    await second.redraw({ text: `${pointer(2)} ${pointer(0)}`, isFirstOfReply: false });
+    await clock.settle();
+    expect(await shown(second)).toBe(`${badge(2)} ${value(0)}`);
+
+    // A new message starts a fresh count.
+    const next = await mountRow($, surface, 'AssistantMessage', pointer(2));
+    await clock.settle();
+    expect(await shown(next)).toBe(value(2));
   });
 
   test(`${surface}: text with no pointer is handed on untouched and spawns nothing`, async ($, on) => {

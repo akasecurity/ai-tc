@@ -211,14 +211,37 @@ export interface PointerWant {
 }
 
 /**
+ * The reveal slots of one message: the first `cap` distinct pointers asked about
+ * (in order of first appearance, over every block of the message) get a slot, and
+ * the answer for a pointer never changes, so a redraw or a later block draws the
+ * same reveal or masked choice. A pointer that no one asked about in a revealable
+ * position (a code span, say) takes no slot.
+ */
+export function revealSlots(cap: number = PARSED_DATA.revealCap): (token: string) => boolean {
+  const granted = new Set<string>();
+  const refused = new Set<string>();
+  return (token) => {
+    if (granted.has(token)) return true;
+    if (refused.has(token)) return false;
+    if (granted.size < cap) {
+      granted.add(token);
+      return true;
+    }
+    refused.add(token);
+    return false;
+  };
+}
+
+/**
  * The text a screen shows for `text`: each COMPLETE vault pointer swapped for
  * what `draw` answers (the revealed value, or the masked badge), a pointer `draw`
  * has no answer for (null) left as written. A trailing partial pointer or a
  * garbled one never matches the grammar and stays plain text. The markdown
  * regions are the MessageDisplay hook's own (src/display/regions.ts): a pointer
  * in a fenced block, an inline code span or a quoted line is `shielded`, and so
- * is any past the per-message reveal cap, counted over what `draw` returns when
- * it was handed `shielded: false` and answered `revealed: true`.
+ * is one `slot` refuses. `slot` is asked only about a pointer outside those
+ * regions, and owns the per-message reveal cap, so that a cap spanning several
+ * rendered blocks of one message is counted by the caller.
  *
  * Pure and synchronous; it spawns and reads nothing, so it is cheap on every
  * redraw. `wanted` lists the pointers `draw` could not answer, for the caller to
@@ -227,7 +250,7 @@ export interface PointerWant {
 export function revealPointers(
   text: string,
   draw: (want: PointerWant) => { text: string; revealed: boolean } | null,
-  cap: number = PARSED_DATA.revealCap,
+  slot: (token: string) => boolean,
 ): { text: string; wanted: PointerWant[] } {
   pointerScanner ??= new RegExp(PARSED_DATA.pointerPattern, 'g');
   const state: RegionState = {
@@ -240,13 +263,12 @@ export function revealPointers(
   const wanted: PointerWant[] = [];
   let out = '';
   let pos = 0;
-  let revealed = 0;
   for (const match of text.matchAll(pointerScanner)) {
     const literal = text.slice(pos, match.index);
     advanceRegions(state, literal);
     out += literal;
     const token = match[0];
-    const shielded = state.fence !== null || state.tickOpen || state.lineQuoted || revealed >= cap;
+    const shielded = state.fence !== null || state.tickOpen || state.lineQuoted || !slot(token);
     const want: PointerWant = { token, shielded };
     const drawn = draw(want);
     let shown = token;
@@ -254,7 +276,6 @@ export function revealPointers(
       wanted.push(want);
     } else {
       shown = drawn.text;
-      if (drawn.revealed) revealed += 1;
     }
     advanceRegions(state, shown);
     out += shown;

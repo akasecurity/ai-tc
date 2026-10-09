@@ -61,6 +61,9 @@ interface FakeAdapterOptions {
   onPush?: (chunk: string) => void;
   parseRequest?: (body: string, exchange: MatchedExchange) => ParsedRequest;
   requiredPaths?: { request: readonly string[]; response: readonly string[] };
+  // Left off the adapter entirely when absent, as an adapter with no account
+  // source declares none.
+  workspaceOf?: (exchange: MatchedExchange) => string | undefined;
 }
 
 function fakeAdapter(options: FakeAdapterOptions = {}): ProviderAdapter {
@@ -79,6 +82,7 @@ function fakeAdapter(options: FakeAdapterOptions = {}): ProviderAdapter {
     ],
     requiredPaths: options.requiredPaths ?? { request: [], response: [] },
     protocolTokens: [],
+    ...(options.workspaceOf === undefined ? {} : { workspaceOf: options.workspaceOf }),
     parseRequest: (body, exchange) => {
       options.onRequestExchange?.(exchange);
       return options.parseRequest?.(body, exchange) ?? { requiredPathsSeen: true };
@@ -317,6 +321,59 @@ describe('createBridge, one exchange end to end', () => {
     attachTap(win.win, () => undefined);
     win.deliverHandshake(port);
     expect(port.postMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('the workspace a request names', () => {
+  it('relays what the adapter read off the request url and its matched endpoint', () => {
+    const seen: MatchedExchange[] = [];
+    const h = harness(
+      fakeAdapter({
+        workspaceOf: (exchange) => {
+          seen.push(exchange);
+          return 'org-1';
+        },
+      }),
+    );
+    h.feed(request(1, `${CONVERSATION_URL}?org=1`), { type: 'chunk', id: 1, text: 'a' });
+    h.feed({ type: 'end', id: 1, status: 200, ok: true });
+
+    expect(h.exchanges()[0]?.workspace).toBe('org-1');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe(`${CONVERSATION_URL}?org=1`);
+    expect(seen[0]?.endpoint.kind).toBe('conversation');
+  });
+
+  it('reads it once per request, so each exchange carries its own', () => {
+    const workspaces = ['org-1', 'org-2'];
+    const h = harness(fakeAdapter({ workspaceOf: () => workspaces.shift() }));
+    h.feed(request(1), request(2));
+    h.feed({ type: 'end', id: 1, status: 200, ok: true });
+    h.feed({ type: 'end', id: 2, status: 200, ok: true });
+
+    expect(h.exchanges().map((relayed) => relayed.workspace)).toEqual(['org-1', 'org-2']);
+  });
+
+  it('relays no workspace key when the adapter reads none', () => {
+    for (const adapter of [fakeAdapter(), fakeAdapter({ workspaceOf: () => undefined })]) {
+      const h = harness(adapter);
+      h.feed(request(), { type: 'end', id: 1, status: 200, ok: true });
+      expect(h.exchanges()).toHaveLength(1);
+      expect(h.exchanges()[0]).not.toHaveProperty('workspace');
+    }
+  });
+
+  it('a reader that throws costs the workspace, never the exchange', () => {
+    const h = harness(
+      fakeAdapter({
+        workspaceOf: () => {
+          throw new Error('unreadable');
+        },
+      }),
+    );
+    h.feed(request(), { type: 'end', id: 1, status: 200, ok: true });
+    expect(h.exchanges()).toHaveLength(1);
+    expect(h.exchanges()[0]).not.toHaveProperty('workspace');
   });
 });
 

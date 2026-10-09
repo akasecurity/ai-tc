@@ -57,6 +57,13 @@ export interface ExchangeRequest {
   sessionId: string;
   tool: WebSourceTool;
   exchange: WebExchange;
+  // The workspace the request's own URL named (ProviderAdapter.workspaceOf), raw.
+  // The host turns it into the account key with `webAccountKey`, which refuses
+  // anything that is not one of the site's workspace ids, so it is not checked
+  // here: a value that names no workspace makes no key, and the exchange is
+  // judged as one with no account. Absent from a route that names none, and from
+  // an extension older than the field.
+  workspace?: string;
 }
 
 // What one tab's interception is actually doing. Reported so a tap that
@@ -174,6 +181,14 @@ export interface CaptureStateResponse {
     enforcement?: WebEnforcementState;
     // Absent when this site has never reported.
     observedAt?: string;
+    // The account this host process last saw the site's own requests name
+    // (`claude:<organization-id>`); whether it is enrolled on this machine's
+    // scoped attachment; and whether this machine records chats in it: capture
+    // is consented to, and the machine either records web chats or is a
+    // personal device with the account enrolled. Held in memory only, so the
+    // popup can show what to enroll without anything being stored. Absent when
+    // no request has named one, and from a host older than the field.
+    account?: { identity: string; enrolled: boolean; recorded: boolean };
   }[];
 }
 

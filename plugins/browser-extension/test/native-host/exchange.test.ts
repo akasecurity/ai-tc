@@ -502,3 +502,32 @@ describe('toToolCallInputs', () => {
     expect(toToolCallInputs(exchange, SESSION, noopScanner)).toEqual([]);
   });
 });
+
+describe('the account a leaf is recorded under', () => {
+  const ACCOUNT = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+  const withTool = (): WebExchange =>
+    WebExchange.parse({
+      messageId: 'msg_scoped',
+      startedAt: ISO,
+      usageSource: 'none',
+      toolCalls: [{ toolUseId: 'tu_scoped', toolName: 'web_search', target: 'q' }],
+    });
+
+  it('stamps the account key on the llm_call leaf and on every tool_call leaf', () => {
+    expect(toLlmCallInput(withTool(), SESSION, 'claude-ai', ACCOUNT)?.attributes.scope_key).toBe(
+      ACCOUNT,
+    );
+    const tools = toToolCallInputs(withTool(), SESSION, noopScanner, ACCOUNT);
+    expect(tools).toHaveLength(1);
+    for (const input of tools) expect(input.attributes.scope_key).toBe(ACCOUNT);
+  });
+
+  it('writes no scope_key at all when there is no account', () => {
+    expect(
+      'scope_key' in (toLlmCallInput(withTool(), SESSION, 'claude-ai')?.attributes ?? {}),
+    ).toBe(false);
+    const tools = toToolCallInputs(withTool(), SESSION, noopScanner);
+    expect(tools).toHaveLength(1);
+    for (const input of tools) expect('scope_key' in input.attributes).toBe(false);
+  });
+});

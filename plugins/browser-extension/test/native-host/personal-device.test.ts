@@ -6,7 +6,7 @@
 // machine that records as its control, so an absence below is the gate's doing
 // rather than a request that would have written nothing anyway.
 import type * as ChildProcess from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,7 +15,9 @@ import {
   controlPlaneCredentialPath,
   DATA_FILE_MODE,
   DB_FILENAME,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
   openLocalDatabase,
+  readDetectedWebAccounts,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
@@ -27,11 +29,19 @@ import type {
   WebCaptureStatus,
   WebExchange,
 } from '@akasecurity/schema';
-import { SOURCE_TOOL, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
+import {
+  SOURCE_TOOL,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
-import { handleRequest, readCaptureStatus } from '../../src/native-host/host.ts';
+import {
+  handleRequest,
+  readCaptureStatus,
+  readSessionAccount,
+} from '../../src/native-host/host.ts';
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
 
 // The detached children a session start asks for on an attached machine (the
@@ -661,5 +671,258 @@ describe('a fully attached personal device', () => {
     expect(recorded.sites.find((site) => site.tool === SOURCE_TOOL.ChatGpt)?.state).not.toBe(
       'unreported',
     );
+  });
+});
+
+describe('an enrolled web chat account on a personal device', () => {
+  // A claude.ai organization id, as the completion route's own path names it,
+  // and the key the host derives from it.
+  const ORG = '0a1b2c3d-0000-4000-8000-00000000000a';
+  const ACCOUNT = `claude:${ORG}`;
+  const OTHER_ORG = '0a1b2c3d-0000-4000-8000-00000000000b';
+
+  interface Options {
+    // The account keys the stored scope enrolls; `null` stores no scope at all.
+    enrolled?: readonly string[] | null;
+    consent?: boolean;
+    grant?: boolean;
+  }
+
+  // A personal device's settings: a scope for this deployment enrolling the
+  // given account keys, the capture consent, and the account grant. A stored
+  // scope is what makes a machine a personal device whatever its credential
+  // says, so `enrolled: null` is the only way to describe any other machine.
+  function personal(options: Options = {}): (tool: WebSourceTool | undefined) => PluginConfig {
+    return (tool) => {
+      const base = config(tool);
+      return {
+        ...base,
+        settings: {
+          ...base.settings,
+          ...(options.enrolled === null
+            ? {}
+            : {
+                attachmentScope: {
+                  endpoint: ENDPOINT,
+                  entries: (options.enrolled ?? [ACCOUNT]).map((identity) => ({
+                    kind: 'account' as const,
+                    identity,
+                    enrolledAt: MINTED_AT,
+                  })),
+                },
+              }),
+          webChatCapture: {
+            responses: 'always',
+            account: options.grant ?? false,
+            ...(options.grant === true
+              ? {
+                  accountConsent: {
+                    acknowledgedAt: MINTED_AT,
+                    version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+                  },
+                }
+              : {}),
+            ...(options.consent === false
+              ? {}
+              : {
+                  consent: {
+                    acknowledgedAt: MINTED_AT,
+                    version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+                  },
+                }),
+          },
+        },
+      };
+    };
+  }
+
+  async function send(
+    sessionId: string,
+    settings: (tool: WebSourceTool | undefined) => PluginConfig,
+    workspace: unknown,
+    tool: WebSourceTool = SOURCE_TOOL.ClaudeAi,
+  ) {
+    return handleRequest(
+      {
+        type: 'exchange',
+        requestId: `${sessionId}-req`,
+        sessionId,
+        tool,
+        exchange: { ...exchange(), messageId: `msg_${sessionId}` },
+        ...(workspace === undefined ? {} : { workspace: workspace as string }),
+      },
+      settings,
+    );
+  }
+
+  function attributesOf(where: string): Record<string, unknown>[] {
+    const db = new DatabaseSync(join(dir, DB_FILENAME));
+    try {
+      return (
+        db.prepare(`SELECT attributes FROM audit_events WHERE ${where}`).all() as {
+          attributes: string | null;
+        }[]
+      ).map((row) => JSON.parse(row.attributes ?? '{}') as Record<string, unknown>);
+    } finally {
+      db.close();
+    }
+  }
+
+  it('records its exchange, under a root keyed to the account and carrying nothing of the machine', async () => {
+    attachAs('scoped');
+    const response = await send('browser-acct', personal(), ORG);
+    expect(response).toMatchObject({ type: 'exchange', accepted: true, llmCalls: 1, toolCalls: 1 });
+
+    const [root] = attributesOf("event_type = 'session' AND id = 'browser-acct'");
+    // The account, and what names the chat: nothing that describes the machine.
+    expect(Object.keys(root ?? {}).sort()).toEqual(['harness', 'provider', 'scope_key']);
+    expect(root).toMatchObject({ scope_key: ACCOUNT, provider: 'anthropic' });
+    for (const leaf of attributesOf(
+      "event_type IN ('llm_call', 'tool_call') AND root_session_id = 'browser-acct'",
+    )) {
+      expect(leaf.scope_key).toBe(ACCOUNT);
+    }
+    expect(
+      rowCount("event_type IN ('llm_call', 'tool_call') AND root_session_id = 'browser-acct'"),
+    ).toBe(2);
+    const responses = attributesOf("event_type = 'response' AND root_session_id = 'browser-acct'");
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.scope_key).toBe(ACCOUNT);
+    expect(storeBytes()).toContain(MARKER);
+  });
+
+  it('keeps the root its first exchange wrote, across the session', async () => {
+    attachAs('scoped');
+    await send('browser-acct-twice', personal(), ORG);
+    await send('browser-acct-twice', personal(), ORG);
+    expect(rowCount("event_type = 'session' AND id = 'browser-acct-twice'")).toBe(1);
+    expect(rowCount("event_type = 'llm_call' AND root_session_id = 'browser-acct-twice'")).toBe(1);
+    expect(attributesOf("event_type = 'session' AND id = 'browser-acct-twice'")[0]?.scope_key).toBe(
+      ACCOUNT,
+    );
+  });
+
+  it('enrolls the account however the request spelled its id', async () => {
+    attachAs('scoped');
+    const response = await send('browser-acct-upper', personal(), ORG.toUpperCase());
+    expect(response).toMatchObject({ accepted: true });
+  });
+
+  it('drops an exchange in an account that is not enrolled', async () => {
+    attachAs('scoped');
+    const response = await send('browser-other', personal(), OTHER_ORG);
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope', llmCalls: 0 });
+    expect(rowCount("root_session_id = 'browser-other' OR id = 'browser-other'")).toBe(0);
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('drops an exchange whose request named no account, or one that is not an id', async () => {
+    attachAs('scoped');
+    for (const [session, workspace] of [
+      ['browser-none', undefined],
+      ['browser-garbage', 'not-an-org'],
+      ['browser-number', 7],
+    ] as const) {
+      expect(await send(session, personal(), workspace)).toMatchObject({
+        accepted: false,
+        skipped: 'out-of-scope',
+      });
+    }
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('drops an exchange on a site with no account provider, whatever it names', async () => {
+    attachAs('scoped');
+    // The key a claude.ai request with this id would carry is enrolled; a
+    // ChatGPT request naming the same id carries none.
+    const response = await send('browser-gpt', personal(), ORG, SOURCE_TOOL.ChatGpt);
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
+    expect(readSessionAccount('browser-gpt')).toBeUndefined();
+  });
+
+  it('records nothing without capture consent, enrolled or not', async () => {
+    attachAs('scoped');
+    const response = await send('browser-acct-noconsent', personal({ consent: false }), ORG);
+    expect(response).toMatchObject({ accepted: false, skipped: 'no-consent' });
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('records nothing in an account on a credential it cannot read', async () => {
+    // No stored scope, so the credential alone decides, and it cannot say what
+    // this machine was attached as. An account key enrolls nothing there.
+    writeFileSync(controlPlaneCredentialPath(dir), '{ not json', { mode: DATA_FILE_MODE });
+    const response = await send('browser-acct-unreadable', personal({ enrolled: null }), ORG);
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('on a machine-wide attachment, still stamps the account on its leaves and records it unenrolled', async () => {
+    attachAs('machine');
+    const response = await send('browser-acct-machine', personal({ enrolled: null }), ORG);
+    expect(response).toMatchObject({ accepted: true });
+    // The stub root, as before: a session start would write the real one.
+    expect(attributesOf("event_type = 'session' AND id = 'browser-acct-machine'")[0]).toEqual({});
+    expect(
+      attributesOf("event_type = 'llm_call' AND root_session_id = 'browser-acct-machine'")[0]
+        ?.scope_key,
+    ).toBe(ACCOUNT);
+  });
+
+  describe('the account it saw', () => {
+    it('is kept in memory whatever is recorded, so the popup can name it', async () => {
+      attachAs('scoped');
+      await send('browser-seen', personal({ enrolled: [], consent: false }), ORG);
+      expect(readSessionAccount('browser-seen')).toMatchObject({
+        tool: SOURCE_TOOL.ClaudeAi,
+        account: ACCOUNT,
+      });
+    });
+
+    it('is written to the detected-account record only under the account grant', async () => {
+      attachAs('scoped');
+      await send('browser-nogrant', personal({ enrolled: [] }), ORG);
+      expect(existsSync(join(dir, DETECTED_WEB_ACCOUNTS_FILENAME))).toBe(false);
+
+      await send('browser-grant', personal({ enrolled: [], grant: true }), OTHER_ORG);
+      expect(readDetectedWebAccounts(dir).map((account) => account.identity)).toEqual([
+        `claude:${OTHER_ORG}`,
+      ]);
+      // A sighting is not a capture: nothing from the chat came with it.
+      expect(storeBytes()).not.toContain(MARKER);
+    });
+
+    it('is written under the grant without capture consent', async () => {
+      attachAs('scoped');
+      await send('browser-grant-noconsent', personal({ grant: true, consent: false }), ORG);
+      expect(readDetectedWebAccounts(dir).map((account) => account.identity)).toEqual([ACCOUNT]);
+    });
+
+    it('is reported by capture_state with whether it is enrolled and recorded', async () => {
+      attachAs('scoped');
+      await send('browser-state', personal({ enrolled: [] }), ORG);
+      const state = async (settings: (tool: WebSourceTool | undefined) => PluginConfig) => {
+        const response = await handleRequest(
+          { type: 'capture_state', requestId: 'acct-state' },
+          settings,
+        );
+        if (response.type !== 'capture_state') throw new Error('expected a capture_state response');
+        return response.sites.find((site) => site.tool === SOURCE_TOOL.ClaudeAi)?.account;
+      };
+      expect(await state(personal({ enrolled: [] }))).toEqual({
+        identity: ACCOUNT,
+        enrolled: false,
+        recorded: false,
+      });
+      expect(await state(personal())).toEqual({
+        identity: ACCOUNT,
+        enrolled: true,
+        recorded: true,
+      });
+      expect(await state(personal({ consent: false }))).toEqual({
+        identity: ACCOUNT,
+        enrolled: true,
+        recorded: false,
+      });
+    });
   });
 });

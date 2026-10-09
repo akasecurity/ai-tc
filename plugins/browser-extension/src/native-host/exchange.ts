@@ -133,6 +133,7 @@ export function toLlmCallInput(
   exchange: WebExchange,
   sessionId: string,
   tool: WebSourceTool,
+  scopeKey?: string,
 ): LlmCallInput | null {
   const messageId = trimmed(exchange.messageId);
   if (messageId === undefined) return null;
@@ -187,6 +188,10 @@ export function toLlmCallInput(
   // omitted, never false.
   if (exchange.truncated) attrs.response_truncated = true;
 
+  // The account the request named, as its scope key: local-only, stripped on
+  // every forward, and what a scoped attachment decides this leaf by.
+  if (scopeKey !== undefined) attrs.scope_key = scopeKey;
+
   return {
     sessionId,
     messageId,
@@ -215,6 +220,7 @@ export function toToolCallInputs(
   exchange: WebExchange,
   sessionId: string,
   scanTarget: TargetScanner,
+  scopeKey?: string,
 ): ToolCallInput[] {
   const conversationId = trimmed(exchange.conversationId);
   const seen = new Set<string>();
@@ -267,6 +273,8 @@ export function toToolCallInputs(
     if (tc.inputSize !== undefined) attrs.input_size = tc.inputSize;
     if (tc.outputSize !== undefined) attrs.output_size = tc.outputSize;
     if (conversationId !== undefined) attrs.run_key = conversationId;
+    // As on the llm_call leaf: the request's account, local-only.
+    if (scopeKey !== undefined) attrs.scope_key = scopeKey;
 
     inputs.push({
       sessionId,

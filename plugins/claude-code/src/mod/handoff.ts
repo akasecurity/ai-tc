@@ -12,59 +12,120 @@
 // it the same way. There the note carries more weight than a missing row: the
 // helper may have spent a single-use grant, which a second pass could not.
 //
-// Best effort throughout: a missing, unreadable or corrupt file means the hook
+// One file per note, under <dataDir>/mod-handoff/. Several helpers (one per
+// prompt, one per tool call, in parallel) write notes while hooks consume them, so
+// no note shares a file with another: a shared file read, changed and renamed back
+// by two processes loses whichever write lands first. A note is written to a
+// temporary name (created exclusively) and renamed into place, so it is never seen
+// half written; consuming a note is unlinking exactly that file, and the unlink
+// that succeeds is the one consumption, so a note is spent once however many hooks
+// race for it. A note expires by its age: past the TTL it is spent without
+// being honoured. Stale files are swept a bounded
+// number at a time as notes are recorded.
+//
+// Best effort throughout: a missing, unreadable or corrupt note means the hook
 // captures as it always did, which can only add a row, never lose one.
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
 
-const HANDOFF_FILE = 'mod-handoff.json';
+const HANDOFF_DIR = 'mod-handoff';
+// The single shared file earlier builds kept every note in; no longer read.
+const LEGACY_FILE = 'mod-handoff.json';
 // A hook runs within a second or two of the mod; this is only the bound on a
 // note nobody consumed (the host was not running the hook).
 export const HANDOFF_TTL_MS = 2 * 60 * 1000;
-const MAX_ENTRIES = 16;
-
-interface Entry {
-  hash: string;
-  at: number;
-}
+// How far ahead of this machine's clock a file's mtime may be before it is swept.
+const SWEEP_SKEW_MS = 5 * 1000;
+// A directory this full is not written to (the hook then captures, as ever).
+const MAX_NOTES = 512;
+// What one sweep may look at and remove, so recording stays cheap however much
+// has piled up.
+const SWEEP_SCAN = 256;
+const SWEEP_REMOVE = 64;
 
 function hashOf(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
-function read(path: string, now: number): Entry[] {
+// A note's content: when it was written, by the writer's clock.
+function isFresh(path: string, now: number): boolean {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e): e is Entry =>
-        typeof e === 'object' &&
-        e !== null &&
-        typeof (e as Entry).hash === 'string' &&
-        typeof (e as Entry).at === 'number' &&
-        now - (e as Entry).at < HANDOFF_TTL_MS,
-    );
+    const at = (parsed as { at?: unknown } | null)?.at;
+    return typeof at === 'number' && now - at < HANDOFF_TTL_MS;
   } catch {
-    return [];
+    return false;
   }
 }
 
-function write(dataDir: string, path: string, entries: Entry[]): void {
-  mkdirSync(dataDir, { recursive: true, mode: DATA_DIR_MODE });
-  const tmp = `${path}.${String(process.pid)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(entries.slice(-MAX_ENTRIES)), { mode: DATA_FILE_MODE });
-  renameSync(tmp, path);
+// Removes files nobody consumed, a bounded number at a time. A file's own mtime
+// (the real clock, not the `now` a caller passes) says it is stale: older than the
+// TTL, or dated ahead of the clock.
+function sweep(dir: string, dataDir: string, names: readonly string[]): void {
+  const clock = Date.now();
+  let removed = 0;
+  for (const name of names.slice(0, SWEEP_SCAN)) {
+    if (removed >= SWEEP_REMOVE) break;
+    try {
+      const { mtimeMs } = statSync(join(dir, name));
+      if (mtimeMs < clock - HANDOFF_TTL_MS || mtimeMs > clock + SWEEP_SKEW_MS) {
+        unlinkSync(join(dir, name));
+        removed += 1;
+      }
+    } catch {
+      // Gone already, or not ours to remove.
+    }
+  }
+  rmSync(join(dataDir, LEGACY_FILE), { force: true });
 }
 
 function record(dataDir: string, hash: string, now: number): void {
   try {
-    const path = join(dataDir, HANDOFF_FILE);
-    write(dataDir, path, [...read(path, now), { hash, at: now }]);
+    const dir = join(dataDir, HANDOFF_DIR);
+    mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
+    const names = readdirSync(dir);
+    sweep(dir, dataDir, names);
+    if (names.length >= MAX_NOTES) return;
+    const nonce = `${String(process.pid)}-${randomBytes(6).toString('hex')}`;
+    const tmp = join(dir, `.${nonce}.tmp`);
+    writeFileSync(tmp, JSON.stringify({ at: now }), { mode: DATA_FILE_MODE, flag: 'wx' });
+    renameSync(tmp, join(dir, `${hash}.${nonce}.json`));
   } catch {
     // The hook captures too: a duplicate row, never a missing one.
+  }
+}
+
+function consume(dataDir: string, hash: string, now: number): boolean {
+  try {
+    const dir = join(dataDir, HANDOFF_DIR);
+    const prefix = `${hash}.`;
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
+      const path = join(dir, name);
+      const fresh = isFresh(path, now);
+      try {
+        unlinkSync(path);
+      } catch {
+        // Another hook spent it first.
+        continue;
+      }
+      if (fresh) return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
@@ -116,18 +177,4 @@ export function consumeToolHandoff(
   now = Date.now(),
 ): boolean {
   return consume(dataDir, toolKey(toolName, toolInput), now);
-}
-
-function consume(dataDir: string, hash: string, now: number): boolean {
-  try {
-    const path = join(dataDir, HANDOFF_FILE);
-    const entries = read(path, now);
-    const at = entries.findIndex((e) => e.hash === hash);
-    if (at === -1) return false;
-    entries.splice(at, 1);
-    write(dataDir, path, entries);
-    return true;
-  } catch {
-    return false;
-  }
 }

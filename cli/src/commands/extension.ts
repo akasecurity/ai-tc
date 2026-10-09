@@ -516,13 +516,14 @@ const LAUNCHER_REMEDY = [
 // The network-capture block on a machine that records less from a web chat than
 // its consent says (only in enrolled accounts), or nothing.
 // It does not say chats are being checked: whether each site is, is a report
-// the native host keeps in memory there, which only the extension's popup reads.
+// the native host keeps in memory there, which only the extension's popup reads,
+// and the popup names a site only when its messages are not being checked.
 const WITHHELD_BLOCKS: Record<WebChatWithholding, string> = {
   'personal-device':
     '\nnetwork capture: on a personal device, only in enrolled accounts\n' +
     '  replies in a claude.ai account enrolled with `aka enroll --account` are recorded and sent;\n' +
     '  nothing else from a chat is, and typed prompts never are\n' +
-    '  the extension popup shows whether each site is being checked, and which account it is in\n',
+    '  the extension popup names any site whose messages are not being checked, and the account a claude.ai tab is in\n',
   'unreadable-attachment':
     '\nnetwork capture: off\n' +
     '  this machine holds a control-plane credential AKA cannot read, so nothing from a chat is recorded or sent\n' +

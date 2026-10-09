@@ -333,6 +333,63 @@ describe('mod-tokenize helper', () => {
     }, 'aka-mod-tokenize-none-');
   });
 
+  // The helper decides first and records last. Every way it can decline, and the
+  // mod's timeout killing it, must leave the store as it was: the command hook
+  // then decides the raw prompt and records it, and recording here too put the
+  // prompt in Activity twice.
+  it.each(['block', 'monitor'] as const)(
+    'a %s verdict is declined and records nothing',
+    (policy) => {
+      withTempHome((home) => {
+        seedPolicy(home, policy);
+        settings(home, true);
+        const run = helper(home, PROMPT);
+
+        expect(run.status).toBe(1);
+        expect(run.stdout).toBe('');
+        expect(rows(home)).toEqual({ events: 0, findings: [] });
+      }, 'aka-mod-tokenize-declined-');
+    },
+  );
+
+  it('the never-leak gate declines a rewrite that still holds the value, and records nothing', () => {
+    // A rule that matches the value only after a label: the same value pasted bare
+    // elsewhere in the text is no match, so redacting the match leaves it in.
+    const awsId = 'secrets/aws-secret-key';
+    const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === awsId));
+    const example = pack?.rules.find((r) => r.id === awsId)?.examples?.[0];
+    if (pack === undefined || example === undefined) throw new Error(`no ${awsId} fixture`);
+    const value = example.slice(example.indexOf('=') + 1);
+    const seedAws = (home: string): void => {
+      const db = openLocalDatabase(join(home, '.aka', 'data'));
+      try {
+        db.installedPacks.recordInventory(bundledDetections());
+        db.installedPacks.setPolicy(pack.namespace, pack.packId, 'redact');
+      } finally {
+        db.close();
+      }
+      settings(home, false);
+    };
+
+    // Control: the labelled value alone is a rewrite, and is recorded.
+    withTempHome((home) => {
+      seedAws(home);
+      const answer = answerOf(helper(home, `use ${example} please`));
+      expect(answer.text).not.toContain(value);
+      expect(rows(home).events).toBe(1);
+      expect(rows(home).findings.length).toBeGreaterThan(0);
+    }, 'aka-mod-tokenize-leak-control-');
+
+    withTempHome((home) => {
+      seedAws(home);
+      const run = helper(home, `use ${example} and also ${value} please`);
+
+      expect(run.status).toBe(1);
+      expect(run.stdout).toBe('');
+      expect(rows(home)).toEqual({ events: 0, findings: [] });
+    }, 'aka-mod-tokenize-leak-');
+  });
+
   it.each(['attachment', 'tool-result'])(
     'a %s row is recorded as a response, never a prompt, with no note and no handoff',
     (door) => {

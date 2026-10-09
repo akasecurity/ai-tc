@@ -5,8 +5,8 @@
  * The vault key must never enter the mod, and the mod has no store. So when the
  * mod finds values its policy says to redact, it hands the prompt here. This
  * process does what the UserPromptSubmit hook would do with it, in the same
- * order and through the same code: it captures the prompt (scan, policy,
- * exceptions, one event, N findings, all in today's shape), then rewrites each
+ * order and through the same code: it scans the prompt and decides it (policy,
+ * exceptions), then rewrites each
  * value the policy said to redact. With a valid vault consent that is a vault
  * pointer for a value whose detection keeps it and `[REDACTED:<CATEGORY>]` for
  * one it destroys; without consent every value is the one-way marker.
@@ -19,6 +19,11 @@
  * stdout: {"v":1,"text":"<rewritten prompt>","note":"<model note>"|null}
  * Exit 1 with nothing on stdout means "no rewrite": the mod then lets the
  * prompt through unchanged and the command hook decides it as it always did.
+ *
+ * The prompt's event and findings (all in today's shape) are recorded only when
+ * a rewrite is returned, as the very last step before it is written: a helper
+ * that declines, or is killed first by the mod's timeout, leaves nothing in the
+ * store and the command hook records the prompt itself.
  *
  * The raw value never leaves this process except inside the vault. Nothing is
  * written to stderr.
@@ -70,11 +75,16 @@ async function main(): Promise<void> {
   const opened = openGateway(config);
   if (opened.gateway === null) process.exit(1);
 
-  // The capture the UserPromptSubmit hook makes, with its arguments.
+  // The capture the UserPromptSubmit hook makes, with its arguments, decided
+  // first and recorded last. Nothing reaches the store until this process has a
+  // rewrite to hand back: a verdict that is not a rewrite, a policy that changed
+  // since the mod's snapshot, the never-leak gate, a fault, or the mod's timeout
+  // killing this process all leave the store untouched, so the command hook,
+  // which then decides the raw prompt itself, is the only one to record it.
   const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
-  let result: CaptureResult;
+  let answer: { text: string; note: string | null } | null;
   try {
-    result = await runtime.capture(
+    const deferred = await runtime.captureDeferred(
       {
         kind: isRow ? 'response' : 'prompt',
         sourceTool: SOURCE_TOOL.ClaudeCode,
@@ -84,48 +94,62 @@ async function main(): Promise<void> {
       },
       isRow ? { persist: 'with-findings' } : undefined,
     );
+    const { result } = deferred;
+
+    // Only a redact verdict is a rewrite. A block, or a policy that changed since
+    // the mod's snapshot, is the command hook's to decide on the raw prompt.
+    const enforced: Finding[] = result.enforcedFindings ?? result.findings;
+    if (result.action !== 'redact' || enforced.length === 0) {
+      answer = null;
+    } else {
+      let rewritten: string;
+      let note: string | null = null;
+      if (isVaultConsentValid(config.settings.vaultConsent)) {
+        const tokenized = await createVaultGlue().tokenizeText(text, {
+          findings: enforced,
+          reversible: new Set(result.reversibleFindings ?? []),
+          sighting: isRow
+            ? { location: `${rowDoor ?? 'conversation'} row`, kind: 'transcript' }
+            : { location: 'prompt', kind: 'prompt' },
+        });
+        rewritten = tokenized.text;
+        note = isRow
+          ? null
+          : eventNote({
+              marker: sessionProtocolMarker(config.dataDir, sessionId),
+              surface: 'prompt',
+              realized: {
+                pointers: tokenized.pointers.map((token) => ({
+                  token,
+                  category: categoryOf(token),
+                })),
+                degraded: tokenized.degraded,
+              },
+            });
+      } else {
+        rewritten = redact(text, enforced);
+      }
+      // The never-leak gate of the hook's pointerized rewrite: a value still in
+      // the text means the rewrite is not one to hand the model.
+      const leaks = enforced.some(
+        (finding) => finding.rawMatch !== '' && rewritten.includes(finding.rawMatch),
+      );
+      if (leaks) {
+        answer = null;
+      } else {
+        // The last steps before answering: the prompt's event and findings, then
+        // the note that tells the hook they exist. Both only for a rewrite that
+        // is about to be returned.
+        await deferred.record();
+        if (!isRow) recordModHandoff(config.dataDir, rewritten);
+        answer = { text: rewritten, note };
+      }
+    }
   } finally {
     await runtime.close();
   }
-
-  // Only a redact verdict is a rewrite. A block, or a policy that changed since
-  // the mod's snapshot, is the command hook's to decide on the raw prompt.
-  if (result.action !== 'redact') process.exit(1);
-  const enforced: Finding[] = result.enforcedFindings ?? result.findings;
-  if (enforced.length === 0) process.exit(1);
-
-  let rewritten: string;
-  let note: string | null = null;
-  if (isVaultConsentValid(config.settings.vaultConsent)) {
-    const tokenized = await createVaultGlue().tokenizeText(text, {
-      findings: enforced,
-      reversible: new Set(result.reversibleFindings ?? []),
-      sighting: isRow
-        ? { location: `${rowDoor ?? 'conversation'} row`, kind: 'transcript' }
-        : { location: 'prompt', kind: 'prompt' },
-    });
-    rewritten = tokenized.text;
-    note = isRow
-      ? null
-      : eventNote({
-          marker: sessionProtocolMarker(config.dataDir, sessionId),
-          surface: 'prompt',
-          realized: {
-            pointers: tokenized.pointers.map((token) => ({ token, category: categoryOf(token) })),
-            degraded: tokenized.degraded,
-          },
-        });
-  } else {
-    rewritten = redact(text, enforced);
-  }
-  // The never-leak gate of the hook's pointerized rewrite: a value still in the
-  // text means the rewrite is not one to hand the model.
-  for (const finding of enforced) {
-    if (finding.rawMatch !== '' && rewritten.includes(finding.rawMatch)) process.exit(1);
-  }
-
-  if (!isRow) recordModHandoff(config.dataDir, rewritten);
-  process.stdout.write(`${JSON.stringify({ v: 1, text: rewritten, note })}\n`);
+  if (answer === null) process.exit(1);
+  process.stdout.write(`${JSON.stringify({ v: 1, text: answer.text, note: answer.note })}\n`);
 }
 
 try {

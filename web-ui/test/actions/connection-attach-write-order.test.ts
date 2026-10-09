@@ -34,7 +34,9 @@ import { tempHomes } from '../helpers/temp-home.ts';
 // stop there leaves the new scoped key beside the list on file, which may belong
 // to another organization or account, and the earlier grant. The writes are
 // counted and can be made to fail, and a hook runs just before the settings write
-// to read what is on disk at that moment.
+// to read what is on disk at that moment. Every success, on either order, also
+// refreshes the Settings page, which the success rows assert: the page was
+// rendered from settings that the attach has changed.
 const osHome = vi.hoisted(() => ({ dir: '' }));
 vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof NodeOs>();
@@ -264,6 +266,7 @@ describe('a machine-wide attach over a personal device writes the settings first
     const watch = credentialAtSettingsWrite();
 
     expect(await attachMachine()).toEqual({ ok: true });
+    expect(stand.revalidated).toEqual(['/settings']);
 
     expect(watch.ran()).toBe(true);
     expect(watch.text()).toBe(before);
@@ -353,6 +356,7 @@ describe('a machine-wide attach over a personal device writes the settings first
         const watch = credentialAtSettingsWrite();
 
         expect(await attachMachine()).toEqual({ ok: true });
+        expect(stand.revalidated).toEqual(['/settings']);
 
         expect(watch.ran()).toBe(true);
         expect(watch.text()).toBe('absent');
@@ -397,6 +401,7 @@ describe('a machine-wide attach over a personal device writes the settings first
       const seen = keyAtSettingsWrite();
 
       expect(await attachMachine()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
     });
@@ -405,6 +410,7 @@ describe('a machine-wide attach over a personal device writes the settings first
       const seen = keyAtSettingsWrite();
 
       expect(await attachMachine()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
     });
@@ -414,6 +420,7 @@ describe('a machine-wide attach over a personal device writes the settings first
       const seen = keyAtSettingsWrite();
 
       expect(await attachMachine()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
     });
@@ -504,6 +511,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
       const watch = credentialAtSettingsWrite();
 
       expect(await attachScoped()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(watch.ran()).toBe(true);
       expect(watch.text()).toBe(before);
@@ -555,6 +563,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
       const seen = keyAtSettingsWrite();
 
       expect(await attachScoped()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
       expect(storedSettings().attachmentScope).toEqual(BOUND);
@@ -564,6 +573,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
       const seen = keyAtSettingsWrite();
 
       expect(await attachScoped()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
     });
@@ -573,6 +583,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
       const seen = keyAtSettingsWrite();
 
       expect(await attachScoped()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
     });
@@ -589,6 +600,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
       const seen = keyAtSettingsWrite();
 
       expect(await attachScoped()).toEqual({ ok: true });
+      expect(stand.revalidated).toEqual(['/settings']);
 
       expect(seen.get()).toBe(KEY);
       expect(storedSettings().attachmentScope).toEqual(FRESH(DEFAULT_WHO));

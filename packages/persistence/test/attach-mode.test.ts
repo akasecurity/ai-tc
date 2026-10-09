@@ -542,6 +542,25 @@ describe('settledDecisionHolds', () => {
         expect(put(widening, MANAGED, 'machine')).toBe(true);
       });
 
+      it('turns on the administrator answer at the re-read and on nothing else', () => {
+        // One settled decision put twice: only whether the machine is still managed then differs.
+        const settledUnderManagement: Inputs = { ...widening, interactive: true };
+        expect(put(settledUnderManagement, MANAGED, 'machine')).toBe(true);
+        expect(put(settledUnderManagement, null, 'machine')).toBe(false);
+      });
+
+      // Deliberate. The overlay names no administrator that can be checked: its organization
+      // is an optional name, shown to the user and not verified. So an agreement given under
+      // one administrator stands under another's, and what another could change that matters
+      // here, the deployment or the name the connection is pinned to, is refused before this
+      // is asked (managedAttachRefusal).
+      it('counts under a different administrator, or one who names no organization', () => {
+        const other: ConnectionRefusal = { reason: 'scoped-managed', organization: 'Other IT' };
+        const nameless: ConnectionRefusal = { reason: 'scoped-managed' };
+        expect(put({ ...widening, interactive: true }, other, 'machine')).toBe(true);
+        expect(put({ ...widening, interactive: true }, nameless, 'machine')).toBe(true);
+      });
+
       it('counts without a terminal once they stop, where the flag typed is the answer', () => {
         expect(put(widening, null, 'machine')).toBe(true);
       });

@@ -2744,7 +2744,10 @@ describe('ignore flags subtract from what an invocation covers', () => {
       // is source like any other and has to sit behind the same bans.
       ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
-      ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
+      [
+        'eslint src test eval build hooks types *.config.*',
+        ['src', 'test', 'eval', 'build', 'hooks', 'types'],
+      ],
       ['eslint src *.config.*', ['src']],
       // tools/installer ships no `src` at all: the thing under test is the
       // two shell scripts at the package root, which ESLint does not lint,

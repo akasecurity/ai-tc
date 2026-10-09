@@ -1,5 +1,7 @@
+import { Buffer } from 'node:buffer';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
@@ -148,5 +150,5 @@ export async function buildEngine({ stdin, outFile = OUT_FILE } = {}) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { bytes } = await buildEngine();
-  console.log(`hooks/engine.js ${bytes} bytes`);
+  process.stdout.write(`hooks/engine.js ${String(bytes)} bytes\n`);
 }

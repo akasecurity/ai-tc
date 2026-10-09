@@ -699,6 +699,20 @@ export const rootConfigFiles = [
   },
 ];
 
+// The same switch for whole directories of tracked source that no tsconfig owns:
+// code a host loads by its own rules (a Claude Code mod imports a module the
+// host provides, which is not in the repo) and Node build scripts. They stay
+// behind the no-network ban, which is syntactic, and lose only the type-aware
+// rules that cannot resolve. Spread AFTER the block that turns `projectService`
+// on, and name the globs (root-anchored, e.g. `hooks/**`).
+/**
+ * @param {string[]} files
+ * @returns {import('eslint').Linter.Config[]}
+ */
+export function untypedSource(files) {
+  return [{ files, ...tseslint.configs.disableTypeChecked }];
+}
+
 // A standalone config that enforces ONLY the no-network guarantee — the four
 // bans above and nothing else. Point a second lint pass at it (see cli's
 // `eslint.scripts.config.mjs`) to cover files that are not compiled sources:

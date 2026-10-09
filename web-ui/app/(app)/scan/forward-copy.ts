@@ -51,7 +51,7 @@ export function describeForward(outcome: SharesForwardOutcome): ForwardLine | nu
       };
     case 'not-enrolled':
       return {
-        text: `Not forwarded to ${outcome.endpoint}: project not enrolled — its scans stay on this machine.`,
+        text: `Not forwarded to ${outcome.endpoint}: the project or a repository nested in it is not enrolled — its scans stay on this machine.`,
         tone: 'note',
       };
     case 'forwarded':

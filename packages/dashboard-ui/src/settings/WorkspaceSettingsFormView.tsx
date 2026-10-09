@@ -1,5 +1,6 @@
 'use client';
 import type {
+  AttachmentMode,
   CredentialState,
   HistorySyncConsentChoice,
   ManagedContext,
@@ -152,12 +153,20 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
-// The grant covering activity recorded BEFORE this machine attached. Separate
-// from the attachment itself, which governs only what is recorded from now on,
-// and separate again from historical access, which governs local READING.
+// The grant covering activity this machine has not delivered: what it recorded
+// BEFORE it attached, and what a live send could not deliver. On a personal
+// device that is the enrolled repositories' activity (see the _SCOPED set
+// below), and enrolling a repository under the grant also queues the captures
+// still kept for it, including any recorded after attaching. Separate from the
+// attachment itself, which governs only what is recorded from now on, and
+// separate again from historical access, which governs local READING.
 type HistorySyncChoice = 'granted' | 'revoked';
 
 export const HISTORY_SYNC_SECTION_LABEL = 'Unsent activity';
+
+// The row's one-line summary, shown while it is collapsed.
+export const HISTORY_SYNC_ROW_DESCRIPTION =
+  'Whether activity this machine has not delivered may be sent later.';
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
@@ -201,6 +210,59 @@ export const HISTORY_SYNC_STALE_NOTICE =
   'text of the activity recorded before this machine attached — only what a live send failed ' +
   'to deliver afterward — sending is paused until you re-consent. Saving with "Shared" ' +
   'selected re-consents to the current version.';
+
+// The same row on a machine attached as a personal device, picked when the host
+// reports `attachmentMode: 'scoped'`. Such a machine sends activity only from
+// the repositories enrolled on it (the grant's seed marks their captures
+// alone, and the drain reads with the same scope), so every string here names
+// them and none describes the whole machine's backlog. Same payload, same
+// masking rule, same two answers under the same labels: only the subject
+// narrows. The payload-version tripwire in packages/schema names the twins of
+// the three disclosure strings (the section description, the choices and the
+// stale notice) beside the originals, so a payload change re-reads both. The
+// row summary carries no payload claim and is not on that checklist.
+export const HISTORY_SYNC_ROW_DESCRIPTION_SCOPED =
+  'Whether activity the repositories enrolled here have not delivered may be sent later.';
+
+export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
+  'Whether activity the repositories enrolled on this device have not delivered to the ' +
+  'deployment it is attached to may be sent later. Activity in any other repository, or ' +
+  'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
+  'here before you enrolled it, and anything a live send from one could not deliver because ' +
+  'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
+  'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
+  'call, which tools were called with their inputs truncated and every detected secret ' +
+  'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
+  'tool results themselves — for which a captured one INCLUDES ITS TEXT. What is masked in ' +
+  'that text follows the policy assigned to the detection that flagged the value: it is ' +
+  'masked only where that policy is redact or block, and under monitor or warn the value is ' +
+  'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
+  'or block, so on a default install nothing in that text is masked. Live sending from ' +
+  'enrolled repositories is part of being attached and this setting does not change it: ' +
+  'declining means an undelivered item is dropped rather than kept and retried. With no ' +
+  'repository enrolled, no activity is sent. Sending happens in the background over later ' +
+  'sessions. Revoking stops what has not been sent; it cannot recall what has.';
+
+export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not shared',
+    description:
+      'Anything an enrolled repository does not deliver live is dropped rather than kept (default — never assumed).',
+  },
+  {
+    value: 'granted',
+    label: 'Shared',
+    description:
+      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+  },
+];
+
+export const HISTORY_SYNC_STALE_NOTICE_SCOPED =
+  'Your grant was recorded against an older version of this setting, which did not cover the ' +
+  'text of what an enrolled repository recorded before you enrolled it — only what a live send ' +
+  'from one failed to deliver afterward — sending is paused until you re-consent. Saving with ' +
+  '"Shared" selected re-consents to the current version.';
 
 // The grant covering what the browser extension may write down from a web chat.
 // Its own consent rather than a corner of an existing one, because it records a
@@ -608,7 +670,12 @@ export interface WorkspaceSettingsFormViewProps {
   // Register this machine against an organization's deployment, and undo that.
   // Both optional: a build with no transport plugged in renders the connection
   // state read-only rather than offering an action that cannot complete.
-  onAttach?: (endpoint: string, label: string, accessKey: string) => void;
+  //
+  // `mode` is the device kind the form carries — `scoped` for a personal device,
+  // `machine` for an organization's — and is passed only when it carries one. On
+  // a machine held to machine-wide (`machineOnly`) the form offers no choice and
+  // passes none: the host decides that case from its own server-side read.
+  onAttach?: (endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void;
   onDetach?: () => void;
   // Whether the credential half of the attachment is usable, read locally by
   // the host (`readControlPlaneCredentialState`). OPTIONAL, and its absence
@@ -625,6 +692,19 @@ export interface WorkspaceSettingsFormViewProps {
   // and the row withholds those controls exactly as it does under a lock.
   // Absent reads as not held, and a lock on `runMode` withholds them either way.
   connectionHeld?: boolean;
+  // The mode of the attachment's credential when that credential is usable for
+  // the connection the settings name, read by the host
+  // (`readControlPlaneAttachmentMode`) and passed ALONE: the credential itself
+  // never reaches this view. Absent means "not reported", and an attached row
+  // then describes the machine-wide case, the one that claims MORE is sent,
+  // never less. The attach form also uses it as its only default: the endpoint
+  // typed must be the one the settings name.
+  attachmentMode?: AttachmentMode | undefined;
+  // Whether this machine may attach machine-wide only: an administrator locks
+  // or pins its connection, so a scoped attach is refused. Decided by the host
+  // on the rule its attach action refuses on; the form then offers no choice.
+  // Absent reads as not held, and the action refuses a scoped attach either way.
+  machineOnly?: boolean | undefined;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -650,6 +730,8 @@ export function WorkspaceSettingsFormView({
   onDetach,
   credentialState,
   connectionHeld,
+  attachmentMode,
+  machineOnly,
   detectionsHref = '/detections',
   busy,
   error,
@@ -716,6 +798,11 @@ export function WorkspaceSettingsFormView({
     settings.historySyncConsent,
     settings.controlPlane?.endpoint,
   );
+  // The history row's wording. A personal device sends activity only from its
+  // enrolled repositories, so on one the row names them; anything else, a mode the
+  // host did not report included, keeps the machine-wide wording, which says
+  // more is sent, never less (the convention `attachmentMode` documents).
+  const historyScoped = attachmentMode === 'scoped';
   // VALIDITY, not presence, and TOUCHED rather than a seed comparison — the
   // model-judge row's shape, for the same two reasons. A grant recorded against
   // another version authorizes nothing, so it must not render as "Granted"; and
@@ -809,6 +896,8 @@ export function WorkspaceSettingsFormView({
           managedLabel={
             lockOn('runMode') ?? (connectionHeld === true ? managedByLabel(managed) : undefined)
           }
+          attachmentMode={attachmentMode}
+          machineOnly={machineOnly}
           onAttach={onAttach}
           onDetach={onDetach}
           busy={busy}
@@ -896,9 +985,11 @@ export function WorkspaceSettingsFormView({
         {isAttached(settings) && (
           <SettingRow
             label={HISTORY_SYNC_SECTION_LABEL}
-            description="Whether activity this machine has not delivered may be sent later."
+            description={
+              historyScoped ? HISTORY_SYNC_ROW_DESCRIPTION_SCOPED : HISTORY_SYNC_ROW_DESCRIPTION
+            }
             name="historySyncConsent"
-            choices={HISTORY_SYNC_CHOICES}
+            choices={historyScoped ? HISTORY_SYNC_CHOICES_SCOPED : HISTORY_SYNC_CHOICES}
             value={historySync}
             onChange={answerHistorySync}
             alert={historySyncStale ? HISTORY_SYNC_STALE_BADGE : undefined}
@@ -910,11 +1001,13 @@ export function WorkspaceSettingsFormView({
                     className="mb-3 text-xs text-sev-high-ink"
                     data-slot="history-sync-stale-notice"
                   >
-                    {HISTORY_SYNC_STALE_NOTICE}
+                    {historyScoped ? HISTORY_SYNC_STALE_NOTICE_SCOPED : HISTORY_SYNC_STALE_NOTICE}
                   </p>
                 )}
                 <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
-                  {HISTORY_SYNC_SECTION_DESCRIPTION}
+                  {historyScoped
+                    ? HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED
+                    : HISTORY_SYNC_SECTION_DESCRIPTION}
                 </p>
               </>
             }
@@ -1103,11 +1196,98 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 // this surface can speak for: what the plugin sends, and what a scan run here
 // sends. Naming only the plugin would leave a user reading this surface
 // believing a scan they run here stays on the machine.
+//
+// What every attached machine sends whenever a session starts, the policy pull and
+// the device report and, where a scan is available, the check for device
+// commands, is said in the one sentence the terminal command and the README use.
+// Each surface's own tests pin that text; nothing compares the surfaces with each
+// other, so a change to the sentence is made in all of them.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
-  'to see and pulls the policy it sets. A scan you run from the Scan page also sends the Data ' +
-  'Shares register it records — destinations and call sites, never source text. This page reads ' +
-  'only your local store, so it cannot report what the deployment received. Detach to stop sending.';
+  'to see. Whenever a session starts anywhere on this machine, in a repository or not (a ' +
+  "browser chat included), the machine pulls that deployment's policy (at most every 15 " +
+  'minutes) and sends it a device report (at most hourly): a device identifier, host name, ' +
+  'versions, detection packs, policy counts, finding counts and dates for everything recorded ' +
+  'on the machine, and, when the machine is attached as a personal device, the fact that it is ' +
+  'one. Where a scan is available (the coding-agent plugins, not a browser chat), the same ' +
+  'session start also checks it for device commands. A scan you run from the Scan page also ' +
+  'sends the Data Shares register it records — destinations and call sites, ' +
+  'never source text. This page reads only your local store, so it cannot report what the ' +
+  'deployment received. Detach to stop sending.';
+
+// The same notice for a SCOPED attachment, where the machine-wide one would
+// claim more than is sent. Every clause is a sender a scoped machine still has
+// or a line it does not cross:
+//
+//   - the plugin forwards activity only from repositories you enroll (the
+//     forward paths decide by the enrolled scope before they send);
+//   - the policy pull, the device report and the check for device commands are
+//     made whenever a session starts anywhere on the machine, in a repository
+//     or not, a browser chat included, with no scope verdict, by design, so they
+//     are named rather than hidden behind "only". They are said in the terms the
+//     terminal command and the README use for them, one sentence for all three:
+//     the report's finding counts and dates are for everything recorded on the
+//     machine, the report also says that the machine is a personal device, and
+//     the command check is made only where a scan is available (the
+//     coding-agent plugins, not a browser chat);
+//   - the Scan page sends the register only for an enrolled repository;
+//   - a build that predates scoped attachments, re-attaching, writes a
+//     machine-wide credential, and a user reading this is the one who would run
+//     it.
+export const CONNECTION_FORWARDING_NOTICE_SCOPED =
+  'While this machine is attached as a personal device, the plugin forwards activity only from ' +
+  'repositories you enroll with `aka enroll`; activity anywhere else stays on this machine. ' +
+  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
+  "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
+  'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
+  'packs, policy counts, finding counts and dates for everything recorded on the machine, and, ' +
+  'when the machine is attached as a personal device, the fact that it is one. Where a scan is ' +
+  'available (the coding-agent plugins, not a browser chat), the same session start also ' +
+  'checks it for device commands. A scan you run from the Scan page sends the Data ' +
+  'Shares register only for an enrolled repository — destinations and call sites, never source ' +
+  'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
+  'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
+  'received. Detach to stop sending.';
+
+// The mode line under an attached connection's name.
+export const CONNECTION_MODE_SCOPED =
+  'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`.';
+export const CONNECTION_MODE_MACHINE =
+  'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
+
+export const ATTACH_MODE_LABEL = 'What kind of device is this?';
+
+// The attach form's one question beyond the endpoint and key, in the vocabulary
+// the credential records. Asked as a device kind rather than a mode name,
+// because that is the fact the user knows; the description says what each
+// answer sends.
+export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
+  {
+    value: 'scoped',
+    label: 'Personal device',
+    description:
+      'Activity is sent only from repositories you enroll with `aka enroll`; activity anywhere ' +
+      'else stays on this machine. Whenever a session starts anywhere on this machine, in a ' +
+      "repository or not (a browser chat included), the machine pulls your organization's " +
+      'policy (at most every 15 minutes) and sends it a device report (at most hourly): a ' +
+      'device identifier, host name, versions, detection packs, policy counts, finding counts ' +
+      'and dates for everything recorded on the machine, and, when the machine is attached as ' +
+      'a personal device, the fact that it is one. Where a scan is available (the coding-agent ' +
+      'plugins, not a browser chat), the same session start also checks it for device commands.',
+  },
+  {
+    value: 'machine',
+    label: 'Organization device',
+    description: 'Activity from anywhere on this machine is sent to the deployment.',
+  },
+];
+
+// In place of the choice, on a machine whose connection an administrator
+// governs: a scoped pick is refused and any other attach is machine-wide, so
+// offering a pick would be a control with no effect.
+export const ATTACH_MODE_MANAGED_NOTICE =
+  'Your organization manages this machine’s connection, so it attaches as an organization ' +
+  'device: activity from anywhere on it is sent. A personal-device attach is refused here.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 //
@@ -1223,15 +1403,42 @@ export function canAttach(endpoint: string, accessKey: string): boolean {
  *
  * `clearKey` rather than a setter, so the caller owns the state and this stays a
  * plain function the suite can drive with two spies.
+ *
+ * The mode is passed only when the form carries one, as a fourth argument. A
+ * form with nothing to choose (`machineOnly`) passes three, and the host's own
+ * server-side read decides.
  */
 export function submitAttach(
-  values: { endpoint: string; label: string; accessKey: string },
+  values: { endpoint: string; label: string; accessKey: string; mode?: AttachmentMode | undefined },
   clearKey: () => void,
-  onAttach: (endpoint: string, label: string, accessKey: string) => void,
+  onAttach: (endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void,
 ): void {
   const key = values.accessKey.trim();
   clearKey();
-  onAttach(values.endpoint.trim(), values.label.trim(), key);
+  if (values.mode === undefined) onAttach(values.endpoint.trim(), values.label.trim(), key);
+  else onAttach(values.endpoint.trim(), values.label.trim(), key, values.mode);
+}
+
+/**
+ * The mode an attach from the form would carry, or null while the user still
+ * has a choice to make.
+ *
+ * The user's pick wins. With none, the only default is the mode a usable
+ * credential already has (`attachmentMode`), and only when the endpoint typed is
+ * the one the settings name (`settingsEndpoint`), compared as the action
+ * compares it, exactly, after the trim the action applies. Anything else has no
+ * default: a first attach to a deployment is a decision about the device, and a
+ * pre-ticked answer would make it for the user.
+ */
+export function attachFormMode(
+  chosen: AttachmentMode | null,
+  typedEndpoint: string,
+  settingsEndpoint: string | undefined,
+  attachmentMode: AttachmentMode | undefined,
+): AttachmentMode | null {
+  if (chosen !== null) return chosen;
+  if (attachmentMode === undefined || settingsEndpoint === undefined) return null;
+  return typedEndpoint.trim() === settingsEndpoint ? attachmentMode : null;
 }
 
 /**
@@ -1252,6 +1459,8 @@ function ConnectionRow({
   settings,
   credentialState,
   managedLabel,
+  attachmentMode,
+  machineOnly,
   onAttach,
   onDetach,
   busy,
@@ -1259,7 +1468,11 @@ function ConnectionRow({
   settings: WorkspaceSettings;
   credentialState?: CredentialState | undefined;
   managedLabel?: string | undefined;
-  onAttach?: ((endpoint: string, label: string, accessKey: string) => void) | undefined;
+  attachmentMode?: AttachmentMode | undefined;
+  machineOnly?: boolean | undefined;
+  onAttach?:
+    | ((endpoint: string, label: string, accessKey: string, mode?: AttachmentMode) => void)
+    | undefined;
   onDetach?: (() => void) | undefined;
   busy?: boolean | undefined;
 }) {
@@ -1268,8 +1481,24 @@ function ConnectionRow({
   // Held in component state like the other two, and cleared the moment the
   // attach is handed off below.
   const [accessKey, setAccessKey] = useState('');
+  // The device kind the user picked, or null until they pick one.
+  const [mode, setMode] = useState<AttachmentMode | null>(null);
   const attached = isAttached(settings);
+  // A pick belongs to one decision to attach. The in-page Detach clears it, but a
+  // machine detached from outside this page re-renders it standalone in place,
+  // and the old pick would come back pre-ticked: the form's only default is a
+  // mode kept for the endpoint the settings name. So it goes whenever the
+  // machine stops being attached, by whichever route. Adjusted during render
+  // rather than in an effect, so the stale pick is never painted.
+  const [wasAttached, setWasAttached] = useState(attached);
+  if (attached !== wasAttached) {
+    setWasAttached(attached);
+    if (!attached) setMode(null);
+  }
   const locked = managedLabel !== undefined;
+  const holdsMachineWide = machineOnly === true;
+  // What an attach from the form would carry; null while there is a choice left.
+  const selected = attachFormMode(mode, endpoint, settings.controlPlane?.endpoint, attachmentMode);
   // Only meaningful for an attached machine: a standalone one is not missing a
   // credential, it is not supposed to have one, and reporting absence there
   // would turn the ordinary state into a fault.
@@ -1286,6 +1515,13 @@ function ConnectionRow({
           {attached && settings.controlPlane && (
             <span className="mt-1 block text-xs text-text-2" data-slot="control-plane-name">
               {controlPlaneName(settings.controlPlane)}
+            </span>
+          )}
+          {/* Only when the host reported a mode: an unreported one is not a
+              machine-wide one, and the row says nothing rather than guess. */}
+          {attached && attachmentMode !== undefined && (
+            <span className="mt-1 block text-xs text-text-2" data-slot="connection-mode">
+              {attachmentMode === 'scoped' ? CONNECTION_MODE_SCOPED : CONNECTION_MODE_MACHINE}
             </span>
           )}
         </span>
@@ -1315,9 +1551,13 @@ function ConnectionRow({
         </p>
       )}
 
+      {/* The scoped notice only for a reported scoped mode; otherwise the
+          machine-wide one, which never claims less is sent than is. */}
       {attached && (
         <p className="mt-3 text-xs text-text-3" data-slot="connection-forwarding">
-          {CONNECTION_FORWARDING_NOTICE}
+          {attachmentMode === 'scoped'
+            ? CONNECTION_FORWARDING_NOTICE_SCOPED
+            : CONNECTION_FORWARDING_NOTICE}
         </p>
       )}
 
@@ -1343,9 +1583,12 @@ function ConnectionRow({
               // a concurrent `aka attach` flipped this view to attached under
               // them — would otherwise sit in component state across the whole
               // detached period and reappear pre-filled afterwards.
+              //
+              // The device kind goes too: the next attach is a new decision.
               setEndpoint('');
               setLabel('');
               setAccessKey('');
+              setMode(null);
               onDetach();
             }}
             data-slot="detach-button"
@@ -1406,6 +1649,27 @@ function ConnectionRow({
               setAccessKey(e.target.value);
             }}
           />
+          {holdsMachineWide ? (
+            <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-mode-managed">
+              {ATTACH_MODE_MANAGED_NOTICE}
+            </p>
+          ) : (
+            <div className="sm:col-span-2" data-slot="attach-mode">
+              <span id="attach-mode-label" className="mb-2 block text-xs font-medium text-text">
+                {ATTACH_MODE_LABEL}
+              </span>
+              <ChoiceGroup
+                name="attach-mode"
+                labelledBy="attach-mode-label"
+                choices={ATTACH_MODE_CHOICES}
+                value={selected}
+                onChange={(value) => {
+                  setMode(value);
+                }}
+                disabled={busy === true}
+              />
+            </div>
+          )}
           <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-key-hint">
             {ATTACH_KEY_HINT}
           </p>
@@ -1414,10 +1678,19 @@ function ConnectionRow({
               variant="solid"
               tone="primary"
               size="sm"
-              disabled={busy === true || !canAttach(endpoint, accessKey)}
+              disabled={
+                busy === true ||
+                !canAttach(endpoint, accessKey) ||
+                (!holdsMachineWide && selected === null)
+              }
               onClick={() => {
                 submitAttach(
-                  { endpoint, label, accessKey },
+                  {
+                    endpoint,
+                    label,
+                    accessKey,
+                    mode: holdsMachineWide ? undefined : (selected ?? undefined),
+                  },
                   () => {
                     setAccessKey('');
                   },

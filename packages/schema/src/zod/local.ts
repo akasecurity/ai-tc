@@ -21,7 +21,7 @@ import type {
 } from '../drizzle/local/sqlite.ts';
 import { isoToEpochMillis } from '../time.ts';
 import type { AttachmentMode } from './control-plane.ts';
-import { printable } from './control-plane.ts';
+import { PluginWhoami, printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
 import type {
@@ -274,22 +274,40 @@ export const AttachmentScopeEntry = z.object({
 export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
 
 /**
- * The identities a SCOPED attachment forwards, and the deployment they were
- * enrolled for.
+ * The identities a SCOPED attachment forwards, the deployment they were
+ * enrolled for, and, optionally, the organization and account the record
+ * belongs to.
  *
  * Bound by VALUE, HistorySyncConsent's rule: the record names its endpoint, and
  * a record for any other endpoint does not count (isAttachmentScopeValid).
  * Enrolling a repository with one deployment is not enrolling it with another,
  * and that holds without any writer having to remember to clear the record.
  *
+ * `tenantName` and `userEmail` say WHO the record was built for: the
+ * organization and account a whoami answer names, held to the bounds whoami
+ * answers with (the same schemas, not copies). Every organization on a shared
+ * deployment has the same endpoint, so the endpoint alone cannot tell one
+ * tenant's record from another's. Both are optional: a record written without
+ * them carries neither. A well-formed binding takes NO part in the forwarding
+ * verdict: resolveScope and scopeVerdict never compare it with anything, so a
+ * record with no binding forwards its entries exactly as one with a binding
+ * does. The binding's values affect the verdict in one way only, set out below:
+ * a value that is not valid makes the record read as no scope at all.
+ * isAttachmentScopeBoundTo is what compares the binding with an organization
+ * and account.
+ *
  * NOT STRICT, so a field added to the envelope later is stripped by this reader
- * rather than failing it. NO `.meta({ id })`.
+ * rather than failing it. A binding field that is present must be valid,
+ * though: one that is not a printable string fails the envelope, the way a bad
+ * endpoint does, and the record reads as no scope at all. NO `.meta({ id })`.
  *
  * Stored as `WorkspaceSettings.attachmentScope`, but NOT typed there: see that
  * field's note. Read a stored value through parseAttachmentScope.
  */
 export const AttachmentScope = z.object({
   endpoint: z.string().min(1),
+  tenantName: PluginWhoami.shape.tenantName.optional(),
+  userEmail: PluginWhoami.shape.userEmail.optional(),
   entries: z.array(AttachmentScopeEntry),
 });
 export type AttachmentScope = z.infer<typeof AttachmentScope>;
@@ -302,10 +320,12 @@ const AttachmentScopeEnvelope = AttachmentScope.extend({ entries: z.array(z.unkn
  * A stored `attachmentScope`, validated where it is used.
  *
  * The envelope first: anything that is not an object with a non-empty string
- * `endpoint` and an array `entries` is no scope at all, `undefined`. Then each
- * entry on its own, keeping the valid ones, so an unknown `kind`, a control
- * character or a bad timestamp costs that entry and nothing else. Unknown keys
- * are stripped from both levels.
+ * `endpoint` and an array `entries`, or whose binding fields are present but not
+ * printable strings, is no scope at all, `undefined`. Then each entry on its
+ * own, keeping the valid ones, so an unknown `kind`, a control character or a
+ * bad timestamp costs that entry and nothing else. Unknown keys are stripped
+ * from both levels. The binding is kept when the record carries it, and no
+ * binding key is added when it does not.
  *
  * Never throws: a value that throws while it is read is no scope. Pure; no I/O.
  */
@@ -318,7 +338,13 @@ export function parseAttachmentScope(raw: unknown): AttachmentScope | undefined 
       const entry = AttachmentScopeEntry.safeParse(candidate);
       if (entry.success) entries.push(entry.data);
     }
-    return { endpoint: envelope.data.endpoint, entries };
+    const { endpoint, tenantName, userEmail } = envelope.data;
+    return {
+      endpoint,
+      ...(tenantName === undefined ? {} : { tenantName }),
+      ...(userEmail === undefined ? {} : { userEmail }),
+      entries,
+    };
   } catch {
     return undefined;
   }
@@ -343,6 +369,46 @@ function scopeForEndpoint(raw: unknown, endpoint: string | undefined): Attachmen
  */
 export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefined): boolean {
   return scopeForEndpoint(raw, endpoint) !== undefined;
+}
+
+/**
+ * Whether a stored scope belongs to the deployment `endpoint` and to the
+ * organization and account `who` names: it counts for `endpoint` (the rule
+ * isAttachmentScopeValid applies) and carries both binding fields, each
+ * non-empty and equal to `who`'s, byte for byte.
+ *
+ * Every organization on a shared deployment has the same endpoint, so a record
+ * that merely names the endpoint may be another tenant's, or another account's
+ * on the same machine. A record with no binding cannot be checked, so it answers
+ * false: it might be someone else's. An empty field on either side binds
+ * nothing and answers false too. A renamed organization reads as someone else,
+ * so a record bound to the old name answers false. So does any record that is
+ * unbound, mismatched, for another endpoint, or whose envelope fails to parse:
+ * only an exact match answers true. A record that parses but holds an invalid
+ * entry is read without that entry, and still answers true when its binding
+ * matches.
+ *
+ * Only the two binding fields of `who` are read, so a full whoami answer may be
+ * passed. NOT part of the forwarding verdict: scopeVerdict and resolveScope
+ * never compare a well-formed binding with anything, so a record that counts for
+ * the endpoint forwards its entries whatever this answers. Pure; no I/O; never
+ * throws.
+ */
+export function isAttachmentScopeBoundTo(
+  raw: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+): boolean {
+  try {
+    const scope = scopeForEndpoint(raw, endpoint);
+    if (scope === undefined) return false;
+    const { tenantName, userEmail } = scope;
+    if (tenantName === undefined || userEmail === undefined) return false;
+    if (tenantName === '' || userEmail === '') return false;
+    return tenantName === who.tenantName && userEmail === who.userEmail;
+  } catch {
+    return false;
+  }
 }
 
 // The behavior the user consented to when they allowed the browser extension to

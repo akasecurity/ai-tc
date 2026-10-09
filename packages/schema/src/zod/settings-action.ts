@@ -13,7 +13,7 @@
 // receives the type it was written for.
 import { z } from 'zod';
 
-import { printable } from './control-plane.ts';
+import { AttachmentMode, printable } from './control-plane.ts';
 
 // Deliberately NOT `.strict()`, for the reason exception-action.ts gives: an
 // unknown key from a newer client must not refuse a save over a field this
@@ -161,5 +161,14 @@ export const AttachInput = z.object({
   // renders a longer one usefully.
   label: printable(200).optional(),
   accessKey: z.string(),
+  // How much of this machine the attachment is for: everything, or only the
+  // repositories its user enrolls. Optional, so an input without it still
+  // parses; what an absent mode means is for whatever reads it to decide, not
+  // this shape. This member validates the VALUE rather than leaving that to the
+  // call site, a deliberate exception to this module's shape-only rule: a shape
+  // rejection names the field, so a value that is not a mode is refused as a bad
+  // `mode` rather than stripped or passed on. The dashboard's attach action reads
+  // it as the mode to attach in.
+  mode: AttachmentMode.optional(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

@@ -1008,8 +1008,9 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     const byKind = db.historySync.partitionByKind();
     const aggregate = db.historySync.partition();
 
-    // Every bucket reconciles: a surface shows both, so a per-kind number that
-    // did not add up to the aggregate would be two answers about one machine.
+    // Every bucket reconciles: the two reads are one clause, so a per-kind
+    // number that did not add up to the aggregate would be two answers about the
+    // same rows.
     for (const bucket of [
       'queued',
       'inProgress',
@@ -1531,6 +1532,42 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
     expect(db.historySync.pendingCaptureRows(100, ALL, [WORK]).map((r) => r.id)).toEqual(['cap-w']);
   });
 
+  // The capture read through its own index returns what the residual it
+  // replaced returned: owed, unsettled, unclaimed, in scope and inside the grace
+  // bound, oldest first ACROSS keys, in whatever order the keys come (the index
+  // is ordered by key first, so the order is the statement's own sort), and
+  // never a delivered capture, though delivery leaves its marker on.
+  it('reads owed captures of several enrolled keys oldest first, none settled or claimed', () => {
+    const db = store.open();
+    const OTHER = 'github.com/acme/other';
+    seedKeyedCapture(db, 'cap-o-1', MINUTE, OTHER, true);
+    seedKeyedCapture(db, 'cap-w-1', 2 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-o-2', 3 * MINUTE, OTHER, true);
+    seedKeyedCapture(db, 'cap-w-sent', 4 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-w-claimed', 5 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-p', 6 * MINUTE, PERSONAL, true);
+    seedKeyedCapture(db, 'cap-w-late', 30 * MINUTE, WORK, true);
+    db.historySync.markSynced(['cap-w-sent'], T0);
+    db.historySync.claimRows(['cap-w-claimed'], T0);
+    const cutoff = T0 + 10 * MINUTE;
+
+    for (const keys of [
+      [WORK, OTHER],
+      [OTHER, WORK],
+    ]) {
+      expect(db.historySync.pendingCaptureRows(10, cutoff, keys).map((r) => r.id)).toEqual([
+        'cap-o-1',
+        'cap-w-1',
+        'cap-o-2',
+      ]);
+      expect(db.historySync.pendingCaptureRows(2, cutoff, keys).map((r) => r.id)).toEqual([
+        'cap-o-1',
+        'cap-w-1',
+      ]);
+    }
+    expect(outboxOwed(store.openRaw(), 'cap-w-sent')).toBe(true);
+  });
+
   // Read straight off the row, for the reason outboxOwed gives: through the
   // scoped reader this would pass whether or not the writer was scoped.
   it('marks only enrolled captures at the consent instant', () => {
@@ -1587,10 +1624,10 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
     expect(outboxOwed(raw, 'cap-p')).toBe(false);
   });
 
-  // A scope that cannot be computed falls back to the unscoped seed rather than
-  // to no seed, and does not throw: marking is not sending, and the drain's own
-  // capture read applies the scope in SQL whatever was marked.
-  it('marks every capture, and does not throw, when the scope function throws', () => {
+  // A scope that cannot be computed marks no capture, and does not throw:
+  // marking every capture would make a scoped attachment's retention hold the
+  // bodies of repositories it does not cover.
+  it('marks no capture, and does not throw, when the scope function throws', () => {
     const db = store.open();
     const raw = store.openRaw();
     seedKeyedCapture(db, 'cap-w', MINUTE, WORK, false);
@@ -1602,8 +1639,8 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
       });
     }).not.toThrow();
 
-    expect(outboxOwed(raw, 'cap-w')).toBe(true);
-    expect(outboxOwed(raw, 'cap-p')).toBe(true);
+    expect(outboxOwed(raw, 'cap-w')).toBe(false);
+    expect(outboxOwed(raw, 'cap-p')).toBe(false);
   });
 
   // No store, nothing to mark, so nothing to compute a scope for: the credential
@@ -1688,6 +1725,364 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
   });
 });
 
+// THE SCOPED COUNTS. A scoped attachment's delivery-state reads count the rows
+// that pass its drain's reachability rule and nothing else: a structural row
+// whose own key and session root's key are both enrolled, and a capture whose
+// own key is. The rule takes no attach-time bound, though the drain's structural
+// pages do. Every bucket is scoped, so "sent" and "pending" describe one
+// population. Each case either reads its rows through the machine statements, as
+// the control, so an empty scoped answer is the scope's doing and not an empty
+// store's, or pins a non-empty scoped answer.
+describe('SqliteHistorySyncRepository — scoped delivery-state counts (a scoped attachment)', () => {
+  it('leaves a personal repository out of every bucket of all three reads', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'p-1', 10 * MINUTE, { root: PERSONAL, leaves: PERSONAL });
+    seedKeyedCapture(db, 'cap-w', 20 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-p', 21 * MINUTE, PERSONAL, true);
+    // The personal rows settle into every terminal state a bucket names.
+    db.historySync.markSynced(['p-1'], T0);
+    db.historySync.markSkipped(['p-1-llm', 'cap-p'], T0);
+    db.historySync.markRefused(['p-1-tool'], T0);
+
+    // The control: a machine attachment counts them all, the keyless root the
+    // captures hang off included.
+    expect(db.historySync.counts(ALL)).toEqual({
+      pending: 4,
+      sent: 1,
+      skipped: 1,
+      refused: 1,
+      detached: 0,
+      capturesSkipped: 1,
+    });
+    expect(db.historySync.partition()).toEqual({
+      queued: 5,
+      inProgress: 0,
+      synced: 1,
+      failed: 2,
+      refused: 1,
+      detached: 0,
+      total: 9,
+    });
+
+    expect(db.historySync.counts(ALL, [WORK])).toEqual({
+      pending: 3,
+      sent: 0,
+      skipped: 0,
+      refused: 0,
+      detached: 0,
+      capturesSkipped: 0,
+    });
+    expect(db.historySync.partition([WORK])).toEqual({
+      queued: 4,
+      inProgress: 0,
+      synced: 0,
+      failed: 0,
+      refused: 0,
+      detached: 0,
+      total: 4,
+    });
+    const byKind = db.historySync.partitionByKind([WORK]);
+    expect(byKind.map((k) => k.kind).sort()).toEqual([
+      'llm_call',
+      'prompt',
+      'session',
+      'tool_call',
+    ]);
+    for (const k of byKind) {
+      expect(k).toEqual({
+        kind: k.kind,
+        queued: 1,
+        inProgress: 0,
+        synced: 0,
+        failed: 0,
+        refused: 0,
+        detached: 0,
+        total: 1,
+      });
+    }
+  });
+
+  // The mirror of the drain's own rule. An enrolled leaf under a personal or
+  // keyless root is never sent (the receiving side stubs no root), so it is not
+  // pending either; an enrolled root with personal leaves is sent alone.
+  it('counts an enrolled leaf only under an enrolled session root, as the drain sends it', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'personal-root', 0, { root: PERSONAL, leaves: WORK });
+    seedKeyedSession(db, 'keyless-root', 10 * MINUTE, { leaves: WORK });
+    seedKeyedSession(db, 'work-root', 20 * MINUTE, { root: WORK, leaves: PERSONAL });
+
+    expect(db.historySync.counts(ALL).pending).toBe(9);
+    expect(db.historySync.counts(ALL, [WORK]).pending).toBe(1);
+    expect(db.historySync.partition([WORK])).toMatchObject({ queued: 1, total: 1 });
+    expect(db.historySync.partitionByKind([WORK])).toEqual([
+      {
+        kind: 'session',
+        queued: 1,
+        inProgress: 0,
+        synced: 0,
+        failed: 0,
+        refused: 0,
+        detached: 0,
+        total: 1,
+      },
+    ]);
+
+    // Settled, they stay out: a row's delivery state does not let it in.
+    db.historySync.markSynced(['personal-root-llm', 'keyless-root-tool'], T0);
+    expect(db.historySync.counts(ALL).sent).toBe(2);
+    expect(db.historySync.counts(ALL, [WORK]).sent).toBe(0);
+  });
+
+  // The capture half of the rule: /v1/events stubs a missing root, so a
+  // capture is counted by its own key whatever its session root carries. Every
+  // capture seedKeyedCapture writes hangs off a root with no key at all.
+  it('counts a capture by its own key, under a session root no scope sends', () => {
+    const db = store.open();
+    seedKeyedCapture(db, 'cap-w', MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-w-sent', 2 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-w-skipped', 3 * MINUTE, WORK, true);
+    // The lane rule still holds under a scope: a capture nothing owed is not counted.
+    seedKeyedCapture(db, 'cap-w-unowed', 4 * MINUTE, WORK, false);
+    db.historySync.markSynced(['cap-w-sent'], T0);
+    db.historySync.markSkipped(['cap-w-skipped'], T0);
+
+    expect(db.historySync.partition([WORK])).toEqual({
+      queued: 1,
+      inProgress: 0,
+      synced: 1,
+      failed: 1,
+      refused: 0,
+      detached: 0,
+      total: 3,
+    });
+    expect(db.historySync.partitionByKind([WORK])).toEqual([
+      {
+        kind: 'prompt',
+        queued: 1,
+        inProgress: 0,
+        synced: 1,
+        failed: 1,
+        refused: 0,
+        detached: 0,
+        total: 3,
+      },
+    ]);
+    // The keyless root is pending to a machine attachment and to no scope.
+    expect(db.historySync.counts(ALL).pending).toBe(1);
+    expect(db.historySync.counts(ALL, [WORK])).toEqual({
+      pending: 0,
+      sent: 0,
+      skipped: 0,
+      refused: 0,
+      detached: 0,
+      capturesSkipped: 1,
+    });
+    // What the scope counts as queued is what the scoped capture read offers.
+    expect(db.historySync.pendingCaptureRows(10, ALL, [WORK]).map((r) => r.id)).toEqual(['cap-w']);
+  });
+
+  // A scoped detach closes the attached window over every unsent structural row,
+  // personal ones included. Those can only become unsendable, and they do not
+  // count against the scope.
+  it('counts only the enrolled rows among those a detach closed over', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'p-1', 10 * MINUTE, { root: PERSONAL, leaves: PERSONAL });
+    db.historySync.closeAttachedWindow(T0, T0 + 60 * MINUTE);
+
+    expect(db.historySync.counts(ALL).detached).toBe(6);
+    expect(db.historySync.counts(ALL, [WORK]).detached).toBe(3);
+    expect(db.historySync.partition([WORK])).toMatchObject({ detached: 3, total: 3 });
+  });
+
+  // An empty scope is a scoped attachment with nothing enrolled, or a scope that
+  // cannot be read. It sends nothing, so it counts nothing, not everything.
+  it('counts nothing for an empty scope, the state a scoped attach starts in', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
+    seedKeyedCapture(db, 'cap-w', MINUTE, WORK, true);
+    db.historySync.markSynced(['w-1'], T0);
+    db.historySync.markSkipped(['cap-w'], T0);
+
+    expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 1, capturesSkipped: 1 });
+    expect(db.historySync.counts(ALL, [])).toEqual({
+      pending: 0,
+      sent: 0,
+      skipped: 0,
+      refused: 0,
+      detached: 0,
+      capturesSkipped: 0,
+    });
+    expect(db.historySync.partition([])).toEqual({
+      queued: 0,
+      inProgress: 0,
+      synced: 0,
+      failed: 0,
+      refused: 0,
+      detached: 0,
+      total: 0,
+    });
+    expect(db.historySync.partitionByKind([])).toEqual([]);
+  });
+
+  // No list is "no filter", and it must run TODAY's statements, not scoped ones
+  // handed a list that happens to match everything. An EMPTY list is a scope,
+  // not the absence of one, so it runs the scoped statements.
+  it('runs the machine count statements, untouched, when no scope is passed, and the scoped ones for an empty list', () => {
+    const sqlOf = (drive: (ledger: SqliteHistorySyncRepository) => void): string[] => {
+      const recorded: RecordedQuery[] = [];
+      drive(new SqliteHistorySyncRepository(recordingConnection(store.openRaw(), recorded)));
+      return recorded.map((q) => q.sql);
+    };
+    const machine = sqlOf((ledger) => {
+      ledger.counts(ALL);
+      ledger.partition();
+      ledger.partitionByKind();
+    });
+    const omitted = sqlOf((ledger) => {
+      ledger.counts(ALL, undefined);
+      ledger.partition(undefined);
+      ledger.partitionByKind(undefined);
+    });
+    const empty = sqlOf((ledger) => {
+      ledger.counts(ALL, []);
+      ledger.partition([]);
+      ledger.partitionByKind([]);
+    });
+
+    // counts runs two statements: the drain's totals, then the capture skips.
+    expect(machine).toHaveLength(4);
+    expect(omitted).toEqual(machine);
+    for (const statement of machine) expect(statement).not.toContain('scope_key');
+    expect(empty).toHaveLength(4);
+    for (const statement of empty) expect(statement).toContain('json_each(');
+  });
+
+  // The two scoped partition reads share one clause, so the per-kind rows sum
+  // to the scoped aggregate, and the two cannot disagree about which rows a
+  // scope counts.
+  it('breaks the scoped partition down per kind, and reconciles with the scoped aggregate', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'w-2', 10 * MINUTE, { root: WORK, leaves: PERSONAL });
+    seedKeyedSession(db, 'p-1', 20 * MINUTE, { root: PERSONAL, leaves: WORK });
+    seedKeyedCapture(db, 'cap-w', 30 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'cap-p', 31 * MINUTE, PERSONAL, true);
+    db.historySync.markSynced(['w-1-llm', 'cap-w'], T0);
+    db.historySync.markRefused(['w-1-tool'], T0);
+    db.historySync.claimRows(['w-2'], T0);
+
+    const byKind = db.historySync.partitionByKind([WORK]);
+    const aggregate = db.historySync.partition([WORK]);
+
+    for (const bucket of [
+      'queued',
+      'inProgress',
+      'synced',
+      'failed',
+      'refused',
+      'detached',
+      'total',
+    ] as const) {
+      expect(byKind.reduce((sum, k) => sum + k[bucket], 0)).toBe(aggregate[bucket]);
+    }
+    // Not vacuous: the scope holds rows in four buckets, and fewer than the machine.
+    expect(aggregate).toEqual({
+      queued: 1,
+      inProgress: 1,
+      synced: 2,
+      failed: 0,
+      refused: 1,
+      detached: 0,
+      total: 5,
+    });
+    expect(db.historySync.partition().total).toBe(12);
+  });
+
+  // "pending" means "this scope's drain will offer it": the count and the two
+  // reads the drain pages through answer the same question the same way, at
+  // any boundary.
+  it.each<[string, number]>([
+    ['the whole backlog', ALL],
+    ['a boundary inside it', T0 + 25 * MINUTE],
+  ])('counts as pending exactly what the scoped drain pages out, for %s', (_name, before) => {
+    const db = store.open();
+    seedKeyedSession(db, 'personal-root', 0, { root: PERSONAL, leaves: WORK });
+    seedKeyedSession(db, 'keyless-root', 10 * MINUTE, { leaves: WORK });
+    seedKeyedSession(db, 'w-mixed', 20 * MINUTE, { root: WORK, leaves: PERSONAL });
+    seedKeyedSession(db, 'w-1', 21 * MINUTE, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'w-2', 30 * MINUTE, { root: WORK, leaves: WORK });
+    seedKeyedCapture(db, 'cap-w', 40 * MINUTE, WORK, true);
+    // A root that already went: its leaves are still the scope's to send.
+    db.historySync.markSynced(['w-1'], T0);
+
+    let paged = 0;
+    for (const sessionId of db.historySync.pendingSessions(100, before, [WORK])) {
+      paged += db.historySync.pendingRows(sessionId, 100, before, [WORK]).length;
+    }
+
+    expect(paged).toBe(before === ALL ? 6 : 3);
+    expect(db.historySync.counts(before, [WORK]).pending).toBe(paged);
+  });
+
+  // A scope that enrolls every key on the machine counts what a machine
+  // attachment counts, bucket for bucket: the twins add one clause and change
+  // nothing else.
+  it('counts what a machine attachment counts once every key on the machine is enrolled', () => {
+    const db = store.open();
+    seedKeyedSession(db, 'w-1', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'p-1', 10 * MINUTE, { root: PERSONAL, leaves: PERSONAL });
+    seedKeyedSession(db, 'mixed', 20 * MINUTE, { root: WORK, leaves: PERSONAL });
+    db.auditEvents.insertAuditEvent({
+      id: 'p-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 'p-1',
+      parentId: 'p-1',
+      startedAt: at(11 * MINUTE),
+      content: 'text of p-1-prompt',
+      attributes: { scope_key: PERSONAL },
+    });
+    db.historySync.markCaptureOwed('p-1-prompt');
+    db.historySync.markSynced(['w-1', 'mixed-llm'], T0);
+    db.historySync.markSkipped(['p-1-prompt', 'p-1-llm'], T0);
+    db.historySync.markRefused(['w-1-tool'], T0);
+
+    const every = [WORK, PERSONAL];
+    expect(db.historySync.counts(ALL, every)).toEqual(db.historySync.counts(ALL));
+    expect(db.historySync.partition(every)).toEqual(db.historySync.partition());
+    expect(db.historySync.partitionByKind(every)).toEqual(db.historySync.partitionByKind());
+    expect(db.historySync.partition().total).toBe(10);
+  });
+
+  // PINS TODAY'S DOCUMENTED BEHAVIOUR, not a rule: the scoped partition takes
+  // no attach-time bound (the COUNTED_IN_SCOPE docblock says why), so a
+  // structural row that started after the boundary reads as queued, while the
+  // drain's bounded pending count and its session read leave it out.
+  it('pins the documented behaviour: the scoped partition counts a post-attach structural row as queued, and the drain pending does not', () => {
+    const db = store.open();
+    const boundary = T0 + 30 * MINUTE;
+    seedKeyedSession(db, 'before-boundary', 0, { root: WORK, leaves: WORK });
+    seedKeyedSession(db, 'after-boundary', 40 * MINUTE, { root: WORK, leaves: WORK });
+
+    // The drain offers the session that started before the boundary and not the
+    // one after it, and its pending count agrees.
+    expect(db.historySync.pendingSessions(10, boundary, [WORK])).toEqual(['before-boundary']);
+    expect(db.historySync.counts(boundary, [WORK]).pending).toBe(3);
+    // The same rows with no boundary in the way: the bound is the whole difference.
+    expect(db.historySync.counts(ALL, [WORK]).pending).toBe(6);
+
+    // The partition has no boundary to pass: both sessions' rows are queued.
+    expect(db.historySync.partition([WORK])).toMatchObject({ queued: 6, total: 6 });
+    const byKind = db.historySync.partitionByKind([WORK]);
+    expect(byKind.map((k) => [k.kind, k.queued]).sort()).toEqual([
+      ['llm_call', 2],
+      ['session', 2],
+      ['tool_call', 2],
+    ]);
+  });
+});
+
 // The ledger's reads used to scan `audit_events` — the table captures land in.
 // The comments on idx_audit_events_sync and idx_audit_claimed claim the indexes
 // serve them; these pin that claim, because a comment cannot notice when a
@@ -1700,10 +2095,14 @@ describe('SqliteHistorySyncRepository — scoped reads (a scoped attachment)', (
 // plan assertion over drifted SQL is the most convincing kind of green there
 // is — a real plan for a real query that nothing issues.
 describe('SqliteHistorySyncRepository — the ledger reads use the index', () => {
-  /** The statements `drive` executed, and the plan rows for each of them. */
-  const recordFor = (
+  /**
+   * The statements `drive` executed, one entry per execution in the order they
+   * ran, each with its own plan rows. PER STATEMENT, so a read that issues two
+   * is pinned statement by statement rather than as one blended plan.
+   */
+  const recordEach = (
     drive: (ledger: SqliteHistorySyncRepository) => void,
-  ): { sql: string[]; details: string[] } => {
+  ): { sql: string; details: string[] }[] => {
     // The store is seeded from the migrated template, so the file `openRaw`
     // attaches to already carries the schema.
     const raw = store.openRaw();
@@ -1712,12 +2111,20 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // Without this a read that stopped issuing SQL would satisfy every
     // assertion below vacuously, and look exactly like one that was optimised.
     expect(recorded.length, 'the driven read issued no statement').toBeGreaterThan(0);
-    return {
-      sql: recorded.map((q) => q.sql),
+    return recorded.map((q) => ({
+      sql: q.sql,
       // EXPLAIN goes through the RAW handle, so the recorder does not capture
       // its own explains and recurse.
-      details: recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)),
-    };
+      details: explain(raw, q).map((row) => row.detail),
+    }));
+  };
+
+  /** The statements `drive` executed, and the plan rows for each of them. */
+  const recordFor = (
+    drive: (ledger: SqliteHistorySyncRepository) => void,
+  ): { sql: string[]; details: string[] } => {
+    const each = recordEach(drive);
+    return { sql: each.map((s) => s.sql), details: each.flatMap((s) => s.details) };
   };
 
   /** The plans for every statement `drive` executes, as one string. */
@@ -1754,6 +2161,24 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
       const { kind } = classifyPlanRow(d, owners);
       return kind === 'full-table' || kind === 'full-index';
     });
+  };
+
+  /** One primary-key probe per candidate row, for its session root's key. */
+  const ROOT_PROBE = /SEARCH session_root USING INDEX sqlite_autoindex_audit_events_1 \(id=\?\)/;
+
+  /**
+   * The two statements `counts` runs, in the order it runs them: the drain's
+   * totals, then the capture skips. Pinned one by one, so the root probe one of
+   * them must make and the other must not cannot hide in a blended plan.
+   */
+  const countsStatements = (
+    drive: (ledger: SqliteHistorySyncRepository) => void,
+  ): Record<'totals' | 'skips', { sql: string; details: string[] }> => {
+    const [totals, skips, ...rest] = recordEach(drive);
+    if (totals === undefined || skips === undefined || rest.length > 0) {
+      throw new Error('counts runs exactly two statements: the totals, then the capture skips');
+    }
+    return { totals, skips };
   };
 
   it('answers the per-kind breakdown through the index, with no temp B-tree', () => {
@@ -1807,11 +2232,17 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
 
   // The CAPTURE drain's read, which has no lower bound on started_at and so has
   // nothing to stop a walk without an index of its own. Its "is anything owed?"
-  // form runs three times a pass over a table with no retention policy.
+  // form runs twice a pass over a table with no retention policy.
   it('finds owed captures on the partial index rather than scanning', () => {
-    const plan = planFor((ledger) => ledger.pendingCaptureRows(1, ALL));
-    expect(plan).toContain('idx_audit_outbox_owed');
-    expect(plan).not.toContain('SCAN audit_events');
+    const { details } = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL));
+    // EXACT names, not a substring of the joined plan. The scoped read's index
+    // is partial on owed captures too, and this read must never drift onto it:
+    // it leads with a key this read does not have, so it would be walked whole.
+    expect(indexesIn(details)).toEqual(['idx_audit_outbox_owed']);
+    expect(details.join(' | ')).toMatch(
+      /SEARCH audit_events USING INDEX idx_audit_outbox_owed \(event_type=\?/,
+    );
+    expect(fullScans(details)).toEqual([]);
     // A temp B-tree for the ORDER BY REMAINS, and is not what this index is for:
     // `event_type IN (…)` is several seeks, so the order cannot come straight
     // off any index of this shape — the pre-existing one sorts too. What the
@@ -1850,11 +2281,14 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(plan).not.toContain('SCAN audit_events');
   });
 
-  // THE SCOPED TWINS. Each must seek the index its machine twin seeks (the scope
-  // is a residual test on rows the index already found, never a reason to walk
-  // the table) and none may scan, under any name. `json_each(` in the recorded
-  // SQL is what proves the scoped statement ran at all, rather than a machine
-  // statement that ignored its argument.
+  // THE SCOPED TWINS. None may scan, under any name. Each seeks the index its
+  // machine twin seeks, with the scope a residual test on rows that index
+  // already found, plus, for the counts' structural rows, one primary-key
+  // probe of the session root, except the capture read: it seeks an index of
+  // its own by scope key, because as a residual the scope cost a row fetch for
+  // every owed capture outside it. `json_each(` in the recorded SQL is what
+  // proves the scoped statement ran at all, rather than a machine statement
+  // that ignored its argument.
   it('reads scoped pending sessions on the machine read index, each root by key', () => {
     const machine = recordFor((ledger) => ledger.pendingSessions(10, ALL));
     const scoped = recordFor((ledger) => ledger.pendingSessions(10, ALL, [WORK]));
@@ -1886,14 +2320,28 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     expect(fullScans(scoped.details)).toEqual([]);
   });
 
-  it('finds scoped owed captures on the machine read partial index', () => {
+  // The scoped capture read seeks an index of its own, by scope key. Tested as
+  // a residual on the machine read's index, the scope cost a row fetch, and for
+  // a long prompt a walk of its overflow chain to the attribute bag, for every
+  // owed, unsettled capture outside it, and the drain asks this read twice a
+  // pass. The statement names the index with INDEXED BY because, with no
+  // statistics, the planner keeps it on the machine read's index: the SEARCH
+  // below is what goes red if the hint goes.
+  it('finds scoped owed captures by scope key, on an index of their own', () => {
     const machine = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL));
     const scoped = recordFor((ledger) => ledger.pendingCaptureRows(1, ALL, [WORK]));
 
     expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
-    expect(indexesIn(machine.details)).toContain('idx_audit_outbox_owed');
-    expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
+    // Each key in the list is one seek, and the grace bound is a seek too.
+    expect(scoped.details.join(' | ')).toMatch(
+      /SEARCH audit_events USING INDEX idx_audit_scope_owed \(scope_key=\? AND event_type=\? AND started_at<\?\)/,
+    );
+    expect(indexesIn(scoped.details)).toEqual(['idx_audit_scope_owed']);
+    expect(scoped.sql.some((s) => s.includes('INDEXED BY idx_audit_scope_owed'))).toBe(true);
     expect(fullScans(scoped.details)).toEqual([]);
+    // The machine read is untouched: its own index, and never the scoped one.
+    expect(indexesIn(machine.details)).toEqual(['idx_audit_outbox_owed']);
+    expect(fullScans(machine.details)).toEqual([]);
   });
 
   it('finds the scoped capture backlog to mark on the machine seed index', () => {
@@ -1920,5 +2368,78 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
       /SEARCH audit_events USING (?:COVERING )?INDEX idx_audit_(?:events_sync|type_t) \(event_type=\?/,
     );
     expect(fullScans(details)).toEqual([]);
+  });
+
+  // THE SCOPED COUNTS. The machine `counts` statements had no plan pin either;
+  // both forms get one here, for the reason pendingRows did. The split by
+  // statement matters: the totals' twin must probe the session root, and the
+  // skip count's twin must not, because a capture is counted by its own key.
+  it('counts the drain totals on the sync index, scoped or not, each root by key', () => {
+    const machine = countsStatements((ledger) => {
+      ledger.counts(ALL);
+    });
+    const scoped = countsStatements((ledger) => {
+      ledger.counts(ALL, [WORK]);
+    });
+
+    expect(indexesIn(machine.totals.details)).toContain('idx_audit_events_sync');
+    expect(fullScans(machine.totals.details)).toEqual([]);
+    expect(scoped.totals.sql).toContain('json_each(');
+    expect(indexesIn(scoped.totals.details)).toEqual(
+      expect.arrayContaining(indexesIn(machine.totals.details)),
+    );
+    expect(scoped.totals.details.join(' | ')).toMatch(ROOT_PROBE);
+    expect(fullScans(scoped.totals.details)).toEqual([]);
+  });
+
+  it('counts the capture skips on the sync index, scoped or not, with no root probe', () => {
+    const machine = countsStatements((ledger) => {
+      ledger.counts(ALL);
+    });
+    const scoped = countsStatements((ledger) => {
+      ledger.counts(ALL, [WORK]);
+    });
+
+    expect(indexesIn(machine.skips.details)).toContain('idx_audit_events_sync');
+    expect(fullScans(machine.skips.details)).toEqual([]);
+    expect(scoped.skips.sql).toContain('json_each(');
+    expect(indexesIn(scoped.skips.details)).toEqual(
+      expect.arrayContaining(indexesIn(machine.skips.details)),
+    );
+    expect(scoped.skips.details.join(' | ')).not.toContain('session_root');
+    expect(fullScans(scoped.skips.details)).toEqual([]);
+  });
+
+  it('answers the scoped delivery-state partition on the machine read index, each root by key', () => {
+    const machine = recordFor((ledger) => ledger.partition());
+    const scoped = recordFor((ledger) => ledger.partition([WORK]));
+
+    expect(fullScans(machine.details)).toEqual([]);
+    expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
+    expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
+    expect(scoped.details.join(' | ')).toMatch(ROOT_PROBE);
+    expect(fullScans(scoped.details)).toEqual([]);
+  });
+
+  // The per-kind twin keeps the INDEXED BY its machine twin has, for the same
+  // reason, and this is what goes red if somebody drops it from the twin.
+  it('keeps the scoped per-kind breakdown on the sync index, with no temp B-tree', () => {
+    const machine = recordFor((ledger) => {
+      ledger.partitionByKind();
+    });
+    const scoped = recordFor((ledger) => {
+      ledger.partitionByKind([WORK]);
+    });
+    const plan = scoped.details.join(' | ');
+
+    expect(fullScans(machine.details)).toEqual([]);
+    expect(scoped.sql.some((s) => s.includes('json_each('))).toBe(true);
+    expect(indexesIn(scoped.details)).toEqual(expect.arrayContaining(indexesIn(machine.details)));
+    expect(plan).toMatch(ROOT_PROBE);
+    expect(plan).not.toContain('idx_audit_type_t');
+    // The scope sits in the WHERE, so grouping on the index's leading column is
+    // still a walk in index order.
+    expect(plan).not.toContain('TEMP B-TREE');
+    expect(fullScans(scoped.details)).toEqual([]);
   });
 });

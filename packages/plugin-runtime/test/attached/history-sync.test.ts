@@ -1736,6 +1736,53 @@ describe('runHistorySync — a scoped attachment', () => {
     };
   };
 
+  /**
+   * A pass with a one-second budget whose clock moves only when a batch is sent.
+   * The batch carrying `nearDeadline` leaves the clock 10 ms short of the pass
+   * deadline, past the structural lane's slice; the batch carrying
+   * `pastDeadline` runs `atDeadline`, when a case gives one, and moves the
+   * clock past the deadline. `sleep` does not advance it, so nothing else
+   * spends the budget, and each case decides which rows were sent when time
+   * ran out.
+   *
+   * Traced against the drain, with those two the only sessions in scope when
+   * the pass reads its pages: the first structural run sends `nearDeadline`'s
+   * session and stops at the slice, which is no interruption while the pass
+   * deadline is still ahead; the capture lane finds nothing; the second
+   * structural run reads a page holding only `pastDeadline`'s session, sends
+   * it, and returns 'ok' when it next checks the time, without reading another
+   * page. So the pass reaches its end-of-pass check past the deadline, and that
+   * check alone decides the outcome, whatever the drain's page size.
+   */
+  const passRunningOutOfTime = async (
+    nearDeadline: string,
+    pastDeadline: string,
+    opts: {
+      openStore?: NonNullable<Parameters<typeof runHistorySync>[0]['openStore']>;
+      atDeadline?: () => void;
+    } = {},
+  ): Promise<{ pass: HistorySyncResult; sent: string[] }> => {
+    let clock = T0;
+    const sent: string[] = [];
+    const result = await run({
+      passBudgetMs: 1_000,
+      now: () => clock,
+      sleep: () => Promise.resolve(),
+      sendBatch: (events) => {
+        sent.push(...events.map((e) => e.id));
+        if (events.some((e) => e.id === nearDeadline)) clock = T0 + 990;
+        if (events.some((e) => e.id === pastDeadline)) {
+          opts.atDeadline?.();
+          clock = T0 + 5_000;
+        }
+        return Promise.resolve({ settled: events.length });
+      },
+      sendCaptures: (events) => Promise.resolve({ settled: events.length }),
+      ...(opts.openStore === undefined ? {} : { openStore: opts.openStore }),
+    });
+    return { pass: attempted(result), sent };
+  };
+
   // THE STALL, at the drain. Thirty older personal sessions head every page of
   // twenty-five, and none is ever stamped (they stay eligible for the day their
   // repository is enrolled), so a drain filtering pages in memory would re-read
@@ -1758,6 +1805,11 @@ describe('runHistorySync — a scoped attachment', () => {
     expect(delivery('p-29-llm')).toEqual({ syncedAt: null, owed: null });
     // The local scope key never leaves the machine.
     expect(JSON.stringify(l.structural)).not.toContain('scope_key');
+    // And the pass counts only its scope's rows. The sixty personal rows it left
+    // are no backlog of this scope's, so nothing is pending, and the state file
+    // can read complete.
+    expect(attempted(result).counts).toMatchObject({ pending: 0, sent: 2 });
+    expect(attempted(result).countsScope).toBe('scoped');
   });
 
   it('sends an enrolled capture from behind a full batch of older personal ones', async () => {
@@ -2081,5 +2133,113 @@ describe('runHistorySync — a scoped attachment', () => {
     expect(JSON.stringify(l.captures[0]?.metadata)).toBe(
       '{"sessionId":"cap-session","repo":"scratch"}',
     );
+  });
+
+  // THE OUTCOME A SCOPED PASS REPORTS when its time runs out. Only what this
+  // scope will send counts as left over: thirty personal sessions, and two whose
+  // enrolled leaf sits under a root that is not enrolled (one with no key at
+  // all), are rows no pass of this scope will ever offer. A pass that sent
+  // everything it could has finished, and `aka sync-history --run` and the
+  // dashboard would otherwise ask the user to run it again for nothing.
+  it('reports a pass that runs out of time with only unreachable rows left as ok', async () => {
+    attachScoped([WORK]);
+    for (let i = 0; i < 30; i += 1) {
+      seedKeyedSession(`p-${String(i)}`, i * 60_000, { root: PERSONAL, leaf: PERSONAL });
+    }
+    seedKeyedSession('keyless-root', 30 * 60_000, { leaf: WORK });
+    seedKeyedSession('personal-root', 31 * 60_000, { root: PERSONAL, leaf: WORK });
+    seedKeyedSession('w-0', 32 * 60_000, { root: WORK, leaf: WORK });
+    seedKeyedSession('w-1', 33 * 60_000, { root: WORK, leaf: WORK });
+
+    const { pass, sent } = await passRunningOutOfTime('w-0', 'w-1');
+
+    expect(sent).toEqual(['w-0', 'w-0-llm', 'w-1', 'w-1-llm']);
+    expect(pass.outcome).toBe('ok');
+    expect(pass.counts).toMatchObject({ pending: 0, sent: 4 });
+    expect(pass.countsScope).toBe('scoped');
+  });
+
+  // Its control: an enrolled row still unsent when time runs out is what an
+  // interrupted pass is, and the scoped count still says so. The repository is
+  // enrolled while the pass's last batch is in flight, after the drain read its
+  // last page, so its session is left over for the end of the pass to find.
+  it('still reports a pass interrupted when an enrolled row is left at its deadline', async () => {
+    attachScoped([WORK]);
+    for (let i = 0; i < 3; i += 1) {
+      seedKeyedSession(`p-${String(i)}`, i * 60_000, { root: PERSONAL, leaf: PERSONAL });
+    }
+    seedKeyedSession('w-0', 3 * 60_000, { root: WORK, leaf: WORK });
+    seedKeyedSession('w-1', 4 * 60_000, { root: WORK, leaf: WORK });
+    seedKeyedSession('o-0', 5 * 60_000, { root: OTHER_WORK, leaf: OTHER_WORK });
+
+    const { pass, sent } = await passRunningOutOfTime('w-0', 'w-1', {
+      atDeadline: () => {
+        enroll([WORK, OTHER_WORK]);
+      },
+    });
+
+    expect(sent).toEqual(['w-0', 'w-0-llm', 'w-1', 'w-1-llm']);
+    expect(pass.outcome).toBe('interrupted');
+    // The session enrolled at the deadline, and none of the personal ones.
+    expect(pass.counts.pending).toBe(2);
+    expect(pass.countsScope).toBe('scoped');
+  });
+
+  // ONE READING OF THE SCOPE for everything a pass reports. The capture probe is
+  // the only read that asks for one row, and the last such probe is the one in
+  // the result. A pass counts once, at its end, for the outcome check and the
+  // reported counts alike, and that one count must have been handed the probe's
+  // very array.
+  it('takes the outcome, the counts and the capture probe from one reading of the scope', async () => {
+    attachScoped([WORK]);
+    seedKeyedSession('w-0', 0, { root: WORK, leaf: WORK });
+    seedKeyedSession('w-1', 60_000, { root: WORK, leaf: WORK });
+    const countFilters: (readonly string[] | undefined)[] = [];
+    const probeFilters: (readonly string[] | undefined)[] = [];
+
+    const { pass, sent } = await passRunningOutOfTime('w-0', 'w-1', {
+      openStore: (dir) => {
+        const db = openLocalDatabase(dir);
+        const counts = db.historySync.counts.bind(db.historySync);
+        const pendingCaptureRows = db.historySync.pendingCaptureRows.bind(db.historySync);
+        db.historySync.counts = (before: number, scopeKeys?: readonly string[]) => {
+          countFilters.push(scopeKeys);
+          return counts(before, scopeKeys);
+        };
+        db.historySync.pendingCaptureRows = (
+          limit: number,
+          before: number,
+          scopeKeys?: readonly string[],
+        ) => {
+          if (limit === 1) probeFilters.push(scopeKeys);
+          return pendingCaptureRows(limit, before, scopeKeys);
+        };
+        return db;
+      },
+    });
+
+    // The batch that moves the clock past the deadline went, so the pass reached
+    // its end-of-pass check past the deadline, with nothing left in scope.
+    expect(sent).toEqual(['w-0', 'w-0-llm', 'w-1', 'w-1-llm']);
+    expect(pass.outcome).toBe('ok');
+    const reading = probeFilters.at(-1);
+    expect(reading).toEqual([WORK]);
+    expect(countFilters).toHaveLength(1);
+    expect(countFilters[0]).toBe(reading);
+  });
+
+  // A MACHINE attachment counts everything recorded, a stored scope ignored, and
+  // says that it did: the state file records it for `aka status`.
+  it('counts everything recorded on a machine attachment, and says so', async () => {
+    attach({ grantFor: ENDPOINT });
+    enroll([WORK]);
+    seedKeyedSession('p-1', 0, { root: PERSONAL, leaf: PERSONAL });
+    const l = lanes();
+
+    const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.structural.map((e) => e.id)).toEqual(['p-1', 'p-1-llm']);
+    expect(attempted(result).counts).toMatchObject({ pending: 0, sent: 2 });
+    expect(attempted(result).countsScope).toBe('machine');
   });
 });

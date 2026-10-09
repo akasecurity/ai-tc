@@ -1,5 +1,6 @@
 'use client';
 
+import type { AttachmentMode } from '@akasecurity/schema';
 import { Button, Input } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
@@ -11,10 +12,17 @@ import { DirectoryBrowser } from './DirectoryBrowser';
 export function ScanClient({
   enabledRuleCount,
   attachedTo,
+  attachmentMode,
 }: {
   enabledRuleCount: number;
   /** The attached deployment's display name, or null on a standalone install. */
   attachedTo: string | null;
+  /**
+   * The attachment's mode, read on the server; undefined when it was not
+   * reported. Only `scoped` changes the notice: an unreported mode keeps the
+   * machine-wide wording, which never promises less than is sent.
+   */
+  attachmentMode?: AttachmentMode | undefined;
 }) {
   const [path, setPath] = useState('');
   // Whether THIS scan sends the register it records. Default on: an attached
@@ -50,13 +58,24 @@ export function ScanClient({
         </p>
         {/* Said BEFORE the click, on the surface that starts the send: an attached
             machine forwards what this scan records, and the box is the per-scan
-            way to keep one tree local without detaching. */}
+            way to keep one tree local without detaching. A scoped machine sends
+            the register only when the project and every repository nested in it
+            are enrolled, and says so rather than promising a send it never makes. */}
         {attachedTo !== null && (
           <div className="mb-3 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-text-2">
-            <p>
-              This machine is attached to {attachedTo}. The Data Shares register this scan records —
-              destinations and call sites, never source text — is sent there.
-            </p>
+            {attachmentMode === 'scoped' ? (
+              <p>
+                This machine is attached to {attachedTo} as a personal device. The Data Shares
+                register this scan records — destinations and call sites, never source text — is
+                sent there only when the project is a repository enrolled with `aka enroll` and
+                every repository nested in it is enrolled too; otherwise it stays on this machine.
+              </p>
+            ) : (
+              <p>
+                This machine is attached to {attachedTo}. The Data Shares register this scan records
+                — destinations and call sites, never source text — is sent there.
+              </p>
+            )}
             <label className="mt-1.5 flex items-center gap-2">
               <input
                 type="checkbox"
@@ -65,7 +84,12 @@ export function ScanClient({
                   setForward(e.target.checked);
                 }}
               />
-              <span>Send the Data Shares register to {attachedTo}</span>
+              <span>
+                Send the Data Shares register to {attachedTo}
+                {attachmentMode === 'scoped'
+                  ? ' if the project and every repository nested in it are enrolled'
+                  : ''}
+              </span>
             </label>
           </div>
         )}

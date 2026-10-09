@@ -9,15 +9,23 @@ import { parseArgs } from 'node:util';
 import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
 import { isSea } from '@akasecurity/local-ops';
 import {
+  applyOnboarding,
+  clearDetectedWebAccounts,
   DATA_FILE_MODE,
   dataDir,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
   openLocalDatabase,
   readEffectiveSettings,
   settingsDir,
   webChatWithholding,
 } from '@akasecurity/persistence';
-import type { WebChatWithholding } from '@akasecurity/schema';
-import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
+import type { WebChatCapture, WebChatWithholding } from '@akasecurity/schema';
+import {
+  isWebChatAccountGrantValid,
+  isWebChatCaptureConsentValid,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+  webChatCaptureOf,
+} from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { launcherScript, parseLauncher } from '../lib/native-host-launcher.ts';
@@ -245,16 +253,40 @@ function registerWindowsHost(manifestPath: string): void {
   ]);
 }
 
+const EXTENSION_USAGE = 'Usage: aka extension <install | status | account [--on | --off]>';
+
 export function runExtension(argv: string[]): void {
   // Parsed first, THEN read the subcommand from the positionals — the same
   // rule `aka detections` follows, so a flag-first invocation (`--home <dir>
   // status`) still resolves the subcommand.
   const { values, positionals } = parseArgs({
     args: argv,
-    options: HOME_OPTION,
+    options: { ...HOME_OPTION, on: { type: 'boolean' }, off: { type: 'boolean' } },
     allowPositionals: true,
   });
   const sub = positionals[0];
+  const switched = values.on === true || values.off === true;
+  if (sub === 'account') {
+    if (values.on === true && values.off === true) {
+      process.stderr.write(
+        `aka extension account takes --on or --off, not both.\n${EXTENSION_USAGE}\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    runAccount(
+      homeBase(values.home),
+      values.on === true ? 'on' : values.off === true ? 'off' : 'show',
+    );
+    return;
+  }
+  if (switched) {
+    process.stderr.write(
+      `aka extension: --on and --off belong to \`aka extension account\`.\n${EXTENSION_USAGE}\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   if (sub === 'install') {
     runInstall(chromeManifestDir());
     return;
@@ -263,10 +295,94 @@ export function runExtension(argv: string[]): void {
     runStatus(chromeManifestDir(), homeBase(values.home));
     return;
   }
-  process.stderr.write(
-    `aka extension: unknown subcommand '${sub ?? ''}'\nUsage: aka extension <install|status>\n`,
-  );
+  process.stderr.write(`aka extension: unknown subcommand '${sub ?? ''}'\n${EXTENSION_USAGE}\n`);
   process.exitCode = 1;
+}
+
+/**
+ * The account grant: whether this machine records which web chat accounts the
+ * browser extension sees (webChatCapture.account, under its own versioned
+ * consent), so `aka enroll --list-detected` can list them for enrolling.
+ *
+ * Typing `--on` is the consent, as `aka sync-history --on` is for its grant; the
+ * line printed says what it covers. It is separate from the web-chat capture
+ * consent: it records an account key and two times, never anything from a chat,
+ * and turning it on does not turn capture on. `--off` drops the grant and
+ * deletes the record. Both write through the settings lock, and each keeps every
+ * other field of the web-chat block as it is.
+ */
+export function runAccount(
+  home: string,
+  action: 'on' | 'off' | 'show',
+  now: Date = new Date(),
+): void {
+  const record = join(dataDir(home), DETECTED_WEB_ACCOUNTS_FILENAME);
+  if (action === 'show') {
+    const granted = isWebChatAccountGrantValid(
+      webChatCaptureOf(readEffectiveSettings(home).settings),
+    );
+    process.stdout.write(
+      granted
+        ? 'web chat accounts: recorded on this machine\n' +
+            '  `aka enroll --list-detected` lists them; `aka extension account --off` stops this and deletes the record\n'
+        : 'web chat accounts: not recorded\n' +
+            '  `aka extension account --on` records which claude.ai organization each chat is signed in to,\n' +
+            '  so `aka enroll --list-detected` can list it for enrolling\n',
+    );
+    return;
+  }
+  try {
+    applyOnboarding((current) => {
+      if (action === 'on') {
+        const block = webChatCaptureOf(current);
+        // A grant already in force keeps the time it was given: answering yes
+        // again is not a new consent.
+        const accountConsent =
+          isWebChatAccountGrantValid(block) && block.accountConsent !== undefined
+            ? block.accountConsent
+            : { acknowledgedAt: now.toISOString(), version: WEB_CHAT_ACCOUNT_CONSENT_VERSION };
+        const next: WebChatCapture = { ...block, account: true, accountConsent };
+        return { webChatCapture: next };
+      }
+      // Nothing to drop on a machine that never answered: the block stays absent.
+      // Otherwise every other field is kept, and the grant's record is not.
+      const block = current.webChatCapture;
+      if (block === undefined) return {};
+      const next: WebChatCapture = { ...block, account: false };
+      delete next.accountConsent;
+      return { webChatCapture: next };
+    }, home);
+  } catch {
+    process.stderr.write(
+      'aka extension account: could not save that, so nothing changed. If another program is\n' +
+        "changing AKA's settings right now, run the command again.\n",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (action === 'on') {
+    process.stdout.write(
+      'Recording on. When the browser extension sees a claude.ai chat, this machine records the\n' +
+        'organization id its requests name and when it was seen, so `aka enroll --list-detected`\n' +
+        `can list it. The record is kept in ${record}; it holds nothing\n` +
+        'from the chat and no account name or email, and it is never sent anywhere.\n' +
+        'This does not turn web-chat capture on. `aka extension account --off` turns this off and\n' +
+        'deletes the record.\n',
+    );
+    return;
+  }
+  if (!clearDetectedWebAccounts(dataDir(home))) {
+    process.stderr.write(
+      'Recording off, but the record of the accounts already seen could not be deleted.\n' +
+        `Delete ${record} by hand.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(
+    'Recording off. This machine no longer records which web chat accounts it sees, and the\n' +
+      'record of the ones it saw is deleted. What is enrolled stays enrolled.\n',
+  );
 }
 
 // `manifestDir` is injectable so tests can point this at a scratch directory
@@ -397,13 +513,16 @@ const LAUNCHER_REMEDY = [
   're-run `aka extension install` to point it at this install',
 ];
 
-// The network-capture block on a machine that records nothing from a web chat.
+// The network-capture block on a machine that records less from a web chat than
+// its consent says (only in enrolled accounts), or nothing.
 // It does not say chats are being checked: whether each site is, is a report
 // the native host keeps in memory there, which only the extension's popup reads.
 const WITHHELD_BLOCKS: Record<WebChatWithholding, string> = {
   'personal-device':
-    '\nnetwork capture: off on a personal device\n' +
-    '  nothing from a chat is recorded or sent; the extension popup shows whether each site is being checked\n',
+    '\nnetwork capture: on a personal device, only in enrolled accounts\n' +
+    '  replies in a claude.ai account enrolled with `aka enroll --account` are recorded and sent;\n' +
+    '  nothing else from a chat is, and typed prompts never are\n' +
+    '  the extension popup shows whether each site is being checked, and which account it is in\n',
   'unreadable-attachment':
     '\nnetwork capture: off\n' +
     '  this machine holds a control-plane credential AKA cannot read, so nothing from a chat is recorded or sent\n' +
@@ -461,6 +580,19 @@ function captureBlock(home: string): string {
   }
 }
 
+// Whether this machine records which web chat accounts it sees, the account
+// grant `aka extension account` changes. Never throws and never touches the
+// exit code, like the capture block above.
+function accountBlock(home: string): string {
+  try {
+    return isWebChatAccountGrantValid(webChatCaptureOf(readEffectiveSettings(home).settings))
+      ? '\nweb chat accounts: recorded — `aka enroll --list-detected` lists them\n'
+      : '\nweb chat accounts: not recorded — `aka extension account --on` records them\n';
+  } catch {
+    return '\nweb chat accounts: unknown — the settings could not be read\n';
+  }
+}
+
 // The lines that follow `manifest:` in the status block — empty for a
 // registration with nothing wrong with it.
 function registrationFaults(manifestPath: string): string[] {
@@ -503,5 +635,6 @@ export function runStatus(manifestDir: string, home?: string): void {
   // the capture block must never depend on the developer's real ~/.aka.
   if (home !== undefined) {
     process.stdout.write(captureBlock(home));
+    process.stdout.write(accountBlock(home));
   }
 }

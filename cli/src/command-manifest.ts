@@ -60,7 +60,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: 'extension',
     summary: 'Install/check the native-messaging host for the browser extension (Chrome)',
-    args: ['install', 'status'],
+    args: ['install', 'status', 'account'],
   },
   {
     name: 'exception',
@@ -85,17 +85,18 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
   {
     name: 'enroll',
-    argHint: '[path | --repo <url> | --list]',
-    summary: 'Choose which repositories a scoped attachment sends; --list shows them',
+    argHint: '[path | --repo <url> | --account <key> | --list | --list-detected]',
+    summary:
+      'Choose which repositories and web chat accounts a scoped attachment sends; --list shows them',
     // In `args`, not `flags`, like `sync-history`'s switches: the help prints a
     // command's own flags on the one line under it.
-    args: ['--repo', '--list'],
+    args: ['--repo', '--account', '--list', '--list-detected'],
   },
   {
     name: 'unenroll',
-    argHint: '[path | --repo <url>]',
-    summary: 'Stop sending a repository from a scoped attachment',
-    args: ['--repo'],
+    argHint: '[path | --repo <url> | --account <key>]',
+    summary: 'Stop sending a repository or a web chat account from a scoped attachment',
+    args: ['--repo', '--account'],
   },
   {
     name: 'sync-history',

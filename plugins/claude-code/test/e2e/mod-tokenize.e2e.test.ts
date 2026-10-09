@@ -265,4 +265,47 @@ describe('mod-tokenize helper', () => {
       }
     }, 'aka-mod-tokenize-none-');
   });
+
+  it('a conversation row is recorded as a response, never a prompt, with no note and no handoff', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'vault');
+      settings(home, true);
+      const cwd = join(home, 'project');
+      mkdirSync(cwd, { recursive: true });
+      const run = runHook(
+        'mod-tokenize',
+        JSON.stringify({
+          v: 1,
+          text: PROMPT,
+          sessionId: SESSION_ID,
+          cwd,
+          row: { door: 'attachment' },
+        }),
+        { env: env(home) },
+      );
+      const answer = answerOf(run);
+
+      expect(answer.text).not.toContain(SECRET);
+      expect(POINTER_TOKEN_ANCHORED.test(/\[\[aka:[^\]]+\]\]/.exec(answer.text)?.[0] ?? '')).toBe(
+        true,
+      );
+      expect(answer.note).toBeNull();
+      const { events, findings } = rows(home);
+      expect(events).toBe(0);
+      expect(findings).toHaveLength(1);
+
+      // The rewritten text is not a prompt the command hook should skip.
+      const hook = runHook(
+        'user-prompt-submit',
+        JSON.stringify({
+          prompt: answer.text,
+          session_id: SESSION_ID,
+          cwd,
+          hook_event_name: 'UserPromptSubmit',
+        }),
+        { env: env(home) },
+      );
+      expect(hook.status).toBe(0);
+    }, 'aka-mod-tokenize-row-');
+  });
 });

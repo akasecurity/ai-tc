@@ -124,15 +124,15 @@ export function parseModPolicy(text: string): ModPolicy | null {
 export function createPromptPlanner(
   actionFor: (ruleId: string, category: string) => ActionTaken,
   options: { rules?: Rule[] | undefined; excepted?: ReadonlySet<string> | undefined } = {},
-): (text: string) => PromptPlan {
-  return (text) => {
+): (text: string, eventKind?: 'prompt' | 'response') => PromptPlan {
+  return (text, eventKind = 'prompt') => {
     if (options.rules === undefined && !registered) registerBundledPacks();
     const spans = pointerSpans(text);
     let scanned = text;
     for (const s of spans) {
       scanned = scanned.slice(0, s.start) + ' '.repeat(s.end - s.start) + scanned.slice(s.end);
     }
-    const findings = scan(scanned, options.rules, { eventKind: 'prompt' }).filter(
+    const findings = scan(scanned, options.rules, { eventKind }).filter(
       (f) => !spans.some((s) => f.span.start < s.end && f.span.end > s.start),
     );
     if (findings.length === 0) return { text, values: [] };
@@ -168,6 +168,22 @@ export function planPromptWith(text: string, policy: ModPolicy | null): PromptPl
       policy.ruleActions.get(ruleId) ?? policy.categoryActions.get(category) ?? 'log',
     { rules: policy.rules, excepted: policy.exceptionRuleIds },
   )(text);
+}
+
+/**
+ * The rewrite of one text block of a conversation row (an attachment, a memory,
+ * a summary), under the same policy as a prompt. Scanned as a `response`, the
+ * event kind the helper records it under, so a rule scoped to an event kind
+ * applies the same on both sides.
+ */
+export function planRowWith(text: string, policy: ModPolicy | null): PromptPlan {
+  if (policy === null)
+    return createPromptPlanner((ruleId) => bundledActionFor(ruleId))(text, 'response');
+  return createPromptPlanner(
+    (ruleId, category) =>
+      policy.ruleActions.get(ruleId) ?? policy.categoryActions.get(category) ?? 'log',
+    { rules: policy.rules, excepted: policy.exceptionRuleIds },
+  )(text, 'response');
 }
 
 /** {@link planPromptWith}, reduced to the one-way rewritten text. */

@@ -12,6 +12,10 @@
  * one it destroys; without consent every value is the one-way marker.
  *
  * stdin:  {"v":1,"text":"<prompt>","sessionId":"...","cwd":"..."}
+ *         or, for a conversation row the session.append backstop found a value
+ *         in, {"v":1,"row":{"door":"attachment"},"text":"<block>",...}. A row is
+ *         recorded as a `response` (only when it has findings, like PostToolUse),
+ *         never as a prompt, leaves no prompt handoff, and carries no model note.
  * stdout: {"v":1,"text":"<rewritten prompt>","note":"<model note>"|null}
  * Exit 1 with nothing on stdout means "no rewrite": the mod then lets the
  * prompt through unchanged and the command hook decides it as it always did.
@@ -51,6 +55,13 @@ async function main(): Promise<void> {
   if (input?.v !== 1 || text === undefined || text === '') process.exit(1);
 
   const sessionId = getString(input, 'sessionId');
+  const rowInput = input.row;
+  const rowDoor =
+    typeof rowInput === 'object' && rowInput !== null
+      ? getString(rowInput as Record<string, unknown>, 'door')
+      : undefined;
+  const isRow = rowInput !== undefined;
+  if (isRow && rowDoor === undefined) process.exit(1);
   const hookInput: Record<string, unknown> = {
     session_id: sessionId,
     cwd: getString(input, 'cwd'),
@@ -63,13 +74,16 @@ async function main(): Promise<void> {
   const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
   let result: CaptureResult;
   try {
-    result = await runtime.capture({
-      kind: 'prompt',
-      sourceTool: SOURCE_TOOL.ClaudeCode,
-      text,
-      metadata: baseMetadata(hookInput),
-      scopeKey: captureScopeKey(hookInput),
-    });
+    result = await runtime.capture(
+      {
+        kind: isRow ? 'response' : 'prompt',
+        sourceTool: SOURCE_TOOL.ClaudeCode,
+        text,
+        metadata: baseMetadata(hookInput),
+        scopeKey: captureScopeKey(hookInput),
+      },
+      isRow ? { persist: 'with-findings' } : undefined,
+    );
   } finally {
     await runtime.close();
   }
@@ -86,17 +100,21 @@ async function main(): Promise<void> {
     const tokenized = await createVaultGlue().tokenizeText(text, {
       findings: enforced,
       reversible: new Set(result.reversibleFindings ?? []),
-      sighting: { location: 'prompt', kind: 'prompt' },
+      sighting: isRow
+        ? { location: `${rowDoor ?? 'conversation'} row`, kind: 'transcript' }
+        : { location: 'prompt', kind: 'prompt' },
     });
     rewritten = tokenized.text;
-    note = eventNote({
-      marker: sessionProtocolMarker(config.dataDir, sessionId),
-      surface: 'prompt',
-      realized: {
-        pointers: tokenized.pointers.map((token) => ({ token, category: categoryOf(token) })),
-        degraded: tokenized.degraded,
-      },
-    });
+    note = isRow
+      ? null
+      : eventNote({
+          marker: sessionProtocolMarker(config.dataDir, sessionId),
+          surface: 'prompt',
+          realized: {
+            pointers: tokenized.pointers.map((token) => ({ token, category: categoryOf(token) })),
+            degraded: tokenized.degraded,
+          },
+        });
   } else {
     rewritten = redact(text, enforced);
   }
@@ -106,7 +124,7 @@ async function main(): Promise<void> {
     if (finding.rawMatch !== '' && rewritten.includes(finding.rawMatch)) process.exit(1);
   }
 
-  recordModHandoff(config.dataDir, rewritten);
+  if (!isRow) recordModHandoff(config.dataDir, rewritten);
   process.stdout.write(`${JSON.stringify({ v: 1, text: rewritten, note })}\n`);
 }
 

@@ -1,6 +1,6 @@
 import type { Hook, Register } from 'claude-code';
 
-import { type ModPolicy, parseModPolicy, planPromptWith } from './engine.js';
+import { type ModPolicy, parseModPolicy, planPromptWith, planRowWith } from './engine.js';
 
 // The mod half of AKA's prompt redaction. When the user's policy says `redact`
 // for a value in the prompt, the prompt is handed to the `aka` helper
@@ -86,7 +86,11 @@ function parseHelperAnswer(stdout: string): HelperAnswer | null {
 }
 
 // The helper's rewrite of `text`, or null for any reason there is none.
-async function rewriteWithHelper($: Dollar, text: string): Promise<HelperAnswer | null> {
+async function rewriteWithHelper(
+  $: Dollar,
+  text: string,
+  door?: string,
+): Promise<HelperAnswer | null> {
   try {
     const sep = $.plugin.root.includes('\\') ? '\\' : '/';
     const script = [$.plugin.root.replace(/[\\/]+$/, ''), 'scripts', 'mod-tokenize.js'].join(sep);
@@ -97,13 +101,54 @@ async function rewriteWithHelper($: Dollar, text: string): Promise<HelperAnswer 
       sessionId = undefined;
     }
     const run = await $.process.run(['node', script], {
-      stdin: JSON.stringify({ v: 1, text, sessionId }),
+      stdin: JSON.stringify({
+        v: 1,
+        text,
+        sessionId,
+        ...(door === undefined ? {} : { row: { door } }),
+      }),
       timeoutMs: HELPER_TIMEOUT_MS,
     });
     return run.exitCode === 0 ? parseHelperAnswer(run.stdout) : null;
   } catch {
     return null;
   }
+}
+
+// The doors the row backstop leaves alone. The user's own prompt row was already
+// handled by prompt.submit (which also records it); a tool's result is the
+// tool-result door's own backstop.
+const SKIPPED_DOORS: ReadonlySet<string> = new Set(['prompt', 'tool-result']);
+
+// A row's text blocks with each one's helper rewrite. Only `text` blocks are
+// rewritable by the host, so no other block is read. A block the helper cannot
+// answer for (or answers with a value still in it) stays as made.
+async function backstopRow(
+  $: Dollar,
+  row: Parameters<Hook<'session.append'>>[1],
+): Promise<typeof row | null> {
+  const policy = await loadPolicy($);
+  let changed = false;
+  const content = [];
+  for (const block of row.message.content) {
+    if (block.type !== 'text' || block.text === '') {
+      content.push(block);
+      continue;
+    }
+    const plan = planRowWith(block.text, policy);
+    if (plan.values.length === 0) {
+      content.push(block);
+      continue;
+    }
+    const answer = await rewriteWithHelper($, block.text, row.door);
+    if (answer === null || plan.values.some((value) => answer.text.includes(value))) {
+      content.push(block);
+      continue;
+    }
+    content.push({ ...block, text: answer.text });
+    changed = true;
+  }
+  return changed ? { ...row, message: { ...row.message, content } } : null;
 }
 
 export const register: Register = (on) => {
@@ -121,5 +166,17 @@ export const register: Register = (on) => {
       text: answer.text,
       ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
     });
+  });
+
+  // The backstop: every other row the conversation keeps (attachments and the
+  // @-mentioned files they carry, memory, hook context, compaction summaries,
+  // subagent rows, notes, response blocks). A prompt.mention hook cannot see or
+  // rewrite the file's text, so the file is scanned here, as the row that holds
+  // it is stored. A row with nothing to redact is passed on with nothing spawned.
+  on('session.append', async ($, e, next) => {
+    if (SKIPPED_DOORS.has(e.door) && e.agentId === undefined) return next(e);
+    if (e.door === 'tool-result') return next(e);
+    const rewritten = await backstopRow($, e);
+    return next(rewritten ?? e);
   });
 };

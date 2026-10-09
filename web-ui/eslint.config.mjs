@@ -22,6 +22,13 @@ export default [
     // directive-scoped here, because a Server Component is exactly where a
     // render instant is legitimately captured. Built through `reactSyntaxBans`
     // so the network, Drizzle and tonal bans come along unchanged.
+    //
+    // A later per-file entry under app/** re-states the whole rule, so it has to
+    // pass `ambientLocaleEveryModule: true` itself — written through bare
+    // `reactSyntaxBans`, it drops this widening for that file and no case in
+    // package-walls.test.js resolves such a file. `presentationalSyntaxBans`
+    // does not fit here: it also widens the clock ban, which has to stay
+    // directive-scoped for Server Components.
     files: ['app/**', 'middleware.ts'],
     rules: { 'no-restricted-syntax': reactSyntaxBans({ ambientLocaleEveryModule: true }) },
   },

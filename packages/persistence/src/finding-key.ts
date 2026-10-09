@@ -27,6 +27,14 @@
 // leaves the one keyed the old way; rows for values without such a character
 // keep their key. Re-keying the old rows would need the raw value, which is
 // never stored.
+//
+// The masked match moving has two more effects outside this key. A capture
+// recorded before the change and replayed after it can be inserted twice:
+// recordCapture's session and event duplicate checks
+// (SqliteInspectionFindingsRepository) compare `masked_match`, and an in-flight
+// finding has no key to conflict on. And a vault row keeps the preview it was
+// minted with: re-detection bumps its counters and refreshes its fingerprints,
+// but never rewrites its `masked_match`.
 import { createHash } from 'node:crypto';
 
 export interface FindingKeyInput {

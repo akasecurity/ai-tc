@@ -137,6 +137,15 @@ function config(
   };
 }
 
+// The same machine with web-chat capture never granted.
+function withoutConsent(tool: WebSourceTool | undefined): PluginConfig {
+  const base = config(tool);
+  return {
+    ...base,
+    settings: { ...base.settings, webChatCapture: { responses: 'always', account: false } },
+  };
+}
+
 function rowCount(where: string): number {
   const db = new DatabaseSync(join(dir, DB_FILENAME));
   try {
@@ -408,6 +417,53 @@ describe('a capture status on a personal device', () => {
     // The popup's source for an enforcement fault on this machine.
     expect(readCaptureStatus('browser-pd-status')?.status).toEqual(STATUS);
     expect(rowCount("event_type = 'capture_status'")).toBe(0);
+  });
+
+  // Consent governs recording, and nothing is recorded here, so an enforcement
+  // fault reaches the popup whether or not capture was ever granted.
+  it('is kept in memory without capture consent, so the popup can name a site that is not checked', async () => {
+    attachAs('scoped');
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'pd-no-consent-status',
+        sessionId: 'browser-pd-no-consent',
+        tool: SOURCE_TOOL.ClaudeAi,
+        status: { ...STATUS, enforcement: 'unattached' },
+      },
+      withoutConsent,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
+    expect(readCaptureStatus('browser-pd-no-consent')?.status.enforcement).toBe('unattached');
+    expect(rowCount("event_type = 'capture_status'")).toBe(0);
+
+    const state = await handleRequest(
+      { type: 'capture_state', requestId: 'pd-no-consent-state' },
+      withoutConsent,
+    );
+    if (state.type !== 'capture_state') throw new Error('expected a capture_state response');
+    expect(state.withheld).toBe('personal-device');
+    expect(state.sites.find((site) => site.tool === SOURCE_TOOL.ClaudeAi)?.enforcement).toBe(
+      'unattached',
+    );
+  });
+
+  // The control: with no withholding, a missing consent still refuses the
+  // report before it is kept anywhere.
+  it('is refused before it is kept on a machine-wide attachment without consent', async () => {
+    attachAs('machine');
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'md-no-consent-status',
+        sessionId: 'browser-md-no-consent',
+        tool: SOURCE_TOOL.ClaudeAi,
+        status: STATUS,
+      },
+      withoutConsent,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'no-consent' });
+    expect(readCaptureStatus('browser-md-no-consent')).toBeUndefined();
   });
 
   it('is stored and kept on a machine-wide attachment', async () => {

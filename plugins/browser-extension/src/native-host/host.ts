@@ -495,7 +495,16 @@ export async function handleRequest(
         accepted: false,
         skipped,
       });
-      if (!isWebChatCaptureConsentValid(webChat.consent)) return refused('no-consent');
+      // Read once: it decides both whether consent is asked and where the
+      // report may go.
+      const withholding = withheld(config);
+      // Consent governs recording, and a withholding machine records nothing,
+      // so there it has nothing to authorize: the report is still kept in
+      // memory below, which is how the popup names a site that is not being
+      // checked on a personal device that never granted capture.
+      if (withholding === null && !isWebChatCaptureConsentValid(webChat.consent)) {
+        return refused('no-consent');
+      }
       const parsed = WebCaptureStatus.safeParse(request.status);
       if (!parsed.success) {
         return {
@@ -514,7 +523,7 @@ export async function handleRequest(
       // Withheld, the report stays in this process's memory and goes no
       // further: the popup reads it to say when a site is not being checked,
       // and nothing stores or sends it (see withheld).
-      if (withheld(config) !== null) return refused('out-of-scope');
+      if (withholding !== null) return refused('out-of-scope');
       // The durable home: a `capture_status` audit_events row, so a restarted
       // host and a separate process (`aka extension status`) both have
       // somewhere to read the same answer from. No explicit session-root stub

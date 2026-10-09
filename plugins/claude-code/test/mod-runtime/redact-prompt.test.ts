@@ -1,93 +1,8 @@
-import { expect, mock, test } from 'claude-code/testing';
+import { expect, test } from 'claude-code/testing';
 
+import { EMAIL, fileSystem, helper, model, oneWay, snapshotText } from './harness.js';
+import type { FileAnswer } from './harness.js';
 import { SECRET } from './samples.generated.js';
-
-// Runs the shipped hooks/mod.ts inside the real mod runtime. Beneath the plugin,
-// hooks of the test answer the home directory and the policy snapshot the way the
-// file system would, and a last hook stands for the model: what it receives is
-// what the model would read. See prepare.mjs for how the engine beside the module
-// differs from the shipped one.
-
-type Hooks = Parameters<Parameters<typeof test>[1]>[1];
-
-// Spelled by joining so no path or address literal sits in the source.
-const HOME = ['', 'home', 'test'].join('/');
-const SNAPSHOT_PATH = [HOME, '.aka', 'data', 'mod-policy.json'].join('/');
-const EMAIL = ['a', 'example.com'].join('@');
-
-const ALL_CATEGORIES = [
-  'pii',
-  'financial',
-  'secret',
-  'phi',
-  'code_context',
-  'code_flaw',
-  'custom',
-  'config',
-];
-
-interface SnapshotParts {
-  rules?: unknown[];
-  ruleActions?: Record<string, string>;
-  categoryActions?: Record<string, string>;
-  exceptionRuleIds?: string[];
-}
-
-// A snapshot as `aka` writes it: every category resolved, `log` unless said.
-function snapshotText(parts: SnapshotParts = {}): string {
-  return JSON.stringify({
-    version: 1,
-    generatedAt: '2026-10-09T00:00:00.000Z',
-    ...(parts.rules !== undefined ? { rules: parts.rules } : {}),
-    ruleActions: parts.ruleActions ?? {},
-    categoryActions: {
-      ...Object.fromEntries(ALL_CATEGORIES.map((c) => [c, 'log'])),
-      ...parts.categoryActions,
-    },
-    exceptionRuleIds: parts.exceptionRuleIds ?? [],
-  });
-}
-
-interface FileAnswer {
-  text: string;
-  size?: number;
-  mtimeMs: number;
-}
-
-// What the file system beneath the plugin answers for the snapshot path: a value
-// where the file is, a refusal (as a missing file is) where it is not.
-function fileSystem(on: Hooks, file: () => FileAnswer | undefined): string[] {
-  const reads: string[] = [];
-  mock.env(on, { HOME });
-  on('fs.stat', (_$, e) => {
-    const answer = file();
-    if (answer === undefined || e.path !== SNAPSHOT_PATH) return { deny: 'ENOENT' };
-    return {
-      value: {
-        kind: 'file' as const,
-        size: answer.size ?? answer.text.length,
-        mtimeMs: answer.mtimeMs,
-        isLink: false,
-      },
-    };
-  });
-  on('fs.read', (_$, e) => {
-    reads.push(e.path);
-    const answer = file();
-    return answer === undefined ? { deny: 'ENOENT' } : { value: answer.text };
-  });
-  return reads;
-}
-
-// The model's end of the chain: records the prompt as it arrives.
-function model(on: Hooks): string[] {
-  const seen: string[] = [];
-  on('prompt.submit', (_$, e) => {
-    seen.push(e.text);
-    return { text: e.text };
-  });
-  return seen;
-}
 
 test('a user policy of redact reaches the model as a placeholder and the prompt is not blocked', async ($, on) => {
   fileSystem(on, () => ({
@@ -95,6 +10,7 @@ test('a user policy of redact reaches the model as a placeholder and the prompt 
     mtimeMs: 1,
   }));
   const seen = model(on);
+  helper(on, oneWay({ [SECRET]: '[REDACTED:SECRET]' }));
 
   const result = await $.prompt.submit({ text: `deploy with ${SECRET} please` });
 
@@ -136,6 +52,7 @@ test('a custom pack in the snapshot is applied under the policy of its rule', as
     mtimeMs: 3,
   }));
   const seen = model(on);
+  helper(on, oneWay({ 'ACME-123456': '[REDACTED:CUSTOM]' }));
 
   await $.prompt.submit({ text: `see ACME-123456 and ${SECRET}` });
 
@@ -236,6 +153,7 @@ test('an unchanged snapshot is read once and a changed one is read again', async
   };
   const reads = fileSystem(on, () => answer);
   const seen = model(on);
+  helper(on, oneWay({ [SECRET]: '[REDACTED:SECRET]' }));
   const text = `key ${SECRET}`;
 
   await $.prompt.submit({ text });

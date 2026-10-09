@@ -57,6 +57,10 @@ export default defineConfig({
     // only (the transcript and the model keep the original)
     'message-display': 'src/hooks/message-display.ts',
     stop: 'src/hooks/stop.ts',
+    // The prompt.submit mod's helper (hooks/mod.ts runs it with $.process.run):
+    // the one place a vault pointer is minted for a mod-rewritten prompt, so the
+    // key stays out of the mod. Lands flat in scripts/ beside the hook scripts.
+    'mod-tokenize': 'src/mod/tokenize-entry.ts',
     // The isolated scan's worker thread. hooks.json never names it — the plugin
     // SDK starts it by path from whichever hook is running, and every hook
     // script lands in this same directory. See src/scan-worker.ts.

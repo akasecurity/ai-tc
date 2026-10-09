@@ -32,12 +32,12 @@ if (!existsSync(ENGINE)) throw new Error('hooks/engine.js is missing; run `pnpm 
 copyFileSync(join(PLUGIN_ROOT, 'hooks', 'mod.ts'), join(HERE, 'mod.ts'));
 
 const TEST_ENGINE = `
-  import { redactPromptWith as realRedactPromptWith } from './src/mod/engine-entry.ts';
-  import type { ModPolicy } from './src/mod/engine-entry.ts';
+  import { planPromptWith as realPlanPromptWith } from './src/mod/engine-entry.ts';
+  import type { ModPolicy, PromptPlan } from './src/mod/engine-entry.ts';
   export * from './src/mod/engine-entry.ts';
-  export function redactPromptWith(text: string, policy: ModPolicy | null): string {
+  export function planPromptWith(text: string, policy: ModPolicy | null): PromptPlan {
     if (text.includes('__ENGINE_THROWS__')) throw new Error('injected engine fault');
-    return realRedactPromptWith(text, policy);
+    return realPlanPromptWith(text, policy);
   }
 `;
 await buildEngine({ stdin: TEST_ENGINE, outFile: join(HERE, 'engine.js') });

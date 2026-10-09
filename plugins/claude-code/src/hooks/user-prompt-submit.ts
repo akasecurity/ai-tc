@@ -42,6 +42,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
@@ -112,40 +113,46 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
-  let result: CaptureResult;
-  try {
-    result = await runtime.capture({
-      kind: 'prompt',
-      sourceTool: SOURCE_TOOL.ClaudeCode,
-      text: prompt,
-      metadata,
-      scopeKey,
-    });
-  } finally {
-    await runtime.close();
-  }
+  // A prompt the mod's helper already rewrote and recorded (its event and
+  // findings are in the store; this hook is seeing pointers or markers): capture
+  // nothing, or one prompt would appear in Activity twice. The mod only rewrites
+  // a redact verdict, so there is no decision left to make either.
+  if (!consumeModHandoff(config.dataDir, prompt)) {
+    const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+    let result: CaptureResult;
+    try {
+      result = await runtime.capture({
+        kind: 'prompt',
+        sourceTool: SOURCE_TOOL.ClaudeCode,
+        text: prompt,
+        metadata,
+        scopeKey,
+      });
+    } finally {
+      await runtime.close();
+    }
 
-  // Consent is resolved HERE rather than inside the decision: an absent
-  // tokenizer is what makes "no consent → the vault is never touched" a
-  // structural property instead of a flag the decision could forget to read.
-  const decision = await decideUserPromptSubmit(prompt, result, {
-    tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
-      ? (text, findings, reversible) =>
-          createVaultGlue().tokenizeText(text, {
-            findings,
-            // Per-finding custody, exactly as the tool-call paths pass it.
-            // Omitting it means "keep all", which would vault a value whose
-            // detection chose one-way Redact.
-            reversible,
-            sighting: { location: 'prompt', kind: 'prompt' },
-          })
-      : undefined,
-    writeClipboard,
-  });
-  if (decision !== null) {
-    await emit(decision);
-    return;
+    // Consent is resolved HERE rather than inside the decision: an absent
+    // tokenizer is what makes "no consent → the vault is never touched" a
+    // structural property instead of a flag the decision could forget to read.
+    const decision = await decideUserPromptSubmit(prompt, result, {
+      tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
+        ? (text, findings, reversible) =>
+            createVaultGlue().tokenizeText(text, {
+              findings,
+              // Per-finding custody, exactly as the tool-call paths pass it.
+              // Omitting it means "keep all", which would vault a value whose
+              // detection chose one-way Redact.
+              reversible,
+              sighting: { location: 'prompt', kind: 'prompt' },
+            })
+        : undefined,
+      writeClipboard,
+    });
+    if (decision !== null) {
+      await emit(decision);
+      return;
+    }
   }
 
   // Not enforced this prompt (action was monitor/log or allow — possibly WITH

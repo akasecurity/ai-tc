@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { ActionTaken } from '@akasecurity/schema';
-import { builtinPolicyToAction } from '@akasecurity/schema';
+import { builtinPolicyToAction, POINTER_TOKEN_PATTERN } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 // The prompt rewrite in hooks/engine.js, driven in Node. The same module runs
@@ -19,6 +19,7 @@ interface PromptEngine {
   bundledActionFor: (ruleId: string) => ActionTaken;
   createPromptRedactor: (actionFor: (ruleId: string) => ActionTaken) => (text: string) => string;
   redactPrompt: (text: string) => string;
+  planPromptWith: (text: string, policy: null) => { text: string; values: string[] };
 }
 
 async function loadEngine(): Promise<PromptEngine> {
@@ -115,6 +116,41 @@ describe('the bundled default policies', () => {
   it('leave an unknown rule id at log', async () => {
     const { bundledActionFor } = await loadEngine();
     expect(bundledActionFor('nobody/knows-this')).toBe('log');
+  });
+});
+
+describe('the prompt plan', () => {
+  // A pointer in the pinned grammar, built from the schema's own pattern's parts.
+  const POINTER = `[[aka:secret:AB.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
+
+  it('names the values it would remove, and none when it removes nothing', async () => {
+    const { createPromptRedactor } = await loadEngine();
+    expect(createPromptRedactor(() => 'redact')(`x ${SECRET}`)).toBe('x [REDACTED:SECRET]');
+    const mod = (await import(pathToFileURL(join(HOOKS_DIR, 'engine.js')).href)) as PromptEngine & {
+      createPromptPlanner: (
+        a: () => ActionTaken,
+      ) => (t: string) => { text: string; values: string[] };
+    };
+    const plan = mod.createPromptPlanner(() => 'redact');
+    expect(plan(`x ${SECRET}`).values).toEqual([SECRET]);
+    expect(plan('nothing here')).toEqual({ text: 'nothing here', values: [] });
+  });
+
+  it('never sees a vault pointer, so a pointer is never tokenized again', async () => {
+    expect(POINTER_TOKEN_PATTERN.test(POINTER)).toBe(true);
+    const mod = (await import(pathToFileURL(join(HOOKS_DIR, 'engine.js')).href)) as {
+      createPromptPlanner: (
+        a: () => ActionTaken,
+      ) => (t: string) => { text: string; values: string[] };
+      registerBundledPacks: () => void;
+    };
+    mod.registerBundledPacks();
+    const plan = mod.createPromptPlanner(() => 'redact');
+    expect(plan(`use ${POINTER} here`)).toEqual({ text: `use ${POINTER} here`, values: [] });
+    expect(plan(`use ${POINTER} and ${SECRET}`)).toEqual({
+      text: `use ${POINTER} and [REDACTED:SECRET]`,
+      values: [SECRET],
+    });
   });
 });
 

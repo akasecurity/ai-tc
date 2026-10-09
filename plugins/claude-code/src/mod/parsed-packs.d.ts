@@ -5,5 +5,7 @@ declare module 'aka:parsed-packs' {
     packs: readonly { packId: string; rules: Rule[] }[];
     // The action a fresh install enforces for each bundled rule id.
     actions: Readonly<Record<string, ActionTaken>>;
+    // The source of the vault pointer pattern, from @akasecurity/schema.
+    pointerPattern: string;
   };
 }

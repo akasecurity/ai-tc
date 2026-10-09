@@ -9,6 +9,19 @@ import { PARSED_DATA } from 'aka:parsed-packs';
 
 let registered = false;
 
+// The vault pointer's pattern, resolved at build time from the one definition in
+// @akasecurity/schema (importing it here would pull zod into the module). A
+// prompt that already holds a pointer is scanned with that pointer blanked, as
+// the hooks' shield does, so a pointer is never re-tokenized.
+let pointerScanner: RegExp | undefined;
+function pointerSpans(text: string): { start: number; end: number }[] {
+  pointerScanner ??= new RegExp(PARSED_DATA.pointerPattern, 'g');
+  return Array.from(text.matchAll(pointerScanner), (m) => ({
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
+}
+
 /** Registers the bundled packs, parsed with the real Rule schema at build time. */
 export function registerBundledPacks(): void {
   for (const pack of PARSED_DATA.packs) registerPack({ id: pack.packId, rules: pack.rules });
@@ -22,6 +35,16 @@ export function registerBundledPacks(): void {
  */
 export function bundledActionFor(ruleId: string): ActionTaken {
   return PARSED_DATA.actions[ruleId] ?? 'log';
+}
+
+/**
+ * What a prompt rewrite would do: `text` is the one-way rewrite (the prompt
+ * itself when nothing is to be redacted) and `values` the matched values being
+ * removed, which the caller checks a rewrite from elsewhere against.
+ */
+export interface PromptPlan {
+  text: string;
+  values: string[];
 }
 
 const ACTIONS: ReadonlySet<string> = new Set(['warn', 'redact', 'block', 'allow', 'log']);
@@ -98,22 +121,39 @@ export function parseModPolicy(text: string): ModPolicy | null {
  * means matching a keyed fingerprint and consuming a use, which only the hook
  * does. Throws on a fault; the caller must let it propagate.
  */
-export function createPromptRedactor(
+export function createPromptPlanner(
   actionFor: (ruleId: string, category: string) => ActionTaken,
   options: { rules?: Rule[] | undefined; excepted?: ReadonlySet<string> | undefined } = {},
-): (text: string) => string {
+): (text: string) => PromptPlan {
   return (text) => {
     if (options.rules === undefined && !registered) registerBundledPacks();
-    const findings = scan(text, options.rules, { eventKind: 'prompt' });
-    if (findings.length === 0) return text;
+    const spans = pointerSpans(text);
+    let scanned = text;
+    for (const s of spans) {
+      scanned = scanned.slice(0, s.start) + ' '.repeat(s.end - s.start) + scanned.slice(s.end);
+    }
+    const findings = scan(scanned, options.rules, { eventKind: 'prompt' }).filter(
+      (f) => !spans.some((s) => f.span.start < s.end && f.span.end > s.start),
+    );
+    if (findings.length === 0) return { text, values: [] };
     const actions = findings.map((f) => {
       const action = actionFor(f.ruleId, f.category);
       return action === 'redact' && options.excepted?.has(f.ruleId) === true ? 'allow' : action;
     });
-    if (actions.includes('block')) return text;
+    if (actions.includes('block')) return { text, values: [] };
     const redacted = findings.filter((_, i) => actions[i] === 'redact');
-    return redacted.length === 0 ? text : redact(text, redacted);
+    if (redacted.length === 0) return { text, values: [] };
+    return { text: redact(text, redacted), values: redacted.map((f) => f.rawMatch) };
   };
+}
+
+/** {@link createPromptPlanner}, reduced to the one-way rewritten text. */
+export function createPromptRedactor(
+  actionFor: (ruleId: string, category: string) => ActionTaken,
+  options: { rules?: Rule[] | undefined; excepted?: ReadonlySet<string> | undefined } = {},
+): (text: string) => string {
+  const plan = createPromptPlanner(actionFor, options);
+  return (text) => plan(text).text;
 }
 
 /**
@@ -121,13 +161,18 @@ export function createPromptRedactor(
  * default policies when there is none. The policy reads as the hook's resolver
  * reads a bundle: a rule's own action, then its category's, then `log`.
  */
-export function redactPromptWith(text: string, policy: ModPolicy | null): string {
-  if (policy === null) return createPromptRedactor((ruleId) => bundledActionFor(ruleId))(text);
-  return createPromptRedactor(
+export function planPromptWith(text: string, policy: ModPolicy | null): PromptPlan {
+  if (policy === null) return createPromptPlanner((ruleId) => bundledActionFor(ruleId))(text);
+  return createPromptPlanner(
     (ruleId, category) =>
       policy.ruleActions.get(ruleId) ?? policy.categoryActions.get(category) ?? 'log',
     { rules: policy.rules, excepted: policy.exceptionRuleIds },
   )(text);
+}
+
+/** {@link planPromptWith}, reduced to the one-way rewritten text. */
+export function redactPromptWith(text: string, policy: ModPolicy | null): string {
+  return planPromptWith(text, policy).text;
 }
 
 /** The prompt rewrite under the bundled packs' default policies. */

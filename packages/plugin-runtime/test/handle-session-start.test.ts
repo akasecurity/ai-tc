@@ -19,7 +19,6 @@ import {
   EXCEPTION_RETENTION_MS,
   handleSessionStart,
   type SessionStartInput,
-  sessionStartNotice,
 } from '../src/handle-session-start.ts';
 import { setDefaultGatewayFactory } from '../src/resolve.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
@@ -584,33 +583,6 @@ describe('handleSessionStart stale-session notice (return value)', () => {
     );
 
     expect(result.staleBinaryNotice).toBeNull();
-  });
-});
-
-describe('sessionStartNotice', () => {
-  const FORWARDING = 'AKA: forwarding everything to Acme (machine-wide)';
-  const STALE = 'a newer AKA binary is installed than this session started with';
-
-  it('puts the forwarding line first and the prefixed stale notice second, one per line', () => {
-    expect(sessionStartNotice({ forwardingLine: FORWARDING, staleBinaryNotice: STALE })).toBe(
-      `${FORWARDING}\n[aka] ${STALE}`,
-    );
-  });
-
-  it('shows the forwarding line alone, unprefixed, when nothing is stale', () => {
-    expect(sessionStartNotice({ forwardingLine: FORWARDING, staleBinaryNotice: null })).toBe(
-      FORWARDING,
-    );
-  });
-
-  it('shows the stale notice alone, with its prefix, when nothing is forwarded', () => {
-    expect(sessionStartNotice({ forwardingLine: null, staleBinaryNotice: STALE })).toBe(
-      `[aka] ${STALE}`,
-    );
-  });
-
-  it('is undefined, not an empty string, when there is nothing to show', () => {
-    expect(sessionStartNotice({ forwardingLine: null, staleBinaryNotice: null })).toBeUndefined();
   });
 });
 

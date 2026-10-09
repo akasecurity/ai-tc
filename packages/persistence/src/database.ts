@@ -46,6 +46,8 @@ import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
+import type { ModPolicySources } from './mod-policy-snapshot.ts';
+import { refreshModPolicySnapshot } from './mod-policy-snapshot.ts';
 import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
@@ -450,12 +452,24 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     applyMigrations(db, file, { skipTags });
     tightenPerms(file);
 
-    const policies = new SqlitePoliciesRepository(db);
+    // Rewrites the Claude Code mod's policy snapshot after any write to the
+    // installed ruleset, a pack's policy, a category policy or an exception.
+    // These repositories are the one door every writer (the plugin hooks, the
+    // CLI, the web-ui server actions) goes through, so the hook is here and
+    // not at each caller. It reads `repositories` lazily: nothing writes until
+    // the object below exists, and a call before then is a no-op.
+    const modPolicy: { current?: ModPolicySources } = {};
+    const onPolicyStateChange = (): void => {
+      if (modPolicy.current !== undefined)
+        refreshModPolicySnapshot(dirname(file), modPolicy.current);
+    };
+    const policies = new SqlitePoliciesRepository(db, onPolicyStateChange);
     // The layout base, so the pack-policy write path can see whether this
     // machine is attached and what its control plane requires. See
     // SqliteInstalledPacksRepository's constructor for why it is optional there
     // and threaded from here.
-    const installedPacks = new SqliteInstalledPacksRepository(db, base);
+    const installedPacks = new SqliteInstalledPacksRepository(db, base, onPolicyStateChange);
+    const exceptions = new SqliteExceptionsRepository(db, undefined, onPolicyStateChange);
     const repositories = {
       events: new SqliteEventsRepository(db),
       findings: new SqliteFindingsRepository(db),
@@ -464,7 +478,7 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       scanLedger: new SqliteScanLedgerRepository(db),
       historySync: new SqliteHistorySyncRepository(db),
       secretVault: new SqliteSecretVaultRepository(db),
-      exceptions: new SqliteExceptionsRepository(db),
+      exceptions,
       resolutions: new SqliteResolutionsRepository(db),
       ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
       bodyRetention: new SqliteBodyRetentionRepository(db),
@@ -483,6 +497,11 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
       inspectionFindings: new SqliteInspectionFindingsRepository(db),
       configInventory: new SqliteConfigInventoryRepository(db),
+    };
+    modPolicy.current = {
+      installedRuleset: () => installedPacks.installedRuleset(),
+      readPolicies: () => policies.listPolicies(),
+      activeExceptionRuleIds: () => exceptions.activeRuleIds(),
     };
     policies.seedDefaults();
     return { db, ...repositories };

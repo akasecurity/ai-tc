@@ -103,6 +103,16 @@ export {
   overlayManagedSettings,
   readManagedSettings,
 } from './managed-settings.ts';
+export type { ModPolicyInput, ModPolicySources } from './mod-policy-snapshot.ts';
+export {
+  buildModPolicySnapshot,
+  MOD_POLICY_SNAPSHOT_FILENAME,
+  modPolicyInputFromStore,
+  modPolicySnapshotPath,
+  readModPolicySnapshot,
+  refreshModPolicySnapshot,
+  writeModPolicySnapshot,
+} from './mod-policy-snapshot.ts';
 export {
   createOwnerOnlyFileSync,
   DATA_DIR_MODE,

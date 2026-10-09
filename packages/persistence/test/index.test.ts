@@ -30,6 +30,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'KeyUnclaimableError',
   'KeychainKeyProvider',
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
+  'MOD_POLICY_SNAPSHOT_FILENAME',
   'ManagedFieldError',
   'POLICY_CACHE_FILENAME',
   'PolicyFloorError',
@@ -70,6 +71,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'base32Decode',
   'base32Encode',
   'bindingInput',
+  'buildModPolicySnapshot',
   'canonicalRepoUrl',
   'capHits',
   'capWarnEraEnforcementOnce',
@@ -117,6 +119,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'managedDetachRefusal',
   'managedSettingsPaths',
   'migrateLegacyLayout',
+  'modPolicyInputFromStore',
+  'modPolicySnapshotPath',
   'normalizeHost',
   'openLocalDatabase',
   'overlayManagedSettings',
@@ -126,9 +130,6 @@ const PUBLIC_VALUE_EXPORTS = [
   'promptId',
   'readCachedPolicyBundle',
   'readControlPlaneCredential',
-  // The WIDE read. Exported deliberately and named so it cannot be reached by
-  // accident: it returns a bearer credential, unlike the state reader beside
-  // it, and belongs only to server-side callers.
   'readControlPlaneCredentialFile',
   'readControlPlaneCredentialState',
   'readEffectiveSettings',
@@ -137,7 +138,9 @@ const PUBLIC_VALUE_EXPORTS = [
   'readHistorySyncState',
   'readLocalHistoryPreview',
   'readManagedSettings',
+  'readModPolicySnapshot',
   'readWorkspaceSettings',
+  'refreshModPolicySnapshot',
   'removeControlPlaneCredential',
   'rotateFingerprintKey',
   'scopeKeyOfProjectKey',
@@ -159,6 +162,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'withoutDroppedFiles',
   'writeControlPlaneCredential',
   'writeHistorySyncState',
+  'writeModPolicySnapshot',
   'writeOwnerOnlyFileSync',
 ];
 

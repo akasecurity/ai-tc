@@ -20,10 +20,9 @@ import { buildEngine } from '../../build/engine.mjs';
 // outputs are git-ignored.
 //
 // The fixture runs the shipped hooks/mod.ts verbatim. Only the engine beside it
-// is a test build: the bundled defaults enforce no `redact` (the secrets pack
-// ships `warn`, everything else Monitor), so a test build wraps the real
-// entry's prompt rewrite to run under a redact-everything policy and to raise
-// the fault the fail-open case needs. The product module carries neither.
+// is a test build: it wraps the real entry's prompt rewrite to raise the fault
+// the fail-open case needs. The product module carries no such switch, and the
+// policy is the one the test answers from beneath, as the user's own would be.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(HERE, '..', '..');
 const RULES_ROOT = join(PLUGIN_ROOT, '..', '..', 'rules');
@@ -33,13 +32,12 @@ if (!existsSync(ENGINE)) throw new Error('hooks/engine.js is missing; run `pnpm 
 copyFileSync(join(PLUGIN_ROOT, 'hooks', 'mod.ts'), join(HERE, 'mod.ts'));
 
 const TEST_ENGINE = `
-  import { createPromptRedactor, redactPrompt as bundledRedactPrompt } from './src/mod/engine-entry.ts';
+  import { redactPromptWith as realRedactPromptWith } from './src/mod/engine-entry.ts';
+  import type { ModPolicy } from './src/mod/engine-entry.ts';
   export * from './src/mod/engine-entry.ts';
-  const redactEverything = createPromptRedactor(() => 'redact');
-  export function redactPrompt(text: string): string {
+  export function redactPromptWith(text: string, policy: ModPolicy | null): string {
     if (text.includes('__ENGINE_THROWS__')) throw new Error('injected engine fault');
-    if (text.includes('__DEFAULT_POLICY__')) return bundledRedactPrompt(text);
-    return redactEverything(text);
+    return realRedactPromptWith(text, policy);
   }
 `;
 await buildEngine({ stdin: TEST_ENGINE, outFile: join(HERE, 'engine.js') });

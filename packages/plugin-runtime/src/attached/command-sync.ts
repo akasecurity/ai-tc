@@ -405,16 +405,36 @@ function readSessionDirectory(): string | undefined {
  * capture recorded in that directory carries, and undefined outside a
  * repository or in one with no remote.
  *
+ * THE CONFIGURATION IS LOADED WHEN THE SCAN RUNS, not when it is built.
+ * `loadConfig` is called inside `run`, once per run, so the scan's own forward
+ * resolves the enrolled scope in force when the command is serviced. That is a
+ * second read, not the one `runCommandSync` decided on: it judges whether this
+ * root may be scanned at all from the settings it reads before it polls, and the
+ * scan only runs after that verdict. So the configuration is read after, never
+ * before, the live settings read the verdict used, and the forward never sees
+ * an older scope than the verdict did. The scan is built when a session spawns
+ * the sync child, and a scope captured then would let an unenroll that lands
+ * before the poll go unseen by the forward.
+ *
+ * THE OTHER SKEW IS NOT CLOSED HERE. The verdict and this load are two reads. A
+ * root that is unenrolled between them passes the verdict, is scanned, and has its
+ * forwards filtered under the newer scope, while the acknowledgement still counts
+ * the scanned worktree. Nothing leaves the machine, but the deployment is told a
+ * result that was not sent. One read deciding both, and an acknowledgement based on
+ * what was forwarded, is a change to how `runCommandSync` acknowledges, not to how
+ * the scan loads its configuration.
+ *
  * NEVER THROWS, which matters because it is built while a sync entry evaluates
  * its arguments. A working directory removed under a running session makes
  * `process.cwd()` throw, and a throw here would end the whole sync, the policy
  * pull included, where a failed directory read used to fail only the scan. So
  * a directory that cannot be read leaves a scan with no key, which a scoped
  * attachment treats as not enrolled, and a `run` that rejects, which
- * `runCommandSync` acks as `scan_failed` exactly as it does any failed scan.
+ * `runCommandSync` acks as `scan_failed` exactly as it does any failed scan. A
+ * loader that throws is the same: it is not called here, and `run` rejects.
  */
 export function commandScanFor(
-  config: PluginConfig,
+  loadConfig: () => PluginConfig,
   scanWorktree: WorktreeScan,
   sourceTool: SourceTool,
 ): CommandScan {
@@ -424,7 +444,7 @@ export function commandScanFor(
       rootDir === undefined ? undefined : resolveRepoAttribution(rootDir).scopeKey,
     run: async () => {
       if (rootDir === undefined) throw new Error('the session working directory cannot be read');
-      const summary = await scanWorktree(config, { sourceTool, rootDir });
+      const summary = await scanWorktree(loadConfig(), { sourceTool, rootDir });
       // 0 or 1: this mode scans exactly one worktree, so the count answers "was
       // there anything here to scan", not "how many projects were found". A
       // worktree with no scannable file is the `no_projects` outcome rather

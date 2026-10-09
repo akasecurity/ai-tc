@@ -5,6 +5,7 @@
 // and a session start opens no root. Every case runs the same request on a
 // machine that records as its control, so an absence below is the gate's doing
 // rather than a request that would have written nothing anyway.
+import type * as ChildProcess from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,12 +27,28 @@ import type {
   WebCaptureStatus,
   WebExchange,
 } from '@akasecurity/schema';
-import { WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SOURCE_TOOL, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { handleRequest, readCaptureStatus } from '../../src/native-host/host.ts';
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
+
+// The detached children a session start asks for on an attached machine (the
+// policy refresh among them), recorded instead of run, so a fully attached
+// session start can be driven here without starting a process that would try
+// to reach the control plane.
+const spawned = vi.hoisted(() => ({ scripts: [] as string[] }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>();
+  return {
+    ...actual,
+    spawn: (_command: string, args: readonly string[]) => {
+      spawned.scripts.push(String(args[0]));
+      return { on: () => undefined, unref: () => undefined };
+    },
+  };
+});
 
 const ENDPOINT = 'https://cp.example';
 const MINTED_AT = '2026-10-01T00:00:00.000Z';
@@ -104,7 +121,7 @@ function config(
     dbPath: join(dir, 'aka.db'),
     settingsDir: dir,
     onboarded: true,
-    provider: tool === 'chatgpt' ? { provider: 'openai' } : { provider: 'anthropic' },
+    provider: tool === SOURCE_TOOL.ChatGpt ? { provider: 'openai' } : { provider: 'anthropic' },
   };
 }
 
@@ -182,7 +199,7 @@ describe('a prompt on a personal device', () => {
         type: 'capture',
         requestId: 'pd-capture',
         sessionId: 'browser-pd-capture',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         kind: 'prompt',
         text: `${MARKER} deploy with ${SECRET_EXAMPLE} now`,
       },
@@ -205,7 +222,7 @@ describe('a prompt on a personal device', () => {
         type: 'capture',
         requestId: 'md-capture',
         sessionId: 'browser-md-capture',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         kind: 'prompt',
         text: `${MARKER} deploy with ${SECRET_EXAMPLE} now`,
       },
@@ -226,7 +243,7 @@ describe('an exchange on a personal device', () => {
         type: 'exchange',
         requestId: 'pd-exchange',
         sessionId: 'browser-pd-exchange',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: exchange(),
       },
       config,
@@ -254,7 +271,7 @@ describe('an exchange on a personal device', () => {
         type: 'exchange',
         requestId: 'md-exchange',
         sessionId: 'browser-md-exchange',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: exchange(),
       },
       config,
@@ -273,7 +290,7 @@ describe('an exchange on a personal device', () => {
         type: 'exchange',
         requestId: 'switch-1',
         sessionId: 'browser-switch',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: exchange(),
       },
       config,
@@ -284,7 +301,7 @@ describe('an exchange on a personal device', () => {
         type: 'exchange',
         requestId: 'switch-2',
         sessionId: 'browser-switch',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: { ...exchange(), messageId: 'msg_personal_2' },
       },
       config,
@@ -303,7 +320,7 @@ describe('a capture status on a personal device', () => {
         type: 'capture_status',
         requestId: 'pd-status',
         sessionId: 'browser-pd-status',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         status: STATUS,
       },
       config,
@@ -327,7 +344,7 @@ describe('a capture status on a personal device', () => {
         type: 'capture_status',
         requestId: 'md-status',
         sessionId: 'browser-md-status',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         status: STATUS,
       },
       config,
@@ -372,7 +389,7 @@ describe('a machine that cannot tell what it was attached as', () => {
         type: 'exchange',
         requestId: 'ur-exchange',
         sessionId: 'browser-ur-exchange',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: exchange(),
       },
       config,
@@ -397,7 +414,7 @@ describe('a machine that cannot tell what it was attached as', () => {
         type: 'exchange',
         requestId: 'scope-exchange',
         sessionId: 'browser-scope-exchange',
-        tool: 'chatgpt',
+        tool: SOURCE_TOOL.ChatGpt,
         exchange: exchange(),
       },
       scoped,
@@ -420,7 +437,7 @@ describe('a session start on a machine that withholds web chats', () => {
         type: 'session_start',
         requestId: 'half-start',
         sessionId: 'browser-half-start',
-        tool: 'claude-ai',
+        tool: SOURCE_TOOL.ClaudeAi,
         hostname: 'claude.ai',
       },
       halfAttached,
@@ -436,7 +453,7 @@ describe('a session start on a machine that withholds web chats', () => {
         type: 'session_start',
         requestId: 'plain-start',
         sessionId: 'browser-plain-start',
-        tool: 'claude-ai',
+        tool: SOURCE_TOOL.ClaudeAi,
         hostname: 'claude.ai',
       },
       halfAttached,
@@ -452,11 +469,68 @@ describe('a session start on a machine that withholds web chats', () => {
         type: 'exchange',
         requestId: 'half-exchange',
         sessionId: 'browser-half',
-        tool: 'claude-ai',
+        tool: SOURCE_TOOL.ClaudeAi,
         exchange: exchange(),
       },
       halfAttached,
     );
     expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope' });
+  });
+});
+
+describe('a fully attached personal device', () => {
+  it('starts a session with no root, and still asks for the policy refresh', async () => {
+    attachAs('scoped');
+    spawned.scripts.length = 0;
+    const response = await handleRequest(
+      {
+        type: 'session_start',
+        requestId: 'attached-start',
+        sessionId: 'browser-attached-start',
+        tool: SOURCE_TOOL.ClaudeAi,
+        hostname: 'claude.ai',
+      },
+      config,
+    );
+    expect(response).toEqual({ type: 'session_start', requestId: 'attached-start', ok: true });
+    expect(rowCount("event_type IN ('session', 'config_scan')")).toBe(0);
+    // The positive control: the attached half of the session start ran, so the
+    // missing root is the gate's doing and not a pass that gave up early.
+    expect(spawned.scripts.some((script) => script.endsWith('sync.js'))).toBe(true);
+  });
+
+  it('reports every site unreported, while keeping what it heard about enforcement', async () => {
+    attachAs('scoped');
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'attached-status',
+        sessionId: 'browser-attached-status',
+        tool: SOURCE_TOOL.ChatGpt,
+        status: { ...STATUS, enforcement: 'unattached' },
+      },
+      config,
+    );
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'attached-state' },
+      config,
+    );
+    if (response.type !== 'capture_state') throw new Error('expected a capture_state response');
+    expect(response.sites.map((site) => site.state)).toEqual(['unreported', 'unreported']);
+    expect(response.sites.find((site) => site.tool === SOURCE_TOOL.ChatGpt)?.enforcement).toBe(
+      'unattached',
+    );
+
+    // The control: the same memory, read on a machine-wide attachment, reports
+    // the network state the tab saw.
+    attachAs('machine');
+    const recorded = await handleRequest(
+      { type: 'capture_state', requestId: 'machine-state' },
+      config,
+    );
+    if (recorded.type !== 'capture_state') throw new Error('expected a capture_state response');
+    expect(recorded.sites.find((site) => site.tool === SOURCE_TOOL.ChatGpt)?.state).not.toBe(
+      'unreported',
+    );
   });
 });

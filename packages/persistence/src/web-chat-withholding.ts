@@ -22,6 +22,10 @@ import { readControlPlaneCredentialFile } from './control-plane-credential.ts';
  *     the settings name. What the machine was attached as is unknown then, and
  *     recording what a later attachment could send is the failure to avoid.
  *
+ * A settings directory that is not a directory cannot hold a credential, so it
+ * reads as no credential, not as an unreadable one. Any other fault reading the
+ * credential withholds.
+ *
  * What is withheld is never recorded, so no later attachment can send it,
  * including a machine-wide one with history sync granted. Read per call: an
  * attach, a detach and an enrollment all change it. Never throws.
@@ -37,7 +41,7 @@ export function webChatWithholding(
       return attachmentModeOf(read.credential) === 'scoped' ? 'personal-device' : null;
     }
     return read.reason === 'absent' ? null : 'unreadable-attachment';
-  } catch {
-    return 'unreadable-attachment';
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOTDIR' ? null : 'unreadable-attachment';
   }
 }

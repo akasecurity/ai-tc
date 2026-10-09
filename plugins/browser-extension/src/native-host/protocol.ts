@@ -160,8 +160,9 @@ export interface CaptureStateResponse {
   consented: boolean;
   // Why this machine records nothing from a web chat, whatever `consented`
   // says. Absent when it records as usual, and from a host older than the
-  // field. Chats are still checked; `sites` then carries only this host
-  // process's own reports, so an enforcement fault still shows.
+  // field. Chats are still checked; each site's `state` is then unreported,
+  // and its `enforcement` is this host process's own report, so a site that
+  // is not being checked still shows.
   withheld?: WebChatWithholding;
   sites: {
     tool: WebSourceTool;

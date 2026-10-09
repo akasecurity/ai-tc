@@ -326,32 +326,27 @@ export async function handleRequest(
     case 'exchange': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      // Read live, every call: settings.json can change under this long-lived
-      // process, and a revocation must apply to the very next exchange frame.
-      // No module-level snapshot, no memoisation, no hoisting this check out
-      // of the switch.
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
+      // Both read live, every call: settings.json and the attachment can change
+      // under this long-lived process, and a revocation must apply to the very
+      // next exchange frame. No module-level snapshot, no memoisation, no
+      // hoisting either check out of the switch.
+      //
+      // Withheld, the exchange goes no further than this: `isHostRequest` has
+      // already validated the payload in `runHost`, and nothing past this
+      // point runs, so no leaf is written and the reply is not scanned (see
+      // withheld).
+      const skipped = !isWebChatCaptureConsentValid(webChat.consent)
+        ? ('no-consent' as const)
+        : withheld(config) !== null
+          ? ('out-of-scope' as const)
+          : undefined;
+      if (skipped !== undefined) {
         return {
           type: 'exchange',
           requestId: request.requestId,
           ok: true,
           accepted: false,
-          skipped: 'no-consent',
-          llmCalls: 0,
-          toolCalls: 0,
-          ruleIds: [],
-        };
-      }
-      // Dropped on arrival when chats are withheld, before the payload is even
-      // parsed: no leaf, no reply scan, nothing written (see withheld). Read
-      // live for the same reason as the consent check above.
-      if (withheld(config) !== null) {
-        return {
-          type: 'exchange',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'out-of-scope',
+          skipped,
           llmCalls: 0,
           toolCalls: 0,
           ruleIds: [],
@@ -492,15 +487,15 @@ export async function handleRequest(
     case 'capture_status': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
-        return {
-          type: 'capture_status',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'no-consent',
-        };
-      }
+      // The one refusal shape, for both reasons below.
+      const refused = (skipped: 'no-consent' | 'out-of-scope'): HostResponse => ({
+        type: 'capture_status',
+        requestId: request.requestId,
+        ok: true,
+        accepted: false,
+        skipped,
+      });
+      if (!isWebChatCaptureConsentValid(webChat.consent)) return refused('no-consent');
       const parsed = WebCaptureStatus.safeParse(request.status);
       if (!parsed.success) {
         return {
@@ -519,15 +514,7 @@ export async function handleRequest(
       // Withheld, the report stays in this process's memory and goes no
       // further: the popup reads it to say when a site is not being checked,
       // and nothing stores or sends it (see withheld).
-      if (withheld(config) !== null) {
-        return {
-          type: 'capture_status',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'out-of-scope',
-        };
-      }
+      if (withheld(config) !== null) return refused('out-of-scope');
       // The durable home: a `capture_status` audit_events row, so a restarted
       // host and a separate process (`aka extension status`) both have
       // somewhere to read the same answer from. No explicit session-root stub
@@ -589,7 +576,11 @@ export async function handleRequest(
         );
         return {
           tool,
-          state: deriveWebCaptureState(record?.status),
+          // Withheld, the network path records nothing, so no site has a state
+          // to report, whatever this process's memory says the tab saw. A popup
+          // older than `withheld` renders this word rather than a stale live
+          // one. The enforcement half is still this process's own report.
+          state: deriveWebCaptureState(withholding === null ? record?.status : undefined),
           ...(record !== undefined
             ? { enforcement: record.status.enforcement, observedAt: record.observedAt }
             : {}),

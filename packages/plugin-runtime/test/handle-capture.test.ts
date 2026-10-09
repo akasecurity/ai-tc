@@ -139,6 +139,18 @@ describe('handleCapture capture options', () => {
     expect(captureRowCount()).toBe(1);
   });
 
+  it("forwards 'never', so a capture that found something persists no row either", async () => {
+    const hit = await handleCapture(
+      { kind: 'response', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
+      config(dir),
+      { persist: 'never' },
+    );
+    // The finding is what 'with-findings' would have kept, so the zero is the
+    // option's doing.
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(captureRowCount()).toBe(0);
+  });
+
   it('defaults to persisting every capture when no option is passed', async () => {
     // The other positive control: the default must not silently become
     // 'with-findings' for callers that pass nothing.

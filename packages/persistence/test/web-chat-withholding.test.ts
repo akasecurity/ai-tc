@@ -52,6 +52,12 @@ describe('webChatWithholding records a chat', () => {
     expect(webChatWithholding(store.settingsDir, { controlPlane: CONNECTION })).toBeNull();
   });
 
+  it('on a settings path that is a file, which can hold no credential', () => {
+    const file = `${store.settingsDir}/not-a-dir`;
+    writeFileSync(file, 'x');
+    expect(webChatWithholding(file, { controlPlane: CONNECTION })).toBeNull();
+  });
+
   it('on half an attachment with no credential and no stored scope', () => {
     expect(webChatWithholding(store.settingsDir, { controlPlane: CONNECTION })).toBeNull();
   });

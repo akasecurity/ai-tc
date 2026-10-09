@@ -718,7 +718,13 @@ export function createPluginRuntime(
     // recorded set is the findings-bearing subset, which does strictly more work
     // than the clean captures it stands in for. Any reader aggregating this
     // field inherits that skew.
-    const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
+    //
+    // `persist: 'never'` is the other condition, and the stronger one: nothing
+    // it measures is ever recorded, so it is not timed at all. Its captures (a
+    // web chat on a machine that withholds them) are absent from the sample
+    // rather than skewing it.
+    const timingStartedAt =
+      input.occurredAt === undefined && opts.persist !== 'never' ? startTiming() : undefined;
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
@@ -953,9 +959,14 @@ export interface DecisionOptions {
 // (the live hook path, so the activity timeline is complete); 'with-findings'
 // records only when something was detected (the historical backfill);
 // 'never' records no event and no finding, for text the caller may enforce on
-// but must not keep (a web chat on a machine attached as a personal device).
-// Under 'never' the short-lived, masked blocked-detection ledger the approve
-// flow reads is still written, exactly as `processText` writes it.
+// but must not keep (a web chat on a machine that withholds them). Everything
+// before the write still happens under 'never', with the capture's own source
+// tool and metadata: exceptions are matched against them, a single-use grant
+// is spent (with no event to name it), and a block or redact writes the
+// short-lived, masked blocked-detection ledger row the approve flow reads,
+// carrying the capture's session id. `processText` differs on exactly that
+// context: it evaluates with none, so its ledger rows carry no session id and
+// a grant conditioned on a source tool does not match there.
 // `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
 // gateway drops content it has already recorded (fresh event ids on a re-run
 // would otherwise duplicate rows). Never set it on the live hook path.
@@ -972,7 +983,9 @@ export interface PluginRuntime {
   // short-lived approve-flow ledger, when a fingerprint key is available);
   // no event write.
   processText(text: string, context?: ScanContext, opts?: DecisionOptions): Promise<CaptureResult>;
-  // Decision + persist (event with masked content + N masked findings).
+  // Decision + persist (event with masked content + N masked findings), as
+  // `opts.persist` allows: 'with-findings' skips a clean capture, 'never' every
+  // one.
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;

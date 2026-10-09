@@ -222,12 +222,14 @@ export function maskContextSlice(
   return masked;
 }
 
-// maskMatch, guaranteed to never equal or contain the raw value. maskMatch's
-// short-local-email pass-through (e.g. "a@b.com") is the one documented case
-// where its output can still equal the raw value; fall back to '***' there.
-// maskMatch reads past invisible padding, so for a padded copy of such an
-// address the output equals the VISIBLE value instead; comparing against the
-// visible value covers both, since it is the raw value itself when unpadded.
+// maskMatch, guaranteed to never equal or contain the raw value. maskMatch reads
+// past invisible padding and its output never carries any, so both checks are
+// against the VISIBLE value, which is the raw value itself when unpadded.
+// maskMatch's short-local-email pass-through (e.g. "a@b.com") is the documented
+// case where its output equals that value; the fallback there masks the local
+// part and keeps the domain ("*@b.com"), because the domain is the fragment
+// `carriesRawRun` exempts and '***' would exempt nothing. Any other trip falls
+// back to '***'.
 //
 // DELIBERATELY WHOLE-VALUE, unlike its two siblings above and below. They scrub
 // text that must carry NO trace of a raw value; this one verifies a preview that
@@ -241,14 +243,19 @@ export function maskContextSlice(
 // so they sit in two runs of ONE and cannot fill a window at any width. The
 // margin that reasoning spends is pinned in `cli/test/helpers/no-echo.test.ts`.
 export function safeMaskedMatch(rawMatch: string): string {
-  const masked = maskMatch(rawMatch);
-  if (
-    masked === stripInvisiblePadding(rawMatch) ||
-    (rawMatch.length >= MIN_RAW_LEN && masked.includes(rawMatch))
-  ) {
-    return '***';
+  const visible = stripInvisiblePadding(rawMatch);
+  const masked = maskMatch(visible);
+  const reveals = (preview: string): boolean =>
+    preview === visible || (visible.length >= MIN_RAW_LEN && preview.includes(visible));
+  if (!reveals(masked)) return masked;
+  // An '@' inside the preview is maskMatch's email branch: the generic branch
+  // puts asterisks everywhere but its two edges.
+  const atIndex = masked.indexOf('@');
+  if (atIndex > 0 && atIndex < masked.length - 1) {
+    const emailFallback = `*${masked.slice(atIndex)}`;
+    if (!reveals(emailFallback)) return emailFallback;
   }
-  return masked;
+  return '***';
 }
 
 // Reject free-form text if it carries any RUN of a raw value from this run, not

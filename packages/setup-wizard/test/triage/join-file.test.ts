@@ -71,6 +71,27 @@ describe('buildJoinEntries', () => {
     expect(blob).not.toContain('hunter2pass'); // the credential, in no field
   });
 
+  // A one-letter-local email's preview is the fallback that keeps only the
+  // domain. A URL on the same host in the window is unspanned, so without that
+  // domain the egress gate refused the context and the whole triage aborted.
+  it.each([
+    ['clean', 'x@example.com'],
+    ['padded', 'x\u200B@example.com'],
+  ])('builds an entry for a %s one-letter-local email beside its domain', (_, email) => {
+    const e = buildJoinEntries([
+      hit({
+        ruleId: 'pii/email',
+        category: 'pii',
+        rawMatch: email,
+        context: `mail ${email} or see https://example.com/docs`,
+      }),
+    ])[0];
+    if (!e) throw new Error('expected an entry');
+
+    expect(e.maskedMatch).toBe('*@example.com');
+    expect(e.maskedContext).toBe('mail [REDACTED:SECRET] or see https://example.com/docs');
+  });
+
   it('drops raw and masks context (no raw substring in any field)', () => {
     const e = buildJoinEntries([hit({})])[0];
     if (!e) throw new Error('expected an entry');

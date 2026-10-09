@@ -19,6 +19,11 @@ import type { CostModel, CostUsage } from './cost-model.ts';
 export interface LlmCallLeaf {
   sessionId: string;
   attributes: LlmCallAttributes;
+  /**
+   * Set when the leaf stands for several calls: the largest single call's
+   * prompt, which selects the long-context band (see `CostUsage.promptTokens`).
+   */
+  promptTokens?: number;
 }
 
 interface RollupAcc {
@@ -38,7 +43,7 @@ interface RollupAcc {
 const num = (value: number | undefined): number => value ?? 0;
 
 // Map a leaf's stored attribute names onto the cost model's `CostUsage` shape.
-function costUsageOf(a: LlmCallAttributes): CostUsage {
+function costUsageOf(a: LlmCallAttributes, promptTokens: number | undefined): CostUsage {
   const usage: CostUsage = {
     inputTokens: num(a.input_tokens),
     outputTokens: num(a.output_tokens),
@@ -49,6 +54,7 @@ function costUsageOf(a: LlmCallAttributes): CostUsage {
   };
   // `?: string` under exactOptionalPropertyTypes — only set when present.
   if (a.service_tier !== undefined) usage.serviceTier = a.service_tier;
+  if (promptTokens !== undefined) usage.promptTokens = promptTokens;
   return usage;
 }
 
@@ -61,7 +67,7 @@ export function buildTokenReports(
 ): SessionTokenReport[] {
   const bySession = new Map<string, Map<string, RollupAcc>>();
 
-  for (const { sessionId, attributes } of leaves) {
+  for (const { sessionId, attributes, promptTokens } of leaves) {
     const provider = attributes.provider ?? 'unknown';
     const model = attributes.model ?? 'unknown';
     const key = `${provider} ${model}`;
@@ -91,7 +97,11 @@ export function buildTokenReports(
     acc.cacheCreation += num(attributes.cache_creation_input_tokens);
     acc.cacheRead += num(attributes.cache_read_input_tokens);
 
-    const leafCost = costModel.costFor({ provider, model, usage: costUsageOf(attributes) });
+    const leafCost = costModel.costFor({
+      provider,
+      model,
+      usage: costUsageOf(attributes, promptTokens),
+    });
     if (leafCost !== null) {
       acc.costUsd += leafCost;
       acc.priced = true;

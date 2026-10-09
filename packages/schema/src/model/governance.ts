@@ -10,11 +10,17 @@
 import { z } from 'zod';
 
 /**
- * A flagged specialisation, or `null` for a general-purpose model. `null` is a
- * curated statement ("reviewed, no flagged specialisation"), not an unfilled
- * field — entries carry a note saying so.
+ * A curated category tag for what kind of model this is, or `null` for a
+ * general-purpose text model. It describes the model and flags nothing: no
+ * member is a governance concern on its own. `null` is a curated statement
+ * ("reviewed, general-purpose"), not an unfilled field.
+ *
+ *   reasoning — a model the vendor positions for multi-step reasoning
+ *   code      — a model the vendor positions for code generation
+ *   embedding — a model that returns vectors rather than generated text, so it
+ *               bills input tokens only (its `price.output` is 0)
  */
-export const ModelCapability = z.enum(['reasoning', 'code']);
+export const ModelCapability = z.enum(['reasoning', 'code', 'embedding']);
 export type ModelCapability = z.infer<typeof ModelCapability>;
 
 /**

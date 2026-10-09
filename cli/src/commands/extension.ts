@@ -12,7 +12,9 @@ import {
   DATA_FILE_MODE,
   dataDir,
   openLocalDatabase,
+  readControlPlaneAttachmentMode,
   readEffectiveSettings,
+  settingsDir,
 } from '@akasecurity/persistence';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
@@ -406,6 +408,20 @@ const LAUNCHER_REMEDY = [
 function captureBlock(home: string): string {
   try {
     const effective = readEffectiveSettings(home);
+    // Ahead of the consent answer, as in the extension's popup: on a machine
+    // attached as a personal device the native host records nothing from a
+    // chat whether or not capture was consented to, so the stored site states
+    // would describe reports it no longer keeps. The same reading the host
+    // makes, and it never throws.
+    if (
+      readControlPlaneAttachmentMode(settingsDir(home), effective.settings.controlPlane) ===
+      'scoped'
+    ) {
+      return (
+        '\nnetwork capture: off on a personal device\n' +
+        '  chats are checked here, and nothing from them is recorded or sent\n'
+      );
+    }
     const webChat = webChatCaptureOf(effective.settings);
     if (!isWebChatCaptureConsentValid(webChat.consent)) {
       return (

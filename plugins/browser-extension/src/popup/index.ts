@@ -70,9 +70,20 @@ const NOTE_FOR: Readonly<Partial<Record<WebEnforcementState, string>>> = ENFORCE
 export function renderCaptureSites(response: CaptureStateResponse): void {
   const section = document.getElementById('capture-section');
   const notEnabled = document.getElementById('capture-not-enabled');
+  const personalDevice = document.getElementById('capture-personal-device');
   const sitesEl = document.getElementById('capture-sites');
-  if (!section || !notEnabled || !sitesEl) return;
+  if (!section || !notEnabled || !personalDevice || !sitesEl) return;
   section.hidden = false;
+  // Ahead of the consent answer: on a personal device nothing from a chat is
+  // recorded whether or not capture was consented to, and the per-site states
+  // would describe reports the host no longer keeps. An older host's reply
+  // lacks the field, and reads as not a personal device.
+  personalDevice.hidden = response.personalDevice !== true;
+  if (response.personalDevice === true) {
+    notEnabled.hidden = true;
+    sitesEl.replaceChildren();
+    return;
+  }
   if (!response.consented) {
     notEnabled.hidden = false;
     sitesEl.replaceChildren();

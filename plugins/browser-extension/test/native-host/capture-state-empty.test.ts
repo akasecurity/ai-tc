@@ -73,6 +73,7 @@ describe('capture_state on a host that has heard nothing yet', () => {
       requestId: 'state-empty-1',
       ok: true,
       consented: true,
+      personalDevice: false,
       sites: [
         { tool: 'chatgpt', state: 'unreported' },
         { tool: 'claude-ai', state: 'unreported' },

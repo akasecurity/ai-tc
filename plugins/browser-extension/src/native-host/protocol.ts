@@ -118,8 +118,10 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
+  // 'out-of-scope': the machine is attached as a personal device, where no
+  // web chat is recorded.
   accepted: boolean;
-  skipped?: 'no-consent' | 'unkeyable';
+  skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
   // Both leaf ids are content-addressed, so a re-observed turn collapses onto
   // the rows already there (INSERT OR IGNORE for a tool call, an
@@ -139,7 +141,7 @@ export interface CaptureStatusResponse {
   requestId: string;
   ok: true;
   accepted: boolean;
-  skipped?: 'no-consent';
+  skipped?: 'no-consent' | 'out-of-scope';
 }
 
 export interface CaptureStateResponse {
@@ -149,6 +151,10 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
+  // True when the machine is attached as a personal device: chats are still
+  // checked, and nothing from them is recorded or sent. This host always sets
+  // it; it is optional because a host older than the field omits it.
+  personalDevice?: boolean;
   sites: {
     tool: WebSourceTool;
     state: WebCaptureState;

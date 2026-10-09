@@ -42,6 +42,7 @@ const FRAGMENT = `
   </div>
   <div id="capture-section" hidden>
     <div id="capture-not-enabled" class="row muted" hidden>network capture not enabled</div>
+    <div id="capture-personal-device" class="row muted" hidden>personal device</div>
     <div id="capture-sites"></div>
   </div>
   <button id="open-dashboard"></button>
@@ -53,6 +54,7 @@ function response(overrides: Partial<CaptureStateResponse> = {}): CaptureStateRe
     requestId: 'r1',
     ok: true,
     consented: true,
+    personalDevice: false,
     sites: [
       { tool: 'chatgpt', state: 'standby' },
       { tool: 'claude-ai', state: 'idle' },
@@ -157,6 +159,38 @@ describe('renderCaptureSites', () => {
     const sitesEl = document.getElementById('capture-sites');
     expect(notEnabled?.hidden).toBe(false);
     expect(sitesEl?.children).toHaveLength(0);
+  });
+
+  it('renders the personal-device line, and no per-site rows, on a personal device', () => {
+    // Consented and with sites to show, so the line is what hides the rows,
+    // not a missing consent or an empty list.
+    renderCaptureSites(response({ personalDevice: true }));
+    expect(document.getElementById('capture-personal-device')?.hidden).toBe(false);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(0);
+  });
+
+  it('says personal device rather than not enabled when both are true', () => {
+    renderCaptureSites(response({ personalDevice: true, consented: false }));
+    expect(document.getElementById('capture-personal-device')?.hidden).toBe(false);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+  });
+
+  it('hides the personal-device line again once the machine is not one', () => {
+    // The popup re-renders into the same document, so a line left showing from
+    // an earlier reply would outlive a detach.
+    renderCaptureSites(response({ personalDevice: true }));
+    renderCaptureSites(response());
+    expect(document.getElementById('capture-personal-device')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(2);
+  });
+
+  it('reads a reply without the field, from an older host, as not a personal device', () => {
+    const older = response();
+    delete older.personalDevice;
+    renderCaptureSites(older);
+    expect(document.getElementById('capture-personal-device')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(2);
   });
 
   it('unhides the capture section', () => {

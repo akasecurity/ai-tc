@@ -111,5 +111,35 @@
     "label": "same command with no capture kind (folder scan) is out of scope",
     "text": "git push -q -f origin feature-x",
     "shouldMatch": false
+  },
+  {
+    "label": "env assignment prefix",
+    "text": "GIT_DIR=/x git push --force",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "remote command over ssh",
+    "text": "ssh host \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "eval of a quoted command",
+    "text": "eval \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "grep -c counting the text is not a shell -c",
+    "text": "grep -c \"git push --force\" notes.md",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bash -lc wrapper",
+    "text": "bash -lc 'git push -f origin feature-x'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
   }
 ]

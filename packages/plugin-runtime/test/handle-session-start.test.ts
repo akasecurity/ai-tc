@@ -288,6 +288,8 @@ describe('handleSessionStart (standalone)', () => {
     writeFileSync(filePath, 'x');
     await expect(handleSessionStart(start('s1'), config(filePath))).resolves.toEqual({
       staleBinaryNotice: null,
+      forwardingLine: null,
+      warnEraNotice: null,
     });
   });
 
@@ -478,18 +480,20 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     return { ...base, settings: { ...base.settings, policy: 'warn' } };
   }
 
-  it('surfaces the stderr disclosure once when rows are actually capped', async () => {
+  it('returns the disclosure once when rows are actually capped, and writes none to stderr', async () => {
     const seed = openLocalDatabase(dir);
     seed.policies.upsertCategoryAction('secret', 'block');
     seed.close();
 
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await handleSessionStart(start('s1'), warnConfig(dir));
-    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(true);
-
-    stderrSpy.mockClear();
-    await handleSessionStart(start('s2'), warnConfig(dir));
+    const first = await handleSessionStart(start('s1'), warnConfig(dir));
+    expect(first.warnEraNotice).toContain('warn only');
+    // On the result, for the adapter's user-facing channel: stderr from a
+    // SessionStart hook reaches only the host's debug log.
     expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+
+    const second = await handleSessionStart(start('s2'), warnConfig(dir));
+    expect(second.warnEraNotice).toBeNull();
     stderrSpy.mockRestore();
   });
 
@@ -498,10 +502,8 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     seed.policies.upsertCategoryAction('secret', 'block');
     seed.close();
 
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
-    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
-    stderrSpy.mockRestore();
+    const result = await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
+    expect(result.warnEraNotice).toBeNull();
   });
 
   it('is fail-open: a thrown cap never breaks the session, stays silent, and does not skip later steps', async () => {
@@ -516,6 +518,8 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     try {
       await expect(handleSessionStart(start('s1'), warnConfig(dir))).resolves.toEqual({
         staleBinaryNotice: null,
+        forwardingLine: null,
+        warnEraNotice: null,
       });
       expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
 
@@ -707,6 +711,108 @@ describe('handleSessionStart — local-store maintenance capability', () => {
     const db = open();
     expect(count(db, 'audit_events')).toBe(2); // the session root + its config_scan
     db.close();
+  });
+});
+
+// Each notice is decided on its own, so a fault in one costs that one. The
+// gateway is a real store behind a delegating object that also offers a
+// forwarding scope, which is what an attached gateway does.
+describe('handleSessionStart — each notice survives the others failing', () => {
+  const MACHINE_LINE = 'AKA: forwarding everything to Acme (machine-wide)';
+
+  function forwardingGateway(overrides: Record<string, unknown> = {}): DataGateway {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, []) as unknown as Record<string, unknown>;
+    gateway.forwardingScope = () => ({ deploymentName: 'Acme', mode: 'machine' });
+    return Object.assign(gateway, overrides) as unknown as DataGateway;
+  }
+
+  it('returns the line and the stale notice together', async () => {
+    // The control for the cases below: with nothing failing, both arrive.
+    await recordNewerBinary('aka-cli@0.9.1');
+    setDefaultGatewayFactory(() => forwardingGateway());
+
+    const result = await handleSessionStart(
+      start('s-both', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    expect(result.staleBinaryNotice).toContain('aka-cli v0.9.1');
+  });
+
+  it('keeps the line when the stale-session check throws', async () => {
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({
+        staleBinaryNotice: () => {
+          throw new Error('mirror unreadable');
+        },
+      }),
+    );
+
+    const result = await handleSessionStart(
+      start('s-stale-throws', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result).toEqual({
+      staleBinaryNotice: null,
+      forwardingLine: MACHINE_LINE,
+      warnEraNotice: null,
+    });
+  });
+
+  it('keeps every notice when closing the gateway fails', async () => {
+    await recordNewerBinary('aka-cli@0.9.1');
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({ close: () => Promise.reject(new Error('close failed')) }),
+    );
+
+    const result = await handleSessionStart(
+      start('s-close-rejects', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    expect(result.staleBinaryNotice).toContain('aka-cli v0.9.1');
+  });
+
+  it('keeps the line when the inventory pass throws before the root is written', async () => {
+    const calls: string[] = [];
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, calls) as unknown as Record<string, unknown>;
+    gateway.forwardingScope = () => ({ deploymentName: 'Acme', mode: 'machine' });
+    gateway.ensureInventory = () => Promise.reject(new Error('inventory failed'));
+    setDefaultGatewayFactory(() => gateway as unknown as DataGateway);
+
+    const result = await handleSessionStart(start('s-pass-throws'), config(dir));
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    // The pass really did stop before the root: nothing was recorded.
+    expect(calls).not.toContain('recordAuditEvent');
+    expect(calls).toContain('close');
+  });
+
+  // The line is read after the pass and before the store closes, so a
+  // gateway that answers from its store is still open when asked.
+  it('reads the line before the gateway closes', async () => {
+    const order: string[] = [];
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({
+        forwardingScope: () => {
+          order.push('forwardingScope');
+          return { deploymentName: 'Acme', mode: 'machine' };
+        },
+        close: () => {
+          order.push('close');
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    await handleSessionStart(start('s-order'), config(dir));
+
+    expect(order).toEqual(['forwardingScope', 'close']);
   });
 });
 

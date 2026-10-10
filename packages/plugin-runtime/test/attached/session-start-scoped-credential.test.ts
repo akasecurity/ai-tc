@@ -33,6 +33,11 @@ import { createPostureStore } from '../../src/attached/posture-store.ts';
 import type * as SyncTriggerModule from '../../src/attached/sync-trigger.ts';
 import { CONTENT_RETENTION_MARKER_NAME } from '../../src/content-retention-trigger.ts';
 import { handleSessionStart } from '../../src/handle-session-start.ts';
+import {
+  configuredGatewayFactory,
+  setDefaultGatewayFactory,
+  standaloneGatewayFactory,
+} from '../../src/resolve.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
@@ -128,6 +133,10 @@ const WORK_ORIGIN = 'https://github.com/acme/payments-api.git';
 const WORK_KEY = 'github.com/acme/payments-api';
 const PERSONAL_ORIGIN = 'https://github.com/someone/side-project.git';
 const PERSONAL_KEY = 'github.com/someone/side-project';
+
+// The line a scoped session shows when its own repository is not enrolled.
+const LOCAL_ONLY_LINE =
+  'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
 
 // A posture report's members, in the order the reporter writes them, with no
 // plugin block: what a machine attachment reported before any mode existed.
@@ -474,5 +483,142 @@ describe('the posture report across an unenroll', () => {
     expect(policySync.configs).toHaveLength(2);
     expect(otherRoutes()).toEqual(NO_OTHER_ROUTE);
     expect(childMarkers()).toEqual(NO_CHILD);
+  });
+});
+
+describe('the forwarding line a session start returns', () => {
+  /** One session start in `cwd`, returning what the adapter would show. */
+  async function line(
+    sessionId: string,
+    cwd: string,
+    config: PluginConfig,
+  ): Promise<string | null> {
+    const result = await handleSessionStart(
+      { sessionId, cwd, tool: SOURCE_TOOL.ClaudeCode, homeDir: userHome },
+      config,
+    );
+    return result.forwardingLine;
+  }
+
+  it('names the enrolled repository for a work session, and says local-only for the rest, as the root is sent', async () => {
+    const config = attach('scoped');
+
+    expect(await line('l-work', work, config)).toBe(`AKA: forwarding to ${ENDPOINT} (${WORK_KEY})`);
+    expect(await line('l-personal', personal, config)).toBe(LOCAL_ONLY_LINE);
+    expect(await line('l-scratch', scratch, config)).toBe(LOCAL_ONLY_LINE);
+    // The line agrees with what the gateway did: only the root it named as
+    // forwarding was sent.
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual(['l-work']);
+  });
+
+  it('says everything forwards on a machine credential, in a repository nobody enrolled', async () => {
+    expect(await line('l-machine', personal, attach('machine'))).toBe(
+      `AKA: forwarding everything to ${ENDPOINT} (machine-wide)`,
+    );
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual(['l-machine']);
+  });
+
+  it('says local-only for the same repository once it is unenrolled', async () => {
+    attach('scoped');
+
+    expect(await line('l-unenrolled', work, configFor([]))).toBe(LOCAL_ONLY_LINE);
+    expect(sent.audit).toEqual([]);
+  });
+
+  it('names the attachment by its label, with control characters removed', async () => {
+    const config = attach('machine');
+    const controlPlane = config.settings.controlPlane;
+    if (controlPlane === undefined) throw new Error('the fixture is not attached');
+    config.settings.controlPlane = { ...controlPlane, label: 'Acme\u001b[31m prod' };
+
+    expect(await line('l-label', personal, config)).toBe(
+      'AKA: forwarding everything to Acme[31m prod (machine-wide)',
+    );
+  });
+
+  it('shows nothing when the credential is for another deployment, as the gateway forwards nothing', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint: 'https://elsewhere.example.com',
+      apiKey: TEST_KEY,
+      mintedAt: AT,
+    });
+
+    expect(await line('l-mismatch', work, configFor([WORK_KEY]))).toBeNull();
+    expect(sent.audit).toEqual([]);
+    expect(sent.posture).toEqual([]);
+  });
+
+  // Roots are first-write-wins. A root another writer recorded first, with no
+  // key, is the one the gateway decides the session's records by, so they stay
+  // local though this start is in the enrolled repository, and the line says so.
+  it('says local-only for a session whose root was first written without a key', async () => {
+    const config = attach('scoped');
+    const local = new StandaloneDataGateway(dataDirOf(home));
+    try {
+      await local.recordAuditEvent({
+        id: 'l-older',
+        eventType: 'session',
+        startedAt: AT,
+        attributes: { cwd: work },
+      });
+    } finally {
+      await local.close();
+    }
+
+    expect(await line('l-older', work, config)).toBe(LOCAL_ONLY_LINE);
+    expect(
+      sent.audit.filter((body) => body.eventType === 'session').map((body) => body.id),
+    ).toEqual([]);
+  });
+
+  // An embedder's gateway is what the session start writes through, so the line
+  // follows it, whatever the configuration says.
+  it('shows nothing when an embedder installed a local gateway on an attached machine', async () => {
+    const config = attach('machine');
+    const restore = setDefaultGatewayFactory(standaloneGatewayFactory);
+    try {
+      expect(await line('l-embedder', work, config)).toBeNull();
+    } finally {
+      restore();
+    }
+    expect(sent.audit).toEqual([]);
+  });
+
+  // A pass that stops before the root leaves the attached gateway no verdict on
+  // it, and the history reconcile may write that root later and forward under
+  // it. Neither answer is known, so the line is not printed. The machine-wide
+  // control beside it keeps its line, since that answer does not depend on the
+  // root.
+  it('shows nothing on a scoped attachment when the pass stops before the root', async () => {
+    const restore = setDefaultGatewayFactory((config, meta) => {
+      const real = configuredGatewayFactory(config, meta);
+      return Object.assign(Object.create(real) as typeof real, {
+        ensureInventory: () => Promise.reject(new Error('inventory failed')),
+      });
+    });
+    try {
+      expect(await line('l-early-scoped', work, attach('scoped'))).toBeNull();
+      expect(await line('l-early-machine', work, attach('machine'))).toBe(
+        `AKA: forwarding everything to ${ENDPOINT} (machine-wide)`,
+      );
+    } finally {
+      restore();
+    }
+    // The pass really did stop before either root.
+    expect(sent.audit).toEqual([]);
+  });
+
+  it('shows nothing a second time for a session that already started', async () => {
+    const config = attach('scoped');
+
+    expect(await line('l-again', work, config)).toBe(
+      `AKA: forwarding to ${ENDPOINT} (${WORK_KEY})`,
+    );
+    expect(await line('l-again', work, config)).toBeNull();
   });
 });

@@ -961,6 +961,31 @@ If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
 
+**Nothing in the session says where its activity goes.** On a machine attached
+to the organization's control plane, the Claude Code and Codex plugins print one
+line at session start: forwarding everything, forwarding for the enrolled
+repository the session is in, or local-only. This host has no SessionStart
+event, and `PreInvocation`, which AKA uses in its place, can only add steps for
+the model; it has no field for a message to the user, so no such line is
+printed here. `aka status` shows whether this machine is attached, whether it
+sends everything or only enrolled repositories, and which repositories are
+enrolled.
+
+The two other notices a session start can raise are not seen on this host
+either. They are written to the hook's stderr, which Antigravity does not show:
+that this plugin is older than another AKA binary on the machine (usually an
+`aka` CLI updated without the plugin), and that a store left on the retired
+"warn only" handling had its block and redact categories kept at warn. No
+command reports the first for this plugin, since it is installed from a local
+directory rather than a marketplace, so after updating the `aka` CLI, reinstall
+this plugin at the same version. For the second, re-running this setup sets the
+per-category enforcement.
+
+This plugin's hooks also warn, on the same unseen stderr, when a path in the
+AKA store (`~/.aka`) is a symlink that sends what is recorded somewhere else.
+That warning is not seen on this host either. `aka init` reports the same
+symlinks, so run it if the store may have been redirected.
+
 **The model-judge step needs an `agy` with the streaming stdin interface.** It
 runs `agy --input-format stream-json --output-format stream-json` and writes the
 prompt to the CLI's standard input, rather than putting it on the command line.

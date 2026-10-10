@@ -864,3 +864,26 @@ never to fabricate or alter one, and where the human can resolve it
 gap used to cause — a Codex session encountering a pointer with no idea what
 it was looking at — without claiming this plugin can mint or resolve one
 itself; it still cannot.
+
+**The line saying where a session's activity goes appears late, and not at
+all under `codex exec`.** On a machine attached to the organization's control
+plane, SessionStart says where this session's activity goes:
+`AKA: forwarding everything to <deployment> (machine-wide)`,
+`AKA: forwarding to <deployment> (<repository>)` when the session starts in an
+enrolled repository, or
+`AKA: local-only (not enrolled); work in an enrolled repository is still forwarded`
+on a personal device outside one. Codex shows it as a hook line once the first
+turn starts rather than when the session opens, and `codex exec` shows nothing.
+The session start's other notices take the same route: that a newer AKA is
+installed than the one this session started with, that a store left on the
+retired "warn only" handling was kept at warn, and that a store path is a
+symlink. The line is decided by the session's root, recorded where the session
+started, which is why the local-only form says what it does: a file written into
+an enrolled repository from a local-only session is still sent, because each
+capture is decided by the repository it lands in. A resumed session shows no
+line, and neither does a session whose start stopped before it recorded the
+session, so no line never means nothing is forwarded; `aka status` gives the
+attachment, its mode and the enrolled repositories at any time. The line names
+the deployment, by its label or by its address with no credential, and Codex
+keeps hook output in the session's context and transcript: the model sees that
+name, and a transcript you share carries it.

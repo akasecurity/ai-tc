@@ -15,6 +15,7 @@ import { writePostureReportState } from './posture-report-state.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
+import { deploymentNameForTerminal } from './status.ts';
 
 /**
  * What a resolving caller knows about itself, threaded to every gateway
@@ -110,6 +111,9 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
       attachment,
+      // What the session-start line names the deployment, read from the
+      // connection this gateway forwards to, never from the credential.
+      deploymentName: deploymentNameForTerminal(connection),
       posture: createPostureReporter({
         // THROUGH THE BREAKER, and wrapped HERE rather than around
         // `PostureReporter.send`. The reporter swallows every error by

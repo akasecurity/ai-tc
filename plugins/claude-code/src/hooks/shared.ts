@@ -89,7 +89,14 @@ export type HookOutput =
       systemMessage: string;
     }
   | { hookSpecificOutput: { hookEventName: 'MessageDisplay'; displayContent: string } }
-  | { hookSpecificOutput: { hookEventName: 'SessionStart'; additionalContext: string } };
+  | {
+      hookSpecificOutput: { hookEventName: 'SessionStart'; additionalContext: string };
+      // What the user sees at session start (the forwarding line, a stale-binary
+      // notice), beside the brief the model gets. Optional: the brief goes out
+      // alone when there is nothing to show, and a bare systemMessage when there
+      // is no brief.
+      systemMessage?: string;
+    };
 
 // Hook output protocol: write one JSON object to stdout and exit 0.
 // Writing nothing and exiting 0 means "no opinion" (allow).

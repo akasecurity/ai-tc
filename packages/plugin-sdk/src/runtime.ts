@@ -225,8 +225,8 @@ function readRemainingMs(largeInput: LargeInputScanOptions): number | undefined 
   const read = largeInput.remainingMs;
   if (read === undefined) return undefined;
   try {
-    const remaining = read();
-    return Number.isNaN(remaining) ? 0 : remaining;
+    const remaining: unknown = read();
+    return typeof remaining !== 'number' || Number.isNaN(remaining) ? 0 : remaining;
   } catch {
     return 0;
   }

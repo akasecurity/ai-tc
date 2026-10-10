@@ -366,6 +366,39 @@ describe('at or above the threshold', () => {
     }
   });
 
+  // The callback is typed to return a number, but it is the caller's code: a
+  // value that is not one is a limit nobody can read, and that is treated as
+  // spent, never as no limit. `undefined` is the dangerous one — it is also
+  // what "no caller limit" looks like further down.
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['a string', '5000'],
+    ['NaN', Number.NaN],
+  ])(
+    'fails closed when the remaining-time callback answers %s',
+    async (_label, answer) => {
+      const starts = countWorkerStarts();
+      const { gateway } = fakeGateway();
+      const rt = createPluginRuntime(gateway, settings(), {
+        scanIsolation: { workerUrl: ENDLESS_WORKER, onWorkerStart: starts.onWorkerStart },
+        largeInput: largeInput({ budgetMs: 60_000, remainingMs: () => answer as number }),
+      });
+      try {
+        const result = await rt.capture({
+          kind: 'prompt',
+          sourceTool: 'claude-code',
+          text: LARGE_TEXT,
+        });
+        expect(result).toMatchObject({ action: 'block', scanIncomplete: 'timeout' });
+        expect(starts.count()).toBe(0);
+      } finally {
+        await rt.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
   it('fails closed when the remaining-time callback itself fails', async () => {
     const { gateway } = fakeGateway();
     const rt = createPluginRuntime(gateway, settings(), {

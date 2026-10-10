@@ -91,7 +91,7 @@ export const contexts: (readonly string[])[] = [];
 // What the helper is asked, as the mod sends it.
 export interface HelperRequest {
   argv: readonly string[];
-  stdin: { v: number; text: string; sessionId?: string; row?: { door: string } };
+  stdin: { v: number; text: string; sessionId?: string; cwd?: string; row?: { door: string } };
   timeoutMs: number | undefined;
 }
 

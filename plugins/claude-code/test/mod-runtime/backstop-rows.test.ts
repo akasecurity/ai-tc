@@ -195,3 +195,14 @@ test('the scan of a large clean row is cheap', async ($, on) => {
   expect(asked).toEqual([]);
   expect(ms).toBeLessThan(500);
 });
+
+test('a row is scanned in the session cwd', async ($, on) => {
+  redactSecrets(on);
+  store(on);
+  const asked = helper(on, pointerReply);
+  const cwd = await $.session.cwd();
+
+  await $.session.append(row('attachment', `key=${SECRET}`));
+
+  expect(asked[0]?.stdin).toMatchObject({ cwd });
+});

@@ -101,11 +101,25 @@ function parseHelperAnswer(stdout: string): HelperAnswer | null {
   }
 }
 
+// The directory a capture is attributed to: one the event itself names (a subagent
+// started in its own cwd), else the session's. The helper would otherwise fall back
+// to its own process.cwd(), which is the plugin's, not the project's.
+async function captureCwd($: Dollar, e?: object): Promise<string | undefined> {
+  const own = (e as { cwd?: unknown } | undefined)?.cwd;
+  if (typeof own === 'string' && own !== '') return own;
+  try {
+    return await $.session.cwd();
+  } catch {
+    return undefined;
+  }
+}
+
 // The helper's rewrite of `text`, or null for any reason there is none.
 async function rewriteWithHelper(
   $: Dollar,
   text: string,
   door?: string,
+  event?: object,
 ): Promise<HelperAnswer | null> {
   try {
     const script = helperScript($.plugin.root, 'mod-tokenize.js');
@@ -120,6 +134,7 @@ async function rewriteWithHelper(
         v: 1,
         text,
         sessionId,
+        cwd: await captureCwd($, event),
         ...(door === undefined ? {} : { row: { door } }),
       }),
       timeoutMs: HELPER_TIMEOUT_MS,
@@ -147,11 +162,12 @@ async function rewriteRowText(
   policy: ModPolicy | null,
   text: string,
   door: string,
+  row: object,
 ): Promise<string | null> {
   if (text === '') return null;
   const plan = planRowWith(text, policy);
   if (plan.values.length === 0) return null;
-  const answer = await rewriteWithHelper($, text, door);
+  const answer = await rewriteWithHelper($, text, door, row);
   if (answer === null || plan.values.some((value) => answer.text.includes(value))) return null;
   return answer.text;
 }
@@ -169,7 +185,7 @@ async function backstopRow(
   const content = [];
   for (const block of row.message.content) {
     if (block.type === 'text' && typeof block.text === 'string') {
-      const text = await rewriteRowText($, policy, block.text, row.door);
+      const text = await rewriteRowText($, policy, block.text, row.door, row);
       if (text === null) content.push(block);
       else {
         content.push({ ...block, text });
@@ -178,7 +194,7 @@ async function backstopRow(
     } else if (block.type === 'tool_result' && row.door === 'tool-result') {
       const inner = block.content;
       if (typeof inner === 'string') {
-        const text = await rewriteRowText($, policy, inner, row.door);
+        const text = await rewriteRowText($, policy, inner, row.door, row);
         if (text === null) content.push(block);
         else {
           content.push({ ...block, content: text });
@@ -190,7 +206,7 @@ async function backstopRow(
         for (const part of inner as { type?: unknown; text?: unknown }[]) {
           const text =
             part.type === 'text' && typeof part.text === 'string'
-              ? await rewriteRowText($, policy, part.text, row.door)
+              ? await rewriteRowText($, policy, part.text, row.door, row)
               : null;
           if (text === null) parts.push(part);
           else {
@@ -388,6 +404,7 @@ async function decideToolCallWithHelper(
   $: Dollar,
   tool: string,
   input: Record<string, unknown>,
+  event?: object,
 ): Promise<ToolCallAnswer | null> {
   try {
     const script = helperScript($.plugin.root, 'mod-tool-call.js');
@@ -398,7 +415,7 @@ async function decideToolCallWithHelper(
       sessionId = undefined;
     }
     const run = await $.process.run(['node', script], {
-      stdin: JSON.stringify({ v: 1, tool, input, sessionId }),
+      stdin: JSON.stringify({ v: 1, tool, input, sessionId, cwd: await captureCwd($, event) }),
       timeoutMs: HELPER_TIMEOUT_MS,
     });
     return run.exitCode === 0 ? parseToolCallAnswer(run.stdout) : null;
@@ -603,7 +620,7 @@ export const register: Register = (on) => {
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);
-    const answer = await decideToolCallWithHelper($, e.tool, input);
+    const answer = await decideToolCallWithHelper($, e.tool, input, e);
     if (answer === null) return next(e);
     if (answer.deny !== null) return { deny: answer.deny };
     tell($, answer.message);

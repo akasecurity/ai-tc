@@ -159,3 +159,15 @@ for (const [label, reply] of FAILURES) {
     expect(contexts).toEqual([[]]);
   });
 }
+
+test('the helper is told the session cwd, so a capture is attributed to the project', async ($, on) => {
+  redactSecrets(on, 103);
+  model(on);
+  const asked = helper(on, pointerReply());
+  const cwd = await $.session.cwd();
+
+  await $.prompt.submit({ text: `deploy with ${SECRET} please` });
+
+  expect(cwd).not.toBe('');
+  expect(asked[0]?.stdin).toMatchObject({ cwd });
+});

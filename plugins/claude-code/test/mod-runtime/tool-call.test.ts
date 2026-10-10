@@ -230,3 +230,21 @@ test('the helper’s model note follows the tool’s result', async ($, on) => {
 
   expect(result.context).toEqual(['[AKA 0123456789abcdef] Write input: AKA replaced 1 value.']);
 });
+
+test('the helper is told the session cwd, and the cwd a call itself names wins', async ($, on) => {
+  useSnapshot(on, {});
+  endOfChain(on);
+  const asked = helper(on, { stdout: ANSWER() });
+  const cwd = await $.session.cwd();
+
+  await $.tool.call({ tool: 'Bash', command: `deploy --token ${POINTER}` } as never);
+  await $.tool.call({
+    tool: 'Bash',
+    command: `deploy --token ${POINTER}`,
+    cwd: '/work/sub',
+  } as never);
+
+  expect(cwd).not.toBe('');
+  expect(asked[0]?.stdin).toMatchObject({ cwd });
+  expect(asked[1]?.stdin).toMatchObject({ cwd: '/work/sub' });
+});

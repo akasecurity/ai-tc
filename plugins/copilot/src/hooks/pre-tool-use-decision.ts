@@ -20,7 +20,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner } from '@akasecurity/schema';
 
-import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 
 /**
@@ -244,6 +244,15 @@ export function decidePreToolUse(
   toolInput: Record<string, unknown>,
   scanned: readonly ScannedField[],
 ): PreToolUseDecision {
+  // A field whose bounded scan did not finish denies the whole call, ahead of
+  // every other outcome. It is a `block` with no findings, so the loop below
+  // would add no rule for it, and the no-opinion that follows hands the call to
+  // the host's own permission flow with a field nothing scanned. The reason
+  // rides the deny on both dialects, so there is no notice to split off.
+  if (scanned.some(({ result }) => result.scanIncomplete !== undefined)) {
+    return { output: denyOutput(dialect, tooLargeToScanMessage(`${toolName} call`)) };
+  }
+
   const blockedRules = new Set<string>();
   const warnedRules = new Set<string>();
   const redactedRules = new Set<string>();

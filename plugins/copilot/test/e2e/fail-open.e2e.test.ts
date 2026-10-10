@@ -18,21 +18,22 @@
 // built script DOES write, so silence is a decision rather than a failure.
 // Neither half survives without the other.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/copilot
 const PLUGIN_ROOT = join(HERE, '..', '..');
-const SCRIPT = join(PLUGIN_ROOT, 'scripts', 'pre-tool-use.js');
+const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 const MANIFEST = join(PLUGIN_ROOT, 'plugin.json');
 
 interface HookRun {
@@ -47,13 +48,25 @@ interface HookRun {
 // decision channel and must stay exactly one JSON object, so a once-per-session
 // notice has nowhere else to go — leaving stderr uncaptured would make it
 // unassertable.
-function runHook(event: string, home: string, input: string | Buffer): HookRun {
-  const result = spawnSync(process.execPath, [SCRIPT, event, MANIFEST], {
-    env: { HOME: home, USERPROFILE: home },
-    input,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  });
+//
+// `scriptsDir` is for a case that drives a modified COPY of the build (one with
+// the scan worker removed); every other case runs the build output itself.
+function runHook(
+  event: string,
+  home: string,
+  input: string | Buffer,
+  scriptsDir: string = SCRIPTS_DIR,
+): HookRun {
+  const result = spawnSync(
+    process.execPath,
+    [join(scriptsDir, 'pre-tool-use.js'), event, MANIFEST],
+    {
+      env: { HOME: home, USERPROFILE: home },
+      input,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
   const { error, status, stdout, stderr } = result as unknown as {
     error?: Error;
     status: number | null;
@@ -130,8 +143,13 @@ const DIALECTS = [
  * Hostile stdin, one entry per way a payload can arrive broken.
  *
  * `oversized` exercises the READ direction — a payload far past the pipe buffer
- * that the hook must consume without stalling or truncating its own answer. It
- * is deliberately NOT a test of the write-direction flush hazard: what this
+ * that the hook must consume without stalling or truncating its own answer. Its
+ * `sessionId` makes it the CLI dialect, and its command is far past the
+ * large-input threshold, so it is scanned in a worker under the hook's
+ * deadline: a run of one repeated character is cheap for every bundled rule,
+ * so it finishes well inside the budget and the hook still says nothing, while
+ * the refusal rows at the end of this file drive the worker-less case. It is
+ * deliberately NOT a test of the write-direction flush hazard: what this
  * hook emits is around thirty bytes, so no amount of oversized stdin can push
  * its stdout past the buffer. That property belongs to `emit` and is driven
  * directly in `test/hooks/fail-open-wrapper.test.ts`.
@@ -349,5 +367,64 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     // The control on the control. Without it, a hook that denied EVERYTHING
     // would satisfy the block case above.
     noObject(enforce('block', 'echo hello'));
+  });
+});
+
+// ─── The one deliberate refusal: a field too large to scan in time ──────────
+//
+// A field at or above the large-input threshold is scanned in a worker under a
+// deadline that ends inside the fail-open watchdog, and one whose scan does not
+// finish DENIES the call with a reason. Silence would not do here: on both
+// dialects it hands the call to the host's own permission flow, and the field
+// was never scanned. Every fault row above is still silent, because none of
+// them is a field the hook finished reaching.
+//
+// The worker is made unavailable by REMOVING it from a copy of the built
+// scripts — the state an install that never shipped it is in — so the refusal
+// is deterministic rather than a race against a slow scan. The same payload
+// against the intact build is the control: the field is benign, so a deny there
+// would mean the bound itself, not the missing worker, decided.
+describe.each(DIALECTS)('pre-tool-use [$event] — a field too large to scan in time', (d) => {
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+  const payload = JSON.stringify(d.call(`echo ${LARGE}`));
+  const tool = d.event === 'preToolUse' ? 'bash' : 'run_in_terminal';
+
+  it('with no worker to scan it → a deny in this dialect’s shape, exit 0', () => {
+    const run = withTempHome((dir) => {
+      const scriptsDir = join(dir, 'scripts');
+      cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });
+      rmSync(join(scriptsDir, 'scan-worker.js'));
+      // The copy is what the case rests on: with the worker still there the
+      // field would be scanned and the assertion below would read backwards.
+      expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+      const home = join(dir, 'home');
+      mkdirSync(home);
+      return runHook(d.event, home, payload, scriptsDir);
+    }, `aka-copilot-no-worker-${d.event}-`);
+
+    const reason = tooLargeToScanMessage(`${tool} call`);
+    expect(soleObject(run)).toEqual(
+      d.event === 'preToolUse'
+        ? { permissionDecision: 'deny', permissionDecisionReason: reason }
+        : {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: reason,
+            },
+          },
+    );
+    // None of the field's text rides back on the refusal, on either channel.
+    expect(run.stdout).not.toContain('lorem ipsum');
+    expect(run.stderr).not.toContain('lorem ipsum');
+  });
+
+  it('with the worker in place → scanned, and benign, so no verdict', () => {
+    noObject(
+      withTempHome(
+        (home) => runHook(d.event, home, payload),
+        `aka-copilot-with-worker-${d.event}-`,
+      ),
+    );
   });
 });

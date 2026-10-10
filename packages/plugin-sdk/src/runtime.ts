@@ -908,13 +908,20 @@ export function createPluginRuntime(
       // one — the second is a masking the host could not perform, which is what
       // a reader asking "why did this go through" needs to see.
       const redactDegradedTo = decision.redactDegradedTo;
+      // The refusal, recorded on its row: the content stored above is '' and
+      // there are no findings, which is what a clean empty capture looks like.
+      const scanIncomplete = decision.scanIncomplete;
       const metadata =
-        exceptionIds.length > 0 || inspectionMs !== undefined || redactDegradedTo !== undefined
+        exceptionIds.length > 0 ||
+        inspectionMs !== undefined ||
+        redactDegradedTo !== undefined ||
+        scanIncomplete !== undefined
           ? {
               ...input.metadata,
               ...(exceptionIds.length > 0 ? { exceptionIds } : {}),
               ...(inspectionMs !== undefined ? { inspectionMs } : {}),
               ...(redactDegradedTo !== undefined ? { redactDegradedTo } : {}),
+              ...(scanIncomplete !== undefined ? { scanIncomplete } : {}),
             }
           : input.metadata;
       const event = buildIngestEvent({

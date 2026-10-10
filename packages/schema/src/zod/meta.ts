@@ -347,6 +347,11 @@ export const CaptureAttributes = z
     // here too. The full statement is on EventMetadata.redactDegradedTo; it is
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
+    // Why a capture has no content and no findings: its field was refused
+    // because its bounded scan did not finish (see EventMetadata.scanIncomplete,
+    // whose value this is). Absent on every capture that was scanned, so a
+    // reader can tell a refused row from an empty clean one.
+    scan_incomplete: z.enum(['timeout', 'unavailable']).optional(),
     // The scope key this capture was stamped with: the canonical repository
     // (`host/owner/repo`) of the path the capture names (a relative path is read
     // against its working directory), else of its own working directory, or a

@@ -294,7 +294,7 @@ describe('at or above the threshold', () => {
   ])(
     'blocks when the worker %s',
     async (_label, workerUrl, startBudgetMs) => {
-      const { gateway } = fakeGateway();
+      const { gateway, records } = fakeGateway();
       const rt = createPluginRuntime(gateway, settings(), {
         scanIsolation: { workerUrl },
         largeInput: largeInput({ startBudgetMs }),
@@ -312,6 +312,7 @@ describe('at or above the threshold', () => {
           scanIncomplete: 'unavailable',
         });
         expect(scannedInProcess(LARGE_TEXT)).toBe(false);
+        expect(records[0]?.event.metadata?.scanIncomplete).toBe('unavailable');
       } finally {
         await rt.close();
       }
@@ -423,6 +424,9 @@ describe('a refused capture at rest', () => {
 
         expect(records).toHaveLength(1);
         const record = records[0];
+        // The row says WHY it is empty: without the marker a refused field
+        // reads as a clean capture whose content happened to be ''.
+        expect(record?.event.metadata?.scanIncomplete).toBe('timeout');
         expect(record?.event.content).toBe('');
         expect(record?.event.contentHash).toBe(contentHashOf(TEXT));
         expect(record?.findings).toEqual([]);
@@ -459,6 +463,7 @@ describe('a refused capture at rest', () => {
         });
         expect(result).not.toHaveProperty('scanIncomplete');
         expect(records[0]?.event.content).toBe(LARGE_TEXT);
+        expect(records[0]?.event.metadata?.scanIncomplete).toBeUndefined();
       } finally {
         await rt.close();
       }

@@ -160,6 +160,78 @@ function conditionsMatch(
   return true;
 }
 
+/**
+ * Opt-in hard bound on scanning a LARGE field, for a caller that answers to a
+ * host timeout: every hook. Without it a field of any size is scanned
+ * in-process, and an in-process scan cannot be interrupted — so a field large
+ * enough to keep the bundled rules busy past the host's timeout is a hook the
+ * host kills, and a killed hook lets the whole call through unscanned.
+ *
+ * With it, a field of `thresholdChars` or more is scanned in a worker under
+ * `budgetMs` (see `GuardedScanner.scanBounded`), and a scan that cannot finish
+ * there is REFUSED: the decision is 'block' with `scanIncomplete` set. A field
+ * below the threshold takes the in-process path exactly as before and builds no
+ * worker, so the fast path stays free for the prompts and tool fields that make
+ * up nearly all traffic.
+ *
+ * Callers that answer to no host timeout — the worktree scan, the transcript
+ * backfill, the dashboard — leave it unset and keep the in-process scan.
+ */
+export interface LargeInputScanOptions {
+  /** Fields at least this long (UTF-16 code units, i.e. `text.length`) take the bounded path. */
+  thresholdChars: number;
+  /** How long one bounded scan may run once its worker is up. */
+  budgetMs: number;
+  /** How long to wait for the worker to start, when a scan has to start it. */
+  startBudgetMs: number;
+  /**
+   * What is left of the caller's whole time, in milliseconds, read once per
+   * bounded scan. Both budgets above are clipped to it, which is what stops
+   * several large fields in one hook from adding up past the host's timeout.
+   * Zero or less refuses the field without starting a worker; so does a value
+   * that is not a number, or a callback that throws — a limit nobody can read
+   * is treated as spent. Omitted, each scan has its own budgets and nothing
+   * more.
+   */
+  remainingMs?: (() => number) | undefined;
+}
+
+/**
+ * The defaults a hook passes as `largeInput`, before its own `remainingMs`.
+ *
+ * The threshold sits where the bundled rules stop being cheap enough to run
+ * unbounded: an ordinary field below it scans in-process in a few milliseconds
+ * at worst, so nothing that common pays for a worker. The scan budget leaves
+ * ~4x headroom over the slowest ordinary scan measured at the per-leaf cap. The
+ * start budget is far below `ISOLATED_START_BUDGET_MS` because here a slow
+ * start costs one refused field rather than a rule quarantined forever, and
+ * because it is spent from the hook's own time.
+ */
+export const LARGE_INPUT_THRESHOLD_CHARS = 32_768;
+export const LARGE_INPUT_SCAN_BUDGET_MS = 2_000;
+export const LARGE_INPUT_START_BUDGET_MS = 1_500;
+
+export interface PluginRuntimeOptions {
+  dataDir?: string | undefined;
+  scanIsolation?: IsolatedScanOptions | undefined;
+  largeInput?: LargeInputScanOptions | undefined;
+}
+
+// The remaining time a bounded scan may spend, or undefined for no caller limit.
+// A callback that throws or answers with something other than a number reads as
+// spent: refusing the field is the outcome the caller opted into, and an
+// unreadable limit must not become no limit at all.
+function readRemainingMs(largeInput: LargeInputScanOptions): number | undefined {
+  const read = largeInput.remainingMs;
+  if (read === undefined) return undefined;
+  try {
+    const remaining = read();
+    return Number.isNaN(remaining) ? 0 : remaining;
+  } catch {
+    return 0;
+  }
+}
+
 // registerBundledPacks() parses + validates every bundled rule JSON. A hook runs
 // in its own process, so it would happen once there regardless — but tests build
 // many runtimes in one process. Gate it on a module flag so the parse cost is
@@ -196,7 +268,7 @@ let bundlesPacked = false;
 export function createPluginRuntime(
   gateway: DataGateway,
   settings: WorkspaceSettings,
-  opts?: { dataDir?: string | undefined; scanIsolation?: IsolatedScanOptions | undefined },
+  opts?: PluginRuntimeOptions,
 ): PluginRuntime {
   if (!bundlesPacked) {
     registerBundledPacks();
@@ -212,6 +284,7 @@ export function createPluginRuntime(
   // uses the local answer rather than none.
   let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
+  const largeInput = opts?.largeInput;
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -658,7 +731,28 @@ export function createPluginRuntime(
       // impossible case; it must never be an unshielded scan.
       if (!scanner) throw new Error('the runtime initialized without a scanner');
       const shielded = shieldPointers(text);
-      const matched = await scanner.scan(shielded.text, context);
+      let matched: MatchResult[];
+      if (largeInput !== undefined && shielded.text.length >= largeInput.thresholdChars) {
+        const outcome = await scanner.scanBounded(shielded.text, context, {
+          budgetMs: largeInput.budgetMs,
+          startBudgetMs: largeInput.startBudgetMs,
+          remainingMs: readRemainingMs(largeInput),
+        });
+        // RETURNED, never thrown: the catch below fails open, and a field that
+        // could not be scanned is exactly the one the caller asked to refuse.
+        // Nothing was found because nothing finished, so there is nothing for
+        // the exception or ledger steps to act on either.
+        if (outcome.status !== 'ok') {
+          return {
+            decision: { action: 'block', text: null, findings: [], scanIncomplete: outcome.status },
+            excepted: new Set<MatchResult>(),
+            exceptionIds: [],
+          };
+        }
+        matched = outcome.findings;
+      } else {
+        matched = await scanner.scan(shielded.text, context);
+      }
       const findings = dropShieldedFindings(matched, shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
@@ -749,7 +843,15 @@ export function createPluginRuntime(
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
     // store with benign events. The live hook path keeps the default 'always'.
-    if (opts.persist === 'with-findings' && decision.findings.length === 0) return;
+    // A refused field has no findings either, and is not clean: it is recorded
+    // whatever the policy, so a refusal leaves the same trace a block does.
+    if (
+      opts.persist === 'with-findings' &&
+      decision.findings.length === 0 &&
+      decision.scanIncomplete === undefined
+    ) {
+      return;
+    }
     try {
       // Secrets-at-rest: persist the text with the span of every finding whose
       // OWN action is redact or stronger masked, and keep content_hash of the

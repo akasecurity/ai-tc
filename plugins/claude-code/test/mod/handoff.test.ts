@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -111,7 +112,7 @@ describe('concurrent helpers', () => {
       stdin: {
         contents: `
           import { recordModHandoff, recordToolHandoff } from ${JSON.stringify(
-            new URL('../../src/mod/handoff.ts', import.meta.url).pathname,
+            fileURLToPath(new URL('../../src/mod/handoff.ts', import.meta.url)),
           )};
           const [dir, start, who, count] = process.argv.slice(2);
           while (Date.now() < Number(start)) { /* start together */ }

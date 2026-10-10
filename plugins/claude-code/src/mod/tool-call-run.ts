@@ -23,7 +23,6 @@
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
-import { isSyntheticField } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../hooks/shared.ts';
 import { countFailOpen, getString, parseJson } from '../hooks/shared.ts';
@@ -47,11 +46,11 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   }
 
   const outputs: HookOutput[] = [];
-  // What was detected in the fields that execute. A call this helper lets through
+  // What was detected in the scanned fields. A call this helper lets through
   // carries those values in the clear (a granted pointer dereferenced, a value an
   // exception covers, a fallback that only warns), and the hook, which cannot see
   // the grants now spent, takes them from the note rather than judging them again.
-  const executableValues: string[] = [];
+  const letThroughValues: string[] = [];
   const run = await runPreToolUse(
     {
       tool_name: tool,
@@ -66,9 +65,8 @@ async function toolCall(stdin: string): Promise<HelperRun> {
     {
       mode: 'mod',
       onScanned: (scanned) => {
-        for (const { spec, result } of scanned) {
-          if (!spec.executable && !isSyntheticField(spec)) continue;
-          for (const finding of result.findings) executableValues.push(finding.rawMatch);
+        for (const { result } of scanned) {
+          for (const finding of result.findings) letThroughValues.push(finding.rawMatch);
         }
       },
     },
@@ -84,7 +82,7 @@ async function toolCall(stdin: string): Promise<HelperRun> {
       tool,
       answer.input ?? toolInput,
       Date.now(),
-      authorizeValues(dataDir, executableValues),
+      authorizeValues(dataDir, letThroughValues),
     );
   }
   return { code: 0, stdout: `${JSON.stringify(answer)}\n` };

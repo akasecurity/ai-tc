@@ -112,7 +112,21 @@ describe('a handoff note is not taken at its word for the fields that execute', 
     expect(denies(await run('Bash', withPointer))).toBe(true);
   });
 
-  it('a call with nothing that executes is taken from the note', async () => {
+  it('a planted note for a data-only call does not let a raw value through', async () => {
+    const write = { file_path: join(home, 'notes.txt'), content: `token ${SECRET}` };
+    recordToolHandoff(dataDir, 'Write', write);
+
+    expect(denies(await run('Write', write))).toBe(true);
+  });
+
+  it('the note the helper leaves for a value in a data field is honoured', async () => {
+    const write = { file_path: join(home, 'notes.txt'), content: `token ${SECRET}` };
+    recordToolHandoff(dataDir, 'Write', write, Date.now(), authorizeValues(dataDir, [SECRET]));
+
+    expect(await run('Write', write)).toEqual([]);
+  });
+
+  it('a call with nothing enforced in it is taken from the note', async () => {
     const write = { file_path: join(home, 'notes.txt'), content: 'plain text' };
     recordToolHandoff(dataDir, 'Write', write);
 

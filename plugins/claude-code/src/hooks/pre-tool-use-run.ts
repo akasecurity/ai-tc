@@ -383,17 +383,17 @@ export async function runPreToolUse(
 // Whether a handoff note still vouches for the call the hook is shown. The note
 // stands in for a decision the helper made and a grant it spent, neither of which
 // can be repeated, but a note is only a file: anything able to write the data
-// directory could plant one for a call the helper never saw. So an EXECUTABLE field
-// (one whose text runs, where a value cannot be masked in place) is looked at
-// again, writing and spending nothing:
-//   - a vault pointer left in it was never decided (the helper denies an ungranted
-//     one and dereferences a granted one), so the note does not hold;
+// directory could plant one for a call the helper never saw. So EVERY scanned
+// field, the data fields as well as the ones that execute, is looked at again,
+// writing and spending nothing:
+//   - a vault pointer left in any of them was never decided (the helper denies an
+//     ungranted one and dereferences a granted one), so the note does not hold;
 //   - a value the policy enforces (block or redact) may be there only if the note
 //     names it among those the helper let through, as a keyed fingerprint that
-//     only a holder of the store's key can produce.
-// Data fields are not re-judged: the helper rewrote them and what it spent on them
-// is its record. A fault in the re-check trusts the note (fail open): the helper
-// did decide the call.
+//     only a holder of the store's key can produce. A note naming nothing holds
+//     only for a call with nothing enforced in it.
+// A fault in the re-check trusts the note (fail open): the helper did decide the
+// call.
 async function noteStillHolds(
   config: PluginConfig,
   note: HandoffNote,
@@ -404,7 +404,6 @@ async function noteStillHolds(
   try {
     const texts: string[] = [];
     for (const spec of fields) {
-      if (!spec.executable && !isSyntheticField(spec)) continue;
       const text = fieldText(spec, toolInput);
       if (text === undefined || text === '') continue;
       if (text.matchAll(pointerTokenScanner()).next().done !== true) return false;

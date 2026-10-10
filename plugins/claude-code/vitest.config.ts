@@ -26,9 +26,20 @@ const noManagedSettingsGuard = fileURLToPath(
 // per-test AND per-hook timeouts above vitest's 5s/10s defaults (mirrors
 // packages/persistence/vitest.config.ts).
 export default defineConfig({
+  resolve: {
+    // engine-entry.ts imports the rule data build/engine.mjs generates; the stub
+    // computes the same data in-process so the source is testable directly.
+    alias: {
+      'aka:parsed-packs': fileURLToPath(
+        new URL('./test/mod/parsed-packs-stub.ts', import.meta.url),
+      ),
+    },
+  },
   test: {
     setupFiles: [noNetworkGuard, noManagedSettingsGuard],
-    coverage: coverageOptions(import.meta.url),
+    // hooks/mod.ts runs inside Claude Code's mod runtime, never in Node; the
+    // "Claude Code · Mod runtime" CI job (`claude plugin test`) is what covers it.
+    coverage: coverageOptions(import.meta.url, ['hooks/mod.ts']),
     // test/mod-runtime runs under `claude plugin test`, not vitest.
     exclude: [...configDefaults.exclude, 'test/mod-runtime/**'],
     environment: 'node',

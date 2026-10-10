@@ -21,79 +21,9 @@
  * note names the values this helper let through there. Nothing is written to
  * stderr.
  */
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { readStdin } from '../hooks/shared.ts';
+import { runModToolCall } from './tool-call-run.ts';
 
-import { isSyntheticField } from '../hooks/pre-tool-use-fields.ts';
-import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
-import type { HookOutput } from '../hooks/shared.ts';
-import { countFailOpen, getString, parseJson, readStdin } from '../hooks/shared.ts';
-import { authorizeValues, recordToolHandoff } from './handoff.ts';
-import { answerFromOutputs } from './tool-call-answer.ts';
-
-async function main(): Promise<void> {
-  const input = parseJson(await readStdin());
-  const tool = input === null ? undefined : getString(input, 'tool');
-  const toolInput = input?.input;
-  if (
-    input?.v !== 1 ||
-    tool === undefined ||
-    tool === '' ||
-    typeof toolInput !== 'object' ||
-    toolInput === null ||
-    Array.isArray(toolInput)
-  ) {
-    process.exit(1);
-  }
-
-  const outputs: HookOutput[] = [];
-  // What was detected in the fields that execute. A call this helper lets through
-  // carries those values in the clear (a granted pointer dereferenced, a value an
-  // exception covers, a fallback that only warns), and the hook, which cannot see
-  // the grants now spent, takes them from the note rather than judging them again.
-  const executableValues: string[] = [];
-  const run = await runPreToolUse(
-    {
-      tool_name: tool,
-      tool_input: toolInput,
-      session_id: getString(input, 'sessionId'),
-      cwd: getString(input, 'cwd'),
-    },
-    (output) => {
-      outputs.push(output);
-      return Promise.resolve();
-    },
-    {
-      mode: 'mod',
-      onScanned: (scanned) => {
-        for (const { spec, result } of scanned) {
-          if (!spec.executable && !isSyntheticField(spec)) continue;
-          for (const finding of result.findings) executableValues.push(finding.rawMatch);
-        }
-      },
-    },
-  );
-  // No store, or nothing in the call to scan: the hook is the one to say so.
-  if (run !== 'finished') process.exit(1);
-
-  const answer = answerFromOutputs(outputs);
-  if (answer.deny === null) {
-    const { dataDir } = loadConfig();
-    recordToolHandoff(
-      dataDir,
-      tool,
-      answer.input ?? toolInput,
-      Date.now(),
-      authorizeValues(dataDir, executableValues),
-    );
-  }
-  process.stdout.write(`${JSON.stringify(answer)}\n`);
-}
-
-try {
-  await main();
-} catch {
-  // Exit 1 and no output: the mod passes the call on unchanged.
-  countFailOpen();
-  process.exit(1);
-}
-process.exit(0);
+const { code, stdout } = await runModToolCall(await readStdin());
+if (stdout !== '') process.stdout.write(stdout);
+process.exit(code);

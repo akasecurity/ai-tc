@@ -232,6 +232,61 @@ export function revealSlots(cap: number = PARSED_DATA.revealCap): (token: string
   };
 }
 
+/** One rendered block of a conversation, as the host's render hook names it. */
+export interface RenderedBlock {
+  component: string;
+  requestId: string;
+  isFirstOfReply: boolean;
+}
+
+const REPLY_MAX_HELD = 256;
+const REPLY_BLOCKS_MAX_HELD = 2048;
+
+/**
+ * The reveal cap is per MESSAGE, but a reply is drawn as several blocks, each its
+ * own render. `requestId` names the drawing (one per block) and `isFirstOfReply`
+ * is true on the block that opens a reply. So a block not met before opens a new
+ * reply when it is first of one, and otherwise joins the latest; a block already
+ * met keeps its reply on every redraw. Any other component is one block, its own
+ * reply. The returned function answers with the reply's {@link revealSlots}.
+ * Both maps are bounded, the oldest forgotten first, which can only unmask a
+ * long-gone message on a redraw that never comes.
+ */
+export function createReplySlots(
+  blocksHeld: number = REPLY_BLOCKS_MAX_HELD,
+  repliesHeld: number = REPLY_MAX_HELD,
+): (block: RenderedBlock) => (token: string) => boolean {
+  const replyOfBlock = new Map<string, string>();
+  const slotsOfReply = new Map<string, (token: string) => boolean>();
+  let latestReply: string | null = null;
+  let repliesStarted = 0;
+  const forgetOldest = (map: Map<string, unknown>, keep: number): void => {
+    for (const stale of [...map.keys()].slice(0, Math.max(0, map.size - keep))) map.delete(stale);
+  };
+  return (e) => {
+    const block = `${e.component}:${e.requestId}`;
+    let reply = replyOfBlock.get(block);
+    if (reply === undefined) {
+      if (e.component === 'AssistantMessage' && !e.isFirstOfReply && latestReply !== null) {
+        reply = latestReply;
+      } else {
+        repliesStarted += 1;
+        reply = `${e.component}:${String(repliesStarted)}`;
+        latestReply = reply;
+      }
+      replyOfBlock.set(block, reply);
+      forgetOldest(replyOfBlock, blocksHeld);
+    }
+    let slots = slotsOfReply.get(reply);
+    if (slots === undefined) {
+      slots = revealSlots();
+      slotsOfReply.set(reply, slots);
+      forgetOldest(slotsOfReply, repliesHeld);
+    }
+    return slots;
+  };
+}
+
 /**
  * The text a screen shows for `text`: each COMPLETE vault pointer swapped for
  * what `draw` answers (the revealed value, or the masked badge), a pointer `draw`

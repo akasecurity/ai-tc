@@ -205,7 +205,7 @@ const manifestBesideConfig = (configUrl: string): { dir: string; name: string } 
  * defaulting to zero: an unlisted package is one nobody chose a floor for, and
  * defaulting it to 0 would hide exactly that.
  */
-export function coverageOptions(configUrl: string) {
+export function coverageOptions(configUrl: string, extraExclude: readonly string[] = []) {
   const { dir, name } = manifestBesideConfig(configUrl);
   const floor = COVERAGE_FLOORS[name];
   if (floor === undefined) {
@@ -233,7 +233,7 @@ export function coverageOptions(configUrl: string) {
     // which is how `ui-kit`'s zero stayed invisible: nothing imported it, so
     // nothing counted it.
     include: [SOURCE_GLOB],
-    exclude: [...SHARED_EXCLUDES],
+    exclude: [...SHARED_EXCLUDES, ...extraExclude],
     // Per-package, and lines only. Statements/functions/branches move for
     // reasons that have little to do with whether a behaviour is exercised,
     // and four numbers to argue about is how a floor gets lowered.

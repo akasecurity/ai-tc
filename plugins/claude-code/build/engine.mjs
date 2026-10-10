@@ -72,7 +72,7 @@ export default {
 };
 `;
 
-async function parseBundledPacks() {
+export async function parseBundledPacks() {
   const probe = await build({
     stdin: { contents: PROBE, resolveDir: PLUGIN_ROOT, loader: 'ts' },
     bundle: true,

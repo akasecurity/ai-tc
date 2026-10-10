@@ -164,6 +164,11 @@ const DOCUMENTED_EXCLUSIONS: readonly {
     coveredBy: 'test/local-layout.test.ts — the legacy-layout relocation',
   },
   {
+    pattern: /(?:^|\/)mod-policy\.json$/,
+    reason:
+      'the resolved policy and installed rule definitions the Claude Code mod reads; no captured content, so the note does not list it among the files that hold the corpus',
+  },
+  {
     pattern: /\.lock$/,
     reason:
       'a lock held for the length of one write (settings.json, or a vault rotation), not an artifact that outlives it',

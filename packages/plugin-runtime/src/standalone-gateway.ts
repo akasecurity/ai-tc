@@ -26,6 +26,7 @@ import {
   buildTokenReports,
   defaultCostModel,
   readFingerprintKey,
+  shippedRegexMatchers,
 } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
@@ -84,7 +85,7 @@ export class StandaloneDataGateway
     detections: InstalledPackInput[] = [],
     meta?: { recordedBy?: string },
   ) {
-    this.db = openLocalDatabase(dataDir);
+    this.db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
     this.dataDir = dataDir;
     this.db.installedPacks.recordInventory(detections, meta);
   }

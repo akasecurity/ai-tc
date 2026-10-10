@@ -28,6 +28,7 @@ export * from './inventory.ts';
 export * from './local.ts';
 export * from './managed.ts';
 export * from './meta.ts';
+export * from './mod-policy-snapshot.ts';
 export * from './policy.ts';
 export * from './project-files.ts';
 export * from './ranges.ts';

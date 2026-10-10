@@ -1,10 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
-import { openLocalDatabase } from '@akasecurity/persistence';
+import { openLocalDatabase, readModPolicySnapshot } from '@akasecurity/persistence';
 import {
   bundledDetections,
   type DataGateway,
@@ -879,4 +880,47 @@ describe('handleSessionStart — the session root scope key', () => {
       }
     },
   );
+});
+
+describe('handleSessionStart — the Claude Code mod policy snapshot', () => {
+  // A gateway whose effective bundle carries a policy the store alone does not
+  // hold, as an attached machine's organization policy does.
+  function orgPolicyGateway(): DataGateway {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, []) as DataGateway & Record<string, unknown>;
+    gateway.getPolicyBundle = async () => {
+      const local = await inner.getPolicyBundle();
+      return {
+        ...local,
+        policies: [
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { category: 'pii' },
+            action: 'block',
+            enabled: true,
+          },
+          ...local.policies,
+        ],
+      };
+    };
+    return gateway;
+  }
+
+  it('is written from the effective bundle, organization policy included', async () => {
+    setDefaultGatewayFactory(() => orgPolicyGateway());
+
+    await handleSessionStart(start('s-mod'), config(dir));
+
+    expect(readModPolicySnapshot(dir)?.categoryActions.pii).toBe('block');
+  });
+
+  it('is not written for a harness that ships no mod', async () => {
+    setDefaultGatewayFactory(() => orgPolicyGateway());
+
+    await handleSessionStart(start('s-codex', { tool: SOURCE_TOOL.Codex }), config(dir));
+
+    // The store wrote its own on open; the organization policy was not synced in.
+    expect(readModPolicySnapshot(dir)?.categoryActions.pii).toBe('log');
+  });
 });

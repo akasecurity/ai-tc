@@ -698,7 +698,14 @@ export function createPluginRuntime(
     return (await evaluate(text, context, {}, opts.rewritable)).decision;
   }
 
-  async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
+  // The first half of a capture: scan, exceptions, the decision and the ledger.
+  // Nothing is written to the event store here. Split from the write so a caller
+  // can decide first and record only if the outcome is one it acts on
+  // (captureDeferred); `capture` is the two back to back.
+  async function evaluateCapture(
+    input: CaptureInput,
+    opts: CaptureOptions,
+  ): Promise<EvaluatedCapture> {
     // Added latency is measured from here — the caller is blocked from this
     // line until `capture` returns, and everything between here and the event
     // build below is inspection work the host session waits on. A capture that
@@ -719,10 +726,9 @@ export function createPluginRuntime(
     // than the clean captures it stands in for. Any reader aggregating this
     // field inherits that skew.
     const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
-    const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
-      { filePath, eventKind: input.kind },
+      { filePath: input.metadata?.filePath, eventKind: input.kind },
       {
         sourceTool: input.sourceTool,
         metadata: input.metadata,
@@ -730,10 +736,20 @@ export function createPluginRuntime(
       },
       opts.rewritable,
     );
+    return { decision, excepted, exceptionIds, timingStartedAt };
+  }
+
+  // The second half: the event with masked content and its masked findings.
+  async function persistCapture(
+    input: CaptureInput,
+    opts: CaptureOptions,
+    { decision, excepted, exceptionIds, timingStartedAt }: EvaluatedCapture,
+  ): Promise<void> {
+    const filePath = input.metadata?.filePath;
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
     // store with benign events. The live hook path keeps the default 'always'.
-    if (opts.persist === 'with-findings' && decision.findings.length === 0) return decision;
+    if (opts.persist === 'with-findings' && decision.findings.length === 0) return;
     try {
       // Secrets-at-rest: persist the text with the span of every finding whose
       // OWN action is redact or stronger masked, and keep content_hash of the
@@ -883,7 +899,48 @@ export function createPluginRuntime(
     } catch {
       // Fail-open: a persistence failure never changes the enforcement decision.
     }
-    return decision;
+  }
+
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written: no exception is consumed, no ledger row or event
+  // recorded. For a caller re-checking text that something else has already
+  // decided and recorded. An error yields none (the same fail-open the decision
+  // paths have): this answers "is anything enforced here", never a verdict.
+  async function enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]> {
+    try {
+      await ensureInitialized();
+      if (!scanner) return [];
+      const shielded = shieldPointers(text);
+      const matched = await scanner.scan(shielded.text, context);
+      return dropShieldedFindings(matched, shielded.spans).filter((finding) => {
+        const action = resolveAction(finding.ruleId, finding.category);
+        return action === 'block' || action === 'redact';
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
+    const evaluated = await evaluateCapture(input, opts);
+    await persistCapture(input, opts, evaluated);
+    return evaluated.decision;
+  }
+
+  async function captureDeferred(
+    input: CaptureInput,
+    opts: CaptureOptions = {},
+  ): Promise<DeferredCapture> {
+    const evaluated = await evaluateCapture(input, opts);
+    let recorded = false;
+    return {
+      result: evaluated.decision,
+      record: async () => {
+        if (recorded) return;
+        recorded = true;
+        await persistCapture(input, opts, evaluated);
+      },
+    };
   }
 
   // A stable fingerprint of the EFFECTIVE ruleset (bundled packs + pulled bundle
@@ -923,7 +980,15 @@ export function createPluginRuntime(
     await gateway.close();
   }
 
-  return { processText, capture, rulesetFingerprint, scanIsolationDegraded, close };
+  return {
+    processText,
+    capture,
+    captureDeferred,
+    enforcedIn,
+    rulesetFingerprint,
+    scanIsolationDegraded,
+    close,
+  };
 }
 
 // What the CALLER can do about the decision, as opposed to what the runtime
@@ -962,6 +1027,21 @@ export interface CaptureOptions extends DecisionOptions {
   preAuthorizedGrantIds?: readonly string[];
 }
 
+// What `captureDeferred` hands back: the decision, and the write held back.
+export interface DeferredCapture {
+  result: CaptureResult;
+  /** Writes the event and findings. Idempotent; never throws (the write is best effort). */
+  record(): Promise<void>;
+}
+
+// What the first half of a capture leaves for the second.
+interface EvaluatedCapture {
+  decision: CaptureResult;
+  excepted: Set<MatchResult>;
+  exceptionIds: string[];
+  timingStartedAt: ReturnType<typeof startTiming> | undefined;
+}
+
 export interface PluginRuntime {
   // Enforcement decision + best-effort blocked-detection bookkeeping (the
   // short-lived approve-flow ledger, when a fingerprint key is available);
@@ -969,6 +1049,15 @@ export interface PluginRuntime {
   processText(text: string, context?: ScanContext, opts?: DecisionOptions): Promise<CaptureResult>;
   // Decision + persist (event with masked content + N masked findings).
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
+  // The same capture in two steps: the decision now (exceptions evaluated and
+  // spent, the blocked-detections ledger written, as `capture` does), the event
+  // and findings only when `record()` is called, at most once. A caller whose
+  // outcome may be "not mine to record" (a helper that declines the prompt and
+  // leaves it to the hook) decides first and records only what it acts on.
+  captureDeferred(input: CaptureInput, opts?: CaptureOptions): Promise<DeferredCapture>;
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written (no exception consumed, no ledger row, no event).
+  enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
   // True once the pulled/custom-pack regex rules were dropped mid-process

@@ -715,6 +715,34 @@ function mcpPostToolUsePayload(home: string): string {
   });
 }
 
+// The prompt-redaction mod (hooks/mod.ts) rewrites a redact-policy value before
+// this hook sees the prompt. Under every enforcing policy the placeholder text
+// must pass untouched, so a prompt the mod already handled is never blocked a
+// second time for the value it removed.
+describe('user-prompt-submit lets a mod-redacted prompt through', () => {
+  for (const policy of ['redact', 'vault', 'block'] as const) {
+    it(`${policy} policy → exit 0, empty stdout`, () => {
+      withTempHome((home) => {
+        seedPolicy(home, policy);
+        const result = runHook(
+          'user-prompt-submit',
+          JSON.stringify({
+            prompt: 'deploy the service using [REDACTED:SECRET]',
+            session_id: SESSION_ID,
+            cwd: projectDir(home),
+            hook_event_name: 'UserPromptSubmit',
+          }),
+          { env: tempHomeEnv(home) },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).not.toContain('"decision"');
+        expectNoEchoOf(result.stdout, SECRET);
+      });
+    });
+  }
+});
+
 const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
 describe('the wire protocol never carries an action key, at any action level', () => {

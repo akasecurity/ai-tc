@@ -15,7 +15,12 @@
  */
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { hostCompatibilityLines, loadConfig, readHostVersionCache } from '@akasecurity/plugin-sdk';
+import {
+  hostCompatibilityLines,
+  loadConfig,
+  promptRedactionLines,
+  readHostVersionCache,
+} from '@akasecurity/plugin-sdk';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
@@ -26,6 +31,13 @@ import {
   SEVERITIES,
   type Severity,
 } from './render.ts';
+
+// The host-compatibility block for /aka:health: the Claude Code version read
+// from the cache a hook wrote, then how prompts are redacted.
+function claudeHostLines(dataDir: string): string[] {
+  const cache = readHostVersionCache(dataDir);
+  return [...hostCompatibilityLines(cache), ...promptRedactionLines(dataDir, cache !== null)];
+}
 
 const sub = process.argv[2] ?? '';
 const args = process.argv.slice(3);
@@ -92,7 +104,7 @@ try {
             // and not the data dir. Read from the cache a hook wrote: probing
             // `claude --version` would answer for the install on PATH, which
             // need not be the one running any session.
-            hostLines: hostCompatibilityLines(readHostVersionCache(config.dataDir)),
+            hostLines: claudeHostLines(config.dataDir),
           }),
         )}\n`,
       );

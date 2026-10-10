@@ -154,3 +154,41 @@ describe('user-prompt-submit wire contract — allow is silence', () => {
     });
   });
 });
+
+/**
+ * The fallback pairing for the prompt-redaction mod (hooks/mod.ts). The mod
+ * rewrites a `redact`-policy value to a placeholder before this hook runs;
+ * this hook must let that text through, and must keep blocking the raw value
+ * wherever the mod is absent (an older host, a disabled mod, a mod that failed
+ * open). The two prompts differ only in the value, so the verdict is
+ * attributable to it.
+ */
+describe('user-prompt-submit under a redact policy — the mod fallback', () => {
+  const REDACTED_PROMPT = 'please deploy using this key: [REDACTED:SECRET]';
+
+  it('allows text the mod already redacted: exit 0 and an empty stdout', () => {
+    withTempHome((home) => {
+      markOnboarded(home);
+      seedPolicy(home, 'redact');
+      const run = submit(home, REDACTED_PROMPT);
+
+      expect(run.status).toBe(0);
+      expect(run.stdout).toBe('');
+      expect(run.stderr).toBe('');
+    });
+  });
+
+  it('still blocks the raw value when the mod is absent', () => {
+    withTempHome((home) => {
+      markOnboarded(home);
+      seedPolicy(home, 'redact');
+      const run = submit(home, `please deploy using this key: ${SECRET}`);
+
+      expect(run.status).toBe(0);
+      const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toContain(RULE_ID);
+      expectNoEchoOf(run.stdout, SECRET);
+    });
+  });
+});

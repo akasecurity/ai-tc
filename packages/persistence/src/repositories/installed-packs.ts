@@ -277,6 +277,10 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   constructor(
     private readonly db: DatabaseSync,
     private readonly baseDir?: string,
+    // Told after a write that changes the installed ruleset or a pack's policy,
+    // so what is derived from them (the Claude Code mod's policy snapshot) is
+    // rewritten with it. Fail-open on the caller's side: it must not throw.
+    private readonly onChange: () => void = () => undefined,
   ) {
     // Install-if-absent: a pack the user already has (by (namespace, packId)) is
     // NEVER touched here — not its version, rules, enabled state, or policy.
@@ -408,6 +412,9 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
         },
         'IMMEDIATE',
       );
+      // Past the transaction: a first install of a pack changes the installed
+      // ruleset. The steady state returned at the signature gate above.
+      this.onChange();
     } catch {
       // Fail-open: dropping inventory bookkeeping never breaks a session. BEGIN
       // stays inside the try (mirrors recordCapture) so a failed BEGIN/ROLLBACK
@@ -470,7 +477,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     if (this.db.isTransaction) {
       throw new Error('applyUpdate must not be called inside an open transaction');
     }
-    let changed = false;
+    let changed = false as boolean;
     withTransaction(
       this.db,
       () => {
@@ -495,6 +502,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       },
       'IMMEDIATE',
     );
+    if (changed) this.onChange();
     return changed;
   }
 
@@ -783,6 +791,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
          WHERE namespace = :namespace AND pack_id = :packId`,
       )
       .run({ policyId, now: Date.now(), namespace, packId });
+    if (Number(res.changes) > 0) this.onChange();
     return Number(res.changes) > 0;
   }
 
@@ -813,6 +822,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
          WHERE namespace = :namespace AND pack_id = :packId`,
       )
       .run({ enabled: boolToInt(enabled), now: Date.now(), namespace, packId });
+    if (Number(res.changes) > 0) this.onChange();
     return Number(res.changes) > 0;
   }
 

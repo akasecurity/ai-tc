@@ -31,6 +31,7 @@ import {
   legacyDropWouldDestroyRows,
   legacyRowMark,
 } from '../src/migrations.ts';
+import { MOD_POLICY_SNAPSHOT_FILENAME } from '../src/mod-policy-snapshot.ts';
 import { DB_FILENAME } from '../src/paths.ts';
 import { readOnlyStore } from './helpers/fault-injection.ts';
 import { useTempStore } from './helpers/temp-store.ts';
@@ -705,7 +706,12 @@ describe('the pre-drop snapshot is taken only when the drop would destroy rows',
     //
     // Non-vacuous in both directions: the store itself has to BE there, or an
     // open that wrote nothing at all would satisfy an absence check.
-    expect(readdirSync(store.dataDir).sort()).toEqual([DB_FILENAME]);
+    // Except the mod policy snapshot, which every open keeps beside the store.
+    expect(
+      readdirSync(store.dataDir)
+        .filter((f) => f !== MOD_POLICY_SNAPSHOT_FILENAME)
+        .sort(),
+    ).toEqual([DB_FILENAME]);
   });
 
   it('a store carrying legacy rows still gets its snapshot before the drop', () => {

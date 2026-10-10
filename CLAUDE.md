@@ -67,6 +67,22 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+**One path fails CLOSED on purpose: a field too large to scan in time.** The Claude Code and
+Codex hooks build their runtime with `largeInput` (`plugins/*/src/hooks/large-input.ts`), so a
+field of `LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard
+deadline, and every bounded scan in one hook process draws on one deadline — 6 s for
+UserPromptSubmit and PreToolUse, PostToolUse's existing 7 s field-loop deadline. A field whose
+bounded scan times out or finds no worker comes back as a `block` with
+`CaptureResult.scanIncomplete` set and empty `findings`, and the hook REFUSES it: UserPromptSubmit
+blocks the prompt, PreToolUse denies the call, PostToolUse withholds the output. Why: `scan()`
+cannot be interrupted (§5), so without the bound a large enough field keeps the hook busy past the
+host's 10 s timeout, and a killed hook passes the whole call through unscanned — failing open
+there IS the gap. The refusal is a RETURNED decision, never a throw, so nothing else in this
+section changes: a throw, bad stdin, an unopenable store and a PostToolUse field the loop deadline
+never reached all still pass silently. Anything that skips clean fields must read `scanIncomplete`
+first, because a refused field and a clean one both have no findings. Both plugins'
+`fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan worker removed.
+
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
 fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
@@ -400,10 +416,10 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 
 Five properties are load-bearing and easy to break by accident:
 
-- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once. The one exception is the opt-in large-input bound (§1), and only in a hook: a field of `LARGE_INPUT_THRESHOLD_CHARS` or more is scanned in a worker whatever the ruleset, because that is the field whose in-process scan can outlast the host. A field below the threshold still pays nothing.
 - **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
-- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever. The large-input bound is the exception, and it is safe there for the reason it is not here: its start has its own budget (`LARGE_INPUT_START_BUDGET_MS`) clipped to what is left of the hook's deadline, because that path quarantines nothing and names no culprit — a slow start costs one refused field, never a rule.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
 The first two are **counted, not timed** — a different claim from the fifth, which forbids an

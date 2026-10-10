@@ -39,7 +39,7 @@ If you installed via the CLI, `aka init` scaffolds the local store and `aka dash
 
 ## What it registers
 
-The plugin installs Claude Code hooks that run locally with no `node_modules`, and fail open (a hook error never breaks your session):
+The plugin installs Claude Code hooks that run locally with no `node_modules`, and fail open (a hook error never breaks your session). The one exception is a prompt, tool input or tool output field too large to scan within the hook's time limit, which is blocked, or withheld from the model, rather than passed unscanned. The hooks:
 
 - **SessionStart** — snapshot the session context.
 - **UserPromptSubmit** — scan prompts before they reach the model.

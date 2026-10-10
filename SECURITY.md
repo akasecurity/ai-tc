@@ -125,7 +125,10 @@ failing with a bare `ENOENT`. A store path occupied by a regular file — or by 
 to one — is refused the same way rather than failing with a bare `EEXIST`. Plugin
 hooks stay fail-open throughout: they fall back to unonboarded defaults, as they do
 for any home they cannot read, and report the link on stderr without ever failing a
-tool call over it.
+tool call over it. The one deliberate exception is a single prompt, tool input or tool
+output field of 32,768 characters or more whose bounded scan does not finish in time
+(or finds no scan worker to run it): that field is blocked, or withheld from the model,
+rather than passed unscanned.
 
 ## Data in transit
 

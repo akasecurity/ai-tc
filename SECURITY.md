@@ -128,7 +128,12 @@ for any home they cannot read, and report the link on stderr without ever failin
 tool call over it. The one deliberate exception is a single prompt, tool input or tool
 output field of 32,768 characters or more whose bounded scan does not finish in time
 (or finds no scan worker to run it): that field is blocked, or withheld from the model,
-rather than passed unscanned.
+rather than passed unscanned. The same holds for the Antigravity and GitHub Copilot
+tool-call hooks, which deny such a call, and for a prompt the browser extension's native
+host could not scan in time, which is not sent. Each deadline ends before the point at
+which the host itself would let the input through — 6 s for Claude Code and Codex prompts
+and tool inputs (7 s for tool output), 5.5 s for Antigravity, 15 s for Copilot, and 2 s
+from when the native host receives a prompt.
 
 ## Data in transit
 

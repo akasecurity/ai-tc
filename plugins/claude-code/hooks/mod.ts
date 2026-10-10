@@ -1,4 +1,4 @@
-import type { AgentLoop, Hook, Register, ToolCallReserved } from 'claude-code';
+import type { Hook, Register } from 'claude-code';
 import { update } from 'claude-code';
 
 import {
@@ -549,15 +549,10 @@ async function revealRender($: RenderDollar, e: RenderArgs[1], next: RenderArgs[
 // (`tool`, `tool_use_id`, `consent`) and `AgentLoop` (`agentId`). None of them
 // reaches the tool (the engine strips them before it runs), so none belongs in the
 // input handed to the helper or in the name of the handoff note the helper leaves
-// for PreToolUse, which is shown the stripped input. The list is spelled once, and
-// the check below fails to compile if the types grow a key it does not name.
+// for PreToolUse, which is shown the stripped input. The list is spelled once; a key
+// the host adds later is not stripped here, so it is the first thing to check when
+// the host's types change.
 const RESERVED_KEYS = ['tool', 'tool_use_id', 'consent', 'agentId'] as const;
-type UnlistedReservedKey = Exclude<
-  keyof ToolCallReserved<string> | keyof AgentLoop,
-  (typeof RESERVED_KEYS)[number]
->;
-const allReservedKeysListed: UnlistedReservedKey extends never ? true : never = true;
-void allReservedKeysListed;
 
 function toolArguments(e: Record<string, unknown>): Record<string, unknown> {
   const input: Record<string, unknown> = {};

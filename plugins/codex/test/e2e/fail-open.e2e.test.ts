@@ -16,20 +16,24 @@
  */
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToolText, tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
@@ -618,6 +622,126 @@ describe('the wire protocol never carries an action key, at any action level', (
           });
         });
       }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The one deliberate fail-closed path: a field too large to scan in time
+// ---------------------------------------------------------------------------
+
+// A field at or above the large-input threshold is scanned in a worker under a
+// deadline, and one whose scan does not finish is REFUSED rather than passed:
+// left unbounded it would run into the host's own timeout, and a killed hook
+// lets the call through unscanned. That refusal is the one payload a hook
+// writes because it could NOT decide, so it is pinned here beside the fault
+// rows above — which still exit 0 silently, oversized stdin included, because
+// none of them is a field the hook reached.
+//
+// The worker is made unavailable by REMOVING it from a copy of the built
+// scripts — the state an install that never shipped it is in — so the refusal
+// is deterministic rather than a race against a slow scan. The same payloads
+// against the intact build are the control: the field is benign, so a refusal
+// there would mean the bound itself, not the missing worker, decided.
+describe('a field too large to scan in time is refused, not passed', () => {
+  const BUILT_SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+
+  function withoutWorker<T>(fn: (scriptsDir: string) => T): T {
+    return withTempHome((dir) => {
+      const scriptsDir = join(dir, 'scripts');
+      cpSync(BUILT_SCRIPTS, scriptsDir, { recursive: true });
+      rmSync(join(scriptsDir, 'scan-worker.js'));
+      // The copy is what the case rests on: with the worker still there the
+      // field would be scanned and every assertion below would read backwards.
+      expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+      return fn(scriptsDir);
+    }, 'aka-codex-no-worker-');
+  }
+
+  const REFUSAL_ROWS: readonly {
+    name: string;
+    payload: (home: string) => string;
+    refusal: () => unknown;
+  }[] = [
+    {
+      name: 'user-prompt-submit',
+      payload: (home) =>
+        JSON.stringify({
+          prompt: LARGE,
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'UserPromptSubmit',
+        }),
+      refusal: () => ({ decision: 'block', reason: tooLargeToScanMessage('prompt') }),
+    },
+    {
+      name: 'pre-tool-use',
+      payload: (home) =>
+        JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: `echo ${LARGE}` },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PreToolUse',
+        }),
+      refusal: () => ({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: tooLargeToScanMessage('Bash call'),
+        },
+      }),
+    },
+    {
+      // No field-level splice on this host: the whole result is withheld, as
+      // for a flagged field.
+      name: 'post-tool-use',
+      payload: (home) =>
+        JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: 'cat big.log' },
+          tool_response: { stdout: LARGE, stderr: 'warning: short' },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PostToolUse',
+        }),
+      refusal: () => ({
+        decision: 'block',
+        reason: tooLargeToolText('Bash'),
+        systemMessage: expect.stringContaining('Too large to scan in time: stdout') as unknown,
+      }),
+    },
+  ];
+
+  for (const row of REFUSAL_ROWS) {
+    describe(row.name, () => {
+      it('with no worker to scan it → the refusal shape, exit 0', () => {
+        withoutWorker((scriptsDir) => {
+          withTempHome((home) => {
+            const result = runHook(row.name, row.payload(home), {
+              env: tempHomeEnv(home),
+              scriptsDir,
+            });
+            expect(result.status).toBe(0);
+            expect(JSON.parse(result.stdout)).toEqual(row.refusal());
+            expectNoActionKey(result.stdout);
+            // None of the field's text rides back on the refusal.
+            expect(result.stdout).not.toContain('lorem ipsum');
+          });
+        });
+      });
+
+      it('with the worker in place → scanned, and benign, so silent', () => {
+        withTempHome((home) => {
+          const result = runHook(row.name, row.payload(home), { env: tempHomeEnv(home) });
+          expect(result.status).toBe(0);
+          // user-prompt-submit may still nudge an unonboarded machine; what it
+          // must not do is refuse.
+          expect(result.stdout).not.toContain('too large');
+          if (row.name !== 'user-prompt-submit') expect(result.stdout).toBe('');
+        });
+      });
     });
   }
 });

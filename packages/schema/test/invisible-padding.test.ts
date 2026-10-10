@@ -15,6 +15,13 @@ describe('stripInvisiblePadding', () => {
     ['bidi isolate', 0x2067],
     ['tag begin', 0xe0001],
     ['tag letter', 0xe0041],
+    ['left-to-right mark', 0x200e],
+    ['right-to-left mark', 0x200f],
+    ['Arabic letter mark', 0x061c],
+    ['Mongolian vowel separator', 0x180e],
+    ['interlinear annotation anchor', 0xfff9],
+    ['interlinear annotation separator', 0xfffa],
+    ['interlinear annotation terminator', 0xfffb],
   ])('removes a %s', (_name, point) => {
     expect(stripInvisiblePadding(`ab${cp(point)}cd`)).toBe('abcd');
   });
@@ -24,6 +31,7 @@ describe('stripInvisiblePadding', () => {
     ['zero width non-joiner', 0x200c],
     ['Arabic number sign (visible Cf)', 0x0600],
     ['variation selector', 0xfe0f],
+    ['object replacement character', 0xfffc],
     ['space', 0x20],
     ['no-break space', 0xa0],
   ])('keeps a %s', (_name, point) => {

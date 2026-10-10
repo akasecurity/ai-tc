@@ -1064,6 +1064,41 @@ describe('capture — at-rest finding_key', () => {
     expect(gw.records[0]?.findings[0]?.findingKey).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('keys a padded secret like the clean one on the masked fallback (no dataDir)', async () => {
+    // Five visible characters: the clean value masks to '***', and a padded
+    // copy is six code units long, so a mask that counted the padding would
+    // reveal its first and last characters and key the finding differently.
+    const shortRule: Rule = {
+      specVersion: 1,
+      id: 'pulled/short-token',
+      name: 'Pulled short token',
+      category: 'secret',
+      severity: 'critical',
+      matcher: { type: 'keyword', keywords: ['QZXJV'], caseSensitive: true },
+      examples: ['QZXJV'],
+    };
+    const gw = fakeGateway(bundle([shortRule]));
+    const rt = createPluginRuntime(gw, settings()); // no dataDir → keyForLedger() is null
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'deploy with QZXJV now',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'deploy with QZ\u200BXJV now',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+
+    const clean = gw.records[0]?.findings.find((f) => f.ruleId === shortRule.id);
+    const padded = gw.records[1]?.findings.find((f) => f.ruleId === shortRule.id);
+    expect(clean?.findingKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(padded?.findingKey).toBe(clean?.findingKey);
+  });
+
   it('gives two distinct secrets in the same file two distinct finding_keys', async () => {
     const gw = fakeGateway(bundle());
     const rt = createPluginRuntime(gw, settings());

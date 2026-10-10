@@ -60,3 +60,53 @@ describe('maskMatch', () => {
     }
   });
 });
+
+// Invisible padding is removed before any rule runs, so the length rule, the
+// email split and the first/last characters all read the visible value.
+describe('maskMatch — invisible padding', () => {
+  const PADDING = [
+    ['zero width space', '\u200B'],
+    ['left-to-right mark', '\u200E'],
+    ['right-to-left mark', '\u200F'],
+    ['Arabic letter mark', '\u061C'],
+    ['Mongolian vowel separator', '\u180E'],
+    ['interlinear annotation anchor', '\uFFF9'],
+  ] as const;
+
+  describe.each(PADDING)('padded with a %s', (_name, pad) => {
+    it('generic: padding inside or at either edge masks like the clean value', () => {
+      const clean = 'AKIAIOSFODNN7EXAMPLE';
+      expect(maskMatch(`AKIAIOSF${pad}ODNN7EXAMPLE`)).toBe(maskMatch(clean));
+      expect(maskMatch(`${pad}${clean}`)).toBe(maskMatch(clean));
+      expect(maskMatch(`${clean}${pad}`)).toBe(maskMatch(clean));
+    });
+
+    it('short: a five-character value padded past the length boundary is still fully masked', () => {
+      expect(maskMatch(`ab${pad}cde`)).toBe(maskMatch('abcde'));
+      expect(maskMatch(`ab${pad}cde`)).toBe('***');
+    });
+
+    it('email: padding in the local part or the domain masks like the clean address', () => {
+      const clean = 'alice@example.com';
+      expect(maskMatch(`al${pad}ice@example.com`)).toBe(maskMatch(clean));
+      expect(maskMatch(`alice@exa${pad}mple.com`)).toBe(maskMatch(clean));
+      expect(maskMatch(`${pad}alice@example.com`)).toBe(maskMatch(clean));
+    });
+
+    it('email: a padded single-character local part masks like the clean one', () => {
+      expect(maskMatch(`a${pad}@b.com`)).toBe('a@b.com');
+    });
+  });
+
+  it('a zero width non-joiner is not padding: inside the domain it keeps its own masked value', () => {
+    const clean = 'alice@example.com';
+    const joined = 'alice@exa\u200Cmple.com';
+    expect(maskMatch(joined)).not.toBe(maskMatch(clean));
+    expect(maskMatch(joined)).toBe('a****@exa\u200Cmple.com');
+  });
+
+  it('different visible local-part lengths still mask differently when one is padded', () => {
+    expect(maskMatch('alic\u200B@example.com')).not.toBe(maskMatch('alice@example.com'));
+    expect(maskMatch('alic\u200B@example.com')).toBe(maskMatch('alic@example.com'));
+  });
+});

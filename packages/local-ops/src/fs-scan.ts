@@ -746,11 +746,8 @@ export async function scanPathIntoStore(
       // the masked match when it is not (no dataDir, or a corrupt key file) —
       // mirrors createPluginRuntime's capture(), so the two callers derive
       // byte-identical finding_keys for the same (ruleId, filePath, value).
-      // Without a fingerprint key the finding key falls back to the masked
-      // preview. That is a residual: a preview can differ between a clean and an
-      // invisibly padded occurrence (an email's domain and local-part length are
-      // shown), so such a finding may key differently. With a key, both share
-      // one identity.
+      // Either way a clean and an invisibly padded occurrence of one secret key
+      // alike: the fingerprint and maskMatch both ignore the same padding set.
       const valueFingerprint = key ? fingerprintValue(key, m.rawMatch) : maskedMatch;
       return {
         id: randomUUID(),

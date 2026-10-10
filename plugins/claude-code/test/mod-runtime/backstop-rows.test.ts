@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing';
 import type { SessionAppendInput } from 'claude-code';
 
-import { fileSystem, helper, snapshotText } from './harness.js';
+import { SESSION_CWD, fileSystem, helper, snapshotText } from './harness.js';
 import type { Hooks } from './harness.js';
 import { SECRET } from './samples.generated.js';
 
@@ -200,9 +200,8 @@ test('a row is scanned in the session cwd', async ($, on) => {
   redactSecrets(on);
   store(on);
   const asked = helper(on, pointerReply);
-  const cwd = await $.session.cwd();
 
   await $.session.append(row('attachment', `key=${SECRET}`));
 
-  expect(asked[0]?.stdin).toMatchObject({ cwd });
+  expect(asked[0]?.stdin).toMatchObject({ cwd: SESSION_CWD });
 });

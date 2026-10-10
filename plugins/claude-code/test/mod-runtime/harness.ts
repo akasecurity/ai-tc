@@ -88,6 +88,9 @@ export function model(on: Hooks): string[] {
 // What reached the model beside each prompt, in step with model()'s texts.
 export const contexts: (readonly string[])[] = [];
 
+// The directory the stubbed session runs in.
+export const SESSION_CWD = ['', 'work', 'project'].join('/');
+
 // What the helper is asked, as the mod sends it.
 export interface HelperRequest {
   argv: readonly string[];
@@ -104,6 +107,7 @@ export type HelperReply =
 export function helper(on: Hooks, reply: HelperReply): HelperRequest[] {
   const asked: HelperRequest[] = [];
   on('session.id', () => ({ value: 'session-1' }));
+  on('session.cwd', () => ({ value: SESSION_CWD }));
   on('process.run', (_$, e) => {
     const request: HelperRequest = {
       argv: e.argv,

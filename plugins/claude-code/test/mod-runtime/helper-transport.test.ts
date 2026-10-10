@@ -1,6 +1,14 @@
 import { expect, test } from 'claude-code/testing';
 
-import { contexts, fileSystem, helper, model, oneWay, snapshotText } from './harness.js';
+import {
+  SESSION_CWD,
+  contexts,
+  fileSystem,
+  helper,
+  model,
+  oneWay,
+  snapshotText,
+} from './harness.js';
 import { SECRET } from './samples.generated.js';
 
 // The aka helper is answered from beneath the mod, as the process would answer.
@@ -164,10 +172,8 @@ test('the helper is told the session cwd, so a capture is attributed to the proj
   redactSecrets(on, 103);
   model(on);
   const asked = helper(on, pointerReply());
-  const cwd = await $.session.cwd();
 
   await $.prompt.submit({ text: `deploy with ${SECRET} please` });
 
-  expect(cwd).not.toBe('');
-  expect(asked[0]?.stdin).toMatchObject({ cwd });
+  expect(asked[0]?.stdin).toMatchObject({ cwd: SESSION_CWD });
 });

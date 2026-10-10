@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing';
 
-import { fileSystem, helper, snapshotText } from './harness.js';
+import { SESSION_CWD, fileSystem, helper, snapshotText } from './harness.js';
 import type { Hooks, HelperReply } from './harness.js';
 import { ACTION_OF, fill, RULE_IDS, SCENARIOS } from './scenarios.generated.js';
 import { SECRET } from './samples.generated.js';
@@ -235,7 +235,6 @@ test('the helper is told the session cwd, and the cwd a call itself names wins',
   useSnapshot(on, {});
   endOfChain(on);
   const asked = helper(on, { stdout: ANSWER() });
-  const cwd = await $.session.cwd();
 
   await $.tool.call({ tool: 'Bash', command: `deploy --token ${POINTER}` } as never);
   await $.tool.call({
@@ -244,7 +243,6 @@ test('the helper is told the session cwd, and the cwd a call itself names wins',
     cwd: '/work/sub',
   } as never);
 
-  expect(cwd).not.toBe('');
-  expect(asked[0]?.stdin).toMatchObject({ cwd });
+  expect(asked[0]?.stdin).toMatchObject({ cwd: SESSION_CWD });
   expect(asked[1]?.stdin).toMatchObject({ cwd: '/work/sub' });
 });

@@ -152,6 +152,19 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
 });
 
 /**
+ * Shipped source that Node cannot execute, per package, so no vitest run can
+ * count it. Each entry names the suite that does run it. This is the only
+ * per-package exclusion; anything Node can import belongs in that package's
+ * floor.
+ */
+const HOST_RUNTIME_EXCLUDES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  // A Claude Code mod module: it runs inside Claude Code's own hooks runtime
+  // (no Node), and the "Claude Code · Mod runtime" CI job runs it under
+  // `claude plugin test`.
+  '@akasecurity/ai-tc-claude-code': ['hooks/mod.ts'],
+});
+
+/**
  * Paths excluded from every package's coverage denominator.
  *
  * The rule applied here is narrow on purpose: exclude what is **not shipped
@@ -205,7 +218,7 @@ const manifestBesideConfig = (configUrl: string): { dir: string; name: string } 
  * defaulting to zero: an unlisted package is one nobody chose a floor for, and
  * defaulting it to 0 would hide exactly that.
  */
-export function coverageOptions(configUrl: string, extraExclude: readonly string[] = []) {
+export function coverageOptions(configUrl: string) {
   const { dir, name } = manifestBesideConfig(configUrl);
   const floor = COVERAGE_FLOORS[name];
   if (floor === undefined) {
@@ -233,7 +246,7 @@ export function coverageOptions(configUrl: string, extraExclude: readonly string
     // which is how `ui-kit`'s zero stayed invisible: nothing imported it, so
     // nothing counted it.
     include: [SOURCE_GLOB],
-    exclude: [...SHARED_EXCLUDES, ...extraExclude],
+    exclude: [...SHARED_EXCLUDES, ...(HOST_RUNTIME_EXCLUDES[name] ?? [])],
     // Per-package, and lines only. Statements/functions/branches move for
     // reasons that have little to do with whether a behaviour is exercised,
     // and four numbers to argue about is how a floor gets lowered.

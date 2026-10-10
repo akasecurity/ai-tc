@@ -39,7 +39,7 @@ export default defineConfig({
     setupFiles: [noNetworkGuard, noManagedSettingsGuard],
     // hooks/mod.ts runs inside Claude Code's mod runtime, never in Node; the
     // "Claude Code · Mod runtime" CI job (`claude plugin test`) is what covers it.
-    coverage: coverageOptions(import.meta.url, ['hooks/mod.ts']),
+    coverage: coverageOptions(import.meta.url),
     // test/mod-runtime runs under `claude plugin test`, not vitest.
     exclude: [...configDefaults.exclude, 'test/mod-runtime/**'],
     environment: 'node',

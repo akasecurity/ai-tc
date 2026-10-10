@@ -24,6 +24,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
+import { largeInputBound } from './large-input.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
@@ -108,7 +109,13 @@ async function main(): Promise<void> {
   // transcript record is guaranteed to belong to the running host.
   warnIfHostBelowFloor(config, getString(input, 'session_id'), getString(input, 'transcript_path'));
   const gateway = resolveDataGateway(config);
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under what is left
+  // of the field loop's own deadline, and withheld if that scan does not finish
+  // (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(RESPONSE_SCAN_DEADLINE_MS),
+  });
   // Vaulting (and everything narrated about it) is consent-gated; without the
   // grant this hook behaves exactly as it did before the vault existed.
   const vaultGlue = isVaultConsentValid(config.settings.vaultConsent) ? createVaultGlue() : null;
@@ -144,6 +151,8 @@ async function main(): Promise<void> {
   }
   // Out of time before every field was scanned: what was found is still
   // acted on, and the rest passed through, so count it like any fail-open.
+  // A field that was reached but whose bounded scan did not finish is not
+  // counted here: it was withheld, not passed (outcome.tooLargeFields).
   if (outcome.unscannedFields > 0) countFailOpen();
 
   // The model note + user disclosure ride only on a tokenized outcome; a

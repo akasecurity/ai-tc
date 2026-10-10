@@ -12,7 +12,7 @@
  * stdin:  { tool_name, tool_input, session_id, ... }
  * stdout (exit 0):
  *   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",...}}
- *     → tool call blocked
+ *     → tool call blocked (also when a field is too large to scan in time)
  *   {"hookSpecificOutput":{...,"permissionDecision":"allow","updatedInput":{...}}}
  *     → tool runs with redacted input (Write/Edit only)
  *   no output → allow unchanged

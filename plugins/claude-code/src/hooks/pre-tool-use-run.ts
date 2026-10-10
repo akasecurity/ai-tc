@@ -14,6 +14,7 @@ import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
@@ -247,7 +248,15 @@ export async function runPreToolUse(
   // policy bundle and could even evaluate two fields of one payload under
   // different policy snapshots. We own its lifetime here and close it in the
   // `finally` below.
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts). The mod's helper is a process of its own and
+  // takes the same bound on its own clock; a helper the mod's timeout ends first
+  // answers nothing, and the call then reaches the command hook and this bound.
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
 
   const kind = inputEventKind(toolName);
   // The tool NAME rides in the metadata (never its arguments — metadata is
@@ -304,6 +313,9 @@ export async function runPreToolUse(
         },
       );
       scanned.push({ spec, text, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();

@@ -5,6 +5,7 @@
  * stdin:  { prompt, session_id, cwd, hook_event_name, ... }
  * stdout (exit 0):
  *   {"decision":"block","reason":"..."}  → prompt is blocked, reason shown
+ *     (also for a prompt too large to scan within the time limit)
  *   {"systemMessage":"..."}              → warning shown, prompt continues
  *   no output                            → allow
  *
@@ -47,6 +48,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import {
@@ -125,7 +127,12 @@ async function main(): Promise<void> {
   // one, which keeps its warning) or a note planted for a raw prompt is judged
   // here exactly as a prompt with no mod would be.
   const handedOff = consumeModHandoff(config.dataDir, prompt);
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A prompt at or above the large-input threshold is scanned under a deadline
+  // and refused if that scan does not finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
   let result: CaptureResult;
   try {
     const decided = await runtime.captureDeferred({

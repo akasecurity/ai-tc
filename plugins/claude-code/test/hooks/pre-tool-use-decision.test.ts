@@ -29,6 +29,7 @@ import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import type { PreToolUseOutput } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
   decidePreToolUse,
@@ -324,6 +325,46 @@ describe('decidePreToolUse — stored text keeps true redaction', () => {
     expect(
       await decide('Bash', { command: text }, [{ spec: BASH_COMMAND, result: clean }]),
     ).toBeNull();
+  });
+});
+
+// A field whose bounded large-input scan did not finish is `block` with
+// `scanIncomplete` set and NO findings. Every other branch here keys the deny on
+// a flagged rule, so without its own check this field reads as clean and the
+// call runs with a field nothing scanned.
+describe('decidePreToolUse — a field whose bounded scan did not finish', () => {
+  const refused = (scanIncomplete: 'timeout' | 'unavailable'): CaptureResult => ({
+    action: 'block',
+    text: null,
+    findings: [],
+    scanIncomplete,
+  });
+
+  it.each(['timeout', 'unavailable'] as const)(
+    'denies the call with the too-large reason (%s)',
+    async (scanIncomplete) => {
+      const output = await decide('Write', { file_path: '/tmp/a.txt', content: 'x' }, [
+        { spec: WRITE_CONTENT, result: refused(scanIncomplete) },
+      ]);
+      expect(output).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: tooLargeToScanMessage('Write call'),
+        },
+      });
+      expect(denyReason(output)).toContain('too large');
+    },
+  );
+
+  it('denies even when every other field is clean or only redacted', async () => {
+    const text = `mail ${EMAIL}`;
+    const output = await decide('WebFetch', { url: 'https://example.com', prompt: text }, [
+      { spec: WEBFETCH_URL, result: refused('timeout') },
+      { spec: WEBFETCH_PROMPT, result: redactResult(text, 'core-pii/email', EMAIL), text },
+    ]);
+    // A deny, never the redacted allow the second field alone would produce.
+    expect(denyReason(output)).toBe(tooLargeToScanMessage('WebFetch call'));
   });
 });
 

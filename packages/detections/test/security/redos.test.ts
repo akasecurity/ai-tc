@@ -5,13 +5,16 @@ import { describe, expect, it } from 'vitest';
 
 import { scan } from '../../src/index.ts';
 import { MAX_REGEX_INPUT_LENGTH } from '../../src/matchers/limits.ts';
-import type { ProbeClock } from '../../src/security/redos-probe.ts';
+import type { GrowthBreach, ProbeClock } from '../../src/security/redos-probe.ts';
 import {
   backtrackRatio,
   BUDGET_MS,
   CATASTROPHIC_RATIO,
   EXPONENTIAL_PROBES,
+  GROWTH_MAX_CHARS,
+  MAX_GROWTH_RATIO,
   POLYNOMIAL_PROBES,
+  superlinearGrowth,
   worstProbeMs,
 } from '../../src/security/redos-probe.ts';
 import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
@@ -131,6 +134,51 @@ describe('bundled rules survive adversarial input', () => {
           `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. This is CPU time, so a busy ` +
           `runner cannot inflate it: the pattern really did this much work.`,
       ).toBeLessThan(BUDGET_MS);
+    },
+  );
+});
+
+function describeBreach(breach: GrowthBreach): string {
+  return (
+    `on the ${breach.corpus} corpus it took ${breach.smallMs.toFixed(1)}ms at ` +
+    `${String(breach.smallChars)} chars and ${breach.largeMs.toFixed(1)}ms at ` +
+    `${String(breach.largeChars)} chars (${(breach.largeMs / Math.max(breach.smallMs, 1e-6)).toFixed(1)}x ` +
+    `for 2x the input; ${breach.reason})`
+  );
+}
+
+// The growth tier: how each rule's cost scales with input on structured
+// corpora, which the absolute-budget walk above cannot see. A pattern that is
+// quadratic with a small constant passes every 40KB probe and still costs
+// seconds at the engine's 200,000-char input cap.
+//
+// Wall time, not the CPU clock the walk above uses. The verdict is a ratio of
+// two medians whose samples are interleaved, so a slow stretch of the runner
+// lands on both sides and cancels; a coarse CPU clock (16ms ticks on the
+// Windows runner) would instead quantize a 5-30ms reading into a meaningless
+// ratio.
+describe('bundled rules scale linearly on adversarial corpora', () => {
+  it.each(bundled.map((rule) => [rule.id, rule] as const))(
+    '%s grows linearly with its input',
+    (id, rule) => {
+      // The growth tier scans thousands of characters per reading, so a pattern
+      // that backtracks exponentially would never return from it. The short
+      // probes catch that case cheaply, and must pass first.
+      expect(
+        worstProbeMs(rule, cpuMs).ms,
+        `Rule "${id}" fails the short-probe walk; the growth tier is not run on it.`,
+      ).toBeLessThan(BUDGET_MS);
+      const breach = superlinearGrowth(rule);
+      expect(
+        breach && describeBreach(breach),
+        `Rule "${id}" costs more than linear time in its input. Below the ` +
+          `${String(GROWTH_MAX_CHARS)}-char top of this tier that is cheap, but scan() runs ` +
+          `each rule on up to 200,000 chars per field, where a quadratic pattern costs ` +
+          `seconds and a cubic one minutes, and a hook that outlives its timeout fails open. ` +
+          `The usual cause is a quantified scan (\\s+, [^\\n]*?) that can start at every ` +
+          `position of a run and rescans the rest of it each time; confine it so each start ` +
+          `position is consumed once.`,
+      ).toBeUndefined();
     },
   );
 });
@@ -378,6 +426,78 @@ describe('the probe battery itself', () => {
       worstProbeMs(parsed.data, cpuMs).ms,
       'the same benign pattern must stay far inside the budget on CPU time',
     ).toBeLessThan(BUDGET_MS);
+  });
+
+  // The growth tier's own non-vacuity. Each pattern is linear-time on every
+  // short probe above and still superlinear at scale on text an author does
+  // not control: one-line JSON, quoted SQL keywords, whitespace runs, a call
+  // opener repeated without its closer.
+  describe('the growth tier', () => {
+    function regexRule(pattern: string, flags: string, examples?: string[]): Rule {
+      return Rule.parse({
+        specVersion: 1,
+        id: 'test-pack/growth',
+        name: 'growth',
+        category: 'custom',
+        severity: 'low',
+        matcher: { type: 'regex', pattern, flags },
+        ...(examples ? { examples } : {}),
+      });
+    }
+
+    const superlinear: [string, Rule][] = [
+      [
+        'lazy scans from every quote to a trailing operator',
+        regexRule(`["'][^\\n]*?(select|insert|update|delete|drop|where)[^\\n]*?["']\\s*\\.`, 'gi'),
+      ],
+      [
+        'a SQL keyword scanned to a placeholder from every keyword',
+        regexRule('(select|insert|update|delete|where)[^\\n]*?(#\\{|\\$[a-z_])', 'gi'),
+      ],
+      [
+        'an optional whitespace run before a literal',
+        regexRule(
+          '(?:^|\\s+)at\\s+[A-Za-z0-9._$<>]+\\.[A-Za-z0-9_$]+\\s*\\([A-Za-z0-9._\\-/:]+:\\d+:\\d+\\)',
+          'g',
+        ),
+      ],
+      [
+        'a lookahead scanning to a closer that never comes',
+        regexRule('\\byaml\\.load\\s*\\((?![^)]*SafeLoader|[^)]*safe_load)', 'gi', [
+          'data = yaml.load(user_input)',
+        ]),
+      ],
+    ];
+
+    it.each(superlinear)('catches %s', (_label, rule) => {
+      const breach = superlinearGrowth(rule);
+      expect(breach, 'the growth tier passed a pattern that is superlinear at scale').toBeDefined();
+      if (!breach) return;
+      expect(
+        breach.reason === 'over-budget' ||
+          breach.largeMs / Math.max(breach.smallMs, 1e-6) > MAX_GROWTH_RATIO,
+        describeBreach(breach),
+      ).toBe(true);
+    });
+
+    it.each(superlinear)('the absolute-budget walk alone would miss %s', (_label, rule) => {
+      // Pins why the growth tier exists: every one of these clears the
+      // single-probe walk. If that stops being true, the walk has grown a
+      // probe that covers this class and the tier can be reconsidered.
+      expect(worstProbeMs(rule, cpuMs).ms).toBeLessThan(BUDGET_MS);
+    });
+
+    it.each([
+      ['a quoted string confined to one string', regexRule(`["'][^"'\\n]*\\bwhere\\b`, 'gi')],
+      ['a fixed-length key', regexRule('AKIA[A-Z0-9]{16}', 'g')],
+      [
+        'a call opener with no lookahead',
+        regexRule('\\byaml\\.load\\(', 'g', ['data = yaml.load(user_input)']),
+      ],
+    ])('passes a linear pattern: %s', (_label, rule) => {
+      const breach = superlinearGrowth(rule);
+      expect(breach && describeBreach(breach)).toBeUndefined();
+    });
   });
 
   it('the fixed alphabet alone would miss the alphabet-specific patterns', () => {

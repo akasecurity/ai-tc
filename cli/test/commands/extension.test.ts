@@ -14,7 +14,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { dataDir, openLocalDatabase, settingsDir } from '@akasecurity/persistence';
+import {
+  controlPlaneCredentialPath,
+  dataDir,
+  openLocalDatabase,
+  settingsDir,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
 import type { WebCaptureStatus } from '@akasecurity/schema';
 import { toCaptureStatusAttributes, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -595,14 +601,19 @@ describe('runStatus — the network-capture block', () => {
     process.exitCode = 0;
   });
 
-  function writeSettings(webChatCapture?: unknown): void {
+  // An attached machine's descriptor, for the cases that also write the
+  // credential it names.
+  const CONNECTION = { endpoint: 'https://cp.example', attachedAt: '2026-10-01T00:00:00.000Z' };
+
+  function writeSettings(webChatCapture?: unknown, controlPlane?: typeof CONNECTION): void {
     const dir = settingsDir(home);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, 'settings.json'),
       JSON.stringify({
         specVersion: 3,
-        runMode: 'standalone',
+        runMode: controlPlane === undefined ? 'standalone' : 'attached',
+        ...(controlPlane !== undefined ? { controlPlane } : {}),
         policy: 'redact',
         historicalAccess: 'session-only',
         dataSharesInPlace: true,
@@ -796,6 +807,47 @@ describe('runStatus — the network-capture block', () => {
     expect(out).toContain('network capture: not enabled');
     expect(out).not.toContain('chatgpt');
     expect(out).not.toContain('claude-ai');
+  });
+
+  it('prints the personal-device block, and no site lines, on a personal device', () => {
+    // Consented, so the block below is the personal-device answer rather than
+    // the not-enabled one.
+    writeSettings(consentedSettings(), CONNECTION);
+    writeControlPlaneCredential(settingsDir(home), {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: CONNECTION.endpoint,
+      apiKey: 'placeholder',
+      mintedAt: CONNECTION.attachedAt,
+    });
+    const out = run();
+    expect(out).toContain('network capture: off on a personal device');
+    expect(out).toContain('nothing from a chat is recorded or sent');
+    expect(out).not.toContain('chatgpt');
+    expect(out).not.toContain('claude-ai');
+  });
+
+  it('prints the unreadable-attachment block on a credential it cannot read', () => {
+    writeSettings(consentedSettings(), CONNECTION);
+    writeFileSync(controlPlaneCredentialPath(settingsDir(home)), '{ not json', { mode: 0o600 });
+    const out = run();
+    expect(out).toContain('network capture: off');
+    expect(out).toContain('control-plane credential AKA cannot read');
+    expect(out).not.toContain('chatgpt');
+  });
+
+  it('prints the site lines on a machine-wide attachment', () => {
+    writeSettings(consentedSettings(), CONNECTION);
+    writeControlPlaneCredential(settingsDir(home), {
+      specVersion: 1,
+      endpoint: CONNECTION.endpoint,
+      apiKey: 'placeholder',
+      mintedAt: CONNECTION.attachedAt,
+    });
+    const out = run();
+    expect(out).not.toContain('personal device');
+    expect(out).toContain('chatgpt');
+    expect(out).toContain('claude-ai');
   });
 
   it('gives every known site a line even with an empty store', () => {

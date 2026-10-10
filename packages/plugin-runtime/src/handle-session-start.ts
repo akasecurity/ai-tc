@@ -65,6 +65,13 @@ export interface SessionStartInput {
   // Injectable for tests only (keeps the config scan off the test machine's
   // real ~/.claude); adapters omit it and the scanner resolves os.homedir().
   homeDir?: string | undefined;
+  // False for a session whose activity this machine must not record: a web chat
+  // on a personal device. The inventory pass still runs, and with it the device
+  // report an attached gateway sends from it, and so do the maintenance passes
+  // and the background policy refresh. The session root and the config scan
+  // hung off it are not written, so nothing marks that the session happened.
+  // Omitted, the root is recorded as it always has been.
+  recordSession?: boolean | undefined;
 }
 
 /**
@@ -111,16 +118,19 @@ export async function handleSessionStart(
         harnessInterface: input.harnessInterface,
       });
       const resolved = await gateway.ensureInventory(ctx);
-      // The current branch, read from this worktree's HEAD (pure file I/O, no
-      // git spawn) — the one session-display fact not already on `ctx`.
-      const branch = resolveGitBranch(input.cwd);
-      await gateway.recordAuditEvent(
-        buildSessionRoot(input.sessionId, input, ctx, resolved, config.provider, branch),
-      );
-      // The config-inventory pass (skills + hooks), under the same once-per-
-      // session claim. Guarded separately: a scanner bug must not take the
-      // just-written session root down with it.
-      await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
+      if (input.recordSession !== false) {
+        // The current branch, read from this worktree's HEAD (pure file I/O, no
+        // git spawn) — the one session-display fact not already on `ctx`.
+        const branch = resolveGitBranch(input.cwd);
+        await gateway.recordAuditEvent(
+          buildSessionRoot(input.sessionId, input, ctx, resolved, config.provider, branch),
+        );
+        // The config-inventory pass (skills + hooks), under the same once-per-
+        // session claim. Guarded separately: a scanner bug must not take the
+        // just-written session root down with it. Skipped with the root, whose
+        // child row it is.
+        await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
+      }
       // Best-effort store maintenance. Each pass is gated on ITS OWN member
       // rather than on the whole capability: they are unrelated, so a gateway
       // supplying only some of them must still get those run — gating

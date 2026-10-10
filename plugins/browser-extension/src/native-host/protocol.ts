@@ -1,5 +1,10 @@
 import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  WebChatWithholding,
+  WebEnforcementState,
+  WebSourceTool,
+} from '@akasecurity/schema';
 import {
   EventKind,
   WebCaptureStatus,
@@ -11,7 +16,7 @@ import {
 // @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
 // status surface enumerates the same sites without a second copy of the list.
 const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
-export type { WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+export type { WebChatWithholding, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
 // Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
 // browser bundle — can still type its own state handling against the real
 // vocabulary. A type import erases, so this costs the bundle nothing.
@@ -118,8 +123,10 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
+  // 'out-of-scope': this machine records nothing from a web chat (a personal
+  // device, or a credential it cannot read).
   accepted: boolean;
-  skipped?: 'no-consent' | 'unkeyable';
+  skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
   // Both leaf ids are content-addressed, so a re-observed turn collapses onto
   // the rows already there (INSERT OR IGNORE for a tool call, an
@@ -138,8 +145,10 @@ export interface CaptureStatusResponse {
   type: 'capture_status';
   requestId: string;
   ok: true;
+  // False when nothing was stored. 'out-of-scope' still keeps the report in
+  // the host's memory for the popup, and nowhere else.
   accepted: boolean;
-  skipped?: 'no-consent';
+  skipped?: 'no-consent' | 'out-of-scope';
 }
 
 export interface CaptureStateResponse {
@@ -149,6 +158,12 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
+  // Why this machine records nothing from a web chat, whatever `consented`
+  // says. Absent when it records as usual, and from a host older than the
+  // field. Chats are still checked; each site's `state` is then unreported,
+  // and its `enforcement` is this host process's own report, so a site that
+  // is not being checked still shows.
+  withheld?: WebChatWithholding;
   sites: {
     tool: WebSourceTool;
     state: WebCaptureState;

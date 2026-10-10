@@ -89,9 +89,10 @@ export interface CaptureResult {
   // scanner can diff them against a path's previously-open at-rest keys to
   // auto-resolve findings that no longer reproduce (see packages/scanner's
   // re-scan resolver). Absent for in-flight (prompt/response) captures, which
-  // carry no finding_key. Left unset (not []) when capture() takes the
-  // 'with-findings' early-return (findings.length === 0) — callers that need
-  // "no findings produced" should treat an absent value as an empty list.
+  // carry no finding_key. Left unset (not []) when capture() takes an early
+  // return: persist 'never', whatever the capture found, and persist
+  // 'with-findings' when it found nothing (findings.length === 0) — callers that
+  // need "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
   // What a redact this capture could NOT carry out resolved to instead: the
   // configured `redactFallback`, because the caller declared the field

@@ -633,6 +633,33 @@ describe('capture', () => {
     expect(gw.records).toHaveLength(1); // a hit → recorded
     await rt.close();
   });
+
+  it("persist 'never' records nothing, found or not, and enforces as the default does", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const benign = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'never' },
+    );
+    const hit = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'never' },
+    );
+    expect(gw.records).toHaveLength(0);
+    // The control: the same text under the default is recorded, and is given
+    // the same decision, so 'never' changed the write and nothing else.
+    const recorded = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+    });
+    await rt.close();
+    expect(gw.records).toHaveLength(1);
+    expect(benign.findings).toHaveLength(0);
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(hit.action).toBe(recorded.action);
+    expect(hit.text).toBe(recorded.text);
+  });
 });
 
 describe('capture — added-latency measurement (metadata.inspectionMs)', () => {

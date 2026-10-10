@@ -18,9 +18,9 @@ import { resolveDataGateway } from './resolve.ts';
  * `opts` reaches `runtime.capture` whole, never key by key. Omitted it is `{}`,
  * which is capture's own default: every capture is persisted and a resolved
  * `redact` is carried out. A caller narrows that per field — `persist:
- * 'with-findings'` records only a capture that detected something, `rewritable:
- * false` degrades a resolved `redact` to `settings.redactFallback` for a field
- * the caller has no way to rewrite.
+ * 'with-findings'` records only a capture that detected something, `persist:
+ * 'never'` records none, `rewritable: false` degrades a resolved `redact` to
+ * `settings.redactFallback` for a field the caller has no way to rewrite.
  *
  * Forwarding the whole object is the guarantee, and it is what makes a field
  * added to `CaptureOptions` reach `capture` here without an edit. Only two of

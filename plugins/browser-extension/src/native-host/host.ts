@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
+import { webChatWithholding } from '@akasecurity/persistence';
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
   PluginConfig,
@@ -33,7 +34,12 @@ import {
   reportedCaptureDocumentForSite,
   scanText,
 } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, ReportedCaptureDocument, SourceTool } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  ReportedCaptureDocument,
+  SourceTool,
+  WebChatWithholding,
+} from '@akasecurity/schema';
 import {
   isWebChatCaptureConsentValid,
   pickReportedCaptureStatus,
@@ -188,6 +194,31 @@ function resolveWebProvider(
   return () => (tool === 'chatgpt' ? { provider: 'openai' } : { provider: 'anthropic' });
 }
 
+/**
+ * Why this host keeps nothing from a web chat, or null when it records one.
+ *
+ * On a personal device a web chat is never in scope. What a scoped attachment
+ * forwards is decided per enrolled repository, a chat belongs to none, and
+ * nothing yet recognizes a work account in a chat. A machine whose credential
+ * cannot be read withholds too, since what it was attached as is unknown (see
+ * `webChatWithholding`, the one reading every surface makes).
+ *
+ * Withheld, a prompt is still checked and its decision enforced, but no event
+ * is recorded (a value it blocks or masks still leaves the masked, day-long
+ * ledger entry `aka exception` approves from). An exchange is dropped on
+ * arrival. A capture status is kept in this process's memory only, so the
+ * popup can still say when a site is not being checked, and is never stored.
+ * A session start opens no session root. What is never recorded cannot be sent
+ * later either, including by a history sync after the machine is attached
+ * again machine-wide.
+ *
+ * Read per request, since `aka attach` and `aka detach` change it under this
+ * long-lived process. Never throws.
+ */
+function withheld(config: PluginConfig): WebChatWithholding | null {
+  return webChatWithholding(config.settingsDir, config.settings);
+}
+
 // Injectable so tests can point at a scratch dataDir instead of the real
 // ~/.aka, mirroring the DI seam every hook/handler in this repo already uses
 // (resolveProviderFn, gatewayFactory, homeDir, …).
@@ -213,6 +244,10 @@ export async function handleRequest(
     }
     case 'session_start': {
       const config = configForTool(request.tool);
+      // Run even when chats are withheld, because the session start is what
+      // refreshes the organization's policy and sends the device report for
+      // someone who only uses web chat. Withheld, it records no session root
+      // (see withheld).
       // Browser sessions have no cwd/git repo to resolve a project from;
       // os.homedir() stands in so resolveInventoryContext's
       // resolveRepoIdentity(cwd) simply finds nothing and ctx.project stays
@@ -229,6 +264,7 @@ export async function handleRequest(
           tool: WEB_TOOL_TO_SOURCE[request.tool],
           harnessInterface: request.hostname,
           pluginBuild: PLUGIN_BUILD,
+          recordSession: withheld(config) === null,
         },
         config,
       );
@@ -252,6 +288,8 @@ export async function handleRequest(
     }
     case 'capture': {
       const config = configForTool(request.tool);
+      // Withheld, the prompt is checked and enforced exactly as anywhere else,
+      // and recorded nowhere (see withheld).
       const result = await handleCapture(
         {
           kind: request.kind,
@@ -260,6 +298,7 @@ export async function handleRequest(
           metadata: { sessionId: request.sessionId },
         },
         config,
+        withheld(config) === null ? {} : { persist: 'never' },
       );
       const ruleIds = [...new Set(result.findings.map((f) => f.ruleId))];
       // `text` rides back only when the content script needs it (see
@@ -287,17 +326,27 @@ export async function handleRequest(
     case 'exchange': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      // Read live, every call: settings.json can change under this long-lived
-      // process, and a revocation must apply to the very next exchange frame.
-      // No module-level snapshot, no memoisation, no hoisting this check out
-      // of the switch.
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
+      // Both read live, every call: settings.json and the attachment can change
+      // under this long-lived process, and a revocation must apply to the very
+      // next exchange frame. No module-level snapshot, no memoisation, no
+      // hoisting either check out of the switch.
+      //
+      // Withheld, the exchange goes no further than this: `isHostRequest` has
+      // already validated the payload in `runHost`, and nothing past this
+      // point runs, so no leaf is written and the reply is not scanned (see
+      // withheld).
+      const skipped = !isWebChatCaptureConsentValid(webChat.consent)
+        ? ('no-consent' as const)
+        : withheld(config) !== null
+          ? ('out-of-scope' as const)
+          : undefined;
+      if (skipped !== undefined) {
         return {
           type: 'exchange',
           requestId: request.requestId,
           ok: true,
           accepted: false,
-          skipped: 'no-consent',
+          skipped,
           llmCalls: 0,
           toolCalls: 0,
           ruleIds: [],
@@ -438,14 +487,23 @@ export async function handleRequest(
     case 'capture_status': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
-        return {
-          type: 'capture_status',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'no-consent',
-        };
+      // The one refusal shape, for both reasons below.
+      const refused = (skipped: 'no-consent' | 'out-of-scope'): HostResponse => ({
+        type: 'capture_status',
+        requestId: request.requestId,
+        ok: true,
+        accepted: false,
+        skipped,
+      });
+      // Read once: it decides both whether consent is asked and where the
+      // report may go.
+      const withholding = withheld(config);
+      // Consent governs recording, and a withholding machine records nothing,
+      // so there it has nothing to authorize: the report is still kept in
+      // memory below, which is how the popup names a site that is not being
+      // checked on a personal device that never granted capture.
+      if (withholding === null && !isWebChatCaptureConsentValid(webChat.consent)) {
+        return refused('no-consent');
       }
       const parsed = WebCaptureStatus.safeParse(request.status);
       if (!parsed.success) {
@@ -462,6 +520,10 @@ export async function handleRequest(
         status: parsed.data,
         observedAt,
       });
+      // Withheld, the report stays in this process's memory and goes no
+      // further: the popup reads it to say when a site is not being checked,
+      // and nothing stores or sends it (see withheld).
+      if (withholding !== null) return refused('out-of-scope');
       // The durable home: a `capture_status` audit_events row, so a restarted
       // host and a separate process (`aka extension status`) both have
       // somewhere to read the same answer from. No explicit session-root stub
@@ -489,6 +551,7 @@ export async function handleRequest(
     case 'capture_state': {
       const config = configForTool(undefined);
       const webChat = webChatCaptureOf(config.settings);
+      const withholding = withheld(config);
       let stored: ReportedCaptureDocument[] = [];
       // Resolved INSIDE the try for the reason the exchange case gives:
       // opening the store runs the migrations, so an unopenable home throws
@@ -497,8 +560,13 @@ export async function handleRequest(
       // failure when this process's own in-memory map could have answered it.
       let gateway: ReturnType<typeof resolveDataGateway> | undefined;
       try {
-        gateway = resolveDataGateway(config);
-        if (offersCaptureStatusReader(gateway)) stored = await gateway.readCaptureStatuses();
+        // Withheld, only this process's own reports answer: a stored row was
+        // written before the machine stopped recording and describes reports it
+        // no longer keeps.
+        gateway = withholding === null ? resolveDataGateway(config) : undefined;
+        if (gateway !== undefined && offersCaptureStatusReader(gateway)) {
+          stored = await gateway.readCaptureStatuses();
+        }
       } catch {
         stored = [];
       } finally {
@@ -517,7 +585,11 @@ export async function handleRequest(
         );
         return {
           tool,
-          state: deriveWebCaptureState(record?.status),
+          // Withheld, the network path records nothing, so no site has a state
+          // to report, whatever this process's memory says the tab saw. A popup
+          // older than `withheld` renders this word rather than a stale live
+          // one. The enforcement half is still this process's own report.
+          state: deriveWebCaptureState(withholding === null ? record?.status : undefined),
           ...(record !== undefined
             ? { enforcement: record.status.enforcement, observedAt: record.observedAt }
             : {}),
@@ -528,6 +600,7 @@ export async function handleRequest(
         requestId: request.requestId,
         ok: true,
         consented: isWebChatCaptureConsentValid(webChat.consent),
+        ...(withholding === null ? {} : { withheld: withholding }),
         sites,
       };
     }

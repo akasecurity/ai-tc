@@ -13,7 +13,10 @@ import {
   dataDir,
   openLocalDatabase,
   readEffectiveSettings,
+  settingsDir,
+  webChatWithholding,
 } from '@akasecurity/persistence';
+import type { WebChatWithholding } from '@akasecurity/schema';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -394,6 +397,20 @@ const LAUNCHER_REMEDY = [
   're-run `aka extension install` to point it at this install',
 ];
 
+// The network-capture block on a machine that records nothing from a web chat.
+// It does not say chats are being checked: whether each site is, is a report
+// the native host keeps in memory there, which only the extension's popup reads,
+// and the popup names a site only when its messages are not being checked.
+const WITHHELD_BLOCKS: Record<WebChatWithholding, string> = {
+  'personal-device':
+    '\nnetwork capture: off on a personal device\n' +
+    '  nothing from a chat is recorded or sent; the extension popup names any site whose messages are not being checked\n',
+  'unreadable-attachment':
+    '\nnetwork capture: off\n' +
+    '  this machine holds a control-plane credential AKA cannot read, so nothing from a chat is recorded or sent\n' +
+    '  `aka status` says what is wrong with it\n',
+};
+
 // The network-capture block `runStatus` appends when `home` is given. Reads
 // the reported `capture_status` rows through the same store the extension's
 // native host writes into (SqliteCaptureStatusRepository), and derives each
@@ -406,6 +423,12 @@ const LAUNCHER_REMEDY = [
 function captureBlock(home: string): string {
   try {
     const effective = readEffectiveSettings(home);
+    // Ahead of the consent answer, as in the extension's popup: a machine that
+    // withholds web chats records nothing from one whether or not capture was
+    // consented to, so the stored site states would describe reports it no
+    // longer keeps. The same reading the native host makes; it never throws.
+    const withheld = webChatWithholding(settingsDir(home), effective.settings);
+    if (withheld !== null) return WITHHELD_BLOCKS[withheld];
     const webChat = webChatCaptureOf(effective.settings);
     if (!isWebChatCaptureConsentValid(webChat.consent)) {
       return (

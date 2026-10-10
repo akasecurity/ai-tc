@@ -30,6 +30,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  isScopedAttachment,
   readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
@@ -265,3 +266,4 @@ export type {
 } from './vault/vault.ts';
 export { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from './vault/vault.ts';
 export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';
+export { webChatWithholding } from './web-chat-withholding.ts';

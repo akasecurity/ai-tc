@@ -31,7 +31,8 @@ vi.hoisted(() => {
   };
 });
 
-const { DRIFT_STATES, refresh, renderCaptureSites } = await import('../src/popup/index.ts');
+const { DRIFT_STATES, refresh, renderCaptureSites, WITHHELD_NOTES } =
+  await import('../src/popup/index.ts');
 
 // The fragment of popup.html this module actually touches.
 const FRAGMENT = `
@@ -42,6 +43,7 @@ const FRAGMENT = `
   </div>
   <div id="capture-section" hidden>
     <div id="capture-not-enabled" class="row muted" hidden>network capture not enabled</div>
+    <div id="capture-withheld" class="row muted" hidden></div>
     <div id="capture-sites"></div>
   </div>
   <button id="open-dashboard"></button>
@@ -157,6 +159,57 @@ describe('renderCaptureSites', () => {
     const sitesEl = document.getElementById('capture-sites');
     expect(notEnabled?.hidden).toBe(false);
     expect(sitesEl?.children).toHaveLength(0);
+  });
+
+  it('renders the personal-device line, and no network state rows, on a personal device', () => {
+    // Consented and with sites to show, so the line is what hides the rows,
+    // not a missing consent or an empty list.
+    renderCaptureSites(response({ withheld: 'personal-device' }));
+    const line = document.getElementById('capture-withheld');
+    expect(line?.hidden).toBe(false);
+    expect(line?.textContent).toBe(WITHHELD_NOTES['personal-device']);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(0);
+  });
+
+  it('still names a site that is not being checked on a personal device', () => {
+    // The line says chats are checked; a site whose watcher came apart must
+    // say otherwise right beneath it.
+    renderCaptureSites(
+      response({
+        withheld: 'personal-device',
+        sites: [
+          { tool: 'chatgpt', state: 'idle', enforcement: 'unattached' },
+          { tool: 'claude-ai', state: 'idle', enforcement: 'watching' },
+        ],
+      }),
+    );
+    const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'ChatGPT: not enforcing — composer and send button not found',
+    ]);
+  });
+
+  it('words an unreadable attachment as its own reason', () => {
+    renderCaptureSites(response({ withheld: 'unreadable-attachment' }));
+    expect(document.getElementById('capture-withheld')?.textContent).toBe(
+      WITHHELD_NOTES['unreadable-attachment'],
+    );
+  });
+
+  it('says withheld rather than not enabled when both are true', () => {
+    renderCaptureSites(response({ withheld: 'personal-device', consented: false }));
+    expect(document.getElementById('capture-withheld')?.hidden).toBe(false);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+  });
+
+  it('hides the line again once the machine records', () => {
+    // The popup re-renders into the same document, so a line left showing from
+    // an earlier reply would outlive a detach.
+    renderCaptureSites(response({ withheld: 'personal-device' }));
+    renderCaptureSites(response());
+    expect(document.getElementById('capture-withheld')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(2);
   });
 
   it('unhides the capture section', () => {

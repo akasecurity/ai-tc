@@ -880,3 +880,33 @@ describe('handleSessionStart — the session root scope key', () => {
     },
   );
 });
+
+describe('handleSessionStart — a session this machine must not record', () => {
+  it('writes no session root and no config scan, and still runs the inventory pass', async () => {
+    writeFileSync(join(cwd, 'main.ts'), '');
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const calls: string[] = [];
+    setDefaultGatewayFactory(() => delegatingGateway(inner, calls));
+
+    await handleSessionStart(start('s-unrecorded', { recordSession: false }), config(dir));
+
+    // The inventory pass is what an attached gateway sends the device report
+    // from, so it must still run; the maintenance passes run as well.
+    expect(calls).toContain('ensureInventory');
+    expect(calls).toContain('sweepTerminalExceptions');
+    expect(calls).not.toContain('recordAuditEvent');
+    expect(calls).not.toContain('recordConfigScan');
+    const db = open();
+    expect(count(db, 'audit_events')).toBe(0);
+    db.close();
+  });
+
+  it('records both when the option is omitted', async () => {
+    // The control: the same session start, recorded, so the zero above is the
+    // option's doing.
+    await handleSessionStart(start('s-recorded'), config(dir));
+    const db = open();
+    expect(count(db, 'audit_events')).toBe(2); // the session root + its config_scan
+    db.close();
+  });
+});

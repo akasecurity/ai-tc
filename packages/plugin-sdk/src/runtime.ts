@@ -718,7 +718,13 @@ export function createPluginRuntime(
     // recorded set is the findings-bearing subset, which does strictly more work
     // than the clean captures it stands in for. Any reader aggregating this
     // field inherits that skew.
-    const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
+    //
+    // `persist: 'never'` is the other condition, and the stronger one: nothing
+    // it measures is ever recorded, so it is not timed at all. Its captures (a
+    // web chat on a machine that withholds them) are absent from the sample
+    // rather than skewing it.
+    const timingStartedAt =
+      input.occurredAt === undefined && opts.persist !== 'never' ? startTiming() : undefined;
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
@@ -733,6 +739,9 @@ export function createPluginRuntime(
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
     // store with benign events. The live hook path keeps the default 'always'.
+    // 'never' records no event at all, found or not: the decision above is
+    // still returned and enforced.
+    if (opts.persist === 'never') return decision;
     if (opts.persist === 'with-findings' && decision.findings.length === 0) return decision;
     try {
       // Secrets-at-rest: persist the text with the span of every finding whose
@@ -950,12 +959,21 @@ export interface DecisionOptions {
 
 // Persistence policy for capture(): 'always' records an event for every call
 // (the live hook path, so the activity timeline is complete); 'with-findings'
-// records only when something was detected (the historical backfill).
+// records only when something was detected (the historical backfill);
+// 'never' records no event and no finding, for text the caller may enforce on
+// but must not keep (a web chat on a machine that withholds them). Everything
+// before the write still happens under 'never', with the capture's own source
+// tool and metadata: exceptions are matched against them, a single-use grant
+// is spent (with no event to name it), and a block or redact writes the
+// short-lived, masked blocked-detection ledger row the approve flow reads,
+// carrying the capture's session id. `processText` differs on exactly that
+// context: it evaluates with none, so its ledger rows carry no session id and
+// a grant conditioned on a source tool does not match there.
 // `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
 // gateway drops content it has already recorded (fresh event ids on a re-run
 // would otherwise duplicate rows). Never set it on the live hook path.
 export interface CaptureOptions extends DecisionOptions {
-  persist?: 'always' | 'with-findings';
+  persist?: 'always' | 'with-findings' | 'never';
   dedupe?: 'content-hash';
   // Grant ids already spent by this capture's own pointer crossing (see
   // ExceptionEvalContext.preAuthorizedGrantIds).
@@ -967,7 +985,9 @@ export interface PluginRuntime {
   // short-lived approve-flow ledger, when a fingerprint key is available);
   // no event write.
   processText(text: string, context?: ScanContext, opts?: DecisionOptions): Promise<CaptureResult>;
-  // Decision + persist (event with masked content + N masked findings).
+  // Decision + persist (event with masked content + N masked findings), as
+  // `opts.persist` allows: 'with-findings' skips a clean capture, 'never' every
+  // one.
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;

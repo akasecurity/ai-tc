@@ -7,6 +7,7 @@ import type {
   ManagedSettingKey,
   ModelJudgeConsentChoice,
   WebChatCaptureConsentChoice,
+  WebChatWithholding,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -341,6 +342,24 @@ export const WEB_CHAT_STALE_NOTICE =
   'Your grant was recorded against an older version of this setting, which covered less than is ' +
   'recorded now, so it no longer counts as consent. Saving with "Granted" selected re-consents ' +
   'to the current version.';
+
+// The one-word form of a withheld machine's notice, for the collapsed summary,
+// shown only while a valid grant reads "Granted" there: the stored answer is
+// then not the one in force, which is what a row alert is for.
+export const WEB_CHAT_WITHHELD_BADGE = 'Not recording';
+
+// What the web-chat row says on a machine whose browser extension records
+// nothing from a web chat, whatever this grant says. Total over the reasons, so
+// a new one fails to compile until it is worded here.
+export const WEB_CHAT_WITHHELD_NOTICES: Record<WebChatWithholding, string> = {
+  'personal-device':
+    'This machine is attached as a personal device, so the extension records nothing from a web ' +
+    'chat whatever this is set to. What you send is still blocked, redacted or warned on.',
+  'unreadable-attachment':
+    'This machine holds a control-plane credential AKA cannot read, so the extension records ' +
+    'nothing from a web chat whatever this is set to, until the attachment is repaired. What you ' +
+    'send is still blocked, redacted or warned on.',
+};
 
 // A grant recorded against another consent version no longer authorizes
 // anything — the version moved because what is recorded widened. The row still
@@ -705,6 +724,10 @@ export interface WorkspaceSettingsFormViewProps {
   // on the rule its attach action refuses on; the form then offers no choice.
   // Absent reads as not held, and the action refuses a scoped attach either way.
   machineOnly?: boolean | undefined;
+  // Why the browser extension records nothing from a web chat on this machine,
+  // read by the host (`webChatWithholding`). Absent when it records as usual,
+  // and the web-chat row then says nothing more than the grant.
+  webChatWithheld?: WebChatWithholding | undefined;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -732,6 +755,7 @@ export function WorkspaceSettingsFormView({
   connectionHeld,
   attachmentMode,
   machineOnly,
+  webChatWithheld,
   detectionsHref = '/detections',
   busy,
   error,
@@ -822,6 +846,9 @@ export function WorkspaceSettingsFormView({
   // Read once: the badge and the row's default-open state must agree about
   // staleness, and two separate calls could not disagree loudly.
   const webChatStale = webChatCaptureStale(settings.webChatCapture);
+  // A valid grant on a machine that records nothing from a web chat anyway.
+  const webChatInert =
+    webChatWithheld !== undefined && isWebChatCaptureConsentValid(settings.webChatCapture?.consent);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
   const [redactFallback, setRedactFallback] = useState(settings.redactFallback);
@@ -967,10 +994,17 @@ export function WorkspaceSettingsFormView({
           // user's behalf when the pinned value is true, so making this lockable
           // would let an organization consent to recording a person's web chats
           // for them. This key is deliberately outside ManagedSettingKey.
-          alert={webChatStale ? WEB_CHAT_STALE_BADGE : undefined}
-          defaultOpen={webChatStale}
+          alert={
+            webChatStale ? WEB_CHAT_STALE_BADGE : webChatInert ? WEB_CHAT_WITHHELD_BADGE : undefined
+          }
+          defaultOpen={webChatStale || webChatInert}
           notice={
             <>
+              {webChatWithheld !== undefined && (
+                <p className="mb-3 text-xs text-text-2" data-slot="web-chat-withheld-notice">
+                  {WEB_CHAT_WITHHELD_NOTICES[webChatWithheld]}
+                </p>
+              )}
               {webChatStale && (
                 <p className="mb-3 text-xs text-sev-high-ink" data-slot="web-chat-stale-notice">
                   {WEB_CHAT_STALE_NOTICE}

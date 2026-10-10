@@ -5,6 +5,7 @@ import type {
   AttachmentMode,
   CredentialState,
   ManagedContext,
+  WebChatWithholding,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import { useState, useTransition } from 'react';
@@ -18,6 +19,7 @@ export function SettingsClient({
   connectionHeld,
   attachmentMode,
   machineOnly,
+  webChatWithheld,
 }: {
   settings: WorkspaceSettings;
   managed: ManagedContext;
@@ -34,6 +36,9 @@ export function SettingsClient({
   // Decided on the server (page.tsx) by the rule the attach action refuses a
   // scoped attach on, and forwarded verbatim. Absent reads as not held.
   machineOnly?: boolean | undefined;
+  // Why the extension records nothing from a web chat here, read on the server
+  // (page.tsx) and forwarded verbatim. Absent when it records as usual.
+  webChatWithheld?: WebChatWithholding | undefined;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -69,6 +74,7 @@ export function SettingsClient({
       connectionHeld={connectionHeld}
       attachmentMode={attachmentMode}
       machineOnly={machineOnly}
+      webChatWithheld={webChatWithheld}
       busy={busy}
       error={error}
       saved={saved}

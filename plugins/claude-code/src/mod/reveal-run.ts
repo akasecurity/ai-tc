@@ -24,7 +24,8 @@
  * Exit 1 with nothing on stdout means "no answer": the mod shows the pointers
  * unchanged.
  *
- * A revealed value goes to stdout, which the mod draws and holds in `$.state`,
+ * A revealed value goes to stdout, which the mod draws and holds in its own memory (`$.state` carries only a version
+ * counter),
  * and nowhere else. Nothing is written to stderr.
  */
 import { describePointerSafe, detokenizeText, loadConfig } from '@akasecurity/plugin-sdk';

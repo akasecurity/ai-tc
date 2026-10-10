@@ -477,8 +477,9 @@ function mergeReveals(
     held.delete(stale);
 }
 
-// Resolves pointers the render hook found no answer for, once each, and writes
-// the answers to $.state. Runs apart from the render that started it: a render
+// Resolves pointers the render hook found no answer for, once each, and keeps
+// the answers in this module's memory and bumps the $.state version counter so the
+// readers redraw. Runs apart from the render that started it: a render
 // never writes. Never throws.
 async function resolvePointers($: RenderDollar, wanted: PointerWant[]): Promise<void> {
   const byToken = new Map<string, boolean>();

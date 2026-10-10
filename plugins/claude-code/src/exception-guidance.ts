@@ -116,7 +116,9 @@ export interface WithheldBannerInput {
 // preview to a multi-rule list implies the value belongs to the last rule.
 export function withheldBanner(input: WithheldBannerInput): string {
   const header = `${SHADE.full}${SHADE.dark}${SHADE.medium}${SHADE.light} AKA ${SHADE.light}${SHADE.medium}${SHADE.dark}${SHADE.full}`;
-  const subject = input.action === 'withheld' ? 'The flagged value' : 'Redacted spans';
+  // Keyed on what was FLAGGED, not on the header: a too-large field makes the
+  // header `withheld` while the only flagged value was redacted in place.
+  const subject = input.withheldRuleIds ? 'The flagged value' : 'Redacted spans';
   const approve = input.blockedRef
     ? `Allow this exact value (${input.blockedRef.maskedValue}) intentionally: aka exception approve ${input.blockedRef.reference}`
     : 'Allow intentionally: aka exception approve';

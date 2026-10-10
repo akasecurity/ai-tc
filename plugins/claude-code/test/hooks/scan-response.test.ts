@@ -330,6 +330,51 @@ describe('responseEmitPayload', () => {
     expect(payload.systemMessage).toContain('aka exception approve redref');
   });
 
+  // A refused field and a REDACTED one in the same output, nothing withheld for
+  // a rule: the header says withheld (a field was), but the redacted spans are
+  // still the only ledgered value — so the approve line carries the REDACT ref,
+  // and the line about what never reached the model describes the spans rather
+  // than a flagged value nothing withheld.
+  it('too-large + redact, nothing withheld for a rule: keeps the redact ref on the approve line', () => {
+    const payload = responseEmitPayload(
+      'Bash',
+      outcome({
+        updated: { stdout: tooLargeToolText('Bash', 'stdout'), stderr: '[REDACTED]' },
+        redactedFindings: [finding('core-pii/email')],
+        redactedReferences: [
+          { reference: 'redref', ruleId: 'core-pii/email', maskedValue: 'j***' },
+        ],
+        tooLargeFields: ['stdout'],
+      }),
+    ) as { systemMessage: string };
+    expect(payload.systemMessage).toContain('Bash output withheld');
+    expect(payload.systemMessage).toContain('Redacted: core-pii/email');
+    expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+    expect(payload.systemMessage).toContain('(j***) intentionally: aka exception approve redref');
+    expect(payload.systemMessage).toContain('Redacted spans never reached the model.');
+    expect(payload.systemMessage).not.toContain('flagged value');
+  });
+
+  it('too-large + block + redact: the BLOCKED ref still wins the approve line', () => {
+    const payload = responseEmitPayload(
+      'Bash',
+      outcome({
+        withheldFindings: [finding('secrets/aws-access-key')],
+        redactedFindings: [finding('core-pii/email')],
+        redactedReferences: [
+          { reference: 'redref', ruleId: 'core-pii/email', maskedValue: 'j***' },
+        ],
+        blockedReferences: [
+          { reference: 'blkref', ruleId: 'secrets/aws-access-key', maskedValue: 'A***A' },
+        ],
+        tooLargeFields: ['stdout'],
+      }),
+    ) as { systemMessage: string };
+    expect(payload.systemMessage).toContain('aka exception approve blkref');
+    expect(payload.systemMessage).not.toContain('redref');
+    expect(payload.systemMessage).toContain('The flagged value never reached the model.');
+  });
+
   it('warn findings alongside a rewrite land on the banner instead of vanishing', () => {
     const payload = responseEmitPayload(
       'Bash',

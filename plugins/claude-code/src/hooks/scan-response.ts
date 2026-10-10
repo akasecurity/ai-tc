@@ -193,7 +193,10 @@ export function responseEmitPayload(
       },
       // The approve pointer stays OUT of the model-visible replacement text:
       // it is the user's audited escape hatch, not something to nudge an
-      // agent toward. Ref picked from the action the banner names.
+      // agent toward. Ref picked from the most severe FLAGGED action, not
+      // from the header: a too-large field makes the header `withheld`
+      // without ledgering anything, and beside a redact the redact's row is
+      // the only one an approve command can find.
       systemMessage: withheldBanner({
         toolName,
         action,
@@ -202,7 +205,9 @@ export function responseEmitPayload(
         warnedRuleIds: warnedFindings.length > 0 ? uniqueRuleIds(warnedFindings) : undefined,
         tooLargeFields: tooLargeFields.length > 0 ? tooLargeFields.join(', ') : undefined,
         blockedRef:
-          action === 'withheld' ? outcome.blockedReferences[0] : outcome.redactedReferences[0],
+          withheldFindings.length > 0
+            ? outcome.blockedReferences[0]
+            : outcome.redactedReferences[0],
         vaultDisclosure: notes?.disclosure ?? undefined,
       }),
     };

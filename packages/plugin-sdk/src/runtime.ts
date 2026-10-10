@@ -881,8 +881,18 @@ export function createPluginRuntime(
       const maskedFindings = decision.findings.filter((match) =>
         isActionAtLeast(actionForFinding(match, excepted, opts.rewritable), 'redact'),
       );
+      // A REFUSED field (`scanIncomplete`) stores no content at all. It was
+      // never scanned, so it has no findings to mask — and that is not the same
+      // as having nothing to mask: anything in it, a secret included, would
+      // land in the store verbatim, and an attached machine would forward it.
+      // `Event.content` is a required string, so the row carries '' and keeps
+      // `contentHash` of the original, which is what correlates it.
       const storedContent =
-        maskedFindings.length > 0 ? redact(input.text, maskedFindings) : input.text;
+        decision.scanIncomplete !== undefined
+          ? ''
+          : maskedFindings.length > 0
+            ? redact(input.text, maskedFindings)
+            : input.text;
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,

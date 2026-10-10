@@ -24,6 +24,7 @@ import type { PolicyBundle, Rule, RuleProbeVerdict, WorkspaceSettings } from '@a
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CaptureRecord, DataGateway, RuleProbeVerdictEntry } from '../src/data-gateway.ts';
+import { contentHashOf } from '../src/events.ts';
 import type { LargeInputScanOptions } from '../src/runtime.ts';
 
 vi.mock('@akasecurity/detections', async (importOriginal) => {
@@ -385,4 +386,83 @@ describe('at or above the threshold', () => {
       await rt.close();
     }
   });
+});
+
+// A refused field was never scanned, so nothing is known about what it holds:
+// it may carry a secret no rule got to see. With no findings there is nothing
+// to mask, and the ordinary at-rest path would store the text verbatim. These
+// cases read back everything the capture produced and require the raw text to
+// be in none of it.
+describe('a refused capture at rest', () => {
+  // The well-known fabricated AWS example key id, composed so the repo's own
+  // secret scanning does not flag this file.
+  const KEY = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+  const TEXT = `${'lorem ipsum dolor sit amet '.repeat(20)} aws_access_key_id = ${KEY}`;
+
+  it.each(['always', 'with-findings'] as const)(
+    'stores no raw text with persist %s, and keeps the hash of the original',
+    async (persist) => {
+      const stderrLines: string[] = [];
+      vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+        stderrLines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+        return true;
+      });
+      const { gateway, records } = fakeGateway();
+      const rt = createPluginRuntime(gateway, settings(), {
+        scanIsolation: { workerUrl: ENDLESS_WORKER },
+        largeInput: largeInput(),
+      });
+      try {
+        const result = await rt.capture(
+          { kind: 'tool_use', sourceTool: 'claude-code', text: TEXT },
+          { persist },
+        );
+        expect(result.scanIncomplete).toBe('timeout');
+        expect(result.text).toBeNull();
+        expect(JSON.stringify(result)).not.toContain(KEY);
+
+        expect(records).toHaveLength(1);
+        const record = records[0];
+        expect(record?.event.content).toBe('');
+        expect(record?.event.contentHash).toBe(contentHashOf(TEXT));
+        expect(record?.findings).toEqual([]);
+        const stored = JSON.stringify(record);
+        expect(stored).not.toContain(KEY);
+        expect(stored).not.toContain('lorem ipsum');
+
+        const written = stderrLines.join('');
+        // The refusal does say something on stderr, so this is not vacuous.
+        expect(written).toContain('refused');
+        expect(written).not.toContain(KEY);
+      } finally {
+        await rt.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'still stores a scanned large field as before',
+    async () => {
+      // The control: the blanking is keyed on the refusal, not on the size or
+      // the bounded path, so a large field that WAS scanned keeps its content.
+      const { gateway, records } = fakeGateway();
+      const rt = createPluginRuntime(gateway, settings(), {
+        largeInput: largeInput({ budgetMs: 20_000 }),
+        scanIsolation: { startBudgetMs: START_MS },
+      });
+      try {
+        const result = await rt.capture({
+          kind: 'prompt',
+          sourceTool: 'claude-code',
+          text: LARGE_TEXT,
+        });
+        expect(result).not.toHaveProperty('scanIncomplete');
+        expect(records[0]?.event.content).toBe(LARGE_TEXT);
+      } finally {
+        await rt.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
 });

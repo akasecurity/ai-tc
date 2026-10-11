@@ -19,20 +19,27 @@ import type { CostUsage } from '../token/cost-usage.ts';
  * A second rate band that applies once a request's INPUT crosses `thresholdInputTokens`.
  * The input counted is the whole prompt, cached tokens included.
  *
- * Verified to apply to the whole request, not just the tokens above the line:
+ * The band applies to the whole request, not just the tokens above the line:
  * "For GPT-5.6, prompts with more than 272,000 input tokens use long-context
  * pricing for the full request, not only for tokens beyond the threshold."
- * Google and xAI tier the same way (at 200K, xAI a clean 2x step).
+ * Anthropic (Haiku 5.5, at 100K), Google and xAI (at 200K) tier the same way.
  *
  * `input`/`output` are nullable because a vendor can publish the THRESHOLD
- * without publishing the rate above it — which is exactly the OpenAI case
- * today. A null there means "cost unknown above this size", which is a very
- * different statement from "same price", and the difference is a bill.
+ * without publishing the rate above it. A null there means "cost unknown above
+ * this size", which is a very different statement from "same price", and the
+ * difference is a bill.
+ *
+ * The cache columns are optional. Absent, the vendor publishes no band rate for
+ * that column and the base rate applies; null, the band re-prices it at a rate
+ * that was not read, so a request that bills against it is unknown.
  */
 export const LongContextTier = z.object({
   thresholdInputTokens: z.number().int().positive(),
   input: z.number().nonnegative().nullable(),
   output: z.number().nonnegative().nullable(),
+  cacheRead: z.number().nonnegative().nullable().optional(),
+  cacheWrite5m: z.number().nonnegative().nullable().optional(),
+  cacheWrite1h: z.number().nonnegative().nullable().optional(),
 });
 export type LongContextTier = z.infer<typeof LongContextTier>;
 
@@ -66,16 +73,38 @@ export const WEB_SEARCH_PER_REQUEST = 0.01;
  * (5m = 1.25x input, 1h = 2x input), which is still uniform across the family
  * and is re-verified on each price update.
  */
-export function anthropicPrice(input: number, output: number, cacheRead: number): ModelPrice {
+export function anthropicPrice(
+  input: number,
+  output: number,
+  cacheRead: number,
+  longContext: LongContextTier | null = null,
+): ModelPrice {
   return Object.freeze({
     input,
     output,
-    longContext: null, // flat across the full window on every current Claude
+    longContext: longContext === null ? null : Object.freeze(longContext),
     cacheWrite5m: input * 1.25,
     cacheWrite1h: input * 2,
     cacheRead,
     webSearch: WEB_SEARCH_PER_REQUEST,
   });
+}
+
+/** An Anthropic long-context band, with cache writes derived the same way as the base rate. */
+export function anthropicBand(
+  thresholdInputTokens: number,
+  input: number,
+  output: number,
+  cacheRead: number,
+): LongContextTier {
+  return {
+    thresholdInputTokens,
+    input,
+    output,
+    cacheRead,
+    cacheWrite5m: input * 1.25,
+    cacheWrite1h: input * 2,
+  };
 }
 
 /**
@@ -149,17 +178,11 @@ export function promptTokensOf(usage: CostUsage): number {
 }
 
 export function costOf(price: ModelPrice, usage: CostUsage): number | null {
-  const metered: readonly (readonly [number, number | null])[] = [
-    [usage.cacheWrite1hTokens ?? 0, price.cacheWrite1h],
-    [usage.cacheWrite5mTokens ?? 0, price.cacheWrite5m],
-    [usage.cacheReadTokens ?? 0, price.cacheRead],
-  ];
-
   // Above the threshold the band rate applies to the WHOLE request, not just
-  // the tokens past it, so input and output are re-priced rather than split.
-  // A null band rate is an unread rate: the request bills at a price we do not
-  // have, so the cost is unknown rather than the sub-threshold figure. The
-  // threshold is on the whole prompt, so cached tokens count toward it.
+  // the tokens past it, so every column the band names is re-priced rather
+  // than split. A null band rate is an unread rate: the request bills at a
+  // price we do not have, so the cost is unknown rather than the sub-threshold
+  // figure. The threshold is on the whole prompt, so cached tokens count toward it.
   const band =
     price.longContext !== null && promptTokensOf(usage) > price.longContext.thresholdInputTokens
       ? price.longContext
@@ -168,6 +191,14 @@ export function costOf(price: ModelPrice, usage: CostUsage): number | null {
 
   const inputRate = band?.input ?? price.input;
   const outputRate = band?.output ?? price.output;
+  const bandRate = (column: number | null | undefined, base: number | null): number | null =>
+    column === undefined ? base : column;
+
+  const metered: readonly (readonly [number, number | null])[] = [
+    [usage.cacheWrite1hTokens ?? 0, bandRate(band?.cacheWrite1h, price.cacheWrite1h)],
+    [usage.cacheWrite5mTokens ?? 0, bandRate(band?.cacheWrite5m, price.cacheWrite5m)],
+    [usage.cacheReadTokens ?? 0, bandRate(band?.cacheRead, price.cacheRead)],
+  ];
 
   let tokenCost = (usage.inputTokens ?? 0) * inputRate + (usage.outputTokens ?? 0) * outputRate;
   for (const [tokens, rate] of metered) {

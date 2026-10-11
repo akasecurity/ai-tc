@@ -322,10 +322,24 @@ describe('catalog data', () => {
 
   it('records the published Claude 5 context windows', () => {
     // These are 1M models; the Claude 4.x figure is 200K and applies to Haiku.
-    for (const id of ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1']) {
+    for (const id of [
+      'claude-opus-5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude-sonnet-5-5',
+      'claude-haiku-5-5',
+      'claude-fable-5-1',
+    ]) {
       expect(MODEL_INDEX.byId.get(id)?.contextWindow, id).toBe(1_000_000);
     }
     expect(MODEL_INDEX.byId.get('claude-haiku-4-5')?.contextWindow).toBe(200_000);
+  });
+
+  it('resolves the undated command-r-plus to the snapshot it names', () => {
+    expect(resolveModel('command-r-plus', MODEL_INDEX).entry?.id).toBe('command-r-plus-04-2024');
+    expect(resolveModel('command-r-plus-08-2024', MODEL_INDEX).entry?.id).toBe(
+      'command-r-plus-08-2024',
+    );
   });
 
   it('orders the Claude tiers by their published rates', () => {
@@ -479,45 +493,56 @@ describe('long-context pricing', () => {
   });
 
   it('returns unknown when the band rate itself is unpublished', () => {
-    // OpenAI publishes the 272K threshold but not the rate above it. A definite
+    // A vendor can publish a threshold without the rate above it. A definite
     // figure there would be the sub-threshold price reported as the total.
+    const unpublished = tokenPrice(1, 10, {
+      longContext: { thresholdInputTokens: 200_000, input: null, output: null },
+    });
+    expect(costOf(unpublished, { inputTokens: 400_000 })).toBeNull();
+    // Not vacuous: the same price resolves below the threshold.
+    expect(costOf(unpublished, { inputTokens: 100_000 })).toBeCloseTo(0.1, 10);
+  });
+
+  it('prices the whole OpenAI request at the published band above 272K', () => {
+    // GPT-5.5: 5 / 30 below the line; 2x input and 1.5x output above it.
     expect(
       defaultCostModel.costFor({
         provider: 'openai',
         model: 'gpt-5.5',
-        usage: { inputTokens: 400_000 },
+        usage: { inputTokens: 400_000, outputTokens: 10_000 },
       }),
-    ).toBeNull();
-    // Not vacuous: the same model prices normally below the threshold.
+    ).toBeCloseTo(4.45, 10);
     expect(
       defaultCostModel.costFor({
         provider: 'openai',
         model: 'gpt-5.5',
-        usage: { inputTokens: 100_000 },
+        usage: { inputTokens: 100_000, outputTokens: 10_000 },
       }),
-    ).toBeCloseTo(0.5, 10);
+    ).toBeCloseTo(0.8, 10);
   });
 
   it('counts cached prompt tokens toward the band threshold', () => {
     // 15K uncached + 285K read from cache is a 300K prompt: over the 272K line,
-    // where the rate is unpublished.
+    // so GPT-5.4 bills input at 5 and cache reads at 0.5.
     const usage = { inputTokens: 15_000, cacheReadTokens: 285_000 };
-    expect(defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage })).toBeNull();
-    // With a published band rate, a mostly-cached prompt over the line takes it.
+    expect(defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage })).toBeCloseTo(
+      0.2175,
+      10,
+    );
     const banded = tokenPrice(1, 10, {
       cacheRead: 0.1,
       longContext: { thresholdInputTokens: 200_000, input: 2, output: 20 },
     });
     expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 200_000 })).toBeCloseTo(0.12, 10);
     expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 100_000 })).toBeCloseTo(0.06, 10);
-    // Not vacuous: the same split under the line prices.
+    // Not vacuous: the same split under the line takes the base rates.
     expect(
       defaultCostModel.costFor({
         provider: 'openai',
         model: 'gpt-5.4',
         usage: { inputTokens: 15_000, cacheReadTokens: 200_000 },
       }),
-    ).not.toBeNull();
+    ).toBeCloseTo(0.0875, 10);
   });
 
   it('takes the band from promptTokens when a caller prices a sum of requests', () => {
@@ -525,14 +550,49 @@ describe('long-context pricing', () => {
     const summed = { inputTokens: 20_000, cacheReadTokens: 280_000 };
     expect(
       defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage: summed }),
-    ).toBeNull();
+    ).toBeCloseTo(0.24, 10);
     expect(
       defaultCostModel.costFor({
         provider: 'openai',
         model: 'gpt-5.4',
         usage: { ...summed, promptTokens: 150_000 },
       }),
-    ).not.toBeNull();
+    ).toBeCloseTo(0.12, 10);
+  });
+
+  it('re-prices a cache column only where the band names it', () => {
+    const usage = { inputTokens: 250_000, cacheReadTokens: 100_000 };
+    const base = { cacheRead: 0.1 };
+    const unnamed = tokenPrice(1, 10, {
+      ...base,
+      longContext: { thresholdInputTokens: 200_000, input: 2, output: 20 },
+    });
+    const named = tokenPrice(1, 10, {
+      ...base,
+      longContext: { thresholdInputTokens: 200_000, input: 2, output: 20, cacheRead: 0.2 },
+    });
+    const unread = tokenPrice(1, 10, {
+      ...base,
+      longContext: { thresholdInputTokens: 200_000, input: 2, output: 20, cacheRead: null },
+    });
+    expect(costOf(unnamed, usage)).toBeCloseTo(0.51, 10);
+    expect(costOf(named, usage)).toBeCloseTo(0.52, 10);
+    expect(costOf(unread, usage)).toBeNull();
+    // An unread band column only matters to a request that bills against it.
+    expect(costOf(unread, { inputTokens: 250_000 })).toBeCloseTo(0.5, 10);
+  });
+
+  it('prices Claude Haiku 5.5 by prompt length, cache writes included', () => {
+    const haiku = (usage: Parameters<typeof costOf>[1]) =>
+      defaultCostModel.costFor({ provider: 'anthropic', model: 'claude-haiku-5-5', usage });
+    // 80K uncached + 20K cache write = a 100K prompt: not OVER the line.
+    expect(haiku({ inputTokens: 80_000, cacheWrite5mTokens: 20_000 })).toBeCloseTo(0.0105, 10);
+    // One more token crosses it, and every column re-prices: 0.5 input,
+    // 0.625 5m write, 0.05 cache read.
+    expect(
+      haiku({ inputTokens: 80_001, cacheWrite5mTokens: 20_000, cacheReadTokens: 0 }),
+    ).toBeCloseTo((80_001 * 0.5 + 20_000 * 0.625) / 1_000_000, 10);
+    expect(haiku({ inputTokens: 10_000, cacheReadTokens: 100_000 })).toBeCloseTo(0.01, 10);
   });
 
   it('lists every declared band threshold once, ascending', () => {

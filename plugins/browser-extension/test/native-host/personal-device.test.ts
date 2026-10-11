@@ -19,8 +19,8 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
-import { bundledDetections, maskMatch } from '@akasecurity/plugin-sdk';
+import type { LargeInputScanOptions, PluginConfig } from '@akasecurity/plugin-sdk';
+import { bundledDetections, LARGE_INPUT_SCAN_BUDGET_MS, maskMatch } from '@akasecurity/plugin-sdk';
 import type {
   AttachedCredentialAny,
   ControlPlaneConnection,
@@ -31,7 +31,11 @@ import { SOURCE_TOOL, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/sche
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
-import { handleRequest, readCaptureStatus } from '../../src/native-host/host.ts';
+import {
+  CAPTURE_START_BUDGET_MS,
+  handleRequest,
+  readCaptureStatus,
+} from '../../src/native-host/host.ts';
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
 
 // The detached children a session start asks for on an attached machine (the
@@ -314,6 +318,59 @@ describe('a prompt on a personal device', () => {
       masked_value: masked,
     });
     expect(storeBytes()).not.toContain(value);
+  });
+});
+
+// A prompt at or above the large-input threshold whose bounded scan did not
+// finish is refused as a block with `scanIncomplete`, and on a recording machine
+// the refusal is recorded (empty content, the reason on the row). Withheld, the
+// refusal is enforced the same way and recorded nowhere.
+describe('a prompt too large to scan in time on a personal device', () => {
+  const LARGE = `${MARKER} ${'lorem ipsum dolor sit amet '.repeat(40)}end`;
+  // A bound with no time left refuses before any worker starts, so the refusal
+  // is the same on every runner.
+  const spent = (): LargeInputScanOptions => ({
+    thresholdChars: 64,
+    budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
+    startBudgetMs: CAPTURE_START_BUDGET_MS,
+    remainingMs: () => 0,
+  });
+
+  async function refuse(requestId: string): Promise<void> {
+    const response = await handleRequest(
+      {
+        type: 'capture',
+        requestId,
+        sessionId: `browser-${requestId}`,
+        tool: SOURCE_TOOL.ChatGpt,
+        kind: 'prompt',
+        text: LARGE,
+      },
+      config,
+      spent,
+    );
+    expect(response).toEqual({
+      type: 'capture',
+      requestId,
+      ok: true,
+      action: 'block',
+      text: null,
+      ruleIds: [],
+      scanIncomplete: 'timeout',
+    });
+  }
+
+  it('is refused and recorded nowhere', async () => {
+    attachAs('scoped');
+    await refuse('pd-large');
+    expect(rowCount(CAPTURE_KINDS)).toBe(0);
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  it('is refused and its refusal recorded on a machine-wide attachment', async () => {
+    attachAs('machine');
+    await refuse('md-large');
+    expect(rowCount(CAPTURE_KINDS)).toBe(1);
   });
 });
 

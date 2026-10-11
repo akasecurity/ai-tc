@@ -11,7 +11,11 @@ import {
   BUDGET_MS,
   CATASTROPHIC_RATIO,
   EXPONENTIAL_PROBES,
+  GROWTH_CONFIRM_SAMPLES,
+  GROWTH_CORPORA,
   GROWTH_MAX_CHARS,
+  GROWTH_SAMPLES,
+  GROWTH_START_CHARS,
   MAX_GROWTH_RATIO,
   POLYNOMIAL_PROBES,
   superlinearGrowth,
@@ -152,11 +156,13 @@ function describeBreach(breach: GrowthBreach): string {
 // quadratic with a small constant passes every 40KB probe and still costs
 // seconds at the engine's 200,000-char input cap.
 //
-// Wall time, not the CPU clock the walk above uses. The verdict is a ratio of
-// two medians whose samples are interleaved, so a slow stretch of the runner
-// lands on both sides and cancels; a coarse CPU clock (16ms ticks on the
-// Windows runner) would instead quantize a 5-30ms reading into a meaningless
-// ratio.
+// Wall time, not the CPU clock the walk above uses: a coarse CPU clock (16ms
+// ticks on the Windows runner) would quantize a 5-30ms reading into a
+// meaningless ratio. What keeps a busy runner out of the verdict is the
+// statistic instead. Each side is the FASTEST of its readings, which a stall
+// can only leave alone or miss, and a superlinear first pass is re-measured
+// before it is reported; see `growthPair`, and "the growth tier reads through
+// stalls" below for both halves pinned on a scripted clock.
 describe('bundled rules scale linearly on adversarial corpora', () => {
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s grows linearly with its input',
@@ -496,6 +502,90 @@ describe('the probe battery itself', () => {
       ],
     ])('passes a linear pattern: %s', (_label, rule) => {
       const breach = superlinearGrowth(rule);
+      expect(breach && describeBreach(breach)).toBeUndefined();
+    });
+  });
+
+  // The growth tier's verdict on a machine that stalls, made deterministic. The
+  // scans run for real and are ignored: a scripted clock supplies every reading,
+  // so each case states exactly which readings a stall landed on. The rule is a
+  // fixed-length key with no examples, so it is measured on the fixed corpora
+  // only and every corpus reads the clock the same number of times.
+  describe('the growth tier reads through stalls', () => {
+    const benign = Rule.parse({
+      specVersion: 1,
+      id: 'test-pack/stalled',
+      name: 'stalled',
+      category: 'custom',
+      severity: 'low',
+      matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
+    });
+
+    // One reading per doubling on the way up, before the top pair is sampled.
+    const SCOUTS = Math.log2(GROWTH_MAX_CHARS / GROWTH_START_CHARS);
+    const SMALL_MS = 2;
+    const CLEAN_LARGE_MS = 4;
+    const STALLED_LARGE_MS = 20;
+
+    // A clock whose reading for each scan is `large(i)` for the i-th larger
+    // sample of a corpus and SMALL_MS for every smaller one. `pairs` is how
+    // many small/large pairs one corpus takes, which is where the script
+    // starts over. The clock is read twice per scan, start and end.
+    function scripted(pairs: number, large: (sample: number) => number): ProbeClock {
+      const scansPerCorpus = SCOUTS + pairs * 2;
+      let reads = 0;
+      let time = 0;
+      return () => {
+        const read = reads++;
+        if (read % 2 === 0) return time;
+        const scanIndex = Math.floor(read / 2) % scansPerCorpus;
+        const pairScan = scanIndex - SCOUTS;
+        const cost =
+          pairScan < 0 ? 1 : pairScan % 2 === 0 ? SMALL_MS : large(Math.floor(pairScan / 2));
+        time += cost;
+        return time;
+      };
+    }
+
+    // Three of five larger readings stalled: a median reads 20ms over 2ms, the
+    // fastest reading 4ms over 2ms.
+    it('a stall on most of the larger readings does not read as growth', () => {
+      const majority = Math.floor(GROWTH_SAMPLES / 2) + 1;
+      const clock = scripted(GROWTH_SAMPLES, (i) =>
+        i < majority ? STALLED_LARGE_MS : CLEAN_LARGE_MS,
+      );
+      const breach = superlinearGrowth(benign, clock);
+      expect(breach && describeBreach(breach)).toBeUndefined();
+    });
+
+    it('a stall on every larger reading of the first pass is re-measured, not reported', () => {
+      const clock = scripted(GROWTH_SAMPLES + GROWTH_CONFIRM_SAMPLES, (i) =>
+        i < GROWTH_SAMPLES ? STALLED_LARGE_MS : CLEAN_LARGE_MS,
+      );
+      const breach = superlinearGrowth(benign, clock);
+      expect(breach && describeBreach(breach)).toBeUndefined();
+    });
+
+    it('growth that every reading shows is still reported, on the first corpus', () => {
+      // 4.5x on every sample, first pass and confirmation alike: no reading is
+      // faster than the growth, so nothing is discarded.
+      const clock = scripted(GROWTH_SAMPLES + GROWTH_CONFIRM_SAMPLES, () => 9);
+      const breach = superlinearGrowth(benign, clock);
+      expect(breach).toMatchObject({
+        reason: 'superlinear',
+        corpus: GROWTH_CORPORA[0]?.name,
+        smallMs: SMALL_MS,
+        largeMs: 9,
+      });
+    });
+
+    it('a single clean pair among stalled ones is enough to clear a linear rule', () => {
+      // The fastest reading on each side decides, wherever in the run it falls.
+      const last = GROWTH_SAMPLES + GROWTH_CONFIRM_SAMPLES - 1;
+      const clock = scripted(GROWTH_SAMPLES + GROWTH_CONFIRM_SAMPLES, (i) =>
+        i === last ? CLEAN_LARGE_MS : STALLED_LARGE_MS,
+      );
+      const breach = superlinearGrowth(benign, clock);
       expect(breach && describeBreach(breach)).toBeUndefined();
     });
   });

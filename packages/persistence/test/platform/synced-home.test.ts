@@ -34,6 +34,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
 import { UNSAFE_TEST_ONLY_RAW_HANDLE } from '../../src/database.ts';
+import { MOD_POLICY_SNAPSHOT_FILENAME } from '../../src/mod-policy-snapshot.ts';
 import { dbSidecars } from '../../src/paths.ts';
 import { captureCount, captureEvent, captureFinding } from '../helpers/capture-fixtures.ts';
 import { errorFrom } from '../helpers/errors.ts';
@@ -218,7 +219,8 @@ describe('the files a used store leaves in the data directory', () => {
       // on its own it passes just as well against a store nothing wrote.
       expect(entries).toContain('aka.db');
 
-      const named = new Set(['aka.db', ...dbSidecars('aka.db')]);
+      // The mod policy snapshot is the one file besides the store an open keeps.
+      const named = new Set(['aka.db', MOD_POLICY_SNAPSHOT_FILENAME, ...dbSidecars('aka.db')]);
       const unexpected = entries.filter((name) => !named.has(name));
       expect(unexpected).toEqual([]);
     });

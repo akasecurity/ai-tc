@@ -1,4 +1,4 @@
-import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
+import type { BlockedDetectionRef, CaptureResult, WebCaptureState } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   WebChatWithholding,
@@ -115,6 +115,12 @@ export interface CaptureResponse {
   text?: string | null;
   ruleIds: string[];
   blockedReferences?: BlockedDetectionRef[];
+  // Set when the prompt was REFUSED rather than judged: it is at or above the
+  // large-input threshold and its bounded scan timed out ('timeout') or found
+  // no worker to run it ('unavailable'). `action` is then 'block', `text` null
+  // and `ruleIds` empty — nothing was flagged, because nothing finished — so a
+  // reader must check this before treating the block as a detection.
+  scanIncomplete?: NonNullable<CaptureResult['scanIncomplete']>;
 }
 
 export interface ExchangeResponse {

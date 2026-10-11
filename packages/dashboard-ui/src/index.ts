@@ -38,6 +38,13 @@ export {
   Sparkline,
   useMeasuredWidth,
 } from './shared/charts.tsx';
+export {
+  MODEL_FAMILY_MARKS,
+  ModelMark,
+  modelMarkFor,
+  type ModelMarkGlyph,
+  type ModelMarkProps,
+} from './shared/ModelMark.tsx';
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { RefusalReason, refusedControlProps } from './shared/Refusal.tsx';

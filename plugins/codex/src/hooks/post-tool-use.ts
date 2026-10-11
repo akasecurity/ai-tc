@@ -23,6 +23,7 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { largeInputBound } from './large-input.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
   responseEmitPayload,
@@ -72,7 +73,13 @@ async function main(): Promise<void> {
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, getString(input, 'session_id'));
   const gateway = resolveDataGateway(config);
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under what is left
+  // of the field loop's own deadline, and the result withheld if that scan does
+  // not finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(RESPONSE_SCAN_DEADLINE_MS),
+  });
 
   let outcome;
   try {
@@ -91,6 +98,8 @@ async function main(): Promise<void> {
   }
   // Out of time before every field was scanned: what was found is still
   // acted on, and the rest passed through, so count it like any fail-open.
+  // A field that was reached but whose bounded scan did not finish is not
+  // counted here: the result was withheld, not passed (outcome.tooLargeFields).
   if (outcome.unscannedFields > 0) countFailOpen();
 
   const payload = responseEmitPayload(outcome);

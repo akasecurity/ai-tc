@@ -27,6 +27,7 @@ import {
   applyOnboarding,
   loadConfig,
   severityFloorPosture,
+  shippedRegexMatchers,
 } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
@@ -134,7 +135,7 @@ if (Object.keys(answers).length > 0) {
     // settings write above.
     try {
       const dataDir = loadConfig().dataDir;
-      const db = openLocalDatabase(dataDir);
+      const db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
       try {
         const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
         if (capped > 0) {
@@ -169,7 +170,9 @@ if (rawPosture !== undefined || useFloor) {
     // category rows; --floor is the fallback and only fills gaps (never
     // downgrades a calibrated posture) unless --recalibrate forces an overwrite.
     const mode = rawPosture !== undefined || recalibrate ? 'overwrite' : 'fill-gaps';
-    const db = openLocalDatabase(loadConfig().dataDir);
+    const db = openLocalDatabase(loadConfig().dataDir, {
+      shippedRegexMatchers: shippedRegexMatchers(),
+    });
     try {
       applyCategoryPosture(posture, db.policies, mode);
       // The applying confirmation — the "tuned" segment reports the

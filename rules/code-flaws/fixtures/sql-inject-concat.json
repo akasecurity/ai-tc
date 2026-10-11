@@ -58,5 +58,25 @@
     "label": "WHERE-clause fragment concatenation",
     "text": "clause = \"WHERE id = \" + userId",
     "shouldMatch": true
+  },
+  {
+    "label": "SELECT list in one literal, FROM and WHERE in a later one",
+    "text": "query = \"SELECT \" + cols + \" FROM users WHERE id = \" + userId",
+    "shouldMatch": true
+  },
+  {
+    "label": "quoted value inside the SQL literal before the +",
+    "text": "q = \"SELECT * FROM t WHERE name = '\" + name + \"'\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "a SQL literal does not reach a + past a later string that opens with a SQL verb",
+    "text": "log(\"DELETE FROM jobs done\"); label = \"Select one\" + suffix;",
+    "shouldMatch": false
+  },
+  {
+    "label": "JSON array of quoted SQL words with no + operator",
+    "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"drop 5\",\"where 6\"]",
+    "shouldMatch": false
   }
 ]

@@ -17,6 +17,7 @@ import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import type { PreToolUseOutput, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
@@ -375,6 +376,36 @@ function fakeGateway(b: PolicyBundle): DataGateway {
     close: () => Promise.resolve(),
   };
 }
+
+// A field whose bounded large-input scan did not finish is `block` with
+// `scanIncomplete` set and NO findings. Every other branch here keys the deny on
+// a flagged rule, so without its own check the field reads as clean and the
+// call runs with a command nothing scanned.
+describe('decidePreToolUse — a field whose bounded scan did not finish', () => {
+  const refused = (scanIncomplete: 'timeout' | 'unavailable'): CaptureResult => ({
+    action: 'block',
+    text: null,
+    findings: [],
+    scanIncomplete,
+  });
+
+  it.each([
+    ['Bash', BASH_COMMAND, 'timeout'],
+    ['apply_patch', APPLY_PATCH_INPUT, 'unavailable'],
+  ] as const)('denies the %s call with the too-large reason', (toolName, spec, scanIncomplete) => {
+    const output = decidePreToolUse(toolName, { command: 'x' }, [
+      { spec, result: refused(scanIncomplete) },
+    ]);
+    expect(output).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: tooLargeToScanMessage(`${toolName} call`),
+      },
+    });
+    expect(denyReason(output)).toContain('too large');
+  });
+});
 
 describe('incident regression — the seed-cleanup DELETE, end to end', () => {
   const INCIDENT_COMMAND =

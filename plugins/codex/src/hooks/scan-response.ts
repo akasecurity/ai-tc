@@ -22,7 +22,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
+import { tooLargeToolText, withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { ScannableResponseField } from './tool-response.ts';
 
 // The wall-time budget for the field loop, in milliseconds since the hook
@@ -54,6 +54,10 @@ export interface ResponseScanOutcome {
   // Fields left unscanned because the deadline passed. The caller counts a
   // non-zero value as a fail-open exit.
   unscannedFields: number;
+  // Names of the fields whose bounded scan did not finish
+  // (`CaptureResult.scanIncomplete`). Unlike `unscannedFields`, these were
+  // reached and REFUSED, so the result is withheld rather than passed.
+  tooLargeFields: string[];
 }
 
 export async function scanResponseFields(
@@ -70,6 +74,7 @@ export async function scanResponseFields(
     redactedReferences: [],
     toolName,
     unscannedFields: 0,
+    tooLargeFields: [],
   };
 
   for (const [index, field] of fields.entries()) {
@@ -78,6 +83,13 @@ export async function scanResponseFields(
       break;
     }
     const result = await capture(field.text);
+    // Checked before the no-findings skip: a refused field has no findings
+    // because nothing finished, not because it is clean.
+    if (result.scanIncomplete !== undefined) {
+      const name = field.path.join('.');
+      if (!outcome.tooLargeFields.includes(name)) outcome.tooLargeFields.push(name);
+      continue;
+    }
     if (result.findings.length === 0) continue;
 
     if (result.action === 'block') {
@@ -102,9 +114,15 @@ export async function scanResponseFields(
  * Code's field-level `updatedToolOutput` splice.
  */
 export function responseEmitPayload(outcome: ResponseScanOutcome): unknown {
-  const { toolName, withheldFindings, redactedButWithheldFindings, warnedFindings } = outcome;
+  const {
+    toolName,
+    withheldFindings,
+    redactedButWithheldFindings,
+    warnedFindings,
+    tooLargeFields,
+  } = outcome;
   const allWithheld = [...withheldFindings, ...redactedButWithheldFindings];
-  if (allWithheld.length > 0) {
+  if (allWithheld.length > 0 || tooLargeFields.length > 0) {
     const withheldRuleIds =
       withheldFindings.length > 0 ? uniqueRuleIds(withheldFindings) : undefined;
     const redactedRuleIds =
@@ -114,13 +132,19 @@ export function responseEmitPayload(outcome: ResponseScanOutcome): unknown {
     const ref = outcome.blockedReferences[0] ?? outcome.redactedReferences[0];
     return {
       decision: 'block',
-      reason: withheldToolText(toolName, uniqueRuleIds(allWithheld)),
+      // The whole result goes either way; a flagged rule is the more specific
+      // reason when there is one.
+      reason:
+        allWithheld.length > 0
+          ? withheldToolText(toolName, uniqueRuleIds(allWithheld))
+          : tooLargeToolText(toolName),
       systemMessage: withheldBanner({
         toolName,
         action: 'withheld',
         withheldRuleIds,
         redactedRuleIds,
         warnedRuleIds: warnedFindings.length > 0 ? uniqueRuleIds(warnedFindings) : undefined,
+        tooLargeFields: tooLargeFields.length > 0 ? tooLargeFields.join(', ') : undefined,
         blockedRef: ref,
       }),
     };

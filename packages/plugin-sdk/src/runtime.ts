@@ -810,15 +810,16 @@ export function createPluginRuntime(
     //
     // What the sample can NOT correct for is the persistence policy above it: a
     // capture that is measured but never recorded (`persist: 'with-findings'`
-    // with nothing found — see the early return below) carries its measurement
-    // nowhere. The skew therefore follows that CONDITION — a live capture the
-    // caller passed 'with-findings' — and not any particular kind; enumerating
-    // kinds here is what went stale last time. Both 'tool_use' (the pre-tool-use
-    // hooks) and 'response' (the post-tool-use hooks, which see every Read file
-    // and Bash stream) are live and 'with-findings' today, so for each the
-    // recorded set is the findings-bearing subset, which does strictly more work
-    // than the clean captures it stands in for. Any reader aggregating this
-    // field inherits that skew.
+    // with nothing found and nothing refused — see the early return below)
+    // carries its measurement nowhere. The skew therefore follows that
+    // CONDITION — a live capture the caller passed 'with-findings' — and not any
+    // particular kind; enumerating kinds here is what went stale last time. Both
+    // 'tool_use' (the pre-tool-use hooks) and 'response' (the post-tool-use
+    // hooks, which see every Read file and Bash stream) are live and
+    // 'with-findings' today, so for each the recorded set is the findings-bearing
+    // subset plus any refused field, whose reading includes the bounded scan's
+    // wait; both do more work than the clean captures they stand in for. Any
+    // reader aggregating this field inherits that skew.
     //
     // `persist: 'never'` is the other condition, and the stronger one: nothing
     // it measures is ever recorded, so it is not timed at all. Its captures (a
@@ -1143,16 +1144,20 @@ export interface DecisionOptions {
 
 // Persistence policy for capture(): 'always' records an event for every call
 // (the live hook path, so the activity timeline is complete); 'with-findings'
-// records only when something was detected (the historical backfill);
-// 'never' records no event and no finding, for text the caller may enforce on
-// but must not keep (a web chat on a machine that withholds them). Everything
-// before the write still happens under 'never', with the capture's own source
-// tool and metadata: exceptions are matched against them, a single-use grant
-// is spent (with no event to name it), and a block or redact writes the
+// records when something was detected or the field was refused (a bounded scan
+// that did not finish, `scanIncomplete`) and skips only a clean capture (the
+// historical backfill and the live tool hooks); 'never' records no event and
+// no finding, for text the caller may enforce on but must not keep (a web chat
+// on a machine that withholds them). The evaluation is the same under every
+// value, with the capture's own source tool and metadata: exceptions are
+// matched against them, a single-use grant is spent (under 'never', with no
+// event to name it), and a block or redact backed by findings writes the
 // short-lived, masked blocked-detection ledger row the approve flow reads,
-// carrying the capture's session id. `processText` differs on exactly that
-// context: it evaluates with none, so its ledger rows carry no session id and
-// a grant conditioned on a source tool does not match there.
+// carrying the capture's session id. A refused field is a block with no
+// findings: it matches no exception, spends no grant and writes no ledger row,
+// so under 'never' it leaves nothing at all. `processText` differs on exactly
+// that context: it evaluates with none, so its ledger rows carry no session id
+// and a grant conditioned on a source tool does not match there.
 // `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
 // gateway drops content it has already recorded (fresh event ids on a re-run
 // would otherwise duplicate rows). Never set it on the live hook path.
@@ -1167,7 +1172,11 @@ export interface CaptureOptions extends DecisionOptions {
 // What `captureDeferred` hands back: the decision, and the write held back.
 export interface DeferredCapture {
   result: CaptureResult;
-  /** Writes the event and findings. Idempotent; never throws (the write is best effort). */
+  /**
+   * Writes the event and findings as `opts.persist` allows ('never' writes
+   * nothing; 'with-findings' skips a clean capture). Idempotent; never throws
+   * (the write is best effort).
+   */
   record(): Promise<void>;
 }
 

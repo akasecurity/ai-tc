@@ -366,7 +366,10 @@ export const CORROBORATION_FLOOR_MS = BUDGET_MS * CPU_CORROBORATION_SHARE;
 /** The smallest corpus size the growth tier measures. */
 export const GROWTH_START_CHARS = 2_000;
 
-/** The largest corpus size the growth tier climbs to. */
+/**
+ * The largest corpus size the growth tier climbs to. A pair that reads
+ * superlinear is followed one doubling further, so past this at the top.
+ */
 export const GROWTH_MAX_CHARS = 32_000;
 
 // A doubling of the input may cost at most this many times as much. Linear
@@ -459,7 +462,12 @@ function scanContextFor(rule: Rule): { eventKind: EventKind | undefined } {
   return { eventKind: rule.appliesTo?.eventKinds?.[0] };
 }
 
-/** A growth-tier breach: the corpus, the two sizes compared, and their fastest readings. */
+/**
+ * A growth-tier breach: the corpus, the two sizes compared, and their fastest
+ * readings. `nextChars` and `nextMs` are set when the doubling after the pair
+ * was measured as well, which is every `superlinear` breach and an
+ * `over-budget` one that was found there.
+ */
 export interface GrowthBreach {
   reason: 'over-budget' | 'superlinear';
   corpus: string;
@@ -467,6 +475,8 @@ export interface GrowthBreach {
   largeChars: number;
   smallMs: number;
   largeMs: number;
+  nextChars?: number;
+  nextMs?: number;
 }
 
 // Fastest readings at `small` and `small * 2` chars, sampled alternately.
@@ -527,6 +537,58 @@ function isSuperlinear(smallMs: number, largeMs: number): boolean {
   return largeMs >= GROWTH_FLOOR_MS && largeMs / Math.max(smallMs, 1e-6) > MAX_GROWTH_RATIO;
 }
 
+// The fastest reading at twice `large`, taken after a pair has read
+// superlinear, to tell growth that persists from a step.
+//
+// One doubling cannot tell them apart. A cost that is linear on both sides of
+// a threshold between the two sizes (a cache level, a heap region, a compiler
+// tier) reads a against 2a + c there, which is any ratio above 2 depending on
+// the step, and CI runners read 3.1-3.4x that way on rules that
+// are linear to the 200,000-char cap, on the fastest of twenty readings. The
+// next doubling separates the two cases by the shape of the curve rather than
+// by its size. Past a step, a linear cost doubles again, or less than doubles
+// if the step was a one-off: at most 2x, whatever the first ratio was. A
+// polynomial cost does the opposite, because its highest term takes a larger
+// share as the input grows: a quadratic rule that read 3.1x reads closer to 4x
+// on the next doubling, a cubic one closer to 8x. So the second ratio is
+// judged against the same MAX_GROWTH_RATIO, midway between the 2 it is for a
+// step and the 4 it is for a quadratic, and the first ratio is not multiplied
+// in: it is the reading in doubt.
+//
+// One further doubling only. The matchers stop at MAX_MATCHES_PER_RULE, so on
+// a corpus that matches at every unit a scan stops growing once the text holds
+// that many units, and each doubling beyond the first reaches that for longer
+// units. Where that already happens at this size, the reading taken here is
+// the most the corpus costs at any length, and the budget check on it is what
+// bounds the rule.
+//
+// Bounded in time: sampling stops as soon as the reading is at or under the
+// ratio, since more readings can only lower it, and as soon as `majority`
+// readings have all crossed the budget. A pattern just under the budget at
+// `large` therefore costs three readings here if it is cubic, and at most
+// GROWTH_CONFIRM_SAMPLES readings of under the budget each otherwise.
+function nextDoubling(
+  rule: Rule,
+  corpus: GrowthCorpus,
+  large: number,
+  largeMs: number,
+  now: ProbeClock,
+): { nextChars: number; nextMs: number } {
+  const context = scanContextFor(rule);
+  const nextChars = large * 2;
+  const text = corpus.build(nextChars);
+  const majority = Math.floor(GROWTH_SAMPLES / 2) + 1;
+  let nextMs = Infinity;
+  for (let i = 0; i < GROWTH_CONFIRM_SAMPLES; i++) {
+    const start = now();
+    scan(text, [rule], context);
+    nextMs = Math.min(nextMs, now() - start);
+    if (nextMs / Math.max(largeMs, 1e-6) <= MAX_GROWTH_RATIO) break;
+    if (i + 1 >= majority && nextMs >= BUDGET_MS) break;
+  }
+  return { nextChars, nextMs };
+}
+
 /**
  * The first corpus on which `rule`'s cost grows faster than its input, or blows
  * the budget, between two neighbouring sizes; `undefined` when every corpus
@@ -537,7 +599,8 @@ function isSuperlinear(smallMs: number, largeMs: number): boolean {
  * so a pattern that is cubic on a corpus is judged at the size where it first
  * gets expensive, not at the top. The pair below that point is then measured
  * as the fastest of several readings and judged on both the budget and the
- * ratio.
+ * ratio. A pair over the ratio is a breach only if the doubling after it is
+ * over the ratio too, or over the budget; see `nextDoubling`.
  *
  * Call this only on a rule that already passed `worstProbeMs`. A pattern that
  * backtracks exponentially does not return on a 2,000-char input, and the
@@ -565,7 +628,12 @@ export function superlinearGrowth(
         largeMs,
       };
       if (largeMs >= BUDGET_MS) return { reason: 'over-budget', ...breach };
-      if (isSuperlinear(smallMs, largeMs)) return { reason: 'superlinear', ...breach };
+      if (!isSuperlinear(smallMs, largeMs)) continue;
+      const next = nextDoubling(rule, corpus, large, largeMs, now);
+      if (next.nextMs >= BUDGET_MS) return { reason: 'over-budget', ...breach, ...next };
+      if (next.nextMs / Math.max(largeMs, 1e-6) > MAX_GROWTH_RATIO) {
+        return { reason: 'superlinear', ...breach, ...next };
+      }
     }
   }
   return undefined;

@@ -362,11 +362,11 @@ both reach the registry — and `pnpm package:sea` does not run offline. A third
 somewhere other than the registry: on a `bin-v*` tag push, `release-binaries.yml`'s attestation
 step exchanges the runner's OIDC token for a short-lived signing certificate from Sigstore
 (Fulcio), logs the signed provenance to its transparency log (Rekor), and uploads it to GitHub's
-attestations API. A fourth is the pair of publish jobs behind it, which write the rendered
-Homebrew formula and Scoop manifest into `akasecurity/homebrew-tap` and `akasecurity/scoop-bucket`
-through GitHub's contents API with a per-repository token. All four are repository tooling, not
-product paths; nothing a user installs performs any of them, and the installers never contact
-Sigstore.
+attestations API. A fourth is the pair of publish jobs behind it, which write the rendered Homebrew
+formula and Scoop manifest into `akasecurity/homebrew-tap` and `akasecurity/scoop-bucket` through
+GitHub's contents API, each job with a one-hour token it first mints from a GitHub App and scopes to
+that one repository. All four are repository tooling, not product paths; nothing a user installs
+performs any of them, and the installers never contact Sigstore.
 
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
@@ -1711,33 +1711,47 @@ release channel** from the `cli-v*` npm publish:
   `Explain a bin-latest move that lost a race` names that case in the log with no retry loop —
   the repair is re-running this tag's whole workflow, which re-reads the tag from scratch and
   only ever moves forward, so a newer winner makes the re-run a no-op.
-- **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and
-  `publish-scoop-bucket`, push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and
-  `bucket/aka.json` to `akasecurity/scoop-bucket` through the contents API, with a fine-grained
-  PAT per repository (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`). Its value is read exactly once,
-  onto `GH_TOKEN` in the push step's `env:`; the job's gates read a boolean
-  (`${{ secrets.X != '' }}`) instead, because a job-level mapping of the value puts it in every
-  step's environment, the third-party artifact download included. Both targets are HARDCODED
-  rather than repository variables, so the READMEs can be held to the same spelling. Each job
-  holds `contents: read` here and no write scope. On the canonical repository an empty secret
-  FAILS the job with an `::error::` naming it — the Release and the `bin-latest` move have already
-  happened, so the red run is the signal to add the secret and re-run, which a content compare
-  makes a no-op. A fork skips. Each push only moves forward as well: the version already there is
-  read off its versioned download URL, which both formats carry, and a file serving a newer one is
-  left in place — so re-running an older release, or this job alone, cannot downgrade the tap or
-  the bucket. A non-empty existing file that names no such URL at all — hand-edited, or written by
-  something other than this renderer — has nothing in it to compare against, so the push
-  `::warning::`s and still writes rather than either silently keeping it or silently overwriting
-  it. And the write itself is wrapped: a PUT the contents API refuses (two releases racing the
-  same file, say) ends the step with an `::error::` naming the repair — re-run this job, which
-  re-reads the file and leaves a newer one alone — instead of the script's own success line. The
-  formula
-  installs the whole archive directory into `libexec` and symlinks `bin/aka` (Node resolves
-  `process.execPath` through the symlink, which is how `boot.cjs` still finds its sidecars);
-  `brew install ./aka.rb` from the attached copy is refused by current Homebrew, so the attached
-  `aka.rb` is an audit copy and the tap is the only Homebrew door. `scoop install <url>` of the
-  attached `aka.json` IS an install path. There is no darwin-x64 build, so the formula refuses
-  Intel macOS (`depends_on arch: :arm64`).
+- **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and `publish-scoop-bucket`,
+  push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and `bucket/aka.json` to
+  `akasecurity/scoop-bucket` through the contents API, authenticating as a GitHub App rather than a
+  person: each job mints its own token with `actions/create-github-app-token` (pinned by commit
+  SHA), which is revoked when the job ends. The app is configured by one repository VARIABLE,
+  `AKA_RELEASE_APP_CLIENT_ID` (it names the app and grants nothing), and one secret,
+  `AKA_RELEASE_APP_PRIVATE_KEY`. The mint step is the only reader of the key anywhere in the
+  workflow, and the token it returns is handed to the push step alone, as `GH_TOKEN` in its `env:`;
+  the job's gates read a boolean (`${{ vars.X != '' && secrets.Y != '' }}`) instead, because a
+  job-level mapping of the key would put it in every step's environment, the third-party artifact
+  download included. The token's REACH is the mint step's inputs, and the guard pins that whole
+  mapping: `owner` AND `repositories` are both named, because given `owner` alone the action scopes
+  the token to EVERY repository the app is installed on; `permission-contents: write` is named,
+  because a token otherwise inherits all of the installation's permissions; and `skip-token-revoke`
+  stays unset. The two mint steps carry one pinned revision of the action, and the key is looked for
+  in every expression in the file rather than in the two publish jobs, because the `release` job
+  holds `id-token` and attestation write scopes and a step added there reads the same secret by the
+  same name; the match is case-insensitive, and `toJSON(` is refused outright since it serializes a
+  whole context without naming a key. The app itself is installed on the tap and the bucket and on
+  no other repository, and its only repository permission is Contents. Both targets are HARDCODED
+  rather than repository variables, so the READMEs can be held to the same spelling. Each job holds
+  `contents: read` here and no write scope. On the canonical repository an unconfigured app FAILS
+  the job with an `::error::` naming both halves — the Release and the `bin-latest` move have
+  already happened, so the red run is the signal to configure the app and re-run, which a content
+  compare makes a no-op. A re-run executes the workflow as it was at the tagged commit, so
+  configuring the app and re-running repairs a release whose tag already carries the app steps; one
+  tagged before them is not repaired that way. A fork skips. Each push only moves forward as well:
+  the version already there is read off its versioned download URL, which both formats carry, and a
+  file serving a newer one is left in place — so re-running an older release, or this job alone,
+  cannot downgrade the tap or the bucket. A non-empty existing file that names no such URL at all —
+  hand-edited, or written by something other than this renderer — has nothing in it to compare
+  against, so the push `::warning::`s and still writes rather than either silently keeping it or
+  silently overwriting it. And the write itself is wrapped: a PUT the contents API refuses (two
+  releases racing the same file, say) ends the step with an `::error::` naming the repair — re-run
+  this job, which re-reads the file and leaves a newer one alone — instead of the script's own
+  success line. The formula installs the whole archive directory into `libexec` and symlinks
+  `bin/aka` (Node resolves `process.execPath` through the symlink, which is how `boot.cjs` still
+  finds its sidecars); `brew install ./aka.rb` from the attached copy is refused by current
+  Homebrew, so the attached `aka.rb` is an audit copy and the tap is the only Homebrew door.
+  `scoop install <url>` of the attached `aka.json` IS an install path. There is no darwin-x64
+  build, so the formula refuses Intel macOS (`depends_on arch: :arm64`).
 - `cli-v*` (npm) and `bin-v*` (binary) are **independent** — a binary release needs no npm publish
   and vice versa, though they normally share one version line.
 - **Signing state, stated exactly.** The macOS binary is AD-HOC signed (`codesign --sign -`), which

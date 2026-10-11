@@ -1744,24 +1744,42 @@ describe('bin-latest only moves forward', () => {
   });
 });
 
+// The GitHub App the two publish jobs mint their tokens from. The client id is a
+// repository VARIABLE because it names the app and grants nothing; the private
+// key is the one secret, and the only thing here that can mint a token.
+const APP_CLIENT_ID_VAR = 'AKA_RELEASE_APP_CLIENT_ID';
+const APP_PRIVATE_KEY_SECRET = 'AKA_RELEASE_APP_PRIVATE_KEY';
+const APP_CONFIGURED_ENV = 'RELEASE_APP_CONFIGURED';
+
+// The token-minting action, pinned by full commit SHA with the version it
+// resolves to alongside — the property `PINNED_ATTEST_ACTION` states. It is handed
+// a private key that can write to every repository the app is installed on, so
+// whoever can move a tag it is referenced by chooses what runs with that key.
+const PINNED_APP_TOKEN_ACTION =
+  /^[^\S\n]*uses: actions\/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m;
+
 // The two jobs that push a rendered manifest into a repository this workflow
 // does not own.
 const PUBLISH_JOBS = [
   {
     id: 'publish-homebrew-tap',
-    tokenName: 'HOMEBREW_TAP_TOKEN',
     repo: 'akasecurity/homebrew-tap',
     path: 'Formula/aka.rb',
-    failStep: 'Fail if the Homebrew tap token is not configured',
+    failStep: 'Fail if the Homebrew release app is not configured',
+    reportStep: 'Report an unconfigured Homebrew release app',
+    mintStep: 'Mint a token for the Homebrew tap',
+    mintId: 'tap-token',
     pushStep: 'Push Formula/aka.rb to the tap',
     source: 'aka.rb',
   },
   {
     id: 'publish-scoop-bucket',
-    tokenName: 'SCOOP_BUCKET_TOKEN',
     repo: 'akasecurity/scoop-bucket',
     path: 'bucket/aka.json',
-    failStep: 'Fail if the Scoop bucket token is not configured',
+    failStep: 'Fail if the Scoop release app is not configured',
+    reportStep: 'Report an unconfigured Scoop release app',
+    mintStep: 'Mint a token for the Scoop bucket',
+    mintId: 'bucket-token',
     pushStep: 'Push bucket/aka.json to the bucket',
     source: 'aka.json',
   },
@@ -1812,6 +1830,112 @@ function runBlocksOf(jobText) {
   return blocks;
 }
 
+/**
+ * A step's `with:` mapping as a plain object, every value read verbatim.
+ *
+ * The WHOLE mapping is returned rather than the keys a case asks about, because
+ * the property is what the step is NOT given as much as what it is: an extra
+ * `permission-*`, a `skip-token-revoke`, or a legacy `app-id` beside `client-id`
+ * each change what the minted token can do.
+ * @param {string} step one step slice
+ * @returns {Record<string, string>}
+ */
+function withMapping(step) {
+  const lines = step.split('\n');
+  const at = lines.findIndex((line) => /^[^\S\n]*with:[^\S\n]*$/.test(line));
+  expect(at, 'the step has no with: mapping').toBeGreaterThanOrEqual(0);
+  const indent = lines[at].search(/\S/);
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === '') continue;
+    if (line.search(/\S/) <= indent) break;
+    const entry = /^[^\S\n]*([A-Za-z0-9_-]+): (.*?)[^\S\n]*$/.exec(line);
+    expect(entry, `an unreadable with: entry \`${line.trim()}\``).not.toBeNull();
+    out[entry[1]] = entry[2];
+  }
+  return out;
+}
+
+// What the key and the minted token can reach is a property of the WORKFLOW, not
+// of the two jobs meant to hold them: a step added to the build matrix or to the
+// release job — which holds `id-token` and `attestations: write` — reads the same
+// secret by the same name. So the inventory is taken over every expression in the
+// file, comments dropped, and names are matched without regard to case because
+// GitHub resolves them that way.
+describe('the release app credentials, across the whole workflow', () => {
+  const expressions = () =>
+    [...dropComments(readWorkflow()).matchAll(/\$\{\{[\s\S]*?\}\}/g)].map((m) => m[0]);
+
+  /** Whether an expression touches the secrets context, in any spelling. */
+  const readsSecretsContext = (expression) => /\bsecrets\b/i.test(expression);
+
+  const KEY_READ = `\${{ secrets.${APP_PRIVATE_KEY_SECRET} }}`;
+  const CONFIGURED_READ = `\${{ vars.${APP_CLIENT_ID_VAR} != '' && secrets.${APP_PRIVATE_KEY_SECRET} != '' }}`;
+
+  // Every `secrets` this workflow reads is one of four expressions, each in a
+  // publish job: the boolean that gates it and the mint step's `private-key`. The
+  // workflow reads no other secret, so the inventory is an exact list rather than
+  // an allowlist of names — a fifth reader, or the same key spelled another way,
+  // is a difference.
+  it('reads secrets in the two publish jobs and nowhere else', () => {
+    const reads = expressions().filter(readsSecretsContext);
+
+    expect(reads).toEqual([CONFIGURED_READ, KEY_READ, CONFIGURED_READ, KEY_READ]);
+  });
+
+  // Positive control for the inventory above: it must be able to see a key that
+  // is spelled in a way the exact-text comparison would not equal.
+  it('matches the secrets context however it is spelled', () => {
+    const spellings = [
+      "${{ secrets['AKA_RELEASE_APP_PRIVATE_KEY'] }}",
+      '${{ secrets.aka_release_app_private_key }}',
+      '${{ toJSON(secrets) }}',
+      '${{ SECRETS.AKA_RELEASE_APP_PRIVATE_KEY }}',
+    ];
+
+    for (const spelling of spellings) {
+      expect(readsSecretsContext(spelling), spelling).toBe(true);
+    }
+  });
+
+  // `toJSON(secrets)` and `toJSON(steps)` serialize every value in the context
+  // without naming one, so no inventory of NAMES sees them.
+  it('serializes no context wholesale', () => {
+    expect(expressions().filter((expression) => /\btoJSON\s*\(/i.test(expression))).toEqual([]);
+  });
+
+  // The minted token is read as a plain property of its own step. The bracket
+  // spelling reaches the same value past a check written against the dotted one.
+  it('reads step outputs by plain property access in the publish jobs', () => {
+    for (const { id } of PUBLISH_JOBS) {
+      const reads = [...rawJobBlock(id).matchAll(/\$\{\{[\s\S]*?\}\}/g)]
+        .map((m) => m[0])
+        .filter((expression) => /\bsteps\b/i.test(expression));
+
+      expect(reads, id).not.toEqual([]);
+      for (const expression of reads) {
+        expect(expression, `${id} reads a step output another way`).toMatch(
+          /^\$\{\{ steps\.[A-Za-z0-9_-]+\.outputs\.token \}\}$/,
+        );
+      }
+    }
+  });
+
+  // Both jobs are handed the key by the same third-party action, so one revision
+  // of it is reviewed rather than two. The pin check below each job accepts any
+  // full SHA, which would let the jobs drift apart.
+  it('pins both mint steps to the same action revision', () => {
+    const uses = PUBLISH_JOBS.map(({ id, mintStep }) => {
+      const found = /^[^\S\n]*(uses: .*)$/m.exec(stepNamed(jobBlock(readWorkflow(), id), mintStep));
+      expect(found, `${id} mint step has no uses: line`).not.toBeNull();
+      return found[1];
+    });
+
+    expect(new Set(uses).size, `the mint steps differ: ${uses.join(' | ')}`).toBe(1);
+  });
+});
+
 describe.each(PUBLISH_JOBS)('$id', (target) => {
   it('waits on the release and runs only for a tag push', () => {
     const job = jobBlock(readWorkflow(), target.id);
@@ -1824,11 +1948,21 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // scope on THIS repository would be a second, broader credential on the same
   // runner for no reason, and nothing is checked out, so no repository token is
   // persisted either.
+  //
+  // The job's own `permissions:` block is read, not the whole job: the mint step
+  // names `permission-contents: write`, which is a scope on the OTHER
+  // repository's token and says nothing about this one.
   it('reads this repository and writes nothing in it', () => {
     const job = jobBlock(readWorkflow(), target.id);
 
-    expect(job, `${target.id} declares no permissions block`).toMatch(/^ {6}contents: read$/m);
-    expect(job).not.toMatch(/:[^\S\n]*write/);
+    const granted = /^ {4}permissions:[^\S\n]*\n((?: {6}\S[^\n]*\n)+)/m.exec(`${job}\n`);
+    expect(granted, `${target.id} declares no permissions block`).not.toBeNull();
+    expect(
+      granted[1]
+        .trim()
+        .split('\n')
+        .map((line) => line.replace(/[^\S\n]+#.*$/, '').trim()),
+    ).toEqual(['contents: read']);
     expect(job).not.toMatch(/^[^\S\n]*uses: actions\/checkout/m);
   });
 
@@ -1855,9 +1989,45 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     }
   });
 
+  // The token's REACH is this step's inputs, so the whole mapping is pinned.
+  //
+  // `owner` without `repositories` is the one that matters most: the action then
+  // scopes the token to EVERY repository the app is installed on, and nothing
+  // about the push would notice — it would simply be holding a key to the other
+  // repository as well. Naming `repositories` to a different repo than the push
+  // targets fails the other way, and only on a real tag. `permission-contents` is
+  // named because a token otherwise inherits all of the installation's permissions,
+  // and `skip-token-revoke` must stay absent so the token dies with the job.
+  it('mints a token for its own repository alone, with one permission', () => {
+    const job = jobBlock(readWorkflow(), target.id);
+    const mint = stepNamed(job, target.mintStep);
+    const [owner, repoName] = target.repo.split('/');
+
+    expect(mint).toMatch(PINNED_APP_TOKEN_ACTION);
+    expect(mint).toMatch(new RegExp(`^[^\\S\\n]*id: ${target.mintId}$`, 'm'));
+    expect(soleIfCondition(mint, `the ${target.id} mint step`)).toBe(
+      `env.${APP_CONFIGURED_ENV} == 'true'`,
+    );
+    expect(withMapping(mint)).toEqual({
+      'client-id': `\${{ vars.${APP_CLIENT_ID_VAR} }}`,
+      'private-key': `\${{ secrets.${APP_PRIVATE_KEY_SECRET} }}`,
+      owner,
+      repositories: repoName,
+      'permission-contents': 'write',
+    });
+  });
+
+  it('mints the token before the step that uses it', () => {
+    const job = jobBlock(readWorkflow(), target.id);
+
+    expect(soleIndexOf(job, `- name: ${target.mintStep}`, target.id)).toBeLessThan(
+      soleIndexOf(job, `- name: ${target.pushStep}`, target.id),
+    );
+  });
+
   // A released binary whose formula was never pushed is a tap serving the
   // previous version with a green tick on the run that should have moved it.
-  it('fails closed on the canonical repository when the token is missing', () => {
+  it('fails closed on the canonical repository when the app is not configured', () => {
     const step = stepNamed(rawJobBlock(target.id), target.failStep);
     const gate = soleIfCondition(step, `the ${target.id} fail-closed step`);
     const script = blockScalarText(step, 'run');
@@ -1865,91 +2035,119 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     // Exactly, not by containment: a third conjunct (`&& false`) keeps both
     // substrings and makes the refusal unreachable.
     expect(gate).toBe(
-      `github.repository == 'akasecurity/ai-tc' && env.${target.tokenName}_SET != 'true'`,
+      `github.repository == 'akasecurity/ai-tc' && env.${APP_CONFIGURED_ENV} != 'true'`,
     );
     expect(script).toMatch(/^echo "::error::/m);
-    expect(script).toContain(target.tokenName);
+    // Both halves of the configuration, so whoever reads the red run knows there
+    // are two things to set rather than one.
+    expect(script).toContain(APP_CLIENT_ID_VAR);
+    expect(script).toContain(APP_PRIVATE_KEY_SECRET);
     expect(script).toMatch(/\bexit 1\b/);
   });
 
-  // And the push itself happens only with a token, which is what makes a fork
+  // A fork has no app, and is meant to build and release nothing of the kind.
+  it('reports, rather than fails, off the canonical repository', () => {
+    const step = stepNamed(rawJobBlock(target.id), target.reportStep);
+
+    expect(soleIfCondition(step, `the ${target.id} fork notice`)).toBe(
+      `github.repository != 'akasecurity/ai-tc' && env.${APP_CONFIGURED_ENV} != 'true'`,
+    );
+    expect(blockScalarText(step, 'run')).toMatch(/^echo '::notice::/m);
+  });
+
+  // And the push itself happens only with an app, which is what makes a fork
   // inert rather than broken.
-  it('pushes only when a token is configured', () => {
+  it('pushes only when the app is configured', () => {
     const gate = soleIfCondition(
       stepNamed(rawJobBlock(target.id), target.pushStep),
       `the ${target.id} push step`,
     );
 
-    expect(gate).toBe(`env.${target.tokenName}_SET == 'true'`);
+    expect(gate).toBe(`env.${APP_CONFIGURED_ENV} == 'true'`);
   });
 
-  // Secrets are unreadable from an `if:`, so the job carries whether the token
-  // is set as a boolean, and the value itself is mapped exactly once: onto
-  // GH_TOKEN, in the step that calls the API. A job-level mapping of the value
-  // reads the same to every gate below while handing the token to every step's
-  // environment — the artifact download included.
-  it('maps the token value once, onto GH_TOKEN in the push step', () => {
+  // Secrets are unreadable from an `if:`, so the job carries whether the app is
+  // configured as a boolean. The private key itself is read ONCE more, in the mint
+  // step, and nowhere else — a job-level mapping of it reads the same to every gate
+  // below while handing the key to every step's environment, the artifact
+  // download included. What the push step is handed is the minted token, once.
+  it('reads the private key once, into the mint step, and gives the push step only the token', () => {
     const raw = rawJobBlock(target.id);
 
     expect(raw, `${target.id} carries no boolean for its gates`).toMatch(
       new RegExp(
-        `^ {6}${target.tokenName}_SET: \\$\\{\\{ secrets\\.${target.tokenName} != '' \\}\\}$`,
+        `^ {6}${APP_CONFIGURED_ENV}: \\$\\{\\{ vars\\.${APP_CLIENT_ID_VAR} != '' && secrets\\.${APP_PRIVATE_KEY_SECRET} != '' \\}\\}$`,
         'm',
       ),
     );
 
-    // Any expression reading the secret, whatever it does with it. The boolean
-    // above is one; the GH_TOKEN mapping must be the only other.
-    const reads = [
-      ...raw.matchAll(
-        new RegExp(`\\$\\{\\{[^}]*\\bsecrets\\.${target.tokenName}\\b[^}]*\\}\\}`, 'g'),
-      ),
-    ].map((m) => m[0]);
-    expect(reads, `${target.id} reads ${target.tokenName} somewhere else`).toEqual([
-      `\${{ secrets.${target.tokenName} != '' }}`,
-      `\${{ secrets.${target.tokenName} }}`,
+    /** Every `${{ }}` expression in the job that mentions `pattern`. */
+    const expressionsMentioning = (pattern) =>
+      [...raw.matchAll(new RegExp(`\\$\\{\\{[^}]*\\b${pattern}\\b[^}]*\\}\\}`, 'g'))].map(
+        (m) => m[0],
+      );
+
+    expect(
+      expressionsMentioning(`secrets\\.${APP_PRIVATE_KEY_SECRET}`),
+      `${target.id} reads ${APP_PRIVATE_KEY_SECRET} somewhere else`,
+    ).toEqual([
+      `\${{ vars.${APP_CLIENT_ID_VAR} != '' && secrets.${APP_PRIVATE_KEY_SECRET} != '' }}`,
+      `\${{ secrets.${APP_PRIVATE_KEY_SECRET} }}`,
     ]);
+
+    // WHICH step reads it: the mint step and no other. The count above would
+    // pass a key moved onto the push step's environment.
+    const readers = steps(raw).filter((step) => /\$\{\{[^}]*\bsecrets\./.test(step));
+    expect(readers, `${target.id} has more than one step reading a secret`).toHaveLength(1);
+    expect(readers[0]).toContain(`name: ${target.mintStep}`);
+
     expect(
       stepNamed(raw, target.pushStep),
-      `the push step does not map ${target.tokenName} onto GH_TOKEN`,
+      `the push step does not map the minted token onto GH_TOKEN`,
     ).toMatch(
-      new RegExp(`^[^\\S\\n]*GH_TOKEN: \\$\\{\\{ secrets\\.${target.tokenName} \\}\\}$`, 'm'),
+      new RegExp(
+        `^[^\\S\\n]*GH_TOKEN: \\$\\{\\{ steps\\.${target.mintId}\\.outputs\\.token \\}\\}$`,
+        'm',
+      ),
     );
+    expect(
+      expressionsMentioning(`steps\\.${target.mintId}\\.outputs\\.token`),
+      `${target.id} reads the minted token somewhere else`,
+    ).toEqual([`\${{ steps.${target.mintId}.outputs.token }}`]);
   });
 
-  // Two things must not happen to the token once a step has it: a `${{ }}`
-  // expression inside a `run:` is pasted into the program text before bash
-  // parses it, and a dereference anywhere in a script puts the value on a
+  // Two things must not happen to the key or the token once a step has it: a
+  // `${{ }}` expression inside a `run:` is pasted into the program text before
+  // bash parses it, and a dereference anywhere in a script puts the value on a
   // command line.
-  it('hands the token to a shell only as GH_TOKEN in an env mapping', () => {
+  it('hands the minted token to a shell only as GH_TOKEN in an env mapping', () => {
     const raw = rawJobBlock(target.id);
 
     const blocks = runBlocksOf(raw);
-    // The control for the two absence checks: one of these scripts names the
-    // secret in its refusal message, so a reader that captured nothing would
-    // fail here rather than pass the loop below.
+    // The control for the absence checks: the refusal message names both, so a
+    // reader that captured nothing would fail here rather than pass the loop below.
     expect(
-      blocks.filter((block) => block.includes(target.tokenName)),
+      blocks.filter((block) => block.includes(APP_PRIVATE_KEY_SECRET)),
       'no run: block mentions the secret at all — these scripts were not captured',
     ).not.toEqual([]);
 
     for (const block of blocks) {
-      expect(block, 'a run: block dereferences the token').not.toMatch(
-        new RegExp(`\\$\\{?${target.tokenName}\\b`),
-      );
+      for (const name of [APP_PRIVATE_KEY_SECRET, APP_CLIENT_ID_VAR]) {
+        expect(block, `a run: block dereferences ${name}`).not.toMatch(
+          new RegExp(`\\$\\{?${name}\\b`),
+        );
+        // The NAME is what the refusal reports, so it may appear — on an
+        // annotation line and nowhere else.
+        const naming = block.split('\n').filter((line) => new RegExp(`\\b${name}\\b`).test(line));
+        expect(
+          naming.filter((line) => !/^echo ["']::(?:error|notice)::/.test(line.trim())),
+          `a run: block names ${name} outside an annotation`,
+        ).toEqual([]);
+      }
       // Not named at all, not merely not dereferenced: `printenv GH_TOKEN |
       // base64` reads it with no `$`, and the encoding defeats the runner's
       // log masking. `gh` finds GH_TOKEN in its environment on its own.
       expect(block, 'a run: block names GH_TOKEN').not.toMatch(/\bGH_TOKEN\b/);
-      // The secret's NAME is what the refusal and the notice report, so it may
-      // appear — on an annotation line and nowhere else.
-      const naming = block
-        .split('\n')
-        .filter((line) => new RegExp(`\\b${target.tokenName}\\b`).test(line));
-      expect(
-        naming.filter((line) => !/^echo ["']::(?:error|notice)::/.test(line.trim())),
-        `a run: block names ${target.tokenName} outside an annotation`,
-      ).toEqual([]);
       expect(block, 'a run: block pastes an expression into the program text').not.toContain('${{');
     }
   });

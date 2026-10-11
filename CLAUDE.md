@@ -1715,43 +1715,66 @@ release channel** from the `cli-v*` npm publish:
   push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and `bucket/aka.json` to
   `akasecurity/scoop-bucket` through the contents API, authenticating as a GitHub App rather than a
   person: each job mints its own token with `actions/create-github-app-token` (pinned by commit
-  SHA), which is revoked when the job ends. The app is configured by one repository VARIABLE,
-  `AKA_RELEASE_APP_CLIENT_ID` (it names the app and grants nothing), and one secret,
-  `AKA_RELEASE_APP_PRIVATE_KEY`. The mint step is the only reader of the key anywhere in the
-  workflow, and the token it returns is handed to the push step alone, as `GH_TOKEN` in its `env:`;
-  the job's gates read a boolean (`${{ vars.X != '' && secrets.Y != '' }}`) instead, because a
-  job-level mapping of the key would put it in every step's environment, the third-party artifact
-  download included. The token's REACH is the mint step's inputs, and the guard pins that whole
-  mapping: `owner` AND `repositories` are both named, because given `owner` alone the action scopes
-  the token to EVERY repository the app is installed on; `permission-contents: write` is named,
-  because a token otherwise inherits all of the installation's permissions; and `skip-token-revoke`
-  stays unset. The two mint steps carry one pinned revision of the action, and the key is looked for
-  in every expression in the file rather than in the two publish jobs, because the `release` job
-  holds `id-token` and attestation write scopes and a step added there reads the same secret by the
-  same name; the match is case-insensitive, and `toJSON(` is refused outright since it serializes a
-  whole context without naming a key. The app itself is installed on the tap and the bucket and on
-  no other repository, and its only repository permission is Contents. Both targets are HARDCODED
-  rather than repository variables, so the READMEs can be held to the same spelling. Each job holds
-  `contents: read` here and no write scope. On the canonical repository an unconfigured app FAILS
-  the job with an `::error::` naming both halves — the Release and the `bin-latest` move have
-  already happened, so the red run is the signal to configure the app and re-run, which a content
-  compare makes a no-op. A re-run executes the workflow as it was at the tagged commit, so
-  configuring the app and re-running repairs a release whose tag already carries the app steps; one
-  tagged before them is not repaired that way. A fork skips. Each push only moves forward as well:
-  the version already there is read off its versioned download URL, which both formats carry, and a
-  file serving a newer one is left in place — so re-running an older release, or this job alone,
-  cannot downgrade the tap or the bucket. A non-empty existing file that names no such URL at all —
-  hand-edited, or written by something other than this renderer — has nothing in it to compare
-  against, so the push `::warning::`s and still writes rather than either silently keeping it or
-  silently overwriting it. And the write itself is wrapped: a PUT the contents API refuses (two
-  releases racing the same file, say) ends the step with an `::error::` naming the repair — re-run
-  this job, which re-reads the file and leaves a newer one alone — instead of the script's own
-  success line. The formula installs the whole archive directory into `libexec` and symlinks
-  `bin/aka` (Node resolves `process.execPath` through the symlink, which is how `boot.cjs` still
-  finds its sidecars); `brew install ./aka.rb` from the attached copy is refused by current
-  Homebrew, so the attached `aka.rb` is an audit copy and the tap is the only Homebrew door.
-  `scoop install <url>` of the attached `aka.json` IS an install path. There is no darwin-x64
-  build, so the formula refuses Intel macOS (`depends_on arch: :arm64`).
+  SHA), and the token is revoked when the job ends. The app is configured by one repository
+  VARIABLE, `AKA_RELEASE_APP_CLIENT_ID` (it names the app and grants nothing), and one secret,
+  `AKA_RELEASE_APP_PRIVATE_KEY`. The mint step is the only step handed the key, and the token it
+  returns is handed to the push step alone, as `GH_TOKEN` in its `env:`; the job's gates read a
+  boolean (`${{ vars.X != '' && secrets.Y != '' }}`) that tests only that the variable and the
+  secret are set, because a job-level mapping of the key would put it in every step's environment,
+  the artifact download included. The token's REACH is the mint step's inputs, and the guard pins
+  that whole mapping: `owner` AND `repositories` are both named, because given `owner` alone the
+  action scopes the token to EVERY repository the app is installed on; `permission-contents: write`
+  is named, because a token otherwise inherits all of the installation's permissions; and
+  `skip-token-revoke` stays unset. The mint step takes no `env:` and the job's own `env:` holds only
+  that boolean, because the action also reads its `permission-*` inputs from `INPUT_PERMISSION-*`
+  environment variables, which have no default; no `INPUT_` name appears anywhere in the file. Every
+  action in the two publish jobs is pinned by commit SHA, and the two mint steps carry one revision,
+  because every step in a job runs as the same user and an unpinned one runs before the key is
+  handed out. The key is looked for in every expression in the file rather than in the two publish
+  jobs, because the `release` job holds `id-token` and attestation write scopes and a step added
+  there reads the same secret by the same name. The expressions are read from the file's own bytes,
+  since a `#` line inside a `run: |` block is script text GitHub still substitutes, and string
+  literals are respected, since a `}}` inside one does not end the expression; the match is
+  case-insensitive, `toJSON(` is refused outright because it serializes a whole context without
+  naming a key, and no job may carry a `secrets:` key, because a call to a reusable workflow hands
+  the key over with `secrets: inherit` without writing an expression. Each publish job is built from
+  a fixed set of job and step keys, written in block style, so a `shell:` template, a
+  `continue-on-error`, a `container:` or a quoted or flow-style key is a failure rather than
+  something no case reads; the download step's whole `with:` mapping is pinned, because
+  `repository`, `run-id` and `github-token` would make it fetch another repository's run; no
+  backslash escape and no workflow-level `env:` appears outside a script; and the fail-closed,
+  notice and explanation scripts are RUN and their exit status and output read, since a pattern
+  cannot tell `exit 0 # exit 1` from `exit 1`. These are line-based readers over the file's text and
+  not a YAML parse: they refuse the spellings an edit would plausibly take rather than decode every
+  spelling YAML allows, and they are an early catch for a mistake, not a control — whoever can
+  change the workflow can change its guard. The installation is the ceiling on all of this and
+  nothing in this tree can observe it: the app must be installed only on the tap and the bucket,
+  with Contents (read and write) as its only chosen repository permission, and Metadata: read is
+  mandatory for every app. CONTRIBUTING.md's setup steps are what establish that. Both targets are
+  HARDCODED rather than repository variables, so the READMEs can be held to the same spelling. Each
+  job holds `contents: read` here and no write scope. On the canonical repository an unconfigured
+  app FAILS the job with an `::error::` naming both halves — the Release and the `bin-latest` move
+  have already happened, so the red run is the signal to configure the app and re-run, which a
+  content compare makes a no-op. A mint that fails once the app is configured (not installed on the
+  repository, a wrong client id, a key rotated incorrectly) is explained by a step gated on that
+  step's own outcome, since the action's own error says nothing about what already shipped. A re-run
+  executes the workflow as it was at the tagged commit, so configuring the app and re-running
+  repairs a release whose tag already carries the app steps; one tagged before them is not repaired
+  that way. A fork with no app configured skips. Each push only moves forward as well: the version
+  already there is read off its versioned download URL, which both formats carry, and a file serving
+  a newer one is left in place — so re-running an older release, or this job alone, cannot downgrade
+  the tap or the bucket. A non-empty existing file that names no such URL at all — hand-edited, or
+  written by something other than this renderer — has nothing in it to compare against, so the push
+  `::warning::`s and still writes rather than either silently keeping it or silently overwriting it.
+  And the write itself is wrapped: a PUT the contents API refuses (two releases racing the same
+  file, say) ends the step with an `::error::` naming the repair — re-run this job, which re-reads
+  the file and leaves a newer one alone — instead of the script's own success line. The formula
+  installs the whole archive directory into `libexec` and symlinks `bin/aka` (Node resolves
+  `process.execPath` through the symlink, which is how `boot.cjs` still finds its sidecars);
+  `brew install ./aka.rb` from the attached copy is refused by current Homebrew, so the attached
+  `aka.rb` is an audit copy and the tap is the only Homebrew door. `scoop install <url>` of the
+  attached `aka.json` IS an install path. There is no darwin-x64 build, so the formula refuses Intel
+  macOS (`depends_on arch: :arm64`).
 - `cli-v*` (npm) and `bin-v*` (binary) are **independent** — a binary release needs no npm publish
   and vice versa, though they normally share one version line.
 - **Signing state, stated exactly.** The macOS binary is AD-HOC signed (`codesign --sign -`), which

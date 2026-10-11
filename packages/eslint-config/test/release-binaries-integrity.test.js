@@ -75,10 +75,14 @@ import {
   blockScalarLines,
   blockScalarText,
   dropComments,
+  expressionsIn,
   jobBlock,
+  linesOutsideBlockScalars,
+  mappingOf,
   rawStepNamed as rawStepIn,
   stepNamed,
   steps,
+  withMapping,
 } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
@@ -1769,6 +1773,7 @@ const PUBLISH_JOBS = [
     reportStep: 'Report an unconfigured Homebrew release app',
     mintStep: 'Mint a token for the Homebrew tap',
     mintId: 'tap-token',
+    explainStep: 'Explain a failed Homebrew token mint',
     pushStep: 'Push Formula/aka.rb to the tap',
     source: 'aka.rb',
   },
@@ -1780,10 +1785,59 @@ const PUBLISH_JOBS = [
     reportStep: 'Report an unconfigured Scoop release app',
     mintStep: 'Mint a token for the Scoop bucket',
     mintId: 'bucket-token',
+    explainStep: 'Explain a failed Scoop token mint',
     pushStep: 'Push bucket/aka.json to the bucket',
     source: 'aka.json',
   },
 ];
+
+// The keys a publish job and its steps are built from, and nothing else. A key
+// outside these — `container`, `environment`, `strategy`, `secrets`, `shell`,
+// `continue-on-error`, `working-directory` — is a capability this file has not
+// reviewed, and several of them change what a step does with the key without
+// touching a line any other case reads.
+const JOB_KEYS = ['name', 'needs', 'if', 'runs-on', 'permissions', 'env', 'steps'];
+const STEP_KEYS = ['name', 'id', 'if', 'uses', 'with', 'env', 'run'];
+
+/**
+ * The structural lines of a job body that name something this file has not
+ * reviewed: a job key or a step key outside the sets above, a step item that is
+ * not a block-style `- key:`, or a line that does not sit at the job's columns.
+ *
+ * Read over the lines OUTSIDE block scalars, because what a script or a
+ * free-text value contains is not structure. A quoted key (`"env":`), a flow
+ * mapping (`- { uses: … }`) and an escaped key are refused here rather than
+ * decoded: this reads lines, it does not parse YAML, and a spelling it cannot
+ * read is a spelling it cannot vouch for.
+ * @param {string} job a comment-dropped job body
+ * @returns {string[]}
+ */
+function shapeProblems(job) {
+  /** @type {string[]} */
+  const problems = [];
+  let section = '';
+  for (const line of linesOutsideBlockScalars(job)) {
+    if (line.trim() === '') continue;
+    const indent = line.search(/\S/);
+    const text = line.trim();
+    if (indent < 4) {
+      problems.push(`outside the job's columns: ${text}`);
+    } else if (indent === 4) {
+      const key = /^([a-z][a-z-]*):/.exec(text);
+      if (key === null || !JOB_KEYS.includes(key[1])) problems.push(`job key: ${text}`);
+      else section = key[1];
+    } else if (section === 'steps' && indent === 6) {
+      const item = /^-(?:[^\S\n]+([a-z][a-z-]*):|$)/.exec(text);
+      if (item === null || (item[1] !== undefined && !STEP_KEYS.includes(item[1]))) {
+        problems.push(`step item: ${text}`);
+      }
+    } else if (section === 'steps' && indent === 8) {
+      const key = /^([a-z][a-z-]*):/.exec(text);
+      if (key === null || !STEP_KEYS.includes(key[1])) problems.push(`step key: ${text}`);
+    }
+  }
+  return problems;
+}
 
 // A job's own bytes, comments and all.
 //
@@ -1792,7 +1846,7 @@ const PUBLISH_JOBS = [
 // executing one has to read it unaltered.
 function rawJobBlock(id) {
   const block = new RegExp(
-    `^ {2}${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|\\s*$(?![\\s\\S]))`,
+    `^ {2}${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}[^\\s#]|\\s*$(?![\\s\\S]))`,
     'm',
   ).exec(readWorkflow());
   expect(block, `no job \`${id}\` in the workflow`).not.toBeNull();
@@ -1818,11 +1872,11 @@ function stepEnvValue(step, key) {
  */
 function runBlocksOf(jobText) {
   const blocks = steps(jobText)
-    .filter((step) => /^[^\S\n]*run: /m.test(step))
+    .filter((step) => /^(?: {8})?run: /m.test(step))
     .map((step) =>
-      /^[^\S\n]*run: \|[^\S\n]*$/m.test(step)
-        ? blockScalarText(step, 'run')
-        : (/^[^\S\n]*run: (.+)$/m.exec(step)?.[1] ?? ''),
+      /^(?: {8})?run: \|[^\S\n]*$/m.test(step)
+        ? blockScalarText(step, 'run', { indent: 8 })
+        : (/^(?: {8})?run: (.+)$/m.exec(step)?.[1] ?? ''),
     );
   // Non-emptiness first: every assertion below is an absence check, and an
   // absence check over no scripts at all passes.
@@ -1830,42 +1884,20 @@ function runBlocksOf(jobText) {
   return blocks;
 }
 
-/**
- * A step's `with:` mapping as a plain object, every value read verbatim.
- *
- * The WHOLE mapping is returned rather than the keys a case asks about, because
- * the property is what the step is NOT given as much as what it is: an extra
- * `permission-*`, a `skip-token-revoke`, or a legacy `app-id` beside `client-id`
- * each change what the minted token can do.
- * @param {string} step one step slice
- * @returns {Record<string, string>}
- */
-function withMapping(step) {
-  const lines = step.split('\n');
-  const at = lines.findIndex((line) => /^[^\S\n]*with:[^\S\n]*$/.test(line));
-  expect(at, 'the step has no with: mapping').toBeGreaterThanOrEqual(0);
-  const indent = lines[at].search(/\S/);
-  /** @type {Record<string, string>} */
-  const out = {};
-  for (const line of lines.slice(at + 1)) {
-    if (line.trim() === '') continue;
-    if (line.search(/\S/) <= indent) break;
-    const entry = /^[^\S\n]*([A-Za-z0-9_-]+): (.*?)[^\S\n]*$/.exec(line);
-    expect(entry, `an unreadable with: entry \`${line.trim()}\``).not.toBeNull();
-    out[entry[1]] = entry[2];
-  }
-  return out;
-}
-
 // What the key and the minted token can reach is a property of the WORKFLOW, not
 // of the two jobs meant to hold them: a step added to the build matrix or to the
 // release job — which holds `id-token` and `attestations: write` — reads the same
 // secret by the same name. So the inventory is taken over every expression in the
-// file, comments dropped, and names are matched without regard to case because
-// GitHub resolves them that way.
+// file, and names are matched without regard to case because GitHub resolves them
+// that way.
+//
+// The file's own bytes are read, comments included. A `#` line inside a `run: |`
+// block is script text, and GitHub substitutes expressions in it before the shell
+// runs; a comment filter would delete exactly the line that writes the key into
+// the script file. A YAML comment that spells an expression is flagged too, which
+// is the conservative direction.
 describe('the release app credentials, across the whole workflow', () => {
-  const expressions = () =>
-    [...dropComments(readWorkflow()).matchAll(/\$\{\{[\s\S]*?\}\}/g)].map((m) => m[0]);
+  const expressions = () => expressionsIn(readWorkflow());
 
   /** Whether an expression touches the secrets context, in any spelling. */
   const readsSecretsContext = (expression) => /\bsecrets\b/i.test(expression);
@@ -1909,9 +1941,9 @@ describe('the release app credentials, across the whole workflow', () => {
   // spelling reaches the same value past a check written against the dotted one.
   it('reads step outputs by plain property access in the publish jobs', () => {
     for (const { id } of PUBLISH_JOBS) {
-      const reads = [...rawJobBlock(id).matchAll(/\$\{\{[\s\S]*?\}\}/g)]
-        .map((m) => m[0])
-        .filter((expression) => /\bsteps\b/i.test(expression));
+      const reads = expressionsIn(rawJobBlock(id)).filter((expression) =>
+        /\bsteps\b/i.test(expression),
+      );
 
       expect(reads, id).not.toEqual([]);
       for (const expression of reads) {
@@ -1920,6 +1952,137 @@ describe('the release app credentials, across the whole workflow', () => {
         );
       }
     }
+  });
+
+  // A job that calls a reusable workflow can pass the key on without writing an
+  // expression at all: `secrets: inherit` hands over every secret, and a mapping
+  // under `secrets:` hands over the ones it names. Either way the key leaves this
+  // file for code this file does not contain, so no job here carries one.
+  //
+  // Read at any column and in block or flow style, quoted or not: the key is what
+  // matters, not where a particular spelling happens to put it.
+  describe('a job that passes secrets on', () => {
+    /** Whether a structural line names a `secrets` key. */
+    const namesSecretsKey = (line) =>
+      /(?:^[^\S\n]*(?:-[^\S\n]+)*|[{,][^\S\n]*)["']?secrets["']?[^\S\n]*:/.test(line);
+
+    /**
+     * The ids of the jobs in a workflow text that name a `secrets` key.
+     * @param {string} workflow
+     */
+    const jobsNamingSecrets = (workflow) => {
+      const jobs = /^jobs:[^\S\n]*$([\s\S]*)$/m.exec(dropComments(workflow));
+      expect(jobs, 'the workflow declares no jobs block').not.toBeNull();
+      /** @type {string[]} */
+      const offenders = [];
+      let current = '(before the first job)';
+      for (const line of linesOutsideBlockScalars(jobs[1])) {
+        const id = /^ {2}([A-Za-z_][A-Za-z0-9_-]*):/.exec(line);
+        if (id !== null) current = id[1];
+        if (namesSecretsKey(line)) offenders.push(current);
+      }
+      return offenders;
+    };
+
+    it('is absent from every job', () => {
+      expect(jobsNamingSecrets(readWorkflow()), 'jobs passing secrets on').toEqual([]);
+    });
+
+    // The controls: the detector has to see every spelling of the key it exists
+    // to refuse and attribute it to the job it sits in, and has to leave alone
+    // text that merely mentions one, or an empty list above reports nothing.
+    it('is detected in every spelling', () => {
+      for (const line of [
+        '    secrets: inherit',
+        '    "secrets": inherit',
+        "    'secrets':",
+        '    secrets : inherit',
+        '  extra: { uses: o/r/.github/workflows/n.yml@abc, secrets: inherit }',
+        '      secrets:',
+      ]) {
+        expect(namesSecretsKey(line), line).toBe(true);
+      }
+      for (const line of ['    GH_SECRETS: x', '    my-secrets: x', '    name: secrets']) {
+        expect(namesSecretsKey(line), line).toBe(false);
+      }
+    });
+
+    it('is attributed to the job that carries it', () => {
+      const workflow = [
+        'name: x',
+        'jobs:',
+        '  first:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        '      - run: |',
+        '          secrets: not a key, it is script text',
+        '  extra:',
+        '    uses: o/r/.github/workflows/n.yml@abc',
+        '    secrets: inherit',
+        '',
+      ].join('\n');
+
+      expect(jobsNamingSecrets(workflow)).toEqual(['extra']);
+    });
+  });
+
+  // GitHub decodes a double-quoted scalar before it reads an expression in it, so
+  // `"\x24{{ secrets.KEY }}"` is the key read in full and contains no `${{` for
+  // anything above to find, and a backslash at the end of a line joins the next
+  // one to it. Outside block scalars — where a script's own backslashes live —
+  // this file writes no escape, and no scalar runs over a line.
+  it('spells nothing through a YAML escape', () => {
+    const structural = linesOutsideBlockScalars(dropComments(readWorkflow()));
+
+    expect(structural.filter((line) => line.includes('\\'))).toEqual([]);
+    expect(structural.filter((line) => (line.match(/"/g) ?? []).length % 2 === 1)).toEqual([]);
+  });
+
+  // A workflow-level `env:` reaches every step of every job, the mint step
+  // included: `NODE_OPTIONS` runs code inside the action's own process and the
+  // proxy variables route its API traffic. The job-level mappings are pinned
+  // below; nothing here sets one above them.
+  it('declares no workflow-level environment', () => {
+    const structural = linesOutsideBlockScalars(dropComments(readWorkflow()));
+
+    expect(structural.filter((line) => /^["']?env["']?[^\S\n]*:/.test(line))).toEqual([]);
+  });
+
+  // The reader behind the shape check below must refuse every spelling that
+  // would hide a key from it, or an empty list on the real jobs means nothing.
+  it('refuses a job or step shape it cannot vouch for', () => {
+    const job = (...steps) => ['    runs-on: ubuntu-24.04', '    steps:', ...steps, ''].join('\n');
+
+    expect(shapeProblems(job('      - name: Fine', '        run: echo hi'))).toEqual([]);
+    for (const [label, body] of [
+      ['a quoted step key', job('      - name: x', '        "env":', '          K: v')],
+      ['a flow-style step', job('      - { uses: actions/checkout@v7 }')],
+      ['a continue-on-error key', job('      - name: x', '        continue-on-error: true')],
+      ['a shell key', job('      - name: x', '        shell: bash {0}')],
+      [
+        'a job-level container',
+        ['    runs-on: x', '    container: img', '    steps:', ''].join('\n'),
+      ],
+      [
+        'a job-level secrets key',
+        ['    runs-on: x', '    secrets: inherit', '    steps:', ''].join('\n'),
+      ],
+    ]) {
+      expect(shapeProblems(body), label).not.toEqual([]);
+    }
+    // A key that only appears as free text inside a block scalar is not structure.
+    expect(
+      shapeProblems(job('      - name: x', '        run: |', '          continue-on-error: true')),
+    ).toEqual([]);
+  });
+
+  // The runner sets an `INPUT_<NAME>` variable for each input a step is given in
+  // `with:`, and the token action reads its `permission-*` inputs from the
+  // environment by that prefix. Those inputs have no default, so a variable set in
+  // a step's, a job's or the workflow's `env:` reaches the action as an input the
+  // `with:` mapping never named. Nothing in this file sets one.
+  it('sets no action input through the environment', () => {
+    expect(readWorkflow()).not.toMatch(/\bINPUT_/i);
   });
 
   // Both jobs are handed the key by the same third-party action, so one revision
@@ -1936,12 +2099,47 @@ describe('the release app credentials, across the whole workflow', () => {
   });
 });
 
+/**
+ * Run one step's `run:` script under bash with the step's own `env:` mapping.
+ *
+ * What is asserted over the result is the BEHAVIOUR a text match cannot give: a
+ * script ending `exit 0 # exit 1`, or a `false` where an `exit 1` was, reads
+ * as the right thing to every pattern and does the wrong one.
+ *
+ * Only builtins are used by these scripts, so PATH is bound empty rather than
+ * left to whatever the host has (see `shellEnv`).
+ * @param {string} step one step slice
+ * @returns {{ status: number, stdout: string }}
+ */
+function runStepScript(step) {
+  const script = blockScalarText(step, 'run', { indent: 8 });
+  const env = /^ {8}env:[^\S\n]*$/m.test(step) ? mappingOf(step, 'env', { indent: 8 }) : {};
+  try {
+    const stdout = execFileSync(BASH, ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: '', ...env },
+      timeout: 30_000,
+    });
+    return { status: 0, stdout };
+  } catch (err) {
+    return { status: err.status, stdout: String(err.stdout ?? '') };
+  }
+}
+
 describe.each(PUBLISH_JOBS)('$id', (target) => {
   it('waits on the release and runs only for a tag push', () => {
     const job = jobBlock(readWorkflow(), target.id);
 
     expect(needsOf(job), `${target.id} declares no needs: edge`).toContain('release');
     expect(job).toMatch(/^ {4}if: github\.event_name == 'push'$/m);
+  });
+
+  // The job is built from these keys and no others, written in block style.
+  // Every case below reads a particular key; this is the one that notices a
+  // key it does not read — a `shell:` template that wraps the step, an escaped
+  // `continue-on-error`, a `container:` — and a spelling none of them can find.
+  it('carries only the job and step keys it is built from, in block style', () => {
+    expect(shapeProblems(jobBlock(readWorkflow(), target.id))).toEqual([]);
   });
 
   // It writes into ANOTHER repository with a token scoped to that one. A write
@@ -1955,14 +2153,10 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   it('reads this repository and writes nothing in it', () => {
     const job = jobBlock(readWorkflow(), target.id);
 
-    const granted = /^ {4}permissions:[^\S\n]*\n((?: {6}\S[^\n]*\n)+)/m.exec(`${job}\n`);
-    expect(granted, `${target.id} declares no permissions block`).not.toBeNull();
-    expect(
-      granted[1]
-        .trim()
-        .split('\n')
-        .map((line) => line.replace(/[^\S\n]+#.*$/, '').trim()),
-    ).toEqual(['contents: read']);
+    // Read as a mapping rather than as a run of adjacent lines: YAML carries on
+    // past a blank line, so an `actions: write` written after one belongs to the
+    // same block and would be invisible to a reader that stopped at the gap.
+    expect(mappingOf(job, 'permissions', { indent: 4 })).toEqual({ contents: 'read' });
     expect(job).not.toMatch(/^[^\S\n]*uses: actions\/checkout/m);
   });
 
@@ -1979,10 +2173,10 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // push step aimed at its sibling's repository or file keeps both strings in
   // the job through its fail-closed step while writing a Scoop manifest over
   // the formula.
-  it('aims the fail-closed and push steps at its own target', () => {
+  it('aims the fail-closed, explanation and push steps at its own target', () => {
     const job = jobBlock(readWorkflow(), target.id);
 
-    for (const name of [target.failStep, target.pushStep]) {
+    for (const name of [target.failStep, target.explainStep, target.pushStep]) {
       const step = stepNamed(job, name);
       expect(stepEnvValue(step, 'TARGET_REPO'), name).toBe(target.repo);
       expect(stepEnvValue(step, 'TARGET_PATH'), name).toBe(target.path);
@@ -2017,6 +2211,45 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     });
   });
 
+  // `with:` is not the only way an input reaches the action: it reads its
+  // `permission-*` inputs from `INPUT_PERMISSION-*` environment variables, and
+  // those have no default, so one set in this step's or this job's `env:` widens
+  // the token without appearing in the mapping pinned above. The step takes no
+  // `env:` at all, and the job's holds the one boolean the gates read.
+  it('hands the mint step no environment of its own', () => {
+    const job = jobBlock(readWorkflow(), target.id);
+
+    expect(stepNamed(job, target.mintStep)).not.toMatch(/^[^\S\n]*env:/m);
+    expect(mappingOf(job, 'env', { indent: 4 })).toEqual({
+      [APP_CONFIGURED_ENV]: `\${{ vars.${APP_CLIENT_ID_VAR} != '' && secrets.${APP_PRIVATE_KEY_SECRET} != '' }}`,
+    });
+  });
+
+  // This job is about to hand a private key to a step, and every step in a job
+  // runs as the same user: an action that leaves a process behind can read the
+  // mint step's environment. So no action here is a movable tag. A tag is one its
+  // owner — or whoever can push to the owner's repository — decides the meaning
+  // of after this file was reviewed.
+  it('runs only actions pinned by commit SHA', () => {
+    const job = jobBlock(readWorkflow(), target.id);
+    const used = steps(job)
+      .map((step) => /^[^\S\n]*uses: (.+)$/m.exec(step))
+      .filter((found) => found !== null)
+      .map((found) => found[1]);
+
+    // The control: both actions this job runs are seen, so an empty list cannot
+    // pass the loop below.
+    expect(
+      used,
+      `${target.id} runs a different set of actions than the two it is built from`,
+    ).toHaveLength(2);
+    for (const line of used) {
+      expect(line, `${target.id} runs an action that is not pinned by commit SHA`).toMatch(
+        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/,
+      );
+    }
+  });
+
   it('mints the token before the step that uses it', () => {
     const job = jobBlock(readWorkflow(), target.id);
 
@@ -2025,12 +2258,52 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     );
   });
 
+  // The mint is the likeliest first failure on a real tag: the app left off the
+  // repository selection, a key rotated incorrectly, a wrong client id. Every
+  // other fault in this job is explained, so this one is too — by the step that
+  // can see the mint's own outcome, and only that outcome. The gate is compared
+  // exactly: `failure()` alone fires for a failed download as well, and a gate
+  // on the wrong step id never fires at all.
+  it('explains a failed mint, and only a failed mint', () => {
+    const raw = rawJobBlock(target.id);
+    const step = stepNamed(raw, target.explainStep);
+    const script = blockScalarText(step, 'run', { indent: 8 });
+
+    expect(soleIfCondition(step, `the ${target.id} mint explanation`)).toBe(
+      `failure() && steps.${target.mintId}.outcome == 'failure'`,
+    );
+    expect(script).toMatch(/^echo "::error::/m);
+    // Both halves of the configuration, and the way out.
+    expect(script).toContain(APP_CLIENT_ID_VAR);
+    expect(script).toContain(APP_PRIVATE_KEY_SECRET);
+    expect(script).toMatch(/re-run/i);
+    // After the mint, whose outcome it reads, and before the push it stands in for.
+    expect(soleIndexOf(raw, `- name: ${target.mintStep}`, target.id)).toBeLessThan(
+      soleIndexOf(raw, `- name: ${target.explainStep}`, target.id),
+    );
+    expect(soleIndexOf(raw, `- name: ${target.explainStep}`, target.id)).toBeLessThan(
+      soleIndexOf(raw, `- name: ${target.pushStep}`, target.id),
+    );
+  });
+
+  // Run with its own environment, so a copy-paste from the sibling job — wrong
+  // target, a variable left unset — shows up in what it prints.
+  it('prints its error about its own target when it runs', (ctx) => {
+    requirePosixShell(ctx);
+    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.explainStep));
+
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/^::error::/);
+    expect(stdout).toContain(target.repo);
+    expect(stdout).toContain(target.path);
+  });
+
   // A released binary whose formula was never pushed is a tap serving the
   // previous version with a green tick on the run that should have moved it.
   it('fails closed on the canonical repository when the app is not configured', () => {
     const step = stepNamed(rawJobBlock(target.id), target.failStep);
     const gate = soleIfCondition(step, `the ${target.id} fail-closed step`);
-    const script = blockScalarText(step, 'run');
+    const script = blockScalarText(step, 'run', { indent: 8 });
 
     // Exactly, not by containment: a third conjunct (`&& false`) keeps both
     // substrings and makes the refusal unreachable.
@@ -2045,6 +2318,17 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     expect(script).toMatch(/\bexit 1\b/);
   });
 
+  // Run, not read: `exit 0 # exit 1` and a bare `false` both satisfy a pattern.
+  it('exits non-zero, naming its target, when it runs', (ctx) => {
+    requirePosixShell(ctx);
+    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.failStep));
+
+    expect(status).toBe(1);
+    expect(stdout).toMatch(/^::error::/);
+    expect(stdout).toContain(target.repo);
+    expect(stdout).toContain(target.path);
+  });
+
   // A fork has no app, and is meant to build and release nothing of the kind.
   it('reports, rather than fails, off the canonical repository', () => {
     const step = stepNamed(rawJobBlock(target.id), target.reportStep);
@@ -2052,7 +2336,19 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     expect(soleIfCondition(step, `the ${target.id} fork notice`)).toBe(
       `github.repository != 'akasecurity/ai-tc' && env.${APP_CONFIGURED_ENV} != 'true'`,
     );
-    expect(blockScalarText(step, 'run')).toMatch(/^echo '::notice::/m);
+    const script = blockScalarText(step, 'run', { indent: 8 });
+    expect(script).toMatch(/^echo '::notice::/m);
+  });
+
+  // A notice that fails turns every fork's tag release red here, and there are
+  // more ways to fail than to spell `exit 1`: `false`, `exit $((1))`, `return 1`.
+  // So it is run, and what it does is read.
+  it('exits zero when it runs', (ctx) => {
+    requirePosixShell(ctx);
+    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.reportStep));
+
+    expect(status, 'the fork notice must not fail the job').toBe(0);
+    expect(stdout).toMatch(/^::notice::/);
   });
 
   // And the push itself happens only with an app, which is what makes a fork
@@ -2083,9 +2379,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
 
     /** Every `${{ }}` expression in the job that mentions `pattern`. */
     const expressionsMentioning = (pattern) =>
-      [...raw.matchAll(new RegExp(`\\$\\{\\{[^}]*\\b${pattern}\\b[^}]*\\}\\}`, 'g'))].map(
-        (m) => m[0],
-      );
+      expressionsIn(raw).filter((expression) => new RegExp(`\\b${pattern}\\b`).test(expression));
 
     expect(
       expressionsMentioning(`secrets\\.${APP_PRIVATE_KEY_SECRET}`),
@@ -2159,19 +2453,23 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   it('downloads the artifact the release job uploads, where the push step reads it', () => {
     const job = jobBlock(readWorkflow(), target.id);
     const downloads = steps(job).filter((step) =>
-      /^[^\S\n]*uses: actions\/download-artifact@v\d+$/m.test(step),
+      /^[^\S\n]*uses: actions\/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m.test(step),
     );
     expect(downloads, `${target.id} downloads no single artifact`).toHaveLength(1);
 
     const uploaded = /^[^\S\n]*name: (\S+)$/m.exec(manifestUploadStep());
     expect(uploaded, 'the release job uploads an artifact with no name').not.toBeNull();
     expect(downloads[0]).toMatch(new RegExp(`^[^\\S\\n]*name: ${uploaded[1]}$`, 'm'));
+    // The whole mapping, not the two inputs it is read for: `repository`,
+    // `run-id` and `github-token` each make this a download of ANOTHER
+    // repository's run, and what that run uploaded is what gets published.
+    expect(withMapping(downloads[0])).toEqual({ name: uploaded[1], path: 'manifests' });
 
     const into = /^[^\S\n]*path: (\S+)$/m.exec(downloads[0]);
     expect(into, `${target.id} downloads to no named directory`).not.toBeNull();
     const push = stepNamed(job, target.pushStep);
     expect(push).toMatch(new RegExp(`^[^\\S\\n]*SOURCE_FILE: ${into[1]}/${target.source}$`, 'm'));
-    expect(blockScalarText(push, 'run')).toContain(`$(cat ${into[1]}/VERSION)`);
+    expect(blockScalarText(push, 'run', { indent: 8 })).toContain(`$(cat ${into[1]}/VERSION)`);
   });
 });
 
@@ -2227,7 +2525,7 @@ function runPush(target, { mode, remote, rejectPut = false }) {
   chmodSync(join(bin, 'gh'), 0o755);
 
   const push = stepNamed(rawJobBlock(target.id), target.pushStep);
-  const script = blockScalarText(push, 'run');
+  const script = blockScalarText(push, 'run', { indent: 8 });
   const run = {
     cwd: root,
     encoding: 'utf8',

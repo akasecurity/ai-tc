@@ -436,11 +436,13 @@ each job mints a one-hour token from the app's private key, scoped to the single
 writes, and the commits are authored by the app's bot. Nothing depends on one maintainer's account
 or on a token somebody has to remember to renew. The app is configured by a repository variable,
 `AKA_RELEASE_APP_CLIENT_ID`, and a secret, `AKA_RELEASE_APP_PRIVATE_KEY`. With either missing, the
-binaries and the `bin-latest` move still succeed and the corresponding publish job fails with an
-error naming both; configure them and re-run the job, which is a no-op when the tap or bucket
-already carries that version. A re-run executes the workflow as it was at the tagged commit, so it
-repairs a release whose tag already carries the app steps, and a release tagged before them has to
-be pushed by hand or superseded by the next one. The formula and manifest that
+binaries and the `bin-latest` move still succeed and both publish jobs fail, since they share one
+app, each with an error naming both; configure them and re-run the two jobs, which leaves the tap or
+bucket alone when it already serves that file or a newer one. A mint that fails for another reason —
+the app not installed on a repository, a key rotated incorrectly, a wrong client id — is reported
+with its own error, which names what to check. A re-run executes the workflow as it was at the
+tagged commit, so it repairs a release whose tag already carries the app steps, and a release tagged
+before them has to be pushed by hand or superseded by the next one. The formula and manifest that
 ship are the copies in the tap and the bucket — the ones attached to the release are for audit.
 Current Homebrew refuses `brew install ./aka.rb` from a downloaded file; `scoop install <url>` of
 the attached `aka.json` does work.
@@ -465,22 +467,26 @@ Before the first release that publishes them, once:
    GitHub Apps → New GitHub App. Turn the webhook off, grant **one** repository permission —
    Contents: Read and write — and make it installable only on this account.
 3. Install it on `akasecurity` with "Only select repositories": `homebrew-tap` and `scoop-bucket`,
-   and not this repository, which it has no reason to write to. Then, from the app's own page,
-   copy its **Client ID** (not the numeric App ID: the token action deprecated that input) and
-   generate a private key.
-4. Store them here, then delete the downloaded key file:
+   and not this repository, which it has no reason to write to. If either repository protects its
+   default branch, allow the app to push to it: a protected branch refuses the write, and the job
+   reports that as a refused write. Then, from the app's own page, copy its **Client ID** (not the
+   numeric App ID: the token action deprecated that input) and generate a private key.
+4. Store them here, then delete the downloaded key file, which is the credential that can mint
+   tokens for both repositories:
 
    ```bash
    gh variable set AKA_RELEASE_APP_CLIENT_ID -R akasecurity/ai-tc --body <client-id>
    gh secret set AKA_RELEASE_APP_PRIVATE_KEY -R akasecurity/ai-tc < <key-file>.pem
+   rm <key-file>.pem
    ```
 
 5. Retire anything the app replaces: if a personal access token or a repository secret was ever
    created for pushing to the tap or the bucket, revoke the token and delete the secret. The app is
    meant to be the only credential that can write to either repository, and a leftover one is a
    second long-lived key that nothing in this workflow reads.
-6. Run the tap's own check once against the first real formula, on Apple-silicon macOS AND on Linux,
-   before relying on the automated push: `brew install akasecurity/tap/aka`, then `brew test aka`.
+6. After the first release that publishes them, run the tap's own check once against the first
+   real formula, on Apple-silicon macOS AND on Linux, before relying on the automated push:
+   `brew install akasecurity/tap/aka`, then `brew test aka`.
    Nothing in this repository has installed the formula on Linux, where Homebrew may rewrite an
    installed binary's dynamic linkage, and the standalone binary carries an injected payload.
 

@@ -1610,3 +1610,98 @@ describe('capture — where each finding sits', () => {
     expect(redacted).not.toContain('innerHTML =');
   });
 });
+
+// captureDeferred is `capture` in two steps: the decision first, the write only
+// when the caller records it. A caller that declines the outcome writes nothing.
+describe('createPluginRuntime — captureDeferred', () => {
+  const INPUT = {
+    kind: 'prompt' as const,
+    sourceTool: 'claude-code' as const,
+    text: 'deploy with SECRET_MARKER now',
+  };
+
+  it('decides without writing, and writes the same record capture would on record()', async () => {
+    const eager = fakeGateway(bundle());
+    const eagerRt = createPluginRuntime(eager, settings());
+    const decided = await eagerRt.capture(INPUT);
+    await eagerRt.close();
+
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(INPUT);
+    expect(deferred.result).toEqual(decided);
+    expect(gw.records).toHaveLength(0);
+
+    await deferred.record();
+    await deferred.record();
+    await rt.close();
+
+    expect(gw.records).toHaveLength(1);
+    const [got] = gw.records;
+    const [want] = eager.records;
+    expect(got?.findings.map((f) => f.ruleId)).toEqual(want?.findings.map((f) => f.ruleId));
+    expect(got?.event.content).toBe(want?.event.content);
+  });
+
+  it('writes nothing when the caller never records', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.captureDeferred(INPUT);
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+
+  it("keeps persist: 'with-findings' on record(): a clean text writes nothing", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(
+      { ...INPUT, text: 'nothing to see here' },
+      { persist: 'with-findings' },
+    );
+    await deferred.record();
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+});
+
+// enforcedIn answers "is anything enforced here" and touches nothing.
+describe('createPluginRuntime — enforcedIn', () => {
+  const blockSecrets: PolicyBundle['policies'] = [
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { category: 'secret' },
+      action: 'block',
+      enabled: true,
+    },
+  ];
+
+  it('lists the detections whose policy blocks or redacts, and writes nothing', async () => {
+    const gw = fakeGateway({ ...bundle(), policies: blockSecrets });
+    let consumed = 0;
+    gw.consumeException = () => {
+      consumed += 1;
+      return Promise.resolve(true);
+    };
+    let ledger = 0;
+    gw.recordBlockedDetection = () => {
+      ledger += 1;
+      return Promise.resolve();
+    };
+    const rt = createPluginRuntime(gw, settings());
+
+    const found = await rt.enforcedIn('SECRET_MARKER and PII_MARKER');
+    await rt.close();
+
+    expect(found.map((f) => f.ruleId)).toEqual(['test/secret-marker']);
+    expect(gw.records).toHaveLength(0);
+    expect(consumed).toBe(0);
+    expect(ledger).toBe(0);
+  });
+
+  it('finds nothing in text whose detections are only warned or logged', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.enforcedIn('contact PII_MARKER please')).toEqual([]);
+    await rt.close();
+  });
+});

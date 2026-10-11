@@ -12,6 +12,11 @@ export { governanceApplies, offersGovernanceScope } from './governance-scope.ts'
 export { handleCapture } from './handle-capture.ts';
 export type { SessionStartInput } from './handle-session-start.ts';
 export { EXCEPTION_RETENTION_MS, handleSessionStart } from './handle-session-start.ts';
+export {
+  modPolicyInputFromBundle,
+  syncModPolicySnapshot,
+  vetRulesForModFromGateway,
+} from './mod-policy-sync.ts';
 export type { DataGatewayFactory } from './resolve.ts';
 export {
   configuredGatewayFactory,

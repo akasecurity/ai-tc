@@ -29,11 +29,21 @@ interface PolicyRow {
  * one store per machine.
  */
 export class SqlitePoliciesRepository implements PoliciesReadPort {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(
+    private readonly db: DatabaseSync,
+    // Told after a write that changes a policy row, so what is derived from the
+    // table (the Claude Code mod's policy snapshot) is rewritten with it.
+    private readonly onChange: () => void = () => undefined,
+  ) {}
 
   readPolicies(): Promise<PolicyType[]> {
+    return Promise.resolve(this.listPolicies());
+  }
+
+  /** The synchronous read behind {@link readPolicies}. */
+  listPolicies(): PolicyType[] {
     const rows = allRows<PolicyRow>(this.db.prepare('SELECT * FROM policies'));
-    const policies = mapRowsTolerant(rows, (row) => {
+    return mapRowsTolerant(rows, (row) => {
       // JSON columns re-enter as unknown and are validated by Policy.parse.
       const target: unknown = JSON.parse(row.target);
       const customKeywords: unknown = row.custom_keywords
@@ -48,7 +58,6 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
         customKeywords,
       });
     });
-    return Promise.resolve(policies);
   }
 
   // Seed one policy per bundled category at Monitor so the detection-type config
@@ -60,7 +69,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
     const count = countScalar(this.db, 'SELECT count(*) AS n FROM policies');
     if (count > 0) {
       this.markEarlierChoices();
-      this.monitorUntouchedSeeds();
+      if (this.monitorUntouchedSeeds()) this.onChange();
       return;
     }
     const stmt = this.db.prepare(
@@ -77,6 +86,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
         });
       }
     });
+    this.onChange();
   }
 
   // Before this build, upsertCategoryAction INSERTed a new row with updated_at
@@ -137,7 +147,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   // the gateway falls back to the bundled packs with no per-rule policies, so
   // every rule follows these rows. On an upgraded store that fallback now
   // monitors where the earlier build warned.
-  private monitorUntouchedSeeds(): void {
+  private monitorUntouchedSeeds(): boolean {
     // A read first, so the steady state (nothing left to move) takes no write
     // lock on a path every hook opens.
     const untouched = allRows<{ category: string; action: string }>(
@@ -149,7 +159,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
     ).filter(
       (row) => (DEFAULT_ACTIONS as Partial<Record<string, string>>)[row.category] === row.action,
     );
-    if (untouched.length === 0) return;
+    if (untouched.length === 0) return false;
     const stmt = this.db.prepare(
       `UPDATE policies SET action = 'log'
         WHERE scope = 'global' AND json_extract(target, '$.category') = :category
@@ -160,6 +170,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
         stmt.run({ category: row.category, seeded: row.action });
       }
     });
+    return true;
   }
 
   // Insert-or-update the single global per-category policy row, keyed on the
@@ -179,6 +190,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
            updated_at = MAX(excluded.updated_at, policies.created_at + 1)`,
       )
       .run({ id: randomUUID(), target: JSON.stringify({ category }), action, now });
+    this.onChange();
   }
 
   // Caps every global per-category policy currently set to block/redact down
@@ -192,6 +204,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
            AND json_extract(target,'$.category') IS NOT NULL`,
       )
       .run({ now: Date.now() });
+    if (Number(info.changes) > 0) this.onChange();
     return Number(info.changes);
   }
 

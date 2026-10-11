@@ -23,12 +23,13 @@ import type {
   ResolvedInventory,
   SourceTool,
 } from '@akasecurity/schema';
-import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
+import { configInventoryInputs, harnessFromTool, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { triggerContentRetention } from './content-retention-trigger.ts';
+import { syncModPolicySnapshot } from './mod-policy-sync.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
 import { sessionToolIsKeyed } from './session-root-key.ts';
@@ -152,6 +153,13 @@ export async function handleSessionStart(
         } catch {
           // Fail-open: a failed cap drops the migration, never the session.
         }
+      }
+      // The Claude Code mod's policy snapshot, from the effective bundle. The
+      // store writes it on every local change; this is the first one an existing
+      // install gets, and where an attached machine's organization policy lands.
+      // Only the Claude Code plugin ships the mod. Never throws.
+      if (input.tool === SOURCE_TOOL.ClaudeCode) {
+        await syncModPolicySnapshot(gateway, config.dataDir);
       }
       // The project-file inventory pass (the Inventory page's file tree).
       // Guarded separately: a walk bug must never take the session root or

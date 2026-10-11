@@ -98,6 +98,8 @@ export {
 } from './isolated-scan.ts';
 export type { LocatedScanFinding, ScanFinding } from './mask.ts';
 export { bundledMaskingRules, maskText, scanText } from './mask.ts';
+export type { PromptRedactionMode } from './mod-host-mode.ts';
+export { promptRedactionLines, promptRedactionMode } from './mod-host-mode.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
   buildModelRefusalEvent,
@@ -164,11 +166,12 @@ export {
   bundledDetections,
   registerBundledPacks,
   registerRulePack,
+  shippedRegexMatchers,
   uniqueRuleIds,
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
-export type { CaptureOptions, DecisionOptions, PluginRuntime } from './runtime.ts';
+export type { CaptureOptions, DecisionOptions, DeferredCapture, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';

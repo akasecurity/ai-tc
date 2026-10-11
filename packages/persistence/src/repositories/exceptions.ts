@@ -179,6 +179,9 @@ export class SqliteExceptionsRepository {
     // drive the boundary instead of racing the wall clock. The use budget is
     // not among them: `use_count < max_uses` binds no instant.
     private readonly now: () => number = () => Date.now(),
+    // Told after a grant is created or revoked, so what is derived from the set
+    // of active grants (the Claude Code mod's policy snapshot) is rewritten with it.
+    private readonly onChange: () => void = () => undefined,
   ) {
     // The fail-secure primitive: one-time semantics ride a single conditional
     // UPDATE (SQLite serializes writers, so this is race-free on one machine).
@@ -215,7 +218,9 @@ export class SqliteExceptionsRepository {
     // rejection (a bare sync throw would escape a promise-chain caller before
     // .catch attaches).
     try {
-      return Promise.resolve(this.createSync(input));
+      const created = this.createSync(input);
+      this.onChange();
+      return Promise.resolve(created);
     } catch (err) {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
@@ -374,6 +379,7 @@ export class SqliteExceptionsRepository {
           WHERE id = :id AND revoked_at IS NULL`,
       )
       .run({ id, revokedBy, reason: reason ?? null, now });
+    if (Number(result.changes) === 1) this.onChange();
     return Promise.resolve(Number(result.changes) === 1);
   }
 
@@ -386,6 +392,16 @@ export class SqliteExceptionsRepository {
   consume(id: string, now = this.now()): Promise<boolean> {
     const result = this.consumeStmt.run({ id, now });
     return Promise.resolve(Number(result.changes) === 1);
+  }
+
+  /** The rule ids with at least one active grant, under any key version. */
+  activeRuleIds(now = this.now()): string[] {
+    return allRows<{ ruleId: string }>(
+      this.db.prepare(
+        `SELECT DISTINCT rule_id AS ruleId FROM exceptions WHERE ${ACTIVE_PREDICATE}`,
+      ),
+      { now },
+    ).map((row) => row.ruleId);
   }
 
   /**

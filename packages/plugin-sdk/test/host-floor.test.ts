@@ -322,7 +322,7 @@ describe('hostCompatibilityLines', () => {
   it('keeps every floor at or below the tested ceiling', () => {
     // The assertion that BINDS. The sampled loop below is the behavioural half,
     // but it samples fixed versions and the drift it describes opens a BAND: a
-    // floor at 2.2.0 with the ceiling still at 2.1.260 makes a host at 2.1.261
+    // floor at 2.2.0 with the ceiling still at 2.1.294 makes a host at 2.1.295
     // print both blocks, while every sampled version sits outside that band and
     // passes. `MAX_TESTED_HOST` is bumped at release time and floors are read
     // from the host changelog, so the two genuinely move on different schedules.

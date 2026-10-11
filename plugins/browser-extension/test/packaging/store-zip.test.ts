@@ -515,12 +515,17 @@ describe('storeArchiveRefusal', () => {
   // table of fixtures says the function decides correctly; this says the decision
   // it reaches HERE is "go ahead", so the refusals cannot be passing their table
   // while refusing every real build.
-  it('accepts the built tree package:zip is pointed at', () => {
+  // On a pre-release (the repo carries one while a beta is cut on its release
+  // branch) the right decision for the live tree is the bare-version refusal;
+  // the staged positive control below keeps proving the accepting path.
+  it('reaches the right decision for the built tree package:zip is pointed at', () => {
     const packageVersion = String(readJson(PACKAGE_ROOT, 'package.json').version);
     const built = readJson(DIST, 'manifest.json');
+    const refusal = storeArchiveRefusal(packageVersion, builtVersionFields(built));
 
     expect(isLegalChromeVersion(String(built.version))).toBe(true);
-    expect(storeArchiveRefusal(packageVersion, builtVersionFields(built))).toBeUndefined();
+    if (packageVersion.includes('-')) expect(refusal).toMatch(/not a bare version/);
+    else expect(refusal).toBeUndefined();
   });
 });
 
@@ -543,7 +548,7 @@ describe('package:zip acts on the refusal', () => {
   const stagePackage = (edit: {
     packageVersion?: string;
     builtVersion?: string;
-    builtVersionName?: string;
+    builtVersionName?: string | null;
   }): string => {
     const dir = mkdtempSync(join(outDir, 'pkg-'));
     mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -565,7 +570,8 @@ describe('package:zip acts on the refusal', () => {
     if (edit.builtVersion !== undefined || edit.builtVersionName !== undefined) {
       const built = readJson(dir, 'dist', 'manifest.json');
       if (edit.builtVersion !== undefined) built.version = edit.builtVersion;
-      if (edit.builtVersionName !== undefined) built.version_name = edit.builtVersionName;
+      if (edit.builtVersionName === null) delete built.version_name;
+      else if (edit.builtVersionName !== undefined) built.version_name = edit.builtVersionName;
       writeFileSync(join(dir, 'dist', 'manifest.json'), JSON.stringify(built, null, 2) + '\n');
     }
     return dir;
@@ -585,7 +591,9 @@ describe('package:zip acts on the refusal', () => {
   // The positive control for the two refusals below, and the case that fails a
   // script rewritten to refuse everything.
   it('packages a bare, agreeing tree and names the archive from the package version', () => {
-    const dir = stagePackage({});
+    const live = readJson(DIST, 'manifest.json');
+    const bare = String(live.version);
+    const dir = stagePackage({ packageVersion: bare, builtVersion: bare, builtVersionName: null });
     const packageVersion = String(readJson(dir, 'package.json').version);
 
     const run = runPackageZip(dir);

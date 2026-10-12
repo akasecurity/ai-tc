@@ -338,7 +338,10 @@ const TIMELINE_COLUMNS = `
  * key also carries how many of the catalog's band thresholds the call's prompt
  * crossed, and the group carries its largest single prompt for the cost model
  * to choose the band from. Every call in a group sits on the same side of every
- * threshold, so that largest prompt selects the band each call would. That exactness is what lets the
+ * threshold, so that largest prompt selects the band each call would. The key
+ * also carries which billable columns the call uses (`CALL_USAGE_SHAPE`), so a
+ * group that prices to null holds only calls that are unpriced on their own.
+ * That exactness is what lets the
  * report collapse in SQL over the usage index instead of shipping one bag per
  * call to JS — activity.test.ts holds the two folds equal across every shape a
  * bag takes, and token-rollup-plans.test.ts pins the index.
@@ -373,6 +376,21 @@ const CALL_BAND =
         ' + ',
       );
 
+// Which billable columns the call carries, one bit each: input, output, cache
+// read, 1h write, 5m write (a write total with no split counts there, as the
+// cost model prices it) and web search. A rate the model does not publish
+// leaves a column unpriced, and a summed group that bills against it prices to
+// null as a whole; with this in the key, every call in a group bills the same
+// columns, so a null group is one whose every call is unpriced on its own.
+const CALL_USAGE_SHAPE = `((coalesce(input_tokens, 0) > 0)
+     + 2 * (coalesce(output_tokens, 0) > 0)
+     + 4 * (coalesce(cache_read_input_tokens, 0) > 0)
+     + 8 * (coalesce(ephemeral_1h_input_tokens, 0) > 0)
+     + 16 * (coalesce(ephemeral_5m_input_tokens, 0) > 0
+             OR coalesce(cache_creation_input_tokens, 0)
+                > coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))
+     + 32 * (coalesce(web_search_requests, 0) > 0))`;
+
 const LLM_USAGE_SELECT = `
   SELECT root_session_id AS sessionId,
          provider,
@@ -395,7 +413,7 @@ const LLM_USAGE_SELECT = `
 // unparseable leaf to skip, and a generated column only ever reads a valid bag.
 const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
 
-const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier, ${CALL_BAND}`;
+const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier, ${CALL_BAND}, ${CALL_USAGE_SHAPE}`;
 
 /** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
 function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {

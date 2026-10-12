@@ -762,14 +762,9 @@ describe('tokenReports', () => {
     }
     leaf('X10', 'X', NOW + 10, { ...gpt, input_tokens: 10_000, cache_read_input_tokens: 240_000 });
     leaf('X11', 'X', NOW + 11, { ...gpt, input_tokens: 15_000, cache_read_input_tokens: 285_000 });
-    // A 150K call carrying a cache write sits alone in its band, so its null
-    // price stays its own in the grouped fold as in the per-call one.
-    leaf('X14', 'X', NOW + 14, {
-      ...gpt,
-      input_tokens: 50_000,
-      cache_read_input_tokens: 100_000,
-      ephemeral_5m_input_tokens: 500,
-    });
+    // A call carrying a cache write has no OpenAI write rate. It shares band 0
+    // with the three priced calls above, and only it may lose its price.
+    leaf('X14', 'X', NOW + 14, { ...gpt, input_tokens: 1_000, ephemeral_5m_input_tokens: 500 });
     // Haiku 5.5 bands at 100K, cache writes included. A write reported only as a
     // total, with no 1h/5m split, still counts toward the line: 60K + 50K
     // crosses it, 40K + 50K does not.
@@ -843,6 +838,17 @@ describe('tokenReports', () => {
       ?.rollups.find((r) => r.model === 'gpt-5.4');
     expect(gptRollup?.estimatedCostUsd).toBeGreaterThan(0);
     expect(actual.find((r) => r.sessionId === 'X')?.costIsPartial).toBe(true);
+    // The three priced band-0 calls keep their price beside the unpriced one,
+    // along with the 250K and 300K calls over the lower thresholds.
+    const gptCalls = bags.filter((b) => b.attributes.includes('"gpt-5.4"'));
+    const pricedAlone = buildTokenReports(
+      gptCalls
+        .map((b) => JSON.parse(b.attributes) as LlmCallAttributes)
+        .filter((a) => a.ephemeral_5m_input_tokens === undefined)
+        .map((attributes) => ({ sessionId: 'X', attributes })),
+      defaultCostModel,
+    );
+    expect(gptRollup?.estimatedCostUsd).toBeCloseTo(pricedAlone[0]?.estimatedCostUsd ?? NaN, 9);
     // The unsplit write crossing the 100K line bills at the band (60K x 0.50 +
     // 50K x 0.625); the one under it at the base (40K x 0.10 + 50K x 0.125).
     const haikuRollup = actual

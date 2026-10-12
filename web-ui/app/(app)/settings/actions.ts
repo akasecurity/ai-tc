@@ -409,8 +409,7 @@ function nextWebChatCapture(
               version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
             }
         : undefined;
-  const account =
-    accountChoice === 'unchanged' ? block.account : accountChoice === 'granted';
+  const account = accountChoice === 'unchanged' ? block.account : accountChoice === 'granted';
   // Spread conditionally rather than assigning `undefined`: an explicit
   // undefined is a present key under exactOptionalPropertyTypes, and the absence
   // of this key is what "not granted" means to every reader of the file.

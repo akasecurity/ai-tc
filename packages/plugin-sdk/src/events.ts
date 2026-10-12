@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { captureWireId } from '@akasecurity/persistence';
+// Imported through the `./sqlite-free` entry, never the root: a bundle that
+// ships without the store layer reaches this module, and the root carries it all.
+import { captureWireId } from '@akasecurity/persistence/sqlite-free';
 import type { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
 export interface BuildEventInput {

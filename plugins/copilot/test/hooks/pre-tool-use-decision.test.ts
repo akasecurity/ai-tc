@@ -12,6 +12,7 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { POINTER_TOKEN_ANCHORED } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import type { Dialect } from '../../src/hooks/dialect.ts';
 import type { PreToolUseDecision, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
@@ -470,3 +471,51 @@ describe.each(DIALECTS)('decideInputPointerDeny [$dialect]', (c) => {
     expect(decideInputPointerDeny(c.dialect, c.shell, {}, [c.shellCommand])).toBeNull();
   });
 });
+
+// A field whose bounded large-input scan did not finish is `block` with
+// `scanIncomplete` set and NO findings. Every other branch here keys the deny on
+// a flagged rule, so without its own check this field reads as clean and the
+// hook says nothing — which hands the call to the host's own permission flow
+// with a field nothing scanned.
+describe.each(DIALECTS)(
+  'decidePreToolUse [$dialect] — a field whose bounded scan did not finish',
+  (c) => {
+    const refused = (scanIncomplete: 'timeout' | 'unavailable'): CaptureResult => ({
+      action: 'block',
+      text: null,
+      findings: [],
+      scanIncomplete,
+    });
+
+    it.each(['timeout', 'unavailable'] as const)(
+      'denies the call in this dialect’s shape with the too-large reason (%s)',
+      (scanIncomplete) => {
+        const decision = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: 'x' }, [
+          { spec: c.writerField, result: refused(scanIncomplete) },
+        ]);
+        expect(c.denyReason(decision)).toBe(tooLargeToScanMessage(`${c.writer} call`));
+        // Nothing for stderr either: the reason rides the deny itself.
+        expect(decision.notice).toBeUndefined();
+      },
+    );
+
+    it('denies even when the other field alone would be redacted and let through', () => {
+      const text = `mail ${EMAIL}`;
+      const decision = decidePreToolUse(
+        c.dialect,
+        c.shell,
+        { command: 'x', [c.dialect === 'cli' ? 'description' : 'explanation']: text },
+        [
+          { spec: c.shellCommand, result: refused('timeout') },
+          {
+            spec: { field: c.dialect === 'cli' ? 'description' : 'explanation', executable: false },
+            result: redactResult(text, 'core-pii/email', EMAIL),
+          },
+        ],
+      );
+      // A deny, never the rewrite the second field alone would produce.
+      expect(c.denyReason(decision)).toBe(tooLargeToScanMessage(`${c.shell} call`));
+      expect(JSON.stringify(decision)).not.toContain('[REDACTED');
+    });
+  },
+);

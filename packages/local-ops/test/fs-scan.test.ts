@@ -717,6 +717,38 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     }
   });
 
+  it('keys a padded secret like the clean one on the masked fallback too (no dataDir)', async () => {
+    // Five visible characters: the clean value masks to '***', and a padded
+    // copy is six code units long, so a mask that counted the padding would
+    // reveal its first and last characters and key the finding differently.
+    const shortRules: Rule[] = [
+      {
+        specVersion: 1,
+        id: 'test/short-token',
+        name: 'Short token',
+        category: 'secret',
+        severity: 'high',
+        matcher: { type: 'keyword', keywords: ['QZXJV'], caseSensitive: true },
+      },
+    ];
+    const file = join(root, 'app.ts');
+    const db = openLocalDatabase(store);
+    try {
+      writeFileSync(file, `const token = 'QZXJV';\n`);
+      await scanPathIntoStore(db, root, { rules: shortRules });
+      const [clean] = storedFindings(store);
+      expect(clean?.finding_key).toMatch(/^[0-9a-f]{64}$/);
+
+      writeFileSync(file, `const token = 'QZ\u200BXJV';\n`);
+      await scanPathIntoStore(db, root, { rules: shortRules });
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).toBe(clean?.finding_key);
+    } finally {
+      db.close();
+    }
+  });
+
   it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const absFile = join(root, 'app.ts');

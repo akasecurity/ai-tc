@@ -114,6 +114,20 @@ export interface CaptureResult {
   // every degraded finding in it took the same fallback. Where the ceiling caps
   // them differently, this is the strongest of what they resolved to.
   redactDegradedTo?: ActionTaken;
+  // Set when the field was NOT scanned to completion, so the decision is a
+  // refusal rather than a verdict on its content: `action` is 'block', `text`
+  // is null and `findings` is empty. Only a runtime built with `largeInput`
+  // produces it, and only for a field at or above that threshold.
+  //
+  //   - 'timeout': the bounded scan ran out of time — its own budget, or what
+  //     the caller had left.
+  //   - 'unavailable': no worker could run it (missing, crashed, or too slow to
+  //     start).
+  //
+  // A caller must check it before reading an empty `findings` as "clean": the
+  // two look identical otherwise, and a hook that skips clean fields would let
+  // exactly these through.
+  scanIncomplete?: 'timeout' | 'unavailable';
 }
 
 // AkaPluginAdapter signature

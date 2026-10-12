@@ -16,6 +16,11 @@ export {
   handleSessionStart,
   sessionStartNotice,
 } from './handle-session-start.ts';
+export {
+  modPolicyInputFromBundle,
+  syncModPolicySnapshot,
+  vetRulesForModFromGateway,
+} from './mod-policy-sync.ts';
 export type { DataGatewayFactory } from './resolve.ts';
 export {
   configuredGatewayFactory,

@@ -1,6 +1,7 @@
 import type { MatchResult } from '@akasecurity/detections';
 import { maskMatch, redact } from '@akasecurity/detections';
 import type { Span } from '@akasecurity/schema';
+import { stripInvisiblePadding } from '@akasecurity/schema';
 
 // The single boundary-crossing validator for raw secret text leaving an
 // isolated scan/judge process toward the interactive session or a persisted
@@ -79,14 +80,27 @@ const RAW_RUN_LEN = 8;
 // whole value, its local part, and a connection string's password are all caught.
 // The preview is computed only once a window has already matched, so a clean run
 // pays for no masking at all.
+//
+// A value carrying invisible padding is checked in its VISIBLE form as well. If
+// the padding is dense enough that every window of the raw bytes holds some,
+// text carrying the value without it shares no window with them. The visible
+// form's preview is the padded value's own: `safeMaskedMatch` reads past the
+// padding.
 function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
   let windows: Set<string> | null = null;
   // Deduped: callers build this as `hits.map((h) => h.rawMatch)`, and one
   // credential detected across many messages puts the same value in it many
   // times. The answer is a boolean over the whole list, so collapsing repeats
   // cannot change it — it only stops the window walk and the preview being
-  // recomputed per copy, inside a function already called once per hit.
-  for (const raw of new Set(rawValues)) {
+  // recomputed per copy, inside a function already called once per hit. A
+  // visible form equal to its raw value, or to another value in the list, is
+  // collapsed the same way.
+  const values = new Set<string>();
+  for (const raw of rawValues) {
+    values.add(raw);
+    values.add(stripInvisiblePadding(raw));
+  }
+  for (const raw of values) {
     if (raw.length < MIN_RAW_LEN) continue;
     // Shorter than one window: checked whole, exactly as before.
     if (raw.length < RAW_RUN_LEN) {
@@ -221,9 +235,14 @@ export function maskContextSlice(
   return masked;
 }
 
-// maskMatch, guaranteed to never equal or contain the raw value. maskMatch's
-// short-local-email pass-through (e.g. "a@b.com") is the one documented case
-// where its output can still equal the raw value; fall back to '***' there.
+// maskMatch, guaranteed to never equal or contain the raw value. maskMatch reads
+// past invisible padding and its output never carries any, so both checks are
+// against the VISIBLE value, which is the raw value itself when unpadded.
+// maskMatch's short-local-email pass-through (e.g. "a@b.com") is the documented
+// case where its output equals that value; the fallback there masks the local
+// part and keeps the domain ("*@b.com"), because the domain is the fragment
+// `carriesRawRun` exempts and '***' would exempt nothing. Any other trip falls
+// back to '***'.
 //
 // DELIBERATELY WHOLE-VALUE, unlike its two siblings above and below. They scrub
 // text that must carry NO trace of a raw value; this one verifies a preview that
@@ -237,11 +256,19 @@ export function maskContextSlice(
 // so they sit in two runs of ONE and cannot fill a window at any width. The
 // margin that reasoning spends is pinned in `cli/test/helpers/no-echo.test.ts`.
 export function safeMaskedMatch(rawMatch: string): string {
-  const masked = maskMatch(rawMatch);
-  if (masked === rawMatch || (rawMatch.length >= MIN_RAW_LEN && masked.includes(rawMatch))) {
-    return '***';
+  const visible = stripInvisiblePadding(rawMatch);
+  const masked = maskMatch(visible);
+  const reveals = (preview: string): boolean =>
+    preview === visible || (visible.length >= MIN_RAW_LEN && preview.includes(visible));
+  if (!reveals(masked)) return masked;
+  // An '@' inside the preview is maskMatch's email branch: the generic branch
+  // puts asterisks everywhere but its two edges.
+  const atIndex = masked.indexOf('@');
+  if (atIndex > 0 && atIndex < masked.length - 1) {
+    const emailFallback = `*${masked.slice(atIndex)}`;
+    if (!reveals(emailFallback)) return emailFallback;
   }
-  return masked;
+  return '***';
 }
 
 // Reject free-form text if it carries any RUN of a raw value from this run, not

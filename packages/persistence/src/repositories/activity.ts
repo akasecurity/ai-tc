@@ -24,6 +24,7 @@ import {
   HARNESS,
   Harness,
   isoToEpochMillis,
+  LONG_CONTEXT_THRESHOLDS,
   SessionStatus,
 } from '@akasecurity/schema';
 
@@ -332,7 +333,12 @@ const TIMELINE_COLUMNS = `
  * pricing ONCE gives the figure that pricing every call and adding would. The
  * tier is in the key precisely because it is the one per-call dimension that
  * changes the multiplier, and the 1h/5m cache-write split rides along as two
- * sums because the two are priced apart. That exactness is what lets the
+ * sums because the two are priced apart. The long-context band is the other
+ * per-call dimension: it is chosen by ONE request's prompt, never a sum, so the
+ * key also carries how many of the catalog's band thresholds the call's prompt
+ * crossed, and the group carries its largest single prompt for the cost model
+ * to choose the band from. Every call in a group sits on the same side of every
+ * threshold, so that largest prompt selects the band each call would. That exactness is what lets the
  * report collapse in SQL over the usage index instead of shipping one bag per
  * call to JS — activity.test.ts holds the two folds equal across every shape a
  * bag takes, and token-rollup-plans.test.ts pins the index.
@@ -349,7 +355,21 @@ interface LlmUsageRow {
   ephemeral1hTokens: number;
   ephemeral5mTokens: number;
   webSearchRequests: number;
+  promptTokens: number;
 }
+
+// One call's prompt, as the cost model counts it for the long-context band:
+// input plus cache reads plus both cache writes.
+const CALL_PROMPT_TOKENS = `(coalesce(input_tokens, 0) + coalesce(cache_read_input_tokens, 0)
+     + coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))`;
+
+// How many band thresholds the call's prompt crossed (0 when none is declared).
+const CALL_BAND =
+  LONG_CONTEXT_THRESHOLDS.length === 0
+    ? '0'
+    : LONG_CONTEXT_THRESHOLDS.map((t) => `(${CALL_PROMPT_TOKENS} > ${String(Math.trunc(t))})`).join(
+        ' + ',
+      );
 
 const LLM_USAGE_SELECT = `
   SELECT root_session_id AS sessionId,
@@ -362,7 +382,8 @@ const LLM_USAGE_SELECT = `
          coalesce(sum(cache_read_input_tokens), 0) AS cacheReadTokens,
          coalesce(sum(ephemeral_1h_input_tokens), 0) AS ephemeral1hTokens,
          coalesce(sum(ephemeral_5m_input_tokens), 0) AS ephemeral5mTokens,
-         coalesce(sum(web_search_requests), 0) AS webSearchRequests`;
+         coalesce(sum(web_search_requests), 0) AS webSearchRequests,
+         coalesce(max(${CALL_PROMPT_TOKENS}), 0) AS promptTokens`;
 
 // The usage index's own predicate (`idx_audit_llm_usage` is partial on exactly
 // these two terms), so the index applies and neither is re-checked against the
@@ -372,7 +393,7 @@ const LLM_USAGE_SELECT = `
 // unparseable leaf to skip, and a generated column only ever reads a valid bag.
 const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
 
-const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier`;
+const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier, ${CALL_BAND}`;
 
 /** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
 function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
@@ -393,7 +414,7 @@ function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
     if (row.provider !== null) attributes.provider = row.provider;
     if (row.model !== null) attributes.model = row.model;
     if (row.serviceTier !== null) attributes.service_tier = row.serviceTier;
-    return { sessionId: row.sessionId, attributes };
+    return { sessionId: row.sessionId, attributes, promptTokens: row.promptTokens };
   });
 }
 

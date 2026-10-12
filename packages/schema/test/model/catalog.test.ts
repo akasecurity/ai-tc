@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   anthropicPrice,
   buildModelIndex,
+  costOf,
   defaultCostModel,
   hostingFor,
   isFirstParty,
+  LONG_CONTEXT_THRESHOLDS,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
@@ -14,6 +16,7 @@ import {
   resolveModel,
   resolveTrainsOnData,
   stripPlatformDecorations,
+  tokenPrice,
   UNDECLARED_TRAINING,
   UNPRICEABLE_PROVIDERS,
   vendor,
@@ -99,6 +102,66 @@ describe('id resolution', () => {
     const dated = resolveModel('claude-haiku-4-5-20251001', MODEL_INDEX);
     expect(dated.entry?.id).toBe('claude-haiku-4-5');
     expect(resolveModel('claude-haiku-4-5', MODEL_INDEX).entry?.id).toBe('claude-haiku-4-5');
+  });
+
+  it('resolves hyphen-dated OpenAI snapshot ids to their undated entry', () => {
+    const cases: [string, string][] = [
+      ['gpt-4o-2024-08-06', 'gpt-4o'],
+      ['gpt-4o-2024-11-20', 'gpt-4o'],
+      ['gpt-4o-mini-2024-07-18', 'gpt-4o-mini'],
+      ['azure/gpt-4o-2024-08-06', 'gpt-4o'],
+    ];
+    for (const [raw, id] of cases) {
+      const resolved = resolveModel(raw, MODEL_INDEX);
+      expect(resolved.entry?.id, raw).toBe(id);
+      expect(resolved.canonicalId, raw).toBe(id);
+    }
+  });
+
+  it('resolves a separately priced snapshot to its own entry, not the undated one', () => {
+    const resolved = resolveModel('gpt-4o-2024-05-13', MODEL_INDEX);
+    expect(resolved.entry?.id).toBe('gpt-4o-2024-05-13');
+    expect(resolved.entry?.familyId).toBe('gpt');
+    const price = resolved.entry?.platforms.get('openai')?.price;
+    expect(price?.input).toBe(5);
+    expect(price?.output).toBe(15);
+  });
+
+  it('strips only a whole trailing date, never a partial one', () => {
+    // A month-day suffix or a malformed date is not a snapshot date.
+    for (const raw of [
+      'gpt-4o-08-06',
+      'gpt-4o-2024-0806',
+      'gpt-4o-24-08-06',
+      'gpt-4o-2024-08-06x',
+    ]) {
+      expect(resolveModel(raw, MODEL_INDEX).entry, raw).toBeNull();
+    }
+  });
+
+  it('resolves the OpenAI embedding models with their input price and no output price', () => {
+    const expected: [string, number][] = [
+      ['text-embedding-3-small', 0.02],
+      ['text-embedding-3-large', 0.13],
+      ['text-embedding-ada-002', 0.1],
+    ];
+    for (const [id, input] of expected) {
+      const entry = resolveModel(id, MODEL_INDEX).entry;
+      expect(entry?.vendor, id).toBe('openai');
+      expect(entry?.capability, id).toBe('embedding');
+      const price = entry?.platforms.get('openai')?.price;
+      expect(price?.input, id).toBe(input);
+      expect(price?.output, id).toBe(0);
+    }
+  });
+
+  it('prices an embedding call from input tokens alone', () => {
+    const cost = defaultCostModel.costFor({
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    expect(cost).toBeCloseTo(0.02, 10);
   });
 
   it('returns no entry for an unknown model rather than a lookalike', () => {
@@ -433,5 +496,54 @@ describe('long-context pricing', () => {
         usage: { inputTokens: 100_000 },
       }),
     ).toBeCloseTo(0.5, 10);
+  });
+
+  it('counts cached prompt tokens toward the band threshold', () => {
+    // 15K uncached + 285K read from cache is a 300K prompt: over the 272K line,
+    // where the rate is unpublished.
+    const usage = { inputTokens: 15_000, cacheReadTokens: 285_000 };
+    expect(defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage })).toBeNull();
+    // With a published band rate, a mostly-cached prompt over the line takes it.
+    const banded = tokenPrice(1, 10, {
+      cacheRead: 0.1,
+      longContext: { thresholdInputTokens: 200_000, input: 2, output: 20 },
+    });
+    expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 200_000 })).toBeCloseTo(0.12, 10);
+    expect(costOf(banded, { inputTokens: 50_000, cacheReadTokens: 100_000 })).toBeCloseTo(0.06, 10);
+    // Not vacuous: the same split under the line prices.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.4',
+        usage: { inputTokens: 15_000, cacheReadTokens: 200_000 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('takes the band from promptTokens when a caller prices a sum of requests', () => {
+    // Two 150K requests summed: 300K of input, but no single request crossed 272K.
+    const summed = { inputTokens: 20_000, cacheReadTokens: 280_000 };
+    expect(
+      defaultCostModel.costFor({ provider: 'openai', model: 'gpt-5.4', usage: summed }),
+    ).toBeNull();
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.4',
+        usage: { ...summed, promptTokens: 150_000 },
+      }),
+    ).not.toBeNull();
+  });
+
+  it('lists every declared band threshold once, ascending', () => {
+    const declared = new Set<number>();
+    for (const entry of MODEL_ENTRIES) {
+      for (const offering of entry.platforms.values()) {
+        const band = offering.price?.longContext;
+        if (band) declared.add(band.thresholdInputTokens);
+      }
+    }
+    expect(declared.size).toBeGreaterThan(0);
+    expect(LONG_CONTEXT_THRESHOLDS).toEqual([...declared].sort((a, b) => a - b));
   });
 });

@@ -13,6 +13,17 @@
         "$TURBO_ROOT$/cli/src/commands/init.ts",
         "$TURBO_ROOT$/packages/setup-wizard/assets/triage-rubric.md"
       ]
+    },
+    "build": {
+      "outputs": [
+        "dist/**",
+        "public/**",
+        "scripts/**",
+        "hooks/engine.js",
+        "native-host/**",
+        ".next/**",
+        "!.next/cache/**"
+      ]
     }
   }
 }

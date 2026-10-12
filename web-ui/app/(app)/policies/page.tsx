@@ -42,7 +42,9 @@ export default async function PoliciesPage({
     <div className="flex min-h-full flex-col p-6 lg:h-full lg:min-h-0">
       <PageHead title="Policies" sub="Enforcement actions detections take when they match" />
 
-      <PolicyStatsView stats={stats} locale={await renderLocale()} />
+      {/* The local store counts a pack with no policy of its own under Monitor,
+          so these counts are not all assignments (see countsUnassigned). */}
+      <PolicyStatsView stats={stats} locale={await renderLocale()} countsUnassigned />
 
       <PoliciesClient items={list.items} detail={detail} selectedId={selectedId} />
     </div>

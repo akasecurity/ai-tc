@@ -291,7 +291,7 @@ describe('parseTranscriptUsage — token_count events', () => {
         model: 'gpt-5-codex',
         runKey: 'turn-1',
         usage: {
-          input_tokens: 500,
+          input_tokens: 400,
           output_tokens: 50,
           cache_read_input_tokens: 100,
           reasoning_output_tokens: 10,
@@ -302,6 +302,39 @@ describe('parseTranscriptUsage — token_count events', () => {
         originator: 'codex_cli_rs',
       },
     ]);
+  });
+
+  it('stores input_tokens net of cached_input_tokens, clamped at zero', () => {
+    const usageOf = (last: Record<string, number>) =>
+      parseTranscriptUsage(
+        [
+          SESSION_META,
+          line({
+            timestamp: '2026-07-14T10:00:04.000Z',
+            type: 'event_msg',
+            payload: {
+              type: 'token_count',
+              info: { total_token_usage: last, last_token_usage: last, model_context_window: null },
+              rate_limits: null,
+            },
+          }),
+        ].join('\n'),
+      )[0]?.usage;
+
+    expect(usageOf({ input_tokens: 300, output_tokens: 7 })).toEqual({
+      input_tokens: 300,
+      output_tokens: 7,
+    });
+    expect(usageOf({ input_tokens: 300, cached_input_tokens: 300, output_tokens: 7 })).toEqual({
+      input_tokens: 0,
+      output_tokens: 7,
+      cache_read_input_tokens: 300,
+    });
+    expect(usageOf({ input_tokens: 10, cached_input_tokens: 25, output_tokens: 7 })).toEqual({
+      input_tokens: 0,
+      output_tokens: 7,
+      cache_read_input_tokens: 25,
+    });
   });
 
   it('drops an all-zero token_count event', () => {

@@ -162,6 +162,26 @@ function rowCount(where: string): number {
   }
 }
 
+interface CaptureRow {
+  content: string | null;
+  scanIncomplete: string | null;
+}
+
+// Each capture row's body and the refusal reason its attributes carry.
+function captureRows(): CaptureRow[] {
+  const db = new DatabaseSync(join(dir, DB_FILENAME));
+  try {
+    return db
+      .prepare(
+        `SELECT content, json_extract(attributes, '$.scan_incomplete') AS scanIncomplete
+           FROM audit_events WHERE ${CAPTURE_KINDS}`,
+      )
+      .all() as unknown as CaptureRow[];
+  } finally {
+    db.close();
+  }
+}
+
 interface LedgerRow {
   reference: string;
   rule_id: string;
@@ -370,7 +390,7 @@ describe('a prompt too large to scan in time on a personal device', () => {
   it('is refused and its refusal recorded on a machine-wide attachment', async () => {
     attachAs('machine');
     await refuse('md-large');
-    expect(rowCount(CAPTURE_KINDS)).toBe(1);
+    expect(captureRows()).toEqual([{ content: '', scanIncomplete: 'timeout' }]);
   });
 });
 

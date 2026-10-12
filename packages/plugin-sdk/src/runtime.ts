@@ -160,6 +160,78 @@ function conditionsMatch(
   return true;
 }
 
+/**
+ * Opt-in hard bound on scanning a LARGE field, for a caller that answers to a
+ * host timeout: every hook. Without it a field of any size is scanned
+ * in-process, and an in-process scan cannot be interrupted — so a field large
+ * enough to keep the bundled rules busy past the host's timeout is a hook the
+ * host kills, and a killed hook lets the whole call through unscanned.
+ *
+ * With it, a field of `thresholdChars` or more is scanned in a worker under
+ * `budgetMs` (see `GuardedScanner.scanBounded`), and a scan that cannot finish
+ * there is REFUSED: the decision is 'block' with `scanIncomplete` set. A field
+ * below the threshold takes the in-process path exactly as before and builds no
+ * worker, so the fast path stays free for the prompts and tool fields that make
+ * up nearly all traffic.
+ *
+ * Callers that answer to no host timeout — the worktree scan, the transcript
+ * backfill, the dashboard — leave it unset and keep the in-process scan.
+ */
+export interface LargeInputScanOptions {
+  /** Fields at least this long (UTF-16 code units, i.e. `text.length`) take the bounded path. */
+  thresholdChars: number;
+  /** How long one bounded scan may run once its worker is up. */
+  budgetMs: number;
+  /** How long to wait for the worker to start, when a scan has to start it. */
+  startBudgetMs: number;
+  /**
+   * What is left of the caller's whole time, in milliseconds, read once per
+   * bounded scan. Both budgets above are clipped to it, which is what stops
+   * several large fields in one hook from adding up past the host's timeout.
+   * Zero or less refuses the field without starting a worker; so does a value
+   * that is not a number, or a callback that throws — a limit nobody can read
+   * is treated as spent. Omitted, each scan has its own budgets and nothing
+   * more.
+   */
+  remainingMs?: (() => number) | undefined;
+}
+
+/**
+ * The defaults a hook passes as `largeInput`, before its own `remainingMs`.
+ *
+ * The threshold sits where the bundled rules stop being cheap enough to run
+ * unbounded: an ordinary field below it scans in-process in a few milliseconds
+ * at worst, so nothing that common pays for a worker. The scan budget leaves
+ * ~4x headroom over the slowest ordinary scan measured at the per-leaf cap. The
+ * start budget is far below `ISOLATED_START_BUDGET_MS` because here a slow
+ * start costs one refused field rather than a rule quarantined forever, and
+ * because it is spent from the hook's own time.
+ */
+export const LARGE_INPUT_THRESHOLD_CHARS = 32_768;
+export const LARGE_INPUT_SCAN_BUDGET_MS = 2_000;
+export const LARGE_INPUT_START_BUDGET_MS = 1_500;
+
+export interface PluginRuntimeOptions {
+  dataDir?: string | undefined;
+  scanIsolation?: IsolatedScanOptions | undefined;
+  largeInput?: LargeInputScanOptions | undefined;
+}
+
+// The remaining time a bounded scan may spend, or undefined for no caller limit.
+// A callback that throws or answers with something other than a number reads as
+// spent: refusing the field is the outcome the caller opted into, and an
+// unreadable limit must not become no limit at all.
+function readRemainingMs(largeInput: LargeInputScanOptions): number | undefined {
+  const read = largeInput.remainingMs;
+  if (read === undefined) return undefined;
+  try {
+    const remaining: unknown = read();
+    return typeof remaining !== 'number' || Number.isNaN(remaining) ? 0 : remaining;
+  } catch {
+    return 0;
+  }
+}
+
 // registerBundledPacks() parses + validates every bundled rule JSON. A hook runs
 // in its own process, so it would happen once there regardless — but tests build
 // many runtimes in one process. Gate it on a module flag so the parse cost is
@@ -196,7 +268,7 @@ let bundlesPacked = false;
 export function createPluginRuntime(
   gateway: DataGateway,
   settings: WorkspaceSettings,
-  opts?: { dataDir?: string | undefined; scanIsolation?: IsolatedScanOptions | undefined },
+  opts?: PluginRuntimeOptions,
 ): PluginRuntime {
   if (!bundlesPacked) {
     registerBundledPacks();
@@ -212,6 +284,7 @@ export function createPluginRuntime(
   // uses the local answer rather than none.
   let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
+  const largeInput = opts?.largeInput;
   let rules: Rule[] = [];
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
@@ -658,7 +731,28 @@ export function createPluginRuntime(
       // impossible case; it must never be an unshielded scan.
       if (!scanner) throw new Error('the runtime initialized without a scanner');
       const shielded = shieldPointers(text);
-      const matched = await scanner.scan(shielded.text, context);
+      let matched: MatchResult[];
+      if (largeInput !== undefined && shielded.text.length >= largeInput.thresholdChars) {
+        const outcome = await scanner.scanBounded(shielded.text, context, {
+          budgetMs: largeInput.budgetMs,
+          startBudgetMs: largeInput.startBudgetMs,
+          remainingMs: readRemainingMs(largeInput),
+        });
+        // RETURNED, never thrown: the catch below fails open, and a field that
+        // could not be scanned is exactly the one the caller asked to refuse.
+        // Nothing was found because nothing finished, so there is nothing for
+        // the exception or ledger steps to act on either.
+        if (outcome.status !== 'ok') {
+          return {
+            decision: { action: 'block', text: null, findings: [], scanIncomplete: outcome.status },
+            excepted: new Set<MatchResult>(),
+            exceptionIds: [],
+          };
+        }
+        matched = outcome.findings;
+      } else {
+        matched = await scanner.scan(shielded.text, context);
+      }
       const findings = dropShieldedFindings(matched, shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
@@ -698,7 +792,14 @@ export function createPluginRuntime(
     return (await evaluate(text, context, {}, opts.rewritable)).decision;
   }
 
-  async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
+  // The first half of a capture: scan, exceptions, the decision and the ledger.
+  // Nothing is written to the event store here. Split from the write so a caller
+  // can decide first and record only if the outcome is one it acts on
+  // (captureDeferred); `capture` is the two back to back.
+  async function evaluateCapture(
+    input: CaptureInput,
+    opts: CaptureOptions,
+  ): Promise<EvaluatedCapture> {
     // Added latency is measured from here — the caller is blocked from this
     // line until `capture` returns, and everything between here and the event
     // build below is inspection work the host session waits on. A capture that
@@ -709,15 +810,16 @@ export function createPluginRuntime(
     //
     // What the sample can NOT correct for is the persistence policy above it: a
     // capture that is measured but never recorded (`persist: 'with-findings'`
-    // with nothing found — see the early return below) carries its measurement
-    // nowhere. The skew therefore follows that CONDITION — a live capture the
-    // caller passed 'with-findings' — and not any particular kind; enumerating
-    // kinds here is what went stale last time. Both 'tool_use' (the pre-tool-use
-    // hooks) and 'response' (the post-tool-use hooks, which see every Read file
-    // and Bash stream) are live and 'with-findings' today, so for each the
-    // recorded set is the findings-bearing subset, which does strictly more work
-    // than the clean captures it stands in for. Any reader aggregating this
-    // field inherits that skew.
+    // with nothing found and nothing refused — see the early return below)
+    // carries its measurement nowhere. The skew therefore follows that
+    // CONDITION — a live capture the caller passed 'with-findings' — and not any
+    // particular kind; enumerating kinds here is what went stale last time. Both
+    // 'tool_use' (the pre-tool-use hooks) and 'response' (the post-tool-use
+    // hooks, which see every Read file and Bash stream) are live and
+    // 'with-findings' today, so for each the recorded set is the findings-bearing
+    // subset plus any refused field, whose reading includes the bounded scan's
+    // wait; both do more work than the clean captures they stand in for. Any
+    // reader aggregating this field inherits that skew.
     //
     // `persist: 'never'` is the other condition, and the stronger one: nothing
     // it measures is ever recorded, so it is not timed at all. Its captures (a
@@ -725,10 +827,9 @@ export function createPluginRuntime(
     // rather than skewing it.
     const timingStartedAt =
       input.occurredAt === undefined && opts.persist !== 'never' ? startTiming() : undefined;
-    const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
-      { filePath, eventKind: input.kind },
+      { filePath: input.metadata?.filePath, eventKind: input.kind },
       {
         sourceTool: input.sourceTool,
         metadata: input.metadata,
@@ -736,13 +837,31 @@ export function createPluginRuntime(
       },
       opts.rewritable,
     );
+    return { decision, excepted, exceptionIds, timingStartedAt };
+  }
+
+  // The second half: the event with masked content and its masked findings.
+  async function persistCapture(
+    input: CaptureInput,
+    opts: CaptureOptions,
+    { decision, excepted, exceptionIds, timingStartedAt }: EvaluatedCapture,
+  ): Promise<void> {
+    const filePath = input.metadata?.filePath;
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
     // store with benign events. The live hook path keeps the default 'always'.
-    // 'never' records no event at all, found or not: the decision above is
-    // still returned and enforced.
-    if (opts.persist === 'never') return decision;
-    if (opts.persist === 'with-findings' && decision.findings.length === 0) return decision;
+    // 'never' records no event at all, found, clean or refused: the decision
+    // the caller holds is still returned and enforced.
+    if (opts.persist === 'never') return;
+    // A refused field has no findings either, and is not clean: 'with-findings'
+    // records it anyway, so a refusal leaves the same trace a block does.
+    if (
+      opts.persist === 'with-findings' &&
+      decision.findings.length === 0 &&
+      decision.scanIncomplete === undefined
+    ) {
+      return;
+    }
     try {
       // Secrets-at-rest: persist the text with the span of every finding whose
       // OWN action is redact or stronger masked, and keep content_hash of the
@@ -772,8 +891,18 @@ export function createPluginRuntime(
       const maskedFindings = decision.findings.filter((match) =>
         isActionAtLeast(actionForFinding(match, excepted, opts.rewritable), 'redact'),
       );
+      // A REFUSED field (`scanIncomplete`) stores no content at all. It was
+      // never scanned, so it has no findings to mask — and that is not the same
+      // as having nothing to mask: anything in it, a secret included, would
+      // land in the store verbatim, and an attached machine would forward it.
+      // `Event.content` is a required string, so the row carries '' and keeps
+      // `contentHash` of the original, which is what correlates it.
       const storedContent =
-        maskedFindings.length > 0 ? redact(input.text, maskedFindings) : input.text;
+        decision.scanIncomplete !== undefined
+          ? ''
+          : maskedFindings.length > 0
+            ? redact(input.text, maskedFindings)
+            : input.text;
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,
@@ -789,13 +918,20 @@ export function createPluginRuntime(
       // one — the second is a masking the host could not perform, which is what
       // a reader asking "why did this go through" needs to see.
       const redactDegradedTo = decision.redactDegradedTo;
+      // The refusal, recorded on its row: the content stored above is '' and
+      // there are no findings, which is what a clean empty capture looks like.
+      const scanIncomplete = decision.scanIncomplete;
       const metadata =
-        exceptionIds.length > 0 || inspectionMs !== undefined || redactDegradedTo !== undefined
+        exceptionIds.length > 0 ||
+        inspectionMs !== undefined ||
+        redactDegradedTo !== undefined ||
+        scanIncomplete !== undefined
           ? {
               ...input.metadata,
               ...(exceptionIds.length > 0 ? { exceptionIds } : {}),
               ...(inspectionMs !== undefined ? { inspectionMs } : {}),
               ...(redactDegradedTo !== undefined ? { redactDegradedTo } : {}),
+              ...(scanIncomplete !== undefined ? { scanIncomplete } : {}),
             }
           : input.metadata;
       const event = buildIngestEvent({
@@ -847,6 +983,8 @@ export function createPluginRuntime(
                 // exceptions/blocked_detections when a key is available;
                 // falls back to the masked match so at-rest findings still get
                 // a stable (if weaker) identity on a workspace with no dataDir.
+                // Both ignore the same invisible padding, so a clean and a
+                // padded occurrence of one secret key alike on either path.
                 valueFingerprint: findingKeyFingerprintKey
                   ? fingerprintOf(findingKeyFingerprintKey, match, findingKeyFpCache)
                   : maskedMatch,
@@ -890,7 +1028,48 @@ export function createPluginRuntime(
     } catch {
       // Fail-open: a persistence failure never changes the enforcement decision.
     }
-    return decision;
+  }
+
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written: no exception is consumed, no ledger row or event
+  // recorded. For a caller re-checking text that something else has already
+  // decided and recorded. An error yields none (the same fail-open the decision
+  // paths have): this answers "is anything enforced here", never a verdict.
+  async function enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]> {
+    try {
+      await ensureInitialized();
+      if (!scanner) return [];
+      const shielded = shieldPointers(text);
+      const matched = await scanner.scan(shielded.text, context);
+      return dropShieldedFindings(matched, shielded.spans).filter((finding) => {
+        const action = resolveAction(finding.ruleId, finding.category);
+        return action === 'block' || action === 'redact';
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
+    const evaluated = await evaluateCapture(input, opts);
+    await persistCapture(input, opts, evaluated);
+    return evaluated.decision;
+  }
+
+  async function captureDeferred(
+    input: CaptureInput,
+    opts: CaptureOptions = {},
+  ): Promise<DeferredCapture> {
+    const evaluated = await evaluateCapture(input, opts);
+    let recorded = false;
+    return {
+      result: evaluated.decision,
+      record: async () => {
+        if (recorded) return;
+        recorded = true;
+        await persistCapture(input, opts, evaluated);
+      },
+    };
   }
 
   // A stable fingerprint of the EFFECTIVE ruleset (bundled packs + pulled bundle
@@ -930,7 +1109,15 @@ export function createPluginRuntime(
     await gateway.close();
   }
 
-  return { processText, capture, rulesetFingerprint, scanIsolationDegraded, close };
+  return {
+    processText,
+    capture,
+    captureDeferred,
+    enforcedIn,
+    rulesetFingerprint,
+    scanIsolationDegraded,
+    close,
+  };
 }
 
 // What the CALLER can do about the decision, as opposed to what the runtime
@@ -957,16 +1144,20 @@ export interface DecisionOptions {
 
 // Persistence policy for capture(): 'always' records an event for every call
 // (the live hook path, so the activity timeline is complete); 'with-findings'
-// records only when something was detected (the historical backfill);
-// 'never' records no event and no finding, for text the caller may enforce on
-// but must not keep (a web chat on a machine that withholds them). Everything
-// before the write still happens under 'never', with the capture's own source
-// tool and metadata: exceptions are matched against them, a single-use grant
-// is spent (with no event to name it), and a block or redact writes the
+// records when something was detected or the field was refused (a bounded scan
+// that did not finish, `scanIncomplete`) and skips only a clean capture (the
+// historical backfill and the live tool hooks); 'never' records no event and
+// no finding, for text the caller may enforce on but must not keep (a web chat
+// on a machine that withholds them). The evaluation is the same under every
+// value, with the capture's own source tool and metadata: exceptions are
+// matched against them, a single-use grant is spent (under 'never', with no
+// event to name it), and a block or redact backed by findings writes the
 // short-lived, masked blocked-detection ledger row the approve flow reads,
-// carrying the capture's session id. `processText` differs on exactly that
-// context: it evaluates with none, so its ledger rows carry no session id and
-// a grant conditioned on a source tool does not match there.
+// carrying the capture's session id. A refused field is a block with no
+// findings: it matches no exception, spends no grant and writes no ledger row,
+// so under 'never' it leaves nothing at all. `processText` differs on exactly
+// that context: it evaluates with none, so its ledger rows carry no session id
+// and a grant conditioned on a source tool does not match there.
 // `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
 // gateway drops content it has already recorded (fresh event ids on a re-run
 // would otherwise duplicate rows). Never set it on the live hook path.
@@ -978,6 +1169,25 @@ export interface CaptureOptions extends DecisionOptions {
   preAuthorizedGrantIds?: readonly string[];
 }
 
+// What `captureDeferred` hands back: the decision, and the write held back.
+export interface DeferredCapture {
+  result: CaptureResult;
+  /**
+   * Writes the event and findings as `opts.persist` allows ('never' writes
+   * nothing; 'with-findings' skips a clean capture). Idempotent; never throws
+   * (the write is best effort).
+   */
+  record(): Promise<void>;
+}
+
+// What the first half of a capture leaves for the second.
+interface EvaluatedCapture {
+  decision: CaptureResult;
+  excepted: Set<MatchResult>;
+  exceptionIds: string[];
+  timingStartedAt: ReturnType<typeof startTiming> | undefined;
+}
+
 export interface PluginRuntime {
   // Enforcement decision + best-effort blocked-detection bookkeeping (the
   // short-lived approve-flow ledger, when a fingerprint key is available);
@@ -987,6 +1197,15 @@ export interface PluginRuntime {
   // `opts.persist` allows: 'with-findings' skips a clean capture, 'never' every
   // one.
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
+  // The same capture in two steps: the decision now (exceptions evaluated and
+  // spent, the blocked-detections ledger written, as `capture` does), the event
+  // and findings only when `record()` is called, at most once. A caller whose
+  // outcome may be "not mine to record" (a helper that declines the prompt and
+  // leaves it to the hook) decides first and records only what it acts on.
+  captureDeferred(input: CaptureInput, opts?: CaptureOptions): Promise<DeferredCapture>;
+  // The detections in `text` whose policy resolves to block or redact, with
+  // nothing spent or written (no exception consumed, no ledger row, no event).
+  enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
   // True once the pulled/custom-pack regex rules were dropped mid-process

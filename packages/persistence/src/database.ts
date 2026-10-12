@@ -46,6 +46,8 @@ import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
+import type { ModPolicySources } from './mod-policy-snapshot.ts';
+import { refreshModPolicySnapshot } from './mod-policy-snapshot.ts';
 import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
@@ -426,7 +428,12 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * when BOTH halves hold: see `describeStoreSkew` and `isSchemaShapedFailure`.
  * Everything else propagates exactly as it arrived.
  */
-function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
+function openAndInitialize(
+  file: string,
+  base: string,
+  skipTags: ReadonlySet<string> | undefined,
+  shippedRegexMatchers: readonly { pattern: string; flags: string }[],
+) {
   let db = openWithPragmas(file);
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
@@ -451,12 +458,25 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     applyMigrations(db, file, { skipTags });
     tightenPerms(file);
 
-    const policies = new SqlitePoliciesRepository(db);
+    // Rewrites the Claude Code mod's policy snapshot after any write to the
+    // installed ruleset, a pack's policy, a category policy or an exception.
+    // These repositories are the one door every writer (the plugin hooks, the
+    // CLI, the web-ui server actions) goes through, so the hook is here and
+    // not at each caller. It reads `repositories` lazily: nothing writes until
+    // the object below exists, and a call before then is a no-op.
+    const modPolicy: { current?: ModPolicySources } = {};
+    const onPolicyStateChange = (): void => {
+      if (modPolicy.current !== undefined)
+        refreshModPolicySnapshot(dirname(file), modPolicy.current);
+    };
+    const policies = new SqlitePoliciesRepository(db, onPolicyStateChange);
     // The layout base, so the pack-policy write path can see whether this
     // machine is attached and what its control plane requires. See
     // SqliteInstalledPacksRepository's constructor for why it is optional there
     // and threaded from here.
-    const installedPacks = new SqliteInstalledPacksRepository(db, base);
+    const installedPacks = new SqliteInstalledPacksRepository(db, base, onPolicyStateChange);
+    const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
+    const exceptions = new SqliteExceptionsRepository(db, undefined, onPolicyStateChange);
     const repositories = {
       events: new SqliteEventsRepository(db),
       findings: new SqliteFindingsRepository(db),
@@ -465,9 +485,9 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       scanLedger: new SqliteScanLedgerRepository(db),
       historySync: new SqliteHistorySyncRepository(db),
       secretVault: new SqliteSecretVaultRepository(db),
-      exceptions: new SqliteExceptionsRepository(db),
+      exceptions,
       resolutions: new SqliteResolutionsRepository(db),
-      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      ruleProbeCache,
       bodyRetention: new SqliteBodyRetentionRepository(db),
       security: new SqliteSecurityRepository(db),
       detections: new SqliteDetectionsRepository(db),
@@ -484,6 +504,13 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
       inspectionFindings: new SqliteInspectionFindingsRepository(db),
       configInventory: new SqliteConfigInventoryRepository(db),
+    };
+    modPolicy.current = {
+      installedRuleset: () => installedPacks.installedRuleset(),
+      readPolicies: () => policies.listPolicies(),
+      activeExceptionRuleIds: () => exceptions.activeRuleIds(),
+      probeVerdict: (key) => ruleProbeCache.getVerdict(key)?.verdict,
+      bundledRegexMatchers: () => shippedRegexMatchers,
     };
     policies.seedDefaults();
     return { db, ...repositories };
@@ -518,6 +545,20 @@ export interface OpenLocalDatabaseOptions {
    * indexes has to work without it.
    */
   applyDeferredMigrations?: boolean | undefined;
+  /**
+   * The regex matchers the RUNNING BINARY ships (build-time bundled packs, which
+   * CI has timed). The Claude Code mod scans on the host's own thread, where a
+   * runaway pattern cannot be interrupted, so a regex rule enters its policy
+   * snapshot only on evidence it is fast, and "the binary ships it" is the
+   * strongest evidence there is. It is passed in by the caller, which knows its
+   * own build, and never read back from the store: `available_packs` is a
+   * mutable table any writer (another binary, a legacy writer) can fill, so
+   * treating its contents as shipped would let an untimed pattern in. A caller
+   * that passes nothing (the CLI, the web-ui) gets an empty set: a snapshot
+   * written on its store write admits a regex only on a cached `safe` verdict
+   * or an earlier snapshot's vetting, which the plugin's own sync restores.
+   */
+  shippedRegexMatchers?: readonly { pattern: string; flags: string }[] | undefined;
 }
 
 // The set a default open skips, allocated once.
@@ -573,6 +614,7 @@ export function openLocalDatabase(
     // settings/ and data/, and the pack-policy floor needs both halves.
     dirname(dir),
     options.applyDeferredMigrations === true ? undefined : DEFERRED_TAGS,
+    options.shippedRegexMatchers ?? [],
   );
 
   // The one derivation of a capture's row id, shared by the write and the

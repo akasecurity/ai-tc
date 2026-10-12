@@ -10,7 +10,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner } from '@akasecurity/schema';
 
-import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
 
 // Which tool_input fields carry user-authored text worth scanning, and whether
 // that text EXECUTES — see the Claude Code sibling module for the full
@@ -125,6 +125,20 @@ export function decidePreToolUse(
   let escalatedExecutable = false;
   let escalatedUnredactable = false;
   let updatedInput: Record<string, unknown> | null = null;
+
+  // A field whose bounded scan did not finish denies the whole call, ahead of
+  // every other outcome. It is a `block` with no findings, so the loop below
+  // would add no rule for it and the call would run with a field nothing
+  // scanned.
+  if (scanned.some(({ result }) => result.scanIncomplete !== undefined)) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: tooLargeToScanMessage(`${toolName} call`),
+      },
+    };
+  }
 
   for (const { spec, result } of scanned) {
     // Two things this hook cannot carry out, and they are no longer the same

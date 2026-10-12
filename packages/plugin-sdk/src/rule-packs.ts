@@ -58,6 +58,23 @@ export function bundledDetections(): InstalledPackInput[] {
   return cachedDetections;
 }
 
+/**
+ * The regex matchers of the packs this build ships, from the build-time
+ * BUNDLED_PACKS, which CI times. The one trust anchor for "the binary ships this
+ * pattern": handed to the store (`openLocalDatabase`'s `shippedRegexMatchers`)
+ * so the Claude Code mod's policy snapshot admits a regex without a cached
+ * verdict only if it is one of these, and never because a mutable table says so.
+ */
+export function shippedRegexMatchers(): { pattern: string; flags: string }[] {
+  return bundledDetections()
+    .flatMap((pack) => pack.rules)
+    .flatMap((rule) =>
+      rule.matcher.type === 'regex'
+        ? [{ pattern: rule.matcher.pattern, flags: rule.matcher.flags }]
+        : [],
+    );
+}
+
 // Distinct rule ids across a finding set, joined for a one-line summary in the
 // adapter's warn/redact system messages. Generic (no Claude-Code specifics), so
 // it lives in the SDK for every adapter to reuse.

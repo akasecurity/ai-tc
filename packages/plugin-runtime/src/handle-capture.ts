@@ -3,6 +3,7 @@ import type {
   CaptureOptions,
   CaptureResult,
   PluginConfig,
+  PluginRuntimeOptions,
 } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 
@@ -31,6 +32,12 @@ import { resolveDataGateway } from './resolve.ts';
  * a subset of the keys would keep every test green, so it is a deliberate
  * change to argue for rather than one a red suite will catch.
  *
+ * `runtimeOpts.largeInput` is the opt-in bound on large fields (see
+ * `LargeInputScanOptions`): a field at or above its threshold is scanned in a
+ * worker under a deadline, and one that cannot be scanned there comes back as a
+ * `block` with `scanIncomplete` set. That is a RETURNED decision, so the catch
+ * below never sees it. Omitted, every field is scanned in-process as before.
+ *
  * Fully fail-open: any error (config, gateway, scan) yields `log` + the original
  * text so a hook can never break the host session. `config` is injectable for
  * tests/adapters that already loaded it; otherwise it is read fresh per call.
@@ -39,10 +46,14 @@ export async function handleCapture(
   input: CaptureInput,
   config: PluginConfig = loadConfig(),
   opts: CaptureOptions = {},
+  runtimeOpts: Pick<PluginRuntimeOptions, 'largeInput'> = {},
 ): Promise<CaptureResult> {
   try {
     const gateway = resolveDataGateway(config);
-    const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+    const runtime = createPluginRuntime(gateway, config.settings, {
+      dataDir: config.dataDir,
+      largeInput: runtimeOpts.largeInput,
+    });
     let result: CaptureResult;
     try {
       result = await runtime.capture(input, opts);

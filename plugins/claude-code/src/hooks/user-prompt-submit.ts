@@ -5,6 +5,7 @@
  * stdin:  { prompt, session_id, cwd, hook_event_name, ... }
  * stdout (exit 0):
  *   {"decision":"block","reason":"..."}  → prompt is blocked, reason shown
+ *     (also for a prompt too large to scan within the time limit)
  *   {"systemMessage":"..."}              → warning shown, prompt continues
  *   no output                            → allow
  *
@@ -45,7 +46,9 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import {
@@ -115,16 +118,32 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A prompt the mod's helper already rewrote and recorded (its event and
+  // findings are in the store; this hook is seeing pointers or markers): record
+  // nothing, or one prompt would appear in Activity twice. Only the RECORDING is
+  // skipped. The prompt this hook is handed is still scanned and decided, as a
+  // second check on what the mod produced: the rewrite is normally clean and
+  // decides to nothing, but a value the mod left (a warn-level one beside a redacted
+  // one, which keeps its warning) or a note planted for a raw prompt is judged
+  // here exactly as a prompt with no mod would be.
+  const handedOff = consumeModHandoff(config.dataDir, prompt);
+  // A prompt at or above the large-input threshold is scanned under a deadline
+  // and refused if that scan does not finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
   let result: CaptureResult;
   try {
-    result = await runtime.capture({
+    const decided = await runtime.captureDeferred({
       kind: 'prompt',
       sourceTool: SOURCE_TOOL.ClaudeCode,
       text: prompt,
       metadata,
       scopeKey,
     });
+    if (!handedOff) await decided.record();
+    result = decided.result;
   } finally {
     await runtime.close();
   }

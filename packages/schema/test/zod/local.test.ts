@@ -262,6 +262,7 @@ describe('row mappers (tenant-free local store)', () => {
       conversationId: 'conv_1',
       inspectionMs: 7,
       redactDegradedTo: 'warn',
+      scanIncomplete: 'timeout',
     };
     const event: IngestEvent = {
       id: EVENT,
@@ -283,6 +284,7 @@ describe('row mappers (tenant-free local store)', () => {
       'model',
       'redact_degraded_to',
       'repo',
+      'scan_incomplete',
       'source_tool',
       'tool_name',
       'trace_id',

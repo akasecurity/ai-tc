@@ -5,6 +5,7 @@ import {
   buildModelIndex,
   costOf,
   defaultCostModel,
+  firstPartyPlatformFor,
   hostingFor,
   isFirstParty,
   LONG_CONTEXT_THRESHOLDS,
@@ -321,7 +322,7 @@ describe('catalog data', () => {
   });
 
   it('records the published Claude 5 context windows', () => {
-    // These are 1M models; the Claude 4.x figure is 200K and applies to Haiku.
+    // These are 1M models; Haiku 4.5 is published at 200K.
     for (const id of [
       'claude-opus-5',
       'claude-opus-5-5',
@@ -348,20 +349,76 @@ describe('catalog data', () => {
       if (price == null) throw new Error(`no first-party price for ${id}`);
       return price.input + price.output;
     };
-    // Fable bills above Opus, which bills above Sonnet, which bills above Haiku.
+    // Fable bills above Opus, which bills above Sonnet, which bills above Haiku,
+    // within each generation.
     expect(rate('claude-fable-5-1')).toBeGreaterThan(rate('claude-opus-5'));
     expect(rate('claude-opus-5')).toBeGreaterThan(rate('claude-sonnet-5'));
     expect(rate('claude-sonnet-5')).toBeGreaterThan(rate('claude-haiku-4-5'));
+    expect(rate('claude-fable-5-1')).toBeGreaterThan(rate('claude-opus-5-5'));
+    expect(rate('claude-opus-5-5')).toBeGreaterThan(rate('claude-sonnet-5-5'));
+    expect(rate('claude-sonnet-5-5')).toBeGreaterThan(rate('claude-haiku-5-5'));
+    // The 5.5 generation is priced below the 5 generation it follows.
+    expect(rate('claude-opus-5')).toBeGreaterThan(rate('claude-opus-5-5'));
+    expect(rate('claude-haiku-4-5')).toBeGreaterThan(rate('claude-haiku-5-5'));
   });
 
   it('carries the non-uniform Anthropic cache-read rates', () => {
-    // Fable 5.1 reads cache at 0.025x base input; the rest of the family at 0.1x.
-    expect(
-      MODEL_INDEX.byId.get('claude-fable-5-1')?.platforms.get('anthropic')?.price?.cacheRead,
-    ).toBe(0.25);
-    expect(
-      MODEL_INDEX.byId.get('claude-fable-5')?.platforms.get('anthropic')?.price?.cacheRead,
-    ).toBe(1);
+    // Fable 5.1 reads cache at 0.025x base input, Opus 5.5 and Sonnet 5.5 at
+    // 0.05x, and the rest of the family at 0.1x.
+    const cacheRead = (id: string) =>
+      MODEL_INDEX.byId.get(id)?.platforms.get('anthropic')?.price?.cacheRead;
+    expect(cacheRead('claude-fable-5-1')).toBe(0.25);
+    expect(cacheRead('claude-opus-5-5')).toBe(0.2);
+    expect(cacheRead('claude-sonnet-5-5')).toBe(0.1);
+    expect(cacheRead('claude-fable-5')).toBe(1);
+    expect(cacheRead('claude-opus-5')).toBe(0.5);
+  });
+
+  // Published figures, read from each vendor's own pricing and model pages. An
+  // edit to any of these entries has to change this table too.
+  it.each([
+    ['gpt-6-astra', 1_050_000, 10, 50, 1],
+    ['gpt-6.1-sol', 1_050_000, 2, 10, 0.1],
+    ['gpt-6-sol', 1_050_000, 2, 10, 0.2],
+    ['gpt-6-luna', 1_050_000, 0.1, 0.5, 0.01],
+    ['gpt-5.6-sol', 1_050_000, 4, 20, 0.4],
+    ['gpt-5.5-pro', 1_050_000, 30, 180, null],
+    ['gemini-3.8-flash', 1_048_576, 0.75, 3.75, 0.075],
+    ['gemini-3.1-flash-lite', 1_048_576, 0.25, 1.5, 0.025],
+    ['gemini-3-flash-preview', 1_048_576, 0.5, 3, 0.05],
+    ['gemini-embedding-2', null, 0.2, 0, null],
+    ['grok-4.7', 500_000, 2, 6, 0.5],
+    ['grok-4.20-0309-reasoning', 1_000_000, 1.25, 2.5, 0.2],
+    ['grok-4.20-0309-non-reasoning', 1_000_000, 1.25, 2.5, 0.2],
+    ['grok-4.20-multi-agent-0309', 1_000_000, 1.25, 2.5, 0.2],
+    ['deepseek-flash', 1_000_000, 0.3, 1.2, 0.006],
+    ['mistral-large-4', 1_000_000, 0.68, 2.09, 0.07],
+    ['mistral-large-2512', 256_000, 0.5, 1.5, 0.05],
+    ['mistral-medium-3-5', 256_000, 1.5, 7.5, 0.15],
+    ['mistral-small-2603', 256_000, 0.15, 0.6, 0.015],
+    ['ministral-14b-2512', 256_000, 0.2, 0.2, 0.02],
+    ['ministral-8b-2512', 256_000, 0.15, 0.15, 0.015],
+    ['ministral-3b-2512', 256_000, 0.1, 0.1, 0.01],
+    ['codestral-2508', 128_000, 0.3, 0.9, 0.03],
+  ] as const)('carries the published figures for %s', (id, ctx, input, output, cacheRead) => {
+    const entry = MODEL_INDEX.byId.get(id);
+    const price = entry?.platforms.get(firstPartyPlatformFor(entry.vendor) ?? 'local')?.price;
+    expect(entry?.contextWindow ?? null).toBe(ctx);
+    expect(price?.input).toBe(input);
+    expect(price?.output).toBe(output);
+    expect(price?.cacheRead).toBe(cacheRead);
+  });
+
+  it('derives every Grok band as 2x the base rate at 200K', () => {
+    for (const entry of MODEL_ENTRIES.filter((e) => e.vendor === 'xai')) {
+      const price = entry.platforms.get('xai')?.price;
+      expect(price?.longContext, entry.id).toEqual({
+        thresholdInputTokens: 200_000,
+        input: (price?.input ?? 0) * 2,
+        output: (price?.output ?? 0) * 2,
+        cacheRead: (price?.cacheRead ?? 0) * 2,
+      });
+    }
   });
 
   it('leaves every reseller offering unpriced', () => {
@@ -501,6 +558,20 @@ describe('long-context pricing', () => {
     expect(costOf(unpublished, { inputTokens: 400_000 })).toBeNull();
     // Not vacuous: the same price resolves below the threshold.
     expect(costOf(unpublished, { inputTokens: 100_000 })).toBeCloseTo(0.1, 10);
+  });
+
+  it('holds an unread band input or output to the requests that bill against it', () => {
+    const outputOnly = tokenPrice(1, 10, {
+      cacheRead: 0.1,
+      longContext: { thresholdInputTokens: 200_000, input: null, output: 20 },
+    });
+    // A fully cached 300K prompt bills no uncached input, so the unread input
+    // rate does not touch it.
+    expect(costOf(outputOnly, { cacheReadTokens: 300_000, outputTokens: 1_000 })).toBeCloseTo(
+      0.05,
+      10,
+    );
+    expect(costOf(outputOnly, { inputTokens: 1, cacheReadTokens: 300_000 })).toBeNull();
   });
 
   it('prices the whole OpenAI request at the published band above 272K', () => {

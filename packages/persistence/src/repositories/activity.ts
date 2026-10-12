@@ -359,9 +359,11 @@ interface LlmUsageRow {
 }
 
 // One call's prompt, as the cost model counts it for the long-context band:
-// input plus cache reads plus both cache writes.
+// input plus cache reads plus cache writes, where a write total with no 1h/5m
+// split still counts in full (the larger of the total and the split's sum).
 const CALL_PROMPT_TOKENS = `(coalesce(input_tokens, 0) + coalesce(cache_read_input_tokens, 0)
-     + coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))`;
+     + max(coalesce(cache_creation_input_tokens, 0),
+           coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0)))`;
 
 // How many band thresholds the call's prompt crossed (0 when none is declared).
 const CALL_BAND =

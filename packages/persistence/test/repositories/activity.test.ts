@@ -748,8 +748,9 @@ describe('tokenReports', () => {
     leaf('X6', 'X', NOW + 6, { input_tokens: 5 });
     // GPT-5.4 bands at 272K on ONE request's whole prompt, cached tokens included.
     // Three mostly-cached 100K calls sum past the line while no call crosses it;
-    // a 250K call crosses only the catalog's lower threshold; a 300K call
-    // crosses the line and is unpriced.
+    // a 250K call crosses only the catalog's lower thresholds; a 300K call
+    // crosses the line and prices at the band. A call carrying a cache write
+    // has no OpenAI write rate, so the rollup is priced and partial at once.
     const gpt = { model: 'gpt-5.4', provider: 'openai' };
     for (const n of [7, 8, 9]) {
       leaf(`X${String(n)}`, 'X', NOW + n, {
@@ -761,6 +762,28 @@ describe('tokenReports', () => {
     }
     leaf('X10', 'X', NOW + 10, { ...gpt, input_tokens: 10_000, cache_read_input_tokens: 240_000 });
     leaf('X11', 'X', NOW + 11, { ...gpt, input_tokens: 15_000, cache_read_input_tokens: 285_000 });
+    // A 150K call carrying a cache write sits alone in its band, so its null
+    // price stays its own in the grouped fold as in the per-call one.
+    leaf('X14', 'X', NOW + 14, {
+      ...gpt,
+      input_tokens: 50_000,
+      cache_read_input_tokens: 100_000,
+      ephemeral_5m_input_tokens: 500,
+    });
+    // Haiku 5.5 bands at 100K, cache writes included. A write reported only as a
+    // total, with no 1h/5m split, still counts toward the line: 60K + 50K
+    // crosses it, 40K + 50K does not.
+    const haiku = { model: 'claude-haiku-5-5', provider: 'anthropic' };
+    leaf('X15', 'X', NOW + 15, {
+      ...haiku,
+      input_tokens: 60_000,
+      cache_creation_input_tokens: 50_000,
+    });
+    leaf('X16', 'X', NOW + 16, {
+      ...haiku,
+      input_tokens: 40_000,
+      cache_creation_input_tokens: 50_000,
+    });
     leaf('Y1', 'Y', NOW + 12, { ...base, input_tokens: 40, output_tokens: 4 });
     raw
       .prepare(
@@ -819,6 +842,13 @@ describe('tokenReports', () => {
       .find((r) => r.sessionId === 'X')
       ?.rollups.find((r) => r.model === 'gpt-5.4');
     expect(gptRollup?.estimatedCostUsd).toBeGreaterThan(0);
+    expect(actual.find((r) => r.sessionId === 'X')?.costIsPartial).toBe(true);
+    // The unsplit write crossing the 100K line bills at the band (60K x 0.50 +
+    // 50K x 0.625); the one under it at the base (40K x 0.10 + 50K x 0.125).
+    const haikuRollup = actual
+      .find((r) => r.sessionId === 'X')
+      ?.rollups.find((r) => r.model === 'claude-haiku-5-5');
+    expect(haikuRollup?.estimatedCostUsd).toBeCloseTo(0.06125 + 0.01025, 9);
     // The same rows, one session at a time, agree with the cross-session read.
     for (const report of actual) {
       expect(await activity().tokenReportForSession(report.sessionId)).toEqual(report);

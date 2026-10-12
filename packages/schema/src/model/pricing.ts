@@ -24,14 +24,13 @@ import type { CostUsage } from '../token/cost-usage.ts';
  * pricing for the full request, not only for tokens beyond the threshold."
  * Anthropic (Haiku 5.5, at 100K), Google and xAI (at 200K) tier the same way.
  *
- * `input`/`output` are nullable because a vendor can publish the THRESHOLD
- * without publishing the rate above it. A null there means "cost unknown above
- * this size", which is a very different statement from "same price", and the
- * difference is a bill.
- *
- * The cache columns are optional. Absent, the vendor publishes no band rate for
- * that column and the base rate applies; null, the band re-prices it at a rate
- * that was not read, so a request that bills against it is unknown.
+ * Every rate is per column. `input`/`output` are nullable because a vendor can
+ * publish the THRESHOLD without publishing the rate above it; the cache columns
+ * are optional as well as nullable. Absent, the vendor publishes no band rate
+ * for that column and the base rate applies; null, the band re-prices it at a
+ * rate that was not read, so a request that bills against that column is
+ * unknown. "Unknown above this size" is a very different statement from "same
+ * price", and the difference is a bill.
  */
 export const LongContextTier = z.object({
   thresholdInputTokens: z.number().int().positive(),
@@ -50,7 +49,8 @@ export const ModelPrice = z.object({
   output: z.number().nonnegative(),
   /**
    * Rate band above a size threshold, or `null` when the model is flat-rated.
-   * Anthropic is flat across its 1M window; OpenAI, Google and xAI are not.
+   * OpenAI, Google, xAI and some Anthropic models (Haiku 5.5) band; most
+   * Claude models are flat across their window.
    */
   longContext: LongContextTier.nullable(),
   /** USD per 1M tokens written to a 5-minute ephemeral cache, or null if unpriced. */
@@ -71,7 +71,8 @@ export const WEB_SEARCH_PER_REQUEST = 0.01;
  * An Anthropic-shaped price. `cacheRead` is a REQUIRED argument, not a derived
  * column: see the note on `ModelPrice.cacheRead`. Cache writes remain derived
  * (5m = 1.25x input, 1h = 2x input), which is still uniform across the family
- * and is re-verified on each price update.
+ * and is re-verified on each price update. `longContext` is the model's band,
+ * built with `anthropicBand`, for the Claude models that price by prompt length.
  */
 export function anthropicPrice(
   input: number,
@@ -104,6 +105,25 @@ export function anthropicBand(
     cacheRead,
     cacheWrite5m: input * 1.25,
     cacheWrite1h: input * 2,
+  };
+}
+
+/**
+ * A band that scales the base rates by the vendor's published multipliers, for
+ * vendors that publish the band as a ratio of the base (OpenAI: 2x input and
+ * cache reads, 1.5x output; xAI: 2x every column). A cache rate is carried into
+ * the band only when the base has one.
+ */
+export function scaledBand(
+  thresholdInputTokens: number,
+  base: { input: number; output: number; cacheRead?: number },
+  scale: { input: number; output: number; cacheRead: number },
+): LongContextTier {
+  return {
+    thresholdInputTokens,
+    input: base.input * scale.input,
+    output: base.output * scale.output,
+    ...(base.cacheRead === undefined ? {} : { cacheRead: base.cacheRead * scale.cacheRead }),
   };
 }
 
@@ -157,15 +177,6 @@ export function serviceTierMultiplier(tier: string | undefined): number {
   return SERVICE_TIER_MULTIPLIERS.get(tier) ?? 1;
 }
 
-/**
- * Cost in USD for a usage bag at a given price, or `null` when the price
- * carries no verified rate for a column the usage actually bills against.
- *
- * A `null` column is an UNREAD rate, not a free one. Tokens billed against one
- * cannot be priced, so the whole call is unknown rather than silently
- * undercounted — a partial sum reported as a total is a number nobody checked.
- * A column the usage does not touch contributes nothing either way.
- */
 /** The prompt size that selects a long-context band (see `CostUsage.promptTokens`). */
 export function promptTokensOf(usage: CostUsage): number {
   return (
@@ -177,30 +188,42 @@ export function promptTokensOf(usage: CostUsage): number {
   );
 }
 
+/**
+ * The rate a band column bills at: the base rate where the band names none
+ * (`undefined`), else the band's own rate, which is `null` when it was not read.
+ */
+function bandRate(column: number | null | undefined, base: number | null): number | null {
+  return column === undefined ? base : column;
+}
+
+/**
+ * Cost in USD for a usage bag at a given price, or `null` when the price
+ * carries no verified rate for a column the usage actually bills against.
+ *
+ * A `null` column is an UNREAD rate, not a free one. Tokens billed against one
+ * cannot be priced, so the whole call is unknown rather than silently
+ * undercounted — a partial sum reported as a total is a number nobody checked.
+ * A column the usage does not touch contributes nothing either way.
+ */
 export function costOf(price: ModelPrice, usage: CostUsage): number | null {
   // Above the threshold the band rate applies to the WHOLE request, not just
   // the tokens past it, so every column the band names is re-priced rather
-  // than split. A null band rate is an unread rate: the request bills at a
-  // price we do not have, so the cost is unknown rather than the sub-threshold
-  // figure. The threshold is on the whole prompt, so cached tokens count toward it.
+  // than split. The threshold is on the whole prompt, so cached tokens count
+  // toward it.
   const band =
     price.longContext !== null && promptTokensOf(usage) > price.longContext.thresholdInputTokens
       ? price.longContext
       : null;
-  if (band !== null && (band.input === null || band.output === null)) return null;
-
-  const inputRate = band?.input ?? price.input;
-  const outputRate = band?.output ?? price.output;
-  const bandRate = (column: number | null | undefined, base: number | null): number | null =>
-    column === undefined ? base : column;
 
   const metered: readonly (readonly [number, number | null])[] = [
+    [usage.inputTokens ?? 0, bandRate(band?.input, price.input)],
+    [usage.outputTokens ?? 0, bandRate(band?.output, price.output)],
     [usage.cacheWrite1hTokens ?? 0, bandRate(band?.cacheWrite1h, price.cacheWrite1h)],
     [usage.cacheWrite5mTokens ?? 0, bandRate(band?.cacheWrite5m, price.cacheWrite5m)],
     [usage.cacheReadTokens ?? 0, bandRate(band?.cacheRead, price.cacheRead)],
   ];
 
-  let tokenCost = (usage.inputTokens ?? 0) * inputRate + (usage.outputTokens ?? 0) * outputRate;
+  let tokenCost = 0;
   for (const [tokens, rate] of metered) {
     if (tokens === 0) continue;
     if (rate === null) return null;

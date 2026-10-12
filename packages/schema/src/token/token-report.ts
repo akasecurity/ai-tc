@@ -46,12 +46,18 @@ interface RollupAcc {
 const num = (value: number | undefined): number => value ?? 0;
 
 // Map a leaf's stored attribute names onto the cost model's `CostUsage` shape.
+// A cache write the bag reports only as a total, with no 1h/5m split, is
+// priced as a 5-minute write: that is the API's default TTL, and leaving it out
+// would bill it as free and drop it from the prompt that selects a band.
 function costUsageOf(a: LlmCallAttributes, promptTokens: number | undefined): CostUsage {
+  const write1h = num(a.ephemeral_1h_input_tokens);
+  const write5m = num(a.ephemeral_5m_input_tokens);
+  const unsplit = Math.max(num(a.cache_creation_input_tokens) - write1h - write5m, 0);
   const usage: CostUsage = {
     inputTokens: num(a.input_tokens),
     outputTokens: num(a.output_tokens),
-    cacheWrite1hTokens: num(a.ephemeral_1h_input_tokens),
-    cacheWrite5mTokens: num(a.ephemeral_5m_input_tokens),
+    cacheWrite1hTokens: write1h,
+    cacheWrite5mTokens: write5m + unsplit,
     cacheReadTokens: num(a.cache_read_input_tokens),
     webSearchRequests: num(a.web_search_requests),
   };

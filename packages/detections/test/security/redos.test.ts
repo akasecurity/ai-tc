@@ -451,6 +451,10 @@ describe('the probe battery itself', () => {
         regexRule(`["'][^\\n]*?(select|insert|update|delete|drop|where)[^\\n]*?["']\\s*\\.`, 'gi'),
       ],
       [
+        'a lazy scan to a dot from each space-separated literal',
+        regexRule('"[^"\\n]*"\\s+[^\\n]*?\\.', 'g'),
+      ],
+      [
         'a SQL keyword scanned to a placeholder from every keyword',
         regexRule('(select|insert|update|delete|where)[^\\n]*?(#\\{|\\$[a-z_])', 'gi'),
       ],

@@ -15,14 +15,16 @@
 import type { ModelEntry } from './builder.ts';
 import { vendor } from './builder.ts';
 import type { VendorTrainingPolicy } from './governance.ts';
-import type { LongContextTier, ModelPrice } from './pricing.ts';
-import { anthropicBand, anthropicPrice, tokenPrice } from './pricing.ts';
+import type { ModelPrice } from './pricing.ts';
+import { anthropicBand, anthropicPrice, scaledBand, tokenPrice } from './pricing.ts';
 import { buildModelIndex } from './resolve.ts';
 
 // ─── Anthropic ───────────────────────────────────────────────────────────────
-// Prices + context: platform.claude.com/docs/en/about-claude/pricing and
-// platform.claude.com/docs/en/models/overview. Cache reads are 0.1x input except
-// Fable 5.1 (0.025x) and Opus 5.5 / Sonnet 5.5 (0.05x).
+// Prices: the "Model pricing" table at platform.claude.com/docs/en/about-claude/pricing.
+// Context: platform.claude.com/docs/en/models/overview. Cache reads are 0.1x
+// input except Fable 5.1 and Mythos 5.1 (0.025x) and Opus 5.5 / Sonnet 5.5 (0.05x).
+// Mythos 5 and 5.1 are on the pricing page at Fable's rates but are not declared:
+// they are limited-availability models whose API ids were not published there.
 // Training: privacy.claude.com — commercial products are not used for training
 // by default; consumer tiers are opt-IN ("Model Improvement"), not opt-out.
 
@@ -194,6 +196,9 @@ anthropic.model('claude-sonnet-3-7', {
 // developers.openai.com/api/docs/models.
 // Above 272,000 input tokens the whole request bills at 2x input and cache
 // reads and 1.5x output, on the models that window covers.
+// GPT-5.6 and GPT-6 also publish a cache-WRITE rate; `ModelPrice` carries cache
+// writes only in Anthropic's 5m/1h shape, so it is not modelled, and a write
+// reported inside input tokens is billed at the input rate.
 // Training: the API is not used for training by default (opt-in); ChatGPT
 // consumer tiers are on by default with an opt-out under Data Controls.
 
@@ -204,20 +209,12 @@ const OPENAI_TRAINING: VendorTrainingPolicy = {
   source: 'https://developers.openai.com/api/docs/guides/your-data',
 };
 
-function longContext272k(input: number, output: number, cacheRead?: number): LongContextTier {
-  return {
-    thresholdInputTokens: 272_000,
-    input: input * 2,
-    output: output * 1.5,
-    ...(cacheRead === undefined ? {} : { cacheRead: cacheRead * 2 }),
-  };
-}
-
 /** A GPT price whose window crosses the 272K long-context threshold. */
 function gptPrice(input: number, output: number, cacheRead?: number): ModelPrice {
+  const base = { input, output, ...(cacheRead === undefined ? {} : { cacheRead }) };
   return tokenPrice(input, output, {
-    ...(cacheRead === undefined ? {} : { cacheRead }),
-    longContext: longContext272k(input, output, cacheRead),
+    ...base,
+    longContext: scaledBand(272_000, base, { input: 2, output: 1.5, cacheRead: 2 }),
   });
 }
 
@@ -483,6 +480,9 @@ openai.model('gpt-oss-20b', {
 // ─── Google ──────────────────────────────────────────────────────────────────
 // Prices: ai.google.dev/gemini-api/docs/pricing. Context windows: the
 // per-model pages under ai.google.dev/gemini-api/docs/models.
+// Rates below are the TEXT input rate. Several models price audio, image or
+// video input higher, and the usage bag carries no modality, so non-text input
+// is under-reported.
 // The 3.6 and 3.8 Flash rates are introductory through 2026-12-31; from
 // 2027-01-01 they are 1.50 input, 7.50 output and 0.15 cache read.
 // Training: the paid tier is not used to improve products; the free tier is.
@@ -511,7 +511,9 @@ google.model('gemini-3.8-flash', {
   on: ['vertex'],
 });
 
-// Deprecated; requests are routed to Gemini 3.8 Flash.
+// Deprecated and off the pricing page; requests are routed to Gemini 3.8 Flash.
+// The rate is the introductory one the changelog published for this model
+// through 2026-12-31; its cache-read rate was not published.
 google.model('gemini-3.7-flash', {
   name: 'Gemini 3.7 Flash',
   capability: null,
@@ -529,10 +531,10 @@ google.model('gemini-3.6-flash', {
 });
 
 // Deprecated and off the pricing page; requests are routed to Gemini 3.6 Flash.
+// No current rate is published for this id, so its price is unknown.
 google.model('gemini-3.5-flash', {
   name: 'Gemini 3.5 Flash',
   capability: null,
-  price: tokenPrice(1.5, 9),
   on: ['vertex'],
 });
 
@@ -637,24 +639,27 @@ const xai = vendor('xai', {
   },
 });
 
+/** A Grok price: above 200K the whole request bills at 2x every column. */
+function grokPrice(input: number, output: number, cacheRead: number): ModelPrice {
+  const base = { input, output, cacheRead };
+  return tokenPrice(input, output, {
+    cacheRead,
+    longContext: scaledBand(200_000, base, { input: 2, output: 2, cacheRead: 2 }),
+  });
+}
+
 xai.model('grok-4.7', {
   name: 'Grok 4.7',
   ctx: 500_000,
   capability: 'reasoning',
-  price: tokenPrice(2, 6, {
-    cacheRead: 0.5,
-    longContext: { thresholdInputTokens: 200_000, input: 4, output: 12, cacheRead: 1 },
-  }),
+  price: grokPrice(2, 6, 0.5),
 });
 
 xai.model('grok-4.6', {
   name: 'Grok 4.6',
   ctx: 500_000,
   capability: 'reasoning',
-  price: tokenPrice(2, 6, {
-    cacheRead: 0.5,
-    longContext: { thresholdInputTokens: 200_000, input: 4, output: 12, cacheRead: 1 },
-  }),
+  price: grokPrice(2, 6, 0.5),
   on: ['bedrock'],
 });
 
@@ -662,20 +667,14 @@ xai.model('grok-4.5', {
   name: 'Grok 4.5',
   ctx: 500_000,
   capability: 'reasoning',
-  price: tokenPrice(2, 6, {
-    cacheRead: 0.3,
-    longContext: { thresholdInputTokens: 200_000, input: 4, output: 12, cacheRead: 0.6 },
-  }),
+  price: grokPrice(2, 6, 0.3),
 });
 
 xai.model('grok-4.3', {
   name: 'Grok 4.3',
   ctx: 1_000_000,
   capability: 'reasoning',
-  price: tokenPrice(1.25, 2.5, {
-    cacheRead: 0.2,
-    longContext: { thresholdInputTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4 },
-  }),
+  price: grokPrice(1.25, 2.5, 0.2),
   on: ['bedrock'],
 });
 
@@ -683,40 +682,28 @@ xai.model('grok-4.20-0309-reasoning', {
   name: 'Grok 4.20 Reasoning',
   capability: 'reasoning',
   ctx: 1_000_000,
-  price: tokenPrice(1.25, 2.5, {
-    cacheRead: 0.2,
-    longContext: { thresholdInputTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4 },
-  }),
+  price: grokPrice(1.25, 2.5, 0.2),
 });
 
 xai.model('grok-4.20-0309-non-reasoning', {
   name: 'Grok 4.20',
   capability: null,
   ctx: 1_000_000,
-  price: tokenPrice(1.25, 2.5, {
-    cacheRead: 0.2,
-    longContext: { thresholdInputTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4 },
-  }),
+  price: grokPrice(1.25, 2.5, 0.2),
 });
 
 xai.model('grok-4.20-multi-agent-0309', {
   name: 'Grok 4.20 Multi-Agent',
   capability: 'reasoning',
   ctx: 1_000_000,
-  price: tokenPrice(1.25, 2.5, {
-    cacheRead: 0.2,
-    longContext: { thresholdInputTokens: 200_000, input: 2.5, output: 5, cacheRead: 0.4 },
-  }),
+  price: grokPrice(1.25, 2.5, 0.2),
 });
 
 xai.model('grok-build-0.1', {
   name: 'Grok Build 0.1',
   ctx: 256_000,
   capability: 'code',
-  price: tokenPrice(1, 2, {
-    cacheRead: 0.2,
-    longContext: { thresholdInputTokens: 200_000, input: 2, output: 4, cacheRead: 0.4 },
-  }),
+  price: grokPrice(1, 2, 0.2),
 });
 
 // ─── DeepSeek ────────────────────────────────────────────────────────────────

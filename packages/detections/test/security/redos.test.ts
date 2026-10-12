@@ -17,6 +17,7 @@ import {
   GROWTH_SAMPLES,
   GROWTH_START_CHARS,
   MAX_GROWTH_RATIO,
+  OVER_BUDGET_READINGS,
   POLYNOMIAL_PROBES,
   superlinearGrowth,
   worstProbeMs,
@@ -166,14 +167,38 @@ function describeBreach(breach: GrowthBreach): string {
 // Wall time, not the CPU clock the walk above uses: a coarse CPU clock (16ms
 // ticks on the Windows runner) would quantize a 5-30ms reading into a
 // meaningless ratio. What keeps a busy runner out of the verdict is the
-// statistic instead. Each side is the FASTEST of its readings, which a stall
-// can only leave alone or miss, and a superlinear first pass is re-measured
-// before it is reported; see `growthPair`. And one doubling over the ratio is
-// not a breach by itself: the growth has to persist over the next doubling,
-// which is what separates a quadratic curve from a linear one with a step in
-// it; see `nextDoubling`. "The growth tier reads through stalls" and "the
-// growth tier asks for growth that persists" below pin both on a scripted
-// clock.
+// statistic instead. Each side of a ratio is the FASTEST of its readings, which
+// a stall can only leave alone or miss, and the readings a ratio compares are
+// taken in the same rounds, so a slow stretch lands on both sides. One doubling
+// over the ratio is not a breach by itself: the growth has to persist over the
+// next doubling, which is what separates a quadratic curve from a linear one
+// with a step in it. The scripted-clock suites below pin each of these.
+
+// What a failing bundled rule is told. An `over-budget` breach is a statement
+// about cost at one size and says nothing about the shape of the curve; a
+// `superlinear` one is a statement about shape over two doublings.
+function describeFailure(id: string, breach: GrowthBreach): string {
+  const consequence =
+    `scan() runs each rule on up to ${String(MAX_REGEX_INPUT_LENGTH)} chars per field, and a ` +
+    `hook that outlives its timeout fails open.`;
+  if (breach.reason === 'over-budget') {
+    return (
+      `Rule "${id}" takes ${breach.largeMs.toFixed(1)}ms to scan ${String(breach.largeChars)} ` +
+      `chars of one corpus, over the ${String(BUDGET_MS)}ms budget for a single scan. ` +
+      `${consequence} Make the pattern cheaper on this text; a rule this expensive usually ` +
+      `starts a long scan at every position of a run.`
+    );
+  }
+  const top = breach.nextChars ?? breach.largeChars;
+  return (
+    `Rule "${id}" costs more than linear time in its input on every doubling measured, up to ` +
+    `${String(top)} chars. At these sizes that is cheap, but a quadratic pattern costs seconds ` +
+    `at the input cap and a cubic one minutes: ${consequence} The usual cause is a quantified ` +
+    `scan (\\s+, [^\\n]*?) that can start at every position of a run and rescans the rest of ` +
+    `it each time; confine it so each start position is consumed once.`
+  );
+}
+
 describe('bundled rules scale linearly on adversarial corpora', () => {
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s grows linearly with its input',
@@ -188,13 +213,7 @@ describe('bundled rules scale linearly on adversarial corpora', () => {
       const breach = superlinearGrowth(rule);
       expect(
         breach && describeBreach(breach),
-        `Rule "${id}" costs more than linear time in its input. Below the ` +
-          `${String(GROWTH_MAX_CHARS)}-char top of this tier that is cheap, but scan() runs ` +
-          `each rule on up to 200,000 chars per field, where a quadratic pattern costs ` +
-          `seconds and a cubic one minutes, and a hook that outlives its timeout fails open. ` +
-          `The usual cause is a quantified scan (\\s+, [^\\n]*?) that can start at every ` +
-          `position of a run and rescans the rest of it each time; confine it so each start ` +
-          `position is consumed once.`,
+        breach && describeFailure(id, breach),
       ).toBeUndefined();
     },
   );
@@ -531,176 +550,308 @@ describe('the probe battery itself', () => {
     matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
   });
 
-  // One reading per doubling on the way up, before the top pair is sampled.
-  const SCOUTS = Math.log2(GROWTH_MAX_CHARS / GROWTH_START_CHARS);
-  // Pairs sampled when the first pass reads superlinear and is re-measured.
-  const CONFIRMED_PAIRS = GROWTH_SAMPLES + GROWTH_CONFIRM_SAMPLES;
-
-  // What one corpus reads, in the order the tier reads it: `pairs` alternating
-  // small/large readings, then `nexts` readings at twice the large size. The
-  // script starts over after that, for the next corpus.
-  interface Script {
-    pairs: number;
-    small: number;
-    large: (sample: number) => number;
-    nexts?: number;
-    next?: (sample: number) => number;
+  // The sizes a corpus is scouted at on the way up, one reading each: every
+  // doubling of the start size up to the top.
+  const SCOUT_SIZES: number[] = [];
+  for (let size = GROWTH_START_CHARS * 2; size <= GROWTH_MAX_CHARS; size *= 2) {
+    SCOUT_SIZES.push(size);
   }
+  const TOP = { smallChars: GROWTH_MAX_CHARS / 2, largeChars: GROWTH_MAX_CHARS };
+  const NEXT_CHARS = GROWTH_MAX_CHARS * 2;
 
-  // The clock is read twice per scan, start and end; the scouts cost 1ms.
-  function scripted({ pairs, small, large, nexts = 0, next }: Script): ProbeClock {
-    const scansPerCorpus = SCOUTS + pairs * 2 + nexts;
+  type Reading = number | ((round: number) => number);
+  const at = (reading: Reading, round: number): number =>
+    typeof reading === 'number' ? reading : reading(round);
+
+  // The cost of each scan, in the order the tier makes them. `rounds` rounds of
+  // one scan per size, smallest first.
+  const rounds = (count: number, ...sizes: Reading[]): number[] =>
+    Array.from({ length: count }, (_, round) => sizes.map((size) => at(size, round))).flat();
+  // A climb whose scouts all read cheap, so only the top pair is sampled.
+  const cheapClimb = (): number[] => SCOUT_SIZES.map(() => 1);
+  const firstPass = (small: Reading, large: Reading, count = GROWTH_SAMPLES): number[] =>
+    rounds(count, small, large);
+  const confirmPass = (
+    small: Reading,
+    large: Reading,
+    next: Reading,
+    count = GROWTH_CONFIRM_SAMPLES,
+  ): number[] => rounds(count, small, large, next);
+
+  // A clock that charges each scan the next cost in `scans`. It is read twice
+  // per scan, start and end, and throws on a scan the script does not hold, so
+  // a case whose script and the tier disagree on how many scans are made fails
+  // instead of reading costs meant for another scan.
+  function scripted(scans: readonly number[]): { clock: ProbeClock; unread: () => number } {
     let reads = 0;
     let time = 0;
-    const cost = (scanIndex: number): number => {
-      const pairScan = scanIndex - SCOUTS;
-      if (pairScan < 0) return 1;
-      if (pairScan >= pairs * 2) return next?.(pairScan - pairs * 2) ?? 0;
-      return pairScan % 2 === 0 ? small : large(Math.floor(pairScan / 2));
-    };
-    return () => {
+    const clock: ProbeClock = () => {
       const read = reads++;
-      if (read % 2 === 1) time += cost(Math.floor(read / 2) % scansPerCorpus);
+      if (read % 2 === 1) {
+        const cost = scans[(read - 1) / 2];
+        if (cost === undefined) {
+          throw new Error(
+            `scan ${String((read + 1) / 2)} is past the ${String(scans.length)} scripted`,
+          );
+        }
+        time += cost;
+      }
       return time;
     };
+    return { clock, unread: () => scans.length - Math.ceil(reads / 2) };
   }
 
+  // Runs the tier on a script and requires that every scripted scan was made.
+  // `perCorpus` is what one corpus reads. A rule that is cleared reads it once
+  // per corpus; a breach is returned on the first corpus and reads it once.
+  function runCleared(perCorpus: readonly number[]): void {
+    const { clock, unread } = scripted(GROWTH_CORPORA.flatMap(() => perCorpus));
+    const breach = superlinearGrowth(scriptedRule, clock);
+    expect(breach && describeBreach(breach)).toBeUndefined();
+    expect(unread(), 'scripted scans the tier did not make').toBe(0);
+  }
+  function runBreached(perCorpus: readonly number[]): GrowthBreach {
+    const { clock, unread } = scripted(perCorpus);
+    const breach = superlinearGrowth(scriptedRule, clock);
+    expect(unread(), 'scripted scans the tier did not make').toBe(0);
+    if (!breach) throw new Error('expected a breach');
+    expect(breach.corpus).toBe(GROWTH_CORPORA[0]?.name);
+    return breach;
+  }
+
+  describe('the scripted clock', () => {
+    it('throws on a scan past the end of its script', () => {
+      const { clock } = scripted([1]);
+      clock();
+      clock();
+      clock();
+      expect(() => clock()).toThrow('scan 2 is past the 1 scripted');
+    });
+
+    it('fails a case that scripts fewer scans than the tier makes', () => {
+      const { clock } = scripted([...cheapClimb(), ...firstPass(3, 6, GROWTH_SAMPLES - 1)]);
+      expect(() => superlinearGrowth(scriptedRule, clock)).toThrow(/is past the \d+ scripted/);
+    });
+  });
+
   describe('the growth tier reads through stalls', () => {
-    const SMALL_MS = 2;
-    const CLEAN_LARGE_MS = 4;
-    const STALLED_LARGE_MS = 20;
+    const SMALL_MS = 3;
+    const CLEAN_LARGE_MS = 6;
+    const STALLED_LARGE_MS = 30;
+    // Over the ratio against a clean larger reading, so only the pair's own
+    // ratio can clear a case that reads this.
+    const NEXT_MS = 20;
 
-    // Three of five larger readings stalled: a median reads 20ms over 2ms, the
-    // fastest reading 4ms over 2ms.
     it('a stall on most of the larger readings does not read as growth', () => {
-      const majority = Math.floor(GROWTH_SAMPLES / 2) + 1;
-      const clock = scripted({
-        pairs: GROWTH_SAMPLES,
-        small: SMALL_MS,
-        large: (i) => (i < majority ? STALLED_LARGE_MS : CLEAN_LARGE_MS),
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach && describeBreach(breach)).toBeUndefined();
+      // Three of five larger readings stalled: a median reads 30ms over 3ms,
+      // the fastest reading 6ms over 3ms. The next doubling is never scanned.
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(SMALL_MS, (i) => (i < 3 ? STALLED_LARGE_MS : CLEAN_LARGE_MS)),
+      ]);
     });
 
-    it('a stall on every larger reading of the first pass is re-measured, not reported', () => {
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: SMALL_MS,
-        large: (i) => (i < GROWTH_SAMPLES ? STALLED_LARGE_MS : CLEAN_LARGE_MS),
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach && describeBreach(breach)).toBeUndefined();
+    it('a stall on every larger reading of the first pass is sampled again, not reported', () => {
+      // The second loop reads the pair at 2x. The doubling after it reads 3.3x,
+      // so the pair's own ratio in that loop is what clears the rule.
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(SMALL_MS, STALLED_LARGE_MS),
+        ...confirmPass(SMALL_MS, CLEAN_LARGE_MS, NEXT_MS),
+      ]);
     });
 
-    it('a single clean pair among stalled ones is enough to clear a linear rule', () => {
+    it('a single clean round among stalled ones is enough to clear a linear rule', () => {
       // The fastest reading on each side decides, wherever in the run it falls.
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: SMALL_MS,
-        large: (i) => (i === CONFIRMED_PAIRS - 1 ? CLEAN_LARGE_MS : STALLED_LARGE_MS),
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach && describeBreach(breach)).toBeUndefined();
+      const last = GROWTH_CONFIRM_SAMPLES - 1;
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(SMALL_MS, STALLED_LARGE_MS),
+        ...confirmPass(SMALL_MS, (i) => (i === last ? CLEAN_LARGE_MS : STALLED_LARGE_MS), NEXT_MS),
+      ]);
     });
 
     it('a stall on all but one reading of the next doubling does not read as growth', () => {
       // 3.3x, then 4x on fourteen readings and 2x on the last.
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: 3,
-        large: () => 10,
-        nexts: GROWTH_CONFIRM_SAMPLES,
-        next: (i) => (i === GROWTH_CONFIRM_SAMPLES - 1 ? 20 : 40),
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach && describeBreach(breach)).toBeUndefined();
+      const last = GROWTH_CONFIRM_SAMPLES - 1;
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(3, 10),
+        ...confirmPass(3, 10, (i) => (i === last ? 20 : 40)),
+      ]);
     });
   });
 
-  // Every reading in these cases is the same from sample to sample, so the
-  // first pass and its re-measurement agree and only the shape of the curve
-  // over the two doublings decides.
-  describe('the growth tier asks for growth that persists', () => {
-    const TOP = { smallChars: GROWTH_MAX_CHARS / 2, largeChars: GROWTH_MAX_CHARS };
-
-    it('a step followed by linear growth is not a breach', () => {
-      // 3.3x across the step, then 2.0x: sampling the next doubling stops at
-      // its first reading, which is already under the ratio.
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: 3,
-        large: () => 10,
-        nexts: 1,
-        next: () => 20,
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach && describeBreach(breach)).toBeUndefined();
-    });
-
+  describe('the growth tier compares readings taken in the same rounds', () => {
+    // A quadratic rule that reads 3 / 12 / 48 ms on a quiet machine.
     it('quadratic growth is a breach: 4x, then 4x', () => {
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: 3,
-        large: () => 12,
-        nexts: GROWTH_CONFIRM_SAMPLES,
-        next: () => 48,
-      });
-      expect(superlinearGrowth(scriptedRule, clock)).toEqual({
+      expect(
+        runBreached([...cheapClimb(), ...firstPass(3, 12), ...confirmPass(3, 12, 48)]),
+      ).toEqual({
         reason: 'superlinear',
         corpus: GROWTH_CORPORA[0]?.name,
         ...TOP,
         smallMs: 3,
         largeMs: 12,
-        nextChars: GROWTH_MAX_CHARS * 2,
+        nextChars: NEXT_CHARS,
         nextMs: 48,
       });
     });
 
+    it('the same quadratic rule is a breach when every size runs 1.4x slower', () => {
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(4.2, 16.8),
+        ...confirmPass(4.2, 16.8, 67.2),
+      ]);
+      // The clock accumulates, so these readings are differences of sums.
+      expect(breach.reason).toBe('superlinear');
+      expect(breach.largeMs).toBeCloseTo(16.8);
+      expect(breach.nextMs).toBeCloseTo(67.2);
+    });
+
+    it('a quadratic rule is a breach when only the first pass ran slow', () => {
+      // The verdict is given on the second loop's readings alone: 12 over 3,
+      // then 48 over 12, not 48 over the first pass's 16.8.
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(4.2, 16.8),
+        ...confirmPass(3, 12, 48),
+      ]);
+      expect(breach).toMatchObject({ reason: 'superlinear', smallMs: 3, largeMs: 12, nextMs: 48 });
+    });
+
+    it('a step followed by linear growth is not a breach: 3.3x, then 2x', () => {
+      runCleared([...cheapClimb(), ...firstPass(3, 10), ...confirmPass(3, 10, 20)]);
+    });
+
+    it('a step followed by linear growth is not a breach when the second loop runs 1.6x slower', () => {
+      // 4.8 / 16 / 32: the slow stretch is on all three sizes, so the second
+      // ratio is still 2x. Against the first pass's 10ms it would read 3.2x.
+      runCleared([...cheapClimb(), ...firstPass(3, 10), ...confirmPass(4.8, 16, 32)]);
+    });
+
     it('growth just over the ratio on both doublings is a breach: 3.3x, then 3.3x', () => {
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: 3,
-        large: () => 10,
-        nexts: GROWTH_CONFIRM_SAMPLES,
-        next: () => 33,
-      });
-      const breach = superlinearGrowth(scriptedRule, clock);
+      const breach = runBreached([...cheapClimb(), ...firstPass(3, 10), ...confirmPass(3, 10, 33)]);
       expect(breach).toMatchObject({ reason: 'superlinear', largeMs: 10, nextMs: 33 });
-      expect(breach && describeBreach(breach)).toContain(
+      expect(describeBreach(breach)).toContain(
         `3.0ms at ${String(TOP.smallChars)} chars and 10.0ms at ${String(TOP.largeChars)} chars ` +
-          `(3.3x for 2x the input), then 33.0ms at ${String(GROWTH_MAX_CHARS * 2)} chars ` +
+          `(3.3x for 2x the input), then 33.0ms at ${String(NEXT_CHARS)} chars ` +
           `(3.3x for 2x the input); superlinear`,
       );
     });
+  });
 
-    it('a next doubling over the budget is a breach, decided on a majority of one pass', () => {
-      // 3.3x, then 12x and past the budget: a cubic curve or worse. The script
-      // supplies exactly the readings the tier may take before it has to stop,
-      // so reading a further one would start the next corpus and change the
-      // corpus the breach is reported on.
-      const majority = Math.floor(GROWTH_SAMPLES / 2) + 1;
-      const clock = scripted({
-        pairs: CONFIRMED_PAIRS,
-        small: 3,
-        large: () => 10,
-        nexts: majority,
-        next: () => BUDGET_MS + 20,
-      });
-      expect(superlinearGrowth(scriptedRule, clock)).toMatchObject({
-        reason: 'over-budget',
-        corpus: GROWTH_CORPORA[0]?.name,
+  describe('the growth tier judges the budget at the pair, and the next doubling on its ratio', () => {
+    const OVER_BUDGET_MS = BUDGET_MS + 20;
+
+    it('a pair under the ratio is not measured at the next doubling: 31 / 90', () => {
+      runCleared([...cheapClimb(), ...firstPass(31, 90)]);
+    });
+
+    it('a linear rule past a step is not a breach, whatever the next doubling costs: 15 / 55 / 110', () => {
+      // 3.7x across the step, then 2x at a cost over the budget. Sampling stops
+      // once OVER_BUDGET_READINGS rounds have all read the largest size over
+      // the budget; the script holds exactly those rounds.
+      expect(110).toBeGreaterThanOrEqual(BUDGET_MS);
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(15, 55),
+        ...confirmPass(15, 55, 110, OVER_BUDGET_READINGS),
+      ]);
+    });
+
+    it('growth that persists into a next doubling over the budget is superlinear', () => {
+      // 3.3x, then 12x: a cubic curve or worse, decided in the same rounds.
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(3, 10),
+        ...confirmPass(3, 10, OVER_BUDGET_MS, OVER_BUDGET_READINGS),
+      ]);
+      expect(breach).toMatchObject({
+        reason: 'superlinear',
         largeMs: 10,
-        nextChars: GROWTH_MAX_CHARS * 2,
-        nextMs: BUDGET_MS + 20,
+        nextChars: NEXT_CHARS,
+        nextMs: OVER_BUDGET_MS,
       });
     });
 
+    it('a next doubling that read over the budget at first is sampled to the end', () => {
+      // Two readings over the budget and the rest under it: no early stop, and
+      // the fastest reading is 2x the pair's.
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(3, 10),
+        ...confirmPass(3, 10, (i) => (i < OVER_BUDGET_READINGS - 1 ? OVER_BUDGET_MS : 20)),
+      ]);
+    });
+
     it('a pair over the budget is a breach without measuring the next doubling', () => {
-      const clock = scripted({ pairs: GROWTH_SAMPLES, small: 3, large: () => BUDGET_MS + 20 });
-      const breach = superlinearGrowth(scriptedRule, clock);
-      expect(breach).toMatchObject({ reason: 'over-budget', largeMs: BUDGET_MS + 20 });
-      expect(breach?.nextMs).toBeUndefined();
+      // Decided once OVER_BUDGET_READINGS larger readings have all crossed the
+      // budget; the script holds exactly those rounds and no scan at the next
+      // doubling.
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(3, OVER_BUDGET_MS, OVER_BUDGET_READINGS),
+      ]);
+      expect(breach).toMatchObject({ reason: 'over-budget', ...TOP, largeMs: OVER_BUDGET_MS });
+      expect(breach.nextMs).toBeUndefined();
+      expect(breach.nextChars).toBeUndefined();
+    });
+
+    it('a pair over the budget is a breach at any ratio', () => {
+      const breach = runBreached([
+        ...cheapClimb(),
+        ...firstPass(OVER_BUDGET_MS / 2, OVER_BUDGET_MS, OVER_BUDGET_READINGS),
+      ]);
+      expect(breach).toMatchObject({ reason: 'over-budget', largeMs: OVER_BUDGET_MS });
+    });
+
+    it('a larger reading over the budget on fewer readings than that is sampled to the end', () => {
+      runCleared([
+        ...cheapClimb(),
+        ...firstPass(3, (i) => (i < OVER_BUDGET_READINGS - 1 ? OVER_BUDGET_MS : 6)),
+      ]);
+    });
+
+    it('a size the tier just measured is not scanned again as the next scout', () => {
+      // The scout at the second size crosses the budget, so the pair under it
+      // is sampled: over the ratio, then 2x at the third size. That reading is
+      // the third size's scout, and the script holds no further scan of it.
+      const [, , ...later] = SCOUT_SIZES;
+      expect(later.length).toBeGreaterThanOrEqual(2);
+      runCleared([
+        1,
+        OVER_BUDGET_MS,
+        ...firstPass(3, 10),
+        ...confirmPass(3, 10, 20),
+        ...later.slice(1).map(() => 1),
+        ...firstPass(3, 6),
+      ]);
+    });
+  });
+
+  describe('what a failing bundled rule is told', () => {
+    const pair = { corpus: 'space run', ...TOP, smallMs: 15, largeMs: 120 };
+
+    it('an over-budget breach is described by its cost, not by its growth', () => {
+      const message = describeFailure('pack/rule', { reason: 'over-budget', ...pair });
+      expect(message).toContain(`120.0ms to scan ${String(TOP.largeChars)} chars`);
+      expect(message).toContain(`over the ${String(BUDGET_MS)}ms budget`);
+      expect(message).not.toContain('linear');
+    });
+
+    it('a superlinear breach names the largest size that was measured', () => {
+      const message = describeFailure('pack/rule', {
+        reason: 'superlinear',
+        ...pair,
+        largeMs: 60,
+        nextChars: NEXT_CHARS,
+        nextMs: 240,
+      });
+      expect(message).toContain('more than linear time');
+      expect(message).toContain(`up to ${String(NEXT_CHARS)} chars`);
+      expect(message).not.toContain(`${String(TOP.largeChars)} chars`);
     });
   });
 

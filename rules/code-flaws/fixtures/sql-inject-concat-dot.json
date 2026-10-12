@@ -41,5 +41,27 @@
     "label": "JSON array of quoted SQL words with no dot operator",
     "text": "[\"select 1\",\"insert 2\",\"update 3\",\"delete 4\",\"drop 5\",\"where 6\"]",
     "shouldMatch": false
+  },
+  {
+    "label": "single-quoted SQL string concatenated with the dot operator",
+    "text": "$sql = 'DELETE FROM sessions WHERE user_id = ' . $userId;",
+    "shouldMatch": true,
+    "filePath": "src/sessions.php"
+  },
+  {
+    "label": "concatenation after quoted SQL keywords on the same line: the span starts at the SQL literal",
+    "text": "$cols = [\"select\", \"where\"]; $q = \"SELECT * FROM t WHERE id = \" . $id;",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 34, "end": 65 }]
+  },
+  {
+    "label": "string with no SQL keyword concatenated with the dot operator",
+    "text": "$greeting = \"hello \" . $name;",
+    "shouldMatch": false
+  },
+  {
+    "label": "long line of quoted SQL keywords with no dot operator",
+    "text": "\"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\" \"where\"",
+    "shouldMatch": false
   }
 ]

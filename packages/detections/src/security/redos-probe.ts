@@ -434,6 +434,10 @@ export const GROWTH_CORPORA: readonly GrowthCorpus[] = [
       joinTo(length, '[', ']', (i) => `"${SQL_WORDS[i % SQL_WORDS.length] ?? ''} ${String(i)}"`),
   },
   { name: "single-quoted keyword run ('where)", build: (length) => repeatTo("'where", length) },
+  {
+    name: 'double-quoted keyword literal run ("where" )',
+    build: (length) => repeatTo('"where" ', length),
+  },
   { name: 'double-quote run', build: (length) => repeatTo('"', length) },
   { name: 'space run', build: (length) => repeatTo(' ', length) },
   { name: 'newline run', build: (length) => repeatTo('\n', length) },

@@ -368,7 +368,7 @@ export const GROWTH_START_CHARS = 2_000;
 
 /**
  * The largest corpus size the growth tier climbs to. A pair over the ratio is
- * sampled one doubling further, so past this at the top.
+ * also sampled at twice its larger size, which for the top pair is twice this.
  */
 export const GROWTH_MAX_CHARS = 32_000;
 
@@ -585,8 +585,9 @@ function judgePair(
 
 /**
  * The first corpus on which `rule`'s cost blows the budget, or grows faster
- * than its input over two consecutive doublings; `undefined` when every corpus
- * scales linearly up to `GROWTH_MAX_CHARS`.
+ * than its input over two consecutive doublings; `undefined` when no corpus
+ * does either. The climb ends at `GROWTH_MAX_CHARS`, and the second doubling
+ * of a pair is read at twice the pair's larger size.
  *
  * Each corpus climbs from `GROWTH_START_CHARS` by doubling, one reading per
  * size, and stops climbing at the first size whose reading crosses the budget —

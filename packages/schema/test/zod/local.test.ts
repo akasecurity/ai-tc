@@ -261,6 +261,8 @@ describe('row mappers (tenant-free local store)', () => {
       inspectionMs: 7,
       redactDegradedTo: 'warn',
       scanIncomplete: 'timeout',
+      // Wire-only: a forwarded capture's tokens are never stored locally.
+      sightings: [],
     };
     const event: IngestEvent = {
       id: EVENT,

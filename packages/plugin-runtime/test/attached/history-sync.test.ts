@@ -4,15 +4,22 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type * as Persistence from '@akasecurity/persistence';
+import type { SightingKey } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureWireId,
+  createSightingKeyStore,
   dataDir as dataDirOf,
   dbPath as dbPathOf,
+  FileKeyProvider,
+  keysDir as keysDirOf,
+  loadOrCreateFingerprintKey,
   openLocalDatabase,
+  SecretVault,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { contentHashOf } from '@akasecurity/plugin-sdk';
 import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type {
   AttachedCredentialV2,
@@ -27,6 +34,8 @@ import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
+import { FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import { expectedToken, keyOf, materialOf, patShaped } from '../helpers/sighting-fixtures.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 /**
@@ -2241,5 +2250,193 @@ describe('runHistorySync — a scoped attachment', () => {
     expect(l.structural.map((e) => e.id)).toEqual(['p-1', 'p-1-llm']);
     expect(attempted(result).counts).toMatchObject({ pending: 0, sent: 2 });
     expect(attempted(result).countsScope).toBe('machine');
+  });
+});
+
+describe('runHistorySync — secrets on the capture lane', () => {
+  const value = patShaped(61);
+
+  const collect = () => {
+    const captures: IngestEvent[] = [];
+    return {
+      captures,
+      sendBatch: sendBatchOk,
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        captures.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    };
+  };
+
+  const storeKey = (key: SightingKey): void => {
+    createSightingKeyStore('file', keysDirOf(home)).replace({
+      keyVersion: key.keyVersion,
+      algorithm: 'hmac-sha256',
+      key: materialOf(key),
+      fetchedAtMs: 1,
+    });
+  };
+
+  it('resends a stored secret only as its token, with its metadata', async () => {
+    attach({ grantFor: ENDPOINT });
+    const key = keyOf(3, 7);
+    storeKey(key);
+    seedCaptures([{ id: 'cap-s', content: `run ${value} now` }]);
+    const l = collect();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(JSON.stringify(l.captures)).not.toContain(value);
+    expect(l.captures).toHaveLength(1);
+    expect(l.captures[0]?.content).toBe(`run ${expectedToken(key, value)} now`);
+    expect(l.captures[0]?.metadata?.sightings).toEqual([
+      { token: expectedToken(key, value), ruleId: 'secrets/github-pat', category: 'secret' },
+    ]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
+
+  it('resolves a vaulted secret in a stored row through the audited path', async () => {
+    attach({ grantFor: ENDPOINT });
+    const key = keyOf(4, 2);
+    storeKey(key);
+    const db = openLocalDatabase(dataDirOf(home));
+    let minted: string | symbol;
+    try {
+      minted = await new SecretVault({
+        repo: db.secretVault,
+        keys: new FileKeyProvider(keysDirOf(home)),
+        isConsented: () => true,
+      }).tokenize(
+        value,
+        { ruleId: 'secrets/github-pat', category: 'secret', maskedMatch: 'gh****' },
+        () => loadOrCreateFingerprintKey(dataDirOf(home)),
+      );
+    } finally {
+      db.close();
+    }
+    if (typeof minted !== 'string') throw new Error('expected a pointer');
+    seedCaptures([{ id: 'cap-v', content: `use ${minted}` }]);
+    const l = collect();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures[0]?.content).toBe(`use ${expectedToken(key, value)}`);
+    const derefs = ledger((db) => db.secretVault.listDerefs({ includeBatched: true }).items);
+    expect(derefs.map((d) => [d.target, d.reason, d.outcome])).toEqual([
+      ['fingerprint', 'sighting', 'revealed'],
+    ]);
+  });
+
+  it('resends the marker when no key is stored', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-m', content: `run ${value} now` }]);
+    const l = collect();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures[0]?.content).toBe(`run ${FAIL_CLOSED_MARKER} now`);
+    expect(JSON.stringify(l.captures)).not.toContain(value);
+  });
+
+  it('sends each capture through the injected encoder', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-e', content: 'plain' }]);
+    const l = collect();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      encoder: {
+        encodeContent: (content) => Promise.resolve({ content, sightings: [] }),
+        encodeEvent: (event) => Promise.resolve({ ...event, content: 'encoded' }),
+      },
+    });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['encoded']);
+  });
+
+  it('sends neither the raw content hash nor an id derived from it, and resends under one id', async () => {
+    attach({ grantFor: ENDPOINT });
+    storeKey(keyOf(2, 2));
+    seedCaptures([{ id: 'cap-only', content: value }]);
+    const attempts: IngestEvent[] = [];
+    const settling = (settled: boolean) => (events: readonly IngestEvent[]) => {
+      attempts.push(...events);
+      return Promise.resolve({ settled: settled ? events.length : 0 });
+    };
+    await run({ sendBatch: sendBatchOk, sendCaptures: settling(false) });
+    await run({ sendBatch: sendBatchOk, sendCaptures: settling(true) });
+
+    expect(attempts).toHaveLength(2);
+    const [sent, resent] = attempts;
+    expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
+    expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
+    expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
+    expect(sent?.id).toBe(captureWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
+    expect(resent?.id).toBe(sent?.id);
+  });
+
+  it('tokenises a stored value only an installed secret rule matches', async () => {
+    attach({ grantFor: ENDPOINT });
+    const key = keyOf(5, 5);
+    storeKey(key);
+    const installedValue = ['ACME', 'TOK', '3'.repeat(10)].join('');
+    ledger((db) => {
+      db.installedPacks.recordInventory([
+        {
+          namespace: 'acme',
+          packId: 'internal',
+          version: '1.0.0',
+          name: 'Internal',
+          rules: [
+            {
+              specVersion: 1,
+              id: 'internal/token',
+              name: 'Internal token',
+              category: 'secret',
+              severity: 'high',
+              matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+            },
+          ],
+        },
+      ]);
+    });
+    seedCaptures([{ id: 'cap-i', content: `k ${installedValue}` }]);
+    const l = collect();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(JSON.stringify(l.captures)).not.toContain(installedValue);
+    expect(l.captures[0]?.content).toBe(`k ${expectedToken(key, installedValue)}`);
+  });
+
+  it('holds every capture owed when the encoder cannot encode', async () => {
+    attach({ grantFor: ENDPOINT });
+    let attempts = 0;
+    seedCaptures([
+      { id: 'cap-h1', content: 'one' },
+      { id: 'cap-h2', content: 'two' },
+    ]);
+    const l = collect();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      encoder: {
+        encodeContent: () => Promise.resolve(undefined),
+        encodeEvent: () => {
+          attempts += 1;
+          return Promise.resolve(undefined);
+        },
+      },
+    });
+
+    expect(attempts).toBe(1);
+    expect(l.captures).toEqual([]);
+    expect(
+      ledger((db) => db.historySync.pendingCaptureRows(10, ALL))
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['cap-h1', 'cap-h2']);
   });
 });

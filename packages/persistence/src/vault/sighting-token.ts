@@ -1,0 +1,21 @@
+import { createHmac } from 'node:crypto';
+
+import { stripInvisiblePadding } from '@akasecurity/schema';
+
+import type { SightingKey } from './sighting-keys.ts';
+
+/** The domain string prefixed to every value before it is hashed. */
+export const SIGHTING_DOMAIN = 'aka:sighting:v1';
+
+/**
+ * The sighting token for a secret value:
+ * `[[aka:fp:v<keyVersion>.<base64url(HMAC-SHA256(key, domain ‖ value))>]]`,
+ * with invisible padding removed from the value first.
+ */
+export function sightingToken(key: SightingKey, raw: string): string {
+  const mac = createHmac('sha256', key.key)
+    .update(SIGHTING_DOMAIN, 'utf8')
+    .update(stripInvisiblePadding(raw), 'utf8')
+    .digest('base64url');
+  return `[[aka:fp:v${String(key.keyVersion)}.${mac}]]`;
+}

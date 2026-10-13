@@ -173,7 +173,7 @@ export function DerefAuditTableView({
                     {row.target === 'model' ? (
                       <span className="font-semibold text-sev-critical-ink">model</span>
                     ) : (
-                      <span className="text-text-2">human</span>
+                      <span className="text-text-2">{row.target}</span>
                     )}
                   </TableCell>
                   <TableCell>

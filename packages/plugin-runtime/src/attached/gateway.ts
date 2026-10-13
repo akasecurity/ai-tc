@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+
 import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
 import {
   canonicalRepoUrl,
@@ -61,6 +63,8 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import type { OutboundEncoder } from './outbound-encoder.ts';
+import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
@@ -168,6 +172,12 @@ export interface AttachedDataGatewayDeps {
    * scoped one.
    */
   attachment: ResolvedAttachmentScope;
+  /**
+   * Rewrites every forwarded capture's secrets into sighting tokens. Defaults to
+   * the encoder over the `~/.aka` root holding `dataDir`, scanning with this
+   * gateway's own effective ruleset.
+   */
+  encoder?: OutboundEncoder;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -252,7 +262,15 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    */
   private readonly rootVerdicts = new Map<string, ScopeVerdict>();
 
-  constructor(private readonly deps: AttachedDataGatewayDeps) {}
+  private readonly encoder: OutboundEncoder;
+
+  constructor(private readonly deps: AttachedDataGatewayDeps) {
+    this.encoder =
+      deps.encoder ??
+      createStoreOutboundEncoder(dirname(deps.dataDir), {
+        loadRules: async () => (await this.getPolicyBundle()).rules ?? [],
+      });
+  }
 
   // ---------------------------------------------------------------------
   // The scope verdict: whether a row written locally may also be forwarded.
@@ -509,6 +527,14 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     }
   }
 
+  private async encodeForWire(event: IngestEvent): Promise<IngestEvent | undefined> {
+    try {
+      return await this.encoder.encodeEvent(event);
+    } catch {
+      return undefined;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Writes: local first, then forward.
   // ---------------------------------------------------------------------
@@ -531,6 +557,13 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     // never the slug.
     const wireEvent = this.captureForWire(record);
     if (wireEvent === undefined) return;
+    // Secrets leave only as sighting tokens. A capture that cannot be encoded
+    // is held owed rather than sent, without touching the forward breaker.
+    const encoded = await this.encodeForWire(wireEvent);
+    if (encoded === undefined) {
+      this.deps.local.markCaptureOwed(record.event);
+      return;
+    }
     // ONLY the event crosses; `record.findings` stays on this machine. There is
     // no field on `IngestBatch`/`Event` that could carry them, and that is the
     // contract rather than an oversight: the plane re-derives its own findings
@@ -551,7 +584,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     const forwarded = await this.deps.forward.run(
       () =>
         this.deps.client.ingestEvents({
-          events: [wireEvent],
+          events: [encoded],
           ...(record.dedupe ? { dedupe: record.dedupe } : {}),
         }),
       { decisionPath: true },

@@ -1066,3 +1066,60 @@ export const DeviceCommandAckBody = z.discriminatedUnion('outcome', [
     .strict(),
 ]);
 export type DeviceCommandAckBody = z.infer<typeof DeviceCommandAckBody>;
+
+// ─── The sighting key ────────────────────────────────────────────────────────
+
+/** Bytes of HMAC key material in one sighting-key version. */
+export const SIGHTING_KEY_BYTES = 32;
+
+// The canonical unpadded base64url encoding of exactly 32 bytes: 43 characters,
+// the last of which carries 4 data bits and 2 zero bits.
+const SIGHTING_KEY_MATERIAL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+
+const sightingKeyMaterial = z
+  .string()
+  .regex(SIGHTING_KEY_MATERIAL, 'must be the base64url encoding of exactly 32 bytes');
+
+const sightingKeyVersion = z.number().int().min(1);
+
+/** One accepted version of the key: its number and its base64url material. */
+export const SightingKeyVersion = z.object({
+  keyVersion: sightingKeyVersion,
+  key: sightingKeyMaterial,
+});
+export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
+
+/**
+ * `GET /v1/sighting-key` — the HMAC key this machine uses for sightings.
+ *
+ * `keyVersion`/`key` are the current version. `previous` lists the versions
+ * still accepted during a rotation overlap; it may be absent or empty. No two
+ * entries share a version.
+ *
+ * A response parser, so it carries no component id and strips unknown keys.
+ * A refusal names the field and never the value.
+ */
+export const SightingKeyResponse = z
+  .object({
+    keyVersion: sightingKeyVersion,
+    algorithm: z.literal('hmac-sha256'),
+    key: sightingKeyMaterial,
+    previous: z.array(SightingKeyVersion).optional(),
+  })
+  .refine(
+    (body) => {
+      const versions = [body.keyVersion, ...(body.previous ?? []).map((p) => p.keyVersion)];
+      return new Set(versions).size === versions.length;
+    },
+    { message: 'key versions must be distinct', path: ['previous'] },
+  );
+export type SightingKeyResponse = z.infer<typeof SightingKeyResponse>;
+
+/**
+ * The sighting key as this machine stores it: the response it was given, plus
+ * the epoch-ms instant it was fetched. A local custody shape, never on a wire.
+ */
+export const StoredSightingKeys = SightingKeyResponse.and(
+  z.object({ fetchedAtMs: z.number().int().nonnegative() }),
+);
+export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;

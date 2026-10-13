@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing';
 
 import { FINDINGS_PATH, HOME, fileSystem, helper, model, snapshotText } from './harness.js';
-import type { Hooks } from './harness.js';
+import type { HelperRequest, Hooks } from './harness.js';
 import { SECRET } from './samples.generated.js';
 import { ACTION_OF, fill, RULE_IDS, SCENARIOS } from './scenarios.generated.js';
 
@@ -27,6 +27,7 @@ interface PaneMounted {
     type: string;
   }): Promise<{ key: string | undefined; text: string; props: Record<string, unknown> }[]>;
   press(target: { key: string }): Promise<unknown>;
+  redraw(props?: unknown): Promise<void>;
 }
 
 async function paneRowKeys($: Dollar): Promise<string[]> {
@@ -660,3 +661,244 @@ for (const surface of SURFACES) {
     expect(texts.join('\n')).not.toContain('A'.repeat(26));
   });
 }
+
+// Vault reveal controls in the pane.
+
+const REVEALED = 'VALUE-SHOWN-ONCE';
+
+type Answer = { stdout: string; exitCode?: number } | { deny: string };
+
+// The reveal helper, answered from beneath the mod: a function of the request, a
+// non-zero exit, or a refusal.
+function revealing(
+  on: Hooks,
+  mode: 'full' | 'off' | Answer = 'full',
+): { asked: HelperRequest[] } & HelperRequest[] {
+  const asked: HelperRequest[] = [];
+  on('process.run', (_$, e) => {
+    const request: HelperRequest = {
+      argv: e.argv,
+      stdin: JSON.parse(e.init?.stdin ?? 'null') as HelperRequest['stdin'],
+      timeoutMs: e.init?.timeoutMs,
+    };
+    asked.push(request);
+    if (typeof mode === 'object' && 'deny' in mode) return { deny: mode.deny };
+    const items = (request.stdin as unknown as { items: { token: string }[] }).items;
+    const stdout =
+      typeof mode === 'object'
+        ? mode.stdout
+        : JSON.stringify({
+            v: 1,
+            mode,
+            items: items.map((i) => ({
+              token: i.token,
+              badge: '[badge]',
+              revealed: mode === 'off' ? null : REVEALED,
+            })),
+          });
+    return {
+      value: {
+        exitCode: typeof mode === 'object' ? (mode.exitCode ?? 0) : 0,
+        stdout,
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    };
+  });
+  return Object.assign(asked, { asked });
+}
+
+const vaulted = (id: string) => recent(id, { action: 'vaulted', pointer: POINTER });
+
+async function texts(pane: PaneMounted): Promise<string[]> {
+  return (await pane.findAll({ type: 'Text' })).map((t) => t.text);
+}
+
+async function buttonKeys(pane: PaneMounted): Promise<string[]> {
+  return (await pane.findAll({ type: 'Button' })).map((b) => b.key ?? '');
+}
+
+for (const surface of SURFACES) {
+  test(`${surface}: Show reveals one value, once per press, and nothing on open`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    const asked = revealing(on);
+
+    const pane = await mountPane($, surface);
+    expect(asked).toHaveLength(0);
+    expect(await buttonKeys(pane)).toContain(`show-${ID_A}`);
+    expect(await texts(pane)).not.toContain(REVEALED);
+
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.stdin).toMatchObject({ v: 1, items: [{ token: POINTER, reveal: true }] });
+    expect(await texts(pane)).toContain(REVEALED);
+    expect(await buttonKeys(pane)).toContain(`hide-${ID_A}`);
+  });
+
+  test(`${surface}: a shown value is masked again after 30 seconds`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    revealing(on);
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+    expect(await texts(pane)).toContain(REVEALED);
+
+    await clock.advance(30_000);
+    await clock.settle();
+
+    expect(await texts(pane)).not.toContain(REVEALED);
+    expect(await texts(pane)).toContain('[[aka:secret:…]]');
+  });
+
+  test(`${surface}: two presses before the helper answers start one run`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    const asked = revealing(on);
+
+    const pane = await mountPane($, surface);
+    await Promise.all([pane.press({ key: `show-${ID_A}` }), pane.press({ key: `show-${ID_A}` })]);
+    await clock.settle();
+
+    expect(asked).toHaveLength(1);
+  });
+
+  test(`${surface}: with no consent there are no Show buttons and nothing is revealed`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A), vaulted(ID_B)));
+    revealing(on, 'off');
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+
+    expect((await buttonKeys(pane)).filter((k) => k.startsWith('show-'))).toEqual([]);
+    expect(await texts(pane)).not.toContain(REVEALED);
+    expect(await texts(pane)).not.toContain("couldn't reveal");
+  });
+
+  for (const [name, reply] of [
+    ['exits 1', { stdout: '', exitCode: 1 }],
+    ['times out', { deny: 'timeout' }],
+  ] as const) {
+    test(`${surface}: a helper that ${name} draws couldn't reveal and stays masked`, async ($, on) => {
+      const clock = mock.clock(on, { now: NOW });
+      fileOf(on, lines(vaulted(ID_A)));
+      revealing(on, reply);
+
+      const pane = await mountPane($, surface);
+      await pane.press({ key: `show-${ID_A}` });
+      await clock.settle();
+
+      const drawn = await texts(pane);
+      expect(drawn).toContain("couldn't reveal");
+      expect(drawn).toContain('[[aka:secret:…]]');
+      expect(drawn).not.toContain(REVEALED);
+    });
+  }
+
+  test(`${surface}: Hide masks the value at once`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    revealing(on);
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+    await pane.press({ key: `hide-${ID_A}` });
+
+    expect(await texts(pane)).not.toContain(REVEALED);
+    expect(await buttonKeys(pane)).toContain(`show-${ID_A}`);
+  });
+
+  test(`${surface}: a revealed value is never written to state, a toast or the status line`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    revealing(on);
+    const written: string[] = [];
+    on('state.set', (_$, e, next) => {
+      written.push(JSON.stringify(e));
+      return next(e);
+    });
+    const raised = toasts(on);
+    const calls = statuses(on);
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+    expect(await texts(pane)).toContain(REVEALED);
+
+    expect(written.length).toBeGreaterThan(0);
+    expect(written.join('\n')).not.toContain(REVEALED);
+    expect(raised.join('\n')).not.toContain(REVEALED);
+    expect(calls.join('\n')).not.toContain(REVEALED);
+  });
+
+  test(`${surface}: a new session never shows the session before's value`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    const file = fileOf(on, lines(vaulted(ID_A)));
+    revealing(on);
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+    expect(await texts(pane)).toContain(REVEALED);
+
+    file.session(`${file.id}-after-clear`);
+    await pane.redraw();
+
+    expect(await texts(pane)).not.toContain(REVEALED);
+    expect(await texts(pane)).toEqual(['No findings in this session.']);
+  });
+}
+
+// Hooks that must not hold a tool call or a session start.
+
+test('a status write that hangs does not delay a tool call', async ($, on) => {
+  mock.clock(on, { now: NOW });
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  let ran = false;
+  let hang = false;
+  on('tool.call', () => {
+    ran = true;
+    return { result: {}, text: 'ran' } as never;
+  });
+  on('ui.status', () =>
+    hang ? (new Promise(() => undefined) as never) : ({ value: undefined } as never),
+  );
+  answering(on, [record(ID_A)]);
+  await $.prompt.submit({ text: prompt });
+  hang = true;
+
+  await $.tool.call({ tool: 'Bash', command: 'echo hi' } as never);
+
+  expect(ran).toBe(true);
+});
+
+test('a clock that throws does not re-schedule the status flush', async ($, on) => {
+  let sleeps = 0;
+  let now = NOW;
+  on('ui.status', () => ({ value: undefined }) as never);
+  on('clock.now', () => ({ value: now }) as never);
+  on('clock.sleep', () => {
+    sleeps += 1;
+    return { deny: 'no timers' } as never;
+  });
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  const answer = answeringWith(on);
+  for (const n of ['7', '8']) {
+    answer.next([record(n.repeat(16))]);
+    await $.prompt.submit({ text: prompt });
+    now += 10;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(sleeps).toBeLessThanOrEqual(2);
+});

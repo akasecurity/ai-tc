@@ -125,7 +125,9 @@ async function flushStatusLater($: Dollar, ms: number): Promise<void> {
   try {
     await $.clock.sleep(Math.max(ms, 0));
   } catch {
-    // The next hook with a status line writes it.
+    // The next hook with a status line writes it. Not re-scheduled here: a clock
+    // that throws would loop until the window had passed.
+    return;
   } finally {
     flushScheduled = false;
   }
@@ -162,6 +164,27 @@ async function refreshStatus($: Dollar, force = false): Promise<void> {
 
 let paneFilter: ViewSeverity | 'all' = 'all';
 
+const SHOW_FOR_MS = 30_000;
+
+// Values the person pressed Show on, by finding id, with the time they re-mask
+// (a `$.clock.now()` reading). Module memory only: a revealed value is never
+// written to $.state, a file, a log, a toast or the status line.
+const paneReveals = new Map<string, { value: string; until: number }>();
+
+// The finding ids with a reveal run in flight, so a second press starts none.
+const revealing = new Set<string>();
+
+// The finding ids whose last reveal failed.
+const revealFailed = new Set<string>();
+
+// Set when the helper answers that revealing is off (no consent): no Show buttons.
+let consentOff = false;
+
+function forgetReveals(): void {
+  paneReveals.clear();
+  revealFailed.clear();
+}
+
 // A new session id (a /clear or a resume in the same process) starts an empty
 // list: the findings of the session before are not shown in this one. Never throws.
 async function followSession($: Dollar): Promise<void> {
@@ -173,6 +196,8 @@ async function followSession($: Dollar): Promise<void> {
     findingsHeld = [];
     dismissedBefore = 0;
     paneFilter = 'all';
+    forgetReveals();
+    consentOff = false;
     lastFile = undefined;
     if (hadFindings) {
       await update($, findingsVersion, (version) => (version ?? 0) + 1);
@@ -826,6 +851,61 @@ function maskedPointer(pointer: string): string {
   return prefix === undefined ? '[[aka:…]]' : `${prefix}…]]`;
 }
 
+async function bumpPane($: PaneDollar): Promise<void> {
+  await update($, paneVersion, (version) => (version ?? 0) + 1);
+}
+
+// Re-masks a value once its time is up, without waiting for another draw.
+async function maskLater($: PaneDollar, id: string, until: number): Promise<void> {
+  try {
+    await $.clock.sleep(SHOW_FOR_MS);
+    if (paneReveals.get(id)?.until === until) {
+      paneReveals.delete(id);
+      await bumpPane($);
+    }
+  } catch {
+    // The next draw re-masks it.
+  }
+}
+
+// Asks the helper for one vaulted value, on a press and never otherwise. The
+// helper checks consent and audits the reveal. Never throws.
+async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
+  if (f.pointer === undefined || revealing.has(f.id)) return;
+  revealing.add(f.id);
+  try {
+    revealFailed.delete(f.id);
+    const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }]);
+    if (answer?.isOff === true) consentOff = true;
+    const revealed = answer?.isOff === true ? undefined : answer?.items.get(f.pointer)?.revealed;
+    if (typeof revealed === 'string') {
+      const until = (await $.clock.now()) + SHOW_FOR_MS;
+      paneReveals.set(f.id, { value: revealed, until });
+      void maskLater($, f.id, until);
+    } else if (answer?.isOff !== true) {
+      revealFailed.add(f.id);
+    }
+  } catch {
+    revealFailed.add(f.id);
+  } finally {
+    revealing.delete(f.id);
+    try {
+      await bumpPane($);
+    } catch {
+      // The pane stays as it was.
+    }
+  }
+}
+
+async function hideValue($: PaneDollar, id: string): Promise<void> {
+  try {
+    paneReveals.delete(id);
+    await bumpPane($);
+  } catch {
+    // The pane stays as it was.
+  }
+}
+
 function clockTime(at: number): string {
   const date = new Date(at);
   const two = (n: number): string => String(n).padStart(2, '0');
@@ -834,14 +914,56 @@ function clockTime(at: number): string {
 
 // The findings pane: the session's findings newest first, a row of severity
 // filters above them. Anything unexpected hands on to the engine's pane.
+function pointerRows(
+  { Text, Button }: ReturnType<PaneDollar['ui']['resolve']>,
+  $: PaneDollar,
+  f: ViewFinding,
+) {
+  if (f.pointer === undefined) return [];
+  const shown = paneReveals.get(f.id);
+  const rows = [
+    shown === undefined
+      ? h(Text, { key: `masked-${f.id}`, dimColor: true }, maskedPointer(f.pointer))
+      : h(Text, { key: `value-${f.id}` }, shown.value),
+  ];
+  if (shown !== undefined) {
+    rows.push(
+      h(Button, {
+        key: `hide-${f.id}`,
+        label: 'Hide',
+        variant: 'secondary',
+        onPress: () => void hideValue($, f.id),
+      }),
+    );
+  } else if (!consentOff) {
+    rows.push(
+      h(Button, {
+        key: `show-${f.id}`,
+        label: 'Show',
+        variant: 'secondary',
+        onPress: () => void showValue($, f),
+      }),
+    );
+  }
+  if (revealFailed.has(f.id)) {
+    rows.push(h(Text, { key: `failed-${f.id}`, dimColor: true }, "couldn't reveal"));
+  }
+  return rows;
+}
+
 async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
   try {
     // Read for their subscriptions only: a new version redraws the pane.
     await $.state.get(findingsVersion);
     await $.state.get(paneVersion);
     await refreshFromFile($);
-    const { Box, Text, Button } = $.ui.resolve(e);
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
     const rows = heldFindings().filter((f) => paneFilter === 'all' || f.severity === paneFilter);
+    if (paneReveals.size > 0) {
+      const now = await $.clock.now();
+      for (const [id, shown] of paneReveals) if (shown.until <= now) paneReveals.delete(id);
+    }
     return h(
       Box,
       { flexDirection: 'column', key: 'aka-pane' },
@@ -873,7 +995,7 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
             { color: severityStyle(f.severity).color, bold: f.severity === 'critical' },
             `${chipText(f)}  ${clockTime(f.at)}`,
           ),
-          f.pointer === undefined ? null : h(Text, { dimColor: true }, maskedPointer(f.pointer)),
+          ...pointerRows(ui, $, f),
         ),
       ),
     );
@@ -885,7 +1007,7 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await followSession($);
-    await refreshStatus($);
+    void refreshStatus($);
     try {
       await $.command.register({
         name: 'findings-pane',
@@ -938,6 +1060,11 @@ export const register: Register = (on) => {
   on('ui.render', { component: 'AbovePrompt' }, bandRender);
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, paneRender);
 
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE_ID) forgetReveals();
+    return next(e);
+  });
+
   on('command.run', { command: 'findings-pane' }, async ($) => {
     try {
       await $.ui.open({ id: PANE_ID, title: 'AKA findings', focus: true, closeOnEscape: true });
@@ -948,7 +1075,7 @@ export const register: Register = (on) => {
   });
 
   on('tool.call', async ($, e, next) => {
-    await refreshStatus($);
+    void refreshStatus($);
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);

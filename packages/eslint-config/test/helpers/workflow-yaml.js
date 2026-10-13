@@ -41,6 +41,7 @@ const TRAILING_COMMENTS = new WeakMap();
  * More nodes than any real workflow expands to; a chain of aliases can multiply.
  * The largest workflow in this repository decodes to under 300, so this is about
  * seventy times that, and a chain that reaches it is refused in milliseconds.
+ * Raise it if a real workflow ever approaches it; the refusal below names it.
  */
 const MAX_NODES = 20_000;
 
@@ -64,7 +65,10 @@ function decode(node, document, state) {
   // per decoded node, and an `expect` per node is the cost of the whole walk.
   state.budget -= 1;
   if (state.budget <= 0) {
-    expect(state.budget, 'the workflow expands to more nodes than any real one').toBeGreaterThan(0);
+    expect(
+      state.budget,
+      'the workflow expands to more nodes than any real one (raise MAX_NODES in helpers/workflow-yaml.js if a real workflow now needs more)',
+    ).toBeGreaterThan(0);
   }
   if (node === null || node === undefined) return null;
   if (isAlias(node)) {

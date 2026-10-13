@@ -164,6 +164,9 @@ export function ScanClient({
             {forwarded.text}
           </p>
         )}
+        {result?.sightingsLine && (
+          <p className="mt-1 text-xs text-text-2">{result.sightingsLine}</p>
+        )}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { basename, dirname, join, sep } from 'node:path';
 import {
   createGuardedFileScanner,
   forwardProjectEgress,
+  forwardScanSightings,
   isProtectedTarget,
   openScanStoreVault,
   recordProjectEgress,
@@ -15,9 +16,14 @@ import {
   type ScanPathResult,
   type SharesForwardOutcome,
 } from '@akasecurity/local-ops';
-import { dataDir, defaultDataDir } from '@akasecurity/persistence';
-import { createSharesSender } from '@akasecurity/remote';
-import { type EgressWriteSummary, SOURCE_TOOL } from '@akasecurity/schema';
+import { dataDir, defaultDataDir, planSightingShare } from '@akasecurity/persistence';
+import { createCredentialSightingsSender, createSharesSender } from '@akasecurity/remote';
+import {
+  credentialSightingsLine,
+  type CredentialSightingsOutcome,
+  type EgressWriteSummary,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -68,6 +74,9 @@ export interface ScanResult {
   // shared failure sentences out of a Node-only package, and a client component
   // importing that would pull the whole package into the browser bundle.
   forwardLine?: ForwardLine;
+  // What this scan did with the credential sightings it found, as one line.
+  // Absent on a machine that is not attached.
+  sightingsLine?: string;
 }
 
 // A Server Action's result is serialised to the browser, and the recorder hands
@@ -129,6 +138,7 @@ export async function runScan(
     workerUrl: scanWorkerUrl(),
   });
   const vault = openScanStoreVault(db());
+  const sightingPlan = planSightingShare(defaultDataDir(), { enabled: options.forward !== false });
   let result: ScanPathResult;
   try {
     result = await scanPathIntoStore(db(), target, {
@@ -148,6 +158,7 @@ export async function runScan(
       // No `akaHome`: this server always reads the default home, which is what
       // the scanner's own default resolves to. `--home` has no counterpart here.
       vault,
+      sightingKey: sightingPlan.ok ? sightingPlan.key : undefined,
     });
   } catch (err) {
     if (!isProtectedTarget(err)) throw err;
@@ -204,6 +215,14 @@ export async function runScan(
 
   const forwardLine = forward === undefined ? undefined : (describeForward(forward) ?? undefined);
 
+  // Never throws; the counts above never depend on it.
+  const sightings: CredentialSightingsOutcome = sightingPlan.ok
+    ? await forwardScanSightings(defaultDataDir(), target, result, {
+        send: createCredentialSightingsSender(),
+      })
+    : sightingPlan.outcome;
+  const sightingsLine = isStandalone(sightings) ? undefined : credentialSightingsLine(sightings);
+
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
@@ -220,6 +239,7 @@ export async function runScan(
       droppedRules,
       forward,
       forwardLine,
+      sightingsLine,
     };
 
   return {
@@ -230,7 +250,16 @@ export async function runScan(
     droppedRules,
     forward,
     forwardLine,
+    sightingsLine,
   };
+}
+
+function isStandalone(outcome: CredentialSightingsOutcome): boolean {
+  return (
+    outcome.status === 'not-shared' &&
+    outcome.reason === 'sharing-off' &&
+    outcome.sharing.mode === 'standalone'
+  );
 }
 
 export interface DirEntry {

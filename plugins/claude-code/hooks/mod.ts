@@ -315,6 +315,12 @@ async function captureCwd($: Dollar, e?: object): Promise<string | undefined> {
   }
 }
 
+// A subagent row's agent, so its finding is placed in the subagent.
+function agentOf(event: object | undefined): { agentId?: string } {
+  const agentId = (event as { agentId?: unknown } | undefined)?.agentId;
+  return typeof agentId === 'string' ? { agentId } : {};
+}
+
 // The helper's rewrite of `text`, or null for any reason there is none.
 async function rewriteWithHelper(
   $: Dollar,
@@ -336,7 +342,7 @@ async function rewriteWithHelper(
         text,
         sessionId,
         cwd: await captureCwd($, event),
-        ...(door === undefined ? {} : { row: { door } }),
+        ...(door === undefined ? {} : { row: { door, ...agentOf(event) } }),
       }),
       timeoutMs: HELPER_TIMEOUT_MS,
     });

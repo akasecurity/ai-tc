@@ -105,6 +105,18 @@ describe('runModTokenize', () => {
     expect(row.note).toBeNull();
   });
 
+  it('places a finding from a subagent row in the subagent', async () => {
+    seed('redact', { vault: false });
+    const whereOf = async (row: object) =>
+      (
+        JSON.parse((await tokenize({ text: `key ${SECRET}`, row })).stdout) as {
+          findings: { where: string }[];
+        }
+      ).findings.map((f) => f.where);
+    expect(await whereOf({ door: 'attachment', agentId: 'agent-7' })).toEqual(['subagent']);
+    expect(await whereOf({ door: 'attachment' })).toEqual(['attachment']);
+  });
+
   it('answers the rewrite when building the finding records throws', async () => {
     seed('redact', { vault: false });
     const toIso = Object.getOwnPropertyDescriptor(Date.prototype, 'toISOString')?.value as (

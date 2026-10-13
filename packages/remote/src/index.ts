@@ -1,7 +1,7 @@
 // The control-plane transport: the one OSS package that reaches a network, and
 // only the network a machine's own settings name.
 //
-// It is deliberately narrow. `createRemoteClient` speaks the eleven routes an
+// It is deliberately narrow. `createRemoteClient` speaks the twelve routes an
 // attached machine is scoped to and cannot express anything else; `send` is the
 // single module underneath that opens a socket. Nothing here decides WHETHER a
 // machine is attached, reads the credential, or holds a policy — those belong to
@@ -31,6 +31,16 @@ export { classifyRemoteFailure, statusOf } from './failure-kind.ts';
 // instead of each keeping a copy of the same six lines.
 export type { SharesSender, SharesSenderConnection, SharesSendResult } from './shares-sender.ts';
 export { createSharesSender, SHARES_FORWARD_TIMEOUT_MS } from './shares-sender.ts';
+// The same adapter for a scan's credential sightings: one named route, no URL.
+export type {
+  CredentialSightingsSender,
+  CredentialSightingsSenderConnection,
+  CredentialSightingsSendResult,
+} from './sightings-sender.ts';
+export {
+  createCredentialSightingsSender,
+  CREDENTIAL_SIGHTINGS_TIMEOUT_MS,
+} from './sightings-sender.ts';
 // `send` and its option/response types are deliberately NOT re-exported.
 //
 // Every guarantee `http.ts` makes is held by construction inside that module —
@@ -47,7 +57,7 @@ export { createSharesSender, SHARES_FORWARD_TIMEOUT_MS } from './shares-sender.t
 // only one a caller could step around: anything in the workspace could build a
 // `SendOptions.url` from a less-trusted source and put the credential on a
 // cleartext socket, with nothing here to refuse it. Narrowing the barrel closes
-// it by construction instead — the package's whole public surface is now eleven
+// it by construction instead — the package's whole public surface is now twelve
 // named routes against one endpoint, and there is no exported way to hand this
 // module an arbitrary URL. Nothing outside the package used `send`.
 export {

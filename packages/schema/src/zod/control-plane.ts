@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 import { EgressReconcile } from './egress-extraction.ts';
+import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
 import type { ActionTaken } from './finding.ts';
-import { ACTION_TAKEN_KEYS } from './finding.ts';
+import { ACTION_TAKEN_KEYS, VariableName } from './finding.ts';
 import { AuditEventInput, ToolCallInspection } from './meta.ts';
 import {
   DataClass,
@@ -1123,3 +1124,80 @@ export const StoredSightingKeys = SightingKeyResponse.and(
   z.object({ fetchedAtMs: z.number().int().nonnegative() }),
 );
 export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;
+
+// ─── Credential sightings (request: POST /v1/credential-sightings) ───────────
+
+/** The most sightings one request may carry; a larger set is sent in several. */
+export const CREDENTIAL_SIGHTINGS_BATCH_MAX = 500;
+
+/**
+ * Where the file a secret was found in sits, in place of its path:
+ *
+ *   project-file           inside the project and outside every dot-directory
+ *   project-dot-directory  inside a dot-directory of the project, such as `.github/`
+ *   home-dotfile           a dotfile, or a file in a dot-directory, of the home
+ *                          directory, outside any project below it
+ */
+export const SightingLocationClass = z.enum([
+  'project-file',
+  'project-dot-directory',
+  'home-dotfile',
+]);
+export type SightingLocationClass = z.infer<typeof SightingLocationClass>;
+
+/**
+ * The project a sighting was found in, as the Data Shares forward names it:
+ * `projectKey` is the digest `EgressIngestRequest.projectKey` carries, and
+ * `name` is the repository's `owner/repo` slug, or the project directory's
+ * basename when it has no remote.
+ */
+export const SightingProject = z
+  .object({
+    projectKey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'projectKey must be a 64-character lowercase hex digest'),
+    name: printable(256).min(1),
+  })
+  .strict()
+  .meta({ id: 'SightingProject' });
+export type SightingProject = z.infer<typeof SightingProject>;
+
+/**
+ * One secret a scan found, as its sighting token and descriptors.
+ *
+ * `token` is the only member derived from the value. `gitTracked` is true when
+ * the file lies inside a git working tree and no `.gitignore` rule matches it:
+ * a file git would commit. It is not read from the git index, so a file not yet
+ * added counts as tracked. Strict, so no path, excerpt or masked value can ride
+ * along.
+ */
+export const CredentialSighting = z
+  .object({
+    token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+    ruleId: printable(256).min(1),
+    category: z.literal('secret'),
+    variableName: VariableName.min(1).optional(),
+    locationClass: SightingLocationClass,
+    project: SightingProject,
+    gitTracked: z.boolean(),
+    seenAt: z.iso.datetime(),
+  })
+  .strict()
+  .meta({ id: 'CredentialSighting' });
+export type CredentialSighting = z.infer<typeof CredentialSighting>;
+
+/** `POST /v1/credential-sightings` — sightings one scan found, at most a batch at a time. */
+export const CredentialSightingsRequest = z
+  .object({
+    sightings: z.array(CredentialSighting).min(1).max(CREDENTIAL_SIGHTINGS_BATCH_MAX),
+    scanId: z.uuid().optional(),
+  })
+  .strict()
+  .meta({ id: 'CredentialSightingsRequest' });
+export type CredentialSightingsRequest = z.infer<typeof CredentialSightingsRequest>;
+
+/** `POST /v1/credential-sightings` — how many of the batch were accepted. A response parser. */
+export const CredentialSightingsAck = z.object({
+  accepted: z.number().int().nonnegative(),
+});
+export type CredentialSightingsAck = z.infer<typeof CredentialSightingsAck>;

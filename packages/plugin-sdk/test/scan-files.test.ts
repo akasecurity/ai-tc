@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   canonicalizeScanPath,
   isProtectedScanPath,
+  isSecretBearingFileSnapshot,
   protectedScanRoots,
   scanFileKind,
   SOURCE_EXTENSIONS,
@@ -129,5 +130,20 @@ describe('protected scan roots', () => {
     if (!existsSync(mixed)) ctx.skip('case-sensitive filesystem: ...IDE/ names no file');
     expect(canonicalizeScanPath(mixed)).toBe(canonicalizeScanPath(lower));
     expect(canonicalizeScanPath(mixed).endsWith(join('ide', '1.lock'))).toBe(true);
+  });
+});
+
+describe('isSecretBearingFileSnapshot', () => {
+  it.each([
+    [{ filePath: '/repo/.env', wholeFile: true }, true],
+    [{ filePath: '/repo/config/.env.local', wholeFile: true }, true],
+    [{ filePath: '/repo/.env', wholeFile: false }, false],
+    [{ filePath: '/repo/.env' }, false],
+    [{ filePath: '/repo/.env.ts', wholeFile: true }, false],
+    [{ filePath: '/repo/app.ts', wholeFile: true }, false],
+    [{ wholeFile: true }, false],
+    [undefined, false],
+  ])('%j → %s', (metadata, expected) => {
+    expect(isSecretBearingFileSnapshot(metadata)).toBe(expected);
   });
 });

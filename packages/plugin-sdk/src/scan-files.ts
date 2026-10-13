@@ -2,9 +2,8 @@
 // dotenv files secrets are kept in, and which paths are never read at all.
 //
 // `aka scan` (@akasecurity/local-ops fs-scan) reads every file that is not
-// protected, so it uses the protected-path half only. The worktree scanner
-// (@akasecurity/scanner walk) reads by `scanFileKind` and does not consult the
-// protected paths.
+// protected. The worktree scanner (@akasecurity/scanner walk) reads source and
+// secret-bearing files by `scanFileKind`, and also skips the protected paths.
 import { realpathSync } from 'node:fs';
 import { basename, extname, resolve, sep } from 'node:path';
 
@@ -44,6 +43,20 @@ export function scanFileKind(
   const lower = base.toLowerCase();
   if (lower === '.env' || lower === '.envrc' || lower.startsWith('.env.')) return 'secret-bearing';
   return 'other';
+}
+
+/**
+ * Whether a capture is a whole-file snapshot of a secret-bearing file. Such a
+ * capture is recorded locally and never forwarded to a control plane. Decided
+ * from the two fields that persist with the stored row, so a row read back
+ * later is judged the same way as the live capture.
+ */
+export function isSecretBearingFileSnapshot(
+  metadata: { filePath?: string | undefined; wholeFile?: boolean | undefined } | undefined,
+): boolean {
+  const filePath = metadata?.filePath;
+  if (metadata?.wholeFile !== true || filePath === undefined) return false;
+  return scanFileKind(basename(filePath)) === 'secret-bearing';
 }
 
 /**

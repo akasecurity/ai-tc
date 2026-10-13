@@ -1,5 +1,5 @@
-// Worktree scanner: walk source files under a root directory and run each
-// through the detect→record path the live hooks use. Idempotent two ways:
+// Worktree scanner: walk source and secret-bearing files under a root, running
+// each through the detect→record path the live hooks use. Idempotent two ways:
 // findings are deduped by content hash, and a scan-ledger row (path + mtime +
 // hash, keyed to the ruleset fingerprint) is kept for EVERY processed file —
 // including clean ones, which `persist: 'with-findings'` never records as
@@ -11,7 +11,7 @@
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
 import { existsSync, readFileSync } from 'node:fs';
-import { extname, isAbsolute, relative } from 'node:path';
+import { dirname, extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
@@ -415,6 +415,11 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
 // register has any use for one.
 const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
 
+// The config's data directory is `<akaHome>/data`.
+function akaHomeOf(config: PluginConfig): string | undefined {
+  return config.dataDir ? dirname(config.dataDir) : undefined;
+}
+
 async function scanDir(
   runtime: PluginRuntime,
   gateway: DataGateway,
@@ -502,6 +507,7 @@ async function scanDir(
   for (const file of walkSourceFiles({
     ...opts,
     rootDir,
+    akaHome: opts.akaHome ?? akaHomeOf(config),
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
     onRepositoryRoot: egress === null ? undefined : noteNestedRoot,
   })) {

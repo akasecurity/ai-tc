@@ -1,5 +1,5 @@
-// Working-tree file walker: yield source files under a root directory for
-// static code security scanning. Pure I/O — no detection logic — so it
+// Working-tree file walker: yield source and secret-bearing files under a root
+// directory for static security scanning. Pure I/O — no detection logic — so it
 // unit-tests without a runtime.
 //
 // Two ignore mechanisms with deliberately different semantics:
@@ -17,12 +17,17 @@
 // here and collectManifests (./manifests.ts) — shares one interpretation of
 // the on-disk ignore files instead of each re-implementing it.
 import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 
 import {
+  canonicalizeScanPath,
   childRel,
+  defaultDataDir,
   evaluateIgnore,
   type IgnoreLayer,
+  isProtectedScanPath,
+  protectedScanRoots,
   readIgnoreLayer,
   scanFileKind,
   SOURCE_EXTENSIONS,
@@ -80,7 +85,13 @@ export interface WalkedFileMeta {
 
 export interface WalkOptions {
   rootDir?: string;
+  // The source extensions to read. Secret-bearing files (`.env`, `.env.*`) are
+  // read whatever this holds.
   extensions?: ReadonlySet<string>;
+  // The OS home and AKA's home, whose credential paths are never read
+  // (`protectedScanRoots`). Default to `homedir()` and `defaultDataDir()`.
+  home?: string | undefined;
+  akaHome?: string | undefined;
   maxFileSizeBytes?: number;
   // Programmatic excludes in gitignore syntax, anchored at rootDir — the host's
   // counterpart to on-disk .akaignore files (skip semantics, same layer stack).
@@ -137,6 +148,9 @@ export interface TreeWalkOptions {
   // enters is reported: a SKIP_DIRS or .akaignore'd directory is never listed.
   // rootDir itself is never reported, because its repository is the walk's own.
   onRepositoryRoot?: ((relativeDir: string) => void) | undefined;
+  // Canonical paths (see `protectedScanRoots`) never listed or yielded, nor
+  // anything below them.
+  protectedRoots?: readonly string[] | undefined;
 }
 
 // Lazily discover every file under rootDir that survives the SKIP_DIRS floor
@@ -147,6 +161,10 @@ export interface TreeWalkOptions {
 export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generator<TreeFile> {
   const trackGitignore = opts.trackGitignore ?? false;
   const onRepositoryRoot = opts.onRepositoryRoot;
+  const protectedRoots = opts.protectedRoots ?? [];
+  // Compared on disk identity; yielded paths keep the caller's spelling.
+  const canonicalRoot = protectedRoots.length > 0 ? canonicalizeScanPath(rootDir) : rootDir;
+  if (isProtectedScanPath(canonicalRoot, protectedRoots)) return;
 
   // Host-supplied excludePatterns form the OUTERMOST skip layer: on-disk
   // .akaignore files are appended after it, so their negations win. Anchored at
@@ -165,6 +183,7 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
   // are addressed through, so it is threaded rather than recomputed.
   function* visit(
     dir: string,
+    dirCanonical: string,
     dirRel: string,
     markLayers: readonly IgnoreLayer[],
     skipLayers: readonly IgnoreLayer[],
@@ -201,6 +220,8 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
     for (const entry of dirents) {
       const name = entry.name;
       const fullPath = join(dir, name);
+      const canonical = dirCanonical === dir ? fullPath : join(dirCanonical, name);
+      if (isProtectedScanPath(canonical, protectedRoots)) continue;
 
       if (entry.isDirectory()) {
         const skipState = evaluateIgnore(dirSkipLayers, dirRel, name, true);
@@ -212,7 +233,14 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
         const dirIgnored =
           trackGitignore &&
           (inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, name, true) === 'ignored');
-        yield* visit(fullPath, childRel(dirRel, name), dirMarkLayers, dirSkipLayers, dirIgnored);
+        yield* visit(
+          fullPath,
+          canonical,
+          childRel(dirRel, name),
+          dirMarkLayers,
+          dirSkipLayers,
+          dirIgnored,
+        );
         continue;
       }
 
@@ -233,26 +261,32 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
     }
   }
 
-  yield* visit(rootDir, '', [], rootSkipLayers, false);
+  yield* visit(rootDir, canonicalRoot, '', [], rootSkipLayers, false);
 }
 
-// Lazily walk all source files under rootDir. Each file is read once and
-// yielded; callers stream through it to bound peak memory.
-//
-// (If the walker ever scans non-source files like .env, the .gitignore
-// mark-don't-skip stance becomes even more load-bearing — gitignored config is
-// exactly where secrets live.)
+// Lazily walk all source and secret-bearing files under rootDir. Each file is
+// read once and yielded; callers stream through it to bound peak memory.
+// Gitignored files are read too: local, untracked config is where secrets live.
 export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> {
   const rootDir = opts.rootDir ?? process.cwd();
   const extensions = opts.extensions ?? SOURCE_EXTENSIONS;
   const maxBytes = opts.maxFileSizeBytes ?? DEFAULT_MAX_BYTES;
 
+  let protectedRoots: readonly string[];
+  try {
+    protectedRoots = protectedScanRoots(opts.home ?? homedir(), opts.akaHome ?? defaultDataDir());
+  } catch {
+    // No home to resolve the protected set against: read nothing.
+    return;
+  }
+
   for (const file of walkTree(rootDir, {
     excludePatterns: opts.excludePatterns,
     trackGitignore: true,
     onRepositoryRoot: opts.onRepositoryRoot,
+    protectedRoots,
   })) {
-    if (scanFileKind(file.name, extensions) !== 'source') continue;
+    if (scanFileKind(file.name, extensions) === 'other') continue;
 
     let size: number;
     let mtime: Date;

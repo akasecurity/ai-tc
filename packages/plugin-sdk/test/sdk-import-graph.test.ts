@@ -19,6 +19,7 @@ const SDK_SYMBOLS = [
   'bundledDetections',
   'ruleProbeKey',
   'maskMatch',
+  'createInjectedVaultGlue',
 ] as const;
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');

@@ -195,23 +195,11 @@ export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';
-export type {
-  CreateVaultGlueOptions,
-  DetokenizeTextOptions,
-  DetokenizeTextResult,
-  ModelDerefGrantResolver,
-  SubstitutePointersResult,
-  TokenizeTextResult,
-  TokenizeValueMeta,
-  VaultCore,
-  VaultGlue,
-} from './tokenize.ts';
+export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,
   describePointerSafe,
   detokenizeText,
-  hasPointer,
-  POINTER_UNAVAILABLE_TEXT,
   substituteModelPointers,
   tokenizeText,
   tokenizeValue,
@@ -223,6 +211,17 @@ export type {
   CaptureInput,
   CaptureResult,
 } from './types.ts';
+export type {
+  DetokenizeTextOptions,
+  DetokenizeTextResult,
+  ModelDerefGrantResolver,
+  SubstitutePointersResult,
+  TokenizeTextResult,
+  TokenizeValueMeta,
+  VaultCore,
+  VaultGlue,
+} from './vault-glue.ts';
+export { createInjectedVaultGlue, hasPointer, POINTER_UNAVAILABLE_TEXT } from './vault-glue.ts';
 export { maskMatch } from '@akasecurity/detections';
 // The read-time token cost/rollup logic moved to `@akasecurity/schema` (pure, no
 // Node-API deps) so the OSS Activity surfaces + CLI/TUI can price tokens without

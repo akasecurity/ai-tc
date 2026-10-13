@@ -122,6 +122,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'contentHashOf',
   'createFindingLocator',
   'createGuardedScanner',
+  'createInjectedVaultGlue',
   'createIsolatedScanner',
   'createPluginRuntime',
   'createPolicyResolver',

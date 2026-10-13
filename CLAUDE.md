@@ -880,7 +880,8 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      subpath rather than off the index so the plugins' dashboard
                      launcher can reach it without inlining the bundled packs. It
                      imports node:child_process/os/path and nothing else.
-@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
+@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env;
+                     the credential sightings it finds leave through plugin-runtime)
 @akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
                      (the harness-agnostic core of the /aka:setup calibration →
                      triage → remediation flow: pure logic plus dependency-injected

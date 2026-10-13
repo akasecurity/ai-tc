@@ -37,8 +37,12 @@ import { isAlias, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
  */
 const TRAILING_COMMENTS = new WeakMap();
 
-/** More nodes than any real workflow expands to; a chain of aliases can multiply. */
-const MAX_NODES = 200_000;
+/**
+ * More nodes than any real workflow expands to; a chain of aliases can multiply.
+ * The largest workflow in this repository decodes to under 300, so this is about
+ * seventy times that, and a chain that reaches it is refused in milliseconds.
+ */
+const MAX_NODES = 20_000;
 
 /**
  * @param {unknown} value
@@ -50,19 +54,27 @@ export const isMapping = (value) =>
 /**
  * @param {unknown} node
  * @param {import('yaml').Document} document
- * @param {{ budget: number, open: Set<unknown> }} state
+ * @param {{ budget: number, open: Set<unknown>, resolution: object }} state
+ *   `resolution` is the one context every alias lookup shares, so the library
+ *   lists the document's anchors and aliases once instead of once per alias.
  * @returns {unknown}
  */
 function decode(node, document, state) {
+  // The assertions below are reached only on a refusal. This function runs once
+  // per decoded node, and an `expect` per node is the cost of the whole walk.
   state.budget -= 1;
-  expect(state.budget, 'the workflow expands to more nodes than any real one').toBeGreaterThan(0);
+  if (state.budget <= 0) {
+    expect(state.budget, 'the workflow expands to more nodes than any real one').toBeGreaterThan(0);
+  }
   if (node === null || node === undefined) return null;
   if (isAlias(node)) {
-    const target = node.resolve(document);
-    expect(target, `the alias *${node.source} names no anchor`).toBeDefined();
-    expect(state.open.has(target), `the alias *${node.source} refers to a node it is inside`).toBe(
-      false,
-    );
+    const target = node.resolve(document, state.resolution);
+    if (target === undefined) {
+      expect(target, `the alias *${node.source} names no anchor`).toBeDefined();
+    }
+    if (state.open.has(target)) {
+      expect(false, `the alias *${node.source} refers to a node it is inside`).toBe(true);
+    }
     return decode(target, document, state);
   }
   if (isScalar(node)) return node.value;
@@ -83,7 +95,7 @@ function decode(node, document, state) {
       const comments = {};
       const seen = new Set();
       for (const pair of node.items) {
-        const key = isAlias(pair.key) ? pair.key.resolve(document) : pair.key;
+        const key = isAlias(pair.key) ? pair.key.resolve(document, state.resolution) : pair.key;
         expect(
           isScalar(key) && typeof key.value === 'string',
           'a mapping key that is not a plain string — a number, a boolean, an empty key or a collection',
@@ -142,7 +154,11 @@ export function parseWorkflow(source) {
     'the workflow opens with a `%TAG` directive',
   ).toEqual(['!!']);
 
-  const root = decode(document.contents, document, { budget: MAX_NODES, open: new Set() });
+  const root = decode(document.contents, document, {
+    budget: MAX_NODES,
+    open: new Set(),
+    resolution: {},
+  });
   expect(isMapping(root), 'the workflow is not a mapping at its top level').toBe(true);
   return /** @type {Mapping} */ (root);
 }

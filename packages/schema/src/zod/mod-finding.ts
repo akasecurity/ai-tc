@@ -32,5 +32,9 @@ export const ModFinding = z
     where: ModFindingWhere,
     pointer: z.string().regex(POINTER_TOKEN_ANCHORED).optional(),
   })
+  .refine((f) => (f.action === 'vaulted') === (f.pointer !== undefined), {
+    path: ['pointer'],
+    message: 'pointer is present only for a vaulted finding, and a vaulted finding has one',
+  })
   .meta({ id: 'ModFinding' });
 export type ModFinding = z.infer<typeof ModFinding>;

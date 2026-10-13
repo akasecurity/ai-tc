@@ -26,8 +26,21 @@ describe('ModFinding', () => {
     expect(ModFinding.safeParse(bare).success).toBe(true);
   });
   it('refuses a record carrying a raw value or span', () => {
-    expect(ModFinding.safeParse({ ...valid, rawMatch: 'ghp_x' }).success).toBe(false);
+    const raw = ModFinding.safeParse({ ...valid, rawMatch: 'ghp_x' });
+    expect(raw.success).toBe(false);
+    expect(raw.error?.issues[0]?.code).toBe('unrecognized_keys');
     expect(ModFinding.safeParse({ ...valid, span: { start: 0, end: 4 } }).success).toBe(false);
+  });
+  it('refuses a vaulted finding with no pointer', () => {
+    const bare: Record<string, unknown> = { ...valid };
+    delete bare.pointer;
+    expect(ModFinding.safeParse(bare).success).toBe(false);
+  });
+  it('refuses a pointer on a finding that was not vaulted', () => {
+    expect(ModFinding.safeParse({ ...valid, action: 'blocked' }).success).toBe(false);
+  });
+  it('registers its schema id after the refinement', () => {
+    expect(ModFinding.meta()?.id).toBe('ModFinding');
   });
   it('refuses a pointer that is not a vault pointer', () => {
     expect(ModFinding.safeParse({ ...valid, pointer: 'ghp_realvalue' }).success).toBe(false);

@@ -64,7 +64,6 @@ function snapshotPath(home: string): string {
 
 async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   try {
-    await followSession($);
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
     if (home === undefined || home === '') return null;
     const path = snapshotPath(home);
@@ -147,6 +146,7 @@ async function takeFindings($: Dollar, incoming: readonly ViewFinding[]): Promis
 // that fails leaves the list as it was. Never throws.
 async function refreshFromFile($: Dollar): Promise<void> {
   try {
+    await followSession($);
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
     if (home === undefined || home === '') return;
     const sessionId = await $.session.id();
@@ -729,7 +729,8 @@ async function bandRender($: BandDollar, e: BandArgs[1], next: BandArgs[2]) {
 
 async function dismissBand($: BandDollar): Promise<void> {
   try {
-    dismissedBefore = await $.clock.now();
+    const newest = heldFindings().reduce((latest, f) => Math.max(latest, f.at), 0);
+    dismissedBefore = Math.max(await $.clock.now(), newest);
     await update($, findingsVersion, (version) => (version ?? 0) + 1);
   } catch {
     // The band stays as it was.

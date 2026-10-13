@@ -231,8 +231,8 @@ function fileOf(
 ): { set(text: string): void; session(id: string): void; id: string } {
   sessions += 1;
   const state = { id: `band-${String(sessions)}`, text: initial, stamp: 1 };
-  const pathOf = (): string =>
-    [HOME, '.aka', 'data', 'mod-findings', `${state.id}.jsonl`].join('/');
+  const first = state.id;
+  const pathOf = (): string => [HOME, '.aka', 'data', 'mod-findings', `${first}.jsonl`].join('/');
   mock.env(on, { HOME });
   on('session.id', () => ({ value: state.id }));
   on('fs.stat', (_$, e) =>
@@ -258,7 +258,6 @@ function fileOf(
     },
     session(id) {
       state.id = id;
-      state.text = '';
     },
   };
 }

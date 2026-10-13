@@ -31,7 +31,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner } from '@akasecurity/schema';
 
-import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
 
 // Which tool args carry user-authored text worth scanning, and whether that
 // text EXECUTES. `executable` no longer changes whether a redact escalates
@@ -133,6 +133,15 @@ export function decidePreToolUse(
   toolName: string,
   scanned: readonly ScannedField[],
 ): PreToolUseOutput {
+  // A field whose bounded scan did not finish denies the whole call, ahead of
+  // every other outcome. It is a `block` with no findings, so the loop below
+  // would add no rule for it and the call would be ALLOWED with a field
+  // nothing scanned. The deny is explicit: on this host an allow is a payload
+  // too, so there is no silence for a refusal to hide behind.
+  if (scanned.some(({ result }) => result.scanIncomplete !== undefined)) {
+    return { decision: 'deny', reason: tooLargeToScanMessage(`${toolName} call`) };
+  }
+
   const blockedRules = new Set<string>();
   const blockedReferences: BlockedDetectionRef[] = [];
   let escalated = false;

@@ -61,6 +61,15 @@ export function blockMessage(input: BlockMessageInput): string {
   ].join('\n');
 }
 
+// The refusal for a field the hook could not scan in the time it has: a field
+// at or above the large-input threshold whose bounded scan timed out or found
+// no worker to run it (`CaptureResult.scanIncomplete`). It names no rule —
+// none ran to completion — and offers no exception, because there is no
+// flagged value for one to approve. What the user can do is send less at once.
+export function tooLargeToScanMessage(subject: string): string {
+  return `This ${subject} is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.`;
+}
+
 // One trailing sentence for the redact/warn systemMessage branches: redacted
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when

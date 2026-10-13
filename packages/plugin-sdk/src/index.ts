@@ -42,7 +42,12 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
-export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
+export type {
+  BoundedScanRequest,
+  GuardedScanner,
+  GuardedScanOptions,
+  GuardedScanPartition,
+} from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
 export type { HookFailOpens } from './hook-fail-opens.ts';
 export {
@@ -86,6 +91,7 @@ export type {
   CompleteIsolatedScanOptions,
   IsolatedFailure,
   IsolatedProbeOutcome,
+  IsolatedScanJobOptions,
   IsolatedScanner,
   IsolatedScanOptions,
   IsolatedScanOutcome,
@@ -171,8 +177,20 @@ export {
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
-export type { CaptureOptions, DecisionOptions, DeferredCapture, PluginRuntime } from './runtime.ts';
-export { createPluginRuntime } from './runtime.ts';
+export type {
+  CaptureOptions,
+  DecisionOptions,
+  DeferredCapture,
+  LargeInputScanOptions,
+  PluginRuntime,
+  PluginRuntimeOptions,
+} from './runtime.ts';
+export {
+  createPluginRuntime,
+  LARGE_INPUT_SCAN_BUDGET_MS,
+  LARGE_INPUT_START_BUDGET_MS,
+  LARGE_INPUT_THRESHOLD_CHARS,
+} from './runtime.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';

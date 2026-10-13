@@ -67,6 +67,51 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+**One path fails CLOSED on purpose: a field too large to scan in time.** Every capture path
+that answers to a deadline builds its runtime with `largeInput`, so a field of
+`LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard deadline,
+and every bounded scan in one hook process — or one native-host request — draws on one
+deadline. Each sits inside whatever would otherwise answer for that path first:
+
+- **Claude Code and Codex** (`plugins/{claude-code,codex}/src/hooks/large-input.ts`): 6 s
+  from process start for UserPromptSubmit and PreToolUse, PostToolUse's existing 7 s
+  field-loop deadline — inside the host's 10 s.
+- **Antigravity PreToolUse** (`plugins/antigravity/src/hooks/large-input.ts`): 5.5 s from
+  process start, inside `runHookFailOpen`'s 8 s WATCHDOG rather than the host's 10 s,
+  because the watchdog resolves an undecided body with `{"decision":"allow"}` — a refusal
+  still being decided when it fires is printed as an allow.
+- **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
+  start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
+  dialects.
+- **The browser extension's native host** (`captureLargeInput` in
+  `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
+  capture, with a 500 ms worker start budget drawn from it, because `background.ts`
+  answers a relay the host has not answered within `RELAY_TIMEOUT_MS` (3 s) with an error,
+  and the content script lets the original message through on an error.
+
+A field whose bounded scan times out or finds no worker comes back as a `block` with
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
+UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
+explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
+withholds the output, and the native host answers `action: 'block'` with
+`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
+exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
+interrupted (§5), so without the bound a large enough field keeps the hook busy past
+whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
+those passes the call through unscanned, except Antigravity's kill, which denies it with no
+reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
+nothing else in this section changes: a throw, bad stdin, an unopenable store and a
+PostToolUse field the loop deadline never reached all still pass (silently, or with
+Antigravity's explicit allow), and a native host that does not answer at all still lets the
+message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
+a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
+rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
+and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
+worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
+it through the built native host — so every bundle that runs this path also has to SHIP the
+worker, since a missing one refuses every large field.
+
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
 fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
@@ -400,10 +445,10 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 
 Five properties are load-bearing and easy to break by accident:
 
-- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once. The one exception is the opt-in large-input bound (§1), and only on a path that answers to a deadline — a hook or the extension's native host: a field of `LARGE_INPUT_THRESHOLD_CHARS` or more is scanned in a worker whatever the ruleset, because that is the field whose in-process scan can outlast the host. A field below the threshold still pays nothing.
 - **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
-- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever. The large-input bound is the exception, and it is safe there for the reason it is not here: its start has its own budget (`LARGE_INPUT_START_BUDGET_MS`, or the native host's 500 ms) clipped to what is left of the caller's deadline, because that path quarantines nothing and names no culprit — a slow start costs one refused field, never a rule.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
 The first two are **counted, not timed** — a different claim from the fifth, which forbids an

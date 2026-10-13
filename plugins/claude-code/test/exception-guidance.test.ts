@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
   blockMessage,
   exceptionPointer,
+  tooLargeToolText,
+  tooLargeToScanMessage,
   withheldBanner,
   withheldToolText,
 } from '../src/exception-guidance.ts';
@@ -222,5 +224,29 @@ describe('withheldToolText', () => {
     // stdout may be genuine and visible right next to this text.
     expect(out).toContain('Bash stderr withheld');
     expect(out).not.toContain('Bash output withheld');
+  });
+});
+
+// A field whose bounded scan did not finish: nothing was flagged, so there is
+// no rule to name and no value an exception could approve.
+describe('tooLargeToScanMessage', () => {
+  it('says the input was blocked because it was too large to scan in time', () => {
+    expect(tooLargeToScanMessage('prompt')).toBe(
+      'This prompt is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.',
+    );
+    expect(tooLargeToScanMessage('Bash call')).toMatch(/^This Bash call is too large/);
+    expect(tooLargeToScanMessage('prompt')).not.toContain('aka exception');
+  });
+});
+
+describe('tooLargeToolText', () => {
+  it('names the withheld field and keeps the placeholder warning', () => {
+    const text = tooLargeToolText('Read', 'file.content');
+    expect(text).toMatch(/^\[AKA SECURITY\] Read file\.content withheld — too large to scan/);
+    // Same load-bearing sentence as a flagged withhold: this sits where real
+    // content was, and must never be written back over it.
+    expect(text).toContain('never write this notice back to a file');
+    expect(text).not.toContain('aka exception');
+    expect(tooLargeToolText('Bash')).toContain('Bash output withheld');
   });
 });

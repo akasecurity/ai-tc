@@ -22,12 +22,15 @@ import type { Readable, Writable } from 'node:stream';
 
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
+  LargeInputScanOptions,
   PluginConfig,
   ResolvedCodexProvider,
   ResolvedProvider,
 } from '@akasecurity/plugin-sdk';
 import {
   deriveWebCaptureState,
+  LARGE_INPUT_SCAN_BUDGET_MS,
+  LARGE_INPUT_THRESHOLD_CHARS,
   loadConfig,
   offersCaptureStatusReader,
   reportedCaptureDocumentForSite,
@@ -196,9 +199,45 @@ export type ConfigForTool = (tool: WebSourceTool | undefined) => PluginConfig;
 const defaultConfigForTool: ConfigForTool = (tool) =>
   loadConfig(undefined, resolveWebProvider(tool));
 
+// How long a prompt capture may spend on a bounded scan, counted from when this
+// host received the request. A prompt at or above the large-input threshold is
+// scanned in a worker under it, and one whose scan does not finish is REFUSED
+// (`CaptureResponse.scanIncomplete`) rather than judged: an in-process scan of a
+// large enough prompt outlasts background.ts's RELAY_TIMEOUT_MS (3 s), and a
+// relay that times out lets the original message through unscanned. The second
+// left before that cutoff covers the store write and the reply.
+export const CAPTURE_SCAN_DEADLINE_MS = 2_000;
+
+// How long a prompt capture waits for the scan worker to start. Far below the
+// SDK's LARGE_INPUT_START_BUDGET_MS, because it is spent from the 2 s above:
+// a start that slow would leave the scan itself almost nothing. Too slow a
+// start costs one refused prompt, never a rule.
+export const CAPTURE_START_BUDGET_MS = 500;
+
+/**
+ * The runtime's `largeInput` option for a prompt capture received at
+ * `receivedAt` (on `now`'s clock). The remaining time is read when the bounded
+ * scan starts, so the store open and config load before it are charged to the
+ * same deadline.
+ */
+export function captureLargeInput(
+  receivedAt: number,
+  now: () => number = () => performance.now(),
+): LargeInputScanOptions {
+  return {
+    thresholdChars: LARGE_INPUT_THRESHOLD_CHARS,
+    budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
+    startBudgetMs: CAPTURE_START_BUDGET_MS,
+    remainingMs: () => receivedAt + CAPTURE_SCAN_DEADLINE_MS - now(),
+  };
+}
+
+// `largeInputFor` is a seam for tests, which drive the refusal without racing a
+// real worker; the shipped host always takes the default.
 export async function handleRequest(
   request: HostRequest,
   configForTool: ConfigForTool = defaultConfigForTool,
+  largeInputFor: (receivedAt: number) => LargeInputScanOptions = captureLargeInput,
 ): Promise<HostResponse> {
   switch (request.type) {
     case 'ping': {
@@ -251,6 +290,9 @@ export async function handleRequest(
       }
     }
     case 'capture': {
+      // Taken before anything else, so the config load and the store open are
+      // charged to the deadline the relay is counting against.
+      const receivedAt = performance.now();
       const config = configForTool(request.tool);
       const result = await handleCapture(
         {
@@ -260,7 +302,23 @@ export async function handleRequest(
           metadata: { sessionId: request.sessionId },
         },
         config,
+        {},
+        { largeInput: largeInputFor(receivedAt) },
       );
+      // A refused prompt is an explicit block that names no rule, and says why
+      // on `scanIncomplete` so the content script shows a too-large banner
+      // rather than rule guidance for a value nothing flagged.
+      if (result.scanIncomplete !== undefined) {
+        return {
+          type: 'capture',
+          requestId: request.requestId,
+          ok: true,
+          action: 'block',
+          text: null,
+          ruleIds: [],
+          scanIncomplete: result.scanIncomplete,
+        };
+      }
       const ruleIds = [...new Set(result.findings.map((f) => f.ruleId))];
       // `text` rides back only when the content script needs it (see
       // CaptureResponse in protocol.ts): the masked rewrite for redact, null

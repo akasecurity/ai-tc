@@ -26,6 +26,7 @@ import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import type { PreToolUseOutput, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
@@ -209,6 +210,52 @@ describe('decidePreToolUse — STORED text is unrewritable here too', () => {
     expect(reason).toContain(NO_REWRITE_REDACT_NOTE);
     expect(reason).toContain('aka exception approve 9c04d7');
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
+  });
+});
+
+// A field whose bounded large-input scan did not finish is `block` with
+// `scanIncomplete` set and NO findings. Every other branch here keys the deny on
+// a flagged rule, so without its own check this field reads as clean and the
+// call is ALLOWED with a field nothing scanned.
+describe('decidePreToolUse — a field whose bounded scan did not finish', () => {
+  const refused = (scanIncomplete: 'timeout' | 'unavailable'): CaptureResult => ({
+    action: 'block',
+    text: null,
+    findings: [],
+    scanIncomplete,
+  });
+
+  it.each(['timeout', 'unavailable'] as const)(
+    'denies the call with the too-large reason (%s)',
+    (scanIncomplete) => {
+      expect(
+        decidePreToolUse('write_to_file', [
+          { spec: WRITE_CONTENT, result: refused(scanIncomplete) },
+        ]),
+      ).toEqual({
+        decision: 'deny',
+        reason: tooLargeToScanMessage('write_to_file call'),
+      });
+    },
+  );
+
+  it('denies with the too-large reason even beside a flagged field', () => {
+    // A refusal is checked FIRST: the flagged field's block guidance would
+    // offer an exception for a value while the other field was never scanned.
+    const text = `mail ${EMAIL}`;
+    const flagged: CaptureResult = {
+      action: 'block',
+      text: null,
+      findings: [finding('core-pii/email', EMAIL, text)],
+    };
+    const output = decidePreToolUse('run_command', [
+      { spec: RUN_COMMAND, result: flagged },
+      { spec: WRITE_CONTENT, result: refused('timeout') },
+    ]);
+    expect(output).toEqual({
+      decision: 'deny',
+      reason: tooLargeToScanMessage('run_command call'),
+    });
   });
 });
 

@@ -7,13 +7,19 @@
 // this module has no such side effect.
 
 import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
-import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
+import {
+  createPluginRuntime,
+  createVaultGlue,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  loadConfig,
+} from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
 import type { PointerDenyField, PointerField } from './pointer-substitution.ts';
@@ -247,7 +253,15 @@ export async function runPreToolUse(
   // policy bundle and could even evaluate two fields of one payload under
   // different policy snapshots. We own its lifetime here and close it in the
   // `finally` below.
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts). The mod's helper is a process of its own and
+  // takes the same bound on its own clock; a helper the mod's timeout ends first
+  // answers nothing, and the call then reaches the command hook and this bound.
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
 
   const kind = inputEventKind(toolName);
   // The tool NAME rides in the metadata (never its arguments — metadata is
@@ -304,6 +318,9 @@ export async function runPreToolUse(
         },
       );
       scanned.push({ spec, text, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();
@@ -386,6 +403,8 @@ export async function runPreToolUse(
 // directory could plant one for a call the helper never saw. So EVERY scanned
 // field, the data fields as well as the ones that execute, is looked at again,
 // writing and spending nothing:
+//   - a field at or above the large-input threshold is never looked at here, so
+//     the note does not hold for a call carrying one (see the guard below);
 //   - a vault pointer left in any of them was never decided (the helper denies an
 //     ungranted one and dereferences a granted one), so the note does not hold;
 //   - a value the policy enforces (block or redact) may be there only if the note
@@ -406,6 +425,12 @@ async function noteStillHolds(
     for (const spec of fields) {
       const text = fieldText(spec, toolInput);
       if (text === undefined || text === '') continue;
+      // The re-check below scans in-process with no deadline, and a hook the host
+      // kills for running long lets the call through unscanned. A large field is
+      // left to the pipeline, whose bounded scan refuses what it cannot finish
+      // (see large-input.ts). The same length the runtime compares: shielding a
+      // pointer keeps a text's length.
+      if (text.length >= LARGE_INPUT_THRESHOLD_CHARS) return false;
       if (text.matchAll(pointerTokenScanner()).next().done !== true) return false;
       texts.push(text);
     }

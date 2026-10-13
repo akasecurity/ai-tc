@@ -2,8 +2,11 @@ import type { MatchResult } from '@akasecurity/detections';
 import { scan } from '@akasecurity/detections';
 import type { DetectionCategory, Rule } from '@akasecurity/schema';
 
+import type { BoundedScanRequest, GuardedScanner, GuardedScanPartition } from './guarded-scan.ts';
+import { createGuardedScanner } from './guarded-scan.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { bundledDetections } from './rule-packs.ts';
+import { ruleProbeKey } from './rule-quarantine.ts';
 
 /**
  * One secret span in a text. `value` is the span's text when a single match
@@ -66,4 +69,69 @@ export function findSecretSpans(text: string): SecretSpan[] {
   const shielded = shieldPointers(text);
   const matches = dropShieldedFindings(scan(shielded.text, bundledSecretRules()), shielded.spans);
   return disjointSecretSpans(text, matches);
+}
+
+/**
+ * The secret-category rules to scan with: `installed` (the machine's effective
+ * ruleset beyond the compiled-in packs) and every bundled secret rule, one per
+ * id with an installed copy first. A regex rule that is not a bundled pattern is
+ * `unverified` and only ever runs under the bounded scan.
+ */
+export function secretRulePartition(installed: readonly Rule[]): GuardedScanPartition {
+  const bundled = bundledSecretRules();
+  const bundledPatterns = new Set(bundled.map(ruleProbeKey));
+  const byId = new Map<string, Rule>();
+  for (const rule of [...installed, ...bundled]) {
+    if (rule.category === 'secret' && !byId.has(rule.id)) byId.set(rule.id, rule);
+  }
+  const verified: Rule[] = [];
+  const unverified: Rule[] = [];
+  for (const rule of byId.values()) {
+    if (rule.matcher.type === 'regex' && !bundledPatterns.has(ruleProbeKey(rule))) {
+      unverified.push(rule);
+    } else {
+      verified.push(rule);
+    }
+  }
+  return { verified, unverified };
+}
+
+export interface SecretSpanScanner {
+  /** The secret spans in `text`. Throws when the scan cannot finish. */
+  find(text: string): Promise<SecretSpan[]>;
+  close(): Promise<void>;
+}
+
+const NO_VERDICT_STORE = { setRuleProbeVerdict: (): Promise<void> => Promise.resolve() };
+
+const DEFAULT_SECRET_SCAN_BOUND: BoundedScanRequest = { budgetMs: 1_000, startBudgetMs: 1_000 };
+
+/**
+ * A scanner over `partition`: in-process when every rule is verified, and
+ * otherwise the whole ruleset in a worker under `bound`.
+ */
+export function createSecretSpanScanner(
+  partition: GuardedScanPartition,
+  bound: BoundedScanRequest = DEFAULT_SECRET_SCAN_BOUND,
+): SecretSpanScanner {
+  let guarded: GuardedScanner | undefined;
+  return {
+    async find(text) {
+      const shielded = shieldPointers(text);
+      let matches: MatchResult[];
+      if (partition.unverified.length === 0) {
+        matches = scan(shielded.text, partition.verified);
+      } else {
+        // A bounded scan never quarantines, so the verdict store is never written.
+        guarded ??= createGuardedScanner(partition, NO_VERDICT_STORE);
+        const outcome = await guarded.scanBounded(shielded.text, undefined, bound);
+        if (outcome.status !== 'ok') throw new Error(`secret scan ${outcome.status}`);
+        matches = outcome.findings;
+      }
+      return disjointSecretSpans(text, dropShieldedFindings(matches, shielded.spans));
+    },
+    async close() {
+      await guarded?.close();
+    },
+  };
 }

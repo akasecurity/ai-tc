@@ -5,6 +5,7 @@ import type {
   SightingKeys,
 } from '@akasecurity/persistence';
 import {
+  captureWireId,
   createKeyProvider,
   dataDir as dataDirOf,
   keysDir,
@@ -14,10 +15,18 @@ import {
   SecretVault,
   sightingToken,
 } from '@akasecurity/persistence';
-import type { SecretSpan } from '@akasecurity/plugin-sdk';
-import { findSecretSpans } from '@akasecurity/plugin-sdk';
-import type { CaptureSighting, IngestEvent } from '@akasecurity/schema';
+import type { GuardedScanPartition, SecretSpan, SecretSpanScanner } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  contentHashOf,
+  createSecretSpanScanner,
+  secretRulePartition,
+} from '@akasecurity/plugin-sdk';
+import type { CaptureSighting, IngestEvent, Rule } from '@akasecurity/schema';
 import { pointerTokenScanner } from '@akasecurity/schema';
+
+import { StandaloneDataGateway } from '../standalone-gateway.ts';
+import { createPolicyStore } from './policy-store.ts';
 
 /** What a secret span becomes when it cannot be turned into a sighting token. */
 export const FAIL_CLOSED_MARKER = '[REDACTED:SECRET]';
@@ -36,7 +45,19 @@ export interface OutboundEncoderDeps {
   readKeys: () => SightingKeys | undefined;
   /** Opened only for content holding a secret pointer, and closed after it. */
   openVault: () => { vault: PointerFingerprinter; close(): void };
-  findSpans?: (text: string) => SecretSpan[];
+  /**
+   * The machine's effective detection rules beyond the compiled-in packs; its
+   * secret-category rules are scanned with the bundled ones. A rejection holds
+   * the capture.
+   */
+  loadRules: () => Promise<readonly Rule[]>;
+  createScanner?: (partition: GuardedScanPartition) => SecretSpanScanner;
+}
+
+/** The inputs a capture's wire id is derived from, beside its content hash. */
+export interface CaptureIdentity {
+  sessionId: string | null;
+  filePath: string | null;
 }
 
 export interface EncodedContent {
@@ -45,9 +66,15 @@ export interface EncodedContent {
 }
 
 export interface OutboundEncoder {
-  encodeContent(content: string): Promise<EncodedContent>;
-  /** `event` itself when nothing changes; otherwise a copy with encoded content and sightings. */
-  encodeEvent(event: IngestEvent): Promise<IngestEvent>;
+  /** Undefined when the capture must be held rather than sent. */
+  encodeContent(content: string): Promise<EncodedContent | undefined>;
+  /**
+   * The event to send: encoded content, its sightings, and a content hash and
+   * wire id derived from the encoded content and `identity` (by default the
+   * event's own session and file path). `event` itself when nothing changes;
+   * undefined when the capture must be held rather than sent.
+   */
+  encodeEvent(event: IngestEvent, identity?: CaptureIdentity): Promise<IngestEvent | undefined>;
 }
 
 interface Replacement {
@@ -89,15 +116,41 @@ function valueReplacement(span: SecretSpan, key: SightingKey | undefined): Repla
  * the vault's audited fingerprint path to the token of its value.
  *
  * Fails closed and never throws: with no key, or on any fault, a span becomes
- * {@link FAIL_CLOSED_MARKER}, and a failed scan replaces the whole content with it.
+ * {@link FAIL_CLOSED_MARKER}, and a failed scan replaces the whole content with
+ * it. When the effective rules cannot be loaded the capture is held instead.
  */
 export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncoder {
-  const findSpans = deps.findSpans ?? findSecretSpans;
+  const createScanner = deps.createScanner ?? ((p) => createSecretSpanScanner(p));
+  let partition: GuardedScanPartition | undefined;
 
-  async function encodeContent(content: string): Promise<EncodedContent> {
+  async function loadPartition(): Promise<GuardedScanPartition | undefined> {
+    try {
+      partition ??= secretRulePartition(await deps.loadRules());
+      return partition;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function findSpans(rules: GuardedScanPartition, content: string): Promise<SecretSpan[]> {
+    const scanner = createScanner(rules);
+    try {
+      return await scanner.find(content);
+    } finally {
+      try {
+        await scanner.close();
+      } catch {
+        // Releasing the worker is cleanup; the spans stand.
+      }
+    }
+  }
+
+  async function encodeContent(content: string): Promise<EncodedContent | undefined> {
+    const rules = await loadPartition();
+    if (rules === undefined) return undefined;
     try {
       const key = currentKey(deps);
-      const replacements: Replacement[] = findSpans(content).map((span) =>
+      const replacements: Replacement[] = (await findSpans(rules, content)).map((span) =>
         valueReplacement(span, key),
       );
 
@@ -153,7 +206,7 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
           at = replacement.end;
           const { sighting } = resolved;
           if (sighting !== undefined) {
-            sightings.set(`${sighting.token}\u0000${sighting.ruleId}`, sighting);
+            sightings.set(`${sighting.token} ${sighting.ruleId}`, sighting);
           }
         }
       } finally {
@@ -171,14 +224,31 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
 
   return {
     encodeContent,
-    async encodeEvent(event) {
-      const { content, sightings } = await encodeContent(event.content);
+    async encodeEvent(event, identity) {
+      const encoded = await encodeContent(event.content);
+      if (encoded === undefined) return undefined;
+      const { content, sightings } = encoded;
       const carried = event.metadata?.sightings !== undefined;
       if (content === event.content && sightings.length === 0 && !carried) return event;
+      // Encoded content carries its own hash, and the wire id is derived from
+      // that, so nothing sent is a function of the raw text.
+      const contentHash = contentHashOf(content);
+      const { sessionId, filePath } = identity ?? {
+        sessionId: event.metadata?.sessionId ?? null,
+        filePath: event.metadata?.filePath ?? null,
+      };
+      const id = captureWireId(sessionId, contentHash, filePath);
       const rest = { ...event.metadata };
       delete rest.sightings;
       const metadata = sightings.length === 0 ? rest : { ...rest, sightings };
-      return { ...event, content, metadata };
+      const keepsNoMetadata = event.metadata === undefined && sightings.length === 0;
+      return {
+        ...event,
+        id,
+        contentHash,
+        content,
+        ...(keepsNoMetadata ? {} : { metadata }),
+      };
     },
   };
 }
@@ -197,8 +267,13 @@ export function storeVault(db: LocalDatabase, base: string): PointerFingerprinte
  * `~/.aka` root `base`. The store is opened only for content holding a secret
  * pointer, unless `db` is an already-open store to use instead.
  */
-export function createStoreOutboundEncoder(base: string, db?: LocalDatabase): OutboundEncoder {
+export function createStoreOutboundEncoder(
+  base: string,
+  opts: { loadRules: () => Promise<readonly Rule[]>; db?: LocalDatabase | undefined },
+): OutboundEncoder {
+  const { db } = opts;
   return createOutboundEncoder({
+    loadRules: opts.loadRules,
     readKeys: () => readSightingKeys(base),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };
@@ -216,4 +291,20 @@ export function createStoreOutboundEncoder(base: string, db?: LocalDatabase): Ou
       }
     },
   });
+}
+
+/**
+ * The effective rules beyond the compiled-in packs, read as the attached
+ * gateway composes them: the local store's installed snapshot first, then the
+ * cached organization bundle.
+ */
+export async function storeEffectiveRules(dataDir: string): Promise<readonly Rule[]> {
+  const local = new StandaloneDataGateway(dataDir, bundledDetections());
+  try {
+    const bundle = await local.getPolicyBundle();
+    const cached = await createPolicyStore(dataDir).read();
+    return [...(bundle.rules ?? []), ...(cached?.bundle.rules ?? [])];
+  } finally {
+    await local.close();
+  }
 }

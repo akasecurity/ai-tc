@@ -19,6 +19,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { contentHashOf } from '@akasecurity/plugin-sdk';
 import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type {
   AttachedCredentialV2,
@@ -2352,5 +2353,90 @@ describe('runHistorySync — secrets on the capture lane', () => {
     });
 
     expect(l.captures.map((c) => c.content)).toEqual(['encoded']);
+  });
+
+  it('sends neither the raw content hash nor an id derived from it, and resends under one id', async () => {
+    attach({ grantFor: ENDPOINT });
+    storeKey(keyOf(2, 2));
+    seedCaptures([{ id: 'cap-only', content: value }]);
+    const attempts: IngestEvent[] = [];
+    const settling = (settled: boolean) => (events: readonly IngestEvent[]) => {
+      attempts.push(...events);
+      return Promise.resolve({ settled: settled ? events.length : 0 });
+    };
+    await run({ sendBatch: sendBatchOk, sendCaptures: settling(false) });
+    await run({ sendBatch: sendBatchOk, sendCaptures: settling(true) });
+
+    expect(attempts).toHaveLength(2);
+    const [sent, resent] = attempts;
+    expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
+    expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
+    expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
+    expect(sent?.id).toBe(captureWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
+    expect(resent?.id).toBe(sent?.id);
+  });
+
+  it('tokenises a stored value only an installed secret rule matches', async () => {
+    attach({ grantFor: ENDPOINT });
+    const key = keyOf(5, 5);
+    storeKey(key);
+    const installedValue = ['ACME', 'TOK', '3'.repeat(10)].join('');
+    ledger((db) => {
+      db.installedPacks.recordInventory([
+        {
+          namespace: 'acme',
+          packId: 'internal',
+          version: '1.0.0',
+          name: 'Internal',
+          rules: [
+            {
+              specVersion: 1,
+              id: 'internal/token',
+              name: 'Internal token',
+              category: 'secret',
+              severity: 'high',
+              matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+            },
+          ],
+        },
+      ]);
+    });
+    seedCaptures([{ id: 'cap-i', content: `k ${installedValue}` }]);
+    const l = collect();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(JSON.stringify(l.captures)).not.toContain(installedValue);
+    expect(l.captures[0]?.content).toBe(`k ${expectedToken(key, installedValue)}`);
+  });
+
+  it('holds every capture owed when the encoder cannot encode', async () => {
+    attach({ grantFor: ENDPOINT });
+    let attempts = 0;
+    seedCaptures([
+      { id: 'cap-h1', content: 'one' },
+      { id: 'cap-h2', content: 'two' },
+    ]);
+    const l = collect();
+
+    await run({
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+      encoder: {
+        encodeContent: () => Promise.resolve(undefined),
+        encodeEvent: () => {
+          attempts += 1;
+          return Promise.resolve(undefined);
+        },
+      },
+    });
+
+    expect(attempts).toBe(1);
+    expect(l.captures).toEqual([]);
+    expect(
+      ledger((db) => db.historySync.pendingCaptureRows(10, ALL))
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['cap-h1', 'cap-h2']);
   });
 });

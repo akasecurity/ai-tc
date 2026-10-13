@@ -4,12 +4,14 @@ import { join } from 'node:path';
 
 import type { SightingKey } from '@akasecurity/persistence';
 import {
+  captureWireId,
   createSightingKeyStore,
   dataDir as dataDirOf,
   keysDir as keysDirOf,
 } from '@akasecurity/persistence';
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
-import type { IngestBatch, IngestEvent } from '@akasecurity/schema';
+import { contentHashOf } from '@akasecurity/plugin-sdk';
+import type { IngestBatch, IngestEvent, PolicyBundle, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
@@ -37,6 +39,8 @@ const passthrough: ForwardPolicy = {
 };
 
 interface Seen {
+  bundle: () => Promise<PolicyBundle>;
+  forwards: number;
   bodies: string[];
   local: IngestEvent[];
   owed: number;
@@ -55,6 +59,7 @@ function quietLocal(seen: Seen): AttachedDataGatewayDeps['local'] {
     markCaptureOwed: () => {
       seen.owed += 1;
     },
+    getPolicyBundle: () => seen.bundle(),
   } as unknown as AttachedDataGatewayDeps['local'];
 }
 
@@ -96,17 +101,39 @@ function build(seen: Seen, overrides: Partial<AttachedDataGatewayDeps> = {}): At
   });
 }
 
-const emptySeen = (): Seen => ({ bodies: [], local: [], owed: 0, delivered: 0 });
+const bundleOf = (rules: Rule[]): PolicyBundle => ({
+  version: 'v',
+  policies: [],
+  rules,
+  customKeywords: [],
+  fetchedAt: '2026-01-01T00:00:00.000Z',
+});
+
+const emptySeen = (): Seen => ({
+  bundle: () => Promise.resolve(bundleOf([])),
+  forwards: 0,
+  bodies: [],
+  local: [],
+  owed: 0,
+  delivered: 0,
+});
+
+const counting = (seen: Seen): ForwardPolicy => ({
+  run: <T>(op: () => Promise<T>, opts?: { decisionPath?: boolean }) => {
+    seen.forwards += 1;
+    return passthrough.run(op, opts);
+  },
+});
 
 const capture = (content: string): CaptureRecord => ({
   event: {
-    id: '00000000-0000-4000-8000-0000000000a1',
+    id: captureWireId('sess-9', contentHashOf(content), null),
     sourceTool: 'claude-code',
     kind: 'prompt',
     occurredAt: '2026-10-01T10:00:00.000Z',
-    contentHash: 'c'.repeat(64),
+    contentHash: contentHashOf(content),
     content,
-    metadata: { repo: 'org/api' },
+    metadata: { sessionId: 'sess-9', repo: 'org/api' },
   },
   findings: [],
   scopeKey: KEY,
@@ -131,6 +158,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
       `deploy with ${expectedToken(key, value)} and mail ${emailShaped()}`,
     );
     expect(sent?.metadata).toEqual({
+      sessionId: 'sess-9',
       repo: 'org/api',
       sightings: [
         { token: expectedToken(key, value), ruleId: 'secrets/github-pat', category: 'secret' },
@@ -157,7 +185,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     await build(seen).recordCapture(capture(`x ${value} y`));
     const sent = (JSON.parse(seen.bodies[0] ?? '{}') as IngestBatch).events[0];
     expect(sent?.content).toBe(`x ${FAIL_CLOSED_MARKER} y`);
-    expect(sent?.metadata).toEqual({ repo: 'org/api' });
+    expect(sent?.metadata).toEqual({ sessionId: 'sess-9', repo: 'org/api' });
   });
 
   it('never throws into the session when the encoder fails, and owes the row', async () => {
@@ -178,5 +206,53 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     const record = capture('nothing to see');
     await build(seen).recordCapture(record);
     expect(seen.bodies[0]).toBe(JSON.stringify({ events: [record.event] }));
+  });
+
+  it('sends neither the raw content hash nor an id derived from it', async () => {
+    storeKey(keyOf(1, 6));
+    const seen = emptySeen();
+    const record = capture(value);
+    await build(seen).recordCapture(record);
+    const sent = (JSON.parse(seen.bodies[0] ?? '{}') as IngestBatch).events[0];
+    expect(seen.bodies[0]).not.toContain(contentHashOf(value));
+    expect(sent?.id).not.toBe(record.event.id);
+    expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
+    expect(sent?.id).toBe(captureWireId('sess-9', contentHashOf(sent?.content ?? ''), null));
+  });
+
+  it('tokenises a value only an installed secret rule matches', async () => {
+    const key = keyOf(4, 4);
+    storeKey(key);
+    const seen = emptySeen();
+    const installedValue = ['ACME', 'TOK', '9'.repeat(10)].join('');
+    seen.bundle = () =>
+      Promise.resolve(
+        bundleOf([
+          {
+            specVersion: 1,
+            id: 'acme/internal-token',
+            name: 'Internal token',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+          },
+        ]),
+      );
+    await build(seen).recordCapture(capture(`x ${installedValue} y`));
+    expect(seen.bodies[0]).not.toContain(installedValue);
+    expect(seen.bodies[0]).toContain(expectedToken(key, installedValue));
+    expect(seen.bodies[0]).toContain('acme/internal-token');
+  });
+
+  it('holds the capture as owed, without a forward, when the rules cannot be loaded', async () => {
+    storeKey(keyOf(1, 7));
+    const seen = emptySeen();
+    seen.bundle = () => Promise.reject(new Error('store unreadable'));
+    await expect(
+      build(seen, { forward: counting(seen) }).recordCapture(capture(`x ${value}`)),
+    ).resolves.toBeUndefined();
+    expect(seen.bodies).toEqual([]);
+    expect(seen.forwards).toBe(0);
+    expect(seen.owed).toBe(1);
   });
 });

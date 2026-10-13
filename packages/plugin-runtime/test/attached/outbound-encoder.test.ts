@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,10 +13,15 @@ import {
   SecretVault,
   UNAVAILABLE,
 } from '@akasecurity/persistence';
-import type { IngestEvent } from '@akasecurity/schema';
+import { captureWireId } from '@akasecurity/persistence';
+import type { SecretSpan } from '@akasecurity/plugin-sdk';
+import { contentHashOf } from '@akasecurity/plugin-sdk';
+import type { IngestEvent, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import type {
+  OutboundEncoder,
   OutboundEncoderDeps,
   PointerFingerprinter,
 } from '../../src/attached/outbound-encoder.ts';
@@ -37,18 +42,39 @@ import {
 const pointerOf = (category: string, fill: string): string =>
   `[[aka:${category}:AE.${fill.repeat(26)}.${'B'.repeat(16)}]]`;
 
-function encoderWith(
+function must<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('expected the capture to be encoded, not held');
+  return value;
+}
+
+const noInstalledRules = (): Promise<readonly Rule[]> => Promise.resolve([]);
+
+function rawEncoderWith(
   key: SightingKey | undefined,
   overrides: Partial<OutboundEncoderDeps> = {},
-): ReturnType<typeof createOutboundEncoder> {
+): OutboundEncoder {
   return createOutboundEncoder({
     readKeys: () => (key === undefined ? undefined : keysOf(key)),
     openVault: () => {
       throw new Error('no vault in this test');
     },
+    loadRules: noInstalledRules,
     ...overrides,
   });
 }
+
+function encoderWith(key: SightingKey | undefined, overrides: Partial<OutboundEncoderDeps> = {}) {
+  const encoder = rawEncoderWith(key, overrides);
+  return {
+    encodeContent: async (text: string) => must(await encoder.encodeContent(text)),
+    encodeEvent: async (event: IngestEvent) => must(await encoder.encodeEvent(event)),
+  };
+}
+
+const scannerOf = (find: (text: string) => Promise<SecretSpan[]>) => () => ({
+  find,
+  close: () => Promise.resolve(),
+});
 
 describe('outbound encoder: values', () => {
   const value = patShaped(17);
@@ -106,18 +132,49 @@ describe('outbound encoder: values', () => {
   it('sends the marker for a span no single value covers', async () => {
     const text = 'xx 0123456789 yy';
     const result = await encoderWith(keyOf(1, 7), {
-      findSpans: () => [{ start: 3, end: 13, ruleId: 'r', category: 'secret', value: undefined }],
+      createScanner: scannerOf(() =>
+        Promise.resolve([{ start: 3, end: 13, ruleId: 'r', category: 'secret', value: undefined }]),
+      ),
     }).encodeContent(text);
     expect(result.content).toBe(`xx ${FAIL_CLOSED_MARKER} yy`);
   });
 
   it('replaces the whole content with the marker when the scan fails', async () => {
     const result = await encoderWith(keyOf(1, 8), {
-      findSpans: () => {
-        throw new Error('scan fault');
-      },
+      createScanner: scannerOf(() => Promise.reject(new Error('scan fault'))),
     }).encodeContent(`keep ${value} out`);
     expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
+  });
+
+  it('holds the capture when the effective rules cannot be loaded', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 8), {
+      loadRules: () => Promise.reject(new Error('store unreadable')),
+    });
+    await expect(encoder.encodeContent(`keep ${value} out`)).resolves.toBeUndefined();
+  });
+
+  it('tokenises a value only an installed secret rule matches', async () => {
+    const key = keyOf(3, 3);
+    const installedValue = ['ACME', 'TOK', '4'.repeat(10)].join('');
+    const installed: Rule = {
+      specVersion: 1,
+      id: 'acme/internal-token',
+      name: 'Internal token',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+    };
+    const result = await encoderWith(key, {
+      loadRules: () => Promise.resolve([installed]),
+    }).encodeContent(`a ${installedValue} b`);
+    expect(result.content).toBe(`a ${expectedToken(key, installedValue)} b`);
+    expect(result.sightings).toEqual([
+      {
+        token: expectedToken(key, installedValue),
+        ruleId: 'acme/internal-token',
+        category: 'secret',
+      },
+    ]);
   });
 
   it('lists a repeated value once', async () => {
@@ -214,13 +271,41 @@ describe('outbound encoder: vault pointers', () => {
 
 describe('outbound encoder: events', () => {
   const event = (content: string, metadata?: IngestEvent['metadata']): IngestEvent => ({
-    id: '00000000-0000-4000-8000-000000000001',
+    id: captureWireId(metadata?.sessionId ?? null, contentHashOf(content), null),
     sourceTool: 'claude-code',
     kind: 'prompt',
     occurredAt: '2026-10-01T10:00:00.000Z',
-    contentHash: 'h',
+    contentHash: contentHashOf(content),
     content,
     ...(metadata === undefined ? {} : { metadata }),
+  });
+
+  it('never sends the hash of the raw content, nor an id derived from it', async () => {
+    const value = patShaped(37);
+    const raw = event(value, { sessionId: 'sess-1' });
+    const encoded = await encoderWith(keyOf(2, 4)).encodeEvent(raw);
+    expect(encoded.contentHash).not.toBe(contentHashOf(value));
+    expect(encoded.contentHash).toBe(contentHashOf(encoded.content));
+    expect(encoded.id).not.toBe(raw.id);
+    expect(encoded.id).toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
+    expect(JSON.stringify(encoded)).not.toContain(contentHashOf(value));
+  });
+
+  it('derives the same wire id on every encoding of a row, from the identity it is given', async () => {
+    const value = patShaped(43);
+    const raw = event(`p ${value}`, { sessionId: 'sess-2', filePath: 'a.ts' });
+    const encoder = rawEncoderWith(keyOf(2, 5));
+    const first = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
+    const again = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
+    expect(again.id).toBe(first.id);
+    expect(first.id).toBe(captureWireId('sess-2', contentHashOf(first.content), ''));
+  });
+
+  it('holds an event when the effective rules cannot be loaded', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 2), {
+      loadRules: () => Promise.reject(new Error('store unreadable')),
+    });
+    await expect(encoder.encodeEvent(event('anything'))).resolves.toBeUndefined();
   });
 
   it('returns the same event when nothing needs encoding', async () => {
@@ -250,6 +335,11 @@ describe('outbound encoder: events', () => {
   });
 });
 
+const encoderOver = (base: string) => {
+  const encoder = createStoreOutboundEncoder(base, { loadRules: noInstalledRules });
+  return { encodeContent: async (text: string) => must(await encoder.encodeContent(text)) };
+};
+
 describe('createStoreOutboundEncoder', () => {
   let base: string;
 
@@ -258,7 +348,7 @@ describe('createStoreOutboundEncoder', () => {
   });
 
   afterEach(() => {
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('resolves a vaulted secret through the audited path, never logging the value', async () => {
@@ -284,7 +374,7 @@ describe('createStoreOutboundEncoder', () => {
       if (typeof minted !== 'string') throw new Error('expected a pointer');
 
       const log = vi.spyOn(console, 'log');
-      const result = await createStoreOutboundEncoder(base).encodeContent(`use ${minted}`);
+      const result = await encoderOver(base).encodeContent(`use ${minted}`);
       expect(log).not.toHaveBeenCalled();
       log.mockRestore();
 
@@ -313,7 +403,7 @@ describe('createStoreOutboundEncoder', () => {
       key: materialOf(key),
       fetchedAtMs: 1,
     });
-    const result = await createStoreOutboundEncoder(base).encodeContent(pointerOf('secret', 'D'));
+    const result = await encoderOver(base).encodeContent(pointerOf('secret', 'D'));
     expect(result.content).toBe(FAIL_CLOSED_MARKER);
   });
 });

@@ -28,12 +28,12 @@ import {
   scopeVerdict,
 } from '@akasecurity/schema';
 
-import { rebuildCapture } from './capture-rebuild.ts';
+import { captureIdentityOf, rebuildCapture } from './capture-rebuild.ts';
 import { isForwardPaused, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
-import type { OutboundEncoder } from './outbound-encoder.ts';
-import { createStoreOutboundEncoder } from './outbound-encoder.ts';
+import type { CaptureIdentity, OutboundEncoder } from './outbound-encoder.ts';
+import { createStoreOutboundEncoder, storeEffectiveRules } from './outbound-encoder.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 
 /**
@@ -384,7 +384,12 @@ export async function runHistorySync(
 
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
-    const encoder = deps.encoder ?? createStoreOutboundEncoder(deps.base, db);
+    const encoder =
+      deps.encoder ??
+      createStoreOutboundEncoder(deps.base, {
+        db,
+        loadRules: () => storeEffectiveRules(deps.dataDir),
+      });
 
     // WHERE THE BACKLOG ENDS. Everything recorded from the attachment onwards is
     // the live forward path's to deliver, and it delivers it with the
@@ -529,7 +534,7 @@ export async function runHistorySync(
         pid,
         backlogBefore,
         liveScope,
-        encodeCapture: (event) => encoder.encodeEvent(event),
+        encodeCapture: (event, identity) => encoder.encodeEvent(event, identity),
       });
     } finally {
       ledger.release(pid);
@@ -593,8 +598,14 @@ interface DrainDeps {
    * its repository out of the very next read.
    */
   liveScope: () => ResolvedAttachmentScope;
-  /** The outbound encoder every capture passes through before it is sent. Never throws. */
-  encodeCapture: (event: IngestEvent) => Promise<IngestEvent>;
+  /**
+   * The outbound encoder every capture passes through before it is sent. Never
+   * throws; undefined holds the capture owed and ends the lane for this pass.
+   */
+  encodeCapture: (
+    event: IngestEvent,
+    identity: CaptureIdentity,
+  ) => Promise<IngestEvent | undefined>;
 }
 
 /**
@@ -945,6 +956,7 @@ async function drainCaptures(
 
     const ready: { id: string; event: IngestEvent }[] = [];
     const unbuildable: string[] = [];
+    let held = false;
     for (const { row, key } of inScopeRows) {
       const event = rebuildCapture(row);
       if (event === undefined) {
@@ -964,7 +976,12 @@ async function drainCaptures(
       // never the slug, and the stamps below go by the row id. `key` is absent
       // exactly on a machine attachment, whose body stays what it was.
       const scoped = key === undefined ? event : withScopedRepo(event, key);
-      ready.push({ id: row.id, event: await d.encodeCapture(scoped) });
+      const encoded = await d.encodeCapture(scoped, captureIdentityOf(row));
+      if (encoded === undefined) {
+        held = true;
+        break;
+      }
+      ready.push({ id: row.id, event: encoded });
     }
     // ONE write for the page rather than one per row: markSkipped takes a list,
     // and each call is its own IMMEDIATE transaction competing for the store's
@@ -973,6 +990,8 @@ async function drainCaptures(
       d.ledger.markSkipped(unbuildable, d.now());
       skipped += unbuildable.length;
     }
+    // Nothing this pass can encode is sent; every unsent row stays owed.
+    if (held) return { sent, skipped };
     if (ready.length === 0) {
       // BEFORE the continue, not after it. Every statement on this path —
       // pendingCaptureRows, rebuildCapture, markSkipped — is synchronous, so a

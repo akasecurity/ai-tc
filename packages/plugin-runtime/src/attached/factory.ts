@@ -1,5 +1,4 @@
 import { hostname } from 'node:os';
-import { dirname } from 'node:path';
 
 import { readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
@@ -10,7 +9,6 @@ import { attachmentModeOf, isAttached, resolveScope } from '@akasecurity/schema'
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
 import { AttachedDataGateway } from './gateway.ts';
-import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { createPluginBlock, type PluginBuildInfo } from './plugin-block.ts';
 import { createPolicyStore } from './policy-store.ts';
 import { writePostureReportState } from './posture-report-state.ts';
@@ -112,8 +110,6 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
       attachment,
-      // settingsDir sits directly under the ~/.aka root the sighting key and vault are read from.
-      encoder: createStoreOutboundEncoder(dirname(config.settingsDir)),
       posture: createPostureReporter({
         // THROUGH THE BREAKER, and wrapped HERE rather than around
         // `PostureReporter.send`. The reporter swallows every error by

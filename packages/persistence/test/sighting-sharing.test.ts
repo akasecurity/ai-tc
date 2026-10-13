@@ -120,4 +120,22 @@ describe('readSightingSharing', () => {
       locked: false,
     });
   });
+
+  it('fails closed to standalone when the managed settings are malformed', () => {
+    attach(MACHINE);
+    grant();
+    const malformed = {
+      specVersion: 1,
+      values: null,
+      lockedFields: null,
+    } as unknown as ManagedSettings;
+    expect(readSightingSharing(store.home, malformed)).toEqual({
+      mode: 'standalone',
+      managed: false,
+      sharing: false,
+      reason: 'standalone',
+      optedIn: false,
+      locked: false,
+    });
+  });
 });

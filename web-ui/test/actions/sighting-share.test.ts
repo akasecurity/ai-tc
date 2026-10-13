@@ -3,13 +3,13 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
-import { readWorkspaceSettings } from '@akasecurity/persistence';
+import { ManagedFieldError, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { SightingSharing } from '@akasecurity/schema';
 import { isSightingShareConsentValid, SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setSightingShareConsent } from '../../app/(app)/settings/actions.ts';
-import { managedRefusal } from '../../app/lib/action-refusals.ts';
+import { managedRefusal, SETTINGS_WRITE_ERROR } from '../../app/lib/action-refusals.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
 
 const osHome = vi.hoisted(() => ({ dir: '' }));
@@ -24,12 +24,18 @@ vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 const sharingState = vi.hoisted<{ value: SightingSharing | undefined }>(() => ({
   value: undefined,
 }));
+// Makes the settings write itself throw, for the failures a pre-check cannot see.
+const writeFailure = vi.hoisted<{ error: Error | undefined }>(() => ({ error: undefined }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
     readSightingSharing: (...args: Parameters<typeof actual.readSightingSharing>) =>
       sharingState.value ?? actual.readSightingSharing(...args),
+    applyOnboarding: (...args: Parameters<typeof actual.applyOnboarding>) => {
+      if (writeFailure.error !== undefined) throw writeFailure.error;
+      return actual.applyOnboarding(...args);
+    },
   };
 });
 
@@ -41,6 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   sharingState.value = undefined;
+  writeFailure.error = undefined;
 });
 
 function settingsFile(): string {
@@ -91,5 +98,17 @@ describe('setSightingShareConsent', () => {
     const res = await setSightingShareConsent({ choice: 'granted' });
     expect(res).toEqual({ ok: false, error: managedRefusal(['sightingShareConsent']) });
     expect(existsSync(settingsFile())).toBe(false);
+  });
+
+  it('refuses when the field is locked by the time it is written', async () => {
+    writeFailure.error = new ManagedFieldError(['sightingShareConsent']);
+    const res = await setSightingShareConsent({ choice: 'granted' });
+    expect(res).toEqual({ ok: false, error: managedRefusal(['sightingShareConsent']) });
+  });
+
+  it('reports a failed settings write', async () => {
+    writeFailure.error = new Error('disk full');
+    const res = await setSightingShareConsent({ choice: 'revoked' });
+    expect(res).toEqual({ ok: false, error: SETTINGS_WRITE_ERROR });
   });
 });

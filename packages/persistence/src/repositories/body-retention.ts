@@ -214,14 +214,15 @@ export class SqliteBodyRetentionRepository {
     this.expireStmt = this.db.prepare(
       `UPDATE audit_events SET content = NULL, content_expired_at = :now WHERE id = :id`,
     );
-    // Excerpts on findings whose event is past the horizon and holds no body:
+    // Excerpts and variable names (both copies of body text) on findings whose
+    // event is past the horizon and holds no body:
     // a body this pass (or an earlier one) cleared, or an event that never had
     // one. A body the sync lane still holds keeps its findings' excerpts too.
     // Seeks the partial index over excerpt-holding findings by first
     // detection — which can only precede the event's start, so the range never
     // misses a candidate — and checks the event's own time as a residual.
     this.expireContextsStmt = this.db.prepare(
-      `UPDATE inspection_findings SET context = NULL
+      `UPDATE inspection_findings SET context = NULL, variable_name = NULL
         WHERE id IN (
           SELECT f.id
             FROM inspection_findings f INDEXED BY idx_inspection_findings_context

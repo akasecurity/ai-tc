@@ -622,6 +622,28 @@ describe('body expiry — finding excerpts', () => {
     expect(findingOf('new').context).toBe(EXCERPT);
   });
 
+  it('clears the variable name with the excerpt', () => {
+    seed(raw, [
+      { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },
+      { id: 'new', kind: 'code_change', ageDays: 1, content: 'y'.repeat(100) },
+    ]);
+    withExcerpt('old', 60);
+    withExcerpt('new', 1);
+    const name = ['STRIPE', 'KEY'].join('_');
+    raw.prepare(`UPDATE inspection_findings SET variable_name = ?`).run(name);
+    const nameOf = (id: string) =>
+      (
+        raw
+          .prepare(`SELECT variable_name FROM inspection_findings WHERE id = ?`)
+          .get(`find-${id}`) as { variable_name: string | null }
+      ).variable_name;
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(nameOf('old')).toBeNull();
+    expect(nameOf('new')).toBe(name);
+  });
+
   it('clears the excerpt of a tool call past the horizon, which never had a body', () => {
     seed(raw, [
       { id: 'old-call', kind: 'tool_call', ageDays: 60, content: null },

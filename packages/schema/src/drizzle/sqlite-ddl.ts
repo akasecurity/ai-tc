@@ -179,4 +179,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0037_finding_location',
     sql: 'ALTER TABLE `inspection_findings` ADD `line` integer;--> statement-breakpoint\nALTER TABLE `inspection_findings` ADD `col` integer;--> statement-breakpoint\nALTER TABLE `inspection_findings` ADD `context` text;--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_context` ON `inspection_findings` (`first_detected_at`) WHERE context IS NOT NULL;',
   },
+  {
+    tag: '0038_variable_name',
+    sql: 'ALTER TABLE `inspection_findings` ADD `variable_name` text;--> statement-breakpoint\nALTER TABLE `secret_vault` ADD `variable_name` text;',
+  },
 ];

@@ -689,6 +689,9 @@ export const inspectionFindings = sqliteTable(
     line: integer(COL.line),
     col: integer(COL.col),
     context: text(COL.context),
+    // The variable a detected secret is assigned to on its line. Nullable: most
+    // findings are not assignments, and rows written before it have none.
+    variableName: text(COL.variableName),
   },
   (t) => [
     index('idx_inspection_findings_event').on(t.auditEventId),
@@ -1036,6 +1039,9 @@ export const secretVault = sqliteTable(
     ruleId: text(COL.ruleId).notNull(),
     maskedMatch: text(COL.maskedMatch).notNull(),
     provider: text(COL.provider),
+    // The variable the value was assigned to when it was detected. The first
+    // name seen is kept; a later detection only fills it in when it is null.
+    variableName: text(COL.variableName),
     ciphertext: text(COL.ciphertext).notNull(),
     nonce: text(COL.nonce).notNull(),
     authTag: text(COL.authTag).notNull(),

@@ -18,7 +18,14 @@
 // join used to build the hash input.
 import { z } from 'zod';
 
-import { ActionTaken, DetectionCategory, FindingContext, Severity, Span } from './finding.ts';
+import {
+  ActionTaken,
+  DetectionCategory,
+  FindingContext,
+  Severity,
+  Span,
+  VariableName,
+} from './finding.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -560,6 +567,8 @@ export const InspectionFindingInput = z.object({
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
   ...findingLocationFields,
+  // The variable a detected secret is assigned to, e.g. `STRIPE_SECRET_KEY`.
+  variableName: VariableName.optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 

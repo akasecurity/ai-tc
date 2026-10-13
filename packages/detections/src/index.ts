@@ -49,3 +49,4 @@ export { scanTabular } from './tabular.ts';
 export type { Matcher, MatchResult, RulePack, ScanResult } from './types.ts';
 export { isHighEntropy, shannonEntropy } from './validators/entropy.ts';
 export { luhnCheck } from './validators/luhn.ts';
+export { withVariableNames } from './variable-name.ts';

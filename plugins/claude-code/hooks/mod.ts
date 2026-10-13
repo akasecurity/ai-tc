@@ -2,6 +2,8 @@ import type { Hook, Register } from 'claude-code';
 import { update } from 'claude-code';
 
 import {
+  bandFindings,
+  chipText,
   createReplySlots,
   mergeFindings,
   type ModPolicy,
@@ -12,6 +14,7 @@ import {
   planRowWith,
   type PointerWant,
   revealPointers,
+  severityStyle,
   toolCallNeedsHelper,
   type ViewFinding,
 } from './engine.js';
@@ -61,6 +64,7 @@ function snapshotPath(home: string): string {
 
 async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   try {
+    await followSession($);
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
     if (home === undefined || home === '') return null;
     const path = snapshotPath(home);
@@ -86,7 +90,8 @@ let findingsHeld: ViewFinding[] = [];
 const findingsVersion = { plugin: 'aka', key: 'findings' } as const;
 
 // The mod is zod-free, so it spells the findings file's location, id check and
-// read limit itself; the writer is packages/plugin-sdk (mod-findings).
+// read limit itself; the writer is plugins/claude-code/src/mod/findings-log.ts,
+// called by the hooks and the mod's helpers.
 const MOD_FINDINGS_DIR = 'mod-findings';
 const MOD_FINDINGS_MAX_BYTES = 4 * 1024 * 1024;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -94,14 +99,39 @@ const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 // What the last read of the findings file saw, so an unchanged file is not read again.
 let lastFile: string | undefined;
 
+// Findings at or before this time (a `$.clock.now()` reading) are hidden from
+// the band; the dismiss button sets it.
+let dismissedBefore = 0;
+
+// The session the list above belongs to.
+let heldSession: string | undefined;
+
 function heldFindings(): readonly ViewFinding[] {
   return findingsHeld;
+}
+
+// A new session id (a /clear or a resume in the same process) starts an empty
+// list: the findings of the session before are not shown in this one. Never throws.
+async function followSession($: Dollar): Promise<void> {
+  try {
+    const sessionId = await $.session.id();
+    if (sessionId === heldSession) return;
+    const hadFindings = findingsHeld.length > 0;
+    heldSession = sessionId;
+    findingsHeld = [];
+    dismissedBefore = 0;
+    lastFile = undefined;
+    if (hadFindings) await update($, findingsVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The list stays as it was.
+  }
 }
 
 // Merges findings into the session list and bumps the version when the list
 // gained one it did not have. Never throws.
 async function takeFindings($: Dollar, incoming: readonly ViewFinding[]): Promise<void> {
   try {
+    await followSession($);
     if (incoming.length === 0) return;
     const known = new Set(heldFindings().map((f) => f.id));
     if (incoming.every((f) => known.has(f.id))) return;
@@ -650,8 +680,65 @@ function tell($: Dollar, message: string | null): void {
   }
 }
 
+type BandArgs = Parameters<Hook<'ui.render'>>;
+type BandDollar = BandArgs[0];
+
+// The band above the prompt: the session's recent findings, one chip each in the
+// severity's colour, with a dismiss button. Anything unexpected draws nothing.
+async function bandRender($: BandDollar, e: BandArgs[1], next: BandArgs[2]) {
+  try {
+    if ((e.props as { hasSurvey?: boolean }).hasSurvey === true) return next(e);
+    // Read for its subscription only: a new version redraws the band.
+    await $.state.get(findingsVersion);
+    await refreshFromFile($);
+    const now = await $.clock.now();
+    const { shown, more } = bandFindings(
+      heldFindings().filter((f) => f.at > dismissedBefore),
+      now,
+    );
+    if (shown.length === 0) return next(e);
+    const { Box, Text, Button } = $.ui.resolve(e);
+    return h(
+      Box,
+      { flexDirection: 'row', gap: 2, key: 'aka-band' },
+      ...shown.map((f) =>
+        h(
+          Text,
+          {
+            key: `chip-${f.id}`,
+            color: severityStyle(f.severity).color,
+            bold: f.severity === 'critical',
+          },
+          chipText(f),
+        ),
+      ),
+      more > 0
+        ? h(Text, { key: 'more', dimColor: true }, `+${String(more)} more · /aka:findings-pane`)
+        : null,
+      h(Button, {
+        key: 'dismiss',
+        label: 'Dismiss',
+        role: 'dismiss',
+        onPress: () => void dismissBand($),
+      }),
+    );
+  } catch {
+    return next(e);
+  }
+}
+
+async function dismissBand($: BandDollar): Promise<void> {
+  try {
+    dismissedBefore = await $.clock.now();
+    await update($, findingsVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The band stays as it was.
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
+    await followSession($);
     await noteModRunning($);
     return next(e);
   });
@@ -692,6 +779,7 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AssistantMessage' }, revealRender);
   on('ui.render', { component: 'UserMessage' }, revealRender);
+  on('ui.render', { component: 'AbovePrompt' }, bandRender);
 
   on('tool.call', async ($, e, next) => {
     const input = toolArguments(e);
@@ -700,8 +788,11 @@ export const register: Register = (on) => {
     const answer = await decideToolCallWithHelper($, e.tool, input, e);
     if (answer === null) return next(e);
     await takeFindings($, answer.findings);
-    if (answer.deny !== null) return { deny: answer.deny };
-    tell($, answer.message);
+    if (answer.deny !== null) {
+      const first = answer.findings[0];
+      tell($, first === undefined ? answer.message : `Blocked: ${first.label}`);
+      return { deny: answer.deny };
+    }
     const result = await next(answer.input === null ? e : ({ ...e, ...answer.input } as typeof e));
     if (answer.context === null || result.deny !== undefined) return result;
     return { ...result, context: [...(result.context ?? []), answer.context] };

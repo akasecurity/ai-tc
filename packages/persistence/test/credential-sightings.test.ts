@@ -251,12 +251,37 @@ describe('planSightingShare', () => {
     });
   });
 
-  it('refuses a run that opted out before reading anything', () => {
+  it('refuses a run that opted out, and reports sharing off first when it is', () => {
     sharingMachine();
     expect(planSightingShare(store.home, { managedSettings: null, enabled: false })).toEqual({
       ok: false,
       outcome: { status: 'not-shared', reason: 'opt-out' },
     });
+    expect(
+      planSightingShare(store.home, {
+        managedSettings: {
+          specVersion: 1,
+          values: { sightingShareConsent: false },
+          lockedFields: [],
+        },
+        enabled: false,
+      }),
+    ).toMatchObject({ ok: false, outcome: { reason: 'sharing-off' } });
+  });
+
+  it('sends nothing for a run that opted out', async () => {
+    sharingMachine();
+    const root = tempDir('aka-project-');
+    const rec = recorder();
+
+    const outcome = await forwardCredentialSightings(
+      store.home,
+      { project: project(root), sightings: [sightingIn(join(root, 'a.ts'), VALUE_A)] },
+      { ...deps(rec.send), enabled: false },
+    );
+
+    expect(outcome).toEqual({ status: 'not-shared', reason: 'opt-out' });
+    expect(rec.requests).toEqual([]);
   });
 });
 

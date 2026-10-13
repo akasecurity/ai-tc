@@ -79,20 +79,22 @@ export type SightingSharePlan =
 
 /**
  * Whether a scan about to run should compute sighting tokens, and the key to
- * compute them with: only when sharing is on (which requires an attachment)
- * and the machine holds a sighting key. Never throws.
+ * compute them with: only when sharing is on (which requires an attachment),
+ * the run has not opted out, and the machine holds a sighting key. A run that
+ * opted out on a machine that does not share reports that sharing is off.
+ * Never throws.
  */
 export function planSightingShare(
   base: string,
   opts: SightingShareOptions = {},
 ): SightingSharePlan {
   try {
-    if (opts.enabled === false) {
-      return { ok: false, outcome: { status: 'not-shared', reason: 'opt-out' } };
-    }
     const sharing = readSightingSharing(base, opts.managedSettings);
     if (!sharing.sharing) {
       return { ok: false, outcome: { status: 'not-shared', reason: 'sharing-off', sharing } };
+    }
+    if (opts.enabled === false) {
+      return { ok: false, outcome: { status: 'not-shared', reason: 'opt-out' } };
     }
     const keys = readSightingKeys(base);
     if (keys === undefined) {
@@ -182,13 +184,13 @@ export async function forwardCredentialSightings(
   input: ForwardCredentialSightingsInput,
   deps: ForwardCredentialSightingsDeps,
 ): Promise<CredentialSightingsOutcome> {
-  if (deps.enabled === false) return { status: 'not-shared', reason: 'opt-out' };
   let shared = 0;
   let keptLocal = 0;
   let pending = input.sightings.length;
   try {
     const sharing = readSightingSharing(base, deps.managedSettings);
     if (!sharing.sharing) return { status: 'not-shared', reason: 'sharing-off', sharing };
+    if (deps.enabled === false) return { status: 'not-shared', reason: 'opt-out' };
 
     const settings = readWorkspaceSettings(base);
     const connection = settings.controlPlane;

@@ -180,7 +180,11 @@ describe('parseWorkflow', () => {
         lines.push(`l${level}: &l${level} [*l${level - 1}, *l${level - 1}]`);
       }
 
-      expect(() => parseWorkflow(`${lines.join('\n')}\njobs: {}\n`)).toThrow(/more nodes/);
+      // The refusal names the bound and where it lives: this is the one refusal a
+      // legitimate change can reach, and it must not read as a defect in the reader.
+      expect(() => parseWorkflow(`${lines.join('\n')}\njobs: {}\n`)).toThrow(
+        /more nodes[\s\S]*raise MAX_NODES in helpers\/workflow-yaml\.js/,
+      );
     });
   });
 });

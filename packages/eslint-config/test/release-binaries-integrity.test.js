@@ -459,10 +459,12 @@ describe('the release job attests the assets it publishes', () => {
   // claim from a PINNED softprops step, so an unpinned or hand-rolled step with
   // the same shaped input is invisible to the union above and would ship whatever
   // it names with no provenance at all.
+  //
+  // The whole decoded step is read, as the `cache` and `target_commitish` checks
+  // are: the match this replaced saw a `files:` block anywhere in the step, and an
+  // input name is matched without regard to case, so `Files:` is the same input.
   it('every files: block in the release job belongs to a pinned action-gh-release step', () => {
-    const withFiles = stepsOf(releaseJob()).filter((step) =>
-      Object.hasOwn(inputsOf(step), 'files'),
-    );
+    const withFiles = stepsOf(releaseJob()).filter((step) => hasKey(step, 'files'));
 
     expect(withFiles.length, 'no step in the release job carries a files: block').toBeGreaterThan(
       0,

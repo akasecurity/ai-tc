@@ -393,28 +393,6 @@
     // audit-gate's suite parses the mute claim out of both documents and drives
     // it against the real gate. That claim was FALSE in a shipped release and
     // nothing caught it, which is the entire reason the guard exists.
-    // local-ops' repo-akaignore suite drives the file walker over the root
-    // `.akaignore`, which lives outside the package. Unhashed, an edit to that
-    // file would replay a cached green taken under the old patterns. The env
-    // keys repeat the generic `test` task's because this entry replaces it for
-    // the package rather than extending it, and the package's temp-dir suites
-    // need TEMP/TMP on the Windows leg.
-    "@akasecurity/local-ops#test": {
-      "dependsOn": ["build", "^build", "^typecheck"],
-      "env": ["AKA_INSTALLER_ALLOW_USER_PATH"],
-      "passThroughEnv": [
-        "TEMP",
-        "TMP",
-        "PROCESSOR_ARCHITECTURE",
-        "SystemRoot",
-        "windir",
-        "ComSpec",
-        "SystemDrive",
-        "LOCALAPPDATA"
-      ],
-      "outputs": ["coverage/**"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.akaignore"]
-    },
     "@akasecurity/audit-gate#test": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"],

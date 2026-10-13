@@ -8,6 +8,7 @@ import {
   createGuardedFileScanner,
   forwardProjectEgress,
   isProtectedTarget,
+  openScanStoreVault,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
@@ -127,6 +128,7 @@ export async function runScan(
   const guard = await createGuardedFileScanner(db(), ruleset.rules, {
     workerUrl: scanWorkerUrl(),
   });
+  const vault = openScanStoreVault(db());
   let result: ScanPathResult;
   try {
     result = await scanPathIntoStore(db(), target, {
@@ -145,6 +147,7 @@ export async function runScan(
       dataDir: dataDir(),
       // No `akaHome`: this server always reads the default home, which is what
       // the scanner's own default resolves to. `--home` has no counterpart here.
+      vault,
     });
   } catch (err) {
     if (!isProtectedTarget(err)) throw err;
@@ -153,6 +156,7 @@ export async function runScan(
     // place of the message. Same shape as the missing-target answer above.
     return { ok: false, error: `Cannot scan ${err.path}: it holds credentials AKA never reads.` };
   } finally {
+    vault?.close();
     await guard.close();
   }
   // Read the quarantine count AFTER the walk, never before: the hard bound

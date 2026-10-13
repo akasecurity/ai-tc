@@ -1,3 +1,5 @@
+export type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
+export { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
 export type { ResolveConfigInventoryInput } from './config-inventory.ts';
@@ -220,6 +222,7 @@ export {
   describePointerSafe,
   detokenizeText,
   hasPointer,
+  openScanVault,
   POINTER_UNAVAILABLE_TEXT,
   substituteModelPointers,
   tokenizeText,

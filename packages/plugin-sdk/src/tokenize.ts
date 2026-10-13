@@ -14,9 +14,15 @@
 //
 // The two rules compose to: on any failure the session continues and the model
 // sees LESS, never more.
+import { dirname } from 'node:path';
+
 import type { MatchResult } from '@akasecurity/detections';
 import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
-import type { ExceptionPolicyProvider, FingerprintKey } from '@akasecurity/persistence';
+import type {
+  ExceptionPolicyProvider,
+  FingerprintKey,
+  LocalDatabase,
+} from '@akasecurity/persistence';
 import {
   createKeyProvider,
   defaultDataDir,
@@ -33,9 +39,11 @@ import type {
   PointerToken,
   VaultDerefReason,
   VaultSightingKind,
+  WorkspaceSettings,
 } from '@akasecurity/schema';
 import { isActionAtLeast, isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
 
+import type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
 import { dataDir } from './data-dir.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
@@ -158,7 +166,7 @@ export interface TokenizeSighting {
   kind: VaultSightingKind;
 }
 
-export interface VaultGlue {
+export interface VaultGlue extends AtRestVault {
   tokenizeText(
     text: string,
     opts?: {
@@ -404,20 +412,59 @@ class SecretVaultGlue implements VaultGlue {
       // Where these pointers just landed — the ledger that makes pointer
       // correlation visible to the owner. Best-effort: a bookkeeping fault
       // never affects the rewrite.
-      if (opts?.sighting && pointers.length > 0) {
-        for (const pointer of pointers) {
-          try {
-            const id = pointer.split('.')[1];
-            if (id !== undefined) this.#vault.recordSighting?.(id, opts.sighting);
-          } catch {
-            // best-effort only
-          }
-        }
-      }
+      if (opts?.sighting) this.#recordSightings(pointers, opts.sighting);
       return { text: out, pointers, degraded, redacted };
     } catch {
       // The unknown failure could have left raw spans in place; destroy them.
       return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
+    }
+  }
+
+  async vaultSpans(
+    text: string,
+    findings: readonly MatchResult[],
+    opts: VaultSpansOptions,
+  ): Promise<Map<MatchResult, PointerToken>> {
+    const vaulted = new Map<MatchResult, PointerToken>();
+    try {
+      // Grouped over every finding, so a span another finding overlaps is never
+      // vaulted: its characters belong to more than one value.
+      for (const group of groupSpans(text, [...findings])) {
+        const finding = group.finding;
+        if (finding === undefined || !opts.selected.has(finding)) continue;
+        if (text.slice(group.start, group.end) !== finding.rawMatch) continue;
+        let token: string | symbol;
+        try {
+          token = await this.#vault.tokenize(finding.rawMatch, {
+            ruleId: finding.ruleId,
+            category: finding.category,
+            maskedMatch: maskMatch(finding.rawMatch),
+            ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
+          });
+        } catch {
+          continue;
+        }
+        // A sentinel (consent absent, an unopenable store) leaves the span as it was.
+        if (typeof token === 'string') vaulted.set(finding, token);
+      }
+    } catch {
+      // Every entry already in the map is a minted pointer; a later fault only
+      // leaves the remaining spans unvaulted.
+    }
+    this.#recordSightings([...new Set(vaulted.values())], opts.sighting);
+    return vaulted;
+  }
+
+  // Where these pointers just landed. Best-effort: a bookkeeping fault never
+  // affects the rewrite.
+  #recordSightings(pointers: readonly PointerToken[], sighting: TokenizeSighting): void {
+    for (const pointer of pointers) {
+      try {
+        const id = pointer.split('.')[1];
+        if (id !== undefined) this.#vault.recordSighting?.(id, sighting);
+      } catch {
+        // best-effort only
+      }
     }
   }
 
@@ -590,6 +637,8 @@ export interface CreateVaultGlueOptions {
   base?: string;
   // Test seam: a vault core to use instead of opening the real store.
   vault?: VaultCore;
+  // An open store to use instead of opening one. The glue never closes it.
+  db?: LocalDatabase;
   // Test seam: a reveal-grant resolver to pair with an injected vault.
   revealResolver?: ModelDerefGrantResolver;
   // The reveal decision seam. Defaults to the user-driven provider (the grant
@@ -615,7 +664,9 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
   const base = options?.base ?? defaultDataDir();
   try {
     const dir = dataDir(base);
-    const db = openLocalDatabase(dir, { shippedRegexMatchers: shippedRegexMatchers() });
+    const db =
+      options?.db ?? openLocalDatabase(dir, { shippedRegexMatchers: shippedRegexMatchers() });
+    const owned = options?.db === undefined;
     const settings = readWorkspaceSettings(base);
     // Resolved before the vault so the grant verifier below can close over it.
     // An injected provider replaces the user-grant one wholesale, and the vault
@@ -681,11 +732,34 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
         return null;
       }
     };
-    return new SecretVaultGlue(vaultWithSightings, revealGrantResolver, () => {
-      db.close();
-    });
+    return new SecretVaultGlue(
+      vaultWithSightings,
+      revealGrantResolver,
+      owned
+        ? () => {
+            db.close();
+          }
+        : undefined,
+    );
   } catch {
     return new SecretVaultGlue(UNOPENABLE_VAULT);
+  }
+}
+
+/**
+ * The glue a whole-file scan vaults through, over the home `config` names, or
+ * undefined without vault consent — the scan then vaults nothing. `db`, when
+ * given, is the open store to vault into. The caller closes the glue.
+ */
+export function openScanVault(
+  config: { settings: WorkspaceSettings; dataDir: string },
+  db?: LocalDatabase,
+): VaultGlue | undefined {
+  try {
+    if (!isVaultConsentValid(config.settings.vaultConsent)) return undefined;
+    return createVaultGlue({ base: dirname(config.dataDir), ...(db === undefined ? {} : { db }) });
+  } catch {
+    return undefined;
   }
 }
 

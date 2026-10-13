@@ -12,6 +12,7 @@ import {
   FORWARD_FAILURE_LINES,
   forwardProjectEgress,
   isProtectedTarget,
+  openScanStoreVault,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
@@ -222,6 +223,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   registerBundledPacks();
   const storeDir = dataDir(home);
   const db = openLocalDatabase(storeDir);
+  const vault = openScanStoreVault(db, home);
 
   let result: ScanPathResult;
   let inventory: ProjectInventoryResult | null;
@@ -252,6 +254,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
       // literal `~/.aka` the default would name. `home` is the same base
       // `recordProjectEgress` takes below, for the same reason.
       akaHome: home,
+      vault,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
@@ -269,6 +272,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     process.exitCode = 1;
     return;
   } finally {
+    vault?.close();
     db.close();
   }
 

@@ -29,6 +29,7 @@ export type {
 export {
   collectFiles,
   isProtectedTarget,
+  openScanStoreVault,
   ProtectedTargetError,
   scanPathIntoStore,
 } from './fs-scan.ts';

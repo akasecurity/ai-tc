@@ -15,6 +15,7 @@ import { extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
+  AtRestVault,
   DataGateway,
   FileEgressHits,
   ManifestKind,
@@ -33,6 +34,7 @@ import {
   extractManifestSdks,
   isVendoredPath,
   manifestKindOf,
+  openScanVault,
   resolveEgress,
   resolveNonGitProject,
   resolveRepoIdentity,
@@ -423,6 +425,7 @@ async function scanDir(
   ledger: LedgerContext,
   rootDir: string,
   opts: ScanOptions,
+  vault: AtRestVault | undefined,
 ): Promise<WorktreeScanSummary> {
   const byRule: Record<string, number> = {};
   const bySeverity: Record<string, number> = {};
@@ -588,8 +591,9 @@ async function scanDir(
         ...(scopeKey !== undefined ? { scopeKey } : {}),
       },
       // 'content-hash': a re-run mints fresh event ids for identical content;
-      // the store uses the hash to drop what it already recorded.
-      { persist: 'with-findings', dedupe: 'content-hash' },
+      // the store uses the hash to drop what it already recorded. With vault
+      // consent, each detected secret is vaulted and stored as its pointer.
+      { persist: 'with-findings', dedupe: 'content-hash', ...(vault ? { vault } : {}) },
     );
 
     for (const finding of result.findings) {
@@ -880,11 +884,13 @@ export async function scanWorktree(
   const rootDir = opts.rootDir ?? process.cwd();
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  const vault = openScanVault(config);
   try {
     const seen = await gateway.knownContentHashes();
     const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
-    return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
+    return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts, vault);
   } finally {
+    vault?.close();
     await runtime.close();
   }
 }
@@ -896,6 +902,7 @@ export async function scanAllRepos(
   const repoDirs = discoverGitRepos(opts);
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  const vault = openScanVault(config);
   const summary: MultiRepoScanSummary = {
     repos: [],
     totalScanned: 0,
@@ -912,7 +919,16 @@ export async function scanAllRepos(
     // its updates per repo, so a long --discover sweep keeps partial progress.
     const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
     for (const rootDir of repoDirs) {
-      const repoSummary = await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
+      const repoSummary = await scanDir(
+        runtime,
+        gateway,
+        config,
+        seen,
+        ledger,
+        rootDir,
+        opts,
+        vault,
+      );
       summary.repos.push({ rootDir, summary: repoSummary });
       summary.totalScanned += repoSummary.scanned;
       summary.totalSkipped += repoSummary.skipped;
@@ -926,6 +942,7 @@ export async function scanAllRepos(
       }
     }
   } finally {
+    vault?.close();
     await runtime.close();
   }
 

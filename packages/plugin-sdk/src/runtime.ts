@@ -18,6 +18,8 @@ import {
   strongerRedactFallback,
 } from '@akasecurity/schema';
 
+import type { AtRestVault } from './at-rest-vault.ts';
+import { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
@@ -891,12 +893,30 @@ export function createPluginRuntime(
       // land in the store verbatim, and an attached machine would forward it.
       // `Event.content` is a required string, so the row carries '' and keeps
       // `contentHash` of the original, which is what correlates it.
+      //
+      // A whole-file capture handed a vault holds each detected secret there and
+      // stores its pointer in place of the value, whatever the action unless an
+      // exception allowed it; without vault consent the vault holds nothing and
+      // the content is as above.
+      const vaulted =
+        opts.vault !== undefined &&
+        decision.scanIncomplete === undefined &&
+        input.kind === 'code_change' &&
+        filePath !== undefined &&
+        input.metadata?.wholeFile === true
+          ? await opts.vault.vaultSpans(input.text, decision.findings, {
+              selected: new Set(
+                decision.findings.filter((match) =>
+                  isScanVaultable(match, actionForFinding(match, excepted, opts.rewritable)),
+                ),
+              ),
+              sighting: { location: filePath, kind: 'file' },
+            })
+          : new Map<MatchResult, string>();
       const storedContent =
         decision.scanIncomplete !== undefined
           ? ''
-          : maskedFindings.length > 0
-            ? redact(input.text, maskedFindings)
-            : input.text;
+          : composeAtRestContent(input.text, maskedFindings, vaulted);
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,
@@ -958,7 +978,7 @@ export function createPluginRuntime(
         hits: decision.findings,
         evidenceOf,
         backstopRules: bundledMaskingRules(),
-        enforcedHits: new Set(maskedFindings),
+        enforcedHits: new Set([...maskedFindings, ...vaulted.keys()]),
       });
       // Mask the real secret here — no finding row ever carries the raw value,
       // whatever the action resolved to and whatever the stored content shows.
@@ -1149,6 +1169,9 @@ export interface CaptureOptions extends DecisionOptions {
   // Grant ids already spent by this capture's own pointer crossing (see
   // ExceptionEvalContext.preAuthorizedGrantIds).
   preAuthorizedGrantIds?: readonly string[];
+  // For a whole-file `code_change` capture: holds each detected secret in the
+  // vault, with a `file` sighting, and stores its pointer in the event content.
+  vault?: AtRestVault | undefined;
 }
 
 // What `captureDeferred` hands back: the decision, and the write held back.

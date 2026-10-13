@@ -38,6 +38,21 @@ export {
   writeControlPlaneCredential,
 } from './control-plane-credential.ts';
 export type {
+  CredentialSightingsConnection,
+  CredentialSightingsSend,
+  ForwardCredentialSightingsDeps,
+  ForwardCredentialSightingsInput,
+  ScanSighting,
+  SightingScanProject,
+  SightingShareOptions,
+  SightingSharePlan,
+} from './credential-sightings.ts';
+export {
+  forwardCredentialSightings,
+  planSightingShare,
+  sightingLocationClass,
+} from './credential-sightings.ts';
+export type {
   InventoryContext,
   LocalDatabase,
   ResolvedInventory,

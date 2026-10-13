@@ -191,6 +191,14 @@ export {
   LARGE_INPUT_START_BUDGET_MS,
   LARGE_INPUT_THRESHOLD_CHARS,
 } from './runtime.ts';
+export type { ScanFileKind } from './scan-files.ts';
+export {
+  canonicalizeScanPath,
+  isProtectedScanPath,
+  protectedScanRoots,
+  scanFileKind,
+  SOURCE_EXTENSIONS,
+} from './scan-files.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';

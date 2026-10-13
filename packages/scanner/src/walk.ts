@@ -17,34 +17,22 @@
 // here and collectManifests (./manifests.ts) — shares one interpretation of
 // the on-disk ignore files instead of each re-implementing it.
 import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
-import { extname, join, relative, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import {
   childRel,
   evaluateIgnore,
   type IgnoreLayer,
   readIgnoreLayer,
+  scanFileKind,
+  SOURCE_EXTENSIONS,
   withLayer,
 } from '@akasecurity/plugin-sdk';
 import ignore from 'ignore';
 
 import { COMMON_SKIP_DIRS } from './constants.ts';
 
-export const SOURCE_EXTENSIONS = new Set([
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.py',
-  '.java',
-  '.rb',
-  '.cs',
-  '.php',
-  '.go',
-  '.rs',
-]);
+export { SOURCE_EXTENSIONS };
 
 const AKAIGNORE_FILENAME = '.akaignore';
 
@@ -92,7 +80,7 @@ export interface WalkedFileMeta {
 
 export interface WalkOptions {
   rootDir?: string;
-  extensions?: Set<string>;
+  extensions?: ReadonlySet<string>;
   maxFileSizeBytes?: number;
   // Programmatic excludes in gitignore syntax, anchored at rootDir — the host's
   // counterpart to on-disk .akaignore files (skip semantics, same layer stack).
@@ -264,10 +252,7 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
     trackGitignore: true,
     onRepositoryRoot: opts.onRepositoryRoot,
   })) {
-    // extname handles dotfiles (.eslintrc → '') and extension-less names
-    // (Makefile → '') — both fall out at the allowlist check.
-    const ext = extname(file.name);
-    if (!extensions.has(ext)) continue;
+    if (scanFileKind(file.name, extensions) !== 'source') continue;
 
     let size: number;
     let mtime: Date;

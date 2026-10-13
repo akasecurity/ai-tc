@@ -17,7 +17,7 @@ import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecur
 
 import { REVEAL_DISCLOSURE_LEAD } from '../exception-guidance.ts';
 import type { PointersByText } from '../mod/findings-log.ts';
-import { pointersByRawMatch, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
+import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
@@ -358,7 +358,7 @@ export async function runPreToolUse(
               : { location: `${toolName} input`, kind: 'tool-input' },
           });
           try {
-            vaulted.set(text, pointersByRawMatch(findings, reversible, tokenized.pointers));
+            vaulted.set(text, pointersByFinding(findings, reversible, tokenized.pointers));
           } catch {
             // A record of the pointers never changes the rewrite.
           }

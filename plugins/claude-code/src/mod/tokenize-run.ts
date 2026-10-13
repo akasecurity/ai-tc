@@ -44,7 +44,7 @@ import {
 import { openGateway } from '../hooks/store-health.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote } from '../protocol/notes.ts';
-import { pointersByRawMatch, recordModFindings } from './findings-log.ts';
+import { pointersByFinding, recordModFindings } from './findings-log.ts';
 import { recordModHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
 
@@ -124,7 +124,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
             : { location: 'prompt', kind: 'prompt' },
         });
         rewritten = tokenized.text;
-        pointers = pointersByRawMatch(
+        pointers = pointersByFinding(
           enforced,
           new Set(result.reversibleFindings ?? []),
           tokenized.pointers,

@@ -63,7 +63,7 @@ export function modFindingsFrom(input: {
   const at = (input.now ?? new Date()).toISOString();
   const enforced = input.result.enforcedFindings ?? input.result.findings;
   return enforced.map((f) => {
-    const found = input.pointers?.get(f.rawMatch);
+    const found = input.pointers?.get(findingKey(f));
     const action: ModFindingAction =
       input.action === 'vaulted' && found === undefined ? 'redacted' : input.action;
     const shortName = labelOf(f.ruleId, input.result.ruleNames);
@@ -106,13 +106,21 @@ export function appendModFindings(
 }
 
 /**
- * The pointer the vault minted for each value it kept, by the value's raw match.
+ * A finding's key in a pointer map: its rule and span, never its raw value, so a
+ * value two findings share cannot lend one's pointer to the other.
+ */
+export function findingKey(f: Pick<CaptureResult['findings'][number], 'ruleId' | 'span'>): string {
+  return [f.ruleId, String(f.span.start), String(f.span.end)].join('\0');
+}
+
+/**
+ * The pointer the vault minted for each finding it kept, by `findingKey`.
  * The vault answers its pointers in span order and only for the findings it kept,
  * so they pair with the kept findings in span order. When the counts differ (an
  * overlap or a stale span was destroyed instead), which pointer belongs to which
- * value is unknown and the map is empty: those findings are recorded as redacted.
+ * finding is unknown and the map is empty: those findings are recorded as redacted.
  */
-export function pointersByRawMatch(
+export function pointersByFinding(
   findings: readonly CaptureResult['findings'][number][],
   kept: ReadonlySet<CaptureResult['findings'][number]> | undefined,
   pointers: readonly string[],
@@ -124,7 +132,7 @@ export function pointersByRawMatch(
   if (ordered.length !== pointers.length) return map;
   ordered.forEach((f, i) => {
     const pointer = pointers[i];
-    if (pointer !== undefined) map.set(f.rawMatch, pointer);
+    if (pointer !== undefined) map.set(findingKey(f), pointer);
   });
   return map;
 }

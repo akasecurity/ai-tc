@@ -8,9 +8,10 @@ import { describe, expect, it } from 'vitest';
 import {
   appendModFindings,
   findingId,
+  findingKey,
   modFindingsFrom,
   modFindingsPath,
-  pointersByRawMatch,
+  pointersByFinding,
   recordModFindings,
 } from '../../src/mod/findings-log.ts';
 
@@ -55,7 +56,10 @@ describe('modFindingsFrom', () => {
     });
 
   it('builds records with the short name and no raw value', () => {
-    const records = build('vaulted', new Map([[TOKEN, POINTER]]));
+    const records = build(
+      'vaulted',
+      new Map([[findingKey(match('secrets/github-pat', 4, 44, TOKEN)), POINTER]]),
+    );
     expect(records).toHaveLength(1);
     expect(ModFinding.parse(records[0])).toBeTruthy();
     expect(records[0]?.shortName).toBe('GitHub token');
@@ -150,18 +154,37 @@ describe('appendModFindings', () => {
   });
 });
 
-describe('pointersByRawMatch', () => {
+describe('pointersByFinding', () => {
   const a = match('secrets/github-pat', 0, 4, 'aaaa');
   const b = match('secrets/github-pat', 10, 14, 'bbbb');
 
   it('pairs pointers with kept findings in span order', () => {
-    const map = pointersByRawMatch([b, a], undefined, ['p1', 'p2']);
-    expect(map.get('aaaa')).toBe('p1');
-    expect(map.get('bbbb')).toBe('p2');
+    const map = pointersByFinding([b, a], undefined, ['p1', 'p2']);
+    expect(map.get(findingKey(a))).toBe('p1');
+    expect(map.get(findingKey(b))).toBe('p2');
+  });
+
+  it('never lends a kept pointer to a destroyed finding of the same value', () => {
+    const kept = match('secrets/github-pat', 0, 4, 'same');
+    const destroyed = match('secrets/github-pat', 10, 14, 'same');
+    const text = 'same, and same';
+    const records = modFindingsFrom({
+      sessionId: 's1',
+      kind: 'prompt',
+      text,
+      result: { action: 'redact', findings: [kept, destroyed] } as never,
+      where: 'prompt',
+      action: 'vaulted',
+      pointers: pointersByFinding([kept, destroyed], new Set([kept]), [POINTER]),
+    });
+    expect(records.map((r) => [r.action, r.pointer])).toEqual([
+      ['vaulted', POINTER],
+      ['redacted', undefined],
+    ]);
   });
 
   it('answers nothing when the counts differ', () => {
-    expect(pointersByRawMatch([a, b], undefined, ['p1']).size).toBe(0);
+    expect(pointersByFinding([a, b], undefined, ['p1']).size).toBe(0);
   });
 });
 

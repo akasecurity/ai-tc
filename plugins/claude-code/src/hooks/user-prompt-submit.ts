@@ -46,7 +46,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { actionFromCapture, pointersByRawMatch, recordModFindings } from '../mod/findings-log.ts';
+import { actionFromCapture, pointersByFinding, recordModFindings } from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
             sighting: { location: 'prompt', kind: 'prompt' },
           });
           try {
-            vaultedWith = pointersByRawMatch(findings, reversible, tokenized.pointers);
+            vaultedWith = pointersByFinding(findings, reversible, tokenized.pointers);
           } catch {
             // A record of the pointers never changes the rewrite.
           }

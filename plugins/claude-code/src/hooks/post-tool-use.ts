@@ -23,7 +23,7 @@ import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/p
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { PointersByText } from '../mod/findings-log.ts';
-import { pointersByRawMatch, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
+import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
                 : { location: `${toolName} output`, kind: 'tool-output' },
             });
             try {
-              vaulted.set(text, pointersByRawMatch(findings, reversible, tokenized.pointers));
+              vaulted.set(text, pointersByFinding(findings, reversible, tokenized.pointers));
             } catch {
               // A record of the pointers never changes the rewrite.
             }

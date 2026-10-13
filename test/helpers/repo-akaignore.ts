@@ -13,8 +13,11 @@
 // redundant line cannot sit in the file looking like coverage.
 //
 // It sits at the repo root because two packages need it and a package wall
-// blocks the import, the reason `remove-tree.ts` lives here. Both packages'
-// turbo.json hash the whole tree, since what this reads is every tracked path.
+// blocks the import, the reason `remove-tree.ts` lives here. What it reads is
+// every tracked path, so both packages' turbo.json hash the repository root,
+// minus the dependency tree, git's own store and the gitignored build and test
+// output, which an explicit `$TURBO_ROOT$` glob does not drop on its own. Left
+// in, a reinstall or another package's coverage run would move the hash.
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -221,6 +224,11 @@ export function describeRepoAkaignore(walkerName: string, packageDir: string, wa
       const inputs = declaredTestInputs(packageDir);
       expect(inputs).toContain('$TURBO_DEFAULT$');
       expect(inputs).toContain(turboRootInput('**'));
+      // An explicit root glob ignores .gitignore, so each of these has to be
+      // excluded by name or the hash follows install and build state.
+      for (const dir of ['.git', '**/node_modules', '**/.turbo', '**/coverage', '**/dist']) {
+        expect(inputs, dir).toContain(`!${turboRootInput(`${dir}/**`)}`);
+      }
     });
   });
 }

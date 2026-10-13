@@ -5,6 +5,7 @@ import {
   BATCHED_DEREF_REASONS,
   DEFAULT_VAULT_DEREFS_LIMIT,
   DEFAULT_VAULT_INVENTORY_LIMIT,
+  DetokenizeTarget,
   isBatchedDerefReason,
   isVaultConsentValid,
   ListVaultDerefsQuery,
@@ -113,9 +114,11 @@ describe('deref audit taxonomy', () => {
       'view-render',
       'model-input',
       'remediation',
+      'sighting',
       'purge',
     ]);
     expect(VaultDerefReason.safeParse('whatever').success).toBe(false);
+    expect(DetokenizeTarget.options).toEqual(['human', 'model', 'fingerprint']);
   });
 
   // Model crossings are the rows the threat model reads as its anomaly signal —

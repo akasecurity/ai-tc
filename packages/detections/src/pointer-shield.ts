@@ -8,7 +8,10 @@
 // whatever rules are installed. Without this, a matching rule would re-tokenize
 // a pointer (a pointer to a pointer), re-block a pointerized resubmit, or
 // corrupt a transcript rewrite.
-import { pointerTokenScanner } from '@akasecurity/schema';
+import { POINTER_TOKEN_PATTERN, SIGHTING_TOKEN_PATTERN } from '@akasecurity/schema';
+
+// Vault pointers and sighting tokens: neither carries a value, so neither is scanned.
+const SHIELDED_SOURCE = `${POINTER_TOKEN_PATTERN.source}|${SIGHTING_TOKEN_PATTERN.source}`;
 
 export interface ShieldedSpan {
   start: number;
@@ -27,7 +30,7 @@ export interface ShieldedText {
 export function shieldPointers(text: string): ShieldedText {
   const spans: ShieldedSpan[] = [];
   let out: string | null = null;
-  for (const match of text.matchAll(pointerTokenScanner())) {
+  for (const match of text.matchAll(new RegExp(SHIELDED_SOURCE, 'g'))) {
     spans.push({ start: match.index, end: match.index + match[0].length });
     out ??= text;
     out =

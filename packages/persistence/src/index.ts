@@ -274,9 +274,11 @@ export {
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
 } from './vault/sighting-keys.ts';
+export { SIGHTING_DOMAIN, sightingToken } from './vault/sighting-token.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,
+  PointerDigest,
   SecretVaultDeps,
   TokenizeMeta,
   TokenizeResult,

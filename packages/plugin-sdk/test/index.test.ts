@@ -145,6 +145,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'extractEgress',
   'extractManifestSdks',
   'filterUnsafeRules',
+  'findSecretSpans',
   'findingStatus',
   'fingerprintValue',
   'formatCostTotal',

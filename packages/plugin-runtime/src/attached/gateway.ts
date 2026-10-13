@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+
 import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
 import {
   canonicalRepoUrl,
@@ -61,6 +63,8 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import type { OutboundEncoder } from './outbound-encoder.ts';
+import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
@@ -168,6 +172,11 @@ export interface AttachedDataGatewayDeps {
    * scoped one.
    */
   attachment: ResolvedAttachmentScope;
+  /**
+   * Rewrites every forwarded capture's secrets into sighting tokens. Defaults to
+   * the encoder over the `~/.aka` root holding `dataDir`.
+   */
+  encoder?: OutboundEncoder;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -252,7 +261,11 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    */
   private readonly rootVerdicts = new Map<string, ScopeVerdict>();
 
-  constructor(private readonly deps: AttachedDataGatewayDeps) {}
+  private readonly encoder: OutboundEncoder;
+
+  constructor(private readonly deps: AttachedDataGatewayDeps) {
+    this.encoder = deps.encoder ?? createStoreOutboundEncoder(dirname(deps.dataDir));
+  }
 
   // ---------------------------------------------------------------------
   // The scope verdict: whether a row written locally may also be forwarded.
@@ -548,10 +561,13 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     // machine detected, not what the plane derived. Those numbers are allowed
     // to differ and are not a reconciliation signal.
     // Decision path: a hook is blocked on this, so it takes the tighter budget.
+    // Secrets leave only as sighting tokens. Encoded inside the forward so the
+    // decision-path budget bounds it, and an encoder fault is a failed forward
+    // that leaves the row owed.
     const forwarded = await this.deps.forward.run(
-      () =>
+      async () =>
         this.deps.client.ingestEvents({
-          events: [wireEvent],
+          events: [await this.encoder.encodeEvent(wireEvent)],
           ...(record.dedupe ? { dedupe: record.dedupe } : {}),
         }),
       { decisionPath: true },

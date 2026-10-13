@@ -897,10 +897,12 @@ export function toEventRow(event: IngestEvent): EventRow {
 // @akasecurity/plugin-sdk's createPluginRuntime capture().
 //
 // `location` is local-only for the same reason: the masked excerpt is stored on
-// this machine and never forwarded (see FindingLocation).
+// this machine and never forwarded (see FindingLocation). So is `variableName`,
+// the variable a detected secret is assigned to.
 export type DetectedFindingWithKey = DetectedFinding & {
   findingKey?: string | null;
   location?: FindingLocation;
+  variableName?: string;
 };
 
 // DetectedFinding (already masked + assigned id/eventId/actionTaken by the SDK)
@@ -1027,6 +1029,7 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     line: input.line ?? null,
     col: input.col ?? null,
     context: input.context ? JSON.stringify(input.context) : null,
+    variableName: input.variableName ?? null,
   };
 }
 
@@ -1142,6 +1145,17 @@ export interface FindingView {
   occurredAt: string;
   sourceTool: string;
   kind: string;
+  // The variable the secret was assigned to, when it was detected in an
+  // assignment.
+  variableName?: string;
+}
+
+// A finding's match as the read surfaces print it: the masked value, prefixed
+// by the variable it was assigned to when there is one.
+export function findingMatchLabel(view: Pick<FindingView, 'maskedMatch' | 'variableName'>): string {
+  return view.variableName === undefined
+    ? view.maskedMatch
+    : [view.variableName, view.maskedMatch].join(' = ');
 }
 
 export interface HealthSummary {

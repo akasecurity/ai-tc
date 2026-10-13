@@ -109,6 +109,9 @@ export const VaultEntry = z.object({
   // Partial-reveal preview for badges and listings. Never the raw value.
   maskedMatch: z.string(),
   provider: z.string().optional(),
+  // The variable the value was assigned to where it was detected; a name,
+  // never the value.
+  variableName: z.string().optional(),
   ciphertext: z.string(),
   nonce: z.string(),
   authTag: z.string(),
@@ -134,6 +137,8 @@ export type VaultEntry = z.infer<typeof VaultEntry>;
 export const PointerDescriptor = z.object({
   category: DetectionCategory,
   provider: z.string().optional(),
+  // The variable the value was assigned to where it was detected.
+  variableName: z.string().optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),
@@ -238,6 +243,7 @@ export const VaultInventoryEntry = z.object({
   pointerId: z.string(),
   category: DetectionCategory,
   provider: z.string().optional(),
+  variableName: z.string().optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),

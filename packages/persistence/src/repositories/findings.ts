@@ -349,6 +349,7 @@ interface FindingRowJoined {
   occurred_at: number;
   source_tool: string;
   kind: string;
+  variable_name: string | null;
 }
 
 /**
@@ -413,7 +414,7 @@ export class SqliteFindingsRepository
         `SELECT f.id, f.audit_event_id AS event_id, d.rule_id, d.category, d.severity,
                 f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
                 e.source_tool AS source_tool,
-                e.event_type AS kind
+                e.event_type AS kind, f.variable_name
          FROM audit_events e
          CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
          CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -436,6 +437,7 @@ export class SqliteFindingsRepository
         occurredAt: epochMillisToIso(r.occurred_at),
         sourceTool: r.source_tool,
         kind: r.kind,
+        ...(r.variable_name === null ? {} : { variableName: r.variable_name }),
       })),
     );
   }

@@ -10,6 +10,7 @@ import {
   canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
+  findingMatchLabel,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeValid,
@@ -1339,4 +1340,17 @@ describe('syncLaneRetentionOf', () => {
       expect(syncLaneRetentionOf(settings, throwingKeys())).toEqual({ kind: 'hold-all' });
     },
   );
+});
+
+describe('findingMatchLabel', () => {
+  it('prefixes the masked match with the variable it was assigned to', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: name })).toBe(
+      `${name} = s*****y`,
+    );
+  });
+
+  it('is the masked match alone when there is no variable name', () => {
+    expect(findingMatchLabel({ maskedMatch: 's*****y' })).toBe('s*****y');
+  });
 });

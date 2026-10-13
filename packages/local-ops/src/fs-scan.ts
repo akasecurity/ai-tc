@@ -763,6 +763,7 @@ export async function scanPathIntoStore(
         // filePath), unlike the plugin's in-flight captures, so — unlike
         // runtime.ts's isAtRest branch — a finding_key is unconditional here.
         findingKey: computeFindingKey({ ruleId: m.ruleId, filePath: file, valueFingerprint }),
+        ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
         location: locate(m),
       };
     });

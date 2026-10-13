@@ -61,13 +61,13 @@ export class SqliteInspectionFindingsRepository {
       `INSERT INTO inspection_findings
          (id, audit_event_id, inspection_definition_id, classified_data_id,
           span_start, span_end, masked_match, action_taken, confidence,
-          finding_key, first_detected_at, line, col, context)
+          finding_key, first_detected_at, line, col, context, variable_name)
        VALUES
          (:id, :auditEventId, :inspectionDefinitionId, :classifiedDataId,
           :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence,
           :findingKey,
           COALESCE(:firstDetectedAt, (SELECT started_at FROM audit_events WHERE id = :auditEventId)),
-          :line, :col, :context)
+          :line, :col, :context, :variableName)
        ON CONFLICT(id) DO UPDATE SET
          inspection_definition_id = excluded.inspection_definition_id
        ON CONFLICT (finding_key) DO UPDATE SET
@@ -81,7 +81,8 @@ export class SqliteInspectionFindingsRepository {
          confidence = excluded.confidence,
          line = excluded.line,
          col = excluded.col,
-         context = excluded.context`,
+         context = excluded.context,
+         variable_name = excluded.variable_name`,
     );
 
     // Has this (rule, masked value) already been recorded somewhere in this
@@ -173,6 +174,7 @@ export class SqliteInspectionFindingsRepository {
         line: row.line,
         col: row.col,
         context: row.context,
+        variableName: row.variableName,
       }),
     );
   }

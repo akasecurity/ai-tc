@@ -98,6 +98,8 @@ export interface TokenizeValueMeta {
   ruleId: string;
   category: DetectionCategory;
   maskedMatch: string;
+  // The variable the value was assigned to where it was detected.
+  variableName?: string | undefined;
   userAuthorized?: boolean | undefined;
 }
 
@@ -392,6 +394,7 @@ class SecretVaultGlue implements VaultGlue {
             ruleId: finding.ruleId,
             category: finding.category,
             maskedMatch: maskMatch(finding.rawMatch),
+            ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
           });
           if (replacement.startsWith('[[aka:')) pointers.unshift(replacement);
           else degraded.unshift({ category: finding.category });

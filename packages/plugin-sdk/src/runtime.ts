@@ -991,6 +991,7 @@ export function createPluginRuntime(
           actionTaken: actionForFinding(match, excepted, opts.rewritable),
           confidence: match.confidence,
           ...(findingKey ? { findingKey } : {}),
+          ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
           location: locate(match),
         };
       });

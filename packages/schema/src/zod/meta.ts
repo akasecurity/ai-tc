@@ -560,6 +560,8 @@ export const InspectionFindingInput = z.object({
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
   ...findingLocationFields,
+  // The variable a detected secret is assigned to, e.g. `STRIPE_SECRET_KEY`.
+  variableName: z.string().optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 

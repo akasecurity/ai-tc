@@ -180,7 +180,12 @@ const revealFailed = new Set<string>();
 // Set when the helper answers that revealing is off (no consent): no Show buttons.
 let consentOff = false;
 
+// Counts the times the reveals were forgotten (the pane closed, the session
+// changed): a helper answer for an earlier count is dropped, never drawn.
+let revealEpoch = 0;
+
 function forgetReveals(): void {
+  revealEpoch += 1;
   paneReveals.clear();
   revealFailed.clear();
 }
@@ -873,20 +878,23 @@ async function maskLater($: PaneDollar, id: string, until: number): Promise<void
 async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
   if (f.pointer === undefined || revealing.has(f.id)) return;
   revealing.add(f.id);
+  const epoch = revealEpoch;
   try {
     revealFailed.delete(f.id);
     const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }]);
+    if (epoch !== revealEpoch) return;
     if (answer?.isOff === true) consentOff = true;
     const revealed = answer?.isOff === true ? undefined : answer?.items.get(f.pointer)?.revealed;
     if (typeof revealed === 'string') {
       const until = (await $.clock.now()) + SHOW_FOR_MS;
+      if (epoch !== revealEpoch) return;
       paneReveals.set(f.id, { value: revealed, until });
       void maskLater($, f.id, until);
     } else if (answer?.isOff !== true) {
       revealFailed.add(f.id);
     }
   } catch {
-    revealFailed.add(f.id);
+    if (epoch === revealEpoch) revealFailed.add(f.id);
   } finally {
     revealing.delete(f.id);
     try {
@@ -912,8 +920,6 @@ function clockTime(at: number): string {
   return `${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 
-// The findings pane: the session's findings newest first, a row of severity
-// filters above them. Anything unexpected hands on to the engine's pane.
 function pointerRows(
   { Text, Button }: ReturnType<PaneDollar['ui']['resolve']>,
   $: PaneDollar,
@@ -951,6 +957,8 @@ function pointerRows(
   return rows;
 }
 
+// The findings pane: the session's findings newest first, a row of severity
+// filters above them. Anything unexpected hands on to the engine's pane.
 async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
   try {
     // Read for their subscriptions only: a new version redraws the pane.

@@ -709,6 +709,32 @@ function revealing(
   return Object.assign(asked, { asked });
 }
 
+// A reveal helper whose answer waits for release().
+function held(on: Hooks): { release(): void } {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  on('process.run', async (_$, e) => {
+    await gate;
+    const items = (JSON.parse(e.init?.stdin ?? 'null') as { items: { token: string }[] }).items;
+    return {
+      value: {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          v: 1,
+          mode: 'full',
+          items: items.map((i) => ({ token: i.token, badge: '[badge]', revealed: REVEALED })),
+        }),
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    };
+  });
+  return { release: () => release() };
+}
+
 const vaulted = (id: string) => recent(id, { action: 'vaulted', pointer: POINTER });
 
 async function texts(pane: PaneMounted): Promise<string[]> {
@@ -789,12 +815,13 @@ for (const surface of SURFACES) {
     test(`${surface}: a helper that ${name} draws couldn't reveal and stays masked`, async ($, on) => {
       const clock = mock.clock(on, { now: NOW });
       fileOf(on, lines(vaulted(ID_A)));
-      revealing(on, reply);
+      const asked = revealing(on, reply);
 
       const pane = await mountPane($, surface);
       await pane.press({ key: `show-${ID_A}` });
       await clock.settle();
 
+      expect(asked[0]?.timeoutMs).toBe(3000);
       const drawn = await texts(pane);
       expect(drawn).toContain("couldn't reveal");
       expect(drawn).toContain('[[aka:secret:…]]');
@@ -837,6 +864,41 @@ for (const surface of SURFACES) {
     expect(written.join('\n')).not.toContain(REVEALED);
     expect(raised.join('\n')).not.toContain(REVEALED);
     expect(calls.join('\n')).not.toContain(REVEALED);
+  });
+
+  test(`${surface}: an answer that lands after the session changed is never drawn`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    const file = fileOf(on, lines(vaulted(ID_A)));
+    const gate = held(on);
+
+    const pane = await mountPane($, surface);
+    const pressed = pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+    const firstId = file.id;
+    file.session(`${firstId}-after-clear`);
+    await pane.redraw();
+    file.session(firstId);
+    gate.release();
+    await pressed;
+    await clock.settle();
+    await pane.redraw();
+
+    expect(await texts(pane)).not.toContain(REVEALED);
+  });
+
+  test(`${surface}: two findings with one pointer reveal only the one pressed`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A), vaulted(ID_B)));
+    revealing(on);
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+
+    expect(await texts(pane).then((t) => t.filter((x) => x === REVEALED))).toHaveLength(1);
+    expect(await buttonKeys(pane)).toContain(`hide-${ID_A}`);
+    expect(await buttonKeys(pane)).toContain(`show-${ID_B}`);
+    expect(await buttonKeys(pane)).not.toContain(`hide-${ID_B}`);
   });
 
   test(`${surface}: a new session never shows the session before's value`, async ($, on) => {

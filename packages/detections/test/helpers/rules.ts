@@ -56,7 +56,11 @@ export function onDiskRuleCount(): number {
     (n, packDir) =>
       n +
       readdirSync(resolve(RULES_DIR, packDir), { withFileTypes: true }).filter(
-        (e) => e.isFile() && e.name.endsWith('.json') && e.name !== 'manifest.json',
+        (e) =>
+          e.isFile() &&
+          e.name.endsWith('.json') &&
+          e.name !== 'manifest.json' &&
+          e.name !== 'short-names.json',
       ).length,
     0,
   );

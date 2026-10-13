@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import { POINTER_TOKEN_ANCHORED, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
@@ -28,7 +29,7 @@ function env(home: string): Record<string, string> {
   return { ...tempHomeEnv(home), NODE_OPTIONS: '' };
 }
 
-function seed(home: string, policy: BuiltinPolicyId): void {
+function seed(home: string, policy: BuiltinPolicyId, consent = false): void {
   const db = openLocalDatabase(join(home, '.aka', 'data'));
   try {
     db.installedPacks.recordInventory(bundledDetections());
@@ -40,7 +41,17 @@ function seed(home: string, policy: BuiltinPolicyId): void {
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'settings.json'),
-    JSON.stringify({ onboardedAt: '2026-01-01T00:00:00Z' }),
+    JSON.stringify({
+      onboardedAt: '2026-01-01T00:00:00Z',
+      ...(consent
+        ? {
+            vaultConsent: {
+              acknowledgedAt: new Date().toISOString(),
+              version: VAULT_CONSENT_VERSION,
+            },
+          }
+        : {}),
+    }),
   );
 }
 
@@ -125,5 +136,73 @@ describe('the hooks record the findings they act on', () => {
       });
       expect(() => records(home)).toThrow();
     }, 'aka-findings-file-clean-');
+  });
+
+  describe.each([
+    [
+      'PreToolUse',
+      'pre-tool-use',
+      'tool-input',
+      (home: string) => ({
+        tool_name: 'Write',
+        tool_input: { file_path: join(home, 'project', 'a.txt'), content: `token ${TOKEN}` },
+        hook_event_name: 'PreToolUse',
+      }),
+    ],
+    [
+      'PostToolUse',
+      'post-tool-use',
+      'tool-output',
+      () => ({
+        tool_name: 'Bash',
+        tool_input: { command: 'cat .env' },
+        tool_response: { stdout: `GH=${TOKEN}`, stderr: '' },
+        hook_event_name: 'PostToolUse',
+      }),
+    ],
+  ])('%s under a vault policy', (_name, script, where, payload) => {
+    it('with consent: the finding is vaulted and carries the pointer', () => {
+      withTempHome((home) => {
+        seed(home, 'vault', true);
+        run(home, script, payload(home));
+
+        const { text, lines } = records(home);
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatchObject({ action: 'vaulted', where });
+        expect(POINTER_TOKEN_ANCHORED.test(String(lines[0]?.pointer))).toBe(true);
+        expect(text).not.toContain(TOKEN);
+      }, 'aka-findings-file-vaulted-');
+    });
+
+    it('without consent: the finding is redacted and carries no pointer', () => {
+      withTempHome((home) => {
+        seed(home, 'vault', false);
+        run(home, script, payload(home));
+
+        const { lines } = records(home);
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatchObject({ action: 'redacted', where });
+        expect(lines[0]).not.toHaveProperty('pointer');
+      }, 'aka-findings-file-oneway-');
+    });
+  });
+
+  it('a findings file that cannot be written leaves the decision as it was', () => {
+    const decide = (blockFile: boolean): string => {
+      let stdout = '';
+      withTempHome((home) => {
+        seed(home, 'block');
+        if (blockFile) writeFileSync(join(home, '.aka', 'data', 'mod-findings'), 'not a directory');
+        stdout = run(home, 'user-prompt-submit', {
+          prompt: `deploy with ${TOKEN} please`,
+          hook_event_name: 'UserPromptSubmit',
+        }).stdout;
+      }, 'aka-findings-file-unwritable-');
+      return stdout;
+    };
+    const normal = JSON.parse(decide(false)) as { decision?: string };
+    const blocked = JSON.parse(decide(true)) as { decision?: string };
+    expect(blocked.decision).toBe('block');
+    expect(blocked.decision).toBe(normal.decision);
   });
 });

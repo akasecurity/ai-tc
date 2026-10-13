@@ -46,12 +46,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import {
-  actionFromCapture,
-  appendModFindings,
-  modFindingsFrom,
-  pointersByRawMatch,
-} from '../mod/findings-log.ts';
+import { actionFromCapture, pointersByRawMatch, recordModFindings } from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
@@ -169,25 +164,29 @@ async function main(): Promise<void> {
             reversible,
             sighting: { location: 'prompt', kind: 'prompt' },
           });
-          vaultedWith = pointersByRawMatch(findings, reversible, tokenized.pointers);
+          try {
+            vaultedWith = pointersByRawMatch(findings, reversible, tokenized.pointers);
+          } catch {
+            // A record of the pointers never changes the rewrite.
+          }
           return tokenized;
         }
       : undefined,
     writeClipboard,
   });
   // The widgets' record of what was found, unless the mod's helper already wrote
-  // it. A vaulted finding is one whose pointer the user was handed in the block.
+  // it. Nothing here may reach the decision, so a fault in any of it is dropped.
   if (!handedOff && sessionId !== undefined) {
-    const first = vaultedWith.values().next();
-    const vaulted =
-      first.done !== true &&
-      decision !== null &&
-      'reason' in decision &&
-      decision.reason.includes(first.value);
-    appendModFindings(
-      config.dataDir,
-      sessionId,
-      modFindingsFrom({
+    try {
+      // All or nothing: the block reason carries one rewrite of the whole prompt,
+      // so one pointer in it shows the user was handed every pointer minted.
+      const first = vaultedWith.values().next();
+      const vaulted =
+        first.done !== true &&
+        decision !== null &&
+        'reason' in decision &&
+        decision.reason.includes(first.value);
+      recordModFindings(config.dataDir, sessionId, {
         sessionId,
         kind: 'prompt',
         text: prompt,
@@ -195,8 +194,10 @@ async function main(): Promise<void> {
         where: 'prompt',
         action: actionFromCapture(result.action, vaulted),
         pointers: vaultedWith,
-      }),
-    );
+      });
+    } catch {
+      // A record the widgets cannot show is not a reason to change the verdict.
+    }
   }
   if (decision !== null) {
     await emit(decision);

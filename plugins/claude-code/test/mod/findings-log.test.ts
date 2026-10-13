@@ -10,6 +10,8 @@ import {
   findingId,
   modFindingsFrom,
   modFindingsPath,
+  pointersByRawMatch,
+  recordModFindings,
 } from '../../src/mod/findings-log.ts';
 
 const match = (ruleId: string, start: number, end: number, rawMatch: string) => ({
@@ -107,5 +109,40 @@ describe('appendModFindings', () => {
     expect(() => {
       appendModFindings('/dev/null/nope', 's1', blocked());
     }).not.toThrow();
+  });
+});
+
+describe('pointersByRawMatch', () => {
+  const a = match('secrets/github-pat', 0, 4, 'aaaa');
+  const b = match('secrets/github-pat', 10, 14, 'bbbb');
+
+  it('pairs pointers with kept findings in span order', () => {
+    const map = pointersByRawMatch([b, a], undefined, ['p1', 'p2']);
+    expect(map.get('aaaa')).toBe('p1');
+    expect(map.get('bbbb')).toBe('p2');
+  });
+
+  it('answers nothing when the counts differ', () => {
+    expect(pointersByRawMatch([a, b], undefined, ['p1']).size).toBe(0);
+  });
+});
+
+describe('recordModFindings', () => {
+  it('never throws when a record cannot be built', () => {
+    const result = {
+      get findings(): never {
+        throw new Error('boom');
+      },
+    };
+    expect(
+      recordModFindings(tmpdir(), 's1', {
+        sessionId: 's1',
+        kind: 'prompt',
+        text: 'x',
+        result: result as never,
+        where: 'prompt',
+        action: 'blocked',
+      }),
+    ).toEqual([]);
   });
 });

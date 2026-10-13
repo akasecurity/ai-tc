@@ -46,7 +46,7 @@ export function modFindingsFrom(input: {
   result: CaptureResult;
   where: ModFindingWhere;
   action: ModFindingAction;
-  pointers?: ReadonlyMap<string, string>;
+  pointers?: ReadonlyMap<string, string> | undefined;
   now?: Date;
 }): ModFinding[] {
   const at = (input.now ?? new Date()).toISOString();
@@ -116,4 +116,36 @@ export function pointersByRawMatch(
     if (pointer !== undefined) map.set(f.rawMatch, pointer);
   });
   return map;
+}
+
+/** The pointers the vault minted for a field, keyed by the field's text. */
+export type PointersByText = Map<string, ReadonlyMap<string, string>>;
+
+/**
+ * Builds the records for one scanned field and appends them, inside one
+ * try/catch so no fault here can reach the decision the caller is about to make.
+ * Answers the records built, or none.
+ */
+export function recordModFindings(
+  dataDir: string,
+  sessionId: string,
+  input: Parameters<typeof modFindingsFrom>[0],
+): ModFinding[] {
+  try {
+    const records = modFindingsFrom(input);
+    appendModFindings(dataDir, sessionId, records);
+    return records;
+  } catch {
+    return [];
+  }
+}
+
+/** A tool field's action: vaulted when the vault rewrote its redacted value to a pointer. */
+export function toolFieldAction(
+  result: CaptureResult,
+  pointers: ReadonlyMap<string, string> | undefined,
+): ModFindingAction {
+  return result.action === 'redact' && pointers !== undefined && pointers.size > 0
+    ? 'vaulted'
+    : actionFromCapture(result.action, false);
 }

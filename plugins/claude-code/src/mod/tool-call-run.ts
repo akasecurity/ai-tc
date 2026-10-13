@@ -22,13 +22,14 @@
  * stderr.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
-import type { ModFinding } from '@akasecurity/schema';
 
+import type { ScannedField } from '../hooks/pre-tool-use-decision.ts';
 import { inputEventKind } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../hooks/shared.ts';
 import { countFailOpen, getString, parseJson } from '../hooks/shared.ts';
-import { actionFromCapture, appendModFindings, modFindingsFrom } from './findings-log.ts';
+import type { PointersByText } from './findings-log.ts';
+import { recordModFindings, toolFieldAction } from './findings-log.ts';
 import { authorizeValues, recordToolHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
 import { answerFromOutputs } from './tool-call-answer.ts';
@@ -54,7 +55,8 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   // exception covers, a fallback that only warns), and the hook, which cannot see
   // the grants now spent, takes them from the note rather than judging them again.
   const letThroughValues: string[] = [];
-  const records: ModFinding[] = [];
+  let scanned: readonly ScannedField[] = [];
+  let vaultedPointers: PointersByText = new Map();
   const sessionId = getString(input, 'sessionId');
   const run = await runPreToolUse(
     {
@@ -69,21 +71,11 @@ async function toolCall(stdin: string): Promise<HelperRun> {
     },
     {
       mode: 'mod',
-      onScanned: (scanned) => {
-        for (const { text, result } of scanned) {
+      onScanned: (fields, vaulted) => {
+        scanned = fields;
+        vaultedPointers = vaulted;
+        for (const { result } of fields) {
           for (const finding of result.findings) letThroughValues.push(finding.rawMatch);
-          if (sessionId !== undefined) {
-            records.push(
-              ...modFindingsFrom({
-                sessionId,
-                kind: inputEventKind(tool),
-                text,
-                result,
-                where: 'tool-input',
-                action: actionFromCapture(result.action, false),
-              }),
-            );
-          }
         }
       },
     },
@@ -93,8 +85,22 @@ async function toolCall(stdin: string): Promise<HelperRun> {
 
   const answer = answerFromOutputs(outputs);
   const { dataDir } = loadConfig();
-  if (sessionId !== undefined) appendModFindings(dataDir, sessionId, records);
-  answer.findings = records;
+  if (sessionId !== undefined) {
+    for (const { text, result } of scanned) {
+      const pointers = vaultedPointers.get(text);
+      answer.findings.push(
+        ...recordModFindings(dataDir, sessionId, {
+          sessionId,
+          kind: inputEventKind(tool),
+          text,
+          result,
+          where: 'tool-input',
+          action: toolFieldAction(result, pointers),
+          pointers,
+        }),
+      );
+    }
+  }
   if (answer.deny === null) {
     recordToolHandoff(
       dataDir,

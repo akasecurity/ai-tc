@@ -18,10 +18,12 @@
  * Fail-open: any error → no output, exit 0.
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { actionFromCapture, appendModFindings, modFindingsFrom } from '../mod/findings-log.ts';
+import type { PointersByText } from '../mod/findings-log.ts';
+import { pointersByRawMatch, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
@@ -123,6 +125,8 @@ async function main(): Promise<void> {
   const vaultGlue = isVaultConsentValid(config.settings.vaultConsent) ? createVaultGlue() : null;
 
   let outcome: ResponseScanOutcome;
+  const capturedFields: { text: string; result: CaptureResult }[] = [];
+  const vaulted: PointersByText = new Map();
   try {
     // persist:'with-findings': benign responses record nothing (matching the
     // pre-structured-scan behavior); 'always' would copy every Read file and
@@ -136,36 +140,44 @@ async function main(): Promise<void> {
           { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
           { persist: 'with-findings' },
         );
-        if (sessionId !== undefined) {
-          appendModFindings(
-            config.dataDir,
-            sessionId,
-            modFindingsFrom({
-              sessionId,
-              kind: 'response',
-              text,
-              result,
-              where: 'tool-output',
-              action: actionFromCapture(result.action, false),
-            }),
-          );
-        }
+        capturedFields.push({ text, result });
         return result;
       },
       vaultGlue
-        ? (text, findings, reversible) =>
-            vaultGlue.tokenizeText(text, {
+        ? async (text, findings, reversible) => {
+            const tokenized = await vaultGlue.tokenizeText(text, {
               findings,
               reversible,
               sighting: filePath
                 ? { location: filePath, kind: 'file' }
                 : { location: `${toolName} output`, kind: 'tool-output' },
-            })
+            });
+            try {
+              vaulted.set(text, pointersByRawMatch(findings, reversible, tokenized.pointers));
+            } catch {
+              // A record of the pointers never changes the rewrite.
+            }
+            return tokenized;
+          }
         : undefined,
       { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();
+  }
+  if (sessionId !== undefined) {
+    for (const { text, result } of capturedFields) {
+      const pointers = vaulted.get(text);
+      recordModFindings(config.dataDir, sessionId, {
+        sessionId,
+        kind: 'response',
+        text,
+        result,
+        where: 'tool-output',
+        action: toolFieldAction(result, pointers),
+        pointers,
+      });
+    }
   }
   // Out of time before every field was scanned: what was found is still
   // acted on, and the rest passed through, so count it like any fail-open.

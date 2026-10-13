@@ -5,6 +5,36 @@ import type { Hooks } from './harness.js';
 import { SECRET } from './samples.generated.js';
 import { ACTION_OF, fill, RULE_IDS, SCENARIOS } from './scenarios.generated.js';
 
+// The findings pane, mounted on the terminal: what the store tests read back.
+type Dollar = Parameters<Parameters<typeof test>[1]>[0];
+
+async function mountPane(
+  $: Dollar,
+  surface: 'terminal' | 'desktop' = 'terminal',
+): Promise<PaneMounted> {
+  return $.ui.mount({
+    plugin: 'aka',
+    surface,
+    component: 'Pane',
+    requestId: 'aka-findings',
+    props: { title: 'AKA findings', isFocused: false, bodyColumns: 80, placement: 'inline' },
+  } as never) as unknown as PaneMounted;
+}
+
+interface PaneMounted {
+  find(query: { key: string }): Promise<{ text: string } | undefined>;
+  findAll(query: {
+    type: string;
+  }): Promise<{ key: string | undefined; text: string; props: Record<string, unknown> }[]>;
+  press(target: { key: string }): Promise<unknown>;
+}
+
+async function paneRowKeys($: Dollar): Promise<string[]> {
+  const pane = await mountPane($);
+  const boxes = await pane.findAll({ type: 'Box' });
+  return boxes.map((b) => b.key ?? '').filter((key) => key.startsWith('row-'));
+}
+
 // The mod's findings store: what it holds from helper answers and from the
 // session's findings file, observed through the version counter in $.state.
 
@@ -76,6 +106,7 @@ test('an invalid finding is dropped and does not fail the answer', async ($, on)
 
   expect(seen[0]).toContain('[REDACTED:SECRET]');
   expect(bumps).toEqual([1]);
+  expect(await paneRowKeys($)).toEqual([`row-${ID_B}`]);
 });
 
 test('a findings value that is not a list is read as none', async ($, on) => {
@@ -93,7 +124,7 @@ test('a findings value that is not a list is read as none', async ($, on) => {
 test('the same finding from the helper and the file is held once', async ($, on) => {
   const bumps = counter(on);
   const line = JSON.stringify(record(ID_A));
-  fileSystem(
+  const reads = fileSystem(
     on,
     () => SECRET_REDACT,
     () => ({ text: `${line}\n`, mtimeMs: 5 }),
@@ -103,7 +134,9 @@ test('the same finding from the helper and the file is held once', async ($, on)
 
   await $.prompt.submit({ text: prompt });
 
+  expect(reads).toContain(FINDINGS_PATH);
   expect(bumps).toEqual([1]);
+  expect(await paneRowKeys($)).toEqual([`row-${ID_A}`]);
 });
 
 test('a truncated last line in the file leaves the complete lines taken', async ($, on) => {
@@ -120,6 +153,7 @@ test('a truncated last line in the file leaves the complete lines taken', async 
   await $.prompt.submit({ text: 'nothing sensitive here' });
 
   expect(bumps).toEqual([1]);
+  expect((await paneRowKeys($)).sort()).toEqual([`row-${ID_A}`, `row-${ID_B}`]);
 });
 
 test('a file over 4 MiB per stat is not read', async ($, on) => {
@@ -436,5 +470,167 @@ for (const kind of ['deny', 'rewrite'] as const) {
     await clock.settle();
 
     expect(raised).toEqual(kind === 'deny' ? ['Blocked: Prod key'] : []);
+  });
+}
+
+// The status line, the findings command and the findings pane.
+
+function statuses(on: Hooks): (string | undefined)[] {
+  const calls: (string | undefined)[] = [];
+  on('ui.status', (_$, e) => {
+    calls.push((e as unknown as { text?: string }).text);
+    return { value: undefined } as never;
+  });
+  return calls;
+}
+
+// A helper whose answer carries whatever findings the test sets next.
+function answeringWith(on: Hooks): { next(findings: unknown[]): void } {
+  let current: unknown[] = [];
+  helper(on, (request) =>
+    JSON.stringify({
+      v: 1,
+      text: request.stdin.text.replaceAll(SECRET, '[REDACTED:SECRET]'),
+      note: null,
+      findings: current,
+    }),
+  );
+  return {
+    next(findings) {
+      current = findings;
+    },
+  };
+}
+
+test('the status line counts critical, high and other findings', async ($, on) => {
+  mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  answering(on, [record(ID_A, { severity: 'critical' }), record(ID_B, { severity: 'high' })]);
+
+  await $.prompt.submit({ text: prompt });
+
+  expect(calls.at(-1)).toBe('AKA · redacting in place · 1 critical  1 high  0 other');
+});
+
+test('findings within one second write the status line once, a later one again', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  const answer = answeringWith(on);
+  const ids = ['1', '2', '3', '4'].map((n) => n.repeat(16));
+
+  for (const id of ids.slice(0, 3)) {
+    answer.next([record(id)]);
+    await $.prompt.submit({ text: prompt });
+  }
+  expect(calls).toEqual(['AKA · redacting in place · 0 critical  1 high  0 other']);
+
+  await clock.advance(1000);
+  answer.next([record(ids[3] as string)]);
+  await $.prompt.submit({ text: prompt });
+  expect(calls).toEqual([
+    'AKA · redacting in place · 0 critical  1 high  0 other',
+    'AKA · redacting in place · 0 critical  4 high  0 other',
+  ]);
+});
+
+test('the findings-pane command opens the pane', async ($, on) => {
+  const opened: unknown[] = [];
+  on('ui.open', (_$, e) => {
+    opened.push(e);
+    return { value: { isPlaced: true } } as never;
+  });
+  on('session.start', (_$, e) => ({ cwd: e.cwd }));
+  on('env.get', () => ({ value: undefined }));
+  const registered: unknown[] = [];
+  on('command.register', (_$, e) => {
+    registered.push(e);
+    return { value: undefined } as never;
+  });
+
+  await $.session.start({ cwd: HOME, surface: null, isInteractive: true });
+  await $.command.run({ command: 'findings-pane' } as never);
+
+  expect(registered).toEqual([expect.objectContaining({ name: 'findings-pane' })]);
+  expect(opened).toEqual([expect.objectContaining({ id: 'aka-findings' })]);
+});
+
+for (const surface of SURFACES) {
+  const time = (at: string): string => {
+    const date = new Date(at);
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  };
+
+  test(`${surface}: pane rows are newest first, in the severity colour, with the time`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    const older = '2026-10-13T10:00:00.000Z';
+    const newer = '2026-10-13T10:00:10.000Z';
+    fileOf(
+      on,
+      lines(
+        record(ID_A, { at: older, severity: 'high', shortName: 'Old one' }),
+        record(ID_B, { at: newer, severity: 'critical', shortName: 'New one' }),
+      ),
+    );
+
+    const pane = await mountPane($, surface);
+
+    const rows = (await pane.findAll({ type: 'Text' })).filter((t) => t.text.includes('·'));
+    expect(rows.map((r) => r.text)).toEqual([
+      `CRITICAL  New one · redacted · prompt  ${time(newer)}`,
+      `HIGH  Old one · redacted · prompt  ${time(older)}`,
+    ]);
+    expect(rows[0]?.props).toMatchObject({ color: 'error' });
+    expect(rows[1]?.props).toMatchObject({ color: 'warning' });
+  });
+
+  test(`${surface}: filter buttons narrow the rows and filter-all restores them`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    fileOf(
+      on,
+      lines(
+        recent(ID_A, { severity: 'high' }),
+        recent(ID_B, { severity: 'critical' }),
+        recent('c'.repeat(16), { severity: 'low' }),
+      ),
+    );
+
+    const pane = await mountPane($, surface);
+    const keys = async (): Promise<string[]> =>
+      (await pane.findAll({ type: 'Box' }))
+        .map((b) => b.key ?? '')
+        .filter((k) => k.startsWith('row-'))
+        .sort();
+
+    expect(await keys()).toHaveLength(3);
+    await pane.press({ key: 'filter-critical' });
+    expect(await keys()).toEqual([`row-${ID_B}`]);
+    await pane.press({ key: 'filter-all' });
+    expect(await keys()).toHaveLength(3);
+  });
+
+  test(`${surface}: an empty pane says so`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    fileOf(on, '');
+
+    const pane = await mountPane($, surface);
+
+    expect((await pane.findAll({ type: 'Text' })).map((t) => t.text)).toEqual([
+      'No findings in this session.',
+    ]);
+  });
+
+  test(`${surface}: a pointer is drawn masked, never whole`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    fileOf(on, lines(recent(ID_A, { action: 'vaulted', pointer: POINTER })));
+
+    const pane = await mountPane($, surface);
+
+    const texts = (await pane.findAll({ type: 'Text' })).map((t) => t.text);
+    expect(texts).toContain('[[aka:secret:…]]');
+    expect(texts.join('\n')).not.toContain('A'.repeat(26));
   });
 }

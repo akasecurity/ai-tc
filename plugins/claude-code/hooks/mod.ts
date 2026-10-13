@@ -15,8 +15,10 @@ import {
   type PointerWant,
   revealPointers,
   severityStyle,
+  statusText,
   toolCallNeedsHelper,
   type ViewFinding,
+  type ViewSeverity,
 } from './engine.js';
 
 // The mod half of AKA's prompt redaction. When the user's policy says `redact`
@@ -109,6 +111,34 @@ function heldFindings(): readonly ViewFinding[] {
   return findingsHeld;
 }
 
+const STATUS_EVERY_MS = 1000;
+
+// When the status line was last written (a `$.clock.now()` reading), and what it said.
+let lastStatusAt: number | undefined;
+let lastStatusText: string | undefined;
+
+// Writes the status line from the held list, at most once a second, and only when
+// its text changed: a burst of findings shows its first count and the next call
+// after the second shows the rest. `force` skips the wait. A render's `$` has no
+// status line, so a call from one writes nothing and the next prompt or tool call
+// writes it. Never throws.
+async function refreshStatus($: Dollar, force = false): Promise<void> {
+  try {
+    const text = statusText(heldFindings(), 'in-place');
+    if (text === lastStatusText) return;
+    if (lastStatusText === undefined && heldFindings().length === 0) return;
+    const now = await $.clock.now();
+    const waiting =
+      lastStatusAt !== undefined && now >= lastStatusAt && now - lastStatusAt < STATUS_EVERY_MS;
+    if (waiting && !force) return;
+    await $.ui.status(text);
+    lastStatusAt = now;
+    lastStatusText = text;
+  } catch {
+    // The status line is a courtesy.
+  }
+}
+
 // A new session id (a /clear or a resume in the same process) starts an empty
 // list: the findings of the session before are not shown in this one. Never throws.
 async function followSession($: Dollar): Promise<void> {
@@ -120,7 +150,10 @@ async function followSession($: Dollar): Promise<void> {
     findingsHeld = [];
     dismissedBefore = 0;
     lastFile = undefined;
-    if (hadFindings) await update($, findingsVersion, (version) => (version ?? 0) + 1);
+    if (hadFindings) {
+      await update($, findingsVersion, (version) => (version ?? 0) + 1);
+      await refreshStatus($, true);
+    }
   } catch {
     // The list stays as it was.
   }
@@ -136,6 +169,7 @@ async function takeFindings($: Dollar, incoming: readonly ViewFinding[]): Promis
     if (incoming.every((f) => known.has(f.id))) return;
     findingsHeld = mergeFindings(findingsHeld, incoming);
     await update($, findingsVersion, (version) => (version ?? 0) + 1);
+    await refreshStatus($);
   } catch {
     // The widgets show what they already held.
   }
@@ -737,9 +771,102 @@ async function dismissBand($: BandDollar): Promise<void> {
   }
 }
 
+const PANE_ID = 'aka-findings';
+
+// A bare counter, like the findings one: a filter press bumps it to redraw the pane.
+const paneVersion = { plugin: 'aka', key: 'pane' } as const;
+
+type PaneDollar = Parameters<Hook<'ui.render'>>[0];
+
+let paneFilter: ViewSeverity | 'all' = 'all';
+
+const PANE_FILTERS: readonly (ViewSeverity | 'all')[] = [
+  'all',
+  'critical',
+  'high',
+  'medium',
+  'low',
+];
+
+async function setPaneFilter($: PaneDollar, filter: ViewSeverity | 'all'): Promise<void> {
+  try {
+    paneFilter = filter;
+    await update($, paneVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The pane stays as it was.
+  }
+}
+
+// The pointer with everything after its category hidden: a pane never draws
+// the part that locates a value.
+function maskedPointer(pointer: string): string {
+  const prefix = /^\[\[aka:[a-z][a-z0-9_]*:/.exec(pointer)?.[0];
+  return prefix === undefined ? '[[aka:…]]' : `${prefix}…]]`;
+}
+
+function clockTime(at: number): string {
+  const date = new Date(at);
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+// The findings pane: the session's findings newest first, a row of severity
+// filters above them. Anything unexpected hands on to the engine's pane.
+async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
+  try {
+    // Read for their subscriptions only: a new version redraws the pane.
+    await $.state.get(findingsVersion);
+    await $.state.get(paneVersion);
+    await refreshFromFile($);
+    const { Box, Text, Button } = $.ui.resolve(e);
+    const rows = heldFindings().filter((f) => paneFilter === 'all' || f.severity === paneFilter);
+    return h(
+      Box,
+      { flexDirection: 'column', key: 'aka-pane' },
+      h(
+        Box,
+        { flexDirection: 'row', gap: 1, key: 'filters' },
+        ...PANE_FILTERS.map((filter) =>
+          h(Button, {
+            key: `filter-${filter}`,
+            label: filter === 'all' ? 'All' : severityStyle(filter).word,
+            variant: filter === paneFilter ? 'primary' : 'secondary',
+            onPress: () => void setPaneFilter($, filter),
+          }),
+        ),
+      ),
+      rows.length === 0
+        ? h(Text, { key: 'empty', dimColor: true }, 'No findings in this session.')
+        : null,
+      ...rows.map((f) =>
+        h(
+          Box,
+          { flexDirection: 'column', key: `row-${f.id}` },
+          h(
+            Text,
+            { color: severityStyle(f.severity).color, bold: f.severity === 'critical' },
+            `${chipText(f)}  ${clockTime(f.at)}`,
+          ),
+          f.pointer === undefined ? null : h(Text, { dimColor: true }, maskedPointer(f.pointer)),
+        ),
+      ),
+    );
+  } catch {
+    return next(e);
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await followSession($);
+    try {
+      await $.command.register({
+        name: 'findings-pane',
+        description: "Show this session's AKA findings",
+      });
+    } catch {
+      // The band still points at the pane; the command is the only way in.
+    }
     await noteModRunning($);
     return next(e);
   });
@@ -760,6 +887,7 @@ export const register: Register = (on) => {
             ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
           });
     await refreshFromFile($);
+    await refreshStatus($);
     return result;
   });
 
@@ -781,6 +909,16 @@ export const register: Register = (on) => {
   on('ui.render', { component: 'AssistantMessage' }, revealRender);
   on('ui.render', { component: 'UserMessage' }, revealRender);
   on('ui.render', { component: 'AbovePrompt' }, bandRender);
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, paneRender);
+
+  on('command.run', { command: 'findings-pane' }, async ($) => {
+    try {
+      await $.ui.open({ id: PANE_ID, title: 'AKA findings', focus: true, closeOnEscape: true });
+    } catch {
+      // Nothing to open.
+    }
+    return { text: '' };
+  });
 
   on('tool.call', async ($, e, next) => {
     const input = toolArguments(e);

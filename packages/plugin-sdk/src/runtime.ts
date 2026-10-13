@@ -1066,6 +1066,20 @@ export function createPluginRuntime(
     }
   }
 
+  async function secretsIn(text: string, context?: ScanContext): Promise<MatchResult[]> {
+    try {
+      await ensureInitialized();
+      if (!scanner) return [];
+      const shielded = shieldPointers(text);
+      const matched = await scanner.scan(shielded.text, context);
+      return withVariableNames(dropShieldedFindings(matched, shielded.spans), shielded.text).filter(
+        (finding) => finding.category === 'secret',
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
     const evaluated = await evaluateCapture(input, opts);
     await persistCapture(input, opts, evaluated);
@@ -1130,6 +1144,7 @@ export function createPluginRuntime(
     capture,
     captureDeferred,
     enforcedIn,
+    secretsIn,
     rulesetFingerprint,
     scanIsolationDegraded,
     close,
@@ -1206,6 +1221,9 @@ export interface PluginRuntime {
   // The detections in `text` whose policy resolves to block or redact, with
   // nothing spent or written (no exception consumed, no ledger row, no event).
   enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
+  // The secret-category detections in `text`, each with the variable it is
+  // assigned to, with nothing spent or written.
+  secretsIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
   // True once the pulled/custom-pack regex rules were dropped mid-process

@@ -10,12 +10,27 @@
 // scanAllRepos shares one gateway + runtime across all discovered repos so
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
-import { existsSync, readFileSync } from 'node:fs';
-import { extname, isAbsolute, relative } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, extname, isAbsolute, relative } from 'node:path';
 
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import type {
+  CredentialSightingsOutcome,
+  CredentialSightingsSend,
+  ManagedSettings,
+  ScanSighting,
+  SightingKey,
+} from '@akasecurity/plugin-runtime';
+import {
+  combineCredentialSightingsOutcomes,
+  planSightingShare,
+  resolveDataGateway,
+  sendScanSightings,
+  sightingToken,
+} from '@akasecurity/plugin-runtime';
 import type {
   AtRestVault,
+  CaptureResult,
   DataGateway,
   FileEgressHits,
   ManifestKind,
@@ -26,19 +41,23 @@ import type {
   SourceTool,
 } from '@akasecurity/plugin-sdk';
 import {
+  canonicalizeScanPath,
   contentHashOf,
   createPluginRuntime,
   EGRESS_CODE_EXTENSIONS,
   EGRESS_VERSION_MATERIAL,
   extractEgress,
   extractManifestSdks,
+  isProtectedScanPath,
   isVendoredPath,
   manifestKindOf,
   openScanVault,
+  protectedScanRoots,
   resolveEgress,
   resolveNonGitProject,
   resolveRepoIdentity,
   resolveWorktreeRoot,
+  scanFileKind,
   toPosix,
 } from '@akasecurity/plugin-sdk';
 
@@ -47,7 +66,7 @@ import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
 import { type FileRepository, type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
-import { type WalkedFileMeta, type WalkOptions, walkSourceFiles } from './walk.ts';
+import { type WalkedFileMeta, type WalkOptions, walkSourceFiles, walkTree } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
 // findings originate from (required!).
@@ -56,6 +75,10 @@ import { type WalkedFileMeta, type WalkOptions, walkSourceFiles } from './walk.t
 // root itself (see scanDir), so the walk's own option is not one a host sets.
 export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot'> {
   sourceTool: SourceTool;
+  // Replaces the attached transport the scan's credential sightings take.
+  sendSightings?: CredentialSightingsSend | undefined;
+  // Replaces the managed settings file; `null` reads a machine with no administrator.
+  managedSettings?: ManagedSettings | null | undefined;
 }
 
 // scanAllRepos options: discovery scope + scan options.
@@ -72,6 +95,8 @@ export interface WorktreeScanSummary {
   gitignoredFindings: number;
   byRule: Record<string, number>;
   bySeverity: Record<string, number>;
+  // What the scan did with the credential sightings it found.
+  sightings?: CredentialSightingsOutcome;
 }
 
 export interface MultiRepoScanSummary {
@@ -82,6 +107,7 @@ export interface MultiRepoScanSummary {
   totalGitignoredFindings: number;
   byRule: Record<string, number>;
   bySeverity: Record<string, number>;
+  sightings?: CredentialSightingsOutcome;
 }
 
 // The previously scanned state loaded once per scan (already filtered to the
@@ -101,17 +127,22 @@ interface LedgerContext {
 // the re-read forever, so their egress would never be extracted once it is
 // switched back on. Whether the scan vaults is folded in for the same reason:
 // files skipped as unchanged while vault consent was absent are re-read once
-// consent is granted, so their secrets are vaulted.
+// consent is granted, so their secrets are vaulted. So is whether the scan
+// shares credential sightings, and under which key version: files skipped while
+// sharing was off are re-read once it is on, so their sightings are sent.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
   dataSharesInPlace: boolean,
   vaulting: boolean,
+  sightings: SightingRun | undefined,
 ): Promise<LedgerContext> {
   const egressMaterial = `${dataSharesInPlace ? 'egress:on' : 'egress:off'}\n${EGRESS_VERSION_MATERIAL}`;
   const vaultMaterial = vaulting ? ':vault:on' : '';
+  const sightingMaterial =
+    sightings === undefined ? '' : `:sightings:v${String(sightings.key.keyVersion)}`;
   const rulesetHash = contentHashOf(
-    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}`,
+    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
   return {
     previous: await gateway.scanLedger(rulesetHash),
@@ -417,6 +448,113 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
   return decided.key !== prev.scopeKey || decided.root !== prev.scopeRoot;
 }
 
+// A scan that shares credential sightings: the AKA home whose attachment it
+// sends through, the key it computes tokens with, and the transport seams.
+interface SightingRun {
+  base: string;
+  key: SightingKey;
+  send: CredentialSightingsSend | undefined;
+  managedSettings: ManagedSettings | null | undefined;
+}
+
+// A dotenv file is read only for its sightings: its content is never recorded
+// or forwarded by this pass.
+const MAX_SECRET_FILE_BYTES = 512 * 1024;
+
+// The secret matches of one file as sighting tokens. A value that cannot be
+// reduced to a token is left out.
+function sightingsOf(
+  key: SightingKey,
+  matches: CaptureResult['findings'],
+  file: { path: string; gitignored: boolean },
+  scopeKey: string | undefined,
+): ScanSighting[] {
+  const found: ScanSighting[] = [];
+  for (const match of matches) {
+    if (match.category !== 'secret') continue;
+    try {
+      found.push({
+        token: sightingToken(key, match.rawMatch),
+        ruleId: match.ruleId,
+        ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
+        file: file.path,
+        gitignored: file.gitignored,
+        scopeKey,
+      });
+    } catch {
+      // Left out; the scan goes on.
+    }
+  }
+  return found;
+}
+
+// The sightings in the dotenv files under `rootDir` that the source walk did
+// not read. Each is read into memory, matched, and dropped; nothing of it is
+// stored. The protected credential paths are never read.
+async function dotenvSightings(
+  runtime: PluginRuntime,
+  run: SightingRun,
+  rootDir: string,
+  opts: ScanOptions,
+  read: ReadonlySet<string>,
+  scopeKeyOf: ScopeKeyLookup,
+): Promise<ScanSighting[]> {
+  const found: ScanSighting[] = [];
+  let protectedRoots: readonly string[] | undefined;
+  for (const file of walkTree(rootDir, {
+    excludePatterns: opts.excludePatterns,
+    trackGitignore: true,
+  })) {
+    if (read.has(file.path) || scanFileKind(file.name) !== 'secret-bearing') continue;
+    try {
+      protectedRoots ??= protectedScanRoots(homedir(), run.base);
+      if (isProtectedScanPath(canonicalizeScanPath(file.path), protectedRoots)) continue;
+      if (statSync(file.path).size > MAX_SECRET_FILE_BYTES) continue;
+      const content = readFileSync(file.path, 'utf8');
+      const relativePath = toPosix(relative(rootDir, file.path));
+      found.push(
+        ...sightingsOf(run.key, await runtime.secretsIn(content), file, scopeKeyOf(relativePath)),
+      );
+    } catch {
+      // An unreadable file has no sightings.
+    }
+  }
+  return found;
+}
+
+// Send this root's sightings under its project. Returns the outcome and whether
+// the send failed, in which case the files that produced sightings are not
+// ledgered, so the next scan reads and sends them again.
+async function shareSightings(
+  run: SightingRun,
+  rootDir: string,
+  sightings: readonly ScanSighting[],
+): Promise<CredentialSightingsOutcome> {
+  const project = resolveEgressProject(rootDir);
+  if (project === null) {
+    return {
+      status: 'sent',
+      shared: 0,
+      keptLocal: 0,
+      unsent: sightings.length,
+      failure: 'unreachable',
+    };
+  }
+  return sendScanSightings(
+    run.base,
+    {
+      project: {
+        projectKey: project.projectKey,
+        name: project.project,
+        root: project.root,
+        git: project.projectKey.startsWith('git:'),
+      },
+      sightings,
+    },
+    { send: run.send, managedSettings: run.managedSettings },
+  );
+}
+
 // What a scan without a register records: no repository. Only a scan with a
 // register has any use for one.
 const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
@@ -430,8 +568,13 @@ async function scanDir(
   rootDir: string,
   opts: ScanOptions,
   vault: AtRestVault | undefined,
+  sightingRun: SightingRun | undefined,
 ): Promise<WorktreeScanSummary> {
   const byRule: Record<string, number> = {};
+  const sightings: ScanSighting[] = [];
+  // Every path the source walk read, and those of them that held a secret.
+  const readPaths = new Set<string>();
+  const sightingPaths = new Set<string>();
   const bySeverity: Record<string, number> = {};
   const updates: ScanLedgerEntry[] = [];
   let scanned = 0;
@@ -562,8 +705,11 @@ async function scanDir(
     //
     // A vaulting scan never skips here either: each path holding a vaulted
     // value records its own sighting, which only a capture of that path does.
+    // A sharing scan never skips here either: a duplicate in another place is
+    // another sighting.
     if (
       vault === undefined &&
+      sightingRun === undefined &&
       seen.has(hash) &&
       (await gateway.openAtRestKeysForPath(file.path)).length === 0
     ) {
@@ -607,6 +753,13 @@ async function scanDir(
       { persist: 'with-findings', dedupe: 'content-hash', ...(vault ? { vault } : {}) },
     );
 
+    readPaths.add(file.path);
+    if (sightingRun !== undefined) {
+      const found = sightingsOf(sightingRun.key, result.findings, file, scopeKey);
+      if (found.length > 0) sightingPaths.add(file.path);
+      sightings.push(...found);
+    }
+
     for (const finding of result.findings) {
       findings++;
       if (file.gitignored) gitignoredFindings++;
@@ -640,13 +793,36 @@ async function scanDir(
     }
   }
 
+  let sightingOutcome: CredentialSightingsOutcome | undefined;
+  if (sightingRun !== undefined) {
+    sightings.push(
+      ...(await dotenvSightings(runtime, sightingRun, rootDir, opts, readPaths, scopeKeyOf)),
+    );
+    sightingOutcome = await shareSightings(sightingRun, rootDir, sightings);
+    if (sightingOutcome.status === 'sent' && sightingOutcome.failure !== undefined) {
+      const unsent = updates.filter((entry) => !sightingPaths.has(entry.path));
+      updates.length = 0;
+      updates.push(...unsent);
+    }
+  }
+  const sharedSightings = sightingOutcome === undefined ? {} : { sightings: sightingOutcome };
+
   // Egress commits BEFORE the ledger. If the write fails the ledger batch is
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
   const committed = await commitEgress(gateway, egress, scopeKeyOf);
   if (committed === null) {
-    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+    return {
+      rootDir,
+      scanned,
+      skipped,
+      findings,
+      gitignoredFindings,
+      byRule,
+      bySeverity,
+      ...sharedSightings,
+    };
   }
 
   // Same reasoning, for a different loss. `ledger.rulesetHash` was computed
@@ -656,11 +832,29 @@ async function scanDir(
   // hash, and the next run would skip exactly the files the dropped rules never
   // saw. Skipping the batch costs a re-read; writing it hides the gap.
   if (runtime.scanIsolationDegraded()) {
-    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+    return {
+      rootDir,
+      scanned,
+      skipped,
+      findings,
+      gitignoredFindings,
+      byRule,
+      bySeverity,
+      ...sharedSightings,
+    };
   }
 
   await gateway.recordScanned(ledgerable(updates, egress, committed));
-  return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+  return {
+    rootDir,
+    scanned,
+    skipped,
+    findings,
+    gitignoredFindings,
+    byRule,
+    bySeverity,
+    ...sharedSightings,
+  };
 }
 
 // Ledger + extract every dependency manifest under the SCAN root — the same
@@ -888,6 +1082,26 @@ function ledgerable(
   });
 }
 
+// Whether this scan shares credential sightings, decided once before it walks:
+// the run that computes tokens, or the outcome that says why it does not. A
+// plan that cannot be made shares nothing.
+function planSightings(
+  config: PluginConfig,
+  opts: ScanOptions,
+): { run: SightingRun | undefined; outcome: CredentialSightingsOutcome | undefined } {
+  try {
+    const base = dirname(config.dataDir);
+    const plan = planSightingShare(base, { managedSettings: opts.managedSettings });
+    if (!plan.ok) return { run: undefined, outcome: plan.outcome };
+    return {
+      run: { base, key: plan.key, send: opts.sendSightings, managedSettings: opts.managedSettings },
+      outcome: undefined,
+    };
+  } catch {
+    return { run: undefined, outcome: undefined };
+  }
+}
+
 export async function scanWorktree(
   config: PluginConfig,
   opts: ScanOptions,
@@ -896,6 +1110,7 @@ export async function scanWorktree(
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   const vault = openScanVault(config);
+  const sightings = planSightings(config, opts);
   try {
     const seen = await gateway.knownContentHashes();
     const ledger = await loadLedger(
@@ -903,8 +1118,20 @@ export async function scanWorktree(
       runtime,
       config.settings.dataSharesInPlace,
       vault !== undefined,
+      sightings.run,
     );
-    return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts, vault);
+    const summary = await scanDir(
+      runtime,
+      gateway,
+      config,
+      seen,
+      ledger,
+      rootDir,
+      opts,
+      vault,
+      sightings.run,
+    );
+    return sightings.outcome === undefined ? summary : { ...summary, sightings: sightings.outcome };
   } finally {
     vault?.close();
     await runtime.close();
@@ -919,6 +1146,7 @@ export async function scanAllRepos(
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   const vault = openScanVault(config);
+  const sightings = planSightings(config, opts);
   const summary: MultiRepoScanSummary = {
     repos: [],
     totalScanned: 0,
@@ -938,7 +1166,9 @@ export async function scanAllRepos(
       runtime,
       config.settings.dataSharesInPlace,
       vault !== undefined,
+      sightings.run,
     );
+    if (sightings.outcome !== undefined) summary.sightings = sightings.outcome;
     for (const rootDir of repoDirs) {
       const repoSummary = await scanDir(
         runtime,
@@ -949,8 +1179,14 @@ export async function scanAllRepos(
         rootDir,
         opts,
         vault,
+        sightings.run,
       );
       summary.repos.push({ rootDir, summary: repoSummary });
+      if (repoSummary.sightings !== undefined) {
+        summary.sightings =
+          combineCredentialSightingsOutcomes(summary.sightings, repoSummary.sightings) ??
+          repoSummary.sightings;
+      }
       summary.totalScanned += repoSummary.scanned;
       summary.totalSkipped += repoSummary.skipped;
       summary.totalFindings += repoSummary.findings;

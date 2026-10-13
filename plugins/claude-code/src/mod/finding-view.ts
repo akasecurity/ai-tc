@@ -47,10 +47,13 @@ const WHERES: ReadonlySet<string> = new Set([
 ]);
 const SEVERITIES: ReadonlySet<string> = new Set(['critical', 'high', 'medium', 'low']);
 const ID = /^[0-9a-f]{16}$/;
-const POINTER = /^\[\[aka:[a-z][a-z_-]*:[A-Z2-7]{2,7}\.[A-Z2-7]{26}\.[A-Z2-7]{16}\]\]$/;
+const CATEGORY = /^[a-z][a-z0-9_]*$/;
+const ISO_UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
+const POINTER = /^\[\[aka:[a-z][a-z0-9_]*:[A-Z2-7]{2,7}\.[A-Z2-7]{26}\.[A-Z2-7]{16}\]\]$/;
 
 export function labelFor(ruleId: string, shortName: string | undefined, fullName?: string): string {
-  return shortName ?? fullName ?? ruleId;
+  if (shortName !== undefined && shortName !== '') return shortName;
+  return fullName !== undefined && fullName !== '' ? fullName : ruleId;
 }
 
 export function parseFindingRecord(value: unknown): ViewFinding | null {
@@ -58,24 +61,30 @@ export function parseFindingRecord(value: unknown): ViewFinding | null {
   const r = value as Record<string, unknown>;
   if (Object.keys(r).some((k) => !KEYS.has(k))) return null;
   if (r.v !== 1 || typeof r.id !== 'string' || !ID.test(r.id)) return null;
-  if (typeof r.ruleId !== 'string' || r.ruleId === '' || typeof r.category !== 'string') {
+  if (
+    typeof r.ruleId !== 'string' ||
+    r.ruleId === '' ||
+    typeof r.category !== 'string' ||
+    !CATEGORY.test(r.category)
+  ) {
     return null;
   }
   if (typeof r.action !== 'string' || !ACTIONS.has(r.action)) return null;
   if (typeof r.where !== 'string' || !WHERES.has(r.where)) return null;
-  const at = typeof r.at === 'string' ? Date.parse(r.at) : Number.NaN;
+  const at = typeof r.at === 'string' && ISO_UTC.test(r.at) ? Date.parse(r.at) : Number.NaN;
   if (Number.isNaN(at)) return null;
-  if (r.shortName !== undefined && typeof r.shortName !== 'string') return null;
   if (r.pointer !== undefined && (typeof r.pointer !== 'string' || !POINTER.test(r.pointer))) {
     return null;
   }
   if ((r.action === 'vaulted') !== (r.pointer !== undefined)) return null;
+  const shortName =
+    typeof r.shortName === 'string' && r.shortName.length <= 64 ? r.shortName : undefined;
   const severity = SEVERITIES.has(r.severity as string) ? (r.severity as ViewSeverity) : 'low';
   return {
     id: r.id,
     at,
     ruleId: r.ruleId,
-    label: labelFor(r.ruleId, r.shortName, undefined),
+    label: labelFor(r.ruleId, shortName, undefined),
     category: r.category,
     severity,
     action: r.action,

@@ -42,6 +42,15 @@ describe('parseFindingRecord', () => {
   it('falls back to the rule id when there is no short name', () => {
     expect(parseFindingRecord(rec({ shortName: undefined }))?.label).toBe('secrets/github-pat');
   });
+  it('labels by rule id when the short name is empty, oversized or not a string', () => {
+    for (const shortName of ['', 'x'.repeat(65), 4]) {
+      expect(parseFindingRecord(rec({ shortName }))?.label).toBe('secrets/github-pat');
+    }
+    expect(parseFindingRecord(rec({ shortName: 'x'.repeat(64) }))?.label).toBe('x'.repeat(64));
+  });
+  it('accepts a category it does not know', () => {
+    expect(parseFindingRecord(rec({ category: 'banana' }))?.category).toBe('banana');
+  });
   it('reads an unknown severity as low', () => {
     expect(parseFindingRecord(rec({ severity: 'catastrophic' }))?.severity).toBe('low');
   });
@@ -63,9 +72,14 @@ describe('parseFindingRecord', () => {
       { where: 'elsewhere' },
       { at: 'yesterday' },
       { at: 5 },
-      { shortName: 4 },
+      { category: '' },
+      { category: 'a-b' },
+      { category: 'A B' },
+      { at: '2026' },
+      { at: 'Oct 13 2026' },
       { action: 'vaulted', pointer: 'not-a-pointer' },
       { action: 'vaulted', pointer: 7 },
+      { action: 'vaulted', pointer: POINTER.replace('secret', 'a-b') },
     ]) {
       expect(parseFindingRecord(rec(over))).toBeNull();
     }

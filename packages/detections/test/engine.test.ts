@@ -98,6 +98,11 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
         if (fixture.expectedSpans) {
           expect(own.map((f) => f.span)).toEqual(fixture.expectedSpans);
         }
+        if (fixture.expectedVariableName !== undefined) {
+          expect(own.map((f) => f.variableName ?? null)).toEqual(
+            own.map(() => fixture.expectedVariableName),
+          );
+        }
       });
     }
   });

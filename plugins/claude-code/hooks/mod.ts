@@ -365,7 +365,8 @@ async function rewriteRowText(
   const plan = planRowWith(text, policy);
   if (plan.values.length === 0) return null;
   const answer = await rewriteWithHelper($, text, door, row);
-  if (answer !== null) await takeFindings($, answer.findings);
+  // The widgets update apart: a host call that hangs never holds the row.
+  if (answer !== null) void takeFindings($, answer.findings);
   if (answer === null || plan.values.some((value) => answer.text.includes(value))) return null;
   return answer.text;
 }
@@ -1056,7 +1057,8 @@ export const register: Register = (on) => {
     // Nothing to redact: nothing is spawned.
     const plan = planPromptWith(e.text, await loadPolicy($));
     const answer = plan.values.length === 0 ? null : await rewriteWithHelper($, e.text);
-    if (answer !== null) await takeFindings($, answer.findings);
+    // The widgets update apart: a host call that hangs never holds the prompt.
+    if (answer !== null) void takeFindings($, answer.findings);
     // A rewrite that leaves a value this module detected is not one to send.
     const result =
       answer === null || plan.values.some((value) => answer.text.includes(value))
@@ -1066,8 +1068,7 @@ export const register: Register = (on) => {
             text: answer.text,
             ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
           });
-    await refreshFromFile($);
-    await refreshStatus($);
+    void refreshFromFile($).then(() => refreshStatus($));
     return result;
   });
 
@@ -1112,7 +1113,8 @@ export const register: Register = (on) => {
     if (!needsHelper) return next(e);
     const answer = await decideToolCallWithHelper($, e.tool, input, e);
     if (answer === null) return next(e);
-    await takeFindings($, answer.findings);
+    // The widgets update apart: a host call that hangs never holds the call.
+    void takeFindings($, answer.findings);
     if (answer.deny !== null) {
       const first = answer.findings[0];
       tell($, first === undefined ? answer.message : `Blocked: ${first.label}`);

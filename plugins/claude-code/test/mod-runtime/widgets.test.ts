@@ -87,23 +87,27 @@ const POINTER = ['[[aka:secret:', 'AB.', 'A'.repeat(26), '.', 'B'.repeat(16), ']
 const prompt = `deploy with ${SECRET} please`;
 
 test('a finding in the tokenize helper answer is held', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   fileSystem(on, () => SECRET_REDACT);
   model(on);
   answering(on, [record(ID_A)]);
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(bumps).toEqual([1]);
 });
 
 test('an invalid finding is dropped and does not fail the answer', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   fileSystem(on, () => SECRET_REDACT);
   const seen = model(on);
   answering(on, [record(ID_A, { action: 'vaulted' }), 'junk', record(ID_B)]);
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(seen[0]).toContain('[REDACTED:SECRET]');
   expect(bumps).toEqual([1]);
@@ -111,18 +115,21 @@ test('an invalid finding is dropped and does not fail the answer', async ($, on)
 });
 
 test('a findings value that is not a list is read as none', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   fileSystem(on, () => SECRET_REDACT);
   const seen = model(on);
   answering(on, { not: 'a list' });
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(seen[0]).toContain('[REDACTED:SECRET]');
   expect(bumps).toEqual([]);
 });
 
 test('the same finding from the helper and the file is held once', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   const line = JSON.stringify(record(ID_A));
   const reads = fileSystem(
@@ -134,6 +141,7 @@ test('the same finding from the helper and the file is held once', async ($, on)
   answering(on, [record(ID_A)]);
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(reads).toContain(FINDINGS_PATH);
   expect(bumps).toEqual([1]);
@@ -141,6 +149,7 @@ test('the same finding from the helper and the file is held once', async ($, on)
 });
 
 test('a truncated last line in the file leaves the complete lines taken', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   const text = `${JSON.stringify(record(ID_A))}\n${JSON.stringify(record(ID_B))}\n{"v":1,"id":"cccc`;
   fileSystem(
@@ -152,12 +161,14 @@ test('a truncated last line in the file leaves the complete lines taken', async 
   answering(on, []);
 
   await $.prompt.submit({ text: 'nothing sensitive here' });
+  await clock.settle();
 
   expect(bumps).toEqual([1]);
   expect((await paneRowKeys($)).sort()).toEqual([`row-${ID_A}`, `row-${ID_B}`]);
 });
 
 test('a file over 4 MiB per stat is not read', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   const reads = fileSystem(
     on,
@@ -168,12 +179,14 @@ test('a file over 4 MiB per stat is not read', async ($, on) => {
   answering(on, []);
 
   await $.prompt.submit({ text: 'hello' });
+  await clock.settle();
 
   expect(reads).not.toContain(FINDINGS_PATH);
   expect(bumps).toEqual([]);
 });
 
 test('an unchanged file is read once', async ($, on) => {
+  const clock = mock.clock(on);
   const bumps = counter(on);
   const reads = fileSystem(
     on,
@@ -184,13 +197,16 @@ test('an unchanged file is read once', async ($, on) => {
   answering(on, []);
 
   await $.prompt.submit({ text: 'one' });
+  await clock.settle();
   await $.prompt.submit({ text: 'two' });
+  await clock.settle();
 
   expect(reads.filter((path) => path === FINDINGS_PATH)).toHaveLength(1);
   expect(bumps).toEqual([1]);
 });
 
 test('only numbers are ever written under aka', async ($, on) => {
+  const clock = mock.clock(on);
   const written: { key?: unknown; value?: unknown }[] = [];
   on('state.set', (_$, e, next) => {
     written.push(e as never);
@@ -205,6 +221,7 @@ test('only numbers are ever written under aka', async ($, on) => {
   answering(on, [record(ID_A)]);
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(written.length).toBeGreaterThan(0);
   const all = JSON.stringify(written);
@@ -517,13 +534,14 @@ function answeringWith(on: Hooks): { next(findings: unknown[]): void } {
 }
 
 test('the status line counts critical, high and other findings', async ($, on) => {
-  mock.clock(on, { now: NOW });
+  const clock = mock.clock(on, { now: NOW });
   const calls = statuses(on);
   fileSystem(on, () => SECRET_REDACT);
   model(on);
   answering(on, [record(ID_A, { severity: 'critical' }), record(ID_B, { severity: 'high' })]);
 
   await $.prompt.submit({ text: prompt });
+  await clock.settle();
 
   expect(calls.at(-1)).toBe('AKA · redacting in place · 1 critical  1 high  0 other');
 });
@@ -1121,4 +1139,82 @@ test('a clock that throws does not re-schedule the status flush', async ($, on) 
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   expect(sleeps).toBeLessThanOrEqual(2);
+});
+
+// A findings write the host never answers: the decision a hook makes must not wait
+// on the widgets. The bound is a real timer; the mocked clock never moves on its own.
+function hangFindingsWrites(on: Hooks): void {
+  on('state.set', (_$, e, next) =>
+    (e as { key?: unknown }).key === 'findings' ? (new Promise(() => undefined) as never) : next(e),
+  );
+}
+
+async function within<T>(work: Promise<T>, ms = 2000): Promise<T | 'held'> {
+  return Promise.race([
+    work,
+    new Promise<'held'>((resolve) => setTimeout(() => resolve('held'), ms)),
+  ]);
+}
+
+for (const kind of ['deny', 'rewrite'] as const) {
+  test(`a findings write that never answers does not hold a tool call's ${kind}`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    hangFindingsWrites(on);
+    const scenario = scenarioOf(kind);
+    const text = snapshotFor(scenario.policy);
+    fileSystem(on, () => ({ text, mtimeMs: 78 }));
+    let ran = false;
+    on('tool.call', () => {
+      ran = true;
+      return { result: {}, text: 'ran' } as never;
+    });
+    const finding = record(ID_A, { shortName: 'Prod key' });
+    helper(on, {
+      stdout:
+        kind === 'deny'
+          ? ANSWER({ deny: 'blocked by policy', findings: [finding] })
+          : ANSWER({ input: fill(scenario.outcome.input, VALUES), findings: [finding] }),
+    });
+
+    const result = await within(
+      $.tool.call({ tool: scenario.tool, ...fill(scenario.input, VALUES) } as never),
+    );
+
+    expect(result).not.toBe('held');
+    expect(ran).toBe(kind === 'rewrite');
+  });
+}
+
+test('a findings write that never answers does not hold a prompt', async ($, on) => {
+  mock.clock(on, { now: NOW });
+  hangFindingsWrites(on);
+  fileSystem(on, () => SECRET_REDACT);
+  const seen = model(on);
+  answering(on, [record(ID_A)]);
+
+  expect(await within($.prompt.submit({ text: prompt }))).not.toBe('held');
+  expect(seen[0]).toContain('[REDACTED:SECRET]');
+});
+
+test('a findings write that never answers does not hold a row', async ($, on) => {
+  mock.clock(on, { now: NOW });
+  hangFindingsWrites(on);
+  fileSystem(on, () => SECRET_REDACT);
+  const appended = mock.session(on).appended;
+  answering(on, [record(ID_A)]);
+
+  const row = {
+    message: {
+      type: 'user',
+      role: 'user',
+      isMeta: true,
+      content: [{ type: 'text', text: `file: ${SECRET}` }],
+    },
+    door: 'attachment',
+    origin: { kind: 'engine' },
+    uuid: 'row-hang',
+  };
+
+  expect(await within($.session.append(row as never))).not.toBe('held');
+  expect(JSON.stringify(appended()[0])).toContain('[REDACTED:SECRET]');
 });

@@ -148,6 +148,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'readLocalHistoryPreview',
   'readManagedSettings',
   'readModPolicySnapshot',
+  'readSightingSharing',
   'readWorkspaceSettings',
   'refreshModPolicySnapshot',
   'regexProbeKey',

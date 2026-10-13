@@ -1,0 +1,164 @@
+import { z } from 'zod';
+
+import type { AttachmentMode } from './control-plane.ts';
+import type { WorkspaceSettings } from './local.ts';
+import type { ManagedSettings } from './managed.ts';
+
+// The behaviour a user agrees to when they let this machine share credential
+// sightings with the organization it is attached to. A grant recorded against
+// an older version stops counting, so widening what is shared re-asks.
+export const SIGHTING_SHARE_CONSENT_VERSION = 1;
+
+// A recorded grant: when it was given, and the version it was given against.
+export const SightingShareConsent = z.object({
+  acknowledgedAt: z.iso.datetime(),
+  version: z.number().int().positive(),
+});
+export type SightingShareConsent = z.infer<typeof SightingShareConsent>;
+
+/** Whether a recorded grant is in force. Absent or another version → no. */
+export function isSightingShareConsentValid(consent: SightingShareConsent | undefined): boolean {
+  return consent?.version === SIGHTING_SHARE_CONSENT_VERSION;
+}
+
+/** The sentence every surface attaches to a sharing state. */
+export const SIGHTING_SHARE_PAYLOAD_NOTE =
+  'Only hashes or ciphertext are ever sent, never plaintext.';
+
+/** How this machine is connected: not attached, or the credential's attachment mode. */
+export type SightingShareMode = 'standalone' | AttachmentMode;
+
+/**
+ * Why sharing is on or off.
+ *
+ *   standalone        no usable attach credential; nothing is shared
+ *   managed-required  a machine-wide attachment whose managed settings pin sharing on
+ *   managed-denied    the managed settings pin sharing off
+ *   opted-in          the user granted the consent
+ *   not-opted-in      the user has not granted the consent
+ */
+export type SightingShareReason =
+  'standalone' | 'managed-required' | 'managed-denied' | 'opted-in' | 'not-opted-in';
+
+export interface SightingSharing {
+  mode: SightingShareMode;
+  /** Sharing is required by the organization rather than chosen by the user. */
+  managed: boolean;
+  sharing: boolean;
+  reason: SightingShareReason;
+  /** The user's own grant is on file and current, whatever else applies. */
+  optedIn: boolean;
+  /** The user cannot change the answer on this machine. */
+  locked: boolean;
+  /** The organization named in the managed settings file, when it names one. */
+  organization?: string;
+}
+
+export interface SightingSharingInput {
+  /**
+   * The user's OWN settings file, without the managed overlay. The overlay turns
+   * a pinned `true` into a grant, which must not count as a user's opt-in on a
+   * scoped attachment.
+   */
+  settings: WorkspaceSettings;
+  managed: ManagedSettings | null;
+  /** The attach credential's mode, or undefined when no usable credential is held. */
+  attachmentMode: AttachmentMode | undefined;
+}
+
+/**
+ * Whether credential sightings may leave this machine for the organization it
+ * is attached to.
+ *
+ * Every sender of credential sightings MUST call this (or
+ * `readSightingSharing` in @akasecurity/persistence, which reads its inputs)
+ * immediately before sending, and send nothing unless `sharing` is true.
+ *
+ *   standalone                       → never shares
+ *   managed pin `false`              → never shares; locked
+ *   `machine` AND managed pin `true` → shares without asking; locked
+ *   otherwise                        → shares only on the user's own valid grant
+ *
+ * Pure; no I/O. Any throw resolves to not sharing.
+ */
+export function resolveSightingSharing(input: SightingSharingInput): SightingSharing {
+  try {
+    const { settings, managed, attachmentMode } = input;
+    const pin = managed?.values.sightingShareConsent;
+    const lockListed = managed?.lockedFields.includes('sightingShareConsent') ?? false;
+    const organization =
+      managed?.organization === undefined ? {} : { organization: managed.organization };
+    const mode: SightingShareMode = attachmentMode ?? 'standalone';
+    const isManaged = mode === 'machine' && pin === true;
+    const locked = lockListed || pin === false || isManaged;
+    const optedIn = isSightingShareConsentValid(settings.sightingShareConsent);
+    const base = { mode, locked, optedIn, ...organization };
+
+    if (mode === 'standalone') {
+      return { ...base, managed: false, sharing: false, reason: 'standalone' };
+    }
+    if (pin === false) {
+      return { ...base, managed: false, sharing: false, reason: 'managed-denied' };
+    }
+    if (isManaged) {
+      return { ...base, managed: true, sharing: true, reason: 'managed-required' };
+    }
+    return {
+      ...base,
+      managed: false,
+      sharing: optedIn,
+      reason: optedIn ? 'opted-in' : 'not-opted-in',
+    };
+  } catch {
+    return {
+      mode: 'standalone',
+      managed: false,
+      sharing: false,
+      reason: 'standalone',
+      optedIn: false,
+      locked: false,
+    };
+  }
+}
+
+/** The connection, in words. */
+export function sightingShareModeLabel(mode: SightingShareMode): string {
+  switch (mode) {
+    case 'standalone':
+      return 'standalone';
+    case 'machine':
+      return 'attached, machine-wide';
+    case 'scoped':
+      return 'attached, scoped';
+  }
+}
+
+/** Why sharing is on or off, as one sentence. */
+export function sightingShareReasonText(state: SightingSharing): string {
+  const who = state.organization ?? 'your organization';
+  switch (state.reason) {
+    case 'standalone':
+      return 'this machine is not attached to an organization.';
+    case 'managed-required':
+      return `required by ${who} on this managed machine.`;
+    case 'managed-denied':
+      return `turned off by ${who}.`;
+    case 'opted-in':
+      return 'you opted in.';
+    case 'not-opted-in':
+      return 'you have not opted in.';
+  }
+}
+
+/**
+ * The one-line summary for terminal surfaces, e.g.
+ * `Credential sightings: off (standalone) — this machine is not attached to an
+ * organization. Only hashes or ciphertext are ever sent, never plaintext.`
+ */
+export function sightingSharingLine(state: SightingSharing): string {
+  return (
+    `Credential sightings: ${state.sharing ? 'on' : 'off'} ` +
+    `(${sightingShareModeLabel(state.mode)}) — ${sightingShareReasonText(state)} ` +
+    SIGHTING_SHARE_PAYLOAD_NOTE
+  );
+}

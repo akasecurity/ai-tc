@@ -354,6 +354,12 @@ export {
 
 // Settings views — the web twin of the `/aka:setup` wizard's editable knobs.
 export {
+  SIGHTING_SHARE_CHOICES,
+  type SightingShareChoice,
+  SightingSharingView,
+  type SightingSharingViewProps,
+} from './settings/SightingSharingView.tsx';
+export {
   type SyncKindRow,
   type SyncLastOutcome,
   type SyncLocalOnlyLine,

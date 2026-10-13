@@ -21,6 +21,7 @@ import {
   readEffectiveSettings,
   readLocalHistoryPreview,
   readManagedSettings,
+  readSightingSharing,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
@@ -59,6 +60,7 @@ import {
   isAttachmentScopeBoundTo,
   originOnly,
   parseAttachmentScope,
+  sightingSharingLine,
   unsafeEndpointReason,
 } from '@akasecurity/schema';
 
@@ -1784,6 +1786,7 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
+  io.out(`${sightingSharingLine(readSightingSharing(base, deps.managedSettings))}\n`);
   // The host's own version, and which of AKA's protections it is too old for.
   // This is one of the two surfaces carrying that detail: someone reading it has
   // come looking, which is why it names protections where the in-session notice

@@ -10,6 +10,7 @@ import type {
 import {
   defaultWorkspaceSettings,
   isModelJudgeConsentValid,
+  isSightingShareConsentValid,
   isVaultConsentValid,
   WorkspaceSettings as WorkspaceSettingsSchema,
 } from '@akasecurity/schema';
@@ -72,7 +73,7 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
  * survive the managed file being removed, which is the one thing a lock must
  * never do.
  */
-function readUserSettings(base: string): WorkspaceSettings {
+export function readUserSettings(base: string): WorkspaceSettings {
   const record = readJson(join(settingsDir(base), SETTINGS_FILENAME));
   if (!record) return defaultWorkspaceSettings();
   try {
@@ -229,6 +230,13 @@ function lockableKeysTouched(
     keys.push('vaultConsent');
   }
   if (
+    'sightingShareConsent' in applied &&
+    isSightingShareConsentValid(applied.sightingShareConsent) !==
+      isSightingShareConsentValid(current.sightingShareConsent)
+  ) {
+    keys.push('sightingShareConsent');
+  }
+  if (
     'modelJudgeConsent' in applied &&
     isModelJudgeConsentValid(applied.modelJudgeConsent) !==
       isModelJudgeConsentValid(current.modelJudgeConsent)
@@ -292,6 +300,7 @@ function pinnedKeys(managed: ManagedSettings | null): ManagedSettingKey[] {
   if (values.vaultKeyCustody !== undefined) keys.push('vaultKeyCustody');
   if (values.vaultInlineReveal !== undefined) keys.push('vaultInlineReveal');
   if (values.modelJudgeConsent !== undefined) keys.push('modelJudgeConsent');
+  if (values.sightingShareConsent !== undefined) keys.push('sightingShareConsent');
   if (values.dataSharesInPlace !== undefined) keys.push('dataSharesInPlace');
   if (values.redactFallback !== undefined) keys.push('redactFallback');
   if (values.bodyRetention !== undefined) keys.push('bodyRetention');
@@ -350,6 +359,7 @@ function withoutManagedKeys(
   if (strip('vaultKeyCustody')) delete out.vaultKeyCustody;
   if (strip('vaultInlineReveal')) delete out.vaultInlineReveal;
   if (strip('modelJudgeConsent')) delete out.modelJudgeConsent;
+  if (strip('sightingShareConsent')) delete out.sightingShareConsent;
   if (strip('dataSharesInPlace')) delete out.dataSharesInPlace;
   if (strip('redactFallback')) delete out.redactFallback;
   if (strip('bodyRetention')) delete out.bodyRetention;

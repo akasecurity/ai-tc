@@ -41,6 +41,7 @@ export * from './settings-action.ts';
 export * from './setup-frame.ts';
 export * from './shares.ts';
 export * from './shares-access.ts';
+export * from './sighting-share.ts';
 export * from './triage.ts';
 export * from './updates.ts';
 export * from './vault.ts';

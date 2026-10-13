@@ -32,6 +32,7 @@ export const ManagedSettingKey = z
     'vaultKeyCustody',
     'vaultInlineReveal',
     'modelJudgeConsent',
+    'sightingShareConsent',
     'dataSharesInPlace',
     'redactFallback',
     // Pins the toggle and the day count together — see BodyRetention on why the
@@ -51,7 +52,7 @@ export function isManagedSettingKey(value: string): value is ManagedSettingKey {
 // shape WorkspaceSettings carries for that key, so an overlay cannot introduce
 // a value the settings schema would reject.
 //
-// `vaultConsent` and `modelJudgeConsent` are booleans HERE while
+// `vaultConsent`, `modelJudgeConsent` and `sightingShareConsent` are booleans HERE while
 // WorkspaceSettings stores dated grant records: an administrator states the
 // answer, and the overlay materialises a grant stamped at read time. An admin
 // cannot forge a user's acknowledgement timestamp, and a `false` is a hard
@@ -75,6 +76,9 @@ export const ManagedSettingsValues = z
     vaultKeyCustody: z.enum(['file', 'keychain']).optional(),
     vaultInlineReveal: z.enum(['masked', 'full', 'off']).optional(),
     modelJudgeConsent: z.boolean().optional(),
+    // `true` on a machine-wide attachment makes sharing credential sightings
+    // required, with no prompt; `false` turns it off on every attachment.
+    sightingShareConsent: z.boolean().optional(),
     dataSharesInPlace: z.boolean().optional(),
     redactFallback: RedactFallback.optional(),
     bodyRetention: BodyRetention.optional(),

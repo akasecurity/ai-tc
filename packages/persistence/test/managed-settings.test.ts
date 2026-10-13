@@ -10,6 +10,7 @@ import {
   managedByLabel,
   ManagedSettingKey,
   MODEL_JUDGE_PAYLOAD_VERSION,
+  SIGHTING_SHARE_CONSENT_VERSION,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -324,6 +325,35 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       );
       expect(out.vaultConsent).toBeUndefined();
       expect(out.modelJudgeConsent).toBeUndefined();
+    });
+
+    it('materialises a sighting-share grant from a pinned true, and clears it on false', () => {
+      const own = {
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        version: SIGHTING_SHARE_CONSENT_VERSION,
+      };
+      const on: ManagedSettings = {
+        specVersion: 1,
+        values: { sightingShareConsent: true },
+        lockedFields: [],
+      };
+      expect(overlayManagedSettings(settings(), on, CLOCK).sightingShareConsent).toEqual({
+        acknowledgedAt: '2026-03-04T05:06:07.000Z',
+        version: SIGHTING_SHARE_CONSENT_VERSION,
+      });
+      expect(
+        overlayManagedSettings(settings({ sightingShareConsent: own }), on, CLOCK)
+          .sightingShareConsent,
+      ).toEqual(own);
+      const off: ManagedSettings = {
+        specVersion: 1,
+        values: { sightingShareConsent: false },
+        lockedFields: [],
+      };
+      expect(
+        overlayManagedSettings(settings({ sightingShareConsent: own }), off, CLOCK)
+          .sightingShareConsent,
+      ).toBeUndefined();
     });
 
     it('leaves a consent the administrator said nothing about alone', () => {
@@ -995,6 +1025,10 @@ interface KeySample {
 }
 
 const grant = () => ({ acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION });
+const sightingGrant = () => ({
+  acknowledgedAt: new Date().toISOString(),
+  version: SIGHTING_SHARE_CONSENT_VERSION,
+});
 const judgeGrant = () => ({
   acknowledgedAt: new Date().toISOString(),
   payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
@@ -1046,6 +1080,14 @@ const KEY_SAMPLES = {
     userAnswer: { modelJudgeConsent: undefined },
     echoAnswer: { modelJudgeConsent: judgeGrant() },
     read: (s) => s.modelJudgeConsent !== undefined,
+    underPin: true,
+    underUser: false,
+  },
+  sightingShareConsent: {
+    pin: { sightingShareConsent: true },
+    userAnswer: { sightingShareConsent: undefined },
+    echoAnswer: { sightingShareConsent: sightingGrant() },
+    read: (s) => s.sightingShareConsent !== undefined,
     underPin: true,
     underUser: false,
   },

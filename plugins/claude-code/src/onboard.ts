@@ -4,7 +4,8 @@
  * collects the answers conversationally, then runs:
  *
  *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only> \
- *     --vault-consent <grant|revoke> --posture <json> --floor
+ *     --vault-consent <grant|revoke> --sighting-share-consent <grant|revoke> \
+ *     --posture <json> --floor
  *
  * Each flag is optional and additive: omit one and its current value (or the
  * default) is kept, so a later wizard step is one more flag with no rewrite.
@@ -21,7 +22,11 @@
  * `--recalibrate` forces an overwrite on the floor write. `--floor` and
  * `--posture` are mutually exclusive.
  */
-import { capWarnEraEnforcementOnce, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  capWarnEraEnforcementOnce,
+  openLocalDatabase,
+  readSightingSharing,
+} from '@akasecurity/persistence';
 import {
   applyCategoryPosture,
   applyOnboarding,
@@ -33,6 +38,8 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   HistoricalAccess,
   MODEL_JUDGE_PAYLOAD_VERSION,
+  SIGHTING_SHARE_CONSENT_VERSION,
+  sightingSharingLine,
   SimpleDetectionPolicy,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
@@ -118,6 +125,26 @@ if (vaultConsentAction === 'grant') {
   answers.vaultConsent = undefined;
 }
 
+// The credential-sightings sharing answer. `grant` stamps the acknowledgment
+// here; `revoke` clears the stored grant.
+const rawSightingShare = flags.get('sighting-share-consent');
+let sightingShareAction: 'grant' | 'revoke' | undefined;
+if (rawSightingShare !== undefined) {
+  if (rawSightingShare === 'grant' || rawSightingShare === 'revoke') {
+    sightingShareAction = rawSightingShare;
+  } else {
+    fail(`invalid --sighting-share-consent "${rawSightingShare}" (expected grant or revoke)`);
+  }
+}
+if (sightingShareAction === 'grant') {
+  answers.sightingShareConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    version: SIGHTING_SHARE_CONSENT_VERSION,
+  };
+} else if (sightingShareAction === 'revoke') {
+  answers.sightingShareConsent = undefined;
+}
+
 const rawPosture = flags.get('posture');
 const useFloor = process.argv.includes('--floor');
 const recalibrate = process.argv.includes('--recalibrate');
@@ -128,7 +155,9 @@ const recalibrate = process.argv.includes('--recalibrate');
 if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
 
 if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
-  fail('nothing to save — pass --policy, --historical, --vault-consent, --posture and/or --floor');
+  fail(
+    'nothing to save — pass --policy, --historical, --vault-consent, --sighting-share-consent, --posture and/or --floor',
+  );
 }
 
 // Recording the model-judge consent is not an onboarding-posture answer: it
@@ -160,6 +189,11 @@ if (Object.keys(answers).length > 0) {
           'Okay — new detections will no longer be vaulted. Anything already stored stays until you purge the vault.',
         ),
       );
+    }
+    // The state in force after the write, which also weighs the attachment and
+    // any managed settings.
+    if (sightingShareAction !== undefined) {
+      process.stdout.write(show(sightingSharingLine(readSightingSharing())));
     }
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the

@@ -26,6 +26,7 @@ import {
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   readForwardHealth,
+  readSightingSharing,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
@@ -56,12 +57,15 @@ import {
   isAttachmentScopeBoundTo,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
+  isSightingShareConsentValid,
   isVaultConsentValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
   RedactFallback,
   SaveSettingsInput,
+  SetSightingShareConsentInput,
+  SIGHTING_SHARE_CONSENT_VERSION,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
@@ -309,6 +313,37 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         settings,
       );
     });
+  }
+  revalidatePath('/settings');
+  return { ok: true };
+}
+
+/**
+ * Grant or revoke sharing credential sightings with the organization. Refused
+ * while the organization's managed settings decide the answer. A still-valid
+ * grant is kept as-is so its acknowledgedAt survives a repeated grant.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function setSightingShareConsent(input: unknown): Promise<SaveSettingsResult> {
+  const parsed = parseActionInput(SetSightingShareConsentInput, input);
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  const { choice } = parsed.data;
+  if (readSightingSharing().locked) {
+    return { ok: false, error: managedRefusal(['sightingShareConsent']) };
+  }
+  try {
+    applyOnboarding((current) => ({
+      sightingShareConsent:
+        choice === 'revoked'
+          ? undefined
+          : isSightingShareConsentValid(current.sightingShareConsent)
+            ? current.sightingShareConsent
+            : { acknowledgedAt: new Date().toISOString(), version: SIGHTING_SHARE_CONSENT_VERSION },
+    }));
+  } catch (error) {
+    if (error instanceof ManagedFieldError)
+      return { ok: false, error: managedRefusal(error.fields) };
+    return { ok: false, error: SETTINGS_WRITE_ERROR };
   }
   revalidatePath('/settings');
   return { ok: true };

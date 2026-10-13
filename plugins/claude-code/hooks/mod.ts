@@ -136,14 +136,18 @@ async function flushStatusLater($: Dollar, ms: number): Promise<void> {
 
 // Writes the status line from the held list, at most once a second, and only when
 // its text changed: a burst of findings shows its first count and the next call
-// after the second shows the rest. `force` skips the wait. A render's `$` has no
-// status line, so a call from one writes nothing and the next prompt or tool call
-// writes it. Never throws.
-async function refreshStatus($: Dollar, force = false): Promise<void> {
+// after the second shows the rest. `force` skips the wait; `evenEmpty` writes the
+// line before any finding, as the session starts, so the person sees the mod is
+// on. A render's `$` has no status line, so a call from one writes nothing and
+// the next prompt or tool call writes it. Never throws.
+async function refreshStatus(
+  $: Dollar,
+  { force = false, evenEmpty = false }: { force?: boolean; evenEmpty?: boolean } = {},
+): Promise<void> {
   try {
     const text = statusText(heldFindings(), 'in-place');
     if (text === lastStatusText) return;
-    if (lastStatusText === undefined && heldFindings().length === 0) return;
+    if (lastStatusText === undefined && heldFindings().length === 0 && !evenEmpty) return;
     const now = await $.clock.now();
     const waiting =
       lastStatusAt !== undefined && now >= lastStatusAt && now - lastStatusAt < STATUS_EVERY_MS;
@@ -208,7 +212,7 @@ async function followSession($: Dollar): Promise<void> {
     lastFile = undefined;
     if (hadFindings) {
       await update($, findingsVersion, (version) => (version ?? 0) + 1);
-      await refreshStatus($, true);
+      await refreshStatus($, { force: true });
     }
   } catch {
     // The list stays as it was.
@@ -1039,7 +1043,7 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await followSession($);
-    void refreshStatus($);
+    void refreshStatus($, { evenEmpty: true });
     try {
       await $.command.register({
         name: 'findings-pane',

@@ -1218,3 +1218,58 @@ test('a findings write that never answers does not hold a row', async ($, on) =>
   expect(await within($.session.append(row as never))).not.toBe('held');
   expect(JSON.stringify(appended()[0])).toContain('[REDACTED:SECRET]');
 });
+
+// The status line from the session's start: the mod says it is on before any finding.
+
+function startSession(on: Hooks): void {
+  on('session.start', (_$, e) => ({ cwd: e.cwd }));
+  on('command.register', () => ({ value: undefined }) as never);
+}
+
+test('the session start writes the status line with nothing found', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  helper(on, { stdout: '' });
+  startSession(on);
+
+  await $.session.start({ cwd: HOME, surface: null, isInteractive: true });
+  await clock.settle();
+
+  expect(calls).toEqual(['AKA · redacting in place · 0 critical  0 high  0 other']);
+});
+
+test('a finding within a second of the start waits out the window', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  answering(on, [record(ID_A)]);
+  startSession(on);
+
+  await $.session.start({ cwd: HOME, surface: null, isInteractive: true });
+  await clock.settle();
+  await $.prompt.submit({ text: prompt });
+  await clock.settle();
+  expect(calls).toEqual(['AKA · redacting in place · 0 critical  0 high  0 other']);
+
+  await clock.advance(1000);
+  await clock.settle();
+  expect(calls).toEqual([
+    'AKA · redacting in place · 0 critical  0 high  0 other',
+    'AKA · redacting in place · 0 critical  1 high  0 other',
+  ]);
+});
+
+test('with no session start, a prompt with nothing found writes no status line', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  answering(on, []);
+
+  await $.prompt.submit({ text: 'nothing sensitive here' });
+  await clock.settle();
+
+  expect(calls).toEqual([]);
+});

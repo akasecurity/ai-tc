@@ -1,5 +1,48 @@
-# Detection-rule fixtures under /rules are deliberately full of the exact
-# patterns each rule targets — scanning them would flood real findings with
-# self-inflicted noise. Hard-skip, not gitignore-mark: these are tracked,
-# intentional examples, not local scratch.
+# Paths a folder scan of this repository (`aka scan .`, the dashboard's Scan
+# page, `/aka:scan`) skips. This tree deliberately carries thousands of
+# secret-shaped and PII-shaped values as test data; scanning them buries any
+# real finding under self-inflicted noise.
+#
+# Matches are HARD-SKIPPED: the file is never read, so it yields no event and
+# no finding. Every entry below therefore names data whose secret-shaped
+# content is intentional. Product source stays scanned, and so does anything a
+# real credential could land in (`.env*`, docs, hand-written scripts).
+#
+# Only the folder scans read this file — the live hooks (prompts, tool input,
+# tool output, history backfill) do not. Patterns are relative to this
+# directory, and a scan aimed at a subdirectory does not read it at all, so
+# scan from the repository root.
+#
+# packages/local-ops/test/repo-akaignore.test.ts drives the real file walker
+# over the tracked tree with this file and pins what it skips and what it keeps.
+
+# Detection-rule examples and fixtures: each holds the exact patterns its rule
+# targets. GitHub secret scanning excludes the same tree
+# (.github/secret_scanning.yml).
 rules/
+
+# Fixture data that lives under a package's `src/` because a built suite or a
+# bundled module loads it: egress-extraction and posture samples, and the
+# persistence sample datasets and corpus generator.
+packages/detections/src/egress/fixtures/
+packages/detections/src/posture/fixtures/
+packages/persistence/src/test-fixtures/
+
+# Test fixture trees in every package, plus the repo-root shared corpus.
+**/test/fixtures/
+# ...except the browser extension's. Raw web-chat captures recorded there
+# (`*.har`, `*.raw.json`) are real conversations that can carry auth headers —
+# .gitignore keeps them out of git, and this keeps them visible to a scan.
+!plugins/browser-extension/test/fixtures/
+
+# Benchmark suites and the corpora they generate.
+**/bench/
+
+# Gitignored build output. Each bundle inlines the detection packs, every
+# rule's examples included.
+plugins/claude-code/scripts/
+plugins/codex/scripts/
+plugins/antigravity/scripts/
+plugins/copilot/scripts/
+plugins/browser-extension/native-host/
+*.tsbuildinfo

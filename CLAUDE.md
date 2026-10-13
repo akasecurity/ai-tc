@@ -2117,9 +2117,14 @@ itself. All three are product calls, not tuning.
 **A VIRTUAL generated column is only faster than the bag when an index stores its value.**
 The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
 columns — model, provider, the four token counts and the tier, cache-split and web-search
-members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
-once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
-fold equal to the per-call fold across every bag shape). Naming those columns against the
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)`, per
+long-context band and per set of billed columns, and priced once per group, which the cost
+model's linearity makes exact (activity.test.ts holds the SQL fold equal to the per-call fold
+across every bag shape). The band is in the key because one request's prompt selects it, never
+a sum; the billed columns are, because a summed group billing a column its model has no rate
+for prices to null as a whole, and without them one such call would null the priced calls
+beside it. That last part costs the all-time read ~9 ms at 50k calls (34 → 43 ms, fastest of
+the run), still under folding the bags in JS. Naming those columns against the
 TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
 VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
 `idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,

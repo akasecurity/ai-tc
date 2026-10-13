@@ -177,8 +177,10 @@ const revealing = new Set<string>();
 // The finding ids whose last reveal failed.
 const revealFailed = new Set<string>();
 
-// Set when the helper answers that revealing is off (no consent): no Show buttons.
-let consentOff = false;
+// Whether the pane may offer Show: `on` once the helper answered that consent is
+// valid, `off` once it answered that it is not or did not answer, `asking` while
+// it is asked. A Show button is drawn only for `on`.
+let paneConsent: 'unknown' | 'asking' | 'on' | 'off' = 'unknown';
 
 // Counts the times the reveals were forgotten (the pane closed, the session
 // changed): a helper answer for an earlier count is dropped, never drawn.
@@ -188,6 +190,7 @@ function forgetReveals(): void {
   revealEpoch += 1;
   paneReveals.clear();
   revealFailed.clear();
+  paneConsent = 'unknown';
 }
 
 // A new session id (a /clear or a resume in the same process) starts an empty
@@ -202,7 +205,6 @@ async function followSession($: Dollar): Promise<void> {
     dismissedBefore = 0;
     paneFilter = 'all';
     forgetReveals();
-    consentOff = false;
     lastFile = undefined;
     if (hadFindings) {
       await update($, findingsVersion, (version) => (version ?? 0) + 1);
@@ -886,7 +888,7 @@ async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
     revealFailed.delete(f.id);
     const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }], true);
     if (epoch !== revealEpoch) return;
-    if (answer?.isOff === true) consentOff = true;
+    if (answer?.isOff === true) paneConsent = 'off';
     const revealed = answer?.isOff === true ? undefined : answer?.items.get(f.pointer)?.revealed;
     if (typeof revealed === 'string') {
       const until = (await $.clock.now()) + SHOW_FOR_MS;
@@ -905,6 +907,21 @@ async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
     } catch {
       // The pane stays as it was.
     }
+  }
+}
+
+// Asks the helper, once per opening of the pane, whether a value may be shown:
+// a pane request with no items answers the consent alone. Never throws.
+async function askPaneConsent($: PaneDollar): Promise<void> {
+  paneConsent = 'asking';
+  const epoch = revealEpoch;
+  const answer = await runRevealHelper($, [], true);
+  if (epoch !== revealEpoch) return;
+  paneConsent = answer === null || answer.isOff ? 'off' : 'on';
+  try {
+    await bumpPane($);
+  } catch {
+    // The next draw shows it.
   }
 }
 
@@ -944,7 +961,7 @@ function pointerRows(
         onPress: () => void hideValue($, f.id),
       }),
     );
-  } else if (!consentOff) {
+  } else if (paneConsent === 'on') {
     rows.push(
       h(Button, {
         key: `show-${f.id}`,
@@ -971,6 +988,9 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
     const ui = $.ui.resolve(e);
     const { Box, Text, Button } = ui;
     const rows = heldFindings().filter((f) => paneFilter === 'all' || f.severity === paneFilter);
+    if (paneConsent === 'unknown' && heldFindings().some((f) => f.pointer !== undefined)) {
+      void askPaneConsent($);
+    }
     if (paneReveals.size > 0) {
       const now = await $.clock.now();
       for (const [id, shown] of paneReveals) if (shown.until <= now) paneReveals.delete(id);

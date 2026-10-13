@@ -669,21 +669,35 @@ const REVEALED = 'VALUE-SHOWN-ONCE';
 type Answer = { stdout: string; exitCode?: number } | { deny: string };
 
 // The reveal helper, answered from beneath the mod: a function of the request, a
-// non-zero exit, or a refusal.
+// non-zero exit, or a refusal. The pane's consent question (a pane request with no
+// items) is answered apart and kept in `probes`: by `probe` when given, else by
+// the function, else `off` for mode 'off' and consent for any other.
 function revealing(
   on: Hooks,
   mode: 'full' | 'off' | Answer | ((request: HelperRequest) => string) = 'full',
-): { asked: HelperRequest[] } & HelperRequest[] {
+  probe?: Answer,
+): { asked: HelperRequest[]; probes: HelperRequest[] } & HelperRequest[] {
   const asked: HelperRequest[] = [];
+  const probes: HelperRequest[] = [];
+  const answer = (stdout: string, exitCode = 0) => ({
+    value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  });
   on('process.run', (_$, e) => {
     const request: HelperRequest = {
       argv: e.argv,
       stdin: JSON.parse(e.init?.stdin ?? 'null') as HelperRequest['stdin'],
       timeoutMs: e.init?.timeoutMs,
     };
+    const items = (request.stdin as unknown as { items: { token: string }[] }).items;
+    if (items.length === 0) {
+      probes.push(request);
+      if (probe !== undefined)
+        return 'deny' in probe ? { deny: probe.deny } : answer(probe.stdout, probe.exitCode);
+      if (typeof mode === 'function') return answer(mode(request));
+      return answer(JSON.stringify({ v: 1, mode: mode === 'off' ? 'off' : 'full', items: [] }));
+    }
     asked.push(request);
     if (typeof mode === 'object' && 'deny' in mode) return { deny: mode.deny };
-    const items = (request.stdin as unknown as { items: { token: string }[] }).items;
     const stdout =
       typeof mode === 'function'
         ? mode(request)
@@ -708,7 +722,7 @@ function revealing(
       },
     };
   });
-  return Object.assign(asked, { asked });
+  return Object.assign(asked, { asked, probes });
 }
 
 // A reveal helper whose answer waits for release().
@@ -718,8 +732,8 @@ function held(on: Hooks): { release(): void } {
     release = resolve;
   });
   on('process.run', async (_$, e) => {
-    await gate;
     const items = (JSON.parse(e.init?.stdin ?? 'null') as { items: { token: string }[] }).items;
+    if (items.length > 0) await gate;
     return {
       value: {
         exitCode: 0,
@@ -754,7 +768,9 @@ for (const surface of SURFACES) {
     const asked = revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     expect(asked).toHaveLength(0);
+    expect(asked.probes.map((r) => r.stdin)).toEqual([{ v: 1, pane: true, items: [] }]);
     expect(await buttonKeys(pane)).toContain(`show-${ID_A}`);
     expect(await texts(pane)).not.toContain(REVEALED);
 
@@ -802,12 +818,94 @@ for (const surface of SURFACES) {
     expect(await texts(pane)).not.toContain("couldn't reveal");
   });
 
+  test(`${surface}: no Show is drawn until the helper answers consent`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    on('process.run', async () => {
+      await gate;
+      return {
+        value: {
+          exitCode: 0,
+          stdout: JSON.stringify({ v: 1, mode: 'full', items: [] }),
+          stderr: '',
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      };
+    });
+
+    const pane = await mountPane($, surface);
+    expect((await buttonKeys(pane)).filter((k) => k.startsWith('show-'))).toEqual([]);
+
+    release();
+    await clock.settle();
+
+    expect(await buttonKeys(pane)).toContain(`show-${ID_A}`);
+  });
+
+  for (const [name, probe] of [
+    ['exits 1', { stdout: '', exitCode: 1 }],
+    ['times out', { deny: 'timeout' }],
+  ] as const) {
+    test(`${surface}: a consent question that ${name} draws no Show`, async ($, on) => {
+      const clock = mock.clock(on, { now: NOW });
+      fileOf(on, lines(vaulted(ID_A)));
+      const asked = revealing(on, 'full', probe);
+
+      const pane = await mountPane($, surface);
+      await clock.settle();
+      await pane.redraw();
+
+      expect(asked.probes).toHaveLength(1);
+      expect((await buttonKeys(pane)).filter((k) => k.startsWith('show-'))).toEqual([]);
+      expect(await texts(pane)).toContain('[[aka:secret:…]]');
+    });
+  }
+
+  test(`${surface}: a pane with no vaulted finding asks nothing`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(recent(ID_A)));
+    const asked = revealing(on);
+
+    await mountPane($, surface);
+    await clock.settle();
+
+    expect(asked.probes).toHaveLength(0);
+  });
+
+  test(`${surface}: forgetting the reveals forgets the answer and the pane asks again`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    const file = fileOf(on, lines(vaulted(ID_A)));
+    let consent: 'full' | 'off' = 'off';
+    const asked = revealing(on, () => JSON.stringify({ v: 1, mode: consent, items: [] }));
+
+    const pane = await mountPane($, surface);
+    await clock.settle();
+    expect((await buttonKeys(pane)).filter((k) => k.startsWith('show-'))).toEqual([]);
+
+    consent = 'full';
+    const firstId = file.id;
+    file.session(`${firstId}-after-clear`);
+    await pane.redraw();
+    file.session(firstId);
+    await pane.redraw();
+    await clock.settle();
+
+    expect(asked.probes).toHaveLength(2);
+    expect(await buttonKeys(pane)).toContain(`show-${ID_A}`);
+  });
+
   test(`${surface}: a shown value is masked again after 30 seconds`, async ($, on) => {
     const clock = mock.clock(on, { now: NOW });
     fileOf(on, lines(vaulted(ID_A)));
     revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
     expect(await texts(pane)).toContain(REVEALED);
@@ -825,6 +923,7 @@ for (const surface of SURFACES) {
     const asked = revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await Promise.all([pane.press({ key: `show-${ID_A}` }), pane.press({ key: `show-${ID_A}` })]);
     await clock.settle();
 
@@ -834,11 +933,13 @@ for (const surface of SURFACES) {
   test(`${surface}: with no consent there are no Show buttons and nothing is revealed`, async ($, on) => {
     const clock = mock.clock(on, { now: NOW });
     fileOf(on, lines(vaulted(ID_A), vaulted(ID_B)));
-    revealing(on, 'off');
+    const asked = revealing(on, 'off');
 
     const pane = await mountPane($, surface);
-    await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
+
+    expect(asked).toHaveLength(0);
+    expect(asked.probes).toHaveLength(1);
 
     expect((await buttonKeys(pane)).filter((k) => k.startsWith('show-'))).toEqual([]);
     expect(await texts(pane)).not.toContain(REVEALED);
@@ -855,6 +956,7 @@ for (const surface of SURFACES) {
       const asked = revealing(on, reply);
 
       const pane = await mountPane($, surface);
+      await clock.settle();
       await pane.press({ key: `show-${ID_A}` });
       await clock.settle();
 
@@ -872,6 +974,7 @@ for (const surface of SURFACES) {
     revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
     await pane.press({ key: `hide-${ID_A}` });
@@ -893,6 +996,7 @@ for (const surface of SURFACES) {
     const calls = statuses(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
     expect(await texts(pane)).toContain(REVEALED);
@@ -909,6 +1013,7 @@ for (const surface of SURFACES) {
     const gate = held(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     const pressed = pane.press({ key: `show-${ID_A}` });
     await clock.settle();
     const firstId = file.id;
@@ -930,6 +1035,7 @@ for (const surface of SURFACES) {
     revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
 
@@ -945,6 +1051,7 @@ for (const surface of SURFACES) {
     revealing(on);
 
     const pane = await mountPane($, surface);
+    await clock.settle();
     await pane.press({ key: `show-${ID_A}` });
     await clock.settle();
     expect(await texts(pane)).toContain(REVEALED);

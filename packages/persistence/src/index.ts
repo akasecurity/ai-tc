@@ -268,6 +268,12 @@ export {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
+export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
+export {
+  createSightingKeyStore,
+  readSightingKeys,
+  SIGHTING_KEY_FILENAME,
+} from './vault/sighting-keys.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,

@@ -49,8 +49,8 @@ read by `aka scan` are stored under the same rule. The store is protected by
 **filesystem permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
-`control-plane-credential.json`, `exception.key`, `settings.json`, and
-`vault.key` — are written `0600`, so only
+`control-plane-credential.json`, `exception.key`, `settings.json`, `sighting.key`
+and `vault.key` — are written `0600`, so only
 your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.
@@ -71,6 +71,11 @@ what is vaulted — that separation is the whole of what encryption at rest buys
 here. The file appears only once vaulting is granted; without that consent there is
 no key and no recoverable copy, and with it a detection on any other policy is
 still never vaulted.
+
+`sighting.key` exists only on an attached machine. It holds the HMAC key versions
+the attached deployment issues to the machine, and it follows the same custody
+setting as `vault.key`: under keychain custody it is an OS-keychain item rather
+than a file.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  readSightingKeys,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -17,13 +18,14 @@ import { SYNC_STATE_FILENAME } from '../../src/attached/sync-state.ts';
 const getPolicyBundle = vi.fn();
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
+const getSightingKey = vi.fn();
 
 // Only the client is faked; the rest of the package — the failure classifier
 // the attached code reads verdicts through — stays real, so a fake that
 // throws a status is classified the way production classifies it.
 vi.mock('@akasecurity/remote', async (importActual) => ({
   ...(await importActual<typeof Remote>()),
-  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand }),
+  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand, getSightingKey }),
 }));
 
 /** What the two jobs did, in the order they did it. */
@@ -58,6 +60,8 @@ beforeEach(() => {
   pollCommand.mockReset();
   ackCommand.mockReset();
   ackCommand.mockResolvedValue(undefined);
+  getSightingKey.mockReset();
+  getSightingKey.mockRejectedValue(new Error('ECONNREFUSED'));
   order = [];
   base = mkdtempSync(join(tmpdir(), 'aka-entry-home-'));
   mkdirSync(dataDirOf(base), { recursive: true });
@@ -283,5 +287,44 @@ describe('runAttachedSync — what a refused credential does to the command pass
     await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runAttachedSync — the sighting-key pass', () => {
+  it('fetches the sighting key on an attached machine, even when the policy pull failed', async () => {
+    attach();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    getSightingKey.mockResolvedValue({
+      keyVersion: 1,
+      algorithm: 'hmac-sha256',
+      key: Buffer.alloc(32, 7).toString('base64url'),
+    });
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(1);
+  });
+
+  it('still runs the command pass when the sighting-key fetch fails', async () => {
+    attach();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, {
+      scan: { rootScopeKey: () => undefined, run: () => Promise.resolve({ projects: 1 }) },
+    });
+
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+    expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fetch on a standalone machine', async () => {
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(getSightingKey).not.toHaveBeenCalled();
   });
 });

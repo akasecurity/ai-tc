@@ -44,7 +44,7 @@ import {
 import { openGateway } from '../hooks/store-health.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote } from '../protocol/notes.ts';
-import { appendModFindings, modFindingsFrom, pointersByRawMatch } from './findings-log.ts';
+import { pointersByRawMatch, recordModFindings } from './findings-log.ts';
 import { recordModHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
 
@@ -160,7 +160,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
         const records =
           sessionId === undefined
             ? []
-            : modFindingsFrom({
+            : recordModFindings(config.dataDir, sessionId, {
                 sessionId,
                 kind: isRow ? 'response' : 'prompt',
                 text,
@@ -174,7 +174,6 @@ async function tokenize(stdin: string): Promise<HelperRun> {
                 action: pointers.size > 0 ? 'vaulted' : 'redacted',
                 pointers,
               });
-        if (sessionId !== undefined) appendModFindings(config.dataDir, sessionId, records);
         if (!isRow) recordModHandoff(config.dataDir, rewritten);
         answer = { text: rewritten, note, findings: records };
       }

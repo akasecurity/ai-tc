@@ -104,6 +104,28 @@ describe('runModTokenize', () => {
     expect(row.note).toBeNull();
   });
 
+  it('answers the rewrite when building the finding records throws', async () => {
+    seed('redact', { vault: false });
+    const toIso = Object.getOwnPropertyDescriptor(Date.prototype, 'toISOString')?.value as (
+      this: Date,
+    ) => string;
+    const fault = vi.spyOn(Date.prototype, 'toISOString').mockImplementation(function (this: Date) {
+      if (new Error().stack?.includes('modFindingsFrom') === true) throw new RangeError('fault');
+      return toIso.call(this);
+    });
+    try {
+      const run = await tokenize({ text: `key ${SECRET} now` });
+      expect(run.code).toBe(0);
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        text: 'key [REDACTED:SECRET] now',
+        findings: [],
+      });
+      expect(fault).toHaveBeenCalled();
+    } finally {
+      fault.mockRestore();
+    }
+  });
+
   it('answers nothing when the policy is not a redact', async () => {
     seed('monitor', { vault: true });
     expect(await tokenize({ text: `key ${SECRET}` })).toEqual({ code: 1, stdout: '' });

@@ -1,11 +1,14 @@
 // What a file-scanning walk may read: which files are source, which are the
 // dotenv files secrets are kept in, and which paths are never read at all.
-// Shared by `aka scan` (@akasecurity/local-ops fs-scan) and the worktree
-// scanner (@akasecurity/scanner walk).
+//
+// `aka scan` (@akasecurity/local-ops fs-scan) reads every file that is not
+// protected, so it uses the protected-path half only. The worktree scanner
+// (@akasecurity/scanner walk) reads by `scanFileKind` and does not consult the
+// protected paths.
 import { realpathSync } from 'node:fs';
 import { basename, extname, resolve, sep } from 'node:path';
 
-import { defaultDataDir } from '@akasecurity/persistence';
+import { defaultDataDir } from '@akasecurity/persistence/sqlite-free';
 
 export const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.ts',
@@ -26,17 +29,20 @@ export const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
 export type ScanFileKind = 'source' | 'secret-bearing' | 'other';
 
 /**
- * Classifies a file by its basename. `extname` gives a dotfile such as `.env`
- * an empty extension, so a dotenv file is recognised by name: `.env` itself
- * and every `.env.<variant>`. A name with a source extension is source first,
- * so `.env.ts` is source.
+ * Classifies a file by its basename; a full path is reduced to its basename
+ * first. `extname` gives a dotfile such as `.env` an empty extension, so a
+ * dotenv file is recognised by name, case-insensitively: `.env`, every
+ * `.env.<variant>`, and direnv's `.envrc`. A name with a source extension is
+ * source first, so `.env.ts` is source.
  */
 export function scanFileKind(
   name: string,
   sourceExtensions: ReadonlySet<string> = SOURCE_EXTENSIONS,
 ): ScanFileKind {
-  if (sourceExtensions.has(extname(name))) return 'source';
-  if (name === '.env' || name.startsWith('.env.')) return 'secret-bearing';
+  const base = basename(name);
+  if (sourceExtensions.has(extname(base))) return 'source';
+  const lower = base.toLowerCase();
+  if (lower === '.env' || lower === '.envrc' || lower.startsWith('.env.')) return 'secret-bearing';
   return 'other';
 }
 
@@ -48,6 +54,9 @@ export function scanFileKind(
  *   <home>/.claude/.credentials.json the host's stored credential
  *   <home>/.codex/auth.json          the Codex CLI's stored credential
  *   <akaHome>, <home>/.aka, default  AKA's own homes: vault key, control-plane credential, store
+ *
+ * Not listed, and read by a scan: `~/.gemini` (the conversation store, which is
+ * scanned) and `~/.claude.json` (user-authored MCP server configuration).
  *
  * `home` is the OS home the hosts write under; `akaHome` is AKA's own home,
  * which `--home` relocates independently, so both are protected. Neither host
@@ -77,7 +86,9 @@ export function protectedScanRoots(home: string, akaHome: string): readonly stri
  * A path's on-disk identity: symlinks followed and, on a case-insensitive
  * volume, the volume's own casing (`realpathSync.native` returns it;
  * `realpathSync` does not). A path that does not exist falls back to its
- * lexical form.
+ * lexical form. A root and a path compared with `isProtectedScanPath` both come
+ * through here, so a lexical fallback is only ever reached for an absent path,
+ * which has nothing under it to match.
  */
 export function canonicalizeScanPath(path: string): string {
   try {
@@ -89,5 +100,9 @@ export function canonicalizeScanPath(path: string): string {
 
 /** Whether a canonical path is a protected root or lies under one. */
 export function isProtectedScanPath(canonical: string, roots: readonly string[]): boolean {
-  return roots.some((root) => canonical === root || canonical.startsWith(root + sep));
+  return roots.some((root) => {
+    if (!canonical.startsWith(root)) return false;
+    if (canonical.length === root.length || root.endsWith(sep)) return true;
+    return canonical[root.length] === sep;
+  });
 }

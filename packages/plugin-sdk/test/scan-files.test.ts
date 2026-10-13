@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -23,13 +23,23 @@ describe('scanFileKind', () => {
     ['.env.local', 'secret-bearing'],
     ['.env.production', 'secret-bearing'],
     ['.env.example', 'secret-bearing'],
+    ['.envrc', 'secret-bearing'],
+    ['.ENV', 'secret-bearing'],
+    ['.Env.Local', 'secret-bearing'],
     ['README.md', 'other'],
     ['Makefile', 'other'],
     ['.eslintrc', 'other'],
-    ['.envrc', 'other'],
+    ['.environment', 'other'],
     ['env', 'other'],
   ])('classifies %s as %s', (name, kind) => {
     expect(scanFileKind(name)).toBe(kind);
+  });
+
+  it('gives a full path the same answer as its basename', () => {
+    expect(scanFileKind(join('repo', 'src', 'index.ts'))).toBe('source');
+    expect(scanFileKind(join('repo', '.env'))).toBe('secret-bearing');
+    expect(scanFileKind(join('repo', '.env.local'))).toBe('secret-bearing');
+    expect(scanFileKind(join('repo', 'README.md'))).toBe('other');
   });
 
   it('classifies by the given source extensions when they are supplied', () => {
@@ -84,17 +94,40 @@ describe('protected scan roots', () => {
     expect(isProtectedScanPath(resolve(home, 'project', '.env'), roots)).toBe(false);
   });
 
-  it('canonicalizes an existing path through symlinks and leaves an absent one lexical', () => {
+  it('protects everything under a root that is a filesystem root', () => {
+    const fsRoot = parse(resolve(home)).root;
+    expect(isProtectedScanPath(resolve(home, 'any', 'file'), [fsRoot])).toBe(true);
+    expect(isProtectedScanPath(fsRoot, [fsRoot])).toBe(true);
+  });
+
+  it('canonicalizes an existing path through a directory link', (ctx) => {
     const real = join(home, 'real');
     mkdirSync(real);
     writeFileSync(join(real, 'f.txt'), 'x');
     const link = join(home, 'link');
-    symlinkSync(real, link);
+    try {
+      symlinkSync(real, link, 'junction');
+    } catch (err) {
+      ctx.skip(`symlink unavailable on this host: ${(err as Error).message}`);
+    }
     expect(canonicalizeScanPath(join(link, 'f.txt'))).toBe(
       canonicalizeScanPath(join(real, 'f.txt')),
     );
+  });
+
+  it('leaves an absent path in its lexical form', () => {
     expect(canonicalizeScanPath(join(home, 'missing', '..', 'absent'))).toBe(
       resolve(home, 'absent'),
     );
+  });
+
+  it('returns the on-disk casing where the volume folds case', (ctx) => {
+    const lower = join(home, '.claude', 'ide', '1.lock');
+    mkdirSync(join(home, '.claude', 'ide'), { recursive: true });
+    writeFileSync(lower, 'x');
+    const mixed = join(home, '.claude', 'IDE', '1.lock');
+    if (!existsSync(mixed)) ctx.skip('case-sensitive filesystem: ...IDE/ names no file');
+    expect(canonicalizeScanPath(mixed)).toBe(canonicalizeScanPath(lower));
+    expect(canonicalizeScanPath(mixed).endsWith(join('ide', '1.lock'))).toBe(true);
   });
 });

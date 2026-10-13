@@ -63,6 +63,44 @@ describe('modFindingsFrom', () => {
     expect(JSON.stringify(records)).not.toContain(TOKEN);
   });
 
+  const named = (ruleId: string, ruleNames?: Record<string, string>) =>
+    modFindingsFrom({
+      sessionId: 's1',
+      kind: 'prompt',
+      text: `use ${TOKEN}`,
+      result: {
+        action: 'redact',
+        findings: [match(ruleId, 4, 44, TOKEN)],
+        ...(ruleNames === undefined ? {} : { ruleNames }),
+      } as never,
+      where: 'prompt',
+      action: 'redacted',
+    })[0];
+
+  it('labels a rule with no short name by the full name of the rule that matched', () => {
+    const record = named('acme/ticket', { 'acme/ticket': 'Acme ticket' });
+    expect(record?.shortName).toBe('Acme ticket');
+    expect(ModFinding.parse(record)).toBeTruthy();
+  });
+
+  it('cuts a long rule name to 64 characters', () => {
+    const record = named('acme/ticket', { 'acme/ticket': 'n'.repeat(70) });
+    expect(record?.shortName).toBe('n'.repeat(64));
+    expect(ModFinding.parse(record)).toBeTruthy();
+  });
+
+  it('leaves the label to the rule id when the rule has no name', () => {
+    expect(named('acme/ticket')).not.toHaveProperty('shortName');
+    expect(named('acme/ticket', { 'acme/ticket': '  ' })).not.toHaveProperty('shortName');
+  });
+
+  it('prefers the short name a bundled rule ships', () => {
+    expect(
+      named('secrets/github-pat', { 'secrets/github-pat': 'GitHub personal access token' })
+        ?.shortName,
+    ).toBe('GitHub token');
+  });
+
   it('demotes vaulted to redacted when no pointer matches', () => {
     const records = build('vaulted', new Map([['other', POINTER]]));
     expect(records[0]?.action).toBe('redacted');

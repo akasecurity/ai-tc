@@ -4,6 +4,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
@@ -124,6 +125,42 @@ describe('runModTokenize', () => {
     } finally {
       fault.mockRestore();
     }
+  });
+
+  it('labels a custom rule with no short name by its full name', async () => {
+    seed('redact', { vault: false });
+    const raw = new DatabaseSync(join(home, '.aka', 'data', 'aka.db'));
+    try {
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+           VALUES ('custom-tickets', 'acme', 'tickets', '1.0.0', 'Acme tickets', :rules, 1, 'redact', 1, 1)`,
+        )
+        .run({
+          rules: JSON.stringify([
+            {
+              specVersion: 1,
+              id: 'acme/ticket',
+              name: 'Acme support ticket reference',
+              category: 'custom',
+              severity: 'high',
+              matcher: { type: 'regex', pattern: 'ACME-[0-9]{6}', flags: 'g' },
+              examples: ['ACME-123456'],
+            },
+          ]),
+        });
+    } finally {
+      raw.close();
+    }
+    const run = await tokenize({ text: 'see ACME-123456 today' });
+    expect(run.code).toBe(0);
+    const answer = JSON.parse(run.stdout) as { findings: { ruleId: string; shortName?: string }[] };
+    expect(answer.findings).toEqual([
+      expect.objectContaining({
+        ruleId: 'acme/ticket',
+        shortName: 'Acme support ticket reference',
+      }),
+    ]);
   });
 
   it('answers nothing when the policy is not a redact', async () => {

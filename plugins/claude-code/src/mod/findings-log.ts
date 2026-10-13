@@ -18,6 +18,17 @@ const SHORT_NAMES: ReadonlyMap<string, string> = new Map(
   BUNDLED_PACKS.flatMap((pack) => Object.entries(pack.shortNames)),
 );
 
+const MAX_LABEL = 64;
+
+// A rule's label: its short name, else the full name of the rule that matched,
+// cut to what a record holds. Undefined leaves the reader to show the rule id.
+function labelOf(ruleId: string, names: CaptureResult['ruleNames']): string | undefined {
+  const short = SHORT_NAMES.get(ruleId);
+  if (short !== undefined) return short;
+  const name = names?.[ruleId]?.trim();
+  return name === undefined || name === '' ? undefined : name.slice(0, MAX_LABEL).trimEnd();
+}
+
 export function findingId(
   sessionId: string,
   kind: string,
@@ -55,7 +66,7 @@ export function modFindingsFrom(input: {
     const found = input.pointers?.get(f.rawMatch);
     const action: ModFindingAction =
       input.action === 'vaulted' && found === undefined ? 'redacted' : input.action;
-    const shortName = SHORT_NAMES.get(f.ruleId);
+    const shortName = labelOf(f.ruleId, input.result.ruleNames);
     return {
       v: 1,
       id: findingId(input.sessionId, input.kind, input.text, f.ruleId, f.span),

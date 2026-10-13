@@ -12,6 +12,7 @@ import { SIGHTING_SHARE_PAYLOAD_NOTE } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
+import { hostEnv, tempHomeEnv } from '../helpers/run-hook.ts';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'filescan.js');
 
@@ -21,11 +22,6 @@ afterAll(() => {
   removeTrees(temps);
 });
 
-function processEnv(): NodeJS.ProcessEnv {
-  // eslint-disable-next-line n/no-process-env -- an e2e spawn of the real script needs the host PATH
-  return process.env;
-}
-
 describe('/aka:scan footer', () => {
   it('closes the report with whether credential sightings are shared', () => {
     const home = mkdtempSync(join(tmpdir(), 'aka-filescan-home-'));
@@ -34,7 +30,7 @@ describe('/aka:scan footer', () => {
 
     const result = spawnSync(process.execPath, [SCRIPT, '--dir', target], {
       encoding: 'utf8',
-      env: { ...processEnv(), HOME: home, USERPROFILE: home },
+      env: { ...hostEnv(), ...tempHomeEnv(home) },
       timeout: 60_000,
     });
 

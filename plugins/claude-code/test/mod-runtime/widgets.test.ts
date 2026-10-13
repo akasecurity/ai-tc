@@ -878,6 +878,7 @@ for (const surface of SURFACES) {
     file.session(`${firstId}-after-clear`);
     await pane.redraw();
     file.session(firstId);
+    await pane.redraw();
     gate.release();
     await pressed;
     await clock.settle();

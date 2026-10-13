@@ -93,6 +93,10 @@ describe('the ./sqlite-free entry', () => {
     }
   });
 
+  it('serves the pointer minting helpers', () => {
+    expect(Object.keys(entry)).toEqual(expect.arrayContaining(['formatPointer', 'signPointer']));
+  });
+
   it('loads no module that imports node:sqlite', () => {
     const { modules, builtins } = closure();
     // The positive control: the walk really followed the entry's re-exports,

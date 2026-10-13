@@ -30,3 +30,4 @@ export {
   settingsDir,
 } from './local-layout.ts';
 export { DATA_DIR_MODE, DATA_FILE_MODE } from './paths.ts';
+export { formatPointer, signPointer } from './vault/crypto.ts';

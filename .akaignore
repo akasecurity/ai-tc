@@ -32,18 +32,30 @@
 /packages/detections/src/posture/fixtures/
 /packages/persistence/src/test-fixtures/
 
-# Constructed test fixtures: the shared adversarial corpus and each package's
-# and tool's fixture tree.
-/test/fixtures/
-/packages/*/test/fixtures/
-/tools/*/test/fixtures/
-# The plugins' fixture trees stay scanned: they hold recordings of real
-# sessions (payloads captured from a live Copilot CLI, Codex and Claude Code),
-# which can carry real credentials, and the browser extension's tree is where
-# raw web-chat captures (`*.har`, `*.raw.json`) are recorded before
-# .gitignore keeps them out of git. The one constructed tree among them is the
-# Copilot VS Code specimens, built from the published contract rather than
-# recorded.
+# Test code and the fixtures it builds: the shared repo-root test tree, each
+# package's and tool's test tree, and tests kept beside their source. Most of
+# this tree's findings are values written inline in test code, which takes them
+# from a rule's own `examples` rather than inventing secret-shaped literals.
+# What that leaves uncovered: a real key committed into one of these files is
+# not reported by a folder scan. The write that introduced it is still scanned
+# by the agent hooks, and GitHub secret scanning covers these paths.
+/test/
+/cli/test/
+/web-ui/test/
+/packages/*/test/
+/tools/*/test/
+/packages/*/src/**/*.test.ts
+# The plugins' test code is skipped too, but not their fixture trees: those
+# hold recordings of real sessions (payloads captured from a live Copilot CLI,
+# Codex and Claude Code), which can carry real credentials, and the browser
+# extension's tree is where raw web-chat captures (`*.har`, `*.raw.json`) are
+# recorded before .gitignore keeps them out of git. A walker never enters a
+# skipped directory, so the contents of each plugin's `test/` are skipped
+# rather than the directory itself. The one constructed tree among the
+# fixtures is the Copilot VS Code specimens, built from the published contract
+# rather than recorded.
+/plugins/*/test/*
+!/plugins/*/test/fixtures/
 /plugins/copilot/test/fixtures/vscode-provisional/
 
 # Benchmark suites and the corpora they generate.

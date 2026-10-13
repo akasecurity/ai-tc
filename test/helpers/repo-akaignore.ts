@@ -74,8 +74,15 @@ export function intendedSkip(rel: string): boolean {
   }
   if (rel.endsWith('.tsbuildinfo')) return true;
   if (/^packages\/[^/]+\/bench\//.test(rel)) return true;
-  if (/^(?:(?:packages|tools)\/[^/]+\/)?test\/fixtures\//.test(rel)) return true;
-  if (rel.startsWith(CONSTRUCTED_PLUGIN_FIXTURES)) return true;
+  // Test trees at a package's root (or the repo's), and tests beside source.
+  if (/^(?:(?:packages|tools)\/[^/]+\/|cli\/|web-ui\/)?test\//.test(rel)) return true;
+  if (/^packages\/[^/]+\/src\/.*\.test\.ts$/.test(rel)) return true;
+  // A plugin's test tree, all but its fixture recordings.
+  if (/^plugins\/[^/]+\/test\//.test(rel)) {
+    return (
+      !/^plugins\/[^/]+\/test\/fixtures\//.test(rel) || rel.startsWith(CONSTRUCTED_PLUGIN_FIXTURES)
+    );
+  }
   return false;
 }
 
@@ -91,6 +98,14 @@ const PLANTED = [
   'plugins/browser-extension/test/fixtures/claude-ai/capture.raw.json',
   'plugins/copilot/test/fixtures/cli/new-recording.json',
   'plugins/antigravity/test/fixtures/new-recording.json',
+  // A test file under a fixture tree is still kept: the recording rule wins.
+  'plugins/codex/test/fixtures/hooks/planted.test.ts',
+  // Tests elsewhere than a package root, or beside source in a form the
+  // colocated entry does not name, stay scanned.
+  'packages/scanner/src/planted.test.tsx',
+  'docs-site/test/planted.ts',
+  'cli/src/test/planted.ts',
+  'web-ui/app/test/planted.ts',
   'web-ui/.env.local',
   // Same-named directories outside the locations each entry is anchored to.
   'packages/scanner/src/bench/planted.ts',
@@ -195,6 +210,13 @@ export function describeRepoAkaignore(walkerName: string, packageDir: string, wa
         'test/fixtures/',
         ...RECORDING_DIRS,
         CONSTRUCTED_PLUGIN_FIXTURES,
+        'test/setup/',
+        'cli/test/',
+        'web-ui/test/',
+        'packages/persistence/test/',
+        'tools/installer/test/',
+        'plugins/claude-code/test/hooks/',
+        'packages/local-ops/src/self-exec.test.ts',
         'plugins/browser-extension/scripts/',
       ];
       expect(families.filter((dir) => ![...baseline].some((file) => file.startsWith(dir)))).toEqual(

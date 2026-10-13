@@ -14,7 +14,7 @@
 // belongs on a public API surface.
 import { z } from 'zod';
 
-import { DetectionCategory } from './finding.ts';
+import { DetectionCategory, VariableName } from './finding.ts';
 
 // Bumped when the vault's stored shape changes in a way a reader must notice.
 export const VAULT_SPEC_VERSION = 1;
@@ -111,7 +111,7 @@ export const VaultEntry = z.object({
   provider: z.string().optional(),
   // The variable the value was assigned to where it was detected; a name,
   // never the value.
-  variableName: z.string().optional(),
+  variableName: VariableName.optional(),
   ciphertext: z.string(),
   nonce: z.string(),
   authTag: z.string(),
@@ -138,7 +138,7 @@ export const PointerDescriptor = z.object({
   category: DetectionCategory,
   provider: z.string().optional(),
   // The variable the value was assigned to where it was detected.
-  variableName: z.string().optional(),
+  variableName: VariableName.optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),
@@ -243,7 +243,7 @@ export const VaultInventoryEntry = z.object({
   pointerId: z.string(),
   category: DetectionCategory,
   provider: z.string().optional(),
-  variableName: z.string().optional(),
+  variableName: VariableName.optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),

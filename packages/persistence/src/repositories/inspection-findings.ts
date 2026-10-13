@@ -48,11 +48,14 @@ export class SqliteInspectionFindingsRepository {
     // `finding_key` itself (baked into the conflict target, so a conflict can
     // never carry a different one — same reasoning as the legacy writer) and
     // `first_detected_at`, which is DELIBERATELY excluded so a re-detection keeps
-    // the ORIGINAL detection time (see the VALUES clause below). Under the rule
-    // above, this clause moves `audit_event_id`, so `line`, `col` and `context`
-    // move with it — including to NULL when the new detection built no excerpt
-    // (past the per-text cap, or a masking fault). Keeping the old excerpt
-    // instead would pair the previous event's lines with the new line number.
+    // the ORIGINAL detection time (see the VALUES clause below), and
+    // `variable_name`, which a re-detection that names the value replaces and
+    // one that does not keeps — never NULLed, as in `secret_vault`. Clause 1
+    // leaves it alone. Under the rule above, this clause moves `audit_event_id`,
+    // so `line`, `col` and `context` move with it — including to NULL when the
+    // new detection built no excerpt (past the per-text cap, or a masking
+    // fault). Keeping the old excerpt instead would pair the previous event's
+    // lines with the new line number.
     //
     // Neither clause is a blanket `INSERT OR IGNORE`: a genuine constraint bug
     // (FK miss / NOT NULL / CHECK) still throws instead of being silently
@@ -82,7 +85,7 @@ export class SqliteInspectionFindingsRepository {
          line = excluded.line,
          col = excluded.col,
          context = excluded.context,
-         variable_name = excluded.variable_name`,
+         variable_name = COALESCE(excluded.variable_name, variable_name)`,
     );
 
     // Has this (rule, masked value) already been recorded somewhere in this

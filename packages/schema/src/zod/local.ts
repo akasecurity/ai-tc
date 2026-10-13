@@ -24,6 +24,7 @@ import type { AttachmentMode } from './control-plane.ts';
 import { PluginWhoami, printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
+import { MAX_VARIABLE_NAME_LENGTH } from './finding.ts';
 import type {
   AuditEventInput,
   CaptureAttributes,
@@ -1029,7 +1030,10 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     line: input.line ?? null,
     col: input.col ?? null,
     context: input.context ? JSON.stringify(input.context) : null,
-    variableName: input.variableName ?? null,
+    variableName:
+      input.variableName !== undefined && input.variableName.length <= MAX_VARIABLE_NAME_LENGTH
+        ? input.variableName
+        : null,
   };
 }
 
@@ -1151,11 +1155,20 @@ export interface FindingView {
 }
 
 // A finding's match as the read surfaces print it: the masked value, prefixed
-// by the variable it was assigned to when there is one.
-export function findingMatchLabel(view: Pick<FindingView, 'maskedMatch' | 'variableName'>): string {
-  return view.variableName === undefined
-    ? view.maskedMatch
-    : [view.variableName, view.maskedMatch].join(' = ');
+// by the variable it was assigned to when there is one. With `maxWidth`, the
+// name is shortened (or dropped) to fit and the masked value is kept whole.
+export function findingMatchLabel(
+  view: Pick<FindingView, 'maskedMatch' | 'variableName'>,
+  maxWidth?: number,
+): string {
+  const { maskedMatch, variableName } = view;
+  if (variableName === undefined) return maskedMatch;
+  const separator = ' = ';
+  const room =
+    maxWidth === undefined ? variableName.length : maxWidth - separator.length - maskedMatch.length;
+  if (variableName.length <= room) return `${variableName}${separator}${maskedMatch}`;
+  if (room < 2) return maskedMatch;
+  return `${variableName.slice(0, room - 1)}…${separator}${maskedMatch}`;
 }
 
 export interface HealthSummary {

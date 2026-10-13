@@ -36,6 +36,7 @@ import type {
 import {
   DEFAULT_VAULT_DEREFS_LIMIT,
   DEFAULT_VAULT_INVENTORY_LIMIT,
+  MAX_VARIABLE_NAME_LENGTH,
   MAX_VAULT_PAGE_LIMIT,
   POINTER_FORMAT_VERSION,
 } from '@akasecurity/schema';
@@ -241,6 +242,12 @@ function toRow(raw: RawVaultRow): VaultRow {
   };
 }
 
+// A name past the detection cap is not stored: the column holds a name, and
+// nothing that long is one.
+function boundedName(name: string | undefined): string | undefined {
+  return name !== undefined && name.length <= MAX_VARIABLE_NAME_LENGTH ? name : undefined;
+}
+
 /**
  * `secret_vault` / `secret_vault_deref` reader and writer, bound to one open DB.
  * Every query reads the whole store — no row carries an owner column to scope by.
@@ -271,9 +278,10 @@ export class SqliteSecretVaultRepository {
          :userAuthorized, 1, :now, :now
        )`,
     );
-    // Deliberately touches only the counters, the provenance marker and a
-    // missing variable name: pointer_id, category, key_version and the sealed
-    // bytes are fixed at mint, and so is a variable name once one is recorded.
+    // Deliberately touches only the counters, the provenance marker and the
+    // variable name: pointer_id, category, key_version and the sealed bytes are
+    // fixed at mint. The latest sighting that names the value sets the name; a
+    // sighting with no name keeps the stored one, matching inspection_findings.
     //
     // `max` is what makes the marker STICKY, and it is the invariant rather than
     // an optimization: one value is one row, so an automatic vaulting of a value
@@ -286,7 +294,7 @@ export class SqliteSecretVaultRepository {
       `UPDATE secret_vault
        SET occurrence_count = occurrence_count + 1, last_seen = :now,
            user_authorized = max(user_authorized, :userAuthorized),
-           variable_name = COALESCE(variable_name, :variableName)
+           variable_name = COALESCE(:variableName, variable_name)
        WHERE value_fingerprint = :valueFingerprint`,
     );
     this.byPointerStmt = db.prepare(
@@ -355,7 +363,7 @@ export class SqliteSecretVaultRepository {
               ruleId: input.ruleId,
               maskedMatch: input.maskedMatch,
               provider: input.provider,
-              variableName: input.variableName,
+              variableName: boundedName(input.variableName),
               ciphertext: input.ciphertext,
               nonce: input.nonce,
               authTag: input.authTag,
@@ -369,7 +377,7 @@ export class SqliteSecretVaultRepository {
         this.bumpStmt.run({
           valueFingerprint: input.valueFingerprint,
           userAuthorized: input.userAuthorized === true ? 1 : 0,
-          variableName: input.variableName ?? null,
+          variableName: boundedName(input.variableName) ?? null,
           now,
         });
       },

@@ -1353,4 +1353,19 @@ describe('findingMatchLabel', () => {
   it('is the masked match alone when there is no variable name', () => {
     expect(findingMatchLabel({ maskedMatch: 's*****y' })).toBe('s*****y');
   });
+
+  it('fits a width by shortening the name and keeping the masked match whole', () => {
+    const name = ['GOOGLE', 'APPLICATION', 'CREDENTIALS'].join('_');
+    const label = findingMatchLabel({ maskedMatch: 's*****y', variableName: name }, 28);
+    expect(label).toHaveLength(28);
+    expect(label).toBe('GOOGLE_APPLICATIO… = s*****y');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: 'KEY' }, 28)).toBe(
+      'KEY = s*****y',
+    );
+  });
+
+  it('drops the name when the masked match leaves no room for it', () => {
+    const masked = 's'.repeat(26);
+    expect(findingMatchLabel({ maskedMatch: masked, variableName: 'API_KEY' }, 28)).toBe(masked);
+  });
 });

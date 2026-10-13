@@ -30,6 +30,11 @@ export const Span = z
   .meta({ id: 'Span' });
 export type Span = z.infer<typeof Span>;
 
+// The longest variable name detection records, and the longest any store
+// accepts, beside a detected secret.
+export const MAX_VARIABLE_NAME_LENGTH = 128;
+export const VariableName = z.string().max(MAX_VARIABLE_NAME_LENGTH);
+
 // The canonical finding shape, and the component named 'Finding'. Carries no
 // scoping columns — a finding is identified by its own id and its parent event.
 // Consumed directly by @akasecurity/persistence and the web-ui.

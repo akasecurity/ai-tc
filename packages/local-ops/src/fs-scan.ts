@@ -16,6 +16,7 @@ import {
   redact,
   scan,
   shieldPointers,
+  withVariableNames,
 } from '@akasecurity/detections';
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
 import {
@@ -707,7 +708,10 @@ export async function scanPathIntoStore(
     // original text, so redaction and stored spans below still line up — and
     // drop any finding that touches a shielded span.
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
+    const matches = withVariableNames(
+      dropShieldedFindings(await matchText(shielded.text), shielded.spans),
+      shielded.text,
+    );
     if (matches.length === 0) continue;
 
     // Resolved through the same reading the live path uses (see

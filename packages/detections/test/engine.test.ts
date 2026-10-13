@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../src/engine.ts';
 import type { MatchResult } from '../src/types.ts';
+import { withVariableNames } from '../src/variable-name.ts';
 import { expectFixtureBar, MIN_FIXTURES_PER_POLARITY } from './helpers/fixture-bar.ts';
 import {
   bundledPackDirs,
@@ -83,7 +84,7 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
           fixture.filePath || fixture.eventKind
             ? { filePath: fixture.filePath, eventKind: fixture.eventKind }
             : undefined;
-        const findings = scan(fixture.text, ruleset, context);
+        const findings = withVariableNames(scan(fixture.text, ruleset, context), fixture.text);
         // For gated rules other rules in the set may also match the fixture
         // text, so assert specifically on THIS rule's findings.
         const own = gated ? findings.filter((f) => f.ruleId === rule.id) : findings;

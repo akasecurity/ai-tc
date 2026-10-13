@@ -75,6 +75,15 @@ describe('capture — the variable a secret is assigned to', () => {
     expect(finding?.variableName).not.toContain(MARKER);
   });
 
+  it('leaves names off a decision that records nothing', async () => {
+    const rt = createPluginRuntime(recordingGateway(), settings());
+    const result = await rt.processText(['export ', NAME, EQ, MARKER].join(''));
+    await rt.close();
+    const finding = result.findings.find((f) => f.ruleId === 'test/assigned-marker');
+    expect(finding).toBeDefined();
+    expect(finding).not.toHaveProperty('variableName');
+  });
+
   it('records no name when the secret is not assigned', async () => {
     const finding = await recorded(['deploy with ', MARKER].join(''));
     expect(finding).toBeDefined();

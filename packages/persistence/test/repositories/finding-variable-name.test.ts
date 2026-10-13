@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { DetectedFindingWithKey, IngestEvent } from '@akasecurity/schema';
+import { MAX_VARIABLE_NAME_LENGTH } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -61,11 +62,23 @@ describe('recordCapture — variable name', () => {
     expect(nameOf('id', record(undefined))).toBeNull();
   });
 
+  it('stores no name longer than the cap', () => {
+    expect(nameOf('id', record('K'.repeat(MAX_VARIABLE_NAME_LENGTH + 1)))).toBeNull();
+  });
+
   it('follows a re-detected at-rest finding', () => {
     record(undefined, 'key-env');
     expect(nameOf('finding_key', 'key-env')).toBeNull();
     record(NAME, 'key-env');
     expect(nameOf('finding_key', 'key-env')).toBe(NAME);
+    record('OTHER_NAME', 'key-env');
+    expect(nameOf('finding_key', 'key-env')).toBe('OTHER_NAME');
+  });
+
+  it('keeps the stored name when a re-detection carries none', () => {
+    record(NAME, 'key-kept');
+    record(undefined, 'key-kept');
+    expect(nameOf('finding_key', 'key-kept')).toBe(NAME);
   });
 
   it('hands the name to the recent-findings read, and omits it when absent', async () => {

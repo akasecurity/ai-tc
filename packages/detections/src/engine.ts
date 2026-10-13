@@ -9,7 +9,6 @@ import { memoizedRegExpList } from './regex-cache.ts';
 import type { MatchResult, RulePack } from './types.ts';
 import { isHighEntropy } from './validators/entropy.ts';
 import { luhnCheck } from './validators/luhn.ts';
-import { withVariableNames } from './variable-name.ts';
 
 const keywordMatcher = new KeywordMatcher();
 const regexMatcher = new RegexMatcher();
@@ -569,7 +568,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   // test/security/unicode.test.ts.
   const normalization = normalizeFormatChars(text);
   const originalCandidates = buildCandidates(text, ruleset, extension, context?.eventKind);
-  if (!normalization) return withVariableNames(gate(originalCandidates, text, undefined), text);
+  if (!normalization) return gate(originalCandidates, text, undefined);
   const pooledOriginal = originalCandidates.map((candidate) =>
     withNormalizedSpan(candidate, normalization),
   );
@@ -590,7 +589,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   // number of findings and could leave two overlapping findings of the same
   // rule behind when a third one only overlapped the widened result of
   // merging the first two).
-  return withVariableNames(mergeOverlappingSameRule(findings, text), text);
+  return mergeOverlappingSameRule(findings, text);
 }
 
 // Severity precedence for naming a merged region's placeholder — the most

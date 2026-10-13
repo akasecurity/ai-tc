@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { MAX_VARIABLE_NAME_LENGTH } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { FingerprintKey } from '../../src/fingerprint.ts';
@@ -63,11 +64,24 @@ describe('SecretVault — variable name', () => {
     expect(storedName()).toBeNull();
   });
 
-  it('fills a missing name on re-detection and keeps the first name seen', async () => {
+  it('takes the latest name a re-detection carries', async () => {
     await tokenize();
     await tokenize(NAME);
     expect(storedName()).toBe(NAME);
     await tokenize('OTHER_NAME');
+    expect(storedName()).toBe('OTHER_NAME');
+  });
+
+  it('stores no name longer than the cap', async () => {
+    await tokenize('K'.repeat(MAX_VARIABLE_NAME_LENGTH + 1));
+    expect(storedName()).toBeNull();
+    await tokenize('K'.repeat(MAX_VARIABLE_NAME_LENGTH));
+    expect(storedName()).toBe('K'.repeat(MAX_VARIABLE_NAME_LENGTH));
+  });
+
+  it('keeps the stored name when a re-detection carries none', async () => {
+    await tokenize(NAME);
+    await tokenize();
     expect(storedName()).toBe(NAME);
   });
 

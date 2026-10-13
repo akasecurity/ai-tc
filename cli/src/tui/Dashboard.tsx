@@ -350,7 +350,7 @@ function FindingsView({
     { text: f.category },
     { text: f.ruleId, color: COLOR.dim },
     { text: f.actionTaken, color: actionColor(f.actionTaken) },
-    { text: truncate(findingMatchLabel(f), MATCH_W) },
+    { text: truncate(findingMatchLabel(f, MATCH_W), MATCH_W) },
   ]);
   return (
     <Box flexDirection="column">

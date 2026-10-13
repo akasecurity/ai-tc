@@ -239,7 +239,7 @@ function nestedVerdict(
  * plugin's per-directory memo. This runs in the dashboard's long-lived server,
  * where a remembered remote could outlive an edit to it.
  */
-function nestedRepositoryKey(dir: string): string | undefined {
+export function nestedRepositoryKey(dir: string): string | undefined {
   const dotGit = join(dir, '.git');
   if (!existsSync(dotGit)) return undefined;
   const identity = resolveRepoIdentity(dir);

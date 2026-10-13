@@ -518,6 +518,7 @@ describe('scanPathIntoStore', () => {
         files: [],
         egress: { files: [] },
         nestedRepositories: [],
+        sightings: [],
       });
       expect(storedEvents(store)).toEqual([]);
     } finally {

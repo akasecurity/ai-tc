@@ -17,7 +17,12 @@ import {
   shieldPointers,
   withVariableNames,
 } from '@akasecurity/detections';
-import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
+import type {
+  FingerprintKey,
+  LocalDatabase,
+  ScanSighting,
+  SightingKey,
+} from '@akasecurity/persistence';
 import {
   computeFindingKey,
   dataDir as dataDirOf,
@@ -25,6 +30,7 @@ import {
   fingerprintValue,
   loadOrCreateFingerprintKey,
   readWorkspaceSettings,
+  sightingToken,
 } from '@akasecurity/persistence';
 import {
   assignedRulePolicies,
@@ -524,6 +530,9 @@ export interface ScanPathOptions {
   // without vault consent, and the scan then stores the file as it would with
   // no vault at all. Omitted, nothing is vaulted.
   vault?: AtRestVault | undefined;
+  // With a key, each secret found is also reduced to its sighting token, in
+  // memory, and listed in the result's `sightings`. Omitted, none is computed.
+  sightingKey?: SightingKey | undefined;
 }
 
 // Per-file detail for machine consumers (`aka scan --format json`, CI gates).
@@ -550,6 +559,8 @@ export interface ScanPathResult {
   // The Data Shares forward is handed this list so that a scoped attachment
   // can hold the register to each repository in it.
   nestedRepositories: string[];
+  // The secrets found, as sighting tokens; empty unless `sightingKey` was given.
+  sightings: ScanSighting[];
 }
 
 // What the egress pass extracts from one already-read file, or null when the
@@ -674,6 +685,7 @@ export async function scanPathIntoStore(
 
   // Every nested repository the walk lists, for the Data Shares forward.
   const nestedRepositories: string[] = [];
+  const sightings: ScanSighting[] = [];
 
   // Absolutize the walk root before any path reaches computeFindingKey /
   // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
@@ -713,6 +725,9 @@ export async function scanPathIntoStore(
       shielded.text,
     );
     if (matches.length === 0) continue;
+    if (opts.sightingKey) {
+      sightings.push(...sightingsOf(opts.sightingKey, matches, file, gitignored));
+    }
 
     // Resolved through the same reading the live path uses (see
     // scanPolicyResolver), ONCE per match here because two things read it: the
@@ -819,5 +834,32 @@ export async function scanPathIntoStore(
     files,
     egress: { files: egressFiles },
     nestedRepositories,
+    sightings,
   };
+}
+
+// The secret matches in one file, as sighting tokens. A value that cannot be
+// reduced to a token is left out.
+function sightingsOf(
+  key: SightingKey,
+  matches: readonly MatchResult[],
+  file: string,
+  gitignored: boolean,
+): ScanSighting[] {
+  const found: ScanSighting[] = [];
+  for (const match of matches) {
+    if (match.category !== 'secret') continue;
+    try {
+      found.push({
+        token: sightingToken(key, match.rawMatch),
+        ruleId: match.ruleId,
+        ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
+        file,
+        gitignored,
+      });
+    } catch {
+      // Left out; the scan itself goes on.
+    }
+  }
+  return found;
 }

@@ -1148,8 +1148,8 @@ export type SightingLocationClass = z.infer<typeof SightingLocationClass>;
 /**
  * The project a sighting was found in, as the Data Shares forward names it:
  * `projectKey` is the digest `EgressIngestRequest.projectKey` carries, and
- * `name` is the repository's `owner/repo` slug, or the project directory's
- * basename when it has no remote.
+ * `name` is the display name `EgressIngestRequest.project` carries. Neither
+ * is a path.
  */
 export const SightingProject = z
   .object({

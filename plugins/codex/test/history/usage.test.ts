@@ -345,7 +345,7 @@ describe('reconcileHistory — cached input', () => {
 
   it('leaves a mostly-cached prompt over the long-context line unpriced', async () => {
     // 300K prompt, 95% cached. Only 15K is uncached, but the band is chosen by
-    // the whole prompt, and above 272K this price has no published rate.
+    // the whole prompt, and above 272K this synthetic price has no input rate.
     const overLine: CodexTokenUsage = {
       input_tokens: 300_000,
       cached_input_tokens: 285_000,

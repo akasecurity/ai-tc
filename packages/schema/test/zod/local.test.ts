@@ -59,7 +59,7 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     // it. The version is a changelog marker that nothing reads, which is exactly
     // why a change to it needs a test that names the number. The next field that
     // bumps it changes this literal on purpose.
-    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(9);
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(10);
   });
 
   it('enables in-place Data Shares extraction by default', () => {

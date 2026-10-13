@@ -17,10 +17,15 @@ import {
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
-import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  MAX_EGRESS_CALL_SITES_PER_PROJECT,
+  openLocalDatabase,
+  readSightingSharing,
+} from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
 import { createSharesSender } from '@akasecurity/remote';
-import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
+import type { ManagedSettings } from '@akasecurity/schema';
+import { Severity, sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -120,6 +125,8 @@ export function renderEgressLine(egress: EgressRecordResult): string {
  */
 export interface ScanDeps {
   send?: SharesForwardSender;
+  /** Replaces the managed settings file; `null` reads a machine with no administrator. */
+  managedSettings?: ManagedSettings | null;
 }
 
 /**
@@ -358,6 +365,9 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
     const reported = reportedForward(await runForward());
     if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
+    process.stdout.write(
+      `${sightingSharingLine(readSightingSharing(home, deps.managedSettings))}\n`,
+    );
   }
 
   if (failOn !== undefined) {

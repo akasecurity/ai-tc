@@ -252,6 +252,7 @@ export {
   readWorkspaceSettings,
   SETTINGS_FILENAME,
 } from './settings.ts';
+export { readSightingSharing } from './sighting-sharing.ts';
 export type { StoreSkew } from './store-skew.ts';
 export { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
 export type { SymlinkedStorePath } from './store-symlinks.ts';

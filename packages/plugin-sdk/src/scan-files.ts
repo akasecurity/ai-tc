@@ -31,8 +31,8 @@ export type ScanFileKind = 'source' | 'secret-bearing' | 'other';
  * Classifies a file by its basename; a full path is reduced to its basename
  * first. `extname` gives a dotfile such as `.env` an empty extension, so a
  * dotenv file is recognised by name, case-insensitively: `.env`, every
- * `.env.<variant>`, and direnv's `.envrc`. A name with a source extension is
- * source first, so `.env.ts` is source.
+ * `.env.<variant>`, every `<name>.env`, and direnv's `.envrc`. A name with a
+ * source extension is source first, so `.env.ts` is source.
  */
 export function scanFileKind(
   name: string,
@@ -41,7 +41,9 @@ export function scanFileKind(
   const base = basename(name);
   if (sourceExtensions.has(extname(base))) return 'source';
   const lower = base.toLowerCase();
-  if (lower === '.env' || lower === '.envrc' || lower.startsWith('.env.')) return 'secret-bearing';
+  if (lower === '.envrc' || lower.endsWith('.env') || lower.startsWith('.env.')) {
+    return 'secret-bearing';
+  }
   return 'other';
 }
 

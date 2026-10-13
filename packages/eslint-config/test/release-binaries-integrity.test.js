@@ -1157,9 +1157,11 @@ describe('the release job renders the package-manager manifests', () => {
     expect(matching, 'the release job runs no single setup-node step').toHaveLength(1);
     expect(inputsOf(matching[0])['node-version']).toBe('24');
     // This job installs nothing, so a package-manager cache has no lockfile
-    // install to serve and would only restore a store nothing reads.
+    // install to serve and would only restore a store nothing reads. The whole
+    // decoded step is read, not only its `with:`, so a `cache` key written at
+    // step level or under `env:` is refused as well.
     expect(
-      Object.hasOwn(inputsOf(matching[0]), 'cache'),
+      hasKey(matching[0], 'cache'),
       'the release job caches a store it never installs into',
     ).toBe(false);
   });
@@ -1420,9 +1422,10 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   });
 
   // The REST releases API ignores this key when the tag already exists, so a
-  // value here reads as a decision the release does not make.
+  // value here reads as a decision the release does not make. The whole decoded
+  // step is read, so the key is refused wherever in the step it is written.
   it('names no commitish, because the tag already exists by then', () => {
-    expect(Object.hasOwn(inputsOf(rollingStep()), 'target_commitish')).toBe(false);
+    expect(hasKey(rollingStep(), 'target_commitish')).toBe(false);
   });
 
   // Ordering. The tag is moved by the step above; a release cut before that

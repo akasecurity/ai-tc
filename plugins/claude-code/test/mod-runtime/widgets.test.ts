@@ -529,12 +529,28 @@ test('findings within one second write the status line once, a later one again',
   expect(calls).toEqual(['AKA · redacting in place · 0 critical  1 high  0 other']);
 
   await clock.advance(1000);
-  answer.next([record(ids[3] as string)]);
-  await $.prompt.submit({ text: prompt });
+  await clock.settle();
   expect(calls).toEqual([
     'AKA · redacting in place · 0 critical  1 high  0 other',
-    'AKA · redacting in place · 0 critical  4 high  0 other',
+    'AKA · redacting in place · 0 critical  3 high  0 other',
   ]);
+});
+
+test('a later hook with no new finding also writes the held-back count', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW });
+  const calls = statuses(on);
+  fileSystem(on, () => SECRET_REDACT);
+  model(on);
+  const answer = answeringWith(on);
+  for (const n of ['5', '6']) {
+    answer.next([record(n.repeat(16))]);
+    await $.prompt.submit({ text: prompt });
+  }
+  expect(calls).toHaveLength(1);
+  await clock.advance(1000);
+  answer.next([]);
+  await $.prompt.submit({ text: 'nothing sensitive' });
+  expect(calls.at(-1)).toBe('AKA · redacting in place · 0 critical  2 high  0 other');
 });
 
 test('the findings-pane command opens the pane', async ($, on) => {
@@ -621,6 +637,16 @@ for (const surface of SURFACES) {
     expect((await pane.findAll({ type: 'Text' })).map((t) => t.text)).toEqual([
       'No findings in this session.',
     ]);
+  });
+
+  test(`${surface}: a filter with no matches names the severity`, async ($, on) => {
+    mock.clock(on, { now: NOW });
+    fileOf(on, lines(recent(ID_A, { severity: 'high' })));
+
+    const pane = await mountPane($, surface);
+    await pane.press({ key: 'filter-low' });
+
+    expect((await pane.findAll({ type: 'Text' })).map((t) => t.text)).toEqual(['No low findings.']);
   });
 
   test(`${surface}: a pointer is drawn masked, never whole`, async ($, on) => {

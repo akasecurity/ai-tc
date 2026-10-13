@@ -117,6 +117,21 @@ const STATUS_EVERY_MS = 1000;
 let lastStatusAt: number | undefined;
 let lastStatusText: string | undefined;
 
+// True while a trailing write is waiting out the window.
+let flushScheduled = false;
+
+// Writes the change the window held back once it has elapsed. Never throws.
+async function flushStatusLater($: Dollar, ms: number): Promise<void> {
+  try {
+    await $.clock.sleep(Math.max(ms, 0));
+  } catch {
+    // The next hook with a status line writes it.
+  } finally {
+    flushScheduled = false;
+  }
+  await refreshStatus($);
+}
+
 // Writes the status line from the held list, at most once a second, and only when
 // its text changed: a burst of findings shows its first count and the next call
 // after the second shows the rest. `force` skips the wait. A render's `$` has no
@@ -130,7 +145,13 @@ async function refreshStatus($: Dollar, force = false): Promise<void> {
     const now = await $.clock.now();
     const waiting =
       lastStatusAt !== undefined && now >= lastStatusAt && now - lastStatusAt < STATUS_EVERY_MS;
-    if (waiting && !force) return;
+    if (waiting && !force) {
+      if (!flushScheduled) {
+        flushScheduled = true;
+        void flushStatusLater($, STATUS_EVERY_MS - (now - (lastStatusAt ?? now)));
+      }
+      return;
+    }
     await $.ui.status(text);
     lastStatusAt = now;
     lastStatusText = text;
@@ -138,6 +159,8 @@ async function refreshStatus($: Dollar, force = false): Promise<void> {
     // The status line is a courtesy.
   }
 }
+
+let paneFilter: ViewSeverity | 'all' = 'all';
 
 // A new session id (a /clear or a resume in the same process) starts an empty
 // list: the findings of the session before are not shown in this one. Never throws.
@@ -149,6 +172,7 @@ async function followSession($: Dollar): Promise<void> {
     heldSession = sessionId;
     findingsHeld = [];
     dismissedBefore = 0;
+    paneFilter = 'all';
     lastFile = undefined;
     if (hadFindings) {
       await update($, findingsVersion, (version) => (version ?? 0) + 1);
@@ -778,8 +802,6 @@ const paneVersion = { plugin: 'aka', key: 'pane' } as const;
 
 type PaneDollar = Parameters<Hook<'ui.render'>>[0];
 
-let paneFilter: ViewSeverity | 'all' = 'all';
-
 const PANE_FILTERS: readonly (ViewSeverity | 'all')[] = [
   'all',
   'critical',
@@ -836,7 +858,11 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
         ),
       ),
       rows.length === 0
-        ? h(Text, { key: 'empty', dimColor: true }, 'No findings in this session.')
+        ? h(
+            Text,
+            { key: 'empty', dimColor: true },
+            paneFilter === 'all' ? 'No findings in this session.' : `No ${paneFilter} findings.`,
+          )
         : null,
       ...rows.map((f) =>
         h(
@@ -859,6 +885,7 @@ async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await followSession($);
+    await refreshStatus($);
     try {
       await $.command.register({
         name: 'findings-pane',
@@ -921,6 +948,7 @@ export const register: Register = (on) => {
   });
 
   on('tool.call', async ($, e, next) => {
+    await refreshStatus($);
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);

@@ -1,5 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type {
@@ -9,9 +8,8 @@ import type {
 } from '@akasecurity/schema';
 import { CredentialSightingsRequest as RequestSchema } from '@akasecurity/schema';
 import { SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { writeControlPlaneCredential } from '../src/control-plane-credential.ts';
 import type {
   CredentialSightingsSend,
@@ -48,14 +46,12 @@ const REPO_KEY = 'github.com/acme/widgets';
 const VALUE_A = ['AK', 'IA', 'Q7RT', '2MXP', '9KZB', '4HWN'].join('');
 const VALUE_B = ['gh', 'p_', 'x'.repeat(36)].join('');
 
-const temps: string[] = [];
-afterEach(() => {
-  removeTrees(temps.splice(0));
-});
-
+// Directories inside the harness's own tree, so its teardown removes them.
+let made = 0;
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  temps.push(dir);
+  made += 1;
+  const dir = join(store.home, 'trees', `${prefix}${String(made)}`);
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -400,7 +396,7 @@ describe('forwardCredentialSightings', () => {
         project: project(home, { projectKey: `path:${home}`, name: 'someone', git: false }),
         sightings: [
           sightingIn(join(home, '.aws', 'credentials'), VALUE_A),
-          sightingIn(join(tmpdir(), 'elsewhere.txt'), VALUE_B),
+          sightingIn(join(tempDir('aka-elsewhere-'), 'elsewhere.txt'), VALUE_B),
         ],
       },
       { ...deps(rec.send), home },

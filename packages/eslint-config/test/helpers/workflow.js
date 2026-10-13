@@ -12,6 +12,14 @@ import { expect } from 'vitest';
 // Called from a `describe` body an assertion is a collection error, which vitest
 // reports as `(0 test)` and which takes every other suite in the file down with
 // it — so call these inside the case, not beside it.
+//
+// They match TEXT, by line and column, and are not a YAML parse. That is enough
+// for a guard that asks where a block sits and what a pattern finds in it, and it
+// is not enough for one that has to vouch for what a workflow MEANS: the same
+// structure can be written with an escape, a quoted or flow-style key, an alias,
+// or text that merely looks like a key inside another key's block scalar, and a
+// reader of lines can only refuse the spellings it anticipated. A guard that makes
+// that kind of claim reads the decoded document in `workflow-yaml.js` instead.
 
 /**
  * Drop `#` comment lines.
@@ -141,29 +149,6 @@ export function rawStepNamed(source, name) {
 }
 
 /**
- * The first line of a step slice that opens `key` as a block scalar.
- *
- * Without `indent` that is the first `key: |` anywhere in the slice. A step's own
- * keys sit at one column, though, and a line that merely LOOKS like an opener can
- * sit deeper: inside another key's block scalar, as text. Taking the first match
- * there reads a script the runner never runs. With `indent`, only an opener at
- * that column counts — or at column 0, which is where a slice's first key lands
- * once the list marker is stripped.
- *
- * @param {string} step one step slice
- * @param {string} key the input key
- * @param {{ indent?: number }} [options]
- */
-function blockScalarOpener(step, key, options = {}) {
-  const pattern = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'gm');
-  for (const found of step.matchAll(pattern)) {
-    const column = found[1].length;
-    if (options.indent === undefined || column === 0 || column === options.indent) return found;
-  }
-  return null;
-}
-
-/**
  * The entries of one block-scalar input of a step, and only those.
  *
  * An entry sitting under a NEIGHBOURING key in the same step is not one of them,
@@ -173,10 +158,9 @@ function blockScalarOpener(step, key, options = {}) {
  *
  * @param {string} step one step slice
  * @param {string} key the input key
- * @param {{ indent?: number }} [options] pins the opener's column
  */
-export function blockScalarLines(step, key, options = {}) {
-  const opener = blockScalarOpener(step, key, options);
+export function blockScalarLines(step, key) {
+  const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const indent = opener[1].length;
   const entries = [];
@@ -206,10 +190,9 @@ export function blockScalarLines(step, key, options = {}) {
  *
  * @param {string} step one step slice
  * @param {string} key the input key
- * @param {{ indent?: number }} [options] pins the opener's column
  */
-export function blockScalarText(step, key, options = {}) {
-  const opener = blockScalarOpener(step, key, options);
+export function blockScalarText(step, key) {
+  const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const keyIndent = opener[1].length;
   const body = [];
@@ -228,156 +211,4 @@ export function blockScalarText(step, key, options = {}) {
   expect(body.length, `\`${key}:\` opens a block scalar with no body`).toBeGreaterThan(0);
   const offsets = body.filter((line) => line.trim() !== '').map((line) => line.search(/\S/));
   return body.map((line) => line.slice(Math.min(...offsets))).join('\n');
-}
-
-/**
- * One block mapping of plain `key: value` entries, every value read verbatim.
- *
- * The mapping is every line indented past the key that opens it, up to the
- * first non-blank, non-comment line that is not. Blank lines and comments do not
- * end it: YAML carries on past both, so a reader that stopped at the first one
- * would report a mapping shorter than the one GitHub evaluates, and an entry
- * written after the gap would be invisible to every check made over it.
- *
- * Every entry must be a single-line `key: value` at one column. A value that
- * opens a nested mapping or a block scalar, or an entry indented differently
- * from the first, is refused rather than flattened into siblings, because a
- * reader that quietly absorbed an entry it did not understand would report a
- * mapping other than the one in the file.
- *
- * A step slice has lost the indentation of its FIRST key (the list marker is
- * stripped), so a mapping that opens there cannot be told from its siblings and
- * is refused too.
- *
- * @param {string} source a step slice or a job body
- * @param {string} key the key that opens the mapping, with nothing after its colon
- * @param {{ indent?: number }} [options] `indent` pins the opener's column, which is
- *   how a job's own `env:` is told from a step's, and a real step key from a line
- *   that only looks like one inside another key's text
- * @returns {Record<string, string>}
- */
-export function mappingOf(source, key, options = {}) {
-  const lines = source.split('\n');
-  const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}:[^\\S\\n]*$`);
-  const at = lines.findIndex((line) => {
-    const found = opener.exec(line);
-    return found !== null && (options.indent === undefined || found[1].length === options.indent);
-  });
-  expect(at, `no \`${key}:\` mapping to read`).toBeGreaterThanOrEqual(0);
-  const indent = lines[at].search(/\S/);
-  expect(
-    at > 0 || indent > 0,
-    `\`${key}:\` is the first key of a step slice, whose siblings cannot be told from its entries`,
-  ).toBe(true);
-  /** @type {Record<string, string>} */
-  const out = {};
-  /** @type {number | undefined} */
-  let entryIndent;
-  for (const line of lines.slice(at + 1)) {
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
-    if (line.search(/\S/) <= indent) break;
-    const entry = /^[^\S\n]*([A-Za-z0-9_-]+): (\S.*?)[^\S\n]*$/.exec(line);
-    expect(entry, `an unreadable \`${key}:\` entry \`${line.trim()}\``).not.toBeNull();
-    // A value that is itself a block scalar header carries its content on the
-    // lines below, which would otherwise be read as further entries.
-    expect(
-      /^[|>][+-]?\d*$/.test(entry[2]),
-      `\`${key}:\` entry \`${entry[1]}\` opens a block scalar`,
-    ).toBe(false);
-    entryIndent ??= line.search(/\S/);
-    expect(
-      line.search(/\S/),
-      `\`${key}:\` entry \`${entry[1]}\` is not at the column of the first entry`,
-    ).toBe(entryIndent);
-    // A trailing ` # …` is a YAML comment, not part of the value.
-    out[entry[1]] = entry[2].replace(/[^\S\n]+#.*$/, '');
-  }
-  return out;
-}
-
-/**
- * A step's `with:` mapping as a plain object.
- *
- * The WHOLE mapping is returned rather than the keys a case asks about, because
- * the property is what the step is NOT given as much as what it is: an extra
- * `permission-*`, a `skip-token-revoke`, or a legacy `app-id` beside `client-id`
- * each change what a minted token can do.
- *
- * @param {string} step one step slice
- */
-export const withMapping = (step) => mappingOf(step, 'with', { indent: 8 });
-
-/**
- * Every `${{ … }}` expression in a text, in order.
- *
- * Read the way GitHub reads one rather than with a lazy `}}` match: a string
- * literal inside an expression may itself contain `}}`, and `format('}}',
- * secrets.X)` is one expression that a lazy match splits in two, leaving
- * `secrets.X` outside both. Quotes are tracked, with `''` as the escape that
- * toggles twice.
- *
- * Pass the file's own bytes, not a comment-stripped copy: a `#` line inside a
- * `run: |` block is script text, GitHub substitutes expressions in it before the
- * shell runs, and a comment filter would delete exactly that line.
- *
- * @param {string} text
- * @returns {string[]}
- */
-export function expressionsIn(text) {
-  /** @type {string[]} */
-  const found = [];
-  let from = 0;
-  for (;;) {
-    const start = text.indexOf('${{', from);
-    if (start === -1) return found;
-    let end = start + 3;
-    let inString = false;
-    for (; end < text.length; end += 1) {
-      if (text[end] === "'") inString = !inString;
-      else if (!inString && text[end] === '}' && text[end + 1] === '}') {
-        end += 2;
-        break;
-      }
-    }
-    found.push(text.slice(start, end));
-    from = end;
-  }
-}
-
-/**
- * The lines of a text that are not the body of a block scalar.
- *
- * A `run: |` body is script and an `env` value written as `|` is free text: what
- * is true of YAML structure — a key, an indentation, a quote — says nothing
- * about them. A reader that wants the STRUCTURE reads what is left.
- *
- * Pass comment-dropped text. An opener is a `key: |` / `key: >` line, optionally
- * behind list markers, and its body is every following line indented past that
- * key.
- *
- * @param {string} text
- * @returns {string[]}
- */
-export function linesOutsideBlockScalars(text) {
-  /** @type {string[]} */
-  const kept = [];
-  /** @type {number | undefined} */
-  let closesAt;
-  for (const line of text.split('\n')) {
-    if (line.trim() === '') {
-      if (closesAt === undefined) kept.push(line);
-      continue;
-    }
-    const indent = line.search(/\S/);
-    if (closesAt !== undefined) {
-      if (indent > closesAt) continue;
-      closesAt = undefined;
-    }
-    kept.push(line);
-    if (/:[^\S\n]+[|>][+-]?\d*[^\S\n]*$/.test(line)) {
-      // The key's own column: past any `- ` list markers in front of it.
-      closesAt = /^([^\S\n]*(?:-[^\S\n]+)*)/.exec(line)[1].length;
-    }
-  }
-  return kept;
 }

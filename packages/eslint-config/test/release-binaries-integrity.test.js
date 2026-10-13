@@ -31,19 +31,25 @@
 //    REACHED, and whether its `exit 1` stops anything, are asserted separately from
 //    what it decides.
 //
-// The STEP SLICE below is load-bearing rather than tidy. Matching a subject glob
-// against the whole release job is INERT: the Create GitHub Release step three lines
-// down lists `dist/aka-*.tar.gz`, `dist/aka-*.zip` and `dist/SHA256SUMS` in its own
-// `files:`, so deleting a glob from `subject-path` leaves all three strings in the
-// job and a job-wide assertion green — while every Windows release ships unattested.
-// Read inside the step or read nothing.
+// The STEP is load-bearing rather than tidy. Matching a subject glob against the
+// whole release job is INERT: the Create GitHub Release step three lines down lists
+// `dist/aka-*.tar.gz`, `dist/aka-*.zip` and `dist/SHA256SUMS` in its own `files:`,
+// so deleting a glob from `subject-path` leaves all three strings in the job and a
+// job-wide assertion green — while every Windows release ships unattested. Read
+// inside the step or read nothing.
 //
-// Two readings go one level finer than the step, because a step slice is still not
-// the position these defects live in. The subject globs are read as the ENTRIES of
-// the `subject-path` block scalar, so the same three lines moved under a mistyped or
-// neighbouring key are not mistaken for them; and package-sea.mjs is read with its
-// comment lines dropped, so a call that was commented OUT is not mistaken for one
-// that runs.
+// Two readings go one level finer than the step. The subject globs are read as the
+// ENTRIES of the `subject-path` input, so the same three lines moved under a
+// mistyped or neighbouring key are not mistaken for them; and package-sea.mjs is
+// read with its comment lines dropped, so a call that was commented OUT is not
+// mistaken for one that runs.
+//
+// The workflow itself is read as a PARSED YAML document (helpers/workflow-yaml.js)
+// and not as lines: every case below runs on decoded structure — jobs, then steps,
+// then each step's keys, `with:`, `env:` and `run:` — so a key written quoted, in
+// flow style, behind an escape or through an alias reads the same as its plain
+// spelling, and a line that only LOOKS like a key inside another key's text is not
+// one.
 
 import { execFileSync } from 'node:child_process';
 import {
@@ -62,28 +68,33 @@ import { runInNewContext } from 'node:vm';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-// jobBlock drops `#` lines before returning a body, which is load-bearing here
-// rather than cosmetic: this workflow's own comments name the attest step, both
-// permission scopes and the neighbouring Release step in prose, so a reader that
-// kept them would satisfy several assertions below against sentences.
-//
-// The step and block-scalar readers live beside it rather than here: a second
-// suite reads the same workflow, and two readers of one YAML file are free to
-// disagree about where a step ends — which is how a step ends up covered by one
-// guard and inspected vacuously by another.
+// This file asks structural questions of structure: which jobs there are, which
+// steps a job has, and what a step's `if:`, `with:`, `env:` and `run:` hold.
+// Comments are not part of that structure — a `#` line inside a `run:` body is part
+// of the script and stays in it, and a YAML comment is dropped — so a sentence in a
+// comment that names the attest step, a permission scope or the neighbouring Release
+// step cannot satisfy an assertion about the step itself.
 import {
-  blockScalarLines,
-  blockScalarText,
-  dropComments,
-  expressionsIn,
-  jobBlock,
-  linesOutsideBlockScalars,
-  mappingOf,
-  rawStepNamed as rawStepIn,
+  envOf,
+  expressionsOf,
+  hasKey,
+  ifOf,
+  inputLines,
+  inputsOf,
+  jobIds,
+  jobOf,
+  needsOf,
+  parseWorkflow,
+  scriptOf,
+  scriptsOf,
+  stepIndex,
   stepNamed,
-  steps,
-  withMapping,
-} from './helpers/workflow.js';
+  stepsOf,
+  stringsIn,
+  usesIndex,
+  usesOf,
+  writeScopes,
+} from './helpers/workflow-yaml.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-binaries.yml');
@@ -91,9 +102,8 @@ const PACKAGE_SEA = join(REPO_ROOT, 'cli', 'scripts', 'package-sea.mjs');
 
 const readWorkflow = () => readFileSync(WORKFLOW, 'utf8');
 
-// Whole-line comments dropped, for the reason jobBlock drops the YAML kind: every
-// claim below package-sea.mjs is either an ORDER or a PRESENCE, and both are
-// satisfied by a line that was commented out. `// if (isWin)
+// Whole-line comments dropped: every claim below package-sea.mjs is either an
+// ORDER or a PRESENCE, and both are satisfied by a line that was commented out. `// if (isWin)
 // stripWindowsSignature(exePath);` still contains the call, still sits above the
 // inject, and reports green while no Windows binary is ever stripped; the three
 // outcome lines demoted to a comment report green while the strip is silent.
@@ -127,83 +137,31 @@ const soleIndexOf = (source, needle, where) => {
   return first;
 };
 
-// A step read from the workflow's OWN BYTES, comments and all.
-//
-// Every other reader here goes through the comment-dropping job reader, and for
-// structure that is what keeps a sentence about a step from being mistaken for
-// the step. A `run:` script is the one place it would be wrong: a `#` line inside
-// a shell block is part of that shell block, so executing a copy with them
-// removed is executing something this repository does not contain.
-//
-// Split over the whole file rather than one job: a step name is asserted to occur
-// exactly once, which is the stronger claim anyway, and the only other six-space
-// list item in this workflow is the tag filter under `on:` — a slice carrying no
-// `name:` line at all.
-const rawStepNamed = (name) => rawStepIn(readWorkflow(), name);
+// The workflow, decoded. Parsed afresh on each call, which is a few milliseconds
+// for this file, so no case holds a value across another case's reading.
+const workflow = () => parseWorkflow(readWorkflow());
 
-// Every job id the workflow declares, in file order.
+// A step of the whole workflow, by name, asserted to occur exactly once in the
+// file. The executing cases read their scripts through it: a `run:` body is the one
+// place a `#` line is code, and it comes back from the decoded step with its own
+// comments in it, so what is executed is what the repository contains.
 //
-// Derived rather than listed, because the absence checks below are per job: a
-// list would have gone on naming two jobs the day a third was added, leaving the
-// new one inspected by nothing. Scoped to the `jobs:` mapping, since `on:` and
-// `concurrency:` carry two-space keys of their own.
-function jobIds() {
-  const jobs = /^jobs:[^\S\n]*$([\s\S]*)$/m.exec(dropComments(readWorkflow()));
-  expect(jobs, 'release-binaries.yml declares no jobs block').not.toBeNull();
-  const ids = [...jobs[1].matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_-]*):[^\S\n]*$/gm)].map((m) => m[1]);
-  expect(ids.length, 'the jobs block captured no job id').toBeGreaterThan(0);
-  return ids;
-}
+// Across the whole file rather than one job: a step name occurring exactly once
+// there is the stronger claim, and the executing cases name steps that way.
+const stepNamedAnywhere = (name) => stepNamed(workflow(), name);
 
-// The job ids one job declares a `needs:` edge to.
-//
-// Accepted in every shape GitHub takes — a scalar, a flow sequence, a block
-// sequence — because which one is written is a formatting choice while the edge
-// is the property. An absent key returns an empty list, which the caller asserts
-// against: that is the defect being read for.
-function needsOf(jobBody) {
-  const key = /^ {4}needs:[^\S\n]*(.*)$/m.exec(jobBody);
-  if (key === null) return [];
-  const inline = key[1].trim();
-  if (inline !== '') {
-    return inline
-      .replace(/^\[/, '')
-      .replace(/\]$/, '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter((id) => id !== '');
-  }
-  const out = [];
-  for (const line of jobBody
-    .slice(key.index + key[0].length)
+const releaseJob = () => jobOf(workflow(), 'release');
+const buildJob = () => jobOf(workflow(), 'build');
+const verifyTagJob = () => jobOf(workflow(), 'verify-tag');
+
+// A shell script with its whole-line `#` comments dropped. These are the SCRIPT's
+// comments: a `#` line inside a `run:` body is part of what the decoded step holds,
+// and a case asking what the script DOES leaves out the lines that only say so.
+const dropShellComments = (script) =>
+  script
     .split('\n')
-    .slice(1)) {
-    const item = /^ {6}- (\S+)[^\S\n]*$/.exec(line);
-    if (item === null) break;
-    out.push(item[1]);
-  }
-  return out;
-}
-
-// The one `if:` condition inside a slice, asserted to occur exactly once.
-//
-// A gate is not a spelling to match but a VALUE to compare, because the property
-// is that two steps fire under the same condition rather than that either is
-// written a particular way. Exactly once, for the reason soleIndexOf demands it:
-// a slice carrying two gates answers about whichever came first.
-//
-// `if: ` with the colon, so the shell's own `if [ … ]` inside a `run:` block —
-// which this reader sees, because a job body carries its steps' scripts — is not
-// mistaken for a step key.
-function soleIfCondition(slice, where) {
-  const all = [...slice.matchAll(/^[^\S\n]*if: (.+?)[^\S\n]*$/gm)].map((m) => m[1]);
-  expect(all, `${where} declares no single \`if:\` gate`).toHaveLength(1);
-  return all[0];
-}
-
-const releaseJob = () => jobBlock(readWorkflow(), 'release');
-const buildJob = () => jobBlock(readWorkflow(), 'build');
-const verifyTagJob = () => jobBlock(readWorkflow(), 'verify-tag');
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
 
 // A first-party GitHub attestation action, pinned by full commit SHA with the version
 // it resolves to alongside. Either spelling is accepted: `actions/attest` is where the
@@ -214,20 +172,23 @@ const verifyTagJob = () => jobBlock(readWorkflow(), 'verify-tag');
 // `[0-9a-f]{40}` is the whole point. A tag — even `@v4.2.2` — is a movable pointer:
 // whoever can move it chooses what signs this repository's releases, with a workflow
 // file that has not changed.
-// `[^\S\n]*` rather than `\s*` for every line anchor read out of a step slice:
-// splitting on the `- ` prefix leaves the step's FIRST line unindented and every
-// later line carrying its original eight spaces, and `\s*` would let an anchor run
-// back across newlines and match a key belonging to a different step.
+//
+// Matched against `usesOf(step)`: the reference as written, with the trailing
+// comment that names the version the SHA resolves to.
 const PINNED_ATTEST_ACTION =
-  /^[^\S\n]*uses: actions\/attest(?:-build-provenance)?@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m;
+  /^actions\/attest(?:-build-provenance)?@[0-9a-f]{40} # v\d+\.\d+\.\d+$/;
 
-// The two scopes the attestation needs, as they appear under a job's `permissions:`
-// (job keys at four spaces, their entries at six). A trailing `#` comment is allowed
-// because dropComments only removes a line whose FIRST non-space character is `#`,
-// and this repo annotates each scope in place.
-const permissionLine = (scope) => new RegExp(`^ {6}${scope}: write(?:[^\\S\\n]+#.*)?$`, 'm');
-
+// The two scopes the attestation needs, granted at `write` under a job's own
+// `permissions:`.
 const ATTEST_SCOPES = ['id-token', 'attestations'];
+
+/**
+ * The scopes a job's own `permissions:` grants at `write`, lower-cased. A quoted
+ * `"write"`, a differently cased one and a flow-style entry are all `write`, and
+ * `write-all` grants every scope.
+ * @param {Record<string, unknown>} job
+ */
+const writtenBy = (job) => writeScopes(job.permissions).map((scope) => scope.toLowerCase());
 
 // The assets this release is known to publish, kept as the NON-VACUITY CONTROL
 // for the two derived reads below and nothing more. SHA256SUMS is on it for a
@@ -257,8 +218,8 @@ const rollingStep = () => stepNamed(releaseJob(), 'Publish the rolling bin-lates
 
 /** The release job's one artifact upload: the rendered manifests. */
 function manifestUploadStep() {
-  const matching = steps(releaseJob()).filter((step) =>
-    /^[^\S\n]*uses: actions\/upload-artifact@v\d+$/m.test(step),
+  const matching = stepsOf(releaseJob()).filter(
+    (step) => typeof step.uses === 'string' && /^actions\/upload-artifact@v\d+$/.test(step.uses),
   );
   expect(matching, 'the release job uploads no single artifact').toHaveLength(1);
   return matching[0];
@@ -267,8 +228,7 @@ function manifestUploadStep() {
 // The release-cutting action, pinned by full commit SHA with the version it
 // resolves to alongside — the property `PINNED_ATTEST_ACTION` states, for the
 // other vendor action this job runs.
-const PINNED_RELEASE_ACTION =
-  /^[^\S\n]*uses: softprops\/action-gh-release@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m;
+const PINNED_RELEASE_ACTION = /^softprops\/action-gh-release@[0-9a-f]{40} # v\d+\.\d+\.\d+$/;
 
 /**
  * Every step of the release job that cuts a Release through that action.
@@ -280,7 +240,9 @@ const PINNED_RELEASE_ACTION =
  * the count — a third would be read, not ignored.
  */
 function releasePublishSteps() {
-  const matching = steps(releaseJob()).filter((step) => PINNED_RELEASE_ACTION.test(step));
+  const matching = stepsOf(releaseJob()).filter(
+    (step) => typeof step.uses === 'string' && PINNED_RELEASE_ACTION.test(usesOf(step)),
+  );
   expect(
     matching.length,
     'the release job runs fewer than two pinned action-gh-release steps — the union below would read one release or none',
@@ -289,27 +251,27 @@ function releasePublishSteps() {
 }
 
 /** The globs the attestation covers, as the entries of its own `subject-path`. */
-const attestedGlobs = () => blockScalarLines(attestStep(), 'subject-path');
+const attestedGlobs = () => inputLines(attestStep(), 'subject-path');
 
 /** Everything this job publishes, as the union of every Release step's `files`. */
 const publishedGlobs = () => [
-  ...new Set(releasePublishSteps().flatMap((step) => blockScalarLines(step, 'files'))),
+  ...new Set(releasePublishSteps().flatMap((step) => inputLines(step, 'files'))),
 ];
 
 describe('the release job attests the assets it publishes', () => {
   it('carries a step named for the attestation, which every case below reads inside', () => {
-    // The structural control for the presence checks that follow: a slice holding
-    // only its own `name:` line would satisfy none of them for a reason worth
-    // telling apart from a missing glob.
-    expect(attestStep()).toMatch(/^[^\S\n]*uses: /m);
+    // The structural control for the presence checks that follow: a step holding
+    // only its own `name:` would satisfy none of them for a reason worth telling
+    // apart from a missing glob.
+    expect(attestStep().uses, 'the attest step uses no action').toBeTypeOf('string');
   });
 
   it('pins the action by commit SHA, not by a movable tag', () => {
-    expect(attestStep()).toMatch(PINNED_ATTEST_ACTION);
+    expect(usesOf(attestStep())).toMatch(PINNED_ATTEST_ACTION);
   });
 
-  // Read as the block scalar's entries rather than as text anywhere in the step, so
-  // a glob is neither satisfied by a longer one that contains it (`dist/SHA256SUMS`
+  // Read as the input's entries rather than as text anywhere in the step, so a
+  // glob is neither satisfied by a longer one that contains it (`dist/SHA256SUMS`
   // by `dist/SHA256SUMS.asc`) nor by the same line parked under another key.
   it.each(SUBJECT_GLOBS)('names %s as a subject-path entry', (glob) => {
     expect(attestedGlobs()).toContain(glob);
@@ -332,8 +294,8 @@ describe('the release job attests the assets it publishes', () => {
     const published = publishedGlobs();
 
     // The control. Two reads that both came back empty agree with each other
-    // perfectly, and `blockScalarLines` refusing an empty scalar is only half of
-    // that — a scalar holding one unrelated line is non-empty too.
+    // perfectly, and `inputLines` refusing an empty input is only half of that —
+    // an input holding one unrelated line is non-empty too.
     for (const glob of SUBJECT_GLOBS) {
       expect(attested, `subject-path no longer names ${glob}`).toContain(glob);
       expect(published, `no Release step publishes ${glob} any more`).toContain(glob);
@@ -356,7 +318,7 @@ describe('the release job attests the assets it publishes', () => {
   // key that turns the textual agreement into a claim about bytes, and it is a
   // refusal newly added to the path every binary release has already taken.
   it('refuses to publish the versioned Release with an asset list that matched nothing', () => {
-    expect(releaseStep()).toMatch(/^[^\S\n]*fail_on_unmatched_files: true$/m);
+    expect(inputsOf(releaseStep()).fail_on_unmatched_files).toBe('true');
   });
 
   // The versioned Release carries the rendered formula and manifest as audit
@@ -365,8 +327,8 @@ describe('the release job attests the assets it publishes', () => {
   // lists still agree and the floor names neither. So they are read from the
   // artifact the publish jobs push from — the one list that must hold them.
   it('publishes the rendered manifests on the versioned Release too', () => {
-    const rendered = blockScalarLines(manifestUploadStep(), 'path');
-    const versioned = blockScalarLines(releaseStep(), 'files');
+    const rendered = inputLines(manifestUploadStep(), 'path');
+    const versioned = inputLines(releaseStep(), 'files');
 
     expect(rendered.length, 'the artifact carries no rendered file').toBeGreaterThan(0);
     expect(
@@ -387,7 +349,7 @@ describe('the release job attests the assets it publishes', () => {
   // side alone names a file the staging block never produces, which
   // `fail_on_unmatched_files` would only report once a tag had been pushed.
   it('names each rolling asset literally, so a glob cannot stand in for four', () => {
-    const rolling = blockScalarLines(rollingStep(), 'files');
+    const rolling = inputLines(rollingStep(), 'files');
 
     expect(
       rolling.filter((entry) => entry.includes('*')),
@@ -406,16 +368,14 @@ describe('the release job attests the assets it publishes', () => {
   // `body_path` naming something that block never writes fails the action at
   // release time rather than here.
   it('takes its release body from a file the staging block writes', () => {
-    expect(rollingStep()).toMatch(
-      new RegExp(`^[^\\S\\n]*body_path: ${stagedPath(ALIAS_NOTES)}$`, 'm'),
-    );
+    expect(inputsOf(rollingStep()).body_path).toBe(stagedPath(ALIAS_NOTES));
   });
 
   // Without this the step runs on workflow_dispatch too, where no Release is cut:
   // it would mint an OIDC identity and sign a dry run's artifacts, publishing
   // provenance for bytes nobody can download.
   it('runs only on a tag push, so the dry run signs nothing', () => {
-    expect(attestStep()).toMatch(/^[^\S\n]*if: github\.event_name == 'push'$/m);
+    expect(ifOf(attestStep(), 'the attest step')).toBe("github.event_name == 'push'");
   });
 
   // Ordering, not mere presence. Attesting AFTER the Release means a failed
@@ -423,13 +383,15 @@ describe('the release job attests the assets it publishes', () => {
   // already downloadable by the time it runs.
   it('attests before the Release is created, never after', () => {
     const job = releaseJob();
-    const attest = soleIndexOf(job, '- name: Attest build provenance', 'the release job');
-    const release = soleIndexOf(job, '- name: Create GitHub Release', 'the release job');
+    const attest = stepIndex(job, 'Attest build provenance');
+    const release = stepIndex(job, 'Create GitHub Release');
     expect(attest).toBeLessThan(release);
   });
 
   it.each(ATTEST_SCOPES)('grants %s: write on the release job', (scope) => {
-    expect(releaseJob()).toMatch(permissionLine(scope));
+    expect(writtenBy(releaseJob()), `the release job does not grant ${scope}: write`).toContain(
+      scope,
+    );
   });
 
   // The build fan-out is four runners that only compile and upload, and the tag
@@ -440,34 +402,39 @@ describe('the release job attests the assets it publishes', () => {
   // case would have gone on inspecting two of them the day a third was added —
   // which is exactly what adding the tag-refusal job did. Absence-only, so it is
   // paired with the release job as the positive control: without that pair a
-  // reader whose job blocks all captured nothing would pass this.
+  // reader whose jobs all came back empty would pass this.
   it.each(ATTEST_SCOPES)('grants %s: write on no job but the release', (scope) => {
-    expect(releaseJob(), `the release job does not grant ${scope}: write either`).toMatch(
-      permissionLine(scope),
-    );
+    expect(
+      writtenBy(releaseJob()),
+      `the release job does not grant ${scope}: write either`,
+    ).toContain(scope);
 
-    const others = jobIds().filter((id) => id !== 'release');
+    const others = jobIds(workflow()).filter((id) => id !== 'release');
     expect(others.length, 'the workflow declares no job besides the release').toBeGreaterThan(0);
 
-    const granting = others.filter((id) =>
-      permissionLine(scope).test(jobBlock(readWorkflow(), id)),
-    );
+    const granting = others.filter((id) => {
+      const granted = writtenBy(jobOf(workflow(), id));
+      return granted.includes(scope) || granted.includes('write-all');
+    });
     expect(granting, `these jobs grant ${scope}: write and must not`).toEqual([]);
   });
 
   // The other place a scope can be granted, and the one the per-job check cannot
   // see: a write scope at the TOP LEVEL is inherited by every job that declares no
   // `permissions:` of its own — which is the build fan-out — so it reaches the four
-  // runners by a key neither job block contains. Granting both scopes there was
-  // measured green against the per-job checks alone.
+  // runners by a key neither job contains. Granting both scopes there was measured
+  // green against the per-job checks alone.
   it('grants no write scope at the workflow top level, so the fan-out inherits none', () => {
-    const block = /^permissions:[^\S\n]*$([\s\S]*?)(?=^\S)/m.exec(dropComments(readWorkflow()));
-    expect(block, 'release-binaries.yml declares no top-level permissions block').not.toBeNull();
-    // The control: an absence check over a block that captured nothing passes.
-    expect(block[1], 'the top-level permissions block captured no scope').toMatch(
-      /^ {2}contents: read$/m,
-    );
-    expect(block[1]).not.toMatch(/:[^\S\n]*write/);
+    const { permissions } = workflow();
+    expect(
+      permissions,
+      'release-binaries.yml declares no top-level permissions block',
+    ).toBeDefined();
+    // The control: an absence check over a block that read nothing passes.
+    expect(permissions, 'the top-level permissions block read no scope').toMatchObject({
+      contents: 'read',
+    });
+    expect(writeScopes(permissions), 'the top level grants write scopes').toEqual([]);
   });
 
   // The union above sees only `softprops/action-gh-release` steps, so a
@@ -476,9 +443,7 @@ describe('the release job attests the assets it publishes', () => {
   // calling `gh release` directly, or `gh api` against a releases endpoint,
   // is exactly that: it publishes bytes this attestation never learns about.
   it('publishes a Release only through the pinned action, never a bare gh call', () => {
-    const job = releaseJob();
-
-    for (const script of runBlocksOf(job)) {
+    for (const script of runBlocksOf(releaseJob())) {
       expect(script, 'a run: block in the release job calls gh release directly').not.toMatch(
         /\bgh release\b/,
       );
@@ -489,21 +454,22 @@ describe('the release job attests the assets it publishes', () => {
     }
   });
 
-  // And the other direction: a step that carries its own `files:` block scalar
-  // is claiming to publish a set of assets. `releasePublishSteps` only reads
-  // that claim from a PINNED softprops step, so an unpinned or hand-rolled
-  // step with the same shaped input is invisible to the union above and would
-  // ship whatever it names with no provenance at all.
+  // And the other direction: a step that carries its own `files` input is
+  // claiming to publish a set of assets. `releasePublishSteps` only reads that
+  // claim from a PINNED softprops step, so an unpinned or hand-rolled step with
+  // the same shaped input is invisible to the union above and would ship whatever
+  // it names with no provenance at all.
   it('every files: block in the release job belongs to a pinned action-gh-release step', () => {
-    const job = releaseJob();
-    const withFiles = steps(job).filter((step) => /^[^\S\n]*files: \|[^\S\n]*$/m.test(step));
+    const withFiles = stepsOf(releaseJob()).filter((step) =>
+      Object.hasOwn(inputsOf(step), 'files'),
+    );
 
     expect(withFiles.length, 'no step in the release job carries a files: block').toBeGreaterThan(
       0,
     );
     for (const step of withFiles) {
       expect(
-        step,
+        typeof step.uses === 'string' ? usesOf(step) : '(no uses:)',
         'a files: block belongs to a step that is not the pinned action-gh-release action',
       ).toMatch(PINNED_RELEASE_ACTION);
     }
@@ -546,8 +512,7 @@ function requirePosixShell(ctx) {
 }
 
 /** The refusal step's own `run:` script, as the workflow spells it. */
-const refusalScript = () =>
-  blockScalarText(rawStepNamed('Refuse a tag that is not a bare version'), 'run');
+const refusalScript = () => scriptOf(stepNamedAnywhere('Refuse a tag that is not a bare version'));
 
 /**
  * The environment an extracted block runs under: an empty PATH, plus the tag.
@@ -595,10 +560,9 @@ function runRefusal(tag) {
 
 describe('the binary channel refuses a tag that is not a bare version', () => {
   it('carries a refusal step, which every case below reads inside', () => {
-    // The structural control for the executing cases: a slice that captured only
-    // its own `name:` line would leave `blockScalarText` with nothing to return,
-    // and a shell handed an empty script exits 0 — which every acceptance case
-    // would read as a pass.
+    // The structural control for the executing cases: a step with only a `name:`
+    // would leave `scriptOf` with nothing to return, and a shell handed an empty
+    // script exits 0 — which every acceptance case would read as a pass.
     const script = refusalScript();
     expect(script).toContain('GITHUB_REF_NAME');
     expect(script).toMatch(/^case /m);
@@ -669,11 +633,15 @@ describe('the binary channel refuses a tag that is not a bare version', () => {
   it('grants the refusal job no write scope of any kind', () => {
     const job = verifyTagJob();
 
-    // The control: an absence check over a body that captured nothing passes.
-    // jobBlock demands a runner and a step, and this demands the step is the one
-    // the executing cases read.
-    expect(job).toMatch(/^ {6}- name: Refuse a tag that is not a bare version$/m);
-    expect(job).not.toMatch(/:[^\S\n]*write/);
+    // The control: an absence check over a job that was never read passes. This
+    // demands the step is the one the executing cases read.
+    expect(stepNamed(job, 'Refuse a tag that is not a bare version').run).toBeTypeOf('string');
+    // Every string in the job, keys and values, wherever it sits: a `permissions`
+    // value, a `with` input, a flow entry, quoted or not.
+    expect(
+      stringsIn(job).filter((text) => /^write(?:-all)?$/i.test(text.trim())),
+      'the refusal job grants a write scope',
+    ).toEqual([]);
   });
 
   // WHETHER the block runs, which every executing case above takes for granted.
@@ -685,9 +653,15 @@ describe('the binary channel refuses a tag that is not a bare version', () => {
   // a literal: the property is that the two fire under the SAME condition, and
   // the attest case a few lines up is what pins that condition to a real push.
   it('fires on the same event the Release does, so a tag push really reaches it', () => {
-    const gate = soleIfCondition(verifyTagJob(), 'the refusal job');
+    const job = verifyTagJob();
+    // A job-level `if:` skips the whole job, which the step's own gate cannot see.
+    expect(
+      Object.hasOwn(job, 'if'),
+      'the refusal job carries a job-level if:, so it can be skipped whole',
+    ).toBe(false);
+    const gate = ifOf(stepNamed(job, 'Refuse a tag that is not a bare version'), 'the refusal job');
 
-    expect(gate).toBe(soleIfCondition(attestStep(), 'the attest step'));
+    expect(gate).toBe(ifOf(attestStep(), 'the attest step'));
   });
 
   // And that nothing downstream is allowed past a refusal. The `needs:` edge is
@@ -699,21 +673,20 @@ describe('the binary channel refuses a tag that is not a bare version', () => {
   // Derived over every job rather than the two named ones, so a third job cannot
   // arrive carrying either key uninspected.
   it('makes that edge binding — no job may fail softly or run regardless', () => {
-    const ids = jobIds();
+    const ids = jobIds(workflow());
     expect(ids.length, 'the workflow declares no jobs').toBeGreaterThan(0);
 
-    const soft = ids.filter((id) => /continue-on-error/.test(jobBlock(readWorkflow(), id)));
+    const soft = ids.filter((id) => hasKey(jobOf(workflow(), id), 'continue-on-error'));
     expect(
       soft,
       'these jobs report success when they fail, which satisfies any needs: edge',
     ).toEqual([]);
 
-    // A job-level key, at four spaces: a step's own `if:` sits at eight and is
-    // what the case above reads.
+    // A job-level key: a step's own `if:` is what the case above reads.
     expect(
-      buildJob(),
+      Object.hasOwn(buildJob(), 'if'),
       'the fan-out carries a job-level if:, so it can run whatever the refusal decided',
-    ).not.toMatch(/^ {4}if:/m);
+    ).toBe(false);
   });
 
   // The executing cases stand in for the runner by spawning `/bin/bash`, which is
@@ -723,8 +696,9 @@ describe('the binary channel refuses a tag that is not a bare version', () => {
   it('leaves the refusal on the runner default shell the cases above stand in for', () => {
     const job = verifyTagJob();
 
-    expect(job).toMatch(/^ {6}- name: Refuse a tag that is not a bare version$/m);
-    expect(job).not.toMatch(/^[^\S\n]*shell:/m);
+    expect(stepNamed(job, 'Refuse a tag that is not a bare version').run).toBeTypeOf('string');
+    // A `shell:` on the step, or a `defaults: run: shell:` on the job.
+    expect(hasKey(job, 'shell'), 'the refusal job overrides the shell').toBe(false);
   });
 
   // Defence in depth, and the reason it is worth having: `bin-latest` is where
@@ -734,8 +708,7 @@ describe('the binary channel refuses a tag that is not a bare version', () => {
   // versions reach the `git push` and not which words the block contains.
   it('moves bin-latest for a bare version only', (ctx) => {
     requirePosixShell(ctx);
-    const step = rawStepNamed('Point bin-latest at this release');
-    const move = blockScalarText(step, 'run');
+    const move = scriptOf(stepNamedAnywhere('Point bin-latest at this release'));
 
     // The control: the two git lines are what a bare version must reach, and the
     // substitution below is what makes running this safe. If they are not there
@@ -1129,8 +1102,7 @@ function releaseFixture(version, triples) {
 }
 
 /** The staging step's own `run:` script, as the workflow spells it. */
-const stagingScript = () =>
-  blockScalarText(rawStepNamed('Stage the rolling bin-latest assets'), 'run');
+const stagingScript = () => scriptOf(stepNamedAnywhere('Stage the rolling bin-latest assets'));
 
 /**
  * Run the staging block over a fresh fixture.
@@ -1173,22 +1145,23 @@ function runStaging({ tag, version = '0.9.12', corrupt = false, triples = TRIPLE
 }
 
 describe('the release job renders the package-manager manifests', () => {
-  const renderStep = () => rawStepNamed('Render the package-manager manifests');
+  const renderStep = () => stepNamedAnywhere('Render the package-manager manifests');
 
   // The runner image ships a Node, and which one is not this repository's
   // choice. The renderer runs under type stripping, so the line it runs on is
   // pinned the way the build fan-out pins the runtime it embeds.
   it('pins the runtime the renderer runs under', () => {
-    const matching = steps(releaseJob()).filter((step) =>
-      /^[^\S\n]*uses: actions\/setup-node@v\d+$/m.test(step),
+    const matching = stepsOf(releaseJob()).filter(
+      (step) => typeof step.uses === 'string' && /^actions\/setup-node@v\d+$/.test(step.uses),
     );
     expect(matching, 'the release job runs no single setup-node step').toHaveLength(1);
-    expect(matching[0]).toMatch(/^[^\S\n]*node-version: 24$/m);
+    expect(inputsOf(matching[0])['node-version']).toBe('24');
     // This job installs nothing, so a package-manager cache has no lockfile
     // install to serve and would only restore a store nothing reads.
-    expect(matching[0], 'the release job caches a store it never installs into').not.toMatch(
-      /^[^\S\n]*cache:/m,
-    );
+    expect(
+      Object.hasOwn(inputsOf(matching[0]), 'cache'),
+      'the release job caches a store it never installs into',
+    ).toBe(false);
   });
 
   // Every OTHER step this job runs after the download is gated on `push`, so the
@@ -1197,9 +1170,10 @@ describe('the release job renders the package-manager manifests', () => {
   // it refuses, first surfaces on a real tag — after four build runners have
   // spent, with the Release step next in line.
   it('renders on the dry run too, which is the only rehearsal it gets', () => {
-    expect(renderStep(), 'the renderer no longer runs on a workflow_dispatch').not.toMatch(
-      /^[^\S\n]*if:/m,
-    );
+    expect(
+      Object.hasOwn(renderStep(), 'if'),
+      'the renderer no longer runs on a workflow_dispatch',
+    ).toBe(false);
   });
 
   // Ordering, three times over, and each edge is a different failure. Before
@@ -1208,13 +1182,9 @@ describe('the release job renders the package-manager manifests', () => {
   // image happens to ship.
   it('installs that runtime after the version check and before the render', () => {
     const job = releaseJob();
-    const check = soleIndexOf(job, '- name: Verify tag matches package version', 'the release job');
-    const setup = soleIndexOf(job, '- uses: actions/setup-node@v6', 'the release job');
-    const render = soleIndexOf(
-      job,
-      '- name: Render the package-manager manifests',
-      'the release job',
-    );
+    const check = stepIndex(job, 'Verify tag matches package version');
+    const setup = usesIndex(job, 'actions/setup-node@v6');
+    const render = stepIndex(job, 'Render the package-manager manifests');
 
     expect(check).toBeLessThan(setup);
     expect(setup).toBeLessThan(render);
@@ -1225,13 +1195,9 @@ describe('the release job renders the package-manager manifests', () => {
   // rendering after the attestation publishes a formula nobody signed.
   it('renders after the checksums are aggregated and before the attestation', () => {
     const job = releaseJob();
-    const aggregate = soleIndexOf(job, '- name: Aggregate SHA256SUMS', 'the release job');
-    const render = soleIndexOf(
-      job,
-      '- name: Render the package-manager manifests',
-      'the release job',
-    );
-    const attest = soleIndexOf(job, '- name: Attest build provenance', 'the release job');
+    const aggregate = stepIndex(job, 'Aggregate SHA256SUMS');
+    const render = stepIndex(job, 'Render the package-manager manifests');
+    const attest = stepIndex(job, 'Attest build provenance');
 
     expect(aggregate).toBeLessThan(render);
     expect(render).toBeLessThan(attest);
@@ -1242,18 +1208,10 @@ describe('the release job renders the package-manager manifests', () => {
   // reads files that do not exist yet.
   it('renders before anything that copies or uploads what it wrote', () => {
     const job = releaseJob();
-    const render = soleIndexOf(
-      job,
-      '- name: Render the package-manager manifests',
-      'the release job',
-    );
-    const stage = soleIndexOf(
-      job,
-      '- name: Stage the rolling bin-latest assets',
-      'the release job',
-    );
-    const attest = soleIndexOf(job, '- name: Attest build provenance', 'the release job');
-    const upload = soleIndexOf(job, '- uses: actions/upload-artifact@', 'the release job');
+    const render = stepIndex(job, 'Render the package-manager manifests');
+    const stage = stepIndex(job, 'Stage the rolling bin-latest assets');
+    const attest = stepIndex(job, 'Attest build provenance');
+    const upload = usesIndex(job, 'actions/upload-artifact@');
 
     expect(render).toBeLessThan(stage);
     expect(stage).toBeLessThan(attest);
@@ -1268,7 +1226,7 @@ describe('the release job renders the package-manager manifests', () => {
     // Read with the script's own comment lines dropped: a `#` line quoting the
     // manifest read would otherwise satisfy these while `version` came from the
     // tag, which on the dry run is a branch name.
-    const script = dropComments(blockScalarText(renderStep(), 'run'));
+    const script = dropShellComments(scriptOf(renderStep()));
 
     expect(script).toMatch(
       /^version=\$\(node -p "require\('\.\/cli\/package\.json'\)\.version"\)$/m,
@@ -1286,10 +1244,9 @@ describe('the release job renders the package-manager manifests', () => {
 
 describe('the rolling bin-latest assets are the versioned bytes, renamed', () => {
   it('carries a staging step, which every case below reads inside', () => {
-    // The structural control for the executing cases: a slice that captured only
-    // its own `name:` line would leave `blockScalarText` with nothing to return,
-    // and a shell handed an empty script exits 0 — which the acceptance case
-    // would read as a pass.
+    // The structural control for the executing cases: a step with only a `name:`
+    // would leave `scriptOf` with nothing to return, and a shell handed an empty
+    // script exits 0 — which the acceptance case would read as a pass.
     const script = stagingScript();
 
     expect(script).toContain('GITHUB_REF_NAME');
@@ -1304,9 +1261,9 @@ describe('the rolling bin-latest assets are the versioned bytes, renamed', () =>
   // answer, which is what keeps a dispatch from reaching bin-latest.
   it('stages on the dry run too, so its refusals are exercised before a tag', () => {
     expect(
-      rawStepNamed('Stage the rolling bin-latest assets'),
+      Object.hasOwn(stepNamedAnywhere('Stage the rolling bin-latest assets'), 'if'),
       'staging no longer runs on a workflow_dispatch',
-    ).not.toMatch(/^[^\S\n]*if:/m);
+    ).toBe(false);
   });
 
   it('stages every alias asset and proves each copy against its checksum', (ctx) => {
@@ -1401,7 +1358,7 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   // satisfied on a workflow_dispatch from a branch whose name happens to read
   // like a version — and this job holds contents: write.
   it('gates on the event, on what staging decided, and on bin-latest moving forward', () => {
-    const gate = soleIfCondition(rollingStep(), 'the rolling release step');
+    const gate = ifOf(rollingStep(), 'the rolling release step');
 
     expect(gate).toContain("github.event_name == 'push'");
     expect(gate).toContain("steps.rolling.outputs.publish == 'yes'");
@@ -1428,13 +1385,13 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   // own right, so publishing them on an event that attests nothing would put
   // unsigned bytes behind a link a documentation page points at.
   it('publishes on the same event the attestation covers', () => {
-    const gate = soleIfCondition(rollingStep(), 'the rolling release step');
+    const gate = ifOf(rollingStep(), 'the rolling release step');
 
-    expect(gate.startsWith(soleIfCondition(attestStep(), 'the attest step'))).toBe(true);
+    expect(gate.startsWith(ifOf(attestStep(), 'the attest step'))).toBe(true);
   });
 
   it('pins the release action by commit SHA, not by a movable tag', () => {
-    expect(rollingStep()).toMatch(PINNED_RELEASE_ACTION);
+    expect(usesOf(rollingStep())).toMatch(PINNED_RELEASE_ACTION);
   });
 
   // `prerelease` keeps this out of the repository's latest-release election,
@@ -1443,13 +1400,13 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   // `overwrite_files` is what makes the second release of the same tag replace
   // the assets rather than fail.
   it.each([
-    ['tag_name: bin-latest', /^[^\S\n]*tag_name: bin-latest$/m],
-    ['prerelease: true', /^[^\S\n]*prerelease: true$/m],
-    ['make_latest: false', /^[^\S\n]*make_latest: false$/m],
-    ['overwrite_files: true', /^[^\S\n]*overwrite_files: true$/m],
-    ['fail_on_unmatched_files: true', /^[^\S\n]*fail_on_unmatched_files: true$/m],
-  ])('declares %s', (_label, pattern) => {
-    expect(rollingStep()).toMatch(pattern);
+    ['tag_name: bin-latest', 'tag_name', 'bin-latest'],
+    ['prerelease: true', 'prerelease', 'true'],
+    ['make_latest: false', 'make_latest', 'false'],
+    ['overwrite_files: true', 'overwrite_files', 'true'],
+    ['fail_on_unmatched_files: true', 'fail_on_unmatched_files', 'true'],
+  ])('declares %s', (_label, key, value) => {
+    expect(inputsOf(rollingStep())[key]).toBe(value);
   });
 
   // One tag carrying whatever the last release put there, so the release's own
@@ -1457,27 +1414,23 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   // staging step's other output, which is what gives that output a consumer at
   // all — the executing case below pins the value it carries.
   it('titles itself with the version staging resolved', () => {
-    expect(rollingStep()).toMatch(
-      /^[^\S\n]*name: aka \$\{\{ steps\.rolling\.outputs\.version \}\}/m,
+    expect(inputsOf(rollingStep()).name).toMatch(
+      /^aka \$\{\{ steps\.rolling\.outputs\.version \}\}/,
     );
   });
 
   // The REST releases API ignores this key when the tag already exists, so a
   // value here reads as a decision the release does not make.
   it('names no commitish, because the tag already exists by then', () => {
-    expect(rollingStep()).not.toMatch(/^[^\S\n]*target_commitish:/m);
+    expect(Object.hasOwn(inputsOf(rollingStep()), 'target_commitish')).toBe(false);
   });
 
   // Ordering. The tag is moved by the step above; a release cut before that
   // move names the previous commit.
   it('is published after bin-latest has been moved to this commit', () => {
     const job = releaseJob();
-    const move = soleIndexOf(job, '- name: Point bin-latest at this release', 'the release job');
-    const publish = soleIndexOf(
-      job,
-      '- name: Publish the rolling bin-latest release',
-      'the release job',
-    );
+    const move = stepIndex(job, 'Point bin-latest at this release');
+    const publish = stepIndex(job, 'Publish the rolling bin-latest release');
 
     expect(move).toBeLessThan(publish);
   });
@@ -1487,13 +1440,9 @@ describe('the rolling bin-latest release is published only by a real tag push', 
   it('uploads the rendered manifests for the jobs that publish them', () => {
     const upload = manifestUploadStep();
 
-    expect(upload).toMatch(/^[^\S\n]*name: package-manifests$/m);
-    expect(blockScalarLines(upload, 'path')).toEqual([
-      'dist/aka.rb',
-      'dist/aka.json',
-      'dist/VERSION',
-    ]);
-    expect(upload).toMatch(/^[^\S\n]*if-no-files-found: error$/m);
+    expect(inputsOf(upload).name).toBe('package-manifests');
+    expect(inputLines(upload, 'path')).toEqual(['dist/aka.rb', 'dist/aka.json', 'dist/VERSION']);
+    expect(inputsOf(upload)['if-no-files-found']).toBe('error');
   });
 });
 
@@ -1550,7 +1499,7 @@ function runAdvance({ version = '0.9.12', mode, current = '' }) {
     },
     timeout: 60_000,
   };
-  const script = blockScalarText(rawStepNamed('Decide whether bin-latest moves forward'), 'run');
+  const script = scriptOf(stepNamedAnywhere('Decide whether bin-latest moves forward'));
   try {
     const stdout = execFileSync(BASH, ['-c', script], run);
     return { ok: true, status: 0, stdout, outputs: readStepOutputs(outputFile) };
@@ -1618,18 +1567,15 @@ describe('bin-latest only moves forward', () => {
 
   it('decides on the same event the release fires on', () => {
     expect(
-      soleIfCondition(
-        stepNamed(releaseJob(), 'Decide whether bin-latest moves forward'),
-        'the decision step',
-      ),
-    ).toBe(soleIfCondition(attestStep(), 'the attest step'));
+      ifOf(stepNamed(releaseJob(), 'Decide whether bin-latest moves forward'), 'the decision step'),
+    ).toBe(ifOf(attestStep(), 'the attest step'));
   });
 
   // EXACTLY these two: a third term ORed on (`… || always()`) keeps both
   // substrings and moves the tag whatever was decided.
   it('moves the tag only when the decision says so', () => {
     const move = stepNamed(releaseJob(), 'Point bin-latest at this release');
-    const gate = soleIfCondition(move, 'the move step');
+    const gate = ifOf(move, 'the move step');
 
     expect(
       gate
@@ -1637,14 +1583,16 @@ describe('bin-latest only moves forward', () => {
         .map((term) => term.trim())
         .sort(),
     ).toEqual(["github.event_name == 'push'", "steps.advance.outputs.move == 'yes'"]);
-    expect(move).toMatch(/^[^\S\n]*id: move$/m);
+    expect(move.id).toBe('move');
   });
 
   it('pushes against the lease the decision read, never with a plain force', () => {
-    const step = rawStepNamed('Point bin-latest at this release');
-    const script = blockScalarText(step, 'run');
+    const step = stepNamedAnywhere('Point bin-latest at this release');
+    const script = scriptOf(step);
 
-    expect(step).toMatch(/^[^\S\n]*LEASE: \$\{\{ steps\.advance\.outputs\.lease \}\}$/m);
+    expect(envOf(step).LEASE, 'the lease is not mapped from the decision step').toBe(
+      '${{ steps.advance.outputs.lease }}',
+    );
     expect(script).toContain(LEASE_PUSH);
     expect(script, 'the tag is also pushed with a plain force').not.toMatch(
       /git push\b(?:(?!--force-with-lease)[^\n])*(?:\s-f\b|--force\b(?!-with-lease))/,
@@ -1666,21 +1614,17 @@ describe('bin-latest only moves forward', () => {
     writeFileSync(join(bin, 'git'), '#!/bin/sh\necho "$*" >> "$GIT_CALLS"\n');
     chmodSync(join(bin, 'git'), 0o755);
 
-    execFileSync(
-      BASH,
-      ['-c', blockScalarText(rawStepNamed('Point bin-latest at this release'), 'run')],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          PATH: [bin, TOOL_PATH].join(delimiter),
-          GITHUB_REF_NAME: 'bin-v0.9.12',
-          LEASE: lease,
-          GIT_CALLS: calls,
-        },
-        timeout: 30_000,
+    execFileSync(BASH, ['-c', scriptOf(stepNamedAnywhere('Point bin-latest at this release'))], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        PATH: [bin, TOOL_PATH].join(delimiter),
+        GITHUB_REF_NAME: 'bin-v0.9.12',
+        LEASE: lease,
+        GIT_CALLS: calls,
       },
-    );
+      timeout: 30_000,
+    });
 
     expect(readFileSync(calls, 'utf8').split('\n')).toContain(
       `push --force-with-lease=${expected} origin refs/tags/bin-latest`,
@@ -1689,14 +1633,13 @@ describe('bin-latest only moves forward', () => {
 
   it('decides, then moves, then publishes, then explains a failure, then uploads', () => {
     const job = releaseJob();
-    const at = (needle) => soleIndexOf(job, needle, 'the release job');
     const order = [
-      at('- name: Decide whether bin-latest moves forward'),
-      at('- name: Point bin-latest at this release'),
-      at('- name: Explain a bin-latest move that lost a race'),
-      at('- name: Publish the rolling bin-latest release'),
-      at('- name: Explain a bin-latest left half-published'),
-      at('- uses: actions/upload-artifact@'),
+      stepIndex(job, 'Decide whether bin-latest moves forward'),
+      stepIndex(job, 'Point bin-latest at this release'),
+      stepIndex(job, 'Explain a bin-latest move that lost a race'),
+      stepIndex(job, 'Publish the rolling bin-latest release'),
+      stepIndex(job, 'Explain a bin-latest left half-published'),
+      usesIndex(job, 'actions/upload-artifact@'),
     ];
 
     expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -1709,10 +1652,8 @@ describe('bin-latest only moves forward', () => {
   it('explains a bin-latest move that lost a race, gated to the move step failing', () => {
     const step = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
 
-    expect(soleIfCondition(step, 'the explanation step')).toBe(
-      "failure() && steps.move.outcome == 'failure'",
-    );
-    const script = blockScalarText(step, 'run');
+    expect(ifOf(step, 'the explanation step')).toBe("failure() && steps.move.outcome == 'failure'");
+    const script = scriptOf(step);
     expect(script).toMatch(/^echo "::error::/m);
     expect(script, 'does not say the tag is already published').toContain('own GitHub Release');
     expect(script, 'does not name what is still stale').toContain('package managers');
@@ -1729,8 +1670,8 @@ describe('bin-latest only moves forward', () => {
     const race = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
     const halfPublished = stepNamed(releaseJob(), 'Explain a bin-latest left half-published');
 
-    expect(soleIfCondition(race, 'the race explainer')).not.toBe(
-      soleIfCondition(halfPublished, 'the half-published explainer'),
+    expect(ifOf(race, 'the race explainer')).not.toBe(
+      ifOf(halfPublished, 'the half-published explainer'),
     );
   });
 
@@ -1741,10 +1682,8 @@ describe('bin-latest only moves forward', () => {
   it('explains a failure only once the tag has moved', () => {
     const step = stepNamed(releaseJob(), 'Explain a bin-latest left half-published');
 
-    expect(soleIfCondition(step, 'the explanation step')).toBe(
-      "failure() && steps.move.outcome == 'success'",
-    );
-    expect(blockScalarText(step, 'run')).toMatch(/^echo "::error::.*re-run/im);
+    expect(ifOf(step, 'the explanation step')).toBe("failure() && steps.move.outcome == 'success'");
+    expect(scriptOf(step)).toMatch(/^echo "::error::.*re-run/im);
   });
 });
 
@@ -1759,8 +1698,7 @@ const APP_CONFIGURED_ENV = 'RELEASE_APP_CONFIGURED';
 // resolves to alongside — the property `PINNED_ATTEST_ACTION` states. It is handed
 // a private key that can write to every repository the app is installed on, so
 // whoever can move a tag it is referenced by chooses what runs with that key.
-const PINNED_APP_TOKEN_ACTION =
-  /^[^\S\n]*uses: actions\/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m;
+const PINNED_APP_TOKEN_ACTION = /^actions\/create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+$/;
 
 // The two jobs that push a rendered manifest into a repository this workflow
 // does not own.
@@ -1799,89 +1737,57 @@ const PUBLISH_JOBS = [
 const JOB_KEYS = ['name', 'needs', 'if', 'runs-on', 'permissions', 'env', 'steps'];
 const STEP_KEYS = ['name', 'id', 'if', 'uses', 'with', 'env', 'run'];
 
+// The same allowance one level up. A workflow-level `env:` reaches every step of
+// every job, and a workflow-level `defaults:` sets the shell of every `run:`.
+const WORKFLOW_KEYS = ['name', 'on', 'permissions', 'concurrency', 'jobs'];
+
 /**
- * The structural lines of a job body that name something this file has not
- * reviewed: a job key or a step key outside the sets above, a step item that is
- * not a block-style `- key:`, or a line that does not sit at the job's columns.
+ * The keys of a decoded job, and of each of its steps, that are not among the
+ * ones this file is built from.
  *
- * Read over the lines OUTSIDE block scalars, because what a script or a
- * free-text value contains is not structure. A quoted key (`"env":`), a flow
- * mapping (`- { uses: … }`) and an escaped key are refused here rather than
- * decoded: this reads lines, it does not parse YAML, and a spelling it cannot
- * read is a spelling it cannot vouch for.
- * @param {string} job a comment-dropped job body
+ * Read on decoded keys, so a quoted key, an escaped one and a flow-style step are
+ * the keys they spell: `"con\x74inue-on-error": true` is `continue-on-error`, and a
+ * step written `- { uses: x, shell: bash }` has a `shell` key. Free text inside a
+ * block scalar is a value and never a key.
+ * @param {Record<string, unknown>} job a decoded job
  * @returns {string[]}
  */
 function shapeProblems(job) {
   /** @type {string[]} */
-  const problems = [];
-  let section = '';
-  for (const line of linesOutsideBlockScalars(job)) {
-    if (line.trim() === '') continue;
-    const indent = line.search(/\S/);
-    const text = line.trim();
-    if (indent < 4) {
-      problems.push(`outside the job's columns: ${text}`);
-    } else if (indent === 4) {
-      const key = /^([a-z][a-z-]*):/.exec(text);
-      if (key === null || !JOB_KEYS.includes(key[1])) problems.push(`job key: ${text}`);
-      else section = key[1];
-    } else if (section === 'steps' && indent === 6) {
-      const item = /^-(?:[^\S\n]+([a-z][a-z-]*):|$)/.exec(text);
-      if (item === null || (item[1] !== undefined && !STEP_KEYS.includes(item[1]))) {
-        problems.push(`step item: ${text}`);
-      }
-    } else if (section === 'steps' && indent === 8) {
-      const key = /^([a-z][a-z-]*):/.exec(text);
-      if (key === null || !STEP_KEYS.includes(key[1])) problems.push(`step key: ${text}`);
+  const problems = Object.keys(job)
+    .filter((key) => !JOB_KEYS.includes(key))
+    .map((key) => `job key: ${key}`);
+  for (const [index, step] of stepsOf(job).entries()) {
+    for (const key of Object.keys(step)) {
+      if (!STEP_KEYS.includes(key)) problems.push(`step key: ${key} (step ${index + 1})`);
     }
   }
   return problems;
-}
-
-// A job's own bytes, comments and all.
-//
-// `jobBlock` drops `#` lines, which is right for structure and wrong for a
-// script: what a `run:` block is handed includes its own comments, so a case
-// executing one has to read it unaltered.
-function rawJobBlock(id) {
-  const block = new RegExp(
-    `^ {2}${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}[^\\s#]|\\s*$(?![\\s\\S]))`,
-    'm',
-  ).exec(readWorkflow());
-  expect(block, `no job \`${id}\` in the workflow`).not.toBeNull();
-  expect(block[1], `\`${id}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
-  return block[1];
-}
-
-/**
- * One plain value from a step's `env:` mapping, asserted to occur exactly once.
- * @param {string} step one step slice
- * @param {string} key the variable
- */
-function stepEnvValue(step, key) {
-  const all = [...step.matchAll(new RegExp(`^[^\\S\\n]*${key}: (\\S+)[^\\S\\n]*$`, 'gm'))];
-  expect(all, `the step maps no single \`${key}\``).toHaveLength(1);
-  return all[0][1];
 }
 
 /**
  * Every `run:` script a job declares, in either form: a `run: |` block, or a
  * one-line `run: <command>`. A reader that took only the block form would pass
  * every absence check below over a one-line step that prints the token.
+ * @param {Record<string, unknown>} job
  */
-function runBlocksOf(jobText) {
-  const blocks = steps(jobText)
-    .filter((step) => /^(?: {8})?run: /m.test(step))
-    .map((step) =>
-      /^(?: {8})?run: \|[^\S\n]*$/m.test(step)
-        ? blockScalarText(step, 'run', { indent: 8 })
-        : (/^(?: {8})?run: (.+)$/m.exec(step)?.[1] ?? ''),
-    );
+function runBlocksOf(job) {
+  const blocks = scriptsOf(job);
   // Non-emptiness first: every assertion below is an absence check, and an
   // absence check over no scripts at all passes.
   expect(blocks.length, 'the job declares no run: block').toBeGreaterThan(0);
   return blocks;
+}
+
+/**
+ * One plain value from a step's `env:` mapping, asserted to be mapped.
+ * @param {Record<string, unknown>} step
+ * @param {string} key the variable
+ */
+function stepEnvValue(step, key) {
+  const env = envOf(step);
+  expect(Object.hasOwn(env, key), `the step maps no single \`${key}\``).toBe(true);
+  return env[key];
 }
 
 // What the key and the minted token can reach is a property of the WORKFLOW, not
@@ -1891,13 +1797,14 @@ function runBlocksOf(jobText) {
 // file, and names are matched without regard to case because GitHub resolves them
 // that way.
 //
-// The file's own bytes are read, comments included. A `#` line inside a `run: |`
-// block is script text, and GitHub substitutes expressions in it before the shell
-// runs; a comment filter would delete exactly the line that writes the key into
-// the script file. A YAML comment that spells an expression is flagged too, which
-// is the conservative direction.
+// The expressions are read from the file's DECODED strings, keys and values. A
+// `#` line inside a `run: |` block is script text and GitHub substitutes
+// expressions in it before the shell runs, so it is in the string and is found; a
+// YAML comment is not evaluated by anything, so a sentence about an expression is
+// not one. And an expression spelled through an escape or across a folded line is
+// the expression the runner evaluates, so it is found in its decoded form.
 describe('the release app credentials, across the whole workflow', () => {
-  const expressions = () => expressionsIn(readWorkflow());
+  const expressions = () => expressionsOf(workflow());
 
   /** Whether an expression touches the secrets context, in any spelling. */
   const readsSecretsContext = (expression) => /\bsecrets\b/i.test(expression);
@@ -1931,6 +1838,29 @@ describe('the release app credentials, across the whole workflow', () => {
     }
   });
 
+  // The inventory is only as good as its reading of the scalar that holds an
+  // expression. Each of these spells `${{ secrets.KEY }}` in a way a match on
+  // the file's text would not find, and each decodes to the expression.
+  it('finds a secret read however the scalar holding it is spelled', () => {
+    for (const [label, text] of [
+      ['an escaped dollar', 'x: "\\x24{{ secrets.KEY }}"'],
+      ['a unicode escape', 'x: "\\u0024{{ secrets.KEY }}"'],
+      ['an escaped brace', 'x: "$\\x7b{ secrets.KEY }}"'],
+      ['a line folded inside the name', 'x: "${{ secr\\\n  ets.KEY }}"'],
+      ['single quotes', "x: '${{ secrets.KEY }}'"],
+      ['a block scalar', 'x: |\n  ${{ secrets.KEY }}'],
+      ['a flow mapping', 'x: { y: "${{ secrets.KEY }}" }'],
+      ['an escaped key', '"$\\x7b{ secrets.KEY }}": y'],
+      ['an alias', 'x: &a ${{ secrets.KEY }}\ny: *a'],
+    ]) {
+      const found = expressionsOf(parseWorkflow(`${text}\n`));
+
+      expect(found.filter(readsSecretsContext), label).not.toEqual([]);
+    }
+    // Both uses of an anchored value are reads: the alias is the value again.
+    expect(expressionsOf(parseWorkflow('x: &a ${{ secrets.KEY }}\ny: *a\n'))).toHaveLength(2);
+  });
+
   // `toJSON(secrets)` and `toJSON(steps)` serialize every value in the context
   // without naming one, so no inventory of NAMES sees them.
   it('serializes no context wholesale', () => {
@@ -1941,7 +1871,7 @@ describe('the release app credentials, across the whole workflow', () => {
   // spelling reaches the same value past a check written against the dotted one.
   it('reads step outputs by plain property access in the publish jobs', () => {
     for (const { id } of PUBLISH_JOBS) {
-      const reads = expressionsIn(rawJobBlock(id)).filter((expression) =>
+      const reads = expressionsOf(jobOf(workflow(), id)).filter((expression) =>
         /\bsteps\b/i.test(expression),
       );
 
@@ -1959,30 +1889,25 @@ describe('the release app credentials, across the whole workflow', () => {
   // under `secrets:` hands over the ones it names. Either way the key leaves this
   // file for code this file does not contain, so no job here carries one.
   //
-  // Read at any column and in block or flow style, quoted or not: the key is what
-  // matters, not where a particular spelling happens to put it.
+  // Read as a decoded KEY at any depth, so the spelling is irrelevant: block or
+  // flow style, quoted or not, escaped or not.
   describe('a job that passes secrets on', () => {
-    /** Whether a structural line names a `secrets` key. */
-    const namesSecretsKey = (line) =>
-      /(?:^[^\S\n]*(?:-[^\S\n]+)*|[{,][^\S\n]*)["']?secrets["']?[^\S\n]*:/.test(line);
-
     /**
-     * The ids of the jobs in a workflow text that name a `secrets` key.
-     * @param {string} workflow
+     * The ids of the jobs in a workflow text that name a `secrets` key, and a
+     * marker for the workflow's own keys when one of those does.
+     * @param {string} text
      */
-    const jobsNamingSecrets = (workflow) => {
-      const jobs = /^jobs:[^\S\n]*$([\s\S]*)$/m.exec(dropComments(workflow));
-      expect(jobs, 'the workflow declares no jobs block').not.toBeNull();
-      /** @type {string[]} */
-      const offenders = [];
-      let current = '(before the first job)';
-      for (const line of linesOutsideBlockScalars(jobs[1])) {
-        const id = /^ {2}([A-Za-z_][A-Za-z0-9_-]*):/.exec(line);
-        if (id !== null) current = id[1];
-        if (namesSecretsKey(line)) offenders.push(current);
-      }
+    const jobsNamingSecrets = (text) => {
+      const parsed = parseWorkflow(text);
+      const offenders = jobIds(parsed).filter((id) => hasKey(jobOf(parsed, id), 'secrets'));
+      const { jobs: _jobs, ...own } = parsed;
+      if (hasKey(own, 'secrets')) offenders.push('(outside any job)');
       return offenders;
     };
+
+    /** A workflow whose only job has the given lines for a body. */
+    const caller = (...lines) =>
+      ['jobs:', '  extra:', '    uses: o/r/.github/workflows/n.yml@abc', ...lines, ''].join('\n');
 
     it('is absent from every job', () => {
       expect(jobsNamingSecrets(readWorkflow()), 'jobs passing secrets on').toEqual([]);
@@ -1992,23 +1917,59 @@ describe('the release app credentials, across the whole workflow', () => {
     // to refuse and attribute it to the job it sits in, and has to leave alone
     // text that merely mentions one, or an empty list above reports nothing.
     it('is detected in every spelling', () => {
-      for (const line of [
-        '    secrets: inherit',
-        '    "secrets": inherit',
-        "    'secrets':",
-        '    secrets : inherit',
-        '  extra: { uses: o/r/.github/workflows/n.yml@abc, secrets: inherit }',
-        '      secrets:',
+      for (const [label, text] of [
+        ['plain', caller('    secrets: inherit')],
+        ['double-quoted', caller('    "secrets": inherit')],
+        ['single-quoted', caller("    'secrets': inherit")],
+        ['spaced before the colon', caller('    secrets : inherit')],
+        ['escaped', caller('    "\\x73ecrets": inherit')],
+        ['a mapping of names', caller('    secrets:', '      KEY: x')],
+        ['upper case', caller('    SECRETS: inherit')],
+        [
+          'a flow-style job',
+          [
+            'jobs:',
+            '  extra: { uses: o/r/.github/workflows/n.yml@abc, secrets: inherit }',
+            '',
+          ].join('\n'),
+        ],
+        [
+          'inside a step input',
+          [
+            'jobs:',
+            '  extra:',
+            '    runs-on: x',
+            '    steps:',
+            '      - uses: a/b@c',
+            '        with: { "secrets": "x" }',
+            '',
+          ].join('\n'),
+        ],
       ]) {
-        expect(namesSecretsKey(line), line).toBe(true);
+        expect(jobsNamingSecrets(text), label).toEqual(['extra']);
       }
-      for (const line of ['    GH_SECRETS: x', '    my-secrets: x', '    name: secrets']) {
-        expect(namesSecretsKey(line), line).toBe(false);
+      for (const [label, line] of [
+        ['a key that contains the word', '          GH_SECRETS: x'],
+        ['a key that ends with it', '          my-secrets: x'],
+        ['a value that is the word', '          name: secrets'],
+      ]) {
+        const text = [
+          'jobs:',
+          '  extra:',
+          '    runs-on: x',
+          '    steps:',
+          '      - uses: a/b@c',
+          '        with:',
+          line,
+          '',
+        ].join('\n');
+
+        expect(jobsNamingSecrets(text), label).toEqual([]);
       }
     });
 
     it('is attributed to the job that carries it', () => {
-      const workflow = [
+      const text = [
         'name: x',
         'jobs:',
         '  first:',
@@ -2022,20 +1983,8 @@ describe('the release app credentials, across the whole workflow', () => {
         '',
       ].join('\n');
 
-      expect(jobsNamingSecrets(workflow)).toEqual(['extra']);
+      expect(jobsNamingSecrets(text)).toEqual(['extra']);
     });
-  });
-
-  // GitHub decodes a double-quoted scalar before it reads an expression in it, so
-  // `"\x24{{ secrets.KEY }}"` is the key read in full and contains no `${{` for
-  // anything above to find, and a backslash at the end of a line joins the next
-  // one to it. Outside block scalars — where a script's own backslashes live —
-  // this file writes no escape, and no scalar runs over a line.
-  it('spells nothing through a YAML escape', () => {
-    const structural = linesOutsideBlockScalars(dropComments(readWorkflow()));
-
-    expect(structural.filter((line) => line.includes('\\'))).toEqual([]);
-    expect(structural.filter((line) => (line.match(/"/g) ?? []).length % 2 === 1)).toEqual([]);
   });
 
   // A workflow-level `env:` reaches every step of every job, the mint step
@@ -2043,36 +1992,62 @@ describe('the release app credentials, across the whole workflow', () => {
   // proxy variables route its API traffic. The job-level mappings are pinned
   // below; nothing here sets one above them.
   it('declares no workflow-level environment', () => {
-    const structural = linesOutsideBlockScalars(dropComments(readWorkflow()));
+    expect(Object.keys(workflow()).filter((key) => key.toLowerCase() === 'env')).toEqual([]);
+  });
 
-    expect(structural.filter((line) => /^["']?env["']?[^\S\n]*:/.test(line))).toEqual([]);
+  // The same reasoning for every other key a workflow can carry above its jobs:
+  // `defaults:` sets the shell of every `run:` in every job, and none of them is
+  // read by a case that names one.
+  it('declares only the workflow-level keys it is built from', () => {
+    expect(Object.keys(workflow()).filter((key) => !WORKFLOW_KEYS.includes(key))).toEqual([]);
   });
 
   // The reader behind the shape check below must refuse every spelling that
   // would hide a key from it, or an empty list on the real jobs means nothing.
   it('refuses a job or step shape it cannot vouch for', () => {
-    const job = (...steps) => ['    runs-on: ubuntu-24.04', '    steps:', ...steps, ''].join('\n');
+    /** The shape problems of a one-job workflow whose job has these lines. */
+    const problemsOf = (...lines) =>
+      shapeProblems(
+        jobOf(parseWorkflow(['jobs:', '  fixture:', ...lines, ''].join('\n')), 'fixture'),
+      );
+    const job = (...steps) => ['    runs-on: ubuntu-24.04', '    steps:', ...steps];
 
-    expect(shapeProblems(job('      - name: Fine', '        run: echo hi'))).toEqual([]);
+    expect(problemsOf(...job('      - name: Fine', '        run: echo hi'))).toEqual([]);
+    // Spelling is not a reason to refuse a key the file is built from.
+    expect(
+      problemsOf(
+        ...job(
+          '      - { name: Flow, run: echo hi }',
+          '      - name: Quoted',
+          '        "env":',
+          '          K: v',
+        ),
+      ),
+    ).toEqual([]);
     for (const [label, body] of [
-      ['a quoted step key', job('      - name: x', '        "env":', '          K: v')],
-      ['a flow-style step', job('      - { uses: actions/checkout@v7 }')],
+      ['a quoted key', job('      - name: x', '        "continue-on-error": true')],
+      ['an escaped key', job('      - name: x', '        "con\\x74inue-on-error": true')],
+      ['a flow-style step', job('      - { uses: actions/checkout@v7, shell: bash }')],
       ['a continue-on-error key', job('      - name: x', '        continue-on-error: true')],
       ['a shell key', job('      - name: x', '        shell: bash {0}')],
       [
         'a job-level container',
-        ['    runs-on: x', '    container: img', '    steps:', ''].join('\n'),
+        ['    runs-on: x', '    container: img', '    steps:', '      - run: x'],
       ],
       [
         'a job-level secrets key',
-        ['    runs-on: x', '    secrets: inherit', '    steps:', ''].join('\n'),
+        ['    runs-on: x', '    secrets: inherit', '    steps:', '      - run: x'],
+      ],
+      [
+        'a job-level defaults block',
+        ['    runs-on: x', '    defaults: { run: { shell: sh } }', '    steps:', '      - run: x'],
       ],
     ]) {
-      expect(shapeProblems(body), label).not.toEqual([]);
+      expect(problemsOf(...body), label).not.toEqual([]);
     }
     // A key that only appears as free text inside a block scalar is not structure.
     expect(
-      shapeProblems(job('      - name: x', '        run: |', '          continue-on-error: true')),
+      problemsOf(...job('      - name: x', '        run: |', '          continue-on-error: true')),
     ).toEqual([]);
   });
 
@@ -2082,18 +2057,16 @@ describe('the release app credentials, across the whole workflow', () => {
   // a step's, a job's or the workflow's `env:` reaches the action as an input the
   // `with:` mapping never named. Nothing in this file sets one.
   it('sets no action input through the environment', () => {
-    expect(readWorkflow()).not.toMatch(/\bINPUT_/i);
+    expect(stringsIn(workflow()).filter((text) => /\bINPUT_/i.test(text))).toEqual([]);
   });
 
   // Both jobs are handed the key by the same third-party action, so one revision
   // of it is reviewed rather than two. The pin check below each job accepts any
   // full SHA, which would let the jobs drift apart.
   it('pins both mint steps to the same action revision', () => {
-    const uses = PUBLISH_JOBS.map(({ id, mintStep }) => {
-      const found = /^[^\S\n]*(uses: .*)$/m.exec(stepNamed(jobBlock(readWorkflow(), id), mintStep));
-      expect(found, `${id} mint step has no uses: line`).not.toBeNull();
-      return found[1];
-    });
+    const uses = PUBLISH_JOBS.map(({ id, mintStep }) =>
+      usesOf(stepNamed(jobOf(workflow(), id), mintStep)),
+    );
 
     expect(new Set(uses).size, `the mint steps differ: ${uses.join(' | ')}`).toBe(1);
   });
@@ -2108,12 +2081,12 @@ describe('the release app credentials, across the whole workflow', () => {
  *
  * Only builtins are used by these scripts, so PATH is bound empty rather than
  * left to whatever the host has (see `shellEnv`).
- * @param {string} step one step slice
+ * @param {Record<string, unknown>} step a decoded step
  * @returns {{ status: number, stdout: string }}
  */
 function runStepScript(step) {
-  const script = blockScalarText(step, 'run', { indent: 8 });
-  const env = /^ {8}env:[^\S\n]*$/m.test(step) ? mappingOf(step, 'env', { indent: 8 }) : {};
+  const script = scriptOf(step);
+  const env = envOf(step);
   try {
     const stdout = execFileSync(BASH, ['-c', script], {
       encoding: 'utf8',
@@ -2127,19 +2100,21 @@ function runStepScript(step) {
 }
 
 describe.each(PUBLISH_JOBS)('$id', (target) => {
+  const publishJob = () => jobOf(workflow(), target.id);
+
   it('waits on the release and runs only for a tag push', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const job = publishJob();
 
     expect(needsOf(job), `${target.id} declares no needs: edge`).toContain('release');
-    expect(job).toMatch(/^ {4}if: github\.event_name == 'push'$/m);
+    expect(ifOf(job, target.id)).toBe("github.event_name == 'push'");
   });
 
-  // The job is built from these keys and no others, written in block style.
-  // Every case below reads a particular key; this is the one that notices a
-  // key it does not read — a `shell:` template that wraps the step, an escaped
-  // `continue-on-error`, a `container:` — and a spelling none of them can find.
-  it('carries only the job and step keys it is built from, in block style', () => {
-    expect(shapeProblems(jobBlock(readWorkflow(), target.id))).toEqual([]);
+  // The job is built from these keys and no others. Every case below reads a
+  // particular key; this is the one that notices a key it does not read — a
+  // `shell:` template that wraps the step, an escaped `continue-on-error`, a
+  // `container:` — in whatever spelling it is written.
+  it('carries only the job and step keys it is built from', () => {
+    expect(shapeProblems(publishJob())).toEqual([]);
   });
 
   // It writes into ANOTHER repository with a token scoped to that one. A write
@@ -2147,26 +2122,30 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // runner for no reason, and nothing is checked out, so no repository token is
   // persisted either.
   //
-  // The job's own `permissions:` block is read, not the whole job: the mint step
-  // names `permission-contents: write`, which is a scope on the OTHER
+  // The job's own `permissions:` mapping is read, not the whole job: the mint
+  // step names `permission-contents: write`, which is a scope on the OTHER
   // repository's token and says nothing about this one.
   it('reads this repository and writes nothing in it', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const job = publishJob();
 
-    // Read as a mapping rather than as a run of adjacent lines: YAML carries on
-    // past a blank line, so an `actions: write` written after one belongs to the
-    // same block and would be invisible to a reader that stopped at the gap.
-    expect(mappingOf(job, 'permissions', { indent: 4 })).toEqual({ contents: 'read' });
-    expect(job).not.toMatch(/^[^\S\n]*uses: actions\/checkout/m);
+    // Whole, and as decoded values: an `actions: write` written after a blank
+    // line, quoted, or in flow style is an entry of this mapping like any other.
+    expect(job.permissions).toEqual({ contents: 'read' });
+    expect(writeScopes(job.permissions)).toEqual([]);
+    expect(
+      stepsOf(job).filter(
+        (step) => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout'),
+      ),
+    ).toEqual([]);
   });
 
   // The target is a literal rather than a repository variable, because both
   // READMEs name it and a reader cannot observe a variable.
   it('names its target repository and path in the file', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const text = stringsIn(publishJob()).join('\n');
 
-    expect(job).toContain(target.repo);
-    expect(job).toContain(target.path);
+    expect(text).toContain(target.repo);
+    expect(text).toContain(target.path);
   });
 
   // Per step rather than per job: both publish jobs have the same shape, and a
@@ -2174,7 +2153,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // the job through its fail-closed step while writing a Scoop manifest over
   // the formula.
   it('aims the fail-closed, explanation and push steps at its own target', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const job = publishJob();
 
     for (const name of [target.failStep, target.explainStep, target.pushStep]) {
       const step = stepNamed(job, name);
@@ -2193,16 +2172,13 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // named because a token otherwise inherits all of the installation's permissions,
   // and `skip-token-revoke` must stay absent so the token dies with the job.
   it('mints a token for its own repository alone, with one permission', () => {
-    const job = jobBlock(readWorkflow(), target.id);
-    const mint = stepNamed(job, target.mintStep);
+    const mint = stepNamed(publishJob(), target.mintStep);
     const [owner, repoName] = target.repo.split('/');
 
-    expect(mint).toMatch(PINNED_APP_TOKEN_ACTION);
-    expect(mint).toMatch(new RegExp(`^[^\\S\\n]*id: ${target.mintId}$`, 'm'));
-    expect(soleIfCondition(mint, `the ${target.id} mint step`)).toBe(
-      `env.${APP_CONFIGURED_ENV} == 'true'`,
-    );
-    expect(withMapping(mint)).toEqual({
+    expect(usesOf(mint)).toMatch(PINNED_APP_TOKEN_ACTION);
+    expect(mint.id).toBe(target.mintId);
+    expect(ifOf(mint, `the ${target.id} mint step`)).toBe(`env.${APP_CONFIGURED_ENV} == 'true'`);
+    expect(inputsOf(mint)).toEqual({
       'client-id': `\${{ vars.${APP_CLIENT_ID_VAR} }}`,
       'private-key': `\${{ secrets.${APP_PRIVATE_KEY_SECRET} }}`,
       owner,
@@ -2217,10 +2193,10 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // the token without appearing in the mapping pinned above. The step takes no
   // `env:` at all, and the job's holds the one boolean the gates read.
   it('hands the mint step no environment of its own', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const job = publishJob();
 
-    expect(stepNamed(job, target.mintStep)).not.toMatch(/^[^\S\n]*env:/m);
-    expect(mappingOf(job, 'env', { indent: 4 })).toEqual({
+    expect(Object.hasOwn(stepNamed(job, target.mintStep), 'env')).toBe(false);
+    expect(envOf(job)).toEqual({
       [APP_CONFIGURED_ENV]: `\${{ vars.${APP_CLIENT_ID_VAR} != '' && secrets.${APP_PRIVATE_KEY_SECRET} != '' }}`,
     });
   });
@@ -2231,11 +2207,9 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // owner — or whoever can push to the owner's repository — decides the meaning
   // of after this file was reviewed.
   it('runs only actions pinned by commit SHA', () => {
-    const job = jobBlock(readWorkflow(), target.id);
-    const used = steps(job)
-      .map((step) => /^[^\S\n]*uses: (.+)$/m.exec(step))
-      .filter((found) => found !== null)
-      .map((found) => found[1]);
+    const used = stepsOf(publishJob())
+      .filter((step) => typeof step.uses === 'string')
+      .map(usesOf);
 
     // The control: both actions this job runs are seen, so an empty list cannot
     // pass the loop below.
@@ -2251,11 +2225,9 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   });
 
   it('mints the token before the step that uses it', () => {
-    const job = jobBlock(readWorkflow(), target.id);
+    const job = publishJob();
 
-    expect(soleIndexOf(job, `- name: ${target.mintStep}`, target.id)).toBeLessThan(
-      soleIndexOf(job, `- name: ${target.pushStep}`, target.id),
-    );
+    expect(stepIndex(job, target.mintStep)).toBeLessThan(stepIndex(job, target.pushStep));
   });
 
   // The mint is the likeliest first failure on a real tag: the app left off the
@@ -2265,11 +2237,11 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // exactly: `failure()` alone fires for a failed download as well, and a gate
   // on the wrong step id never fires at all.
   it('explains a failed mint, and only a failed mint', () => {
-    const raw = rawJobBlock(target.id);
-    const step = stepNamed(raw, target.explainStep);
-    const script = blockScalarText(step, 'run', { indent: 8 });
+    const job = publishJob();
+    const step = stepNamed(job, target.explainStep);
+    const script = scriptOf(step);
 
-    expect(soleIfCondition(step, `the ${target.id} mint explanation`)).toBe(
+    expect(ifOf(step, `the ${target.id} mint explanation`)).toBe(
       `failure() && steps.${target.mintId}.outcome == 'failure'`,
     );
     expect(script).toMatch(/^echo "::error::/m);
@@ -2278,19 +2250,15 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     expect(script).toContain(APP_PRIVATE_KEY_SECRET);
     expect(script).toMatch(/re-run/i);
     // After the mint, whose outcome it reads, and before the push it stands in for.
-    expect(soleIndexOf(raw, `- name: ${target.mintStep}`, target.id)).toBeLessThan(
-      soleIndexOf(raw, `- name: ${target.explainStep}`, target.id),
-    );
-    expect(soleIndexOf(raw, `- name: ${target.explainStep}`, target.id)).toBeLessThan(
-      soleIndexOf(raw, `- name: ${target.pushStep}`, target.id),
-    );
+    expect(stepIndex(job, target.mintStep)).toBeLessThan(stepIndex(job, target.explainStep));
+    expect(stepIndex(job, target.explainStep)).toBeLessThan(stepIndex(job, target.pushStep));
   });
 
   // Run with its own environment, so a copy-paste from the sibling job — wrong
   // target, a variable left unset — shows up in what it prints.
   it('prints its error about its own target when it runs', (ctx) => {
     requirePosixShell(ctx);
-    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.explainStep));
+    const { status, stdout } = runStepScript(stepNamed(publishJob(), target.explainStep));
 
     expect(status).toBe(0);
     expect(stdout).toMatch(/^::error::/);
@@ -2301,9 +2269,9 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // A released binary whose formula was never pushed is a tap serving the
   // previous version with a green tick on the run that should have moved it.
   it('fails closed on the canonical repository when the app is not configured', () => {
-    const step = stepNamed(rawJobBlock(target.id), target.failStep);
-    const gate = soleIfCondition(step, `the ${target.id} fail-closed step`);
-    const script = blockScalarText(step, 'run', { indent: 8 });
+    const step = stepNamed(publishJob(), target.failStep);
+    const gate = ifOf(step, `the ${target.id} fail-closed step`);
+    const script = scriptOf(step);
 
     // Exactly, not by containment: a third conjunct (`&& false`) keeps both
     // substrings and makes the refusal unreachable.
@@ -2321,7 +2289,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // Run, not read: `exit 0 # exit 1` and a bare `false` both satisfy a pattern.
   it('exits non-zero, naming its target, when it runs', (ctx) => {
     requirePosixShell(ctx);
-    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.failStep));
+    const { status, stdout } = runStepScript(stepNamed(publishJob(), target.failStep));
 
     expect(status).toBe(1);
     expect(stdout).toMatch(/^::error::/);
@@ -2331,13 +2299,12 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
 
   // A fork has no app, and is meant to build and release nothing of the kind.
   it('reports, rather than fails, off the canonical repository', () => {
-    const step = stepNamed(rawJobBlock(target.id), target.reportStep);
+    const step = stepNamed(publishJob(), target.reportStep);
 
-    expect(soleIfCondition(step, `the ${target.id} fork notice`)).toBe(
+    expect(ifOf(step, `the ${target.id} fork notice`)).toBe(
       `github.repository != 'akasecurity/ai-tc' && env.${APP_CONFIGURED_ENV} != 'true'`,
     );
-    const script = blockScalarText(step, 'run', { indent: 8 });
-    expect(script).toMatch(/^echo '::notice::/m);
+    expect(scriptOf(step)).toMatch(/^echo '::notice::/m);
   });
 
   // A notice that fails turns every fork's tag release red here, and there are
@@ -2345,7 +2312,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // So it is run, and what it does is read.
   it('exits zero when it runs', (ctx) => {
     requirePosixShell(ctx);
-    const { status, stdout } = runStepScript(stepNamed(rawJobBlock(target.id), target.reportStep));
+    const { status, stdout } = runStepScript(stepNamed(publishJob(), target.reportStep));
 
     expect(status, 'the fork notice must not fail the job').toBe(0);
     expect(stdout).toMatch(/^::notice::/);
@@ -2354,10 +2321,7 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // And the push itself happens only with an app, which is what makes a fork
   // inert rather than broken.
   it('pushes only when the app is configured', () => {
-    const gate = soleIfCondition(
-      stepNamed(rawJobBlock(target.id), target.pushStep),
-      `the ${target.id} push step`,
-    );
+    const gate = ifOf(stepNamed(publishJob(), target.pushStep), `the ${target.id} push step`);
 
     expect(gate).toBe(`env.${APP_CONFIGURED_ENV} == 'true'`);
   });
@@ -2368,18 +2332,15 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // below while handing the key to every step's environment, the artifact
   // download included. What the push step is handed is the minted token, once.
   it('reads the private key once, into the mint step, and gives the push step only the token', () => {
-    const raw = rawJobBlock(target.id);
+    const job = publishJob();
 
-    expect(raw, `${target.id} carries no boolean for its gates`).toMatch(
-      new RegExp(
-        `^ {6}${APP_CONFIGURED_ENV}: \\$\\{\\{ vars\\.${APP_CLIENT_ID_VAR} != '' && secrets\\.${APP_PRIVATE_KEY_SECRET} != '' \\}\\}$`,
-        'm',
-      ),
+    expect(envOf(job)[APP_CONFIGURED_ENV], `${target.id} carries no boolean for its gates`).toBe(
+      `\${{ vars.${APP_CLIENT_ID_VAR} != '' && secrets.${APP_PRIVATE_KEY_SECRET} != '' }}`,
     );
 
     /** Every `${{ }}` expression in the job that mentions `pattern`. */
     const expressionsMentioning = (pattern) =>
-      expressionsIn(raw).filter((expression) => new RegExp(`\\b${pattern}\\b`).test(expression));
+      expressionsOf(job).filter((expression) => new RegExp(`\\b${pattern}\\b`).test(expression));
 
     expect(
       expressionsMentioning(`secrets\\.${APP_PRIVATE_KEY_SECRET}`),
@@ -2390,20 +2351,18 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
     ]);
 
     // WHICH step reads it: the mint step and no other. The count above would
-    // pass a key moved onto the push step's environment.
-    const readers = steps(raw).filter((step) => /\$\{\{[^}]*\bsecrets\./.test(step));
+    // pass a key moved onto the push step's environment. Any spelling of the
+    // secrets context counts, not only the dotted one.
+    const readers = stepsOf(job).filter((step) =>
+      expressionsOf(step).some((expression) => /\bsecrets\b/i.test(expression)),
+    );
     expect(readers, `${target.id} has more than one step reading a secret`).toHaveLength(1);
-    expect(readers[0]).toContain(`name: ${target.mintStep}`);
+    expect(readers[0].name).toBe(target.mintStep);
 
     expect(
-      stepNamed(raw, target.pushStep),
+      stepEnvValue(stepNamed(job, target.pushStep), 'GH_TOKEN'),
       `the push step does not map the minted token onto GH_TOKEN`,
-    ).toMatch(
-      new RegExp(
-        `^[^\\S\\n]*GH_TOKEN: \\$\\{\\{ steps\\.${target.mintId}\\.outputs\\.token \\}\\}$`,
-        'm',
-      ),
-    );
+    ).toBe(`\${{ steps.${target.mintId}.outputs.token }}`);
     expect(
       expressionsMentioning(`steps\\.${target.mintId}\\.outputs\\.token`),
       `${target.id} reads the minted token somewhere else`,
@@ -2415,14 +2374,12 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // bash parses it, and a dereference anywhere in a script puts the value on a
   // command line.
   it('hands the minted token to a shell only as GH_TOKEN in an env mapping', () => {
-    const raw = rawJobBlock(target.id);
-
-    const blocks = runBlocksOf(raw);
+    const blocks = runBlocksOf(publishJob());
     // The control for the absence checks: the refusal message names both, so a
-    // reader that captured nothing would fail here rather than pass the loop below.
+    // reader that read nothing would fail here rather than pass the loop below.
     expect(
       blocks.filter((block) => block.includes(APP_PRIVATE_KEY_SECRET)),
-      'no run: block mentions the secret at all — these scripts were not captured',
+      'no run: block mentions the secret at all — these scripts were not read',
     ).not.toEqual([]);
 
     for (const block of blocks) {
@@ -2451,25 +2408,26 @@ describe.each(PUBLISH_JOBS)('$id', (target) => {
   // disagrees with that upload fails only on a real tag, after the binaries are
   // already released.
   it('downloads the artifact the release job uploads, where the push step reads it', () => {
-    const job = jobBlock(readWorkflow(), target.id);
-    const downloads = steps(job).filter((step) =>
-      /^[^\S\n]*uses: actions\/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m.test(step),
+    const job = publishJob();
+    const downloads = stepsOf(job).filter(
+      (step) =>
+        typeof step.uses === 'string' &&
+        /^actions\/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(usesOf(step)),
     );
     expect(downloads, `${target.id} downloads no single artifact`).toHaveLength(1);
 
-    const uploaded = /^[^\S\n]*name: (\S+)$/m.exec(manifestUploadStep());
-    expect(uploaded, 'the release job uploads an artifact with no name').not.toBeNull();
-    expect(downloads[0]).toMatch(new RegExp(`^[^\\S\\n]*name: ${uploaded[1]}$`, 'm'));
+    const uploaded = inputsOf(manifestUploadStep()).name;
+    expect(uploaded, 'the release job uploads an artifact with no name').toBeDefined();
     // The whole mapping, not the two inputs it is read for: `repository`,
     // `run-id` and `github-token` each make this a download of ANOTHER
     // repository's run, and what that run uploaded is what gets published.
-    expect(withMapping(downloads[0])).toEqual({ name: uploaded[1], path: 'manifests' });
+    const inputs = inputsOf(downloads[0]);
+    expect(inputs).toEqual({ name: uploaded, path: 'manifests' });
 
-    const into = /^[^\S\n]*path: (\S+)$/m.exec(downloads[0]);
-    expect(into, `${target.id} downloads to no named directory`).not.toBeNull();
+    const into = inputs.path;
     const push = stepNamed(job, target.pushStep);
-    expect(push).toMatch(new RegExp(`^[^\\S\\n]*SOURCE_FILE: ${into[1]}/${target.source}$`, 'm'));
-    expect(blockScalarText(push, 'run', { indent: 8 })).toContain(`$(cat ${into[1]}/VERSION)`);
+    expect(stepEnvValue(push, 'SOURCE_FILE')).toBe(`${into}/${target.source}`);
+    expect(scriptOf(push)).toContain(`$(cat ${into}/VERSION)`);
   });
 });
 
@@ -2524,8 +2482,8 @@ function runPush(target, { mode, remote, rejectPut = false }) {
   );
   chmodSync(join(bin, 'gh'), 0o755);
 
-  const push = stepNamed(rawJobBlock(target.id), target.pushStep);
-  const script = blockScalarText(push, 'run', { indent: 8 });
+  const push = stepNamed(jobOf(workflow(), target.id), target.pushStep);
+  const script = scriptOf(push);
   const run = {
     cwd: root,
     encoding: 'utf8',
@@ -2763,9 +2721,7 @@ describe('every run: block passes the workflow gate shellcheck applies', () => {
   });
 
   it('carries no single-quoted expansion in any run: block', () => {
-    const scripts = steps(readWorkflow())
-      .filter((step) => /^[^\S\n]*run: \|[^\S\n]*$/m.test(step))
-      .map((step) => blockScalarText(step, 'run'));
+    const scripts = scriptsOf(workflow());
     expect(scripts.length, 'the workflow declares no run: block').toBeGreaterThan(0);
 
     expect(scripts.flatMap(singleQuotedExpansions)).toEqual([]);

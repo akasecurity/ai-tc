@@ -1732,22 +1732,32 @@ release channel** from the `cli-v*` npm publish:
   because every step in a job runs as the same user and an unpinned one runs before the key is
   handed out. The key is looked for in every expression in the file rather than in the two publish
   jobs, because the `release` job holds `id-token` and attestation write scopes and a step added
-  there reads the same secret by the same name. The expressions are read from the file's own bytes,
-  since a `#` line inside a `run: |` block is script text GitHub still substitutes, and string
-  literals are respected, since a `}}` inside one does not end the expression; the match is
-  case-insensitive, `toJSON(` is refused outright because it serializes a whole context without
-  naming a key, and no job may carry a `secrets:` key, because a call to a reusable workflow hands
-  the key over with `secrets: inherit` without writing an expression. Each publish job is built from
-  a fixed set of job and step keys, written in block style, so a `shell:` template, a
-  `continue-on-error`, a `container:` or a quoted or flow-style key is a failure rather than
-  something no case reads; the download step's whole `with:` mapping is pinned, because
-  `repository`, `run-id` and `github-token` would make it fetch another repository's run; no
-  backslash escape and no workflow-level `env:` appears outside a script; and the fail-closed,
-  notice and explanation scripts are RUN and their exit status and output read, since a pattern
-  cannot tell `exit 0 # exit 1` from `exit 1`. These are line-based readers over the file's text and
-  not a YAML parse: they refuse the spellings an edit would plausibly take rather than decode every
-  spelling YAML allows, and they are an early catch for a mistake, not a control — whoever can
-  change the workflow can change its guard. The installation is the ceiling on all of this and
+  there reads the same secret by the same name. The workflow is read as a PARSED YAML document
+  (`yaml`, YAML 1.2 — a dev dependency of `@akasecurity/eslint-config`, in
+  `test/helpers/workflow-yaml.js`), so every check runs on decoded structure: jobs, then steps, then
+  each step's keys, `with:`, `env:` and `run:`. A key written quoted, in flow style, behind an
+  escape (`"\x24{{ … }}"` spells the dollar of an expression) or through an alias reads the same as
+  its plain spelling, and a line that only looks like a key inside another key's block scalar is
+  not one. The expressions are read from the DECODED strings, keys and values, since a `#` line
+  inside a `run: |` block is script text GitHub still substitutes and a YAML comment is not
+  evaluated by anything; string literals are respected, since a `}}` inside one does not end the
+  expression; the match is case-insensitive, `toJSON(` is refused outright because it serializes a
+  whole context without naming a key, and no job may carry a `secrets:` key at any depth, because a
+  call to a reusable workflow hands the key over with `secrets: inherit` without writing an
+  expression. The top level and each publish job are built from a fixed set of keys, as are a
+  publish job's steps, so a `shell:` template, a `defaults:` block, a `continue-on-error`, a
+  `container:` or a workflow-level `env:` is a failure in whatever spelling it is written rather
+  than something no case reads; a permission is `write` however its value is quoted; the download
+  step's whole `with:` mapping is pinned, because `repository`, `run-id` and `github-token` would
+  make it fetch another repository's run; and the fail-closed, notice and explanation scripts are
+  RUN and their exit status and output read, since a pattern cannot tell `exit 0 # exit 1` from
+  `exit 1`. The reader refuses what it cannot decode faithfully rather than guess: a parse error or
+  warning, a duplicate key, more than one document, a key that is not a string, an alias that
+  points at a node it sits inside, and a `<<` merge key — GitHub's parser follows YAML 1.2, where
+  that is an ordinary key, so a reader that expanded it would report a mapping the runner may never
+  build. Anchors and aliases are decoded. The version a pinned `uses:` names in its trailing
+  `# v1.2.3` comment is a comment, which the reader keeps beside the value it trails. These are an
+  early catch for a mistake, not a control — whoever can change the workflow can change its guard. The installation is the ceiling on all of this and
   nothing in this tree can observe it: the app must be installed only on the tap and the bucket,
   with Contents (read and write) as its only chosen repository permission, and Metadata: read is
   mandatory for every app. CONTRIBUTING.md's setup steps are what establish that. Both targets are

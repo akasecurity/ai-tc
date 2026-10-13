@@ -406,7 +406,8 @@ for (const surface of SURFACES) {
   });
 }
 
-// The toast: only a block raises one.
+// The toast: a block, or a message the helper left because it says more than the
+// band (the helper drops a message that only repeats the findings).
 
 const UNGRANTED = ['[[aka:secret:', 'AB.', 'C'.repeat(26), '.', 'D'.repeat(16), ']]'].join('');
 const VALUES = {
@@ -443,8 +444,20 @@ function scenarioOf(kind: 'deny' | 'rewrite') {
   return found;
 }
 
-for (const kind of ['deny', 'rewrite'] as const) {
-  test(`a ${kind === 'deny' ? 'blocked' : 'redacted'} tool call ${kind === 'deny' ? 'raises' : 'does not raise'} a toast`, async ($, on) => {
+const REVEAL_MESSAGE =
+  'AKA revealed granted vault value(s) to this Write call — the reveal exception you approved authorized it.';
+
+for (const [name, kind, message, expected] of [
+  [
+    'a blocked tool call raises Blocked: and the label',
+    'deny',
+    'AKA blocked it',
+    ['Blocked: Prod key'],
+  ],
+  ['a redacted tool call with no message raises no toast', 'rewrite', null, []],
+  ['a message beyond the findings is raised as it is', 'rewrite', REVEAL_MESSAGE, [REVEAL_MESSAGE]],
+] as const) {
+  test(name, async ($, on) => {
     const scenario = scenarioOf(kind);
     const text = snapshotFor(scenario.policy);
     fileSystem(on, () => ({ text, mtimeMs: 77 }));
@@ -458,10 +471,10 @@ for (const kind of ['deny', 'rewrite'] as const) {
     helper(on, {
       stdout:
         kind === 'deny'
-          ? ANSWER({ deny: 'blocked by policy', message: 'AKA blocked it', findings: [finding] })
+          ? ANSWER({ deny: 'blocked by policy', message, findings: [finding] })
           : ANSWER({
               input: fill(scenario.outcome.input, VALUES),
-              message: 'AKA redacted it',
+              message,
               findings: [finding],
             }),
     });
@@ -470,7 +483,7 @@ for (const kind of ['deny', 'rewrite'] as const) {
 
     await clock.settle();
 
-    expect(raised).toEqual(kind === 'deny' ? ['Blocked: Prod key'] : []);
+    expect(raised).toEqual(expected);
   });
 }
 

@@ -229,9 +229,16 @@ describe('runModToolCall', () => {
     const rewritten = JSON.parse(
       (await call({ tool: 'Write', input: { file_path: join(cwd, 'a.txt'), content: SECRET } }))
         .stdout,
-    ) as { deny: string | null; input: { content: string } | null };
+    ) as {
+      deny: string | null;
+      input: { content: string } | null;
+      message: string | null;
+      findings: unknown[];
+    };
     expect(rewritten.deny).toBeNull();
     expect(JSON.stringify(rewritten.input)).not.toContain(SECRET);
+    expect(rewritten.findings).toHaveLength(1);
+    expect(rewritten.message).toContain('aka exception approve');
     const dir = join(home, '.aka', 'data');
     const db = openLocalDatabase(dir);
     try {
@@ -243,6 +250,17 @@ describe('runModToolCall', () => {
       (await call({ tool: 'Bash', input: { command: `run ${SECRET}` } })).stdout,
     ) as { deny: string | null };
     expect(denied.deny).not.toBeNull();
+  });
+
+  it('leaves no message when it says only what the findings show', async () => {
+    seed('vault', { vault: true });
+    const answer = JSON.parse(
+      (await call({ tool: 'Write', input: { file_path: join(cwd, 'a.txt'), content: SECRET } }))
+        .stdout,
+    ) as { input: unknown; message: string | null; findings: unknown[] };
+    expect(JSON.stringify(answer.input)).not.toContain(SECRET);
+    expect(answer.findings).toHaveLength(1);
+    expect(answer.message).toBeNull();
   });
 
   it('answers a pass for a call with nothing in it', async () => {

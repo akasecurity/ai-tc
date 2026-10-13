@@ -15,6 +15,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { REVEAL_DISCLOSURE_LEAD } from '../exception-guidance.ts';
 import type { PointersByText } from '../mod/findings-log.ts';
 import { pointersByRawMatch, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import type { HandoffNote } from '../mod/handoff.ts';
@@ -378,7 +379,7 @@ export async function runPreToolUse(
       });
     }
   }
-  const revealNote = `AKA revealed granted vault value(s) to this ${toolName} call — the reveal exception you approved authorized it.`;
+  const revealNote = `${REVEAL_DISCLOSURE_LEAD} to this ${toolName} call — the reveal exception you approved authorized it.`;
   if (decision) {
     const output = withProtocolNotes(
       decision.output,

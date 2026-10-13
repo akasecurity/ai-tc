@@ -10,7 +10,8 @@
  * what that pipeline decided.
  *
  * stdin:  {"v":1,"tool":"Bash","input":{...},"sessionId":"...","cwd":"..."}
- * stdout: {"v":1,"deny":string|null,"input":{...}|null,"context":string|null,"message":string|null}
+ * stdout: {"v":1,"deny":string|null,"input":{...}|null,"context":string|null,"message":string|null,"findings":[...]}
+ *   `message` is null when it says no more than `findings`, which the mod shows.
  * Exit 1 with nothing on stdout means "no decision": the mod passes the call on
  * unchanged and the PreToolUse command hook decides it as it always did.
  *
@@ -32,7 +33,7 @@ import type { PointersByText } from './findings-log.ts';
 import { recordModFindings, toolFieldAction } from './findings-log.ts';
 import { authorizeValues, recordToolHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
-import { answerFromOutputs } from './tool-call-answer.ts';
+import { answerFromOutputs, messageForUser } from './tool-call-answer.ts';
 
 async function toolCall(stdin: string): Promise<HelperRun> {
   const input = parseJson(stdin);
@@ -101,6 +102,7 @@ async function toolCall(stdin: string): Promise<HelperRun> {
       );
     }
   }
+  answer.message = messageForUser(answer.message, answer.findings.length > 0);
   if (answer.deny === null) {
     recordToolHandoff(
       dataDir,

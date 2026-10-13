@@ -1118,6 +1118,8 @@ export const register: Register = (on) => {
       tell($, first === undefined ? answer.message : `Blocked: ${first.label}`);
       return { deny: answer.deny };
     }
+    // The helper leaves a message only when it says more than the band shows.
+    tell($, answer.message);
     const result = await next(answer.input === null ? e : ({ ...e, ...answer.input } as typeof e));
     if (answer.context === null || result.deny !== undefined) return result;
     return { ...result, context: [...(result.context ?? []), answer.context] };

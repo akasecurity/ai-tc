@@ -705,10 +705,11 @@ describe('tokenReports', () => {
 
   it('prices exactly what folding every call in JS would, tier and cache split included', async () => {
     // The repository groups calls in SQL and prices one synthetic leaf per
-    // (session, provider, model, service_tier) group. That is exact only while
-    // the group key carries every dimension the cost model does not sum over:
-    // drop the tier from the key, or merge the 1h/5m cache-write split, and a
-    // session that mixed them misprices. This holds the SQL fold to the
+    // (session, provider, model, service_tier, band, billed columns) group.
+    // That is exact only while the group key carries every dimension the cost
+    // model does not sum over: drop the tier, the band or a billed column from
+    // the key, or merge the 1h/5m cache-write split, and a session that mixed
+    // them misprices. This holds the SQL fold to the
     // per-call fold across every shape a bag takes: both tiers, both cache
     // splits, web searches, an unknown provider, a bag with no provider or
     // model, missing token keys, and a NULL bag.
@@ -779,6 +780,54 @@ describe('tokenReports', () => {
       input_tokens: 40_000,
       cache_creation_input_tokens: 50_000,
     });
+    // Each of these bills one column GPT-5.4 has no rate for, beside priced calls
+    // that are otherwise alike: a web search and a 1h write in band 0, and a 5m
+    // write in band 1. Only the call itself may lose its price.
+    leaf('X19', 'X', NOW + 19, {
+      ...gpt,
+      input_tokens: 2_000,
+      cache_read_input_tokens: 98_000,
+      output_tokens: 300,
+      web_search_requests: 1,
+    });
+    leaf('X20', 'X', NOW + 20, {
+      ...gpt,
+      input_tokens: 1_500,
+      cache_read_input_tokens: 98_000,
+      output_tokens: 300,
+      ephemeral_1h_input_tokens: 500,
+    });
+    leaf('X23', 'X', NOW + 23, {
+      ...gpt,
+      input_tokens: 1_500,
+      cache_read_input_tokens: 98_000,
+      output_tokens: 300,
+      ephemeral_5m_input_tokens: 500,
+    });
+    // GPT-5.5 Pro publishes no cache-read rate: a call reading cache loses its
+    // price, the calls beside it that read none keep theirs.
+    const pro = { model: 'gpt-5.5-pro', provider: 'openai' };
+    leaf('X24', 'X', NOW + 24, { ...pro, input_tokens: 1_000, output_tokens: 100 });
+    leaf('X25', 'X', NOW + 25, { ...pro, input_tokens: 1_000, output_tokens: 100 });
+    leaf('X26', 'X', NOW + 26, {
+      ...pro,
+      input_tokens: 1_000,
+      output_tokens: 100,
+      cache_read_input_tokens: 1_000,
+    });
+    leaf('X21', 'X', NOW + 21, {
+      ...gpt,
+      input_tokens: 50_000,
+      cache_read_input_tokens: 100_000,
+      ephemeral_5m_input_tokens: 500,
+    });
+    // A bag whose write total exceeds its split prices both parts.
+    leaf('X22', 'X', NOW + 22, {
+      ...base,
+      input_tokens: 10,
+      cache_creation_input_tokens: 6_000,
+      ephemeral_5m_input_tokens: 1_000,
+    });
     // One bag reports its writes only as a total, one only as a split. Each
     // prices its own 5-minute write, so neither may cancel the other in a sum.
     leaf('X17', 'X', NOW + 17, { ...base, input_tokens: 10, cache_creation_input_tokens: 5_000 });
@@ -842,17 +891,15 @@ describe('tokenReports', () => {
       ?.rollups.find((r) => r.model === 'gpt-5.4');
     expect(gptRollup?.estimatedCostUsd).toBeGreaterThan(0);
     expect(actual.find((r) => r.sessionId === 'X')?.costIsPartial).toBe(true);
-    // The three priced band-0 calls keep their price beside the unpriced one,
-    // along with the 250K and 300K calls over the lower thresholds.
-    const gptCalls = bags.filter((b) => b.attributes.includes('"gpt-5.4"'));
-    const pricedAlone = buildTokenReports(
-      gptCalls
-        .map((b) => JSON.parse(b.attributes) as LlmCallAttributes)
-        .filter((a) => a.ephemeral_5m_input_tokens === undefined)
-        .map((attributes) => ({ sessionId: 'X', attributes })),
-      defaultCostModel,
-    );
-    expect(gptRollup?.estimatedCostUsd).toBeCloseTo(pricedAlone[0]?.estimatedCostUsd ?? NaN, 9);
+    // The priced GPT-5.4 calls keep their price beside the unpriced ones: three
+    // band-0 calls at $0.034, the 250K call at the base rate ($0.085) and the
+    // 300K call at the band ($0.2175).
+    expect(gptRollup?.estimatedCostUsd).toBeCloseTo(3 * 0.034 + 0.085 + 0.2175, 9);
+    // Two GPT-5.5 Pro calls at $30 / $180: 1,000 in and 100 out each.
+    const proRollup = actual
+      .find((r) => r.sessionId === 'X')
+      ?.rollups.find((r) => r.model === 'gpt-5.5-pro');
+    expect(proRollup?.estimatedCostUsd).toBeCloseTo((2 * (1_000 * 30 + 100 * 180)) / 1_000_000, 9);
     // The unsplit write crossing the 100K line bills at the band (60K x 0.50 +
     // 50K x 0.625); the one under it at the base (40K x 0.10 + 50K x 0.125).
     const haikuRollup = actual

@@ -174,7 +174,7 @@ example, while `aka scan .` skips them.
 - a package's or tool's `test/` tree (fixtures included);
 - `cli/test/` or `web-ui/test/`;
 - the repo-root `test/` tree;
-- `bench/`;
+- a package's `bench/` tree (`packages/*/bench/`; a `bench/` anywhere else is scanned);
 - a rule's `examples` and fixtures under `rules/`.
 
 A plugin's `test/` tree is covered too, **except its `fixtures/`**. Those hold recordings of

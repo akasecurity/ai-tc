@@ -32,7 +32,9 @@ describe('scanFileKind', () => {
     ['Makefile', 'other'],
     ['.eslintrc', 'other'],
     ['.environment', 'other'],
-    ['foo.env', 'other'],
+    ['foo.env', 'secret-bearing'],
+    ['prod.ENV', 'secret-bearing'],
+    ['env.example', 'other'],
     ['env', 'other'],
   ])('classifies %s as %s', (name, kind) => {
     expect(scanFileKind(name)).toBe(kind);

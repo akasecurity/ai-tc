@@ -377,19 +377,22 @@ const CALL_BAND =
       );
 
 // Which billable columns the call carries, one bit each: input, output, cache
-// read, 1h write, 5m write (a write total with no split counts there, as the
-// cost model prices it) and web search. A rate the model does not publish
-// leaves a column unpriced, and a summed group that bills against it prices to
-// null as a whole; with this in the key, every call in a group bills the same
-// columns, so a null group is one whose every call is unpriced on its own.
+// read, 1h write, a 5m write split out, a write total beyond its split (which
+// the cost model prices as 5-minute), and web search. A rate the model does not
+// publish leaves a column unpriced, and a summed group that bills against it
+// prices to null as a whole; with this in the key, every call in a group bills
+// the same columns, so a null group is one whose every call is unpriced on its
+// own. The two 5-minute sources take separate bits because the unsplit part is
+// clamped per call: a total-only call and a split-only call summed together
+// would cancel each other's remainder.
 const CALL_USAGE_SHAPE = `((coalesce(input_tokens, 0) > 0)
      + 2 * (coalesce(output_tokens, 0) > 0)
      + 4 * (coalesce(cache_read_input_tokens, 0) > 0)
      + 8 * (coalesce(ephemeral_1h_input_tokens, 0) > 0)
-     + 16 * (coalesce(ephemeral_5m_input_tokens, 0) > 0
-             OR coalesce(cache_creation_input_tokens, 0)
-                > coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))
-     + 32 * (coalesce(web_search_requests, 0) > 0))`;
+     + 16 * (coalesce(ephemeral_5m_input_tokens, 0) > 0)
+     + 32 * (coalesce(web_search_requests, 0) > 0)
+     + 64 * (coalesce(cache_creation_input_tokens, 0)
+             > coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0)))`;
 
 const LLM_USAGE_SELECT = `
   SELECT root_session_id AS sessionId,

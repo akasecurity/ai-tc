@@ -779,6 +779,10 @@ describe('tokenReports', () => {
       input_tokens: 40_000,
       cache_creation_input_tokens: 50_000,
     });
+    // One bag reports its writes only as a total, one only as a split. Each
+    // prices its own 5-minute write, so neither may cancel the other in a sum.
+    leaf('X17', 'X', NOW + 17, { ...base, input_tokens: 10, cache_creation_input_tokens: 5_000 });
+    leaf('X18', 'X', NOW + 18, { ...base, input_tokens: 10, ephemeral_5m_input_tokens: 5_000 });
     leaf('Y1', 'Y', NOW + 12, { ...base, input_tokens: 40, output_tokens: 4 });
     raw
       .prepare(

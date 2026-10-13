@@ -3,13 +3,17 @@ import { update } from 'claude-code';
 
 import {
   createReplySlots,
+  mergeFindings,
   type ModPolicy,
+  parseFindingRecord,
+  parseFindingsJsonl,
   parseModPolicy,
   planPromptWith,
   planRowWith,
   type PointerWant,
   revealPointers,
   toolCallNeedsHelper,
+  type ViewFinding,
 } from './engine.js';
 
 // The mod half of AKA's prompt redaction. When the user's policy says `redact`
@@ -73,6 +77,65 @@ async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   }
 }
 
+// The findings this session's mod holds, newest first. Module memory on purpose:
+// finding detail is never written to $.state, which any installed plugin can
+// read; $.state holds a bare version counter that the widgets read while drawing,
+// so bumping it redraws them.
+let findingsHeld: ViewFinding[] = [];
+
+const findingsVersion = { plugin: 'aka', key: 'findings' } as const;
+
+// The mod is zod-free, so it spells the findings file's location, id check and
+// read limit itself; the writer is packages/plugin-sdk (mod-findings).
+const MOD_FINDINGS_DIR = 'mod-findings';
+const MOD_FINDINGS_MAX_BYTES = 4 * 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+// What the last read of the findings file saw, so an unchanged file is not read again.
+let lastFile: string | undefined;
+
+function heldFindings(): readonly ViewFinding[] {
+  return findingsHeld;
+}
+
+// Merges findings into the session list and bumps the version when the list
+// gained one it did not have. Never throws.
+async function takeFindings($: Dollar, incoming: readonly ViewFinding[]): Promise<void> {
+  try {
+    if (incoming.length === 0) return;
+    const known = new Set(heldFindings().map((f) => f.id));
+    if (incoming.every((f) => known.has(f.id))) return;
+    findingsHeld = mergeFindings(findingsHeld, incoming);
+    await update($, findingsVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The widgets show what they already held.
+  }
+}
+
+// Takes what the session's findings file holds when its mtime or size changed.
+// A session id the writer would refuse, a missing or oversized file, or a read
+// that fails leaves the list as it was. Never throws.
+async function refreshFromFile($: Dollar): Promise<void> {
+  try {
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
+    if (home === undefined || home === '') return;
+    const sessionId = await $.session.id();
+    if (!SESSION_ID.test(sessionId)) return;
+    const sep = home.includes('\\') ? '\\' : '/';
+    const root = home.endsWith('/') || home.endsWith('\\') ? home.slice(0, -1) : home;
+    const path = [root, '.aka', 'data', MOD_FINDINGS_DIR, `${sessionId}.jsonl`].join(sep);
+    const stat = await $.fs.stat(path);
+    if (stat.kind !== 'file' || stat.size > MOD_FINDINGS_MAX_BYTES) return;
+    const key = `${path}|${String(stat.mtimeMs)}|${String(stat.size)}`;
+    if (lastFile === key) return;
+    const text = await $.fs.read(path);
+    lastFile = key;
+    await takeFindings($, parseFindingsJsonl(text));
+  } catch {
+    // No file yet, or an unreadable one: the helper answers still count.
+  }
+}
+
 // A helper script's path under the plugin root, in the root's own separator.
 function helperScript(root: string, name: string): string {
   const sep = root.includes('\\') ? '\\' : '/';
@@ -85,6 +148,20 @@ const HELPER_TIMEOUT_MS = 3000;
 interface HelperAnswer {
   text: string;
   note: string | null;
+  findings: ViewFinding[];
+}
+
+// The findings an answer carries, each checked as a record on disk is; one that
+// does not parse is dropped, and an answer without a list has none. A bad finding
+// never fails the answer it rides on.
+function parseAnswerFindings(value: unknown): ViewFinding[] {
+  if (!Array.isArray(value)) return [];
+  const out: ViewFinding[] = [];
+  for (const item of value as unknown[]) {
+    const finding = parseFindingRecord(item);
+    if (finding !== null) out.push(finding);
+  }
+  return out;
 }
 
 // The helper's stdout, or null for anything that is not exactly its answer.
@@ -92,10 +169,10 @@ function parseHelperAnswer(stdout: string): HelperAnswer | null {
   try {
     const raw: unknown = JSON.parse(stdout);
     if (typeof raw !== 'object' || raw === null) return null;
-    const answer = raw as { v?: unknown; text?: unknown; note?: unknown };
+    const answer = raw as { v?: unknown; text?: unknown; note?: unknown; findings?: unknown };
     if (answer.v !== 1 || typeof answer.text !== 'string' || answer.text === '') return null;
     if (answer.note !== null && typeof answer.note !== 'string') return null;
-    return { text: answer.text, note: answer.note };
+    return { text: answer.text, note: answer.note, findings: parseAnswerFindings(answer.findings) };
   } catch {
     return null;
   }
@@ -168,6 +245,7 @@ async function rewriteRowText(
   const plan = planRowWith(text, policy);
   if (plan.values.length === 0) return null;
   const answer = await rewriteWithHelper($, text, door, row);
+  if (answer !== null) await takeFindings($, answer.findings);
   if (answer === null || plan.values.some((value) => answer.text.includes(value))) return null;
   return answer.text;
 }
@@ -361,6 +439,7 @@ interface ToolCallAnswer {
   input: Record<string, unknown> | null;
   context: string | null;
   message: string | null;
+  findings: ViewFinding[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -372,13 +451,13 @@ function parseToolCallAnswer(stdout: string): ToolCallAnswer | null {
   try {
     const raw: unknown = JSON.parse(stdout);
     if (!isRecord(raw) || raw.v !== 1) return null;
-    const { deny, input, context, message } = raw;
+    const { deny, input, context, message, findings } = raw;
     if (deny !== null && (typeof deny !== 'string' || deny === '')) return null;
     if (input !== null && !isRecord(input)) return null;
     if (context !== null && typeof context !== 'string') return null;
     if (message !== null && typeof message !== 'string') return null;
     if (deny !== null && (input !== null || context !== null)) return null;
-    return { deny, input, context, message };
+    return { deny, input, context, message, findings: parseAnswerFindings(findings) };
   } catch {
     return null;
   }
@@ -581,17 +660,19 @@ export const register: Register = (on) => {
     await noteModRunning($);
     // Nothing to redact: nothing is spawned.
     const plan = planPromptWith(e.text, await loadPolicy($));
-    if (plan.values.length === 0) return next(e);
-    const answer = await rewriteWithHelper($, e.text);
+    const answer = plan.values.length === 0 ? null : await rewriteWithHelper($, e.text);
+    if (answer !== null) await takeFindings($, answer.findings);
     // A rewrite that leaves a value this module detected is not one to send.
-    if (answer === null || plan.values.some((value) => answer.text.includes(value))) {
-      return next(e);
-    }
-    return next({
-      ...e,
-      text: answer.text,
-      ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
-    });
+    const result =
+      answer === null || plan.values.some((value) => answer.text.includes(value))
+        ? await next(e)
+        : await next({
+            ...e,
+            text: answer.text,
+            ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
+          });
+    await refreshFromFile($);
+    return result;
   });
 
   // The backstop: every other row the conversation keeps (attachments and the
@@ -618,6 +699,7 @@ export const register: Register = (on) => {
     if (!needsHelper) return next(e);
     const answer = await decideToolCallWithHelper($, e.tool, input, e);
     if (answer === null) return next(e);
+    await takeFindings($, answer.findings);
     if (answer.deny !== null) return { deny: answer.deny };
     tell($, answer.message);
     const result = await next(answer.input === null ? e : ({ ...e, ...answer.input } as typeof e));

@@ -384,3 +384,5 @@ export function toolCallNeedsHelper(
 }
 
 export { getLoadedRules, redact, scan };
+
+export * from './finding-view.ts';

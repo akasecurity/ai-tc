@@ -90,3 +90,20 @@ describe('recordCapture — variable name', () => {
     expect(views.filter((v) => v !== undefined && !('variableName' in v))).toHaveLength(1);
   });
 });
+
+describe('the findings page reads — variable name', () => {
+  it('carries the name on the instance list match, and omits it when absent', async () => {
+    const named = record(NAME);
+    const bare = record(undefined);
+    const { items } = await db.findings.listFindingInstances({});
+    expect(items.find((i) => i.id === named)?.match.variableName).toBe(NAME);
+    expect(items.find((i) => i.id === bare)?.match).not.toHaveProperty('variableName');
+  });
+
+  it('carries the name on a single finding the drawer opens', async () => {
+    const named = record(NAME);
+    const detail = await db.findings.findingInstance(named);
+    expect(detail?.match.variableName).toBe(NAME);
+    expect(detail?.match.maskedValue).toBe('s*********2');
+  });
+});

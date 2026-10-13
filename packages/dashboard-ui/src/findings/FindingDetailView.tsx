@@ -127,6 +127,13 @@ export function FindingDetailView({
               )}
             </span>
           </MetaItem>
+          {finding.match.variableName === undefined ? null : (
+            <MetaItem label="Variable">
+              <span className="font-mono text-xs wrap-break-word">
+                {finding.match.variableName}
+              </span>
+            </MetaItem>
+          )}
           <MetaItem label="Action taken">
             <ActionTag action={instance.action} />
           </MetaItem>

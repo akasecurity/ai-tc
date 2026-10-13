@@ -1,0 +1,16 @@
+{
+  "core-pii/email": "Email",
+  "core-pii/ssn": "US SSN",
+  "core-pii/phone-us": "US phone number",
+  "core-pii/phone-intl": "Phone number",
+  "core-pii/ip-address": "IP address",
+  "core-pii/dob": "Date of birth",
+  "core-pii/drivers-license-us": "US driver license",
+  "core-pii/passport-us": "US passport number",
+  "core-pii/home-address": "Home address",
+  "core-pii/name": "Personal name",
+  "core-pii/vin": "Vehicle VIN",
+  "core-pii/mac-address": "MAC address",
+  "core-pii/national-id": "National ID",
+  "core-pii/zip": "US ZIP code"
+}

@@ -43,7 +43,14 @@ describe('answerFromOutputs', () => {
         },
       },
     ]);
-    expect(answer).toEqual({ v: 1, deny: 'no', input: null, context: null, message: null });
+    expect(answer).toEqual({
+      v: 1,
+      deny: 'no',
+      input: null,
+      context: null,
+      message: null,
+      findings: [],
+    });
   });
 
   it('reads an allow with updatedInput as the input to run, with its note and message', () => {
@@ -64,6 +71,7 @@ describe('answerFromOutputs', () => {
       input: { content: 'x' },
       context: 'note',
       message: 'AKA redacted',
+      findings: [],
     });
   });
 
@@ -74,6 +82,7 @@ describe('answerFromOutputs', () => {
       input: null,
       context: null,
       message: 'AKA flagged',
+      findings: [],
     });
   });
 
@@ -84,6 +93,7 @@ describe('answerFromOutputs', () => {
       input: null,
       context: null,
       message: null,
+      findings: [],
     });
   });
 });

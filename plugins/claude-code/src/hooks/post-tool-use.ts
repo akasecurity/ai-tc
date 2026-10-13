@@ -21,6 +21,7 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { actionFromCapture, appendModFindings, modFindingsFrom } from '../mod/findings-log.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
@@ -108,6 +109,7 @@ async function main(): Promise<void> {
   // See host-floor-notice.ts: PostToolUse is the other event whose newest
   // transcript record is guaranteed to belong to the running host.
   warnIfHostBelowFloor(config, getString(input, 'session_id'), getString(input, 'transcript_path'));
+  const sessionId = getString(input, 'session_id');
   const gateway = resolveDataGateway(config);
   // A field at or above the large-input threshold is scanned under what is left
   // of the field loop's own deadline, and withheld if that scan does not finish
@@ -129,11 +131,27 @@ async function main(): Promise<void> {
       toolName,
       response,
       fields,
-      (text) =>
-        runtime.capture(
+      async (text) => {
+        const result = await runtime.capture(
           { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
           { persist: 'with-findings' },
-        ),
+        );
+        if (sessionId !== undefined) {
+          appendModFindings(
+            config.dataDir,
+            sessionId,
+            modFindingsFrom({
+              sessionId,
+              kind: 'response',
+              text,
+              result,
+              where: 'tool-output',
+              action: actionFromCapture(result.action, false),
+            }),
+          );
+        }
+        return result;
+      },
       vaultGlue
         ? (text, findings, reversible) =>
             vaultGlue.tokenizeText(text, {

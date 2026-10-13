@@ -11,7 +11,7 @@
  * The chain and the hook alone must agree: PreToolUse behaves the same with and
  * without the mod, and a call the mod decided is not recorded or decided twice.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -157,6 +157,7 @@ interface HelperAnswer {
   input: Record<string, unknown> | null;
   context: string | null;
   message: string | null;
+  findings: { id: string; action: string; where: string }[];
 }
 
 function helper(
@@ -379,6 +380,33 @@ describe('mod-tool-call helper and PreToolUse', () => {
       );
       expect(planted.status).toBe(0);
       expect(planted.stdout).not.toBe('');
+    });
+  });
+
+  it('a redacted Write field is answered and recorded as a tool-input finding, once', async () => {
+    const scenario = SCENARIOS.find((s) => s.tool === 'Write' && s.outcome.kind === 'rewrite');
+    if (scenario === undefined) throw new Error('no Write rewrite scenario');
+    await inHome(async (home) => {
+      const values = await seed(home, scenario);
+      const input = fill(scenario.input, values);
+      const answer = helper(home, scenario.tool, input);
+      if (answer === 'no-decision') throw new Error('the helper made no decision');
+
+      expect(answer.findings.length).toBeGreaterThan(0);
+      expect(answer.findings[0]).toMatchObject({ where: 'tool-input' });
+      const file = join(home, '.aka', 'data', 'mod-findings', `${SESSION_ID}.jsonl`);
+      const before = readFileSync(file, 'utf8');
+      expect(
+        before
+          .trim()
+          .split('\n')
+          .map((l) => (JSON.parse(l) as { id: string }).id),
+      ).toEqual(answer.findings.map((f) => f.id));
+      expect(before).not.toContain(values.SECRET);
+
+      // The hook, shown what the tool will run with, adds nothing for the same finding.
+      hook(home, scenario.tool, answer.input ?? input);
+      expect(readFileSync(file, 'utf8')).toBe(before);
     });
   });
 

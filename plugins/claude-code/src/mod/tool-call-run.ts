@@ -22,10 +22,13 @@
  * stderr.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
+import type { ModFinding } from '@akasecurity/schema';
 
+import { inputEventKind } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../hooks/shared.ts';
 import { countFailOpen, getString, parseJson } from '../hooks/shared.ts';
+import { actionFromCapture, appendModFindings, modFindingsFrom } from './findings-log.ts';
 import { authorizeValues, recordToolHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
 import { answerFromOutputs } from './tool-call-answer.ts';
@@ -51,6 +54,8 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   // exception covers, a fallback that only warns), and the hook, which cannot see
   // the grants now spent, takes them from the note rather than judging them again.
   const letThroughValues: string[] = [];
+  const records: ModFinding[] = [];
+  const sessionId = getString(input, 'sessionId');
   const run = await runPreToolUse(
     {
       tool_name: tool,
@@ -65,8 +70,20 @@ async function toolCall(stdin: string): Promise<HelperRun> {
     {
       mode: 'mod',
       onScanned: (scanned) => {
-        for (const { result } of scanned) {
+        for (const { text, result } of scanned) {
           for (const finding of result.findings) letThroughValues.push(finding.rawMatch);
+          if (sessionId !== undefined) {
+            records.push(
+              ...modFindingsFrom({
+                sessionId,
+                kind: inputEventKind(tool),
+                text,
+                result,
+                where: 'tool-input',
+                action: actionFromCapture(result.action, false),
+              }),
+            );
+          }
         }
       },
     },
@@ -75,8 +92,10 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   if (run !== 'finished') return { code: 1, stdout: '' };
 
   const answer = answerFromOutputs(outputs);
+  const { dataDir } = loadConfig();
+  if (sessionId !== undefined) appendModFindings(dataDir, sessionId, records);
+  answer.findings = records;
   if (answer.deny === null) {
-    const { dataDir } = loadConfig();
     recordToolHandoff(
       dataDir,
       tool,

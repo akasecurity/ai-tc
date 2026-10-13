@@ -93,3 +93,27 @@ export function appendModFindings(
     // A finding the widgets cannot show is not a reason to fail the hook.
   }
 }
+
+/**
+ * The pointer the vault minted for each value it kept, by the value's raw match.
+ * The vault answers its pointers in span order and only for the findings it kept,
+ * so they pair with the kept findings in span order. When the counts differ (an
+ * overlap or a stale span was destroyed instead), which pointer belongs to which
+ * value is unknown and the map is empty: those findings are recorded as redacted.
+ */
+export function pointersByRawMatch(
+  findings: readonly CaptureResult['findings'][number][],
+  kept: ReadonlySet<CaptureResult['findings'][number]> | undefined,
+  pointers: readonly string[],
+): ReadonlyMap<string, string> {
+  const ordered = findings
+    .filter((f) => kept === undefined || kept.has(f))
+    .sort((a, b) => a.span.start - b.span.start);
+  const map = new Map<string, string>();
+  if (ordered.length !== pointers.length) return map;
+  ordered.forEach((f, i) => {
+    const pointer = pointers[i];
+    if (pointer !== undefined) map.set(f.rawMatch, pointer);
+  });
+  return map;
+}

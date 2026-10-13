@@ -15,6 +15,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { actionFromCapture, appendModFindings, modFindingsFrom } from '../mod/findings-log.ts';
 import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
@@ -324,6 +325,22 @@ export async function runPreToolUse(
     }
   } finally {
     await runtime.close();
+  }
+  if (options.mode === 'hook' && sessionId !== undefined) {
+    for (const { text, result } of scanned) {
+      appendModFindings(
+        config.dataDir,
+        sessionId,
+        modFindingsFrom({
+          sessionId,
+          kind,
+          text,
+          result,
+          where: 'tool-input',
+          action: actionFromCapture(result.action, false),
+        }),
+      );
+    }
   }
   try {
     options.onScanned?.(scanned);

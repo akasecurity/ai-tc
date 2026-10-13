@@ -46,6 +46,12 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import {
+  actionFromCapture,
+  appendModFindings,
+  modFindingsFrom,
+  pointersByRawMatch,
+} from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
@@ -151,20 +157,47 @@ async function main(): Promise<void> {
   // Consent is resolved HERE rather than inside the decision: an absent
   // tokenizer is what makes "no consent → the vault is never touched" a
   // structural property instead of a flag the decision could forget to read.
+  let vaultedWith: ReadonlyMap<string, string> = new Map();
   const decision = await decideUserPromptSubmit(prompt, result, {
     tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
-      ? (text, findings, reversible) =>
-          createVaultGlue().tokenizeText(text, {
+      ? async (text, findings, reversible) => {
+          const tokenized = await createVaultGlue().tokenizeText(text, {
             findings,
             // Per-finding custody, exactly as the tool-call paths pass it.
             // Omitting it means "keep all", which would vault a value whose
             // detection chose one-way Redact.
             reversible,
             sighting: { location: 'prompt', kind: 'prompt' },
-          })
+          });
+          vaultedWith = pointersByRawMatch(findings, reversible, tokenized.pointers);
+          return tokenized;
+        }
       : undefined,
     writeClipboard,
   });
+  // The widgets' record of what was found, unless the mod's helper already wrote
+  // it. A vaulted finding is one whose pointer the user was handed in the block.
+  if (!handedOff && sessionId !== undefined) {
+    const first = vaultedWith.values().next();
+    const vaulted =
+      first.done !== true &&
+      decision !== null &&
+      'reason' in decision &&
+      decision.reason.includes(first.value);
+    appendModFindings(
+      config.dataDir,
+      sessionId,
+      modFindingsFrom({
+        sessionId,
+        kind: 'prompt',
+        text: prompt,
+        result,
+        where: 'prompt',
+        action: actionFromCapture(result.action, vaulted),
+        pointers: vaultedWith,
+      }),
+    );
+  }
   if (decision !== null) {
     await emit(decision);
     return;

@@ -1,5 +1,7 @@
 // What the tool.call mod's helper tells the mod, built from what the PreToolUse
 // pipeline emitted. Pure, so it unit-tests without a process.
+import type { ModFinding } from '@akasecurity/schema';
+
 import type { HookOutput } from '../hooks/shared.ts';
 
 /** The helper's stdout (one JSON line). */
@@ -13,6 +15,8 @@ export interface ToolCallAnswer {
   context: string | null;
   /** A line for the user (what PreToolUse would have shown as its systemMessage). */
   message: string | null;
+  /** What the pipeline found and acted on, for the mod's widgets. */
+  findings: ModFinding[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,7 +25,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Collapses the pipeline's outputs the way the host collapses a hook's. */
 export function answerFromOutputs(outputs: readonly HookOutput[]): ToolCallAnswer {
-  const answer: ToolCallAnswer = { v: 1, deny: null, input: null, context: null, message: null };
+  const answer: ToolCallAnswer = {
+    v: 1,
+    deny: null,
+    input: null,
+    context: null,
+    message: null,
+    findings: [],
+  };
   const messages: string[] = [];
   for (const output of outputs) {
     if ('systemMessage' in output && typeof output.systemMessage === 'string') {

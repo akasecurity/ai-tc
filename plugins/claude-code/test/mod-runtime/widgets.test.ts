@@ -672,7 +672,7 @@ type Answer = { stdout: string; exitCode?: number } | { deny: string };
 // non-zero exit, or a refusal.
 function revealing(
   on: Hooks,
-  mode: 'full' | 'off' | Answer = 'full',
+  mode: 'full' | 'off' | Answer | ((request: HelperRequest) => string) = 'full',
 ): { asked: HelperRequest[] } & HelperRequest[] {
   const asked: HelperRequest[] = [];
   on('process.run', (_$, e) => {
@@ -685,17 +685,19 @@ function revealing(
     if (typeof mode === 'object' && 'deny' in mode) return { deny: mode.deny };
     const items = (request.stdin as unknown as { items: { token: string }[] }).items;
     const stdout =
-      typeof mode === 'object'
-        ? mode.stdout
-        : JSON.stringify({
-            v: 1,
-            mode,
-            items: items.map((i) => ({
-              token: i.token,
-              badge: '[badge]',
-              revealed: mode === 'off' ? null : REVEALED,
-            })),
-          });
+      typeof mode === 'function'
+        ? mode(request)
+        : typeof mode === 'object'
+          ? mode.stdout
+          : JSON.stringify({
+              v: 1,
+              mode,
+              items: items.map((i) => ({
+                token: i.token,
+                badge: '[badge]',
+                revealed: mode === 'off' ? null : REVEALED,
+              })),
+            });
     return {
       value: {
         exitCode: typeof mode === 'object' ? (mode.exitCode ?? 0) : 0,
@@ -760,9 +762,44 @@ for (const surface of SURFACES) {
     await clock.settle();
 
     expect(asked).toHaveLength(1);
-    expect(asked[0]?.stdin).toMatchObject({ v: 1, items: [{ token: POINTER, reveal: true }] });
+    expect(asked[0]?.stdin).toMatchObject({
+      v: 1,
+      pane: true,
+      items: [{ token: POINTER, reveal: true }],
+    });
     expect(await texts(pane)).toContain(REVEALED);
     expect(await buttonKeys(pane)).toContain(`hide-${ID_A}`);
+  });
+
+  test(`${surface}: Show reveals under the default masked inline setting`, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW });
+    fileOf(on, lines(vaulted(ID_A)));
+    // The helper as it answers with consent and vaultInlineReveal 'masked': an
+    // inline request is masked, a pane request is revealed.
+    const asked = revealing(on, (request) => {
+      const { items, pane } = request.stdin as unknown as {
+        items: { token: string }[];
+        pane?: boolean;
+      };
+      return JSON.stringify({
+        v: 1,
+        mode: pane === true ? 'full' : 'masked',
+        items: items.map((i) => ({
+          token: i.token,
+          badge: '[badge]',
+          revealed: pane === true ? REVEALED : null,
+        })),
+      });
+    });
+
+    const pane = await mountPane($, surface);
+    await clock.settle();
+    await pane.press({ key: `show-${ID_A}` });
+    await clock.settle();
+
+    expect(asked.at(-1)?.stdin).toMatchObject({ pane: true });
+    expect(await texts(pane)).toContain(REVEALED);
+    expect(await texts(pane)).not.toContain("couldn't reveal");
   });
 
   test(`${surface}: a shown value is masked again after 30 seconds`, async ($, on) => {

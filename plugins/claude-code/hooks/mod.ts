@@ -581,13 +581,16 @@ function parseToolCallAnswer(stdout: string): ToolCallAnswer | null {
   }
 }
 
+// `pane` marks a press in the findings pane: the helper then reveals under valid
+// consent whatever the inline reveal setting says.
 async function runRevealHelper(
   $: RenderDollar,
   items: { token: string; reveal: boolean }[],
+  pane = false,
 ): Promise<RevealAnswer | null> {
   try {
     const run = await $.process.run(['node', scriptPath($, 'mod-reveal.js')], {
-      stdin: JSON.stringify({ v: 1, items }),
+      stdin: JSON.stringify({ v: 1, ...(pane ? { pane: true } : {}), items }),
       timeoutMs: REVEAL_HELPER_TIMEOUT_MS,
     });
     return run.exitCode === 0 ? parseRevealAnswer(run.stdout) : null;
@@ -881,7 +884,7 @@ async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
   const epoch = revealEpoch;
   try {
     revealFailed.delete(f.id);
-    const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }]);
+    const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }], true);
     if (epoch !== revealEpoch) return;
     if (answer?.isOff === true) consentOff = true;
     const revealed = answer?.isOff === true ? undefined : answer?.items.get(f.pointer)?.revealed;

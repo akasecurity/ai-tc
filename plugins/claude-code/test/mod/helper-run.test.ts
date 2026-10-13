@@ -163,6 +163,51 @@ describe('runModReveal', () => {
     expect(run.stdout).not.toContain(SECRET);
     expect((JSON.parse(run.stdout) as { mode: string }).mode).toBe('masked');
   });
+
+  // The vault the SDK resolves through is opened once per module instance, under
+  // the home of the first case that reveals; a fresh instance per pane request
+  // opens it under this case's home.
+  const revealPane = async (items: unknown) => {
+    vi.resetModules();
+    const fresh = await import('../../src/mod/reveal-run.ts');
+    return fresh.runModReveal(JSON.stringify({ v: 1, pane: true, items }));
+  };
+
+  it.each(['masked', 'off'] as const)(
+    'a pane request reveals under valid consent with reveal %s',
+    async (setting) => {
+      seed('vault', { vault: true, reveal: setting });
+      const minted = JSON.parse((await tokenize({ text: `key ${SECRET}` })).stdout) as {
+        text: string;
+      };
+      const token = minted.text.slice('key '.length);
+      const answer = JSON.parse(
+        (
+          await revealPane([
+            { token, reveal: true },
+            { token, reveal: false },
+          ])
+        ).stdout,
+      ) as { mode: string; items: { revealed: string | null }[] };
+      expect(answer.mode).toBe('full');
+      expect(answer.items[0]?.revealed).toBe(`${SECRET} [scrubbed:secret]`);
+      expect(answer.items[1]?.revealed).toBeNull();
+    },
+  );
+
+  it('a pane request without consent answers off and reveals nothing', async () => {
+    seed('vault', { vault: false, reveal: 'full' });
+    expect(JSON.parse((await revealPane([{ token: UNBACKED, reveal: true }])).stdout)).toEqual({
+      v: 1,
+      mode: 'off',
+      items: [],
+    });
+  });
+
+  it('a pane request with no items answers the consent alone', async () => {
+    seed('vault', { vault: true, reveal: 'masked' });
+    expect(JSON.parse((await revealPane([])).stdout)).toEqual({ v: 1, mode: 'full', items: [] });
+  });
 });
 
 describe('runModToolCall', () => {

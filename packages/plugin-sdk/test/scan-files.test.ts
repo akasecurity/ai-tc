@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, parse, resolve } from 'node:path';
+import { join, parse, resolve, sep } from 'node:path';
 
+import { defaultDataDir } from '@akasecurity/persistence/sqlite-free';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -20,6 +21,7 @@ describe('scanFileKind', () => {
     ['main.py', 'source'],
     ['handler.go', 'source'],
     ['.env.ts', 'source'],
+    ['.env.local.ts', 'source'],
     ['.env', 'secret-bearing'],
     ['.env.local', 'secret-bearing'],
     ['.env.production', 'secret-bearing'],
@@ -31,6 +33,7 @@ describe('scanFileKind', () => {
     ['Makefile', 'other'],
     ['.eslintrc', 'other'],
     ['.environment', 'other'],
+    ['foo.env', 'other'],
     ['env', 'other'],
   ])('classifies %s as %s', (name, kind) => {
     expect(scanFileKind(name)).toBe(kind);
@@ -48,6 +51,7 @@ describe('scanFileKind', () => {
     expect(scanFileKind('app.rb', rubyOnly)).toBe('source');
     expect(scanFileKind('index.ts', rubyOnly)).toBe('other');
     expect(scanFileKind('.env', rubyOnly)).toBe('secret-bearing');
+    expect(scanFileKind('app.rb', new Set(['rb']))).toBe('other');
   });
 
   it('exposes the default source extensions', () => {
@@ -67,18 +71,21 @@ describe('protected scan roots', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it('names the host credentials and both AKA homes under the given bases', () => {
+  it('names exactly the host credentials and the AKA homes under the given bases', () => {
     const akaHome = join(home, 'relocated-aka');
-    const roots = protectedScanRoots(home, akaHome);
-    expect(roots).toEqual(
-      expect.arrayContaining([
-        resolve(home, '.claude', 'ide'),
-        resolve(home, '.claude', '.credentials.json'),
-        resolve(home, '.codex', 'auth.json'),
-        resolve(akaHome),
-        resolve(home, '.aka'),
-      ]),
-    );
+    const expected = [
+      ...new Set(
+        [
+          resolve(home, '.claude', 'ide'),
+          resolve(home, '.claude', '.credentials.json'),
+          resolve(home, '.codex', 'auth.json'),
+          resolve(akaHome),
+          defaultDataDir(),
+          resolve(home, '.aka'),
+        ].map(canonicalizeScanPath),
+      ),
+    ];
+    expect([...protectedScanRoots(home, akaHome)].sort()).toEqual(expected.sort());
   });
 
   it('lists each root once when the AKA homes coincide', () => {
@@ -117,7 +124,7 @@ describe('protected scan roots', () => {
   });
 
   it('leaves an absent path in its lexical form', () => {
-    expect(canonicalizeScanPath(join(home, 'missing', '..', 'absent'))).toBe(
+    expect(canonicalizeScanPath(`${home}${sep}missing${sep}..${sep}absent`)).toBe(
       resolve(home, 'absent'),
     );
   });

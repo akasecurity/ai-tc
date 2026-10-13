@@ -781,8 +781,8 @@ describe('tokenReports', () => {
       cache_creation_input_tokens: 50_000,
     });
     // Each of these bills one column GPT-5.4 has no rate for, beside priced calls
-    // that are otherwise alike: a web search and a 1h write in band 0, and a 5m
-    // write in band 1. Only the call itself may lose its price.
+    // that are otherwise alike in band 0: a web search, a 1h write and a 5m
+    // write. Only the call itself may lose its price.
     leaf('X19', 'X', NOW + 19, {
       ...gpt,
       input_tokens: 2_000,
@@ -815,6 +815,7 @@ describe('tokenReports', () => {
       output_tokens: 100,
       cache_read_input_tokens: 1_000,
     });
+    // An unpriced 5m write alone in band 1.
     leaf('X21', 'X', NOW + 21, {
       ...gpt,
       input_tokens: 50_000,

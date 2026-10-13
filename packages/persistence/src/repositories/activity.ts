@@ -369,13 +369,12 @@ const CALL_WRITE_SPLIT = `(coalesce(ephemeral_1h_input_tokens, 0) + coalesce(eph
 const CALL_PROMPT_TOKENS = `(coalesce(input_tokens, 0) + coalesce(cache_read_input_tokens, 0)
      + max(coalesce(cache_creation_input_tokens, 0), ${CALL_WRITE_SPLIT}))`;
 
-// How many band thresholds the call's prompt crossed (0 when none is declared).
-const CALL_BAND =
-  LONG_CONTEXT_THRESHOLDS.length === 0
-    ? '0'
-    : LONG_CONTEXT_THRESHOLDS.map((t) => `(${CALL_PROMPT_TOKENS} > ${String(Math.trunc(t))})`).join(
-        ' + ',
-      );
+// How many band thresholds the call's prompt crossed, or none when the
+// catalog declares no band: a bare `0` in a GROUP BY is read as a column ordinal
+// and rejected.
+const CALL_BAND = LONG_CONTEXT_THRESHOLDS.map(
+  (t) => `(${CALL_PROMPT_TOKENS} > ${String(Math.trunc(t))})`,
+);
 
 // Which billable columns the call carries, one condition per column `costOf`
 // meters: input, output, cache read, 1h write, a 5m write split out, a write
@@ -418,7 +417,14 @@ const LLM_USAGE_SELECT = `
 // unparseable leaf to skip, and a generated column only ever reads a valid bag.
 const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
 
-const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier, ${CALL_BAND}, ${CALL_USAGE_SHAPE.join(', ')}`;
+const LLM_USAGE_GROUP = `GROUP BY ${[
+  'root_session_id',
+  'provider',
+  'model',
+  'service_tier',
+  ...(CALL_BAND.length === 0 ? [] : [CALL_BAND.join(' + ')]),
+  ...CALL_USAGE_SHAPE,
+].join(', ')}`;
 
 /** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
 function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {

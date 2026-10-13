@@ -205,9 +205,12 @@ export function* collectFiles(
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, canonicalTarget, '', [], [], false, protectedRoots, opts.onNestedRepository);
+  yield* visit(target, canonicalTarget, protectedRoots, opts.onNestedRepository);
 }
 
+// One directory being walked: its listing, the next entry to visit, and the
+// ignore state its entries are judged against.
+//
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
 // beneath it can be re-included, so we stop evaluating and mark everything.
 // (The skip stack needs no equivalent: a skipped directory is never entered.)
@@ -215,76 +218,100 @@ export function* collectFiles(
 // `dirRel` is `dir` as a posix path relative to the scan target ('' at the
 // target itself), built by appending one component per descent. It is what both
 // layer stacks are addressed through, so it is threaded rather than recomputed.
+//
+// `dirCanonical` is `dir`'s canonical twin, so the protected comparison is made
+// against on-disk identity while everything yielded keeps the caller's
+// spelling. The two are the SAME STRING on an unaliased tree, which is what the
+// per-entry branch below tests for.
+interface WalkFrame {
+  dir: string;
+  dirCanonical: string;
+  dirRel: string;
+  dirents: Dirent[];
+  next: number;
+  markLayers: readonly IgnoreLayer[];
+  skipLayers: readonly IgnoreLayer[];
+  inIgnoredDir: boolean;
+}
+
+// Depth-first and in listing order, with an explicit stack rather than
+// recursion: a tree can nest as deep as the platform's path limit allows, which
+// on a long-path Windows host is thousands of levels, and a recursive generator
+// costs stack frames per level on every resumption.
 function* visit(
-  dir: string,
-  // `dir`'s canonical twin, threaded so the protected comparison is made
-  // against on-disk identity while everything yielded keeps the caller's
-  // spelling. The two are the SAME STRING on an unaliased tree, which is what
-  // the per-entry branch below tests for.
-  dirCanonical: string,
-  dirRel: string,
-  markLayers: readonly IgnoreLayer[],
-  skipLayers: readonly IgnoreLayer[],
-  inIgnoredDir: boolean,
+  root: string,
+  rootCanonical: string,
   protectedRoots: readonly string[],
-  // See CollectFilesOptions.onNestedRepository. Threaded like the roots above.
+  // See CollectFilesOptions.onNestedRepository.
   onNestedRepository: ((dir: string) => void) | undefined,
 ): Generator<CollectedFile> {
-  // The listing comes FIRST, before either ignore file is read. Two reasons,
-  // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
-  // walkTree — the walker this one is aligned with — has always been in this
-  // order, and every directory that turns out to be unlistable was otherwise
-  // paying two `readFileSync` attempts and up to two array copies to build
-  // layer stacks for entries that will never be read. That is exactly the
-  // hostile shape this walk now has coverage for.
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    // THE ROOT IS NOT BEST-EFFORT. `dirRel` is '' only at the scan target, and
-    // a target the user named and we could not read is a FAILED scan, not an
-    // empty one: `statSync` succeeds on a directory with no read bit (measured:
-    // mode 0000 gives `isDirectory() === true` and `readdirSync` EACCES), so
-    // swallowing this yields zero files, and `scanPathIntoStore` then records
-    // `scanned: 0, findings: 0` — the Scan page rendering "no findings" for a
-    // folder that was never opened. A false negative on the whole target is
-    // worse than the error the caller used to see, so the root rethrows.
-    if (dirRel === '') throw err;
-    // A SUBTREE is best-effort, matching the other two walkers: one unreadable
-    // directory costs its own subtree, never the whole scan. Unwrapped, a
-    // permission-denied directory, an antivirus lock, a transient EMFILE — or a
-    // path past the platform's ceiling, which is how the adversarial corpus
-    // finds this — aborts `collectFiles` mid-generator and takes every file
-    // already walked with it.
-    //
-    // That subtree is dropped SILENTLY, which is the same posture
-    // `@akasecurity/scanner`'s walkTree documents. Reporting it to the caller
-    // is worth doing and is a change to this function's contract, so it is
-    // tracked separately rather than smuggled in here.
-    return;
-  }
+  const stack: WalkFrame[] = [];
 
-  // A repository nested below the target, told by the `.git` entry this listing
-  // already holds. `dirRel` is '' only at the target, whose repository is the
-  // scan's own project.
-  if (
-    onNestedRepository !== undefined &&
-    dirRel !== '' &&
-    dirents.some((entry) => entry.name === '.git')
-  ) {
-    onNestedRepository(dir);
-  }
+  const enter = (
+    dir: string,
+    dirCanonical: string,
+    dirRel: string,
+    markLayers: readonly IgnoreLayer[],
+    skipLayers: readonly IgnoreLayer[],
+    inIgnoredDir: boolean,
+  ): void => {
+    // The listing comes FIRST, before either ignore file is read: a directory
+    // that turns out to be unlistable then pays no `readFileSync` attempts and
+    // no layer copies for entries that will never be read. `@akasecurity/scanner`'s
+    // walkTree, the walker this one is aligned with, has the same order.
+    let dirents: Dirent[];
+    try {
+      dirents = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      // THE ROOT IS NOT BEST-EFFORT. `statSync` succeeds on a directory with no
+      // read bit (mode 0000 gives `isDirectory() === true` and `readdirSync`
+      // EACCES), so swallowing this would yield zero files and record a scan of
+      // a folder that was never opened as "no findings". The root rethrows.
+      if (dirRel === '') throw err;
+      // A SUBTREE is best-effort, matching the other two walkers: one unreadable
+      // directory (permission denied, an antivirus lock, a transient EMFILE, a
+      // path past the platform's ceiling) costs its own subtree, never the
+      // files already walked. It is dropped silently, as walkTree does.
+      return;
+    }
 
-  const dirMarkLayers = withLayer(
-    markLayers,
-    inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
-  );
-  const dirSkipLayers = withLayer(
-    skipLayers,
-    readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length),
-  );
+    // A repository nested below the target, told by the `.git` entry this
+    // listing already holds. `dirRel` is '' only at the target, whose repository
+    // is the scan's own project.
+    if (
+      onNestedRepository !== undefined &&
+      dirRel !== '' &&
+      dirents.some((entry) => entry.name === '.git')
+    ) {
+      onNestedRepository(dir);
+    }
 
-  for (const entry of dirents) {
+    stack.push({
+      dir,
+      dirCanonical,
+      dirRel,
+      dirents,
+      next: 0,
+      markLayers: withLayer(
+        markLayers,
+        inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
+      ),
+      skipLayers: withLayer(skipLayers, readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length)),
+      inIgnoredDir,
+    });
+  };
+
+  enter(root, rootCanonical, '', [], [], false);
+  for (let frame = stack.at(-1); frame !== undefined; frame = stack.at(-1)) {
+    const entry = frame.dirents[frame.next];
+    if (entry === undefined) {
+      stack.pop();
+      continue;
+    }
+    frame.next++;
+    const { dir, dirCanonical, dirRel, inIgnoredDir } = frame;
+    const dirMarkLayers = frame.markLayers;
+    const dirSkipLayers = frame.skipLayers;
     const path = join(dir, entry.name);
     // One extra `join` only where the walk root was an alias. On every other
     // tree the two are the same reference, so this is a pointer comparison per
@@ -315,15 +342,13 @@ function* visit(
       }
       const dirIgnored =
         inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, true) === 'ignored';
-      yield* visit(
+      enter(
         path,
         canonical,
         childRel(dirRel, entry.name),
         dirMarkLayers,
         dirSkipLayers,
         dirIgnored,
-        protectedRoots,
-        onNestedRepository,
       );
     } else if (entry.isFile()) {
       // THE guarantee for a walked tree: a prefix match, so it covers a

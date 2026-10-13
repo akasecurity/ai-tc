@@ -1,4 +1,8 @@
-import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
+import type {
+  BlockedDetectionInput,
+  ResolutionInput,
+  VaultedValue,
+} from '@akasecurity/persistence';
 import type {
   AuditEventInput,
   ConfigInventoryReport,
@@ -43,6 +47,10 @@ export interface CaptureRecord {
   // The SQLite gateway stores a non-empty key as the capture row's `scope_key`
   // attribute. Optional, so a gateway with no use for it changes nothing.
   scopeKey?: string | undefined;
+  // The values `event.content` holds as vault pointers, raw values included.
+  // Local only, like `scopeKey`: never copied onto anything a gateway sends.
+  // The SQLite gateway replaces each in a stored row for the same capture.
+  vaulted?: readonly VaultedValue[] | undefined;
 }
 
 // One worktree-scan ledger record: a file the scanner has processed (clean or

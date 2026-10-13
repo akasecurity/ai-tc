@@ -37,7 +37,12 @@ export {
   removeControlPlaneCredential,
   writeControlPlaneCredential,
 } from './control-plane-credential.ts';
-export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
+export type {
+  InventoryContext,
+  LocalDatabase,
+  ResolvedInventory,
+  VaultedValue,
+} from './database.ts';
 export { openLocalDatabase } from './database.ts';
 export {
   canonicalRepoUrl,

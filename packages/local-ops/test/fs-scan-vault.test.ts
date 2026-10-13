@@ -175,6 +175,19 @@ describe('scanPathIntoStore — vault', () => {
     expect(second[0]?.last_seen).toBeGreaterThanOrEqual(first[0]?.last_seen ?? 0);
   });
 
+  it('rewrites the copy stored before consent when the unchanged file is scanned again', async () => {
+    writeFileSync(join(root, 'settings.env'), `AWS_KEY=${VALUE}\n`);
+    await scan(undefined);
+    expect(contents(store)).toEqual([`AWS_KEY=${VALUE}\n`]);
+
+    grantConsent();
+    await scan(openGlue());
+
+    const stored = contents(store);
+    expect(stored.join('\n')).not.toContain(VALUE);
+    expect(stored.every((content) => pointersIn(content).length === 1)).toBe(true);
+  });
+
   it('does not count the stored copy again when it is scanned as a file', async () => {
     grantConsent();
     writeFileSync(join(root, 'settings.env'), `AWS_KEY=${VALUE}\n`);

@@ -140,6 +140,54 @@ describe('scanWorktree — vault', () => {
     ).toEqual(['file', 'prompt']);
   });
 
+  it('re-reads an unchanged file once consent is granted and vaults it', async () => {
+    writeFileSync(join(repo, 'deploy.ts'), line(VALUE));
+    await scanWorktree(configWith(false), { rootDir: repo, sourceTool: 'claude-code' });
+
+    const config = configWith(true);
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(vaultRows(config)).toHaveLength(1);
+    const contents = storedContents(config);
+    expect(contents.at(-1)).not.toContain(VALUE);
+    expect([...(contents.at(-1) ?? '').matchAll(POINTER)]).toHaveLength(1);
+  });
+
+  it('records a file sighting for an identical file at a second path', async () => {
+    const config = configWith(true);
+    const first = join(repo, 'deploy.ts');
+    const second = join(repo, 'copy', 'deploy.ts');
+    mkdirSync(join(repo, 'copy'));
+    writeFileSync(first, line(VALUE));
+    writeFileSync(second, line(VALUE));
+
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(vaultRows(config)).toHaveLength(1);
+    expect(
+      sightings(config)
+        .map((s) => s.location)
+        .sort(),
+    ).toEqual([first, second].sort());
+  });
+
+  it('records a sighting for a second path whose content an earlier scan recorded', async () => {
+    const config = configWith(true);
+    const first = join(repo, 'deploy.ts');
+    writeFileSync(first, line(VALUE));
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    const second = join(repo, 'later.ts');
+    writeFileSync(second, line(VALUE));
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect(
+      sightings(config)
+        .map((s) => s.location)
+        .sort(),
+    ).toEqual([first, second].sort());
+  });
+
   it('mints nothing and stores the file as read without vault consent', async () => {
     const config = configWith(false);
     const text = line(VALUE);

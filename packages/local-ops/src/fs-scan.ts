@@ -734,11 +734,7 @@ export async function scanPathIntoStore(
 
     const vaulted = opts.vault
       ? await opts.vault.vaultSpans(text, matches, {
-          selected: new Set(
-            resolved
-              .filter(({ match, action }) => isScanVaultable(match, action))
-              .map(({ match }) => match),
-          ),
+          selected: new Set(matches.filter((match) => isScanVaultable(match))),
           sighting: { location: file, kind: 'file' },
         })
       : new Map<MatchResult, string>();
@@ -808,7 +804,12 @@ export async function scanPathIntoStore(
         location: locate(m),
       };
     });
-    db.recordCapture(event, findings);
+    db.recordCapture(
+      event,
+      findings,
+      undefined,
+      [...vaulted].map(([match, pointer]) => ({ raw: match.rawMatch, pointer })),
+    );
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;
   }

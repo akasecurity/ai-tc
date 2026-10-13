@@ -51,12 +51,8 @@ describe('composeAtRestContent', () => {
 });
 
 describe('isScanVaultable', () => {
-  it('vaults a secret at any action but allow', () => {
-    const found = hit('x', 'x');
-    expect(isScanVaultable(found, 'log')).toBe(true);
-    expect(isScanVaultable(found, 'warn')).toBe(true);
-    expect(isScanVaultable(found, 'block')).toBe(true);
-    expect(isScanVaultable(found, 'allow')).toBe(false);
-    expect(isScanVaultable(hit('x', 'x', { category: 'pii' }), 'redact')).toBe(false);
+  it('vaults a secret, and nothing of another category', () => {
+    expect(isScanVaultable(hit('x', 'x'))).toBe(true);
+    expect(isScanVaultable(hit('x', 'x', { category: 'pii' }))).toBe(false);
   });
 });

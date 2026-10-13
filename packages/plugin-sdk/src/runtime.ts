@@ -895,9 +895,9 @@ export function createPluginRuntime(
       // `contentHash` of the original, which is what correlates it.
       //
       // A whole-file capture handed a vault holds each detected secret there and
-      // stores its pointer in place of the value, whatever the action unless an
-      // exception allowed it; without vault consent the vault holds nothing and
-      // the content is as above.
+      // stores its pointer in place of the value, whatever the action, an
+      // exception's allow included; without vault consent the vault holds
+      // nothing and the content is as above.
       const vaulted =
         opts.vault !== undefined &&
         decision.scanIncomplete === undefined &&
@@ -905,11 +905,7 @@ export function createPluginRuntime(
         filePath !== undefined &&
         input.metadata?.wholeFile === true
           ? await opts.vault.vaultSpans(input.text, decision.findings, {
-              selected: new Set(
-                decision.findings.filter((match) =>
-                  isScanVaultable(match, actionForFinding(match, excepted, opts.rewritable)),
-                ),
-              ),
+              selected: new Set(decision.findings.filter((match) => isScanVaultable(match))),
               sighting: { location: filePath, kind: 'file' },
             })
           : new Map<MatchResult, string>();
@@ -1030,6 +1026,11 @@ export function createPluginRuntime(
         findings,
         dedupe: opts.dedupe,
         ...(input.scopeKey !== undefined ? { scopeKey: input.scopeKey } : {}),
+        ...(vaulted.size > 0
+          ? {
+              vaulted: [...vaulted].map(([match, pointer]) => ({ raw: match.rawMatch, pointer })),
+            }
+          : {}),
       });
       // Thread the produced at-rest finding_keys back onto the decision (the
       // scanner's re-scan resolver diffs these against a path's previously-open

@@ -2,7 +2,7 @@
 // vault, and the stored copy of the file that carries their pointers.
 import type { MatchResult } from '@akasecurity/detections';
 import { redact } from '@akasecurity/detections';
-import type { ActionTaken, PointerToken, VaultSightingKind } from '@akasecurity/schema';
+import type { PointerToken, VaultSightingKind } from '@akasecurity/schema';
 
 export interface VaultSpansOptions {
   // The findings to vault. The rest are still read, so a span they overlap is
@@ -26,11 +26,12 @@ export interface AtRestVault {
 }
 
 /**
- * Whether a scan holds this finding's value in the vault: a secret, whatever
- * its resolved action, unless an exception allowed it.
+ * Whether a scan holds this finding's value in the vault: any secret, whatever
+ * its resolved action. An exception decides enforcement, not storage, so a
+ * secret an exception allows is vaulted too.
  */
-export function isScanVaultable(finding: MatchResult, action: ActionTaken): boolean {
-  return finding.category === 'secret' && action !== 'allow';
+export function isScanVaultable(finding: MatchResult): boolean {
+  return finding.category === 'secret';
 }
 
 /**

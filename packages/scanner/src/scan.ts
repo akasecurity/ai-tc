@@ -99,15 +99,19 @@ interface LedgerContext {
 // the ledger keeps advancing while egress is switched off — without it, files
 // left untouched during the off period would carry ledger rows that suppress
 // the re-read forever, so their egress would never be extracted once it is
-// switched back on.
+// switched back on. Whether the scan vaults is folded in for the same reason:
+// files skipped as unchanged while vault consent was absent are re-read once
+// consent is granted, so their secrets are vaulted.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
   dataSharesInPlace: boolean,
+  vaulting: boolean,
 ): Promise<LedgerContext> {
   const egressMaterial = `${dataSharesInPlace ? 'egress:on' : 'egress:off'}\n${EGRESS_VERSION_MATERIAL}`;
+  const vaultMaterial = vaulting ? ':vault:on' : '';
   const rulesetHash = contentHashOf(
-    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}`,
+    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}`,
   );
   return {
     previous: await gateway.scanLedger(rulesetHash),
@@ -555,7 +559,14 @@ async function scanDir(
     // starve the re-scan resolver (resolveRemovedFindings below never runs for
     // a skipped path) and leave the keys open forever, so fall through to a
     // full capture whose key diff can resolve them.
-    if (seen.has(hash) && (await gateway.openAtRestKeysForPath(file.path)).length === 0) {
+    //
+    // A vaulting scan never skips here either: each path holding a vaulted
+    // value records its own sighting, which only a capture of that path does.
+    if (
+      vault === undefined &&
+      seen.has(hash) &&
+      (await gateway.openAtRestKeysForPath(file.path)).length === 0
+    ) {
       skipped++;
       updates.push(ledgerEntry);
       continue;
@@ -887,7 +898,12 @@ export async function scanWorktree(
   const vault = openScanVault(config);
   try {
     const seen = await gateway.knownContentHashes();
-    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
+    const ledger = await loadLedger(
+      gateway,
+      runtime,
+      config.settings.dataSharesInPlace,
+      vault !== undefined,
+    );
     return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts, vault);
   } finally {
     vault?.close();
@@ -917,7 +933,12 @@ export async function scanAllRepos(
     const seen = await gateway.knownContentHashes();
     // Ledger paths are absolute, so one load covers every repo; scanDir records
     // its updates per repo, so a long --discover sweep keeps partial progress.
-    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
+    const ledger = await loadLedger(
+      gateway,
+      runtime,
+      config.settings.dataSharesInPlace,
+      vault !== undefined,
+    );
     for (const rootDir of repoDirs) {
       const repoSummary = await scanDir(
         runtime,

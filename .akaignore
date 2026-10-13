@@ -63,6 +63,7 @@
 /cli/extension/
 /cli/web-ui/
 /cli/sea-dist/
+/cli/dist-sea/
 
 # TypeScript incremental build state: generated, and its content hashes read
 # as high-entropy strings.

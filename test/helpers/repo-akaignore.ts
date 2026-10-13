@@ -62,6 +62,7 @@ const BUILD_OUTPUT = [
   'cli/extension/',
   'cli/web-ui/',
   'cli/sea-dist/',
+  'cli/dist-sea/',
 ];
 
 /** Whether the repository means to skip `rel` (a posix path from the root). */

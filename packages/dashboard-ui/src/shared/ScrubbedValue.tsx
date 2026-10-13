@@ -3,6 +3,8 @@
 //   value present    → the raw value plus a "scrubbed: <category>" badge
 //   descriptor only  → the masked preview plus the badge (no raw available)
 //   neither          → "[unavailable]"
+// Either of the first two leads with the variable the value was assigned to,
+// when the descriptor names one.
 // Props-driven and render-only: the caller does the de-referencing (and takes
 // the audit row); nothing here fetches or resolves anything.
 import type { PointerDescriptor } from '@akasecurity/schema';
@@ -11,7 +13,7 @@ import { Badge, cn } from '@akasecurity/ui-kit';
 // The descriptor slice this view needs — a structural subset of
 // PointerDescriptor, so a full descriptor passes straight through.
 type ScrubbedDescriptor = Pick<PointerDescriptor, 'category' | 'maskedMatch'> &
-  Partial<Pick<PointerDescriptor, 'provider' | 'occurrences'>>;
+  Partial<Pick<PointerDescriptor, 'provider' | 'occurrences' | 'variableName'>>;
 
 export function ScrubbedValue({
   value,
@@ -45,6 +47,14 @@ export function ScrubbedValue({
       data-slot="scrubbed-value"
       className={cn('inline-flex flex-wrap items-center gap-2', className)}
     >
+      {descriptor?.variableName === undefined ? null : (
+        <code
+          data-slot="scrubbed-variable-name"
+          className="break-all font-mono text-ui font-medium text-text"
+        >
+          {descriptor.variableName}
+        </code>
+      )}
       {value !== null ? (
         <code className="break-all font-mono text-ui text-text">{value}</code>
       ) : (

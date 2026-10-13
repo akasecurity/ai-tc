@@ -71,7 +71,7 @@ describe('collectFiles — repositories nested below the target', () => {
   });
 
   it('reports nothing in a directory the walk does not enter', () => {
-    // Inside a skipped directory: SKIP_DIRS, a dot-directory, .akaignore.
+    // Inside a skipped directory: SKIP_DIRS, a generated dot-directory, .akaignore.
     clone('node_modules/dep');
     clone('.cache/tool');
     write('.akaignore', 'private/\nscratch/\n');
@@ -80,7 +80,7 @@ describe('collectFiles — repositories nested below the target', () => {
     // off its own listing, so only once the walk is inside it; a walk that
     // looked for `.git` from the parent's side, ahead of its skips, would
     // report these.
-    clone('.dotfiles');
+    clone('.venv');
     clone('scratch');
     write('src/app.ts');
 

@@ -826,17 +826,17 @@ describe('runScan', () => {
     });
 
     it('lets an .akaignore negation beat the vendored-directory and dot-directory floor', async () => {
-      writeFileSync(join(root, '.akaignore'), '!build/\n!.config/\n');
+      writeFileSync(join(root, '.akaignore'), '!build/\n!.cache/\n');
       mkdirSync(join(root, 'build'));
       writeFileSync(join(root, 'build', 'gen.ts'), `const key = '${RAW}';\n`);
-      mkdirSync(join(root, '.config'));
-      writeFileSync(join(root, '.config', 'creds.ts'), `const key = '${RAW}';\n`);
+      mkdirSync(join(root, '.cache'));
+      writeFileSync(join(root, '.cache', 'tool.ts'), `const key = '${RAW}';\n`);
 
       const payload = await scanJson(root);
       const files = payload.findings.map((f) => f.file);
 
       expect(files).toContain(join(root, 'build', 'gen.ts'));
-      expect(files).toContain(join(root, '.config', 'creds.ts'));
+      expect(files).toContain(join(root, '.cache', 'tool.ts'));
     });
 
     it('still skips the default floor without a negation', async () => {
@@ -845,8 +845,8 @@ describe('runScan', () => {
       // having quietly stopped applying.
       mkdirSync(join(root, 'build'));
       writeFileSync(join(root, 'build', 'gen.ts'), `const key = '${RAW}';\n`);
-      mkdirSync(join(root, '.config'));
-      writeFileSync(join(root, '.config', 'creds.ts'), `const key = '${RAW}';\n`);
+      mkdirSync(join(root, '.cache'));
+      writeFileSync(join(root, '.cache', 'tool.ts'), `const key = '${RAW}';\n`);
 
       const payload = await scanJson(root);
 

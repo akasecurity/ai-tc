@@ -426,13 +426,10 @@ describe('recordProjectEgress — dot-path exclusion', () => {
     expect(storedSites(store)).toEqual([]);
   });
 
-  it('does not store egress from a dot-directory reached via an .akaignore negation', async () => {
+  it('does not store egress from a file under a dot-directory the walk enters', async () => {
     initRepo(root, REMOTE_URL);
-    // A bare '!' re-include beats the default dot-directory skip (fs-scan.ts),
-    // so this nested file IS walked despite living under a dot-directory —
-    // proving the exclusion below is a second, independent gate, not just a
-    // restatement of the walker's own default dot-directory skip.
-    writeFileSync(join(root, '.akaignore'), '!.github/\n');
+    // The walk enters `.github`, so the file is scanned; the egress record
+    // still excludes it.
     writeCall(join(root, '.github', 'scripts', 'notify.js'), 'api.acme-webhooks.com');
 
     const recorded = await scanAndRecord(db, root, base);

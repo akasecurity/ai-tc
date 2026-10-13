@@ -185,12 +185,8 @@ describe('the folder scan terminates on a hostile tree', () => {
 
     expect(paths).toContain('weird/..hidden.ts');
     expect(paths).toContain('weird/a..b.ts');
-    // `..nested` is a DIRECTORY whose name begins with a dot, so this walker's
-    // dot-directory floor refuses it — the inventory walk, which has no such
-    // floor, records `weird/..nested/inner.ts` from the same tree. Pinned
-    // because the two walkers disagreeing on one fixture reads like a bug in
-    // whichever one you looked at second.
-    expect(paths).not.toContain('weird/..nested/inner.ts');
+    // `..nested` is a directory whose name begins with a dot and is entered.
+    expect(paths).toContain('weird/..nested/inner.ts');
     for (const path of paths) {
       expect(path.split('/'), `${path} carries a .. segment`).not.toContain('..');
     }

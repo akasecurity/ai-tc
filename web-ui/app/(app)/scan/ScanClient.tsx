@@ -51,9 +51,9 @@ export function ScanClient({
           File or directory to scan
         </div>
         <p className="mb-3 text-xs text-text-3">
-          Walked recursively (node_modules, dotdirs, build output and files over 1 MB are skipped).
-          The raw match never lands on disk — findings store only a masked preview and the event
-          keeps a redacted copy. {String(enabledRuleCount)} rule
+          Walked recursively (node_modules, build output, cache directories and files over 1 MB are
+          skipped). The raw match never lands on disk — findings store only a masked preview and the
+          event keeps a redacted copy. {String(enabledRuleCount)} rule
           {enabledRuleCount === 1 ? '' : 's'} enabled.
         </p>
         {/* Said BEFORE the click, on the surface that starts the send: an attached

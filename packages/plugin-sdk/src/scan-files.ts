@@ -47,6 +47,19 @@ export function scanFileKind(
 }
 
 /**
+ * Credential files inside home-directory dot-directories, as posix paths
+ * relative to the home directory. A scan whose target is the home directory
+ * reads these, while every other home dot-directory stays unentered.
+ */
+export const HOME_SECRET_FILES: readonly string[] = [
+  '.aws/credentials',
+  '.config/gh/hosts.yml',
+  '.docker/config.json',
+  '.gem/credentials',
+  '.kube/config',
+];
+
+/**
  * Paths a scan never reads, whatever it is pointed at: live credentials AKA or
  * its host wrote for itself.
  *

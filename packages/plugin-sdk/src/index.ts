@@ -194,6 +194,7 @@ export {
 export type { ScanFileKind } from './scan-files.ts';
 export {
   canonicalizeScanPath,
+  HOME_SECRET_FILES,
   isProtectedScanPath,
   protectedScanRoots,
   scanFileKind,

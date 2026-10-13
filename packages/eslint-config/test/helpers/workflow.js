@@ -156,10 +156,21 @@ export function rawStepNamed(source, name) {
  * mistyped or neighbouring key leave the action with no input at all, at which
  * point it falls back to a default nobody chose.
  *
+ * Reads the FIRST `key: |` line anywhere in the slice, whatever column it sits
+ * at, so text inside another key's block scalar that looks like an opener can
+ * stand in for the real one. There is no option to pin the column: a reader that
+ * needs that decodes the step instead (`inputLines` in helpers/workflow-yaml.js).
+ * A third argument is refused rather than ignored, so a caller that expects the
+ * pin finds out at once.
+ *
  * @param {string} step one step slice
  * @param {string} key the input key
+ * @param {...unknown} rejected not accepted; passing one fails the case
  */
-export function blockScalarLines(step, key) {
+export function blockScalarLines(step, key, ...rejected) {
+  expect(rejected, '`blockScalarLines` takes no options, and ignoring one would be silent').toEqual(
+    [],
+  );
   const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const indent = opener[1].length;
@@ -188,10 +199,21 @@ export function blockScalarLines(step, key) {
  * shell is handed, and the body's offset is read from its first non-empty line
  * rather than assumed, because YAML takes it from there too.
  *
+ * Reads the FIRST `key: |` line anywhere in the slice, whatever column it sits
+ * at, so text inside another key's block scalar that looks like an opener can
+ * stand in for the real one. There is no option to pin the column: a reader that
+ * needs that decodes the step instead (`inputLines` in helpers/workflow-yaml.js).
+ * A third argument is refused rather than ignored, so a caller that expects the
+ * pin finds out at once.
+ *
  * @param {string} step one step slice
  * @param {string} key the input key
+ * @param {...unknown} rejected not accepted; passing one fails the case
  */
-export function blockScalarText(step, key) {
+export function blockScalarText(step, key, ...rejected) {
+  expect(rejected, '`blockScalarText` takes no options, and ignoring one would be silent').toEqual(
+    [],
+  );
   const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const keyIndent = opener[1].length;

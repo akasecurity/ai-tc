@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { jobBlock, steps } from './helpers/workflow.js';
+import { blockScalarLines, blockScalarText, jobBlock, steps } from './helpers/workflow.js';
 
 describe('jobBlock', () => {
   const WORKFLOW = [
@@ -50,5 +50,27 @@ describe('steps', () => {
     ].join('\n');
 
     expect(steps(job)).toHaveLength(2);
+  });
+});
+
+describe('blockScalarText and blockScalarLines', () => {
+  const STEP = [
+    'name: Push',
+    '        run: |',
+    '          echo real',
+    '          echo again',
+    '',
+  ].join('\n');
+
+  it('read the block scalar under the key', () => {
+    expect(blockScalarText(STEP, 'run')).toBe('echo real\necho again');
+    expect(blockScalarLines(STEP, 'run')).toEqual(['echo real', 'echo again']);
+  });
+
+  // The column-pinning option these once took is gone with the readers that used
+  // it. A caller still passing one must find out, not be read as if it had not.
+  it('refuse a third argument rather than ignore it', () => {
+    expect(() => blockScalarText(STEP, 'run', { indent: 8 })).toThrow(/takes no options/);
+    expect(() => blockScalarLines(STEP, 'run', { indent: 8 })).toThrow(/takes no options/);
   });
 });

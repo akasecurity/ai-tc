@@ -6,6 +6,7 @@ import {
   applyOnboarding,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearSightingKeys,
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   decideAttachMode,
@@ -1691,6 +1692,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
+  clearSightingKeys(base);
   // Best-effort, alongside every other piece of attachment-derived state. The
   // SAME base this command resolved above — the LaunchAgent's label is keyed
   // on it, so passing anything else targets a different machine's job.

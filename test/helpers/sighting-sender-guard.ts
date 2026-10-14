@@ -14,6 +14,10 @@ const IMPORTS_GATE =
 
 const CALLS_GATE = /\b(?:readSightingSharing|resolveSightingSharing)\s*\(/;
 
+// What a module that sends credential sightings references: the sightings route, a
+// sighting token, or the function that computes one.
+const SENDS_SIGHTINGS = /credential-sightings|credentialSightings|\[\[aka:fp:|\bsightingToken\s*\(/;
+
 /** Every non-test TypeScript source under `dir`, recursively. */
 export function readSources(dir: string): SourceFile[] {
   const out: SourceFile[] = [];
@@ -33,13 +37,22 @@ export function readSources(dir: string): SourceFile[] {
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-/** Sources that mention credential sightings but are not on the sender list. */
+/**
+ * Sources that mention credential sightings but are on neither the sender list nor
+ * the key-reader list.
+ */
 export function unlistedSightingSenders(
   sources: readonly SourceFile[],
   senders: readonly string[],
+  keyReaders: readonly string[] = [],
 ): string[] {
   return sources
-    .filter((s) => MENTIONS_SIGHTINGS.test(s.text) && !senders.includes(s.path))
+    .filter(
+      (s) =>
+        MENTIONS_SIGHTINGS.test(s.text) &&
+        !senders.includes(s.path) &&
+        !keyReaders.includes(s.path),
+    )
     .map((s) => s.path);
 }
 
@@ -51,5 +64,19 @@ export function ungatedSightingSenders(
   return senders.filter((path) => {
     const source = sources.find((s) => s.path === path);
     return source === undefined || !IMPORTS_GATE.test(source.text) || !CALLS_GATE.test(source.text);
+  });
+}
+
+/**
+ * Listed key readers (modules that fetch or store the sighting key and send no
+ * sightings) that are missing, or that reference sending sightings.
+ */
+export function keyReadersThatSend(
+  sources: readonly SourceFile[],
+  keyReaders: readonly string[],
+): string[] {
+  return keyReaders.filter((path) => {
+    const source = sources.find((s) => s.path === path);
+    return source === undefined || SENDS_SIGHTINGS.test(source.text);
   });
 }

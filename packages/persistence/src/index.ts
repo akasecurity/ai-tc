@@ -258,6 +258,7 @@ export {
   bindingInput,
   deriveSubkeys,
   formatPointer,
+  mintPointer,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';
@@ -269,6 +270,14 @@ export {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
+export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
+export {
+  clearSightingKeys,
+  createSightingKeyStore,
+  readSightingKeys,
+  SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
+} from './vault/sighting-keys.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,

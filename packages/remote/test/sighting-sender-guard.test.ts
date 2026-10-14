@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  keyReadersThatSend,
   ungatedSightingSenders,
   unlistedSightingSenders,
 } from '../../../test/helpers/sighting-sender-guard.ts';
@@ -39,5 +40,15 @@ describe('the sighting-sender guard', () => {
     expect(
       ungatedSightingSenders(sources, ['gated.ts', 'ungated.ts', 'import-only.ts', 'gone.ts']),
     ).toEqual(['ungated.ts', 'import-only.ts', 'gone.ts']);
+  });
+
+  it('lets a key reader mention sightings, but not send them', () => {
+    const reader = { path: 'key.ts', text: "export const route = '/v1/sighting-key';" };
+    const sender = { path: 'send.ts', text: "post('/v1/credential-sightings');" };
+    expect(unlistedSightingSenders([reader], [], ['key.ts'])).toEqual([]);
+    expect(keyReadersThatSend([reader, sender], ['key.ts', 'send.ts', 'gone.ts'])).toEqual([
+      'send.ts',
+      'gone.ts',
+    ]);
   });
 });

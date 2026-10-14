@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type * as PersistenceModule from '@akasecurity/persistence';
 import {
   dataDir as dataDirOf,
   dbPath as dbPathOf,
@@ -26,18 +27,36 @@ import { migratedStore } from '../helpers/store-templates.ts';
 /**
  * What the factory hands the attached gateway as its `attachment`.
  *
- * Two seams, both file-scoped `vi.mock`s and so both hoisted:
+ * Three seams, all file-scoped `vi.mock`s and so all hoisted:
  * - the gateway class is subclassed to record the deps it was built with;
- * - the scope resolver is wrapped to record what it was asked.
+ * - the scope resolver is wrapped to record what it was asked, and the extra
+ *   entries it was given beside that;
+ * - the identity-record reader behind those extra entries is wrapped to count
+ *   its calls.
  *
  * The second pins the WIRING (the settings scope and the connection endpoint
  * reach the resolver), which a machine credential cannot show from the outside:
- * machine mode ignores both.
+ * machine mode ignores both. The third is what shows a machine attachment never
+ * reads the identity record: the reader answers none for a machine credential
+ * either way, so only a count of its calls can tell the two apart.
  */
 const seen = vi.hoisted(() => ({
   attachments: [] as unknown[],
   resolveScopeInputs: [] as unknown[],
+  resolveScopeExtras: [] as unknown[],
+  extrasReads: 0,
 }));
+
+vi.mock('@akasecurity/persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof PersistenceModule>();
+  return {
+    ...actual,
+    codingScopeExtras: (...args: Parameters<typeof actual.codingScopeExtras>) => {
+      seen.extrasReads += 1;
+      return actual.codingScopeExtras(...args);
+    },
+  };
+});
 
 vi.mock('@akasecurity/schema', async (importOriginal) => {
   const actual = await importOriginal<typeof SchemaModule>();
@@ -45,6 +64,7 @@ vi.mock('@akasecurity/schema', async (importOriginal) => {
     ...actual,
     resolveScope: (...args: Parameters<typeof actual.resolveScope>) => {
       seen.resolveScopeInputs.push(args[0]);
+      seen.resolveScopeExtras.push(args[1]);
       return actual.resolveScope(...args);
     },
   };
@@ -77,6 +97,8 @@ beforeEach(() => {
   migratedStore.seed(dataDirOf(home));
   seen.attachments.length = 0;
   seen.resolveScopeInputs.length = 0;
+  seen.resolveScopeExtras.length = 0;
+  seen.extrasReads = 0;
 });
 
 afterEach(() => {
@@ -189,6 +211,15 @@ describe('the attachment the factory builds — work accounts', () => {
     return key;
   }
 
+  // The extra entries each resolve for `mode` was given; an absent argument is none.
+  function extrasGivenFor(mode: 'machine' | 'scoped'): unknown[][] {
+    return seen.resolveScopeInputs.flatMap((input, i) =>
+      (input as { mode?: string }).mode === mode
+        ? [(seen.resolveScopeExtras[i] ?? []) as unknown[]]
+        : [],
+    );
+  }
+
   async function keysFor(settings: SchemaModule.WorkspaceSettings): Promise<string[]> {
     const gateway = resolveGatewayForConfig(configFor(settings));
     try {
@@ -208,6 +239,9 @@ describe('the attachment the factory builds — work accounts', () => {
     ]);
 
     expect(await keysFor(attachedSettings())).toEqual([WORK_KEY, agentKeyOf(LEARNED)].sort());
+    // The keys came through the extra entries, not from the stored scope.
+    expect(seen.extrasReads).toBeGreaterThan(0);
+    expect(extrasGivenFor('scoped').some((extras) => extras.length > 0)).toBe(true);
   });
 
   it('adds nothing from an identity record bound to another key', async () => {
@@ -242,5 +276,11 @@ describe('the attachment the factory builds — work accounts', () => {
     learn(LEARNED);
 
     expect(await keysFor(attachedSettings())).toEqual([]);
+    // The identity record is never read on a machine attachment, and the resolve
+    // is given no extra entries.
+    expect(seen.extrasReads).toBe(0);
+    const given = extrasGivenFor('machine');
+    expect(given.length).toBeGreaterThan(0);
+    expect(given.every((extras) => extras.length === 0)).toBe(true);
   });
 });

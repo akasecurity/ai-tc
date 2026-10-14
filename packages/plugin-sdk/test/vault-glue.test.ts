@@ -1,5 +1,5 @@
 import type { MatchResult } from '@akasecurity/detections';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { VaultCore } from '../src/vault-glue.ts';
 import { createInjectedVaultGlue } from '../src/vault-glue.ts';
@@ -49,6 +49,7 @@ describe('createInjectedVaultGlue', () => {
     expect(result.text).toBe(`key=${POINTER} again=[REDACTED:SECRET]`);
     expect(result.pointers).toEqual([POINTER]);
     expect(result.redacted).toEqual([{ category: 'secret' }]);
+    expect(result.degraded).toEqual([]);
     expect(vault.held.get(POINTER)).toBe(SECRET);
   });
 
@@ -60,5 +61,55 @@ describe('createInjectedVaultGlue', () => {
     const back = await glue.detokenizeText(text, { target: 'human', reason: 'explicit-reveal' });
 
     expect(back).toEqual({ text: `key=${SECRET}`, revealed: 1 });
+  });
+
+  it.each([
+    ['the raw value', SECRET],
+    ['an error message carrying the value', `vault offline, kept ${SECRET}`],
+    ['a pointer with a short id', POINTER.replace(`.${'A'.repeat(26)}.`, `.${'A'.repeat(25)}.`)],
+    ['a pointer with an unknown category', POINTER.replace(':secret:', ':password:')],
+  ])('destroys the span when the core returns %s', async (_label, returned) => {
+    const glue = createInjectedVaultGlue({
+      ...mapVault(),
+      tokenize: () => Promise.resolve(returned),
+    });
+
+    const result = await glue.tokenizeText(`key=${SECRET}`, { findings: [finding(4)] });
+    const value = await glue.tokenizeValue(SECRET, {
+      ruleId: 'aws-access-key',
+      category: 'secret',
+      maskedMatch: 'AKIA****',
+    });
+
+    expect(result).toEqual({
+      text: 'key=[REDACTED:SECRET]',
+      pointers: [],
+      degraded: [{ category: 'secret' }],
+      redacted: [],
+    });
+    expect(value).toBe('[REDACTED:SECRET]');
+  });
+
+  it('resolves no reveal grant and releases nothing by default', async () => {
+    const glue = createInjectedVaultGlue(mapVault());
+
+    expect(() => {
+      glue.close();
+      glue.close();
+    }).not.toThrow();
+    expect(await glue.revealGrantResolver(POINTER)).toBeNull();
+  });
+
+  it('uses the reveal resolver it is given and releases the core once', async () => {
+    const release = vi.fn();
+    const glue = createInjectedVaultGlue(mapVault(), {
+      revealResolver: (pointer) => Promise.resolve(pointer === POINTER ? 'grant-1' : null),
+      release,
+    });
+
+    expect(await glue.revealGrantResolver(POINTER)).toBe('grant-1');
+    glue.close();
+    glue.close();
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

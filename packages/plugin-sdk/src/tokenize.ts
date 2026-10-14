@@ -29,21 +29,7 @@ import type {
   VaultCore,
   VaultGlue,
 } from './vault-glue.ts';
-import { SecretVaultGlue } from './vault-glue.ts';
-
-export type {
-  DetokenizeTextOptions,
-  DetokenizeTextResult,
-  ModelDerefGrantResolver,
-  ProbePointersResult,
-  SubstitutePointersResult,
-  TokenizeSighting,
-  TokenizeTextResult,
-  TokenizeValueMeta,
-  VaultCore,
-  VaultGlue,
-} from './vault-glue.ts';
-export { createInjectedVaultGlue, hasPointer, POINTER_UNAVAILABLE_TEXT } from './vault-glue.ts';
+import { createInjectedVaultGlue, SecretVaultGlue } from './vault-glue.ts';
 
 export interface CreateVaultGlueOptions {
   // The ~/.aka base; defaults to the shared layout root.
@@ -61,8 +47,8 @@ export interface CreateVaultGlueOptions {
 /**
  * Build the glue over a live vault. Opening the store or the key provider can
  * fail; when either does, the returned glue is a degraded one whose tokenize
- * destroys values one-way and whose detokenize resolves nothing — the two fail
- * postures above, decided once at construction.
+ * destroys values one-way and whose detokenize resolves nothing — the never-throw
+ * and never-leak postures `vault-glue.ts` describes, decided once at construction.
  *
  * The fingerprint key is NOT resolved here, so it cannot fail here: it is
  * needed only to write, and is loaded on the first write instead. A fault
@@ -71,7 +57,9 @@ export interface CreateVaultGlueOptions {
  * also serves keep working.
  */
 export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
-  if (options?.vault) return new SecretVaultGlue(options.vault, options.revealResolver);
+  if (options?.vault) {
+    return createInjectedVaultGlue(options.vault, { revealResolver: options.revealResolver });
+  }
   const base = options?.base ?? defaultDataDir();
   try {
     const dir = dataDir(base);

@@ -17,7 +17,7 @@
 // The two rules compose to: on any failure the session continues and the model
 // sees LESS, never more.
 import type { MatchResult } from '@akasecurity/detections';
-import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
+import { maskMatch, scan } from '@akasecurity/detections';
 import type {
   DetectionCategory,
   PointerDescriptor,
@@ -25,11 +25,11 @@ import type {
   VaultDerefReason,
   VaultSightingKind,
 } from '@akasecurity/schema';
-import { isActionAtLeast, pointerTokenScanner } from '@akasecurity/schema';
+import { isActionAtLeast, POINTER_TOKEN_ANCHORED, pointerTokenScanner } from '@akasecurity/schema';
 
+import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
-import { registerBundledPacks } from './rule-packs.ts';
 
 // The one-way placeholder for a span that could not (or must not) be vaulted —
 // identical to the engine's redact() form so a degraded field is
@@ -195,7 +195,7 @@ export interface VaultGlue {
   /**
    * Release the store handle this glue opened. Idempotent, and a no-op on a
    * glue that opened nothing — a degraded one, or one built over an injected
-   * vault.
+   * vault without a `release` callback.
    *
    * Hook processes need not call it: they exit, and exiting releases the
    * handle. Anything that OUTLIVES its glue must — a long-lived process leaks a
@@ -287,8 +287,12 @@ export class SecretVaultGlue implements VaultGlue {
   async tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string> {
     try {
       const result = await this.#vault.tokenize(raw, meta);
-      // Any sentinel (consent absent, or a future one) degrades one-way.
-      return typeof result === 'string' ? result : redactedPlaceholder(meta.category);
+      // Anything but a well-formed pointer degrades one-way: a sentinel
+      // (consent absent, or a future one), and any other string a core returns,
+      // which may carry the raw value or never resolve as a pointer.
+      return typeof result === 'string' && POINTER_TOKEN_ANCHORED.test(result)
+        ? result
+        : redactedPlaceholder(meta.category);
     } catch {
       return redactedPlaceholder(meta.category);
     }
@@ -383,7 +387,7 @@ export class SecretVaultGlue implements VaultGlue {
             category: finding.category,
             maskedMatch: maskMatch(finding.rawMatch),
           });
-          if (replacement.startsWith('[[aka:')) pointers.unshift(replacement);
+          if (POINTER_TOKEN_ANCHORED.test(replacement)) pointers.unshift(replacement);
           else degraded.unshift({ category: finding.category });
         }
         out = out.slice(0, group.start) + replacement + out.slice(group.end);
@@ -450,15 +454,16 @@ export class SecretVaultGlue implements VaultGlue {
     }
   }
 
-  // Scan with the bundled packs, as the mask path does. Pointers already in the
-  // text are blanked first so a pointer is never re-tokenized. Returns null
-  // when the registry or the scan itself failed — the caller must then treat
-  // the whole text as unclassifiable.
+  // Scan with the bundled packs, registered once per process by the mask path.
+  // Pointers already in the text are blanked first so a pointer is never
+  // re-tokenized. Returns null when the registry or the scan itself failed —
+  // the caller must then treat the whole text as unclassifiable.
   #selfScan(text: string): MatchResult[] | null {
     try {
-      registerBundledPacks();
+      const rules = bundledMaskingRules();
+      if (rules === null) return null;
       const shielded = shieldPointers(text);
-      return dropShieldedFindings(scan(shielded.text, getLoadedRules()), shielded.spans);
+      return dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
     } catch {
       return null;
     }
@@ -567,9 +572,20 @@ export class SecretVaultGlue implements VaultGlue {
   }
 }
 
-/** The glue over a caller-supplied vault core. It opens no store, and `close` is a no-op. */
-export function createInjectedVaultGlue(vault: VaultCore): VaultGlue {
-  return new SecretVaultGlue(vault);
+export interface InjectedVaultGlueOptions {
+  // Answers `revealGrantResolver`. Absent, every lookup resolves null, so no
+  // pointer is ever revealed to the model.
+  revealResolver?: ModelDerefGrantResolver | undefined;
+  // Called once, by the first `close`, to release whatever the core holds.
+  release?: (() => void) | undefined;
+}
+
+/** The glue over a caller-supplied vault core. It opens no store of its own. */
+export function createInjectedVaultGlue(
+  vault: VaultCore,
+  options?: InjectedVaultGlueOptions,
+): VaultGlue {
+  return new SecretVaultGlue(vault, options?.revealResolver, options?.release);
 }
 
 /** Whether `text` contains at least one well-formed pointer token. */

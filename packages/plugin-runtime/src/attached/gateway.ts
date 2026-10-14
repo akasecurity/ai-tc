@@ -483,7 +483,7 @@ export class AttachedDataGateway
    * a coding-agent key in scope that the caller stamped the session's root with.
    * Only an agent key widens it, and only for a tool whose root is ever keyed, so
    * a web chat session's inventory never follows an account. Machine mode
-   * answers `'forward'` on the first test, as before. TOTAL.
+   * answers `'forward'` on the first test. TOTAL.
    */
   private inventoryVerdict(ctx: InventoryContext, rootKey: string | undefined): ScopeVerdict {
     if (this.verdictFor(() => inventoryKey(ctx)) === 'forward') return 'forward';
@@ -1490,7 +1490,7 @@ export class AttachedDataGateway
    * The capability producers stamp a row's key through, or undefined. Present
    * only on a scoped attachment whose identity record holds for this
    * credential; a machine-wide attachment never offers one, whatever it was
-   * built with, so its producers stamp the repository key, as before.
+   * built with, so its producers stamp the repository key.
    */
   accountScope(): AccountScope | undefined {
     return this.deps.attachment.mode === 'scoped' ? this.deps.account : undefined;

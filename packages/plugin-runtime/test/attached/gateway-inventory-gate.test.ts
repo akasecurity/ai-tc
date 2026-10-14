@@ -109,7 +109,7 @@ function build(attachment: ResolvedAttachmentScope) {
 }
 
 describe('ensureInventory — the gate on a scoped attachment', () => {
-  it('sends the inventory of a session in an enrolled repository, as before', async () => {
+  it('sends the inventory of a session in an enrolled repository', async () => {
     const { gateway, sent } = build(SCOPED);
     await gateway.ensureInventory(context(SOURCE_TOOL.ClaudeCode, WORK_URL));
     expect(sent).toHaveLength(1);

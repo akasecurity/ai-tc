@@ -11,10 +11,12 @@
  * like-for-like readings.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+
+import { hostPath } from '../test/helpers/run-hook.ts';
 
 /** A preload that reports the process's CPU time on fd 3 as it exits. */
 const CPU_PRELOAD =
@@ -41,15 +43,16 @@ export interface HookRun {
 
 /**
  * A disposable home directory, so the hooks read and write a store of their
- * own rather than the developer's. `HOME` and `USERPROFILE` are the only
- * variables the child receives: the hooks need nothing else to run, and a
- * hand-built environment keeps the measurement independent of the shell it
- * was started from.
+ * own rather than the developer's. The child receives `HOME`, `USERPROFILE`
+ * and `PATH` and nothing else: a hand-built environment keeps the measurement
+ * independent of the shell it was started from, and `PATH` is passed through
+ * so a child process a hook starts can still be found.
  */
 export function createBenchHome(): { env: Record<string, string>; cleanup: () => void } {
   const home = mkdtempSync(join(tmpdir(), 'aka-hook-bench-'));
+  const path = hostPath();
   return {
-    env: { HOME: home, USERPROFILE: home },
+    env: { HOME: home, USERPROFILE: home, ...(path === undefined ? {} : { PATH: path }) },
     cleanup: () => {
       rmSync(home, { recursive: true, force: true });
     },
@@ -85,6 +88,41 @@ export function runHook(run: HookRun, env: Record<string, string>): HookSample {
   }
   const { user, system } = cpu as { user: number; system: number };
   return { wallMs, cpuMs: (user + system) / 1000, status: result.status, stdout: result.stdout };
+}
+
+// A bundled rule, read from its own file in the repository's rules/ so this
+// module runs under plain node as well as under vitest.
+const CONTROL_RULE_FILE = new URL('../../../rules/secrets/twilio-key.json', import.meta.url);
+
+/**
+ * Proves the hooks being measured really run: a pre-tool-use call carrying a
+ * value taken from a bundled rule's own `examples` must come back with a
+ * decision on stdout. A hook that exits at once — a missing body, a broken
+ * build — also exits 0 with nothing printed, and would otherwise be measured
+ * as a very fast hook. Throws, so the run fails, when it does not.
+ */
+export function assertHooksRun(scriptsDir: string, env: Record<string, string>): void {
+  const rule = JSON.parse(readFileSync(CONTROL_RULE_FILE, 'utf8')) as { examples?: unknown };
+  const example = Array.isArray(rule.examples) ? (rule.examples[0] as unknown) : undefined;
+  if (typeof example !== 'string') throw new Error('the bench control rule has no example');
+  const sample = runHook(
+    {
+      script: join(scriptsDir, 'pre-tool-use.js'),
+      payload: JSON.stringify({
+        ...HOOK_PAYLOADS['pre-tool-use (Bash)'].payload,
+        session_id: 'bench-control',
+        tool_input: { command: `echo ${example}` },
+      }),
+    },
+    env,
+  );
+  if (sample.status !== 0 || sample.stdout.trim() === '') {
+    throw new Error(
+      `the bench control found nothing in ${scriptsDir}: pre-tool-use exited ` +
+        `${String(sample.status)} with no decision for a bundled rule's own example, so the ` +
+        'hooks under measurement are not running',
+    );
+  }
 }
 
 /** The payloads the host sends on the paths every session takes most often. */

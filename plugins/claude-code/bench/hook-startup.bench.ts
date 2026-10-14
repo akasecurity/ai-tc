@@ -13,17 +13,29 @@
  * an interleaved comparison of two builds (for example before and after a
  * change), `bench/hook-cost.ts` spawns the same payloads and prints both.
  *
- * NO ASSERTIONS: nothing in this repository gates a PR on wall-clock. The one
- * check below runs at module scope, where a throw fails the run, because a
- * bench body that throws is swallowed — and a hook that exited at once would
- * otherwise read as a very fast one.
+ * The rows are the warm, steady-state cost: the store, the once-per-session
+ * markers and the compile cache are created by a first call before any row is
+ * timed.
+ *
+ * NO ASSERTIONS about time: nothing in this repository gates a PR on
+ * wall-clock. The control below checks something else — that the hooks really
+ * run, by requiring a decision for a bundled rule's own example — and it runs
+ * at module scope, where a throw fails the run, because a bench body that
+ * throws is swallowed and a hook that exited at once would otherwise read as
+ * a very fast one.
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bench, describe } from 'vitest';
 
-import { createBenchHome, HOOK_PAYLOADS, type HookVariant, runHook } from './hook-process.ts';
+import {
+  assertHooksRun,
+  createBenchHome,
+  HOOK_PAYLOADS,
+  type HookVariant,
+  runHook,
+} from './hook-process.ts';
 
 const SCRIPTS_DIR = fileURLToPath(new URL('../scripts/', import.meta.url));
 const { env, cleanup } = createBenchHome();
@@ -35,12 +47,12 @@ const variants = (Object.keys(HOOK_PAYLOADS) as HookVariant[]).map((name) => ({
   payload: JSON.stringify(HOOK_PAYLOADS[name].payload),
 }));
 
-// The control, and the warm-up: the first call creates the store and the
-// once-per-session markers, which no later call pays again.
+// The warm-up, then the control.
 for (const variant of variants) {
   const sample = runHook(variant, env);
   if (sample.status !== 0) throw new Error(`${variant.name} exited ${String(sample.status)}`);
 }
+assertHooksRun(SCRIPTS_DIR, env);
 
 describe('one hook call, as a fresh node process', () => {
   bench('node -e 0 (baseline)', () => {

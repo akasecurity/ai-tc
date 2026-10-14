@@ -12,14 +12,24 @@
  * own `scripts/`. CPU time is the steadier of the two readings on a busy
  * machine, and the delta over the baseline is the number a user pays per call.
  *
- * Prints a table and asserts nothing: this is a measurement, not a gate.
+ * The numbers are the warm, steady-state cost: an untimed first pass creates
+ * the store, the once-per-session markers and the compile cache before any
+ * round is timed. Prints a table and asserts nothing about time: this is a
+ * measurement, not a gate. It does exit non-zero when a control call shows
+ * the hooks under measurement are not actually running.
  */
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { createBenchHome, HOOK_PAYLOADS, type HookVariant, runHook } from './hook-process.ts';
+import {
+  assertHooksRun,
+  createBenchHome,
+  HOOK_PAYLOADS,
+  type HookVariant,
+  runHook,
+} from './hook-process.ts';
 
 const { values } = parseArgs({
   options: {
@@ -67,9 +77,12 @@ const quantile = (sorted: number[], q: number): number =>
 
 const { env, cleanup } = createBenchHome();
 try {
-  // One untimed pass: the first run of each hook creates the store and its
-  // once-per-session markers, which no later call pays again.
+  // One untimed pass: the first run of each hook creates the store, its
+  // once-per-session markers and its compile cache, which no later call pays
+  // again — so every number below is the warm, steady-state cost. Then the
+  // control: each build under measurement must really run its hooks.
   for (const variant of variants) runHook(variant, env);
+  for (const { dir } of dirs) assertHooksRun(dir, env);
 
   const wall = new Map<string, number[]>(variants.map((v) => [v.name, []]));
   const cpu = new Map<string, number[]>(variants.map((v) => [v.name, []]));

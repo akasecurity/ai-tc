@@ -15,7 +15,9 @@ import { readUserSettings } from './settings.ts';
  * Never throws: a failed read resolves to not sharing.
  *
  * `managedOverride` replaces the managed settings file; `null` reads a machine
- * with no administrator.
+ * with no administrator. A managed file that does not parse is read as no
+ * managed file at all, as everywhere else, so a pinned `false` in a malformed
+ * file does not hold and the user's own grant decides.
  */
 export function readSightingSharing(
   base: string = defaultDataDir(),
@@ -28,7 +30,12 @@ export function readSightingSharing(
     const attachmentMode = isAttached(effective)
       ? readControlPlaneAttachmentMode(settingsDir(base), effective.controlPlane)
       : undefined;
-    return resolveSightingSharing({ settings: own, managed, attachmentMode });
+    return resolveSightingSharing({
+      settings: own,
+      managed,
+      attachmentMode,
+      endpoint: effective.controlPlane?.endpoint,
+    });
   } catch {
     return {
       mode: 'standalone',

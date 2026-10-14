@@ -50,28 +50,61 @@ afterEach(() => {
   writeFailure.error = undefined;
 });
 
+const ENDPOINT = 'https://cp.example';
+
+function attachedTo(endpoint: string = ENDPOINT): void {
+  sharingState.value = {
+    mode: 'scoped',
+    managed: false,
+    sharing: false,
+    reason: 'not-opted-in',
+    optedIn: false,
+    locked: false,
+    endpoint,
+  };
+}
+
 function settingsFile(): string {
   return join(osHome.dir, '.aka', 'settings', 'settings.json');
 }
 
 describe('setSightingShareConsent', () => {
-  it('records a server-stamped grant', async () => {
+  it('records a server-stamped grant for the attached deployment', async () => {
+    attachedTo();
     const before = Date.now();
     expect(await setSightingShareConsent({ choice: 'granted' })).toEqual({ ok: true });
     const consent = readWorkspaceSettings().sightingShareConsent;
     expect(consent?.version).toBe(SIGHTING_SHARE_CONSENT_VERSION);
-    expect(isSightingShareConsentValid(consent)).toBe(true);
+    expect(consent?.endpoint).toBe(ENDPOINT);
+    expect(isSightingShareConsentValid(consent, ENDPOINT)).toBe(true);
     expect(Date.parse(consent?.acknowledgedAt ?? '')).toBeGreaterThanOrEqual(before - 5_000);
   });
 
   it('keeps an existing grant and its acknowledgedAt on a repeated grant', async () => {
+    attachedTo();
     await setSightingShareConsent({ choice: 'granted' });
     const first = readWorkspaceSettings().sightingShareConsent;
     await setSightingShareConsent({ choice: 'granted' });
     expect(readWorkspaceSettings().sightingShareConsent).toEqual(first);
   });
 
+  it('replaces a grant given for another deployment', async () => {
+    attachedTo('https://other.example');
+    await setSightingShareConsent({ choice: 'granted' });
+    attachedTo();
+    await setSightingShareConsent({ choice: 'granted' });
+    expect(readWorkspaceSettings().sightingShareConsent?.endpoint).toBe(ENDPOINT);
+  });
+
+  it('refuses a grant while standalone, and writes nothing', async () => {
+    const res = await setSightingShareConsent({ choice: 'granted' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/not attached/);
+    expect(existsSync(settingsFile())).toBe(false);
+  });
+
   it('removes the grant from the file on revoke', async () => {
+    attachedTo();
     await setSightingShareConsent({ choice: 'granted' });
     expect(await setSightingShareConsent({ choice: 'revoked' })).toEqual({ ok: true });
     expect(readFileSync(settingsFile(), 'utf8')).not.toContain('sightingShareConsent');
@@ -101,6 +134,7 @@ describe('setSightingShareConsent', () => {
   });
 
   it('refuses when the field is locked by the time it is written', async () => {
+    attachedTo();
     writeFailure.error = new ManagedFieldError(['sightingShareConsent']);
     const res = await setSightingShareConsent({ choice: 'granted' });
     expect(res).toEqual({ ok: false, error: managedRefusal(['sightingShareConsent']) });

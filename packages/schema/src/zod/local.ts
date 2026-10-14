@@ -568,12 +568,15 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
-  // Records that the user agreed to share credential sightings (hashes or
-  // ciphertext, never plaintext) with the organization this machine is
-  // attached to. Absent until granted. Whether sharing is actually on is
-  // resolveSightingSharing's answer, which also weighs the attachment mode and
-  // the managed settings.
-  sightingShareConsent: SightingShareConsent.optional(),
+  // Records that the user agreed to share credential sightings with the
+  // deployment the grant names. Absent until granted; `aka detach` clears it.
+  // Whether sharing is actually on is resolveSightingSharing's answer, which
+  // also weighs the attachment mode, the endpoint and the managed settings.
+  //
+  // `.catch` reads a grant this schema cannot parse, such as one recorded
+  // before grants named a deployment, as no grant. Without it the whole file
+  // fails to parse and every setting falls back to its default.
+  sightingShareConsent: SightingShareConsent.optional().catch(undefined),
   // The identities a SCOPED attachment forwards and the deployment they were
   // enrolled for (see AttachmentScope). Absent until something is enrolled.
   //

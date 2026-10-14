@@ -126,7 +126,7 @@ if (vaultConsentAction === 'grant') {
 }
 
 // The credential-sightings sharing answer. `grant` stamps the acknowledgment
-// here; `revoke` clears the stored grant.
+// for the attached deployment here; `revoke` clears the stored grant.
 const rawSightingShare = flags.get('sighting-share-consent');
 let sightingShareAction: 'grant' | 'revoke' | undefined;
 if (rawSightingShare !== undefined) {
@@ -137,9 +137,16 @@ if (rawSightingShare !== undefined) {
   }
 }
 if (sightingShareAction === 'grant') {
+  // A grant names the deployment it was given for, so there is none to record
+  // while standalone.
+  const { endpoint } = readSightingSharing();
+  if (endpoint === undefined) {
+    fail('cannot grant --sighting-share-consent: this machine is not attached to an organization');
+  }
   answers.sightingShareConsent = {
     acknowledgedAt: new Date().toISOString(),
     version: SIGHTING_SHARE_CONSENT_VERSION,
+    endpoint,
   };
 } else if (sightingShareAction === 'revoke') {
   answers.sightingShareConsent = undefined;

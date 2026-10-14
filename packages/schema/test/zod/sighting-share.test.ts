@@ -12,9 +12,12 @@ import {
   sightingSharingLine,
 } from '../../src/zod/sighting-share.ts';
 
+const ENDPOINT = 'https://cp.example';
+
 const GRANT = {
   acknowledgedAt: '2026-10-01T00:00:00.000Z',
   version: SIGHTING_SHARE_CONSENT_VERSION,
+  endpoint: ENDPOINT,
 };
 
 function settings(granted: boolean): WorkspaceSettings {
@@ -64,6 +67,7 @@ describe('resolveSightingSharing', () => {
       settings: settings(granted),
       managed: managed(pin),
       attachmentMode,
+      endpoint: ENDPOINT,
     });
     expect(state).toMatchObject(expected);
   });
@@ -74,6 +78,7 @@ describe('resolveSightingSharing', () => {
         settings: settings(false),
         managed: null,
         attachmentMode,
+        endpoint: ENDPOINT,
       });
       expect(state.sharing).toBe(false);
       expect(state.locked).toBe(false);
@@ -85,6 +90,7 @@ describe('resolveSightingSharing', () => {
       settings: settings(true),
       managed: null,
       attachmentMode: 'scoped',
+      endpoint: ENDPOINT,
     });
     expect(state).toMatchObject({ sharing: true, reason: 'opted-in', locked: false });
   });
@@ -94,8 +100,30 @@ describe('resolveSightingSharing', () => {
       settings: settings(true),
       managed: managed(undefined, true),
       attachmentMode: 'scoped',
+      endpoint: ENDPOINT,
     });
     expect(state).toMatchObject({ sharing: true, reason: 'opted-in', locked: true });
+  });
+
+  it('does not count a grant given for another deployment', () => {
+    const state = resolveSightingSharing({
+      settings: settings(true),
+      managed: null,
+      attachmentMode: 'scoped',
+      endpoint: 'https://other.example',
+    });
+    expect(state).toMatchObject({ sharing: false, reason: 'not-opted-in', optedIn: false });
+  });
+
+  it('does not count a grant while standalone, whatever endpoint is passed', () => {
+    const state = resolveSightingSharing({
+      settings: settings(true),
+      managed: null,
+      attachmentMode: undefined,
+      endpoint: ENDPOINT,
+    });
+    expect(state).toMatchObject({ sharing: false, optedIn: false });
+    expect(state.endpoint).toBeUndefined();
   });
 
   it('does not count a grant recorded against another version', () => {
@@ -105,21 +133,24 @@ describe('resolveSightingSharing', () => {
       }),
       managed: null,
       attachmentMode: 'machine',
+      endpoint: ENDPOINT,
     });
     expect(state).toMatchObject({ sharing: false, reason: 'not-opted-in' });
   });
 
   it('reports the user own grant separately from whether sharing is on', () => {
-    const standalone = resolveSightingSharing({
+    const denied = resolveSightingSharing({
       settings: settings(true),
-      managed: null,
-      attachmentMode: undefined,
+      managed: managed(false),
+      attachmentMode: 'scoped',
+      endpoint: ENDPOINT,
     });
-    expect(standalone).toMatchObject({ sharing: false, optedIn: true });
+    expect(denied).toMatchObject({ sharing: false, optedIn: true });
     const scopedPinnedOn = resolveSightingSharing({
       settings: settings(false),
       managed: managed(true),
       attachmentMode: 'scoped',
+      endpoint: ENDPOINT,
     });
     expect(scopedPinnedOn).toMatchObject({ sharing: false, optedIn: false });
   });
@@ -129,6 +160,7 @@ describe('resolveSightingSharing', () => {
       settings: settings(false),
       managed: managed(true),
       attachmentMode: 'machine',
+      endpoint: ENDPOINT,
     });
     expect(state.organization).toBe('Acme');
   });
@@ -138,16 +170,30 @@ describe('resolveSightingSharing', () => {
       settings: null as unknown as WorkspaceSettings,
       managed: null,
       attachmentMode: 'machine',
+      endpoint: ENDPOINT,
     });
     expect(state.sharing).toBe(false);
   });
 });
 
 describe('isSightingShareConsentValid', () => {
-  it('accepts only the current version', () => {
-    expect(isSightingShareConsentValid(GRANT)).toBe(true);
-    expect(isSightingShareConsentValid(undefined)).toBe(false);
-    expect(isSightingShareConsentValid({ ...GRANT, version: 99 })).toBe(false);
+  it('accepts only the current version, given for this deployment', () => {
+    expect(isSightingShareConsentValid(GRANT, ENDPOINT)).toBe(true);
+    expect(isSightingShareConsentValid(undefined, ENDPOINT)).toBe(false);
+    expect(isSightingShareConsentValid({ ...GRANT, version: 99 }, ENDPOINT)).toBe(false);
+    expect(isSightingShareConsentValid(GRANT, 'https://other.example')).toBe(false);
+    expect(isSightingShareConsentValid(GRANT, undefined)).toBe(false);
+  });
+});
+
+describe('the stored grant', () => {
+  it('reads a grant that names no deployment as no grant, keeping the rest of the file', () => {
+    const parsed = WorkspaceSettings.parse({
+      historicalAccess: 'full',
+      sightingShareConsent: { acknowledgedAt: GRANT.acknowledgedAt, version: 1 },
+    });
+    expect(parsed.sightingShareConsent).toBeUndefined();
+    expect(parsed.historicalAccess).toBe('full');
   });
 });
 
@@ -162,6 +208,7 @@ describe('sightingSharingLine', () => {
         settings: settings(granted),
         managed: managed(pin),
         attachmentMode,
+        endpoint: ENDPOINT,
       }),
     );
 
@@ -169,8 +216,9 @@ describe('sightingSharingLine', () => {
     for (const [, mode, pin, granted] of rows) {
       expect(line(mode, pin, granted)).toContain(SIGHTING_SHARE_PAYLOAD_NOTE);
     }
-    expect(SIGHTING_SHARE_PAYLOAD_NOTE).toMatch(/hashes or ciphertext/);
-    expect(SIGHTING_SHARE_PAYLOAD_NOTE).toMatch(/never plaintext/);
+    expect(SIGHTING_SHARE_PAYLOAD_NOTE).toBe(
+      'A credential sighting carries only a hash or ciphertext of the value, never the value itself.',
+    );
   });
 
   it('words each state with its mode and its reason', () => {
@@ -196,6 +244,7 @@ describe('sightingSharingLine', () => {
       settings: settings(false),
       managed: ManagedSettings.parse({ values: { sightingShareConsent: true } }),
       attachmentMode: 'machine',
+      endpoint: ENDPOINT,
     });
     expect(sightingSharingLine(state)).toContain('required by your organization');
   });

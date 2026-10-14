@@ -1663,8 +1663,8 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     readEffectiveSettings(base, deps.managedSettings).settings.controlPlane?.attachedAt,
   );
   try {
-    // The history grant and the enrolled list go with the attachment they
-    // named. `undefined` on an optional key is how this writer records a
+    // The history and sighting-share grants and the enrolled list go with the
+    // attachment they named. `undefined` on an optional key is how this writer records a
     // REVOCATION, so each key leaves settings.json rather than lingering for a
     // deployment this machine no longer talks to. A list left behind would be
     // kept by a later scoped attach as the same account, reviving enrollments
@@ -1674,6 +1674,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
         runMode: 'standalone',
         controlPlane: undefined,
         historySyncConsent: undefined,
+        sightingShareConsent: undefined,
         attachmentScope: undefined,
       },
       base,

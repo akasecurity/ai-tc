@@ -318,27 +318,41 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
   return { ok: true };
 }
 
+const SIGHTING_SHARE_STANDALONE_ERROR =
+  'This machine is not attached to an organization, so there is nothing to share with yet.';
+
 /**
  * Grant or revoke sharing credential sightings with the organization. Refused
- * while the organization's managed settings decide the answer. A still-valid
- * grant is kept as-is so its acknowledgedAt survives a repeated grant.
+ * while the organization's managed settings decide the answer, and a grant is
+ * refused while standalone: it names the deployment it was given for. A
+ * still-valid grant is kept as-is so its acknowledgedAt survives a repeated
+ * grant.
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function setSightingShareConsent(input: unknown): Promise<SaveSettingsResult> {
   const parsed = parseActionInput(SetSightingShareConsentInput, input);
   if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
   const { choice } = parsed.data;
-  if (readSightingSharing().locked) {
+  const state = readSightingSharing();
+  if (state.locked) {
     return { ok: false, error: managedRefusal(['sightingShareConsent']) };
+  }
+  const { endpoint } = state;
+  if (choice === 'granted' && endpoint === undefined) {
+    return { ok: false, error: SIGHTING_SHARE_STANDALONE_ERROR };
   }
   try {
     applyOnboarding((current) => ({
       sightingShareConsent:
-        choice === 'revoked'
+        choice === 'revoked' || endpoint === undefined
           ? undefined
-          : isSightingShareConsentValid(current.sightingShareConsent)
+          : isSightingShareConsentValid(current.sightingShareConsent, endpoint)
             ? current.sightingShareConsent
-            : { acknowledgedAt: new Date().toISOString(), version: SIGHTING_SHARE_CONSENT_VERSION },
+            : {
+                acknowledgedAt: new Date().toISOString(),
+                version: SIGHTING_SHARE_CONSENT_VERSION,
+                endpoint,
+              },
     }));
   } catch (error) {
     if (error instanceof ManagedFieldError)
@@ -868,7 +882,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   closeHistoryWindow(readWorkspaceSettings().controlPlane?.attachedAt);
 
   try {
-    // The history grant goes with the attachment it named, spelled rather than
+    // The history and sighting-share grants go with the attachment they named, spelled rather than
     // omitted: this writer MERGES, so leaving the key out preserves a grant for
     // the deployment the machine is leaving — and a re-attach to that same
     // deployment would pick it straight back up without asking. The scope record
@@ -878,6 +892,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
       runMode: 'standalone',
       controlPlane: undefined,
       historySyncConsent: undefined,
+      sightingShareConsent: undefined,
       attachmentScope: undefined,
     });
   } catch (error) {

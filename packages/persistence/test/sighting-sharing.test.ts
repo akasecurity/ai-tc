@@ -1,9 +1,13 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import type { AttachedCredentialAny, ManagedSettings } from '@akasecurity/schema';
 import { SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { writeControlPlaneCredential } from '../src/control-plane-credential.ts';
-import { applyOnboarding } from '../src/settings.ts';
+import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../src/managed-settings.ts';
+import { applyOnboarding, readWorkspaceSettings } from '../src/settings.ts';
 import { readSightingSharing } from '../src/sighting-sharing.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
@@ -30,17 +34,42 @@ function attach(credential: AttachedCredentialAny): void {
   writeControlPlaneCredential(store.settingsDir, credential);
 }
 
-function grant(): void {
+function grant(endpoint: string = ENDPOINT): void {
   applyOnboarding(
     {
       sightingShareConsent: {
         acknowledgedAt: new Date().toISOString(),
         version: SIGHTING_SHARE_CONSENT_VERSION,
+        endpoint,
       },
     },
     store.home,
     null,
   );
+}
+
+function detach(managed: ManagedSettings | null = null): void {
+  applyOnboarding(
+    {
+      runMode: 'standalone',
+      controlPlane: undefined,
+      historySyncConsent: undefined,
+      sightingShareConsent: undefined,
+      attachmentScope: undefined,
+    },
+    store.home,
+    managed,
+  );
+}
+
+afterEach(() => {
+  UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+});
+
+function writeManaged(values: Record<string, unknown>): string {
+  const path = join(store.home, 'managed-settings.json');
+  writeFileSync(path, JSON.stringify({ specVersion: 1, values, lockedFields: [] }));
+  return path;
 }
 
 const pinned = (value: boolean): ManagedSettings => ({
@@ -121,7 +150,7 @@ describe('readSightingSharing', () => {
     });
   });
 
-  it('fails closed to standalone when the managed settings are malformed', () => {
+  it('fails closed to standalone when the managed override throws', () => {
     attach(MACHINE);
     grant();
     const malformed = {
@@ -136,6 +165,84 @@ describe('readSightingSharing', () => {
       reason: 'standalone',
       optedIn: false,
       locked: false,
+    });
+  });
+  it('does not count a grant given for another deployment', () => {
+    attach(SCOPED);
+    grant('https://other.example');
+    expect(readSightingSharing(store.home, null)).toMatchObject({
+      sharing: false,
+      optedIn: false,
+      reason: 'not-opted-in',
+      endpoint: ENDPOINT,
+    });
+  });
+
+  it('does not carry a grant for deployment A over to deployment B', () => {
+    attach(SCOPED);
+    grant();
+    expect(readSightingSharing(store.home, null).sharing).toBe(true);
+    const other = 'https://cp-b.example';
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: other, attachedAt: MINTED_AT } },
+      store.home,
+      null,
+    );
+    writeControlPlaneCredential(store.settingsDir, { ...SCOPED, endpoint: other });
+    expect(readSightingSharing(store.home, null)).toMatchObject({
+      mode: 'scoped',
+      sharing: false,
+      optedIn: false,
+      endpoint: other,
+    });
+  });
+
+  it('is cleared by a detach, and does not return on a re-attach to the same deployment', () => {
+    attach(SCOPED);
+    grant();
+    detach();
+    expect(readWorkspaceSettings(store.home).sightingShareConsent).toBeUndefined();
+    attach(SCOPED);
+    expect(readSightingSharing(store.home, null)).toMatchObject({
+      sharing: false,
+      optedIn: false,
+    });
+  });
+
+  it('lets a detach clear a grant the administrator locked', () => {
+    attach(SCOPED);
+    grant();
+    const locked: ManagedSettings = {
+      specVersion: 1,
+      values: { sightingShareConsent: true },
+      lockedFields: ['sightingShareConsent'],
+    };
+    detach(locked);
+    expect(readWorkspaceSettings(store.home).sightingShareConsent).toBeUndefined();
+  });
+
+  it('never shows an administrator pin as the user grant in the settings in force', () => {
+    attach(MACHINE);
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([writeManaged({ sightingShareConsent: true })]);
+    expect(readSightingSharing(store.home)).toMatchObject({ sharing: true, optedIn: false });
+    expect(readWorkspaceSettings(store.home).sightingShareConsent).toBeUndefined();
+  });
+
+  it('runs unmanaged when the managed file on disk is malformed, so a pinned false does not hold', () => {
+    attach(MACHINE);
+    grant();
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([
+      writeManaged({ sightingShareConsent: false, vaultInlineReveal: 'not-a-mode' }),
+    ]);
+    expect(readSightingSharing(store.home)).toMatchObject({
+      sharing: true,
+      locked: false,
+      reason: 'opted-in',
+    });
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([writeManaged({ sightingShareConsent: false })]);
+    expect(readSightingSharing(store.home)).toMatchObject({
+      sharing: false,
+      reason: 'managed-denied',
     });
   });
 });

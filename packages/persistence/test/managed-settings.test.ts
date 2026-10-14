@@ -327,33 +327,26 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       expect(out.modelJudgeConsent).toBeUndefined();
     });
 
-    it('materialises a sighting-share grant from a pinned true, and clears it on false', () => {
+    it('never materialises a sighting-share grant from a pin, and leaves the user own alone', () => {
       const own = {
         acknowledgedAt: '2020-01-01T00:00:00.000Z',
         version: SIGHTING_SHARE_CONSENT_VERSION,
+        endpoint: 'https://cp.example',
       };
-      const on: ManagedSettings = {
-        specVersion: 1,
-        values: { sightingShareConsent: true },
-        lockedFields: [],
-      };
-      expect(overlayManagedSettings(settings(), on, CLOCK).sightingShareConsent).toEqual({
-        acknowledgedAt: '2026-03-04T05:06:07.000Z',
-        version: SIGHTING_SHARE_CONSENT_VERSION,
-      });
-      expect(
-        overlayManagedSettings(settings({ sightingShareConsent: own }), on, CLOCK)
-          .sightingShareConsent,
-      ).toEqual(own);
-      const off: ManagedSettings = {
-        specVersion: 1,
-        values: { sightingShareConsent: false },
-        lockedFields: [],
-      };
-      expect(
-        overlayManagedSettings(settings({ sightingShareConsent: own }), off, CLOCK)
-          .sightingShareConsent,
-      ).toBeUndefined();
+      for (const pin of [true, false]) {
+        const managed: ManagedSettings = {
+          specVersion: 1,
+          values: { sightingShareConsent: pin },
+          lockedFields: [],
+        };
+        expect(overlayManagedSettings(settings(), managed, CLOCK).sightingShareConsent).toBe(
+          undefined,
+        );
+        expect(
+          overlayManagedSettings(settings({ sightingShareConsent: own }), managed, CLOCK)
+            .sightingShareConsent,
+        ).toEqual(own);
+      }
     });
 
     it('leaves a consent the administrator said nothing about alone', () => {
@@ -1028,6 +1021,7 @@ const grant = () => ({ acknowledgedAt: new Date().toISOString(), version: VAULT_
 const sightingGrant = () => ({
   acknowledgedAt: new Date().toISOString(),
   version: SIGHTING_SHARE_CONSENT_VERSION,
+  endpoint: 'https://cp.example',
 });
 const judgeGrant = () => ({
   acknowledgedAt: new Date().toISOString(),
@@ -1088,7 +1082,8 @@ const KEY_SAMPLES = {
     userAnswer: { sightingShareConsent: undefined },
     echoAnswer: { sightingShareConsent: sightingGrant() },
     read: (s) => s.sightingShareConsent !== undefined,
-    underPin: true,
+    // resolveSightingSharing reads the pin itself; it never becomes a grant.
+    underPin: false,
     underUser: false,
   },
   redactFallback: {

@@ -56,7 +56,13 @@ export const SIGHTING_TEST_ENDPOINT = 'https://plane.example.test';
 export function storeSightingKey(
   base: string,
   key: SightingKey,
-  opts: { attachedTo?: string; issuedBy?: string; onboard?: boolean; sharing?: boolean } = {},
+  opts: {
+    attachedTo?: string;
+    issuedBy?: string;
+    onboard?: boolean;
+    sharing?: boolean;
+    previous?: { key: SightingKey; acceptedUntil?: string }[];
+  } = {},
 ): void {
   const attachedTo = opts.attachedTo ?? SIGHTING_TEST_ENDPOINT;
   if (opts.onboard !== false) {
@@ -79,6 +85,15 @@ export function storeSightingKey(
     keyVersion: key.keyVersion,
     algorithm: 'hmac-sha256',
     key: materialOf(key),
+    ...(opts.previous === undefined
+      ? {}
+      : {
+          previous: opts.previous.map((p) => ({
+            keyVersion: p.key.keyVersion,
+            key: materialOf(p.key),
+            ...(p.acceptedUntil === undefined ? {} : { acceptedUntil: p.acceptedUntil }),
+          })),
+        }),
     fetchedAtMs: 1,
     endpointFingerprint: sightingKeyEndpointFingerprint(opts.issuedBy ?? attachedTo),
   });

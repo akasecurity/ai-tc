@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -114,7 +114,9 @@ afterEach(() => {
 describe('the digests', () => {
   it('the credential digest is never the bare hash of the key', () => {
     expect(credentialDigestOf(KEY)).not.toBe(sha256(KEY));
-    expect(credentialDigestOf(KEY)).toBe(sha256(`aka-credential-binding:v1\n${KEY}`));
+    expect(credentialDigestOf(KEY)).toBe(
+      createHmac('sha256', KEY).update('aka-credential-binding:v1\n').digest('hex'),
+    );
   });
 
   it('digests the attached user by the normalized email, under its own prefix', () => {

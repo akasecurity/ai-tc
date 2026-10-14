@@ -3,8 +3,8 @@ import { normalizeAccountEmail } from '@akasecurity/schema';
 import { DEFAULT_ANTHROPIC_HOST } from '../provider-env.ts';
 
 // The one module under src/account that reads process.env, for the Claude Code
-// and Codex account checks. Values stay in the returned object, in memory; a
-// credential variable is read for non-empty presence only.
+// account check. Values stay in the returned object, in memory; a credential
+// variable is read for non-empty presence only.
 
 /** Variables whose non-empty value bills a Claude Code session to a key or token. */
 export const CLAUDE_CREDENTIAL_ENV = [

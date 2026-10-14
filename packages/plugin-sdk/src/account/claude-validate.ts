@@ -286,9 +286,9 @@ function inheritsAcrossResume(input: ClaudeHookInput, ctx: AccountContext, at: n
 }
 
 /**
- * SessionStart's part, before the session is claimed: the boundary line for
- * startup, clear and resume (none for compact), and on resume the inheritance
- * line when the login still names the org the session last ran under.
+ * Records the start of a session: the boundary line for startup, clear and resume (none for
+ * compact), and on resume the inheritance line when the login still names the org the session
+ * last ran under.
  */
 export function startClaudeSession(
   input: ClaudeHookInput & { readonly source: ClaudeSessionSource },
@@ -310,14 +310,17 @@ export function startClaudeSession(
 }
 
 export interface ClaudeLoginReport {
-  /** The login's account key, for the user's own terminal; undefined with no org. */
+  /** The login's account key; undefined with no org. */
   readonly key: string | undefined;
   readonly planState: AccountPlanState | undefined;
   readonly found: boolean;
   readonly check: AccountCheck;
 }
 
-/** The login-level check `aka status` and `--list-detected` show. Reads no transcript. */
+/**
+ * The check of the login file alone, against the env and the settings layers: the login's key and
+ * plan state, whether the file exists, and the view of it. Reads no transcript and writes nothing.
+ */
 export function claudeLoginCheck(input: {
   readonly ctx: AccountContext | undefined;
   readonly cwd: string;

@@ -638,7 +638,7 @@ describe('claudeLoginCheck', () => {
     expect(reads.paths).not.toContain(machine.transcript);
   });
 
-  it("reports a personal plan's key and reason, for the user's own terminal", () => {
+  it("reports a personal plan's key and reason", () => {
     workLogin({ organizationType: 'claude_max' });
     expect(
       claudeLoginCheck({ ctx: machine.context(), cwd: machine.cwd, paths: machine.paths }),

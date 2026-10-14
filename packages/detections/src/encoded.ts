@@ -13,11 +13,15 @@
 //
 // Cost is bounded by the text, not by the number of runs: only the first
 // MAX_ENCODED_SEARCH_CHARS characters are searched, and the decoded total is
-// held to MAX_DECODED_CHARS (the segment that crosses it is truncated). Every
-// pattern here is linear (single character classes separated by mandatory line
-// breaks, with no nested quantifier that can match the same character two
-// ways); dump lines are parsed by hand. Decoding is one level deep: a decoded
-// segment is never itself searched for encodings.
+// held to MAX_DECODED_CHARS — a segment that would cross the budget, or that
+// the search window cut mid-value, is REFUSED whole rather than scanned as a
+// truncated prefix (a sliced decode lets a rule match a partial value and
+// redact only it). Every refusal raises `truncated`/`unscannedChars` on the
+// decode's coverage result, so a caller (and `aka status`) can say that
+// coverage stopped. Every pattern here is linear (single character classes
+// separated by mandatory line breaks, with no nested quantifier that can match
+// the same character two ways); dump lines are parsed by hand. Decoding is one
+// level deep: a decoded segment is never itself searched for encodings.
 
 /** One decoded run, as text, with a source span for every UTF-16 unit. */
 export interface DecodedSegment {
@@ -26,6 +30,22 @@ export interface DecodedSegment {
   starts: Int32Array;
   /** Source offset just past the last encoded character behind each unit. */
   ends: Int32Array;
+}
+
+/** What the decode covered, and what it had to leave out. */
+export interface DecodedCoverage {
+  segments: DecodedSegment[];
+  /**
+   * Decoded characters that were decoded but not admitted: segments refused
+   * because they crossed the decoded budget or touch the search window's cut
+   * edge. Alignment offers of one run decode the same source characters, so a
+   * refused run can count its characters more than once here — the number is
+   * a conservative "this much decoded text was never scanned", not an exact
+   * source-character count.
+   */
+  unscannedChars: number;
+  /** True when coverage stopped before the end of the text. */
+  truncated: boolean;
 }
 
 export interface DecodeLimits {
@@ -110,6 +130,18 @@ function utf8At(bytes: readonly number[], i: number): { cp: number; len: number 
 // Decodes a byte run as UTF-8 into a segment, or undefined when it is too
 // short or not text. An invalid byte becomes U+FFFD and counts against the
 // printable ratio.
+//
+// A trailing run of non-printable units is TRIMMED when it is short relative
+// to the whole (at most max(8, an eighth of the run) units) and what precedes
+// it is long enough to scan: an encoded value glued onto a following word —
+// `base64 of the secret` with `success` typed right after it — decodes to the
+// value plus a few bytes of the word's bits, and without the trim the whole
+// segment failed the ratio and was dropped, secret and all. The same trim
+// keeps a wrong grid's replacement characters out of the value a rule
+// reports, so the finding's identity matches the plain secret's. Random data
+// and dumps of binary fail as before: their first non-printable unit arrives
+// within a few bytes of the start, the trim never applies, and the ratio
+// drops them.
 function toSegment(run: ByteRun): DecodedSegment | undefined {
   const { bytes, starts, ends } = run;
   if (bytes.length < MIN_DECODED_BYTES) return undefined;
@@ -118,12 +150,15 @@ function toSegment(run: ByteRun): DecodedSegment | undefined {
   const unitEnds: number[] = [];
   let codePoints = 0;
   let printable = 0;
+  let firstNonPrintable = -1;
   for (let i = 0; i < bytes.length;) {
     const decoded = utf8At(bytes, i);
     const cp = decoded?.cp ?? 0xfffd;
     const len = decoded?.len ?? 1;
+    const isPrintable = decoded !== undefined && isPrintableCodePoint(cp);
+    if (!isPrintable && firstNonPrintable < 0) firstNonPrintable = codePoints;
     codePoints++;
-    if (decoded !== undefined && isPrintableCodePoint(cp)) printable++;
+    if (isPrintable) printable++;
     const start = starts[i] ?? 0;
     let end = 0;
     for (let k = i; k < i + len; k++) end = Math.max(end, ends[k] ?? 0);
@@ -137,14 +172,32 @@ function toSegment(run: ByteRun): DecodedSegment | undefined {
     text += char;
     i += len;
   }
-  if (printable / codePoints < MIN_PRINTABLE_RATIO) return undefined;
-  return { text, starts: Int32Array.from(unitStarts), ends: Int32Array.from(unitEnds) };
+  let end = codePoints;
+  if (firstNonPrintable >= 0) {
+    const tail = codePoints - firstNonPrintable;
+    if (firstNonPrintable >= MIN_DECODED_BYTES && tail <= Math.max(8, codePoints >> 3)) {
+      // The garbage sits at the end of an otherwise-text run: keep the text.
+      end = firstNonPrintable;
+    } else if (printable / codePoints < MIN_PRINTABLE_RATIO) {
+      return undefined;
+    }
+  }
+  if (end < MIN_DECODED_BYTES) return undefined;
+  if (end === codePoints)
+    return { text, starts: Int32Array.from(unitStarts), ends: Int32Array.from(unitEnds) };
+  return {
+    text: text.slice(0, end),
+    starts: Int32Array.from(unitStarts.slice(0, end)),
+    ends: Int32Array.from(unitEnds.slice(0, end)),
+  };
 }
 
 /** Accepts decoded runs into the output while the decoded budget lasts. */
 class Collector {
   readonly segments: DecodedSegment[] = [];
   private left: number;
+  unscannedChars = 0;
+  truncated = false;
 
   constructor(maxDecodedChars: number) {
     this.left = maxDecodedChars;
@@ -155,25 +208,47 @@ class Collector {
   }
 
   add(run: ByteRun): void {
-    if (this.left <= 0) return;
+    if (this.left <= 0) {
+      // The budget was spent exactly (no refusal raised the flag yet): what
+      // follows is not scanned, and the report must say so.
+      this.truncated = true;
+      return;
+    }
     const segment = toSegment(run);
     if (segment === undefined) return;
     if (segment.text.length > this.left) {
-      let keep = this.left;
-      // Never end on half of a surrogate pair.
-      const last = segment.text.charCodeAt(keep - 1);
-      if (last >= 0xd800 && last <= 0xdbff) keep -= 1;
-      this.left = 0;
-      if (keep <= 0) return;
-      this.segments.push({
-        text: segment.text.slice(0, keep),
-        starts: segment.starts.slice(0, keep),
-        ends: segment.ends.slice(0, keep),
-      });
+      // Refuse whole rather than scan a truncated prefix: a sliced decode
+      // lets a rule match a partial value (`CANARY-7` of a longer secret)
+      // and the redaction then masks only that group. Refusing leaves the
+      // rest of the budget for the segments that follow it.
+      this.unscannedChars += segment.text.length;
+      this.truncated = true;
       return;
     }
     this.left -= segment.text.length;
     this.segments.push(segment);
+  }
+
+  /**
+   * Admits every segment of one encoded run against a single reservation: the
+   * run's alignment offers decode the SAME source characters, so the run is
+   * charged its longest view once — not once per offer — and one large dump
+   * cannot starve the segments that follow it through its own re-decodings.
+   * Refused whole (never sliced) when the reservation does not fit.
+   */
+  addRun(segments: DecodedSegment[], reserve: number): void {
+    if (segments.length === 0) return;
+    if (this.left <= 0) {
+      this.truncated = true;
+      return;
+    }
+    if (reserve > this.left) {
+      for (const segment of segments) this.unscannedChars += segment.text.length;
+      this.truncated = true;
+      return;
+    }
+    this.left -= reserve;
+    this.segments.push(...segments);
   }
 }
 
@@ -203,17 +278,25 @@ function decodeBase64At(text: string, positions: readonly number[], skip: number
 // glued onto a preceding word can sit on any of them, and a wrong grid that
 // happens to decode to printable text must not hide the right one. Only the
 // right grid carries a secret intact, so offering the others costs decoding
-// budget, not false findings.
+// budget, not false findings — and the run is CHARGED once (its longest view,
+// by addRun), so the offers cannot multiply their way through the budget and
+// starve whatever follows.
 function addBase64Value(text: string, positions: readonly number[], out: Collector): void {
   if (positions.length < 11) return;
-  for (let skip = 0; skip < 4 && !out.exhausted; skip++) {
-    out.add(decodeBase64At(text, positions, skip));
+  const segments: DecodedSegment[] = [];
+  for (let skip = 0; skip < 4; skip++) {
+    const segment = toSegment(decodeBase64At(text, positions, skip));
+    if (segment !== undefined) segments.push(segment);
   }
+  let reserve = 0;
+  for (const segment of segments) {
+    if (segment.text.length > reserve) reserve = segment.text.length;
+  }
+  out.addRun(segments, reserve);
 }
 
 function base64Segments(text: string, out: Collector): void {
   for (const match of text.matchAll(BASE64_RUN)) {
-    if (out.exhausted) return;
     const run = match[0];
     const base = match.index;
     let positions: number[] = [];
@@ -233,7 +316,6 @@ function base64Segments(text: string, out: Collector): void {
 
 function hexRunSegments(text: string, out: Collector): void {
   for (const match of text.matchAll(HEX_RUN)) {
-    if (out.exhausted) return;
     const run = match[0];
     const base = match.index;
     const decoded = emptyRun();
@@ -344,7 +426,7 @@ function dumpSegments(text: string, out: Collector): void {
     current = emptyRun();
   };
   let lineStart = 0;
-  while (lineStart <= text.length && !out.exhausted) {
+  while (lineStart <= text.length) {
     let lineEnd = text.indexOf('\n', lineStart);
     if (lineEnd < 0) lineEnd = text.length;
     const raw = text.slice(lineStart, lineEnd);
@@ -365,22 +447,52 @@ function dumpSegments(text: string, out: Collector): void {
 // The last default-limits call's input and result. The isolated scan worker
 // calls `scan()` once per rule over the same text when it attributes time to
 // rules, and the decode is the same for every one of those calls.
-let memo: { text: string; segments: DecodedSegment[] } | undefined;
+let memo: { text: string; coverage: DecodedCoverage } | undefined;
 
 /**
  * Every decodable base64 run and hex dump in `text` that decodes to readable
- * text, within the bounds above. Empty for text with no such run.
+ * text, within the bounds above, together with what could not be covered:
+ * segments refused at the decoded budget or cut by the search window are not
+ * returned, and `truncated`/`unscannedChars` say so.
  */
-export function decodeEncodedSegments(text: string, limits?: DecodeLimits): DecodedSegment[] {
-  if (limits === undefined && memo?.text === text) return memo.segments;
+export function decodeEncodedWithCoverage(text: string, limits?: DecodeLimits): DecodedCoverage {
+  if (limits === undefined && memo?.text === text) return memo.coverage;
   const maxSearch = limits?.maxSearchChars ?? MAX_ENCODED_SEARCH_CHARS;
   const window = text.length > maxSearch ? text.slice(0, maxSearch) : text;
   const out = new Collector(limits?.maxDecodedChars ?? MAX_DECODED_CHARS);
   dumpSegments(window, out);
   hexRunSegments(window, out);
   base64Segments(window, out);
-  if (limits === undefined) memo = { text, segments: out.segments };
-  return out.segments;
+  let { segments, unscannedChars, truncated } = out;
+  if (text.length > window.length) {
+    // Source characters past the window were never searched at all, and a
+    // segment whose encoded span touches the cut edge may be a value whose
+    // continuation lies past it; scanning its truncated decode would report a
+    // partial value. Refuse such a segment and say coverage stopped.
+    const edge = window.length;
+    const whole: DecodedSegment[] = [];
+    for (const segment of segments) {
+      if (segment.ends[segment.ends.length - 1] === edge) {
+        unscannedChars += segment.text.length;
+      } else {
+        whole.push(segment);
+      }
+    }
+    unscannedChars += text.length - edge;
+    segments = whole;
+    truncated = true;
+  }
+  const coverage: DecodedCoverage = { segments, unscannedChars, truncated };
+  if (limits === undefined) memo = { text, coverage };
+  return coverage;
+}
+
+/**
+ * Every decodable base64 run and hex dump in `text` that decodes to readable
+ * text, within the bounds above. Empty for text with no such run.
+ */
+export function decodeEncodedSegments(text: string, limits?: DecodeLimits): DecodedSegment[] {
+  return decodeEncodedWithCoverage(text, limits).segments;
 }
 
 /**

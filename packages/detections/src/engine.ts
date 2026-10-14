@@ -1,6 +1,6 @@
 import type { EventKind, PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
-import { decodeEncodedSegments, sourceSpanOf } from './encoded.ts';
+import { decodeEncodedWithCoverage, sourceSpanOf } from './encoded.ts';
 import { escapeRegExp } from './escape-regexp.ts';
 import type { FormatCharNormalization } from './format-chars.ts';
 import { mapSpanToNormalized, mapSpanToOriginal, normalizeFormatChars } from './format-chars.ts';
@@ -530,7 +530,14 @@ function scanEncoded(
   const secretRules = ruleset.filter((rule) => rule.category === 'secret');
   if (secretRules.length === 0) return [];
   const encoded: MatchResult[] = [];
-  for (const segment of decodeEncodedSegments(text)) {
+  // The coverage result is what tells a caller that the decode stopped at the
+  // search window or the decoded budget: every segment handed back is whole
+  // (a truncated one is refused, never scanned as a prefix), and
+  // `truncated`/`unscannedChars` carry the signal a status surface needs to
+  // say that coverage stopped. Surfacing it to `aka status` is the host's
+  // move — the engine keeps only whole-value findings.
+  const { segments } = decodeEncodedWithCoverage(text);
+  for (const segment of segments) {
     for (const finding of scanText(segment.text, secretRules, context)) {
       const span = sourceSpanOf(segment, finding.span.start, finding.span.end);
       // `span` covers the encoded characters, so a redaction masks the

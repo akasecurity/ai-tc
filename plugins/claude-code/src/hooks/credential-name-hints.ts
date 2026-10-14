@@ -48,9 +48,13 @@ const CREDENTIAL_DIR_HINTS: readonly string[] = ['.aws'];
 export function mayNameCredentialFile(path: string): boolean {
   const lower = path.toLowerCase();
   const base = lower.slice(Math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\')) + 1);
+  // The separator before the directory is OPTIONAL: the rule this gates matches
+  // a RELATIVE `.aws/config` (no separator in front of `.aws`), and dropping
+  // such a path here means the rule never runs on it. The trailing separator
+  // stays required — `.awsomething/x` is not an AWS path.
   if (
     CREDENTIAL_DIR_HINTS.some((dir) =>
-      new RegExp(String.raw`[\\/]${escapeRegExp(dir)}[\\/]`).test(lower),
+      new RegExp(String.raw`(?:^|[\\/])${escapeRegExp(dir)}[\\/]`).test(lower),
     )
   ) {
     return true;

@@ -225,6 +225,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/git-reset-hard': 'Git reset --hard',
       'command-risk/curl-pipe-shell': 'Curl piped to shell',
       'command-risk/credential-file-read': 'Credential file read',
+      'command-risk/credential-file-access': 'Credential file read',
     },
   },
   {
@@ -429,6 +430,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'secrets-infra/kubeconfig-token': 'Kubeconfig token',
       'secrets-infra/api-key-header': 'API key header',
       'secrets-infra/generic-high-entropy-secret': 'High-entropy secret',
+      'secrets-infra/secret-config-value': 'Secret config value',
     },
   },
 ];

@@ -22,6 +22,7 @@ export {
   removeAttachmentScopeEntries,
   UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
+export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
 export type {
   CredentialFileRead,
   CredentialState,

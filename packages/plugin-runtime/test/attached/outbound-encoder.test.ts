@@ -9,6 +9,7 @@ import {
   keysDir as keysDirOf,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
+  rotateFingerprintKey,
   SecretVault,
   UNAVAILABLE,
 } from '@akasecurity/persistence';
@@ -407,6 +408,29 @@ describe('createStoreOutboundEncoder', () => {
 
   afterEach(() => {
     removeTree(base);
+  });
+
+  it('keeps the wire id of an encoded capture when the exception key rotates', async () => {
+    storeSightingKey(base, keyOf(6, 5));
+    const content = `p ${patShaped(59)}`;
+    const raw: IngestEvent = {
+      id: captureWireId('sess-r', contentHashOf(content), null),
+      sourceTool: 'claude-code',
+      kind: 'prompt',
+      occurredAt: '2026-10-01T10:00:00.000Z',
+      contentHash: contentHashOf(content),
+      content,
+      metadata: { sessionId: 'sess-r' },
+    };
+    loadOrCreateFingerprintKey(dataDirOf(base));
+    const before = must(
+      await createStoreOutboundEncoder(base, { loadRules: noInstalledRules }).encodeEvent(raw),
+    );
+    rotateFingerprintKey(dataDirOf(base));
+    const after = must(
+      await createStoreOutboundEncoder(base, { loadRules: noInstalledRules }).encodeEvent(raw),
+    );
+    expect(after.id).toBe(before.id);
   });
 
   it('resolves a vaulted secret through the audited path, never logging the value', async () => {

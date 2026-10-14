@@ -12,6 +12,7 @@ import {
   dbPath as dbPathOf,
   FileKeyProvider,
   keysDir as keysDirOf,
+  loadOrCreateCaptureIdKey,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
   SecretVault,
@@ -2403,7 +2404,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
     expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
     expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
-    const idKey = loadOrCreateFingerprintKey(dataDirOf(home)).material;
+    const idKey = loadOrCreateCaptureIdKey(dataDirOf(home));
     expect(sent?.id).toBe(encodedWireId(idKey, 'cap-session', 'b'.repeat(64), null));
     expect(resent?.id).toBe(sent?.id);
   });

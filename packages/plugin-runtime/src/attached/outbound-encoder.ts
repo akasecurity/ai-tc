@@ -9,7 +9,7 @@ import {
   dataDir as dataDirOf,
   keyedCaptureWireId,
   keysDir,
-  loadOrCreateFingerprintKey,
+  loadOrCreateCaptureIdKey,
   openLocalDatabase,
   readSightingKeys,
   readSightingSharing,
@@ -331,7 +331,7 @@ export function createStoreOutboundEncoder(
       : { createScanner: (p: GuardedScanPartition) => createSecretSpanScanner(p, scanBound) }),
     readKeys: () => readSightingKeys(base),
     readSharing: opts.readSharing ?? (() => readSightingSharing(base).sharing),
-    readIdKey: () => (idKey ??= loadOrCreateFingerprintKey(dataDirOf(base)).material),
+    readIdKey: () => (idKey ??= loadOrCreateCaptureIdKey(dataDirOf(base))),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };
       const opened = openLocalDatabase(dataDirOf(base));

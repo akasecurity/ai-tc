@@ -6,7 +6,7 @@ import type { SightingKey } from '@akasecurity/persistence';
 import {
   captureWireId,
   dataDir as dataDirOf,
-  loadOrCreateFingerprintKey,
+  loadOrCreateCaptureIdKey,
 } from '@akasecurity/persistence';
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
 import { contentHashOf } from '@akasecurity/plugin-sdk';
@@ -215,7 +215,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies[0]).not.toContain(contentHashOf(value));
     expect(sent?.id).not.toBe(record.event.id);
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
-    const idKey = loadOrCreateFingerprintKey(dataDirOf(base)).material;
+    const idKey = loadOrCreateCaptureIdKey(dataDirOf(base));
     expect(sent?.id).toBe(encodedWireId(idKey, 'sess-9', record.event.contentHash, null));
   });
 

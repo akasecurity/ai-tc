@@ -380,10 +380,18 @@ describe('forwardProjectEgress — a scoped attachment', () => {
   });
 
   // Data Shares stay repository-only: a register whose key is a learned work
-  // account's agent key is never sent.
+  // account's agent key is never sent. The credential on disk is a real scoped
+  // one, bound to the identity record, so a path that derived the coding-agent
+  // keys from the files alone would find them.
   it('reports not-enrolled for a register keyed for a learned work account', async () => {
-    reader.scoped = true;
     attach(enrolled(WORK_REPO));
+    const scopedCredential = {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+    } as const;
+    writeControlPlaneCredential(settingsDir(home), scopedCredential);
     const account = `claude:${randomUUID()}`;
     writeAttachedIdentity(dataDir(home), {
       endpoint: ENDPOINT,
@@ -393,7 +401,7 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     });
     recordValidatedWorkAccount(dataDir(home), {
       endpoint: ENDPOINT,
-      credential: { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: TEST_KEY },
+      credential: scopedCredential,
       key: account,
     });
     const record = readAttachedIdentity(dataDir(home));

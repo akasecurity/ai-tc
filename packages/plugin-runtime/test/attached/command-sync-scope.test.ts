@@ -226,9 +226,18 @@ describe('runCommandSync — a scoped attachment', () => {
   });
 
   // Device commands stay repository-only: a work account this device recognised
-  // never opens a server-requested scan of a folder nobody enrolled.
+  // never opens a server-requested scan of a folder nobody enrolled. The
+  // credential on disk is a real scoped one, bound to the identity record, so a
+  // path that derived the coding-agent keys from the files alone would find them.
   it('never services a command from a root keyed for a learned work account', async () => {
     attach(enrolled(WORK_REPO));
+    const scopedCredential = {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: CONNECTION.endpoint,
+      apiKey: TEST_KEY,
+    } as const;
+    writeControlPlaneCredential(settingsDirOf(base), scopedCredential);
     const account = `claude:${randomUUID()}`;
     writeAttachedIdentity(dataDirOf(base), {
       endpoint: CONNECTION.endpoint,
@@ -238,12 +247,7 @@ describe('runCommandSync — a scoped attachment', () => {
     });
     recordValidatedWorkAccount(dataDirOf(base), {
       endpoint: CONNECTION.endpoint,
-      credential: {
-        specVersion: 2,
-        mode: 'scoped',
-        endpoint: CONNECTION.endpoint,
-        apiKey: TEST_KEY,
-      },
+      credential: scopedCredential,
       key: account,
     });
     const record = readAttachedIdentity(dataDirOf(base));

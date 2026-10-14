@@ -4,24 +4,23 @@ import { agentKey, effectiveScopeKey, isWebAccountKey } from '@akasecurity/schem
 
 // The key a producer stamps a row with, and the capability it stamps through.
 //
-// A Claude Code or Codex session signed in to a recognised work account
-// forwards its rows from any folder under that account's agent key
-// (`agent:<scopeTag>:<account key>`), unless the row's own repository is in
-// scope, which keeps the repository key. The attached gateway of a scoped
-// attachment whose identity record holds offers the capability that makes the
-// choice; every other gateway offers none, and a producer then stamps the
-// repository key.
+// A row stamped for a recognised work account is forwarded from any folder
+// under that account's agent key (`agent:<scopeTag>:<account key>`), unless the
+// row's own repository is in scope, which keeps the repository key. The attached
+// gateway of a scoped attachment whose identity record holds offers the
+// capability that makes the choice; every other gateway offers none, and a
+// producer then stamps the repository key.
 
 /**
  * A row's scope key as a producer stamped it: through an account scope, or as
- * the repository key when the gateway offers none. A brand, so a plugin's
- * capture wrapper can require a key that came through one of the two.
+ * the repository key when the gateway offers none. A brand, so a parameter can
+ * require a key that came through one of the two.
  */
 export type StampedScopeKey = string & { readonly __brand: 'StampedScopeKey' };
 
 /**
- * What a hook validates a session against, since it never holds the credential:
- * the bound record's attached-user digest and learned accounts, whether work
+ * What the gateway exposes of its identity record without the credential: the
+ * bound record's attached-user digest and learned accounts, whether work
  * subscriptions are on, and the account keys enrolled by hand for coding
  * sessions on this deployment.
  */
@@ -43,10 +42,11 @@ export interface AccountScope {
   stamp(repoKey: string | undefined, accountKey?: string): StampedScopeKey | undefined;
   /**
    * Add the agent key of `accountKey` to this gateway's scope, for this process
-   * only, so the hook that has just validated a work account forwards its own
-   * rows. False, adding nothing, when `bindingHash` is not this scope's, when the
-   * key is not an account key, and, for a key not already in scope, while work
-   * subscriptions are off. True when the key is in scope afterwards. Total.
+   * only, so rows stamped afterwards through this gateway carry that key and are
+   * forwarded. False, adding nothing, when `bindingHash` is not this scope's,
+   * when the key is not an account key, and, for a key not already in scope,
+   * while work subscriptions are off. True when the key is in scope afterwards.
+   * Total.
    */
   admit(accountKey: string, bindingHash: string): boolean;
   /** Whether a row stamped `key` is in this gateway's scope. Total, O(1), no I/O. */
@@ -57,12 +57,12 @@ export interface AccountScope {
    * 'refused' while work subscriptions are off, for a value that is not an
    * account key, at the cap, or when the record does not hold for the
    * credential, 'written' when it added the key, and 'timeout' when the record's
-   * lock was not taken (the next hook retries). It admits nothing. Total.
+   * lock was not taken (a later call can retry). It admits nothing. Total.
    */
   learn(accountKey: string): WorkAccountWrite;
   /** The binding hash of the identity record this scope was built from. */
   readonly bindingHash: string;
-  /** What a hook validates a session against (see AccountScopeContext). */
+  /** The identity record's facts the gateway exposes (see AccountScopeContext). */
   readonly context: AccountScopeContext;
 }
 
@@ -167,8 +167,8 @@ export function stampScopeKey(
   }
 }
 
-// The members every producer calls. A hook reads `context` and calls `learn`
-// and `inScope` inside its own guard, so a stand-in without them is still read.
+// The members every producer calls. `context`, `learn` and `inScope` are not
+// required, so a stand-in without them is still read.
 function isAccountScope(value: unknown): value is AccountScope {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<AccountScope>;

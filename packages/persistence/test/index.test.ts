@@ -153,6 +153,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'readManagedSettings',
   'readModPolicySnapshot',
   'readSightingKeys',
+  'readSightingSharing',
   'readWorkspaceSettings',
   'refreshModPolicySnapshot',
   'regexProbeKey',

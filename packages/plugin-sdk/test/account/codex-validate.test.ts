@@ -321,6 +321,18 @@ describe('startCodexSession', () => {
     expect(authOpens()).toBe(0);
   });
 
+  it('a resume while opted out still ends the thread, and opting back in does not revive it', () => {
+    machine.writeHead();
+    machine.writeAuth();
+    expect(start('startup').mayAdmit).toBe(true);
+    const optedOut = machine.context({ on: false });
+    const resumed = start('resume', optedOut);
+    expect(later(machine.context())).toMatchObject({ check: { none: 'resumed' }, mayAdmit: false });
+    expect(lines().at(-1)).toMatchObject({ kind: 'start', start: 'resume', s: 'none' });
+    expect(resumed).toMatchObject({ check: { none: 'resumed' }, mayAdmit: false });
+    expect(later(optedOut).check).toEqual({ none: 'opted-out' });
+  });
+
   it('keeps the earlier decision on compact', () => {
     const ctx = workThread();
     expect(start('compact', ctx).check).toMatchObject({ key: workKey(), basis: 'remembered' });
@@ -389,26 +401,31 @@ describe('a login file change mid-thread', () => {
     string,
     (m: CodexMachine) => void,
     CodexAccountCheck | 'keeps',
+    number,
   ])[] = [
-    ['a refresh', (m) => m.writeAuth(), 'keeps'],
+    ['a refresh', (m) => m.writeAuth(), 'keeps', 2],
     [
       'account switched mid-thread',
       (m) => m.writeAuth({ accountId: randomUUID() }),
       { none: 'auth-changed' },
+      2,
     ],
-    ['a personal plan', (m) => m.writeAuth({ plan: 'plus' }), { none: 'auth-changed' }],
+    ['a personal plan', (m) => m.writeAuth({ plan: 'plus' }), { none: 'auth-changed' }, 2],
     [
       'another email',
       (m) => m.writeAuth({ email: fixtureEmail('someone-else') }),
       { none: 'auth-changed' },
+      2,
     ],
-    ['another login mode', (m) => m.writeAuth({ authMode: 'apikey' }), { none: 'auth-changed' }],
+    ['another login mode', (m) => m.writeAuth({ authMode: 'apikey' }), { none: 'auth-changed' }, 2],
     [
       'a removed file',
       (m) => {
         rmSync(join(m.codexHome, 'auth.json'));
       },
       { none: 'auth-changed' },
+      // Windows checks the file with lstat before opening it, so a missing file is never opened.
+      process.platform === 'win32' ? 1 : 2,
     ],
     [
       'a torn read',
@@ -418,12 +435,13 @@ describe('a login file change mid-thread', () => {
         });
       },
       { none: 'auth-changed' },
+      2,
     ],
   ];
 
   it.each(scenarios)(
     'a refresh keeps the account; a switch, a personal plan or a torn read ends the thread; nothing new persists: %s',
-    (_, rewrite, expected) => {
+    (_, rewrite, expected, opens) => {
       const ctx = workThread();
       const before = stateBytes();
       rewrite(machine);
@@ -443,7 +461,7 @@ describe('a login file change mid-thread', () => {
         expect(added).not.toContain('chatgpt');
         expect(added).not.toContain(machine.email);
       }
-      expect(authOpens()).toBe(2);
+      expect(authOpens()).toBe(opens);
     },
   );
 
@@ -541,4 +559,28 @@ describe('the lock-timeout retry', () => {
     });
     expect([authOpens(), headOpens()]).toEqual([2, 2]);
   });
+});
+
+describe('the Codex credential variables in the process environment', () => {
+  it.each(['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'])(
+    'a later hook vetoes the thread while %s is set',
+    (name) => {
+      const ctx = workThread();
+      vi.stubEnv(name, randomUUID());
+      expect(later(ctx)).toMatchObject({ check: { none: 'veto' }, mayAdmit: false });
+      expect(authOpens()).toBe(1);
+    },
+  );
+
+  it.each(['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'])(
+    'a start vetoes a fresh thread without reading the login while %s is set',
+    (name) => {
+      machine.writeHead();
+      machine.writeAuth();
+      vi.stubEnv(name, randomUUID());
+      expect(start('startup')).toMatchObject({ check: { none: 'veto' }, mayAdmit: false });
+      expect(lines().map((line) => (line.kind === 'start' ? line.s : line.kind))).toEqual(['none']);
+      expect(authOpens()).toBe(0);
+    },
+  );
 });

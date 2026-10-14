@@ -193,8 +193,9 @@ function headNamesThread(head: CodexHead | 'pending' | undefined, sessionId: str
  * SessionStart's part, before the session is claimed. Startup, clear and fork
  * write the thread's start line: the key's hash and the login file's
  * fingerprint when it validated, `none` otherwise. Resume writes the sticky
- * resume line; compact keeps the earlier decision. A head not on disk yet is
- * pending and writes nothing, unless this is the final attempt.
+ * resume line whether or not the user is opted out; compact keeps the earlier
+ * decision. A head not on disk yet is pending and writes nothing, unless this
+ * is the final attempt.
  */
 export function startCodexSession(
   input: CodexHookInput & {
@@ -205,16 +206,18 @@ export function startCodexSession(
   try {
     const { ctx } = input;
     if (ctx === undefined) return started(answer({ none: 'attached-user-unknown' }));
-    if (!accountGateOpen(ctx, CHATGPT_ACCOUNT_PREFIX))
-      return started(answer({ none: 'opted-out' }));
-    if (input.source === 'compact') return started(codexHookAccount(input));
     const now = (input.now ?? Date.now)();
     const stateDir = sessionAccountsDir(input.dataDir);
     const bd = ctx.bindingHash;
+    // The resume line goes in ahead of the opt-out gate: opting back in mid-thread
+    // must not let a resumed thread validate again from its earlier start line.
     if (input.source === 'resume') {
       appendObservation(stateDir, input.sessionId, { t: now, bd, start: 'resume', s: 'none' });
       return started(answer({ none: 'resumed' }));
     }
+    if (!accountGateOpen(ctx, CHATGPT_ACCOUNT_PREFIX))
+      return started(answer({ none: 'opted-out' }));
+    if (input.source === 'compact') return started(codexHookAccount(input));
     const env = readCodexAccountEnv();
     const head =
       input.transcriptPath === undefined ? 'pending' : readCodexHead(input.transcriptPath);

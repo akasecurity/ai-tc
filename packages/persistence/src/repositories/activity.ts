@@ -326,7 +326,8 @@ const TIMELINE_COLUMNS = `
 
 /**
  * One `llm_call` group: every call in one session on one
- * `(provider, model, service_tier)`, with its usage members summed. The grain
+ * `(provider, model, service_tier)`, in one long-context band, billing one set
+ * of usage columns, with its usage members summed. The grain
  * is the one PRICING needs, not the one the view renders: `CostModel.costFor`
  * is linear in each usage member and applies the service-tier multiplier to
  * the token subtotal, so summing within a fixed `(provider, model, tier)` and
@@ -338,8 +339,11 @@ const TIMELINE_COLUMNS = `
  * key also carries how many of the catalog's band thresholds the call's prompt
  * crossed, and the group carries its largest single prompt for the cost model
  * to choose the band from. Every call in a group sits on the same side of every
- * threshold, so that largest prompt selects the band each call would. That exactness is what lets the
- * report collapse in SQL over the usage index instead of shipping one bag per
+ * threshold, so that largest prompt selects the band each call would. The key
+ * also carries which billable columns the call uses (`CALL_USAGE_SHAPE`), so a
+ * group that prices to null holds only calls that are unpriced on their own.
+ * That exactness is what lets the report collapse in SQL over the usage index
+ * instead of shipping one bag per
  * call to JS — activity.test.ts holds the two folds equal across every shape a
  * bag takes, and token-rollup-plans.test.ts pins the index.
  */
@@ -359,17 +363,37 @@ interface LlmUsageRow {
 }
 
 // One call's prompt, as the cost model counts it for the long-context band:
-// input plus cache reads plus both cache writes.
+// input plus cache reads plus cache writes, where a write total with no 1h/5m
+// split still counts in full (the larger of the total and the split's sum).
+const CALL_WRITE_SPLIT = `(coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))`;
 const CALL_PROMPT_TOKENS = `(coalesce(input_tokens, 0) + coalesce(cache_read_input_tokens, 0)
-     + coalesce(ephemeral_1h_input_tokens, 0) + coalesce(ephemeral_5m_input_tokens, 0))`;
+     + max(coalesce(cache_creation_input_tokens, 0), ${CALL_WRITE_SPLIT}))`;
 
-// How many band thresholds the call's prompt crossed (0 when none is declared).
-const CALL_BAND =
-  LONG_CONTEXT_THRESHOLDS.length === 0
-    ? '0'
-    : LONG_CONTEXT_THRESHOLDS.map((t) => `(${CALL_PROMPT_TOKENS} > ${String(Math.trunc(t))})`).join(
-        ' + ',
-      );
+// How many band thresholds the call's prompt crossed, or none when the
+// catalog declares no band: a bare `0` in a GROUP BY is read as a column ordinal
+// and rejected.
+const CALL_BAND = LONG_CONTEXT_THRESHOLDS.map(
+  (t) => `(${CALL_PROMPT_TOKENS} > ${String(Math.trunc(t))})`,
+);
+
+// Which billable columns the call carries, one condition per column `costOf`
+// meters: input, output, cache read, 1h write, a 5m write split out, a write
+// total beyond its split (which `costUsageOf` prices as 5-minute), and web
+// search. A rate the model does not publish leaves a column unpriced, and a
+// summed group that bills against it prices to null as a whole; grouped by
+// these, every call in a group bills the same columns, so a null group is one
+// whose every call is unpriced on its own. The two 5-minute sources are kept
+// apart because the unsplit part is clamped per call: a total-only call and a
+// split-only call summed together would cancel each other's remainder.
+const CALL_USAGE_SHAPE = [
+  'coalesce(input_tokens, 0) > 0',
+  'coalesce(output_tokens, 0) > 0',
+  'coalesce(cache_read_input_tokens, 0) > 0',
+  'coalesce(ephemeral_1h_input_tokens, 0) > 0',
+  'coalesce(ephemeral_5m_input_tokens, 0) > 0',
+  `coalesce(cache_creation_input_tokens, 0) > ${CALL_WRITE_SPLIT}`,
+  'coalesce(web_search_requests, 0) > 0',
+].map((condition) => `(${condition})`);
 
 const LLM_USAGE_SELECT = `
   SELECT root_session_id AS sessionId,
@@ -393,7 +417,14 @@ const LLM_USAGE_SELECT = `
 // unparseable leaf to skip, and a generated column only ever reads a valid bag.
 const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
 
-const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier, ${CALL_BAND}`;
+const LLM_USAGE_GROUP = `GROUP BY ${[
+  'root_session_id',
+  'provider',
+  'model',
+  'service_tier',
+  ...(CALL_BAND.length === 0 ? [] : [CALL_BAND.join(' + ')]),
+  ...CALL_USAGE_SHAPE,
+].join(', ')}`;
 
 /** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
 function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
@@ -850,7 +881,9 @@ export class SqliteActivityRepository implements ActivityReadPort {
    * store carries, since opening runs the migrations, so the hard requirement
    * `INDEXED BY` introduces is already met; token-rollup-plans.test.ts pins
    * the plan. All-time is a scan of the whole index — still one narrow entry
-   * per call, no bag parsed.
+   * per call, no bag parsed. The usage-shape terms in the key cost the
+   * all-time read ~9 ms at 50k calls (34 → 43 ms, fastest of the run), against
+   * 68 ms for folding the bags in JS.
    */
   tokenReports(fromMs?: number): Promise<SessionTokenReport[]> {
     const rows = allRows<LlmUsageRow>(
@@ -866,8 +899,8 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   /**
-   * One session's token report — its `llm_call`s grouped per (provider,
-   * model, tier) with derived cost, or `null` when the session made no
+   * One session's token report — its `llm_call`s grouped as `tokenReports`
+   * groups them (see LlmUsageRow) with derived cost, or `null` when the session made no
    * `llm_call`s (an empty/tool-only session). Feeds the session-detail pane's
    * per-model breakdown + estimated cost. The same rollup as `tokenReports`,
    * seeking one root through a root-led `llm_call` index; the bag-reading fold

@@ -258,6 +258,7 @@ export {
   bindingInput,
   deriveSubkeys,
   formatPointer,
+  mintPointer,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';

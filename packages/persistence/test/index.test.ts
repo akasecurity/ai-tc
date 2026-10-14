@@ -128,6 +128,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'managedSettingsPaths',
   'mayBePersonalDevice',
   'migrateLegacyLayout',
+  'mintPointer',
   'modPolicyInputFromStore',
   'modPolicySnapshotPath',
   'normalizeHost',

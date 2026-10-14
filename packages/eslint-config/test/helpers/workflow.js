@@ -12,6 +12,14 @@ import { expect } from 'vitest';
 // Called from a `describe` body an assertion is a collection error, which vitest
 // reports as `(0 test)` and which takes every other suite in the file down with
 // it — so call these inside the case, not beside it.
+//
+// They match TEXT, by line and column, and are not a YAML parse. That is enough
+// for a guard that asks where a block sits and what a pattern finds in it, and it
+// is not enough for one that has to vouch for what a workflow MEANS: the same
+// structure can be written with an escape, a quoted or flow-style key, an alias,
+// or text that merely looks like a key inside another key's block scalar, and a
+// reader of lines can only refuse the spellings it anticipated. A guard that makes
+// that kind of claim reads the decoded document in `workflow-yaml.js` instead.
 
 /**
  * Drop `#` comment lines.
@@ -39,9 +47,13 @@ export function jobBlock(source, key) {
   // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
   // where nothing is a metacharacter: the cost is one call, and a caller that
   // ever passes a step name instead would otherwise get `.` as a wildcard.
+  //
+  // The body ends at the next two-space KEY. A two-space comment is not one: it
+  // is legal anywhere in a mapping, and ending the body there would hide every
+  // step written below it from each check made over the job.
   const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const block = new RegExp(
-    `^ {2}${pattern}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|\\s*$(?![\\s\\S]))`,
+    `^ {2}${pattern}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}[^\\s#]|\\s*$(?![\\s\\S]))`,
     'm',
   ).exec(source);
   expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
@@ -82,7 +94,9 @@ export function jobBlock(source, key) {
 //
 // @param {string} source a job body, or the whole workflow
 export function steps(source) {
-  return source.split(/^ {6}- /m).slice(1);
+  // `-` followed by spaces, or by nothing at all: the item's first key may sit on
+  // the next line, and a marker spelled that way is still a step.
+  return source.split(/^ {6}-(?:[^\S\n]+|$)/m).slice(1);
 }
 
 /** A name as a regular-expression literal. */
@@ -142,10 +156,21 @@ export function rawStepNamed(source, name) {
  * mistyped or neighbouring key leave the action with no input at all, at which
  * point it falls back to a default nobody chose.
  *
+ * Reads the FIRST `key: |` line anywhere in the slice, whatever column it sits
+ * at, so text inside another key's block scalar that looks like an opener can
+ * stand in for the real one. There is no option to pin the column: a reader that
+ * needs that decodes the step instead (`inputLines` in helpers/workflow-yaml.js).
+ * A third argument is refused rather than ignored, so a caller that expects the
+ * pin finds out at once.
+ *
  * @param {string} step one step slice
  * @param {string} key the input key
+ * @param {...unknown} rejected not accepted; passing one fails the case
  */
-export function blockScalarLines(step, key) {
+export function blockScalarLines(step, key, ...rejected) {
+  expect(rejected, '`blockScalarLines` takes no options, and ignoring one would be silent').toEqual(
+    [],
+  );
   const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const indent = opener[1].length;
@@ -174,10 +199,21 @@ export function blockScalarLines(step, key) {
  * shell is handed, and the body's offset is read from its first non-empty line
  * rather than assumed, because YAML takes it from there too.
  *
+ * Reads the FIRST `key: |` line anywhere in the slice, whatever column it sits
+ * at, so text inside another key's block scalar that looks like an opener can
+ * stand in for the real one. There is no option to pin the column: a reader that
+ * needs that decodes the step instead (`inputLines` in helpers/workflow-yaml.js).
+ * A third argument is refused rather than ignored, so a caller that expects the
+ * pin finds out at once.
+ *
  * @param {string} step one step slice
  * @param {string} key the input key
+ * @param {...unknown} rejected not accepted; passing one fails the case
  */
-export function blockScalarText(step, key) {
+export function blockScalarText(step, key, ...rejected) {
+  expect(rejected, '`blockScalarText` takes no options, and ignoring one would be silent').toEqual(
+    [],
+  );
   const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
   expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
   const keyIndent = opener[1].length;

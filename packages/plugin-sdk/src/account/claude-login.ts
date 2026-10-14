@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,9 @@ import {
 } from './account-env.ts';
 
 export const CLAUDE_CONFIG_MAX_BYTES = 4 * 1024 * 1024;
+
+const SETTINGS_READ_CHUNK_BYTES = 64 * 1024;
+const NO_FOLLOW = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const COMPANY_CLAUDE_PLANS: ReadonlySet<string> = new Set(['claude_team', 'claude_enterprise']);
@@ -103,16 +106,45 @@ export function claudeSettingsPaths(
   ];
 }
 
+/** The text behind `fd`, read through it to at most the cap plus one byte; undefined past the cap. */
+function readWithinCap(fd: number): string | undefined {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (total <= CLAUDE_CONFIG_MAX_BYTES) {
+    const chunk = Buffer.allocUnsafe(
+      Math.min(SETTINGS_READ_CHUNK_BYTES, CLAUDE_CONFIG_MAX_BYTES + 1 - total),
+    );
+    const read = readSync(fd, chunk, 0, chunk.length, null);
+    if (read === 0) return Buffer.concat(chunks, total).toString('utf8');
+    chunks.push(chunk.subarray(0, read));
+    total += read;
+  }
+  return undefined;
+}
+
+// The layer is opened without following a link and read through that one
+// descriptor, so a link in a checked-out repository, a path swapped after the
+// check and a file that reports a size of 0 cannot carry more than the cap
+// into the parser.
 function settingsLayerVetoes(path: string): boolean {
-  let text: string;
+  let fd: number;
   try {
-    const stat = statSync(path);
-    if (!stat.isFile()) return false;
-    if (stat.size > CLAUDE_CONFIG_MAX_BYTES) return true;
-    text = readFileSync(path, 'utf8');
+    fd = openSync(path, constants.O_RDONLY | NO_FOLLOW);
   } catch (error) {
     return !isNotFound(error);
   }
+  let text: string | undefined;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return false;
+    if (stat.size > CLAUDE_CONFIG_MAX_BYTES) return true;
+    text = readWithinCap(fd);
+  } catch {
+    return true;
+  } finally {
+    closeQuietly(fd);
+  }
+  if (text === undefined) return true;
   let root: unknown;
   try {
     root = JSON.parse(text);
@@ -132,7 +164,8 @@ function settingsLayerVetoes(path: string): boolean {
 
 /**
  * True when any settings layer sets an API key helper or an env block that
- * bills elsewhere. A layer that exists but cannot be read or parsed counts.
+ * bills elsewhere. A layer that exists but cannot be read or parsed, is larger
+ * than the cap, or is a symbolic link counts.
  */
 export function claudeSettingsVeto(paths: readonly string[]): boolean {
   return paths.some(settingsLayerVetoes);

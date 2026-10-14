@@ -1,5 +1,5 @@
-// Worktree scanner: walk source files under a root directory and run each
-// through the detect→record path the live hooks use. Idempotent two ways:
+// Worktree scanner: walk source and secret-bearing files under a root, running
+// each through the detect→record path the live hooks use. Idempotent two ways:
 // findings are deduped by content hash, and a scan-ledger row (path + mtime +
 // hash, keyed to the ruleset fingerprint) is kept for EVERY processed file —
 // including clean ones, which `persist: 'with-findings'` never records as
@@ -11,7 +11,7 @@
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
 import { existsSync, readFileSync } from 'node:fs';
-import { extname, isAbsolute, relative } from 'node:path';
+import { dirname, extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
@@ -45,14 +45,19 @@ import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
 import { type FileRepository, type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
-import { type WalkedFileMeta, type WalkOptions, walkSourceFiles } from './walk.ts';
+import {
+  resolveProtectedRoots,
+  type WalkedFileMeta,
+  type WalkOptions,
+  walkSourceFiles,
+} from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
 // findings originate from (required!).
 //
 // Without `onRepositoryRoot`: a scan listens for the repositories nested in its
 // root itself (see scanDir), so the walk's own option is not one a host sets.
-export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot'> {
+export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot' | 'protectedRoots'> {
   sourceTool: SourceTool;
 }
 
@@ -415,6 +420,11 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
 // register has any use for one.
 const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
 
+// The config's data directory is `<akaHome>/data`.
+function akaHomeOf(config: PluginConfig): string | undefined {
+  return config.dataDir ? dirname(config.dataDir) : undefined;
+}
+
 async function scanDir(
   runtime: PluginRuntime,
   gateway: DataGateway,
@@ -424,6 +434,9 @@ async function scanDir(
   rootDir: string,
   opts: ScanOptions,
 ): Promise<WorktreeScanSummary> {
+  // Resolved before anything is read, and shared by the source and manifest
+  // walks.
+  const protectedRoots = resolveProtectedRoots(opts.home, opts.akaHome ?? akaHomeOf(config));
   const byRule: Record<string, number> = {};
   const bySeverity: Record<string, number> = {};
   const updates: ScanLedgerEntry[] = [];
@@ -502,6 +515,7 @@ async function scanDir(
   for (const file of walkSourceFiles({
     ...opts,
     rootDir,
+    protectedRoots,
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
     onRepositoryRoot: egress === null ? undefined : noteNestedRoot,
   })) {
@@ -613,7 +627,8 @@ async function scanDir(
   // Dependency manifests carry SDK evidence but no source extension, so the
   // source walk never yields them. They are ledgered exactly like walked files
   // and never go through capture — they are egress evidence, not code to scan.
-  if (egress) scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot);
+  if (egress)
+    scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot, protectedRoots);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
   if (egress) {
@@ -664,12 +679,13 @@ function scanManifests(
   rootDir: string,
   scopeKeyOf: ScopeKeyLookup,
   onRepositoryRoot: (relativeDir: string) => void,
+  protectedRoots: readonly string[],
 ): void {
   // This walk lists directories whether or not anything under them changed, so a
   // nested repository is reported because the scan passed through it, not
   // because this run happened to re-read one of its files. `onRepositoryRoot` is
   // the collector the source walk reports to as well (see scanDir).
-  for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot)) {
+  for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot, protectedRoots)) {
     const prev = ledger.previous.get(manifest.path);
     // Recorded like a walked file's repository, decided the same way: the
     // repository the manifest is in, so a manifest in a nested clone is the

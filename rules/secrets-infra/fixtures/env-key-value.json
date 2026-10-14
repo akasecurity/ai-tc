@@ -172,5 +172,42 @@
     "label": "literal token with dots and dashes",
     "text": "export AUTH_TOKEN=abc123.def-456_ghi789",
     "shouldMatch": true
+  },
+  {
+    "label": "bcrypt hash value is a literal, not a shell reference",
+    "text": "SECRET=$2a$12$abcdefghijklmnopqrstuvwxyz012345",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 7,
+        "end": 46
+      }
+    ]
+  },
+  {
+    "label": "quoted bcrypt hash value is a literal too",
+    "text": "PASSWORD=\"$2b$10$abcdefabcdefabcdefabcdefabcdef\"",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 10,
+        "end": 47
+      }
+    ]
+  },
+  {
+    "label": "KNOWN GAP (PR #714): pure dotted literal — the pattern cannot tell it from a property chain, so it stays undetected by design",
+    "text": "ACCESS_TOKEN=abc.def.ghi",
+    "shouldMatch": false
+  },
+  {
+    "label": "KNOWN GAP (PR #714): dotted sk.live key — same property-chain indistinguishability, stays undetected by design",
+    "text": "API_KEY=sk.live.abcdef1234567890",
+    "shouldMatch": false
+  },
+  {
+    "label": "KNOWN GAP (PR #714): dot-separated id/secret pair (Twilio-style) — same, stays undetected by design",
+    "text": "TWILIO_TOKEN=abcdef1234567890.abcdef1234567890",
+    "shouldMatch": false
   }
 ]

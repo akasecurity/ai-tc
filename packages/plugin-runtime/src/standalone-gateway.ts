@@ -217,8 +217,8 @@ export class StandaloneDataGateway
   recordConfigScan(record: ConfigScanRecord): Promise<void> {
     // The scan event hangs off its session's root by a foreign key, so the root
     // is planted first, as recordAuditEvent plants it for a row that FKs onto
-    // one. A session start that leaves its root to the transcript reconciler
-    // still records its scan this way; once a root exists the stub is a no-op.
+    // one. A session start that leaves its root unwritten still records its
+    // scan this way; once a root exists the stub is a no-op.
     const event = record.scanEvent;
     if (event.rootSessionId !== undefined && event.rootSessionId !== event.id) {
       this.db.auditEvents.ensureSessionRoot(event.rootSessionId, event.startedAt);

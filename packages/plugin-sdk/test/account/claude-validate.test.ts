@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type * as Fs from 'node:fs';
+import { statSync, utimesSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { AttachedIdentity, AttachmentScope } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +13,7 @@ import {
   CLAUDE_CREDENTIAL_ENV,
   CLAUDE_PROVIDER_FLAG_ENV,
 } from '../../src/account/account-env.ts';
+import { readScanCache, writeScanCache } from '../../src/account/claude-session.ts';
 import type { ClaudeHookResult, ClaudeSessionSource } from '../../src/account/claude-validate.ts';
 import {
   checkClaudeHook,
@@ -20,6 +23,7 @@ import {
 import {
   appendObservation,
   classifyObservation,
+  latestBoundary,
   readObservations,
 } from '../../src/account/observation-log.ts';
 import type { ClaudeMachine, SettingsLayer } from '../helpers/transcript-builder.ts';
@@ -368,19 +372,75 @@ describe('a remembered org', () => {
 });
 
 describe('the verdict memo', () => {
+  // A key in scope but not learned: a full run answers `validated` and may
+  // admit it, a memo hit answers `remembered` and may not. So each case below
+  // tells the two apart by what the second hook returns.
+  const scoped = (): AccountContext => machine.context({ inScope: (k) => k === key() });
+  const configPath = (): string => join(machine.home, '.claude.json');
+  const pinConfigTime = (ms: number): void => {
+    utimesSync(configPath(), new Date(ms), new Date(ms));
+  };
+  const fullRunValidated = (): ClaudeHookResult => ({
+    check: validated(),
+    mayAdmit: true,
+    threw: false,
+  });
+  const loginChanged = { check: { none: 'login-changed' }, mayAdmit: false, threw: false } as const;
+
   beforeEach(() => {
     workLogin();
     repliedUnder();
+    pinConfigTime(T0);
   });
 
   it('a memo hit forwards a key already in scope, and never admits', () => {
-    expect(hook().mayAdmit).toBe(true);
-    const inScope = machine.context({ learned: [key()], inScope: (k) => k === key() });
-    expect(hook(inScope, T0 + 11 * SECOND)).toEqual({
+    expect(hook(scoped())).toEqual(fullRunValidated());
+    expect(hook(scoped(), T0 + 11 * SECOND)).toEqual({
       check: { key: key(), basis: 'remembered' },
       mayAdmit: false,
       threw: false,
     });
+  });
+
+  it('runs in full when the login file changes size under the same mtime', () => {
+    expect(hook(scoped())).toEqual(fullRunValidated());
+    const size = statSync(configPath()).size;
+    machine.writeConfig(workConfig(randomUUID(), machine.email, {}, { note: 'padding' }));
+    pinConfigTime(T0);
+    expect(statSync(configPath()).size).not.toBe(size);
+    expect(hook(scoped(), T0 + 11 * SECOND)).toEqual(loginChanged);
+  });
+
+  it('runs in full when the login file changes mtime at the same size', () => {
+    expect(hook(scoped())).toEqual(fullRunValidated());
+    const size = statSync(configPath()).size;
+    machine.writeConfig(workConfig(randomUUID(), machine.email));
+    pinConfigTime(T0 + 60 * SECOND);
+    expect(statSync(configPath()).size).toBe(size);
+    expect(hook(scoped(), T0 + 11 * SECOND)).toEqual(loginChanged);
+  });
+
+  it('runs in full when the env now agrees with the login file', () => {
+    expect(hook(scoped())).toEqual(fullRunValidated());
+    vi.stubEnv('CLAUDE_CODE_USER_EMAIL', machine.email);
+    expect(hook(scoped(), T0 + 11 * SECOND)).toEqual(fullRunValidated());
+  });
+
+  it('runs in full when the anchor line moves', () => {
+    expect(hook(scoped())).toEqual(fullRunValidated());
+    writeLines(machine.transcript, [
+      userPromptLine(sid, 'hello again, with a longer first prompt than before', T0 + SECOND),
+      credentialOrgLine(sid, org, T0 + 2 * SECOND),
+      assistantLine(sid, T0 + 3 * SECOND),
+    ]);
+    expect(hook(scoped(), T0 + 11 * SECOND)).toEqual(fullRunValidated());
+  });
+
+  it('runs in full when the transcript now names another org on the same line', () => {
+    const anywhere = machine.context({ inScope: () => true });
+    expect(hook(anywhere)).toEqual(fullRunValidated());
+    repliedUnder(randomUUID());
+    expect(hook(anywhere, T0 + 11 * SECOND)).toEqual(loginChanged);
   });
 
   it('a memo or observation from another binding is ignored', () => {
@@ -450,7 +510,8 @@ describe('startClaudeSession', () => {
 });
 
 describe('a session whose log outgrew the tail window', () => {
-  it('keeps its boundary from the scan cache, and inherits only under the binding that wrote it', () => {
+  /** A resumed session that inherited its org, then 1,600 views that push the boundary out of the tail. */
+  function outgrownResume(): void {
     workLogin();
     repliedUnder();
     expect(start('resume')).toEqual({ inherited: true, threw: false });
@@ -462,9 +523,31 @@ describe('a session whose log outgrew the tail window', () => {
         k: 'n',
       });
     }
+  }
+
+  it('keeps its boundary from the scan cache, and inherits only under the binding that wrote it', () => {
+    outgrownResume();
     expect(hook(machine.context(), T0 + 70 * SECOND).check).toEqual(validated());
     const rebound = machine.context({ bindingHash: randomBytes(8).toString('hex') });
     expect(hook(rebound, T0 + 71 * SECOND).check).toEqual({ none: 'no-session-account' });
+  });
+
+  it('takes the boundary from the scan cache, not from a read of the whole log', () => {
+    outgrownResume();
+    const whole = readObservations(machine.stateDir, sid).entries.map((entry) => entry.observation);
+    expect(latestBoundary(whole, machine.bindingHash)).toMatchObject({
+      kind: 'resume',
+      inherited: true,
+    });
+    const cache = readScanCache(machine.stateDir, sid);
+    if (cache === undefined) throw new Error('the earlier hook left no scan cache');
+    writeScanCache(machine.stateDir, sid, {
+      ...cache,
+      inherited: false,
+      anchorAt: undefined,
+      memo: undefined,
+    });
+    expect(hook(machine.context(), T0 + 70 * SECOND).check).toEqual({ none: 'no-session-account' });
   });
 });
 
@@ -555,7 +638,7 @@ describe('claudeLoginCheck', () => {
     expect(reads.paths).not.toContain(machine.transcript);
   });
 
-  it("reports a personal plan's key and reason, for the user's own terminal", () => {
+  it("reports a personal plan's key and reason", () => {
     workLogin({ organizationType: 'claude_max' });
     expect(
       claudeLoginCheck({ ctx: machine.context(), cwd: machine.cwd, paths: machine.paths }),

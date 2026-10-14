@@ -145,6 +145,32 @@ describe('scanCredentialOrgs', () => {
     expect(scanCredentialOrgs(machine.transcript, sid, 0, 1024)).toBeUndefined();
     expect(scanCredentialOrgs(`${machine.transcript}.missing`, sid, 0)).toBeUndefined();
   });
+
+  it('reads a record that straddles a read chunk, at the offset its line starts', () => {
+    const CHUNK = 4 * 1024 * 1024; // how many bytes the scan reads at a time
+    const padding = `${userPromptLine(sid, 'x'.repeat(40), T0)}\n`;
+    const paddingBytes = Buffer.byteLength(padding);
+    const [straddling, after] = [randomUUID(), randomUUID()];
+    const straddlingLine = `${credentialOrgLine(sid, straddling, T0 + SECOND)}\n`;
+    const afterLine = `${credentialOrgLine(sid, after, T0 + 2 * SECOND)}\n`;
+    const leading = Math.floor((CHUNK - 16) / paddingBytes);
+    const straddlingAt = leading * paddingBytes;
+    const afterAt = straddlingAt + Buffer.byteLength(straddlingLine) + 10 * paddingBytes;
+    expect(straddlingAt).toBeLessThan(CHUNK);
+    expect(straddlingAt + Buffer.byteLength(straddlingLine)).toBeGreaterThan(CHUNK);
+    writeFileSync(
+      machine.transcript,
+      padding.repeat(leading) + straddlingLine + padding.repeat(10) + afterLine,
+    );
+    const delta = scan(0);
+    expect(delta.sightings).toEqual([
+      { pos: straddlingAt, t: T0 + SECOND, org: straddling },
+      { pos: afterAt, t: T0 + 2 * SECOND, org: after },
+    ]);
+    expect(delta.nextOffset).toBe(statSync(machine.transcript).size);
+    expect(delta.nextOffset).toBeGreaterThan(CHUNK);
+    expect(delta.rescanned).toBe(false);
+  });
 });
 
 describe('credentialOrgAt', () => {

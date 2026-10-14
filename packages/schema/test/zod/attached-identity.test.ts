@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AttachedIdentity } from '../../src/zod/local.ts';
 import {
   ATTACHED_IDENTITY_SPEC_VERSION,
   ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX,
+  AttachedIdentity,
   attachedIdentityHolds,
   parseAttachedIdentity,
 } from '../../src/zod/local.ts';
@@ -117,6 +117,13 @@ describe('parseAttachedIdentity', () => {
   });
 
   it('has no field that could hold an email, an organization name or a key', () => {
+    // The schema's declared fields, not a parsed fixture's keys: a field added
+    // later is caught whether or not the fixture sets it.
+    const personalName = /e-?mail|address|tenant|organi[sz]ation|name|key/i;
+    const declared = Object.keys(AttachedIdentity.shape);
+    expect(declared.length).toBeGreaterThan(0);
+    for (const field of declared) expect(field).not.toMatch(personalName);
+
     expect(Object.keys(parseAttachedIdentity(RECORD) ?? {}).sort()).toEqual([
       'attachedUserDigest',
       'checkedAt',

@@ -825,7 +825,7 @@ describe('runScan', () => {
       expect(events).not.toContain(join(root, 'skipped.ts'));
     });
 
-    it('lets an .akaignore negation beat the vendored-directory and dot-directory floor', async () => {
+    it('lets an .akaignore negation beat the vendored and generated-directory floor', async () => {
       writeFileSync(join(root, '.akaignore'), '!build/\n!.cache/\n');
       mkdirSync(join(root, 'build'));
       writeFileSync(join(root, 'build', 'gen.ts'), `const key = '${RAW}';\n`);

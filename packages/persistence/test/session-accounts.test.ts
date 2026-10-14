@@ -99,6 +99,20 @@ describe('pruneSessionAccountState', () => {
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
+  it('leaves the files a symbolic link in its place points at, however old', (ctx) => {
+    if (process.platform === 'win32') ctx.skip();
+    const target = join(store.home, 'elsewhere');
+    mkdirSync(target);
+    const kept = join(target, 'kept');
+    writeFileSync(kept, 'not session state');
+    writtenDaysAgo(kept, 31);
+    symlinkSync(target, sessionAccountsDir(store.dataDir));
+
+    pruneSessionAccountState(store.dataDir, NOW);
+
+    expect(existsSync(kept)).toBe(true);
+  });
+
   it('is not an error when there is no directory', () => {
     expect(() => {
       pruneSessionAccountState(join(store.home, 'no-such-dir'), NOW);

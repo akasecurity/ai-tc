@@ -155,6 +155,13 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
       'redactDegradedTo',
       keep(stringOrUndefined(attributes.redact_degraded_to), REDACT_DEGRADED_TO),
     ),
+    // Carried, for the same reason again: a refused row's content is '' and it
+    // has no findings, so without the marker the deployment reads a refusal as
+    // a clean empty capture. Parsed against the wire for the same reason too.
+    ...withField(
+      'scanIncomplete',
+      keep(stringOrUndefined(attributes.scan_incomplete), SCAN_INCOMPLETE),
+    ),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than
@@ -217,6 +224,7 @@ const TRACE_ID = EventMetadata.shape.traceId;
 // The ELEMENT schema, not the array's: what is filtered here is each id.
 const EXCEPTION_ID = EventMetadata.shape.exceptionIds.unwrap().element;
 const REDACT_DEGRADED_TO = EventMetadata.shape.redactDegradedTo.unwrap();
+const SCAN_INCOMPLETE = EventMetadata.shape.scanIncomplete.unwrap();
 
 function isoOrUndefined(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) return undefined;

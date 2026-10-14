@@ -20,25 +20,39 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
+import { recordDetectedWebAccount, webChatWithholding } from '@akasecurity/persistence';
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
+  LargeInputScanOptions,
   PluginConfig,
   ResolvedCodexProvider,
   ResolvedProvider,
 } from '@akasecurity/plugin-sdk';
 import {
   deriveWebCaptureState,
+  LARGE_INPUT_SCAN_BUDGET_MS,
+  LARGE_INPUT_THRESHOLD_CHARS,
   loadConfig,
   offersCaptureStatusReader,
   reportedCaptureDocumentForSite,
   scanText,
 } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, ReportedCaptureDocument, SourceTool } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  AuditEventInput,
+  ReportedCaptureDocument,
+  SourceTool,
+  WebChatWithholding,
+} from '@akasecurity/schema';
 import {
+  harnessFromTool,
+  isScopeKeyEnrolled,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   pickReportedCaptureStatus,
   SOURCE_TOOL,
   toCaptureStatusAttributes,
+  webAccountKey,
   WebCaptureStatus,
   webChatCaptureOf,
   WebExchange,
@@ -102,6 +116,92 @@ function recordCaptureStatus(sessionId: string, record: TrackedCaptureStatus): v
     if (oldest === undefined) break;
     captureStatuses.delete(oldest);
   }
+}
+
+// The account each tab session's requests last named, in this process's memory
+// only. It is what the popup shows, so the account can be enrolled without
+// anything being stored; the detected-account record is the stored half, and is
+// written only under the account grant. Bounded like the map above.
+interface SessionAccount {
+  tool: WebSourceTool;
+  account: string;
+  // When the host last received an exchange naming it, ISO-8601.
+  seenAt: string;
+}
+
+const sessionAccounts = new Map<string, SessionAccount>();
+
+/** The account this PROCESS last saw a session's requests name. */
+export function readSessionAccount(sessionId: string): SessionAccount | undefined {
+  return sessionAccounts.get(sessionId);
+}
+
+function recordSessionAccount(sessionId: string, record: SessionAccount): void {
+  sessionAccounts.delete(sessionId);
+  sessionAccounts.set(sessionId, record);
+  while (sessionAccounts.size > MAX_TRACKED_SESSIONS) {
+    const oldest = sessionAccounts.keys().next().value;
+    if (oldest === undefined) break;
+    sessionAccounts.delete(oldest);
+  }
+}
+
+/** The account most recently seen on `tool` by this process, across its sessions. */
+function latestAccountFor(tool: WebSourceTool): SessionAccount | undefined {
+  let latest: SessionAccount | undefined;
+  for (const record of sessionAccounts.values()) {
+    if (record.tool !== tool) continue;
+    if (latest === undefined || record.seenAt > latest.seenAt) latest = record;
+  }
+  return latest;
+}
+
+/**
+ * Whether this machine records a web chat in `account`.
+ *
+ * Where web chats are not withheld, every account is recorded, as before. On a
+ * personal device only an account enrolled with `aka enroll --account` is, read
+ * live from the settings. A machine whose credential cannot be read records none,
+ * whatever is enrolled: what it was attached as is unknown. Capture consent is a
+ * separate check, made by the caller; both must pass.
+ */
+function recordsAccount(
+  config: PluginConfig,
+  withholding: WebChatWithholding | null,
+  account: string | undefined,
+): boolean {
+  if (withholding === null) return true;
+  return withholding === 'personal-device' && isScopeKeyEnrolled(config.settings, account);
+}
+
+/**
+ * The session root an enrolled account's first recorded exchange writes on a
+ * personal device, where the session start wrote none.
+ *
+ * It carries the account as its scope key, which is what the attached gateway
+ * decides the session's leaves by, and only what identifies the chat: the
+ * harness and the provider. No working directory, project, repository or host
+ * name: those describe this machine, and the root is sent with the account's
+ * records. Roots are first-write-wins, so a session's later exchanges leave it
+ * as the first one wrote it.
+ */
+function accountSessionRoot(
+  sessionId: string,
+  startedAt: string,
+  tool: WebSourceTool,
+  account: string,
+  config: PluginConfig,
+): AuditEventInput {
+  return {
+    id: sessionId,
+    eventType: 'session',
+    startedAt,
+    attributes: {
+      scope_key: account,
+      harness: harnessFromTool(WEB_TOOL_TO_SOURCE[tool]),
+      provider: config.provider.provider,
+    },
+  };
 }
 
 // The fail-open fallback `capture_state` reaches for: this process's own
@@ -188,6 +288,31 @@ function resolveWebProvider(
   return () => (tool === 'chatgpt' ? { provider: 'openai' } : { provider: 'anthropic' });
 }
 
+/**
+ * Why this host keeps nothing from a web chat, or null when it records one.
+ *
+ * On a personal device a web chat is never in scope. What a scoped attachment
+ * forwards is decided per enrolled repository, a chat belongs to none, and
+ * nothing yet recognizes a work account in a chat. A machine whose credential
+ * cannot be read withholds too, since what it was attached as is unknown (see
+ * `webChatWithholding`, the one reading every surface makes).
+ *
+ * Withheld, a prompt is still checked and its decision enforced, but no event
+ * is recorded (a value it blocks or masks still leaves the masked, day-long
+ * ledger entry `aka exception` approves from). An exchange is dropped on
+ * arrival. A capture status is kept in this process's memory only, so the
+ * popup can still say when a site is not being checked, and is never stored.
+ * A session start opens no session root. What is never recorded cannot be sent
+ * later either, including by a history sync after the machine is attached
+ * again machine-wide.
+ *
+ * Read per request, since `aka attach` and `aka detach` change it under this
+ * long-lived process. Never throws.
+ */
+function withheld(config: PluginConfig): WebChatWithholding | null {
+  return webChatWithholding(config.settingsDir, config.settings);
+}
+
 // Injectable so tests can point at a scratch dataDir instead of the real
 // ~/.aka, mirroring the DI seam every hook/handler in this repo already uses
 // (resolveProviderFn, gatewayFactory, homeDir, …).
@@ -196,9 +321,45 @@ export type ConfigForTool = (tool: WebSourceTool | undefined) => PluginConfig;
 const defaultConfigForTool: ConfigForTool = (tool) =>
   loadConfig(undefined, resolveWebProvider(tool));
 
+// How long a prompt capture may spend on a bounded scan, counted from when this
+// host received the request. A prompt at or above the large-input threshold is
+// scanned in a worker under it, and one whose scan does not finish is REFUSED
+// (`CaptureResponse.scanIncomplete`) rather than judged: an in-process scan of a
+// large enough prompt outlasts background.ts's RELAY_TIMEOUT_MS (3 s), and a
+// relay that times out lets the original message through unscanned. The second
+// left before that cutoff covers the store write and the reply.
+export const CAPTURE_SCAN_DEADLINE_MS = 2_000;
+
+// How long a prompt capture waits for the scan worker to start. Far below the
+// SDK's LARGE_INPUT_START_BUDGET_MS, because it is spent from the 2 s above:
+// a start that slow would leave the scan itself almost nothing. Too slow a
+// start costs one refused prompt, never a rule.
+export const CAPTURE_START_BUDGET_MS = 500;
+
+/**
+ * The runtime's `largeInput` option for a prompt capture received at
+ * `receivedAt` (on `now`'s clock). The remaining time is read when the bounded
+ * scan starts, so the store open and config load before it are charged to the
+ * same deadline.
+ */
+export function captureLargeInput(
+  receivedAt: number,
+  now: () => number = () => performance.now(),
+): LargeInputScanOptions {
+  return {
+    thresholdChars: LARGE_INPUT_THRESHOLD_CHARS,
+    budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
+    startBudgetMs: CAPTURE_START_BUDGET_MS,
+    remainingMs: () => receivedAt + CAPTURE_SCAN_DEADLINE_MS - now(),
+  };
+}
+
+// `largeInputFor` is a seam for tests, which drive the refusal without racing a
+// real worker; the shipped host always takes the default.
 export async function handleRequest(
   request: HostRequest,
   configForTool: ConfigForTool = defaultConfigForTool,
+  largeInputFor: (receivedAt: number) => LargeInputScanOptions = captureLargeInput,
 ): Promise<HostResponse> {
   switch (request.type) {
     case 'ping': {
@@ -213,6 +374,10 @@ export async function handleRequest(
     }
     case 'session_start': {
       const config = configForTool(request.tool);
+      // Run even when chats are withheld, because the session start is what
+      // refreshes the organization's policy and sends the device report for
+      // someone who only uses web chat. Withheld, it records no session root
+      // (see withheld).
       // Browser sessions have no cwd/git repo to resolve a project from;
       // os.homedir() stands in so resolveInventoryContext's
       // resolveRepoIdentity(cwd) simply finds nothing and ctx.project stays
@@ -229,6 +394,7 @@ export async function handleRequest(
           tool: WEB_TOOL_TO_SOURCE[request.tool],
           harnessInterface: request.hostname,
           pluginBuild: PLUGIN_BUILD,
+          recordSession: withheld(config) === null,
         },
         config,
       );
@@ -251,7 +417,12 @@ export async function handleRequest(
       }
     }
     case 'capture': {
+      // Taken before anything else, so the config load and the store open are
+      // charged to the deadline the relay is counting against.
+      const receivedAt = performance.now();
       const config = configForTool(request.tool);
+      // Withheld, the prompt is checked and enforced exactly as anywhere else,
+      // and recorded nowhere (see withheld).
       const result = await handleCapture(
         {
           kind: request.kind,
@@ -260,7 +431,23 @@ export async function handleRequest(
           metadata: { sessionId: request.sessionId },
         },
         config,
+        withheld(config) === null ? {} : { persist: 'never' },
+        { largeInput: largeInputFor(receivedAt) },
       );
+      // A refused prompt is an explicit block that names no rule, and says why
+      // on `scanIncomplete` so the content script shows a too-large banner
+      // rather than rule guidance for a value nothing flagged.
+      if (result.scanIncomplete !== undefined) {
+        return {
+          type: 'capture',
+          requestId: request.requestId,
+          ok: true,
+          action: 'block',
+          text: null,
+          ruleIds: [],
+          scanIncomplete: result.scanIncomplete,
+        };
+      }
       const ruleIds = [...new Set(result.findings.map((f) => f.ruleId))];
       // `text` rides back only when the content script needs it (see
       // CaptureResponse in protocol.ts): the masked rewrite for redact, null
@@ -287,17 +474,43 @@ export async function handleRequest(
     case 'exchange': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      // Read live, every call: settings.json can change under this long-lived
-      // process, and a revocation must apply to the very next exchange frame.
-      // No module-level snapshot, no memoisation, no hoisting this check out
-      // of the switch.
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
+      // Both read live, every call: settings.json and the attachment can change
+      // under this long-lived process, and a revocation must apply to the very
+      // next exchange frame. No module-level snapshot, no memoisation, no
+      // hoisting either check out of the switch.
+      //
+      // The account the request's own URL named, or undefined. Kept in memory
+      // for the popup whatever happens below, and written to the
+      // detected-account record only under the account grant: neither is a
+      // capture, so neither waits on the capture consent.
+      const account = webAccountKey(request.tool, request.workspace);
+      if (account !== undefined) {
+        recordSessionAccount(request.sessionId, {
+          tool: request.tool,
+          account,
+          seenAt: new Date().toISOString(),
+        });
+        if (isWebChatAccountGrantValid(webChat)) {
+          recordDetectedWebAccount(config.dataDir, account, request.tool);
+        }
+      }
+      // Withheld, the exchange goes no further than this unless its account is
+      // enrolled (see recordsAccount): `isHostRequest` has already validated
+      // the payload in `runHost`, and nothing past this point runs, so no leaf
+      // is written and the reply is not scanned (see withheld).
+      const withholding = withheld(config);
+      const skipped = !isWebChatCaptureConsentValid(webChat.consent)
+        ? ('no-consent' as const)
+        : !recordsAccount(config, withholding, account)
+          ? ('out-of-scope' as const)
+          : undefined;
+      if (skipped !== undefined) {
         return {
           type: 'exchange',
           requestId: request.requestId,
           ok: true,
           accepted: false,
-          skipped: 'no-consent',
+          skipped,
           llmCalls: 0,
           toolCalls: 0,
           ruleIds: [],
@@ -315,7 +528,7 @@ export async function handleRequest(
       }
       const exchange = capResponseText(parsed.data);
 
-      const llm = toLlmCallInput(exchange, request.sessionId, request.tool);
+      const llm = toLlmCallInput(exchange, request.sessionId, request.tool, account);
 
       let llmCalls = 0;
       let toolCalls = 0;
@@ -341,11 +554,23 @@ export async function handleRequest(
           // leaf written before the root raises and rolls its transaction back.
           // An attribute-less stub: a real root arriving later heals it in
           // place, and a stub never overwrites one that is already populated.
-          await gateway.recordAuditEvent({
-            id: request.sessionId,
-            eventType: 'session',
-            startedAt: exchange.startedAt,
-          });
+          //
+          // Withheld, this is an enrolled account's exchange (anything else
+          // stopped above), and no session start wrote a root, so the account's
+          // own root is written instead. Written on every exchange, like the
+          // stub: the gateway decides a session's leaves by the root it records
+          // on THIS request, and a later write leaves the first one as it was.
+          await gateway.recordAuditEvent(
+            withholding !== null && account !== undefined
+              ? accountSessionRoot(
+                  request.sessionId,
+                  exchange.startedAt,
+                  request.tool,
+                  account,
+                  config,
+                )
+              : { id: request.sessionId, eventType: 'session', startedAt: exchange.startedAt },
+          );
           await gateway.recordLlmCall(llm);
           llmCalls = 1;
           // Per-rule installed-pack versions, so a tool-call finding cites the
@@ -361,8 +586,11 @@ export async function handleRequest(
           } catch {
             ruleVersions = undefined;
           }
-          const tools = toToolCallInputs(exchange, request.sessionId, (text) =>
-            scanText(text, ruleVersions, { locate: true }),
+          const tools = toToolCallInputs(
+            exchange,
+            request.sessionId,
+            (text) => scanText(text, ruleVersions, { locate: true }),
+            account,
           );
           if (tools.length > 0) {
             await gateway.recordToolCalls(tools);
@@ -397,6 +625,8 @@ export async function handleRequest(
             sourceTool: WEB_TOOL_TO_SOURCE[request.tool],
             text,
             occurredAt: exchange.startedAt,
+            // The account as the capture's scope key, as on the leaves above.
+            ...(account === undefined ? {} : { scopeKey: account }),
             metadata: {
               sessionId: request.sessionId,
               ...(model !== undefined ? { model } : {}),
@@ -438,14 +668,23 @@ export async function handleRequest(
     case 'capture_status': {
       const config = configForTool(request.tool);
       const webChat = webChatCaptureOf(config.settings);
-      if (!isWebChatCaptureConsentValid(webChat.consent)) {
-        return {
-          type: 'capture_status',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'no-consent',
-        };
+      // The one refusal shape, for both reasons below.
+      const refused = (skipped: 'no-consent' | 'out-of-scope'): HostResponse => ({
+        type: 'capture_status',
+        requestId: request.requestId,
+        ok: true,
+        accepted: false,
+        skipped,
+      });
+      // Read once: it decides both whether consent is asked and where the
+      // report may go.
+      const withholding = withheld(config);
+      // Consent governs recording, and a withholding machine records nothing,
+      // so there it has nothing to authorize: the report is still kept in
+      // memory below, which is how the popup names a site that is not being
+      // checked on a personal device that never granted capture.
+      if (withholding === null && !isWebChatCaptureConsentValid(webChat.consent)) {
+        return refused('no-consent');
       }
       const parsed = WebCaptureStatus.safeParse(request.status);
       if (!parsed.success) {
@@ -462,6 +701,10 @@ export async function handleRequest(
         status: parsed.data,
         observedAt,
       });
+      // Withheld, the report stays in this process's memory and goes no
+      // further: the popup reads it to say when a site is not being checked,
+      // and nothing stores or sends it (see withheld).
+      if (withholding !== null) return refused('out-of-scope');
       // The durable home: a `capture_status` audit_events row, so a restarted
       // host and a separate process (`aka extension status`) both have
       // somewhere to read the same answer from. No explicit session-root stub
@@ -489,6 +732,7 @@ export async function handleRequest(
     case 'capture_state': {
       const config = configForTool(undefined);
       const webChat = webChatCaptureOf(config.settings);
+      const withholding = withheld(config);
       let stored: ReportedCaptureDocument[] = [];
       // Resolved INSIDE the try for the reason the exchange case gives:
       // opening the store runs the migrations, so an unopenable home throws
@@ -497,8 +741,13 @@ export async function handleRequest(
       // failure when this process's own in-memory map could have answered it.
       let gateway: ReturnType<typeof resolveDataGateway> | undefined;
       try {
-        gateway = resolveDataGateway(config);
-        if (offersCaptureStatusReader(gateway)) stored = await gateway.readCaptureStatuses();
+        // Withheld, only this process's own reports answer: a stored row was
+        // written before the machine stopped recording and describes reports it
+        // no longer keeps.
+        gateway = withholding === null ? resolveDataGateway(config) : undefined;
+        if (gateway !== undefined && offersCaptureStatusReader(gateway)) {
+          stored = await gateway.readCaptureStatuses();
+        }
       } catch {
         stored = [];
       } finally {
@@ -515,12 +764,31 @@ export async function handleRequest(
             trackedFor(tool),
           ),
         );
+        // The account this process last saw the site's requests name, whether
+        // it is enrolled here, and whether this machine records chats in it:
+        // consented, and either not withheld or enrolled on a personal device.
+        const seen = latestAccountFor(tool);
         return {
           tool,
-          state: deriveWebCaptureState(record?.status),
+          // Withheld, the network path records nothing, so no site has a state
+          // to report, whatever this process's memory says the tab saw. A popup
+          // older than `withheld` renders this word rather than a stale live
+          // one. The enforcement half is still this process's own report.
+          state: deriveWebCaptureState(withholding === null ? record?.status : undefined),
           ...(record !== undefined
             ? { enforcement: record.status.enforcement, observedAt: record.observedAt }
             : {}),
+          ...(seen === undefined
+            ? {}
+            : {
+                account: {
+                  identity: seen.account,
+                  enrolled: isScopeKeyEnrolled(config.settings, seen.account),
+                  recorded:
+                    isWebChatCaptureConsentValid(webChat.consent) &&
+                    recordsAccount(config, withholding, seen.account),
+                },
+              }),
         };
       });
       return {
@@ -528,6 +796,7 @@ export async function handleRequest(
         requestId: request.requestId,
         ok: true,
         consented: isWebChatCaptureConsentValid(webChat.consent),
+        ...(withholding === null ? {} : { withheld: withholding }),
         sites,
       };
     }

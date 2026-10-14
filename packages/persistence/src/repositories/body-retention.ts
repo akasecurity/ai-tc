@@ -133,6 +133,7 @@ export class SqliteBodyRetentionRepository {
   private readonly heldByScopeStmt: StatementSync;
   private readonly expireStmt: StatementSync;
   private readonly expireContextsStmt: StatementSync;
+  private expireNamesStmt: StatementSync | undefined;
 
   constructor(private readonly db: DatabaseSync) {
     // LENGTH over the CAST, never over the TEXT: LENGTH() on a TEXT value stops
@@ -214,14 +215,15 @@ export class SqliteBodyRetentionRepository {
     this.expireStmt = this.db.prepare(
       `UPDATE audit_events SET content = NULL, content_expired_at = :now WHERE id = :id`,
     );
-    // Excerpts on findings whose event is past the horizon and holds no body:
+    // Excerpts and variable names (both copies of body text) on findings whose
+    // event is past the horizon and holds no body:
     // a body this pass (or an earlier one) cleared, or an event that never had
     // one. A body the sync lane still holds keeps its findings' excerpts too.
     // Seeks the partial index over excerpt-holding findings by first
     // detection — which can only precede the event's start, so the range never
     // misses a candidate — and checks the event's own time as a residual.
     this.expireContextsStmt = this.db.prepare(
-      `UPDATE inspection_findings SET context = NULL
+      `UPDATE inspection_findings SET context = NULL, variable_name = NULL
         WHERE id IN (
           SELECT f.id
             FROM inspection_findings f INDEXED BY idx_inspection_findings_context
@@ -289,7 +291,8 @@ export class SqliteBodyRetentionRepository {
       }
     }
 
-    this.expireContexts(opts.cutoff, batchSize, maxRows);
+    this.expireFindingCopies(this.expireContextsStmt, opts.cutoff, batchSize, maxRows);
+    this.expireFindingCopies(this.namesStatement(), opts.cutoff, batchSize, maxRows);
 
     return {
       rowsExpired,
@@ -299,10 +302,37 @@ export class SqliteBodyRetentionRepository {
     };
   }
 
-  // Clear the excerpts that outlived their body, one bounded transaction per
-  // batch for the same reason the body sweep batches, and at most `maxRows` of
-  // them per pass under the same cap: the next pass picks up the rest.
-  private expireContexts(cutoff: number, batchSize: number, maxRows: number): void {
+  // The names the excerpt statement cannot reach: a finding recorded with a
+  // name and no excerpt. Same horizon and residual, over its own partial index,
+  // since `INDEXED BY` the excerpt index refuses a query that no longer implies
+  // `context IS NOT NULL`. Prepared on first use rather than at construction,
+  // so a store missing the index still opens.
+  private namesStatement(): StatementSync {
+    this.expireNamesStmt ??= this.db.prepare(
+      `UPDATE inspection_findings SET variable_name = NULL
+        WHERE id IN (
+          SELECT f.id
+            FROM inspection_findings f INDEXED BY idx_inspection_findings_variable_name
+            JOIN audit_events e ON e.id = f.audit_event_id
+           WHERE f.variable_name IS NOT NULL
+             AND f.first_detected_at < :cutoff
+             AND e.content IS NULL
+             AND e.started_at < :cutoff
+           LIMIT :limit)`,
+    );
+    return this.expireNamesStmt;
+  }
+
+  // Clear the body copies on findings that outlived their body, one bounded
+  // transaction per batch for the same reason the body sweep batches, and at
+  // most `maxRows` of them per pass under the same cap: the next pass picks up
+  // the rest.
+  private expireFindingCopies(
+    stmt: StatementSync,
+    cutoff: number,
+    batchSize: number,
+    maxRows: number,
+  ): void {
     let total = 0;
     while (total < maxRows) {
       const limit = Math.min(batchSize, maxRows - total);
@@ -310,7 +340,7 @@ export class SqliteBodyRetentionRepository {
       withTransaction(
         this.db,
         () => {
-          cleared = Number(this.expireContextsStmt.run({ cutoff, limit }).changes);
+          cleared = Number(stmt.run({ cutoff, limit }).changes);
         },
         'IMMEDIATE',
       );

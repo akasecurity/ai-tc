@@ -67,6 +67,51 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+**One path fails CLOSED on purpose: a field too large to scan in time.** Every capture path
+that answers to a deadline builds its runtime with `largeInput`, so a field of
+`LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard deadline,
+and every bounded scan in one hook process — or one native-host request — draws on one
+deadline. Each sits inside whatever would otherwise answer for that path first:
+
+- **Claude Code and Codex** (`plugins/{claude-code,codex}/src/hooks/large-input.ts`): 6 s
+  from process start for UserPromptSubmit and PreToolUse, PostToolUse's existing 7 s
+  field-loop deadline — inside the host's 10 s.
+- **Antigravity PreToolUse** (`plugins/antigravity/src/hooks/large-input.ts`): 5.5 s from
+  process start, inside `runHookFailOpen`'s 8 s WATCHDOG rather than the host's 10 s,
+  because the watchdog resolves an undecided body with `{"decision":"allow"}` — a refusal
+  still being decided when it fires is printed as an allow.
+- **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
+  start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
+  dialects.
+- **The browser extension's native host** (`captureLargeInput` in
+  `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
+  capture, with a 500 ms worker start budget drawn from it, because `background.ts`
+  answers a relay the host has not answered within `RELAY_TIMEOUT_MS` (3 s) with an error,
+  and the content script lets the original message through on an error.
+
+A field whose bounded scan times out or finds no worker comes back as a `block` with
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
+UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
+explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
+withholds the output, and the native host answers `action: 'block'` with
+`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
+exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
+interrupted (§5), so without the bound a large enough field keeps the hook busy past
+whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
+those passes the call through unscanned, except Antigravity's kill, which denies it with no
+reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
+nothing else in this section changes: a throw, bad stdin, an unopenable store and a
+PostToolUse field the loop deadline never reached all still pass (silently, or with
+Antigravity's explicit allow), and a native host that does not answer at all still lets the
+message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
+a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
+rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
+and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
+worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
+it through the built native host — so every bundle that runs this path also has to SHIP the
+worker, since a missing one refuses every large field.
+
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
 fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
@@ -400,10 +445,10 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 
 Five properties are load-bearing and easy to break by accident:
 
-- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once. The one exception is the opt-in large-input bound (§1), and only on a path that answers to a deadline — a hook or the extension's native host: a field of `LARGE_INPUT_THRESHOLD_CHARS` or more is scanned in a worker whatever the ruleset, because that is the field whose in-process scan can outlast the host. A field below the threshold still pays nothing.
 - **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
-- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever. The large-input bound is the exception, and it is safe there for the reason it is not here: its start has its own budget (`LARGE_INPUT_START_BUDGET_MS`, or the native host's 500 ms) clipped to what is left of the caller's deadline, because that path quarantines nothing and names no culprit — a slow start costs one refused field, never a rule.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
 The first two are **counted, not timed** — a different claim from the fifth, which forbids an
@@ -459,7 +504,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 - **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
 - **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never CONCLUSIVELY timed here (no worker, the pre-flight's pass budget spent, or a wall breach the work clock refused to corroborate) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
 
-Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
+Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `vault-glue.ts`'s self-scan both pass the rules `mask.ts`'s `bundledMaskingRules()` returns — `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
 **The bound is around `scan()`, and the folder scan makes a SECOND unbounded pass that it does not cover.** `scanPathIntoStore` runs `extractFileEgress` — `@akasecurity/detections`' URL/IP and manifest-SDK extraction — on the CALLING thread, before the guarded scan and independent of it. Nothing there can be interrupted, and the exposure is the worse of the two callers': `aka scan` at least runs to a terminal a human can Ctrl-C, while the dashboard's Scan Server Action has no harness timeout at all. So the property extraction owes is not "no catastrophic regex" but the stronger **linear in file length**, since the walker hands it whole files up to `MAX_BYTES` (1 MB) and a merely POLYNOMIAL pass is already minutes at that size. Six had to be fixed to make that true, and only the first two were regexes. **The other four are the shape to recognise, because none of them needs crafted input and none of them looks like a ReDoS: work proportional to the FILE, done once per HIT, in a file whose hit count grows with its size.** A minified bundle puts every hit on one line, so redacting that line per hit is quadratic (118,798 ms of CPU for an ordinary 1 MB bundle carrying 25,641 URLs, against 60 ms memoized); mapping a hit's offset into the redacted line by re-redacting the prefix is quadratic the moment anything on the line is masked, which is to say on exactly the files this product is pointed at (15,333 ms for a 500 KB bundle carrying one token, against 15 ms); and a manifest's line number counted from offset zero, and its quoted key found by scanning from the section start, are each quadratic in its dependency count — an ordinary pretty-printed 1 MB `package.json` cost 1,459 ms and a single-line `pom.xml` 73,925 ms, against 42 ms and 30 ms now. Anything new on this path is linear or it is a denial of service; `packages/detections/test/security/egress-redos.test.ts` holds every pass at the 1 MB cap, and `packages/local-ops/test/performance/fs-scan-egress.test.ts` holds the pipeline that feeds them. Both charge CPU rather than wall time, for the reason the per-rule gate does, and both carry a control proving their input is still adversarial — a budget case fed a harmless string passes for ever.
 
@@ -802,7 +847,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      is the one module inside it that sends; everything else
                      builds requests and parses answers.
                      TWO clients, split by whether the caller holds a credential.
-                     `createRemoteClient` speaks the ten routes an ATTACHED
+                     `createRemoteClient` speaks the eleven routes an ATTACHED
                      machine is scoped to and requires a key. `createAttachClient`
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
@@ -2072,9 +2117,14 @@ itself. All three are product calls, not tuning.
 **A VIRTUAL generated column is only faster than the bag when an index stores its value.**
 The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
 columns — model, provider, the four token counts and the tier, cache-split and web-search
-members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
-once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
-fold equal to the per-call fold across every bag shape). Naming those columns against the
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)`, per
+long-context band and per set of billed columns, and priced once per group, which the cost
+model's linearity makes exact (activity.test.ts holds the SQL fold equal to the per-call fold
+across every bag shape). The band is in the key because one request's prompt selects it, never
+a sum; the billed columns are, because a summed group billing a column its model has no rate
+for prices to null as a whole, and without them one such call would null the priced calls
+beside it. That last part costs the all-time read ~9 ms at 50k calls (34 → 43 ms, fastest of
+the run), still under folding the bags in JS. Naming those columns against the
 TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
 VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
 `idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,

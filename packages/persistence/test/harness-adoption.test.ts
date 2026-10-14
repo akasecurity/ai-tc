@@ -192,6 +192,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
   'test/settings.test.ts': 'settings.json only; the layout the harness creates is not wanted here',
   'test/vault/key-provider.test.ts':
     'key files under a bare directory, ahead of any store that would hold them',
+  'test/vault/sighting-keys.test.ts':
+    'a bare home holding settings.json and the keys directory the sighting key is stored in — no store',
   'test/vault/keychain-real-binary.test.ts':
     'a bare keys directory for the rotation lock to take, beside a throwaway keychain holding the keyring — no store either side',
 };

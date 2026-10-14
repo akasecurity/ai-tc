@@ -2,14 +2,23 @@ import type { Hook, Register } from 'claude-code';
 import { update } from 'claude-code';
 
 import {
+  bandFindings,
+  chipText,
   createReplySlots,
+  mergeFindings,
   type ModPolicy,
+  parseFindingRecord,
+  parseFindingsJsonl,
   parseModPolicy,
   planPromptWith,
   planRowWith,
   type PointerWant,
   revealPointers,
+  severityStyle,
+  statusText,
   toolCallNeedsHelper,
+  type ViewFinding,
+  type ViewSeverity,
 } from './engine.js';
 
 // The mod half of AKA's prompt redaction. When the user's policy says `redact`
@@ -73,6 +82,184 @@ async function loadPolicy($: Dollar): Promise<ModPolicy | null> {
   }
 }
 
+// The findings this session's mod holds, newest first. Module memory on purpose:
+// finding detail is never written to $.state, which any installed plugin can
+// read; $.state holds a bare version counter that the widgets read while drawing,
+// so bumping it redraws them.
+let findingsHeld: ViewFinding[] = [];
+
+const findingsVersion = { plugin: 'aka', key: 'findings' } as const;
+
+// The mod is zod-free, so it spells the findings file's location, id check and
+// read limit itself; the writer is plugins/claude-code/src/mod/findings-log.ts,
+// called by the hooks and the mod's helpers.
+const MOD_FINDINGS_DIR = 'mod-findings';
+const MOD_FINDINGS_MAX_BYTES = 4 * 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+// What the last read of the findings file saw, so an unchanged file is not read again.
+let lastFile: string | undefined;
+
+// Findings at or before this time (a `$.clock.now()` reading) are hidden from
+// the band; the dismiss button sets it.
+let dismissedBefore = 0;
+
+// The session the list above belongs to.
+let heldSession: string | undefined;
+
+function heldFindings(): readonly ViewFinding[] {
+  return findingsHeld;
+}
+
+const STATUS_EVERY_MS = 1000;
+
+// When the status line was last written (a `$.clock.now()` reading), and what it said.
+let lastStatusAt: number | undefined;
+let lastStatusText: string | undefined;
+
+// True while a trailing write is waiting out the window.
+let flushScheduled = false;
+
+// Writes the change the window held back once it has elapsed. Never throws.
+async function flushStatusLater($: Dollar, ms: number): Promise<void> {
+  try {
+    await $.clock.sleep(Math.max(ms, 0));
+  } catch {
+    // The next hook with a status line writes it. Not re-scheduled here: a clock
+    // that throws would loop until the window had passed.
+    return;
+  } finally {
+    flushScheduled = false;
+  }
+  await refreshStatus($);
+}
+
+// Writes the status line from the held list, at most once a second, and only when
+// its text changed: a burst of findings shows its first count and the next call
+// after the second shows the rest. `force` skips the wait; `evenEmpty` writes the
+// line before any finding, as the session starts, so the person sees the mod is
+// on. A render's `$` has no status line, so a call from one writes nothing and
+// the next prompt or tool call writes it. Never throws.
+async function refreshStatus(
+  $: Dollar,
+  { force = false, evenEmpty = false }: { force?: boolean; evenEmpty?: boolean } = {},
+): Promise<void> {
+  try {
+    const text = statusText(heldFindings(), 'in-place');
+    if (text === lastStatusText) return;
+    if (lastStatusText === undefined && heldFindings().length === 0 && !evenEmpty) return;
+    const now = await $.clock.now();
+    const waiting =
+      lastStatusAt !== undefined && now >= lastStatusAt && now - lastStatusAt < STATUS_EVERY_MS;
+    if (waiting && !force) {
+      if (!flushScheduled) {
+        flushScheduled = true;
+        void flushStatusLater($, STATUS_EVERY_MS - (now - (lastStatusAt ?? now)));
+      }
+      return;
+    }
+    await $.ui.status(text);
+    lastStatusAt = now;
+    lastStatusText = text;
+  } catch {
+    // The status line is a courtesy.
+  }
+}
+
+let paneFilter: ViewSeverity | 'all' = 'all';
+
+const SHOW_FOR_MS = 30_000;
+
+// Values the person pressed Show on, by finding id, with the time they re-mask
+// (a `$.clock.now()` reading). Module memory only: a revealed value is never
+// written to $.state, a file, a log, a toast or the status line.
+const paneReveals = new Map<string, { value: string; until: number }>();
+
+// The finding ids with a reveal run in flight, so a second press starts none.
+const revealing = new Set<string>();
+
+// The finding ids whose last reveal failed.
+const revealFailed = new Set<string>();
+
+// Whether the pane may offer Show: `on` once the helper answered that consent is
+// valid, `off` once it answered that it is not or did not answer, `asking` while
+// it is asked. A Show button is drawn only for `on`.
+let paneConsent: 'unknown' | 'asking' | 'on' | 'off' = 'unknown';
+
+// Counts the times the reveals were forgotten (the pane closed, the session
+// changed): a helper answer for an earlier count is dropped, never drawn.
+let revealEpoch = 0;
+
+function forgetReveals(): void {
+  revealEpoch += 1;
+  paneReveals.clear();
+  revealFailed.clear();
+  paneConsent = 'unknown';
+}
+
+// A new session id (a /clear or a resume in the same process) starts an empty
+// list: the findings of the session before are not shown in this one. Never throws.
+async function followSession($: Dollar): Promise<void> {
+  try {
+    const sessionId = await $.session.id();
+    if (sessionId === heldSession) return;
+    const hadFindings = findingsHeld.length > 0;
+    heldSession = sessionId;
+    findingsHeld = [];
+    dismissedBefore = 0;
+    paneFilter = 'all';
+    forgetReveals();
+    lastFile = undefined;
+    if (hadFindings) {
+      await update($, findingsVersion, (version) => (version ?? 0) + 1);
+      await refreshStatus($, { force: true });
+    }
+  } catch {
+    // The list stays as it was.
+  }
+}
+
+// Merges findings into the session list and bumps the version when the list
+// gained one it did not have. Never throws.
+async function takeFindings($: Dollar, incoming: readonly ViewFinding[]): Promise<void> {
+  try {
+    await followSession($);
+    if (incoming.length === 0) return;
+    const known = new Set(heldFindings().map((f) => f.id));
+    if (incoming.every((f) => known.has(f.id))) return;
+    findingsHeld = mergeFindings(findingsHeld, incoming);
+    await update($, findingsVersion, (version) => (version ?? 0) + 1);
+    await refreshStatus($);
+  } catch {
+    // The widgets show what they already held.
+  }
+}
+
+// Takes what the session's findings file holds when its mtime or size changed.
+// A session id the writer would refuse, a missing or oversized file, or a read
+// that fails leaves the list as it was. Never throws.
+async function refreshFromFile($: Dollar): Promise<void> {
+  try {
+    await followSession($);
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'));
+    if (home === undefined || home === '') return;
+    const sessionId = await $.session.id();
+    if (!SESSION_ID.test(sessionId)) return;
+    const sep = home.includes('\\') ? '\\' : '/';
+    const root = home.endsWith('/') || home.endsWith('\\') ? home.slice(0, -1) : home;
+    const path = [root, '.aka', 'data', MOD_FINDINGS_DIR, `${sessionId}.jsonl`].join(sep);
+    const stat = await $.fs.stat(path);
+    if (stat.kind !== 'file' || stat.size > MOD_FINDINGS_MAX_BYTES) return;
+    const key = `${path}|${String(stat.mtimeMs)}|${String(stat.size)}`;
+    if (lastFile === key) return;
+    const text = await $.fs.read(path);
+    lastFile = key;
+    await takeFindings($, parseFindingsJsonl(text));
+  } catch {
+    // No file yet, or an unreadable one: the helper answers still count.
+  }
+}
+
 // A helper script's path under the plugin root, in the root's own separator.
 function helperScript(root: string, name: string): string {
   const sep = root.includes('\\') ? '\\' : '/';
@@ -85,6 +272,20 @@ const HELPER_TIMEOUT_MS = 3000;
 interface HelperAnswer {
   text: string;
   note: string | null;
+  findings: ViewFinding[];
+}
+
+// The findings an answer carries, each checked as a record on disk is; one that
+// does not parse is dropped, and an answer without a list has none. A bad finding
+// never fails the answer it rides on.
+function parseAnswerFindings(value: unknown): ViewFinding[] {
+  if (!Array.isArray(value)) return [];
+  const out: ViewFinding[] = [];
+  for (const item of value as unknown[]) {
+    const finding = parseFindingRecord(item);
+    if (finding !== null) out.push(finding);
+  }
+  return out;
 }
 
 // The helper's stdout, or null for anything that is not exactly its answer.
@@ -92,10 +293,10 @@ function parseHelperAnswer(stdout: string): HelperAnswer | null {
   try {
     const raw: unknown = JSON.parse(stdout);
     if (typeof raw !== 'object' || raw === null) return null;
-    const answer = raw as { v?: unknown; text?: unknown; note?: unknown };
+    const answer = raw as { v?: unknown; text?: unknown; note?: unknown; findings?: unknown };
     if (answer.v !== 1 || typeof answer.text !== 'string' || answer.text === '') return null;
     if (answer.note !== null && typeof answer.note !== 'string') return null;
-    return { text: answer.text, note: answer.note };
+    return { text: answer.text, note: answer.note, findings: parseAnswerFindings(answer.findings) };
   } catch {
     return null;
   }
@@ -112,6 +313,12 @@ async function captureCwd($: Dollar, e?: object): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+// A subagent row's agent, so its finding is placed in the subagent.
+function agentOf(event: object | undefined): { agentId?: string } {
+  const agentId = (event as { agentId?: unknown } | undefined)?.agentId;
+  return typeof agentId === 'string' ? { agentId } : {};
 }
 
 // The helper's rewrite of `text`, or null for any reason there is none.
@@ -135,7 +342,7 @@ async function rewriteWithHelper(
         text,
         sessionId,
         cwd: await captureCwd($, event),
-        ...(door === undefined ? {} : { row: { door } }),
+        ...(door === undefined ? {} : { row: { door, ...agentOf(event) } }),
       }),
       timeoutMs: HELPER_TIMEOUT_MS,
     });
@@ -168,6 +375,8 @@ async function rewriteRowText(
   const plan = planRowWith(text, policy);
   if (plan.values.length === 0) return null;
   const answer = await rewriteWithHelper($, text, door, row);
+  // The widgets update apart: a host call that hangs never holds the row.
+  if (answer !== null) void takeFindings($, answer.findings);
   if (answer === null || plan.values.some((value) => answer.text.includes(value))) return null;
   return answer.text;
 }
@@ -361,6 +570,7 @@ interface ToolCallAnswer {
   input: Record<string, unknown> | null;
   context: string | null;
   message: string | null;
+  findings: ViewFinding[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -372,25 +582,28 @@ function parseToolCallAnswer(stdout: string): ToolCallAnswer | null {
   try {
     const raw: unknown = JSON.parse(stdout);
     if (!isRecord(raw) || raw.v !== 1) return null;
-    const { deny, input, context, message } = raw;
+    const { deny, input, context, message, findings } = raw;
     if (deny !== null && (typeof deny !== 'string' || deny === '')) return null;
     if (input !== null && !isRecord(input)) return null;
     if (context !== null && typeof context !== 'string') return null;
     if (message !== null && typeof message !== 'string') return null;
     if (deny !== null && (input !== null || context !== null)) return null;
-    return { deny, input, context, message };
+    return { deny, input, context, message, findings: parseAnswerFindings(findings) };
   } catch {
     return null;
   }
 }
 
+// `pane` marks a press in the findings pane: the helper then reveals under valid
+// consent whatever the inline reveal setting says.
 async function runRevealHelper(
   $: RenderDollar,
   items: { token: string; reveal: boolean }[],
+  pane = false,
 ): Promise<RevealAnswer | null> {
   try {
     const run = await $.process.run(['node', scriptPath($, 'mod-reveal.js')], {
-      stdin: JSON.stringify({ v: 1, items }),
+      stdin: JSON.stringify({ v: 1, ...(pane ? { pane: true } : {}), items }),
       timeoutMs: REVEAL_HELPER_TIMEOUT_MS,
     });
     return run.exitCode === 0 ? parseRevealAnswer(run.stdout) : null;
@@ -571,8 +784,280 @@ function tell($: Dollar, message: string | null): void {
   }
 }
 
+type BandArgs = Parameters<Hook<'ui.render'>>;
+type BandDollar = BandArgs[0];
+
+// The band above the prompt: the session's recent findings, one chip each in the
+// severity's colour, with a dismiss button. Anything unexpected draws nothing.
+async function bandRender($: BandDollar, e: BandArgs[1], next: BandArgs[2]) {
+  try {
+    if ((e.props as { hasSurvey?: boolean }).hasSurvey === true) return next(e);
+    // Read for its subscription only: a new version redraws the band.
+    await $.state.get(findingsVersion);
+    await refreshFromFile($);
+    const now = await $.clock.now();
+    const { shown, more } = bandFindings(
+      heldFindings().filter((f) => f.at > dismissedBefore),
+      now,
+    );
+    if (shown.length === 0) return next(e);
+    const { Box, Text, Button } = $.ui.resolve(e);
+    return h(
+      Box,
+      { flexDirection: 'row', gap: 2, key: 'aka-band' },
+      ...shown.map((f) =>
+        h(
+          Text,
+          {
+            key: `chip-${f.id}`,
+            color: severityStyle(f.severity).color,
+            bold: f.severity === 'critical',
+          },
+          chipText(f),
+        ),
+      ),
+      more > 0
+        ? h(Text, { key: 'more', dimColor: true }, `+${String(more)} more · /aka:findings-pane`)
+        : null,
+      h(Button, {
+        key: 'dismiss',
+        label: 'Dismiss',
+        role: 'dismiss',
+        onPress: () => void dismissBand($),
+      }),
+    );
+  } catch {
+    return next(e);
+  }
+}
+
+async function dismissBand($: BandDollar): Promise<void> {
+  try {
+    const newest = heldFindings().reduce((latest, f) => Math.max(latest, f.at), 0);
+    dismissedBefore = Math.max(await $.clock.now(), newest);
+    await update($, findingsVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The band stays as it was.
+  }
+}
+
+const PANE_ID = 'aka-findings';
+
+// A bare counter, like the findings one: a filter press bumps it to redraw the pane.
+const paneVersion = { plugin: 'aka', key: 'pane' } as const;
+
+type PaneDollar = Parameters<Hook<'ui.render'>>[0];
+
+const PANE_FILTERS: readonly (ViewSeverity | 'all')[] = [
+  'all',
+  'critical',
+  'high',
+  'medium',
+  'low',
+];
+
+async function setPaneFilter($: PaneDollar, filter: ViewSeverity | 'all'): Promise<void> {
+  try {
+    paneFilter = filter;
+    await update($, paneVersion, (version) => (version ?? 0) + 1);
+  } catch {
+    // The pane stays as it was.
+  }
+}
+
+// The pointer with everything after its category hidden: a pane never draws
+// the part that locates a value.
+function maskedPointer(pointer: string): string {
+  const prefix = /^\[\[aka:[a-z][a-z0-9_]*:/.exec(pointer)?.[0];
+  return prefix === undefined ? '[[aka:…]]' : `${prefix}…]]`;
+}
+
+async function bumpPane($: PaneDollar): Promise<void> {
+  await update($, paneVersion, (version) => (version ?? 0) + 1);
+}
+
+// Re-masks a value once its time is up, without waiting for another draw.
+async function maskLater($: PaneDollar, id: string, until: number): Promise<void> {
+  try {
+    await $.clock.sleep(SHOW_FOR_MS);
+    if (paneReveals.get(id)?.until === until) {
+      paneReveals.delete(id);
+      await bumpPane($);
+    }
+  } catch {
+    // The next draw re-masks it.
+  }
+}
+
+// Asks the helper for one vaulted value, on a press and never otherwise. The
+// helper checks consent and audits the reveal. Never throws.
+async function showValue($: PaneDollar, f: ViewFinding): Promise<void> {
+  if (f.pointer === undefined || revealing.has(f.id)) return;
+  revealing.add(f.id);
+  const epoch = revealEpoch;
+  try {
+    revealFailed.delete(f.id);
+    const answer = await runRevealHelper($, [{ token: f.pointer, reveal: true }], true);
+    if (epoch !== revealEpoch) return;
+    if (answer?.isOff === true) paneConsent = 'off';
+    const revealed = answer?.isOff === true ? undefined : answer?.items.get(f.pointer)?.revealed;
+    if (typeof revealed === 'string') {
+      const until = (await $.clock.now()) + SHOW_FOR_MS;
+      if (epoch !== revealEpoch) return;
+      paneReveals.set(f.id, { value: revealed, until });
+      void maskLater($, f.id, until);
+    } else if (answer?.isOff !== true) {
+      revealFailed.add(f.id);
+    }
+  } catch {
+    if (epoch === revealEpoch) revealFailed.add(f.id);
+  } finally {
+    revealing.delete(f.id);
+    try {
+      await bumpPane($);
+    } catch {
+      // The pane stays as it was.
+    }
+  }
+}
+
+// Asks the helper, once per opening of the pane, whether a value may be shown:
+// a pane request with no items answers the consent alone. Never throws.
+async function askPaneConsent($: PaneDollar): Promise<void> {
+  paneConsent = 'asking';
+  const epoch = revealEpoch;
+  const answer = await runRevealHelper($, [], true);
+  if (epoch !== revealEpoch) return;
+  paneConsent = answer === null || answer.isOff ? 'off' : 'on';
+  try {
+    await bumpPane($);
+  } catch {
+    // The next draw shows it.
+  }
+}
+
+async function hideValue($: PaneDollar, id: string): Promise<void> {
+  try {
+    paneReveals.delete(id);
+    await bumpPane($);
+  } catch {
+    // The pane stays as it was.
+  }
+}
+
+function clockTime(at: number): string {
+  const date = new Date(at);
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+function pointerRows(
+  { Text, Button }: ReturnType<PaneDollar['ui']['resolve']>,
+  $: PaneDollar,
+  f: ViewFinding,
+) {
+  if (f.pointer === undefined) return [];
+  const shown = paneReveals.get(f.id);
+  const rows = [
+    shown === undefined
+      ? h(Text, { key: `masked-${f.id}`, dimColor: true }, maskedPointer(f.pointer))
+      : h(Text, { key: `value-${f.id}` }, shown.value),
+  ];
+  if (shown !== undefined) {
+    rows.push(
+      h(Button, {
+        key: `hide-${f.id}`,
+        label: 'Hide',
+        variant: 'secondary',
+        onPress: () => void hideValue($, f.id),
+      }),
+    );
+  } else if (paneConsent === 'on') {
+    rows.push(
+      h(Button, {
+        key: `show-${f.id}`,
+        label: 'Show',
+        variant: 'secondary',
+        onPress: () => void showValue($, f),
+      }),
+    );
+  }
+  if (revealFailed.has(f.id)) {
+    rows.push(h(Text, { key: `failed-${f.id}`, dimColor: true }, "couldn't reveal"));
+  }
+  return rows;
+}
+
+// The findings pane: the session's findings newest first, a row of severity
+// filters above them. Anything unexpected hands on to the engine's pane.
+async function paneRender($: PaneDollar, e: BandArgs[1], next: BandArgs[2]) {
+  try {
+    // Read for their subscriptions only: a new version redraws the pane.
+    await $.state.get(findingsVersion);
+    await $.state.get(paneVersion);
+    await refreshFromFile($);
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
+    const rows = heldFindings().filter((f) => paneFilter === 'all' || f.severity === paneFilter);
+    if (paneConsent === 'unknown' && heldFindings().some((f) => f.pointer !== undefined)) {
+      void askPaneConsent($);
+    }
+    if (paneReveals.size > 0) {
+      const now = await $.clock.now();
+      for (const [id, shown] of paneReveals) if (shown.until <= now) paneReveals.delete(id);
+    }
+    return h(
+      Box,
+      { flexDirection: 'column', key: 'aka-pane' },
+      h(
+        Box,
+        { flexDirection: 'row', gap: 1, key: 'filters' },
+        ...PANE_FILTERS.map((filter) =>
+          h(Button, {
+            key: `filter-${filter}`,
+            label: filter === 'all' ? 'All' : severityStyle(filter).word,
+            variant: filter === paneFilter ? 'primary' : 'secondary',
+            onPress: () => void setPaneFilter($, filter),
+          }),
+        ),
+      ),
+      rows.length === 0
+        ? h(
+            Text,
+            { key: 'empty', dimColor: true },
+            paneFilter === 'all' ? 'No findings in this session.' : `No ${paneFilter} findings.`,
+          )
+        : null,
+      ...rows.map((f) =>
+        h(
+          Box,
+          { flexDirection: 'column', key: `row-${f.id}` },
+          h(
+            Text,
+            { color: severityStyle(f.severity).color, bold: f.severity === 'critical' },
+            `${chipText(f)}  ${clockTime(f.at)}`,
+          ),
+          ...pointerRows(ui, $, f),
+        ),
+      ),
+    );
+  } catch {
+    return next(e);
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
+    await followSession($);
+    void refreshStatus($, { evenEmpty: true });
+    try {
+      await $.command.register({
+        name: 'findings-pane',
+        description: "Show this session's AKA findings",
+      });
+    } catch {
+      // The band still points at the pane; the command is the only way in.
+    }
     await noteModRunning($);
     return next(e);
   });
@@ -581,17 +1066,20 @@ export const register: Register = (on) => {
     await noteModRunning($);
     // Nothing to redact: nothing is spawned.
     const plan = planPromptWith(e.text, await loadPolicy($));
-    if (plan.values.length === 0) return next(e);
-    const answer = await rewriteWithHelper($, e.text);
+    const answer = plan.values.length === 0 ? null : await rewriteWithHelper($, e.text);
+    // The widgets update apart: a host call that hangs never holds the prompt.
+    if (answer !== null) void takeFindings($, answer.findings);
     // A rewrite that leaves a value this module detected is not one to send.
-    if (answer === null || plan.values.some((value) => answer.text.includes(value))) {
-      return next(e);
-    }
-    return next({
-      ...e,
-      text: answer.text,
-      ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
-    });
+    const result =
+      answer === null || plan.values.some((value) => answer.text.includes(value))
+        ? await next(e)
+        : await next({
+            ...e,
+            text: answer.text,
+            ...(answer.note === null ? {} : { context: [...(e.context ?? []), answer.note] }),
+          });
+    void refreshFromFile($).then(() => refreshStatus($));
+    return result;
   });
 
   // The backstop: every other row the conversation keeps (attachments and the
@@ -611,14 +1099,38 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AssistantMessage' }, revealRender);
   on('ui.render', { component: 'UserMessage' }, revealRender);
+  on('ui.render', { component: 'AbovePrompt' }, bandRender);
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, paneRender);
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE_ID) forgetReveals();
+    return next(e);
+  });
+
+  on('command.run', { command: 'findings-pane' }, async ($) => {
+    try {
+      await $.ui.open({ id: PANE_ID, title: 'AKA findings', focus: true, closeOnEscape: true });
+    } catch {
+      // Nothing to open.
+    }
+    return { text: '' };
+  });
 
   on('tool.call', async ($, e, next) => {
+    void refreshStatus($);
     const input = toolArguments(e);
     const needsHelper = toolCallNeedsHelper(e.tool, input, await loadPolicy($));
     if (!needsHelper) return next(e);
     const answer = await decideToolCallWithHelper($, e.tool, input, e);
     if (answer === null) return next(e);
-    if (answer.deny !== null) return { deny: answer.deny };
+    // The widgets update apart: a host call that hangs never holds the call.
+    void takeFindings($, answer.findings);
+    if (answer.deny !== null) {
+      const first = answer.findings[0];
+      tell($, first === undefined ? answer.message : `Blocked: ${first.label}`);
+      return { deny: answer.deny };
+    }
+    // The helper leaves a message only when it says more than the band shows.
     tell($, answer.message);
     const result = await next(answer.input === null ? e : ({ ...e, ...answer.input } as typeof e));
     if (answer.context === null || result.deny !== undefined) return result;

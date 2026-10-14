@@ -128,6 +128,22 @@ test('the reserved keys are never part of the input the helper decides', async (
   expect(seen).toEqual([{ command: 'deploy --token [REDACTED:SECRET]' }]);
 });
 
+test('an answer that carries findings is still used', async ($, on) => {
+  useSnapshot(on, {});
+  const seen = endOfChain(on);
+  helper(on, {
+    stdout: ANSWER({
+      input: { command: 'deploy --token [REDACTED:SECRET]' },
+      findings: [{ v: 1, id: 'abc', ruleId: 'secrets/x', action: 'redacted' }],
+    }),
+  });
+
+  const result = await $.tool.call({ tool: 'Bash', command: `deploy --token ${POINTER}` } as never);
+
+  expect(result.deny).toBeUndefined();
+  expect(seen).toEqual([{ command: 'deploy --token [REDACTED:SECRET]' }]);
+});
+
 // A failure at any point leaves the call exactly as it came, to the layer beneath
 // (the PreToolUse command hook), which denies an ungranted pointer in an executable
 // field itself. The mod is never the only thing between the pointer and the shell.

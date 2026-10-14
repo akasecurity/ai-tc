@@ -5,12 +5,15 @@ import {
   readControlPlaneAttachmentMode,
   readControlPlaneCredentialState,
   readEffectiveSettings,
+  readSightingSharing,
   settingsDir,
+  webChatWithholding,
 } from '@akasecurity/persistence';
 
 import { renderLocale } from '../../lib/render-locale.ts';
 import { renderInstant } from '../../lib/rendered-at.ts';
 import { SettingsClient } from './SettingsClient';
+import { SightingSharingPanel } from './SightingSharingPanel';
 import { readSyncPanel } from './sync-panel-data.ts';
 import { SyncPanel } from './SyncPanel';
 
@@ -33,6 +36,12 @@ export default async function SettingsPage() {
   // same reason: a connection pinned with nothing locked governs the machine
   // all the same, and the form must not offer a choice the action refuses.
   const machineOnly = managedScopedRefusal() !== null;
+  // Why the browser extension records less from a web chat here than the
+  // web-chat consent says, or nothing, or null. The same reading the native
+  // host makes.
+  const webChatWithheld = webChatWithholding(settingsDir(), settings);
+  // Mode, answer and reason only; the credential stays on the server.
+  const sightingSharing = readSightingSharing();
   const renderedAt = renderInstant();
   // NULL ON A STANDALONE MACHINE, and then nothing is rendered at all. The
   // panel describes a relationship with a deployment: a machine without one has
@@ -66,7 +75,9 @@ export default async function SettingsPage() {
         connectionHeld={connectionHeld}
         attachmentMode={attachmentMode}
         machineOnly={machineOnly}
+        webChatWithheld={webChatWithheld ?? undefined}
       />
+      <SightingSharingPanel state={sightingSharing} />
       {/* BELOW the form, and the panel's own copy depends on it: a stale grant
           reads "Review it above to resume", which names the control in the
           section this sits under. */}

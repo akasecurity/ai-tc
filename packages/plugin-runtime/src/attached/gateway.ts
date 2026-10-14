@@ -61,6 +61,7 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
 import { withoutScopeKey } from './scope-strip.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
@@ -168,6 +169,12 @@ export interface AttachedDataGatewayDeps {
    * scoped one.
    */
   attachment: ResolvedAttachmentScope;
+  /**
+   * The deployment's name as a terminal shows it, for the session-start line
+   * (`forwardingScope`). Optional: a gateway built without one offers no line,
+   * which is the answer a gateway that cannot name where it forwards should give.
+   */
+  deploymentName?: string;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -230,7 +237,9 @@ function bundledRulesFlat(): readonly Rule[] {
  * on either attachment mode. Where the organization's model policy applies is a
  * separate question, answered per event by `governanceAppliesTo`.
  */
-export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, GovernanceScope {
+export class AttachedDataGateway
+  implements DataGateway, LocalStoreMaintenance, GovernanceScope, ForwardingScopeReader
+{
   /**
    * The control plane's OWN resolution of this session's inventory, captured by
    * ensureInventory. Null until the first successful forward — and it stays
@@ -1369,6 +1378,35 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    */
   governanceAppliesTo(scopeKey: string | undefined): boolean {
     return this.verdictFor(() => scopeKey) === 'forward';
+  }
+
+  /**
+   * Where this gateway forwards, for the session-start line: the deployment's
+   * name, and on a scoped attachment the key the local store holds for root
+   * `rootId` with this gateway's verdict on it. Null when the gateway was built
+   * without a name. No credential, nothing sent.
+   *
+   * On a scoped attachment the verdict is the one this instance RECORDED when the
+   * root was written through it, and null when it recorded none. A session start
+   * whose pass stopped before the root has no answer to give: the history
+   * reconcile writes a missing root later, keyed the same way, and forwards the
+   * session's records under it, so saying local-only there would be wrong as
+   * often as right. Never recorded from here, so asking before the root is
+   * written cannot hold the root's records local either.
+   */
+  forwardingScope(rootId: string): ForwardingScope | null {
+    const { deploymentName, attachment } = this.deps;
+    if (deploymentName === undefined) return null;
+    if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const verdict = this.rootVerdicts.get(rootId);
+    if (verdict === undefined) return null;
+    let rootKey: string | undefined;
+    try {
+      rootKey = this.deps.local.readSessionScopeKey(rootId);
+    } catch {
+      rootKey = undefined;
+    }
+    return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
   }
 
   // ---------------------------------------------------------------------

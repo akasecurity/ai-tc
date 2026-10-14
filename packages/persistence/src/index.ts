@@ -30,6 +30,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  isScopedAttachment,
   readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
@@ -39,6 +40,13 @@ export {
 } from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
+export {
+  clearDetectedWebAccounts,
+  DETECTED_WEB_ACCOUNT_RESIGHT_MS,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
+  readDetectedWebAccounts,
+  recordDetectedWebAccount,
+} from './detected-web-accounts.ts';
 export {
   canonicalRepoUrl,
   enrollableRepoKey,
@@ -247,6 +255,7 @@ export {
   readWorkspaceSettings,
   SETTINGS_FILENAME,
 } from './settings.ts';
+export { readSightingSharing } from './sighting-sharing.ts';
 export type { StoreSkew } from './store-skew.ts';
 export { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
 export type { SymlinkedStorePath } from './store-symlinks.ts';
@@ -257,6 +266,7 @@ export {
   bindingInput,
   deriveSubkeys,
   formatPointer,
+  mintPointer,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';
@@ -268,6 +278,14 @@ export {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
+export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
+export {
+  clearSightingKeys,
+  createSightingKeyStore,
+  readSightingKeys,
+  SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
+} from './vault/sighting-keys.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,
@@ -277,3 +295,4 @@ export type {
 } from './vault/vault.ts';
 export { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from './vault/vault.ts';
 export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';
+export { webChatWithholding } from './web-chat-withholding.ts';

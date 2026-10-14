@@ -18,12 +18,16 @@
  * Fail-open: any error → no output, exit 0.
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import type { PointersByText } from '../mod/findings-log.ts';
+import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
+import { largeInputBound } from './large-input.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
@@ -107,13 +111,22 @@ async function main(): Promise<void> {
   // See host-floor-notice.ts: PostToolUse is the other event whose newest
   // transcript record is guaranteed to belong to the running host.
   warnIfHostBelowFloor(config, getString(input, 'session_id'), getString(input, 'transcript_path'));
+  const sessionId = getString(input, 'session_id');
   const gateway = resolveDataGateway(config);
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under what is left
+  // of the field loop's own deadline, and withheld if that scan does not finish
+  // (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(RESPONSE_SCAN_DEADLINE_MS),
+  });
   // Vaulting (and everything narrated about it) is consent-gated; without the
   // grant this hook behaves exactly as it did before the vault existed.
   const vaultGlue = isVaultConsentValid(config.settings.vaultConsent) ? createVaultGlue() : null;
 
   let outcome: ResponseScanOutcome;
+  const capturedFields: { text: string; result: CaptureResult }[] = [];
+  const vaulted: PointersByText = new Map();
   try {
     // persist:'with-findings': benign responses record nothing (matching the
     // pre-structured-scan behavior); 'always' would copy every Read file and
@@ -122,28 +135,54 @@ async function main(): Promise<void> {
       toolName,
       response,
       fields,
-      (text) =>
-        runtime.capture(
+      async (text) => {
+        const result = await runtime.capture(
           { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
           { persist: 'with-findings' },
-        ),
+        );
+        capturedFields.push({ text, result });
+        return result;
+      },
       vaultGlue
-        ? (text, findings, reversible) =>
-            vaultGlue.tokenizeText(text, {
+        ? async (text, findings, reversible) => {
+            const tokenized = await vaultGlue.tokenizeText(text, {
               findings,
               reversible,
               sighting: filePath
                 ? { location: filePath, kind: 'file' }
                 : { location: `${toolName} output`, kind: 'tool-output' },
-            })
+            });
+            try {
+              vaulted.set(text, pointersByFinding(findings, reversible, tokenized.pointers));
+            } catch {
+              // A record of the pointers never changes the rewrite.
+            }
+            return tokenized;
+          }
         : undefined,
       { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },
     );
   } finally {
     await runtime.close();
   }
+  if (sessionId !== undefined) {
+    for (const { text, result } of capturedFields) {
+      const pointers = vaulted.get(text);
+      recordModFindings(config.dataDir, sessionId, {
+        sessionId,
+        kind: 'response',
+        text,
+        result,
+        where: 'tool-output',
+        action: toolFieldAction(result, pointers),
+        pointers,
+      });
+    }
+  }
   // Out of time before every field was scanned: what was found is still
   // acted on, and the rest passed through, so count it like any fail-open.
+  // A field that was reached but whose bounded scan did not finish is not
+  // counted here: it was withheld, not passed (outcome.tooLargeFields).
   if (outcome.unscannedFields > 0) countFailOpen();
 
   // The model note + user disclosure ride only on a tokenized outcome; a

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   enclosingCall,
+  enclosingCalls,
   variableReadsIn,
+  variableRefsOf,
   withLiteralCredentialRefs,
 } from '../../src/egress/credential-refs.ts';
 import { extractEgress } from '../../src/egress/extract.ts';
@@ -154,7 +156,7 @@ describe('enclosingCall', () => {
   });
 
   it('gives up past its lookback', () => {
-    const text = `fetch(${' '.repeat(5_000)}'${URL}')`;
+    const text = `fetch(${' '.repeat(1_500)}'${URL}')`;
     const start = text.indexOf('https');
     expect(enclosingCall(text, start, start + URL.length)).toBeUndefined();
   });
@@ -168,18 +170,49 @@ describe('enclosingCall', () => {
     });
   });
 
-  it('gives up once its step budget is spent', () => {
-    const text = `fetch('${URL}')`;
+  it('reads an unclosed quote, such as an apostrophe in a comment, as a plain character', () => {
+    const text = `// don't\nfetch('${URL}', process.env.K)`;
     const start = text.indexOf('https');
-    expect(enclosingCall(text, start, start + URL.length, { steps: 0 })).toBeUndefined();
-    expect(enclosingCall(text, start, start + URL.length, { steps: 10 })).toBeUndefined();
-    expect(enclosingCall(text, start, start + URL.length)).toBeDefined();
+    expect(enclosingCall(text, start, start + URL.length)).toEqual({
+      start: text.indexOf('('),
+      end: text.length,
+    });
   });
 
-  it('gives up on an unterminated string before the URL', () => {
-    const text = `fetch(x, "abc '${URL}')`;
+  it('skips an escaped quote inside a string', () => {
+    const text = `fetch('${URL}', 'it\\'s )', process.env.K)`;
     const start = text.indexOf('https');
-    expect(enclosingCall(text, start - 1, start + URL.length)).toBeUndefined();
+    expect(enclosingCall(text, start, start + URL.length)?.end).toBe(text.length);
+  });
+
+  it('places many offsets in one pass, each in its own call', () => {
+    const text = `a('${URL}'); b(c('${URL}'), 1);`;
+    const first = text.indexOf('https');
+    const second = text.indexOf('https', first + 1);
+    expect(enclosingCalls(text, [second, first])).toEqual([
+      { start: text.indexOf('c(') + 1, end: text.indexOf(')', second) + 1 },
+      { start: 1, end: text.indexOf(')') + 1 },
+    ]);
+  });
+
+  it('keeps matching brackets nested past its depth cap', () => {
+    const deep = '['.repeat(1_050) + ']'.repeat(1_050);
+    const text = `fetch('${URL}', ${deep})`;
+    const start = text.indexOf('https');
+    expect(enclosingCall(text, start, start + URL.length)).toEqual({ start: 5, end: text.length });
+  });
+});
+
+describe('variableRefsOf', () => {
+  it('reads nothing once the file budget cannot cover the call', () => {
+    const text = `fetch('${URL}', process.env.K)`;
+    const call = { start: 5, end: text.length };
+    expect(variableRefsOf(text, call, { chars: 1_000 })).toEqual([
+      { kind: 'variable', variableName: 'K' },
+    ]);
+    const spent = { chars: 3 };
+    expect(variableRefsOf(text, call, spent)).toEqual([]);
+    expect(spent.chars).toBe(3);
   });
 });
 

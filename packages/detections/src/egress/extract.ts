@@ -8,7 +8,7 @@
 // never lockfiles, never text containing NUL bytes.
 import type { EgressCredentialRef, HttpMethod, Span, Transport } from '@akasecurity/schema';
 
-import { callSearchBudget, enclosingCall, variableRefsOf } from './credential-refs.ts';
+import { enclosingCalls, variableRefsOf, variableScanBudget } from './credential-refs.ts';
 import { isPrivateOrReservedIPv4, isValidIPv4 } from './registry.ts';
 
 /** One URL or bare-IP destination reference found in a file's text. */
@@ -390,18 +390,9 @@ export function extractEgress(text: string): RawEndpointHit[] {
   const redactedOf = memoizeByLine((index) => redactedLineOf(lineTextOf(index)));
   const snippetAt = (index: number, offset: number): string =>
     snippetWindow(redactedOf(index), offset - (lineStarts[index] ?? 0));
-  const refsByCall = new Map<number, EgressCredentialRef[]>();
-  const budget = callSearchBudget();
-  const callOf = (start: number, end: number): Pick<RawEndpointHit, 'call' | 'credentialRefs'> => {
-    const call = enclosingCall(text, start, end, budget);
-    if (call === undefined) return {};
-    let refs = refsByCall.get(call.start);
-    if (refs === undefined) {
-      refs = variableRefsOf(text, call);
-      refsByCall.set(call.start, refs);
-    }
-    return refs.length === 0 ? { call } : { call, credentialRefs: refs };
-  };
+  // Each hit's offset, by position in `hits`, for the one call-search pass.
+  const hitOffsets: number[] = [];
+  const hitEnds: number[] = [];
 
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const start = match.index;
@@ -422,8 +413,9 @@ export function extractEgress(text: string): RawEndpointHit[] {
       method: inferMethod(text, start, start + matched.length),
       line: index + 1,
       snippet: snippetAt(index, start),
-      ...callOf(start, start + matched.length),
     });
+    hitOffsets.push(start);
+    hitEnds.push(start + matched.length);
   }
 
   for (const match of text.matchAll(IPV4_CANDIDATE)) {
@@ -439,11 +431,35 @@ export function extractEgress(text: string): RawEndpointHit[] {
       method: 'REF',
       line: index + 1,
       snippet: snippetAt(index, start),
-      ...callOf(start, start + match[0].length),
     });
+    hitOffsets.push(start);
+    hitEnds.push(start + match[0].length);
   }
 
-  return hits.sort(compareHits);
+  return withCalls(text, hits, hitOffsets, hitEnds).sort(compareHits);
+}
+
+// Each hit with the call expression it sits in and the variables that call reads.
+function withCalls(
+  text: string,
+  hits: RawEndpointHit[],
+  offsets: readonly number[],
+  ends: readonly number[],
+): RawEndpointHit[] {
+  if (hits.length === 0) return hits;
+  const calls = enclosingCalls(text, offsets);
+  const refsByCall = new Map<number, EgressCredentialRef[]>();
+  const budget = variableScanBudget();
+  return hits.map((hit, i) => {
+    const call = calls[i];
+    if (call === undefined || call.end < (ends[i] ?? 0)) return hit;
+    let refs = refsByCall.get(call.start);
+    if (refs === undefined) {
+      refs = variableRefsOf(text, call, budget);
+      refsByCall.set(call.start, refs);
+    }
+    return refs.length === 0 ? { ...hit, call } : { ...hit, call, credentialRefs: refs };
+  });
 }
 
 interface ParsedDestination {

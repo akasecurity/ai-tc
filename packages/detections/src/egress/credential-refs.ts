@@ -14,7 +14,6 @@ export interface TokenizedSecretSpan {
   token: string;
 }
 
-// Both bounds keep the search linear in the number of hits on a minified line.
 const CALL_LOOKBACK = 1_000;
 const CALL_LOOKAHEAD = 4_000;
 const CALLEE_WINDOW = 64;
@@ -67,22 +66,14 @@ const ENV_READS: readonly RegExp[] = [
   ),
 ];
 
-// Shared by every hit in one file, so a file of calls that never close costs a
-// bounded amount of work in total rather than the full search per hit.
-export interface CallSearchBudget {
-  steps: number;
-}
-
-const CALL_SEARCH_STEPS_PER_FILE = 4_000_000;
-
-/** A fresh search budget for one file. */
-export function callSearchBudget(): CallSearchBudget {
-  return { steps: CALL_SEARCH_STEPS_PER_FILE };
-}
+const STRING_SPAN_MAX = 4_000;
+const SPACE_RUN_MAX = 256;
+const STACK_DEPTH_MAX = 1_000;
+// The most call text one file's variable-read scan covers, in total.
+const VARIABLE_SCAN_CHARS_PER_FILE = 2_000_000;
 
 const BACKSLASH = 92;
 const NEWLINE = 10;
-const COMMA = 44;
 const SEMICOLON = 59;
 const OPEN_PAREN = 40;
 const CLOSE_PAREN = 41;
@@ -90,39 +81,16 @@ const OPEN_BRACKET = 91;
 const CLOSE_BRACKET = 93;
 const OPEN_BRACE = 123;
 const CLOSE_BRACE = 125;
+const BACKTICK = 96;
 
 function isQuote(code: number): boolean {
-  return code === 39 || code === 34 || code === 96;
-}
-
-function isOpener(code: number): boolean {
-  return code === OPEN_PAREN || code === OPEN_BRACKET || code === OPEN_BRACE;
-}
-
-function isCloser(code: number): boolean {
-  return code === CLOSE_PAREN || code === CLOSE_BRACKET || code === CLOSE_BRACE;
-}
-
-function isEscaped(text: string, at: number): boolean {
-  let slashes = 0;
-  for (let i = at - 1; i >= 0 && text.charCodeAt(i) === BACKSLASH; i -= 1) slashes += 1;
-  return slashes % 2 === 1;
-}
-
-// Where the backward search starts: before the quote that opens the string the
-// URL sits in, when one opens on the same stretch of plain text.
-function backwardStart(text: string, from: number, floor: number): number {
-  for (let i = from - 1; i >= floor; i -= 1) {
-    const code = text.charCodeAt(i);
-    if (isQuote(code)) return i;
-    if (code === NEWLINE || isOpener(code) || code === COMMA || code === SEMICOLON) return from;
-  }
-  return from;
+  return code === 39 || code === 34 || code === BACKTICK;
 }
 
 function previousNonSpace(text: string, before: number): number {
+  const floor = Math.max(-1, before - 1 - SPACE_RUN_MAX);
   let i = before - 1;
-  while (i >= 0 && SPACE.test(text.charAt(i))) i -= 1;
+  while (i > floor && SPACE.test(text.charAt(i))) i -= 1;
   return i;
 }
 
@@ -151,81 +119,128 @@ function opensBlock(text: string, open: number): boolean {
   return WORD_CHAR.test(char);
 }
 
-function openingParen(
-  text: string,
-  from: number,
-  floor: number,
-  budget: CallSearchBudget,
-): number | undefined {
-  let depth = 0;
-  for (let i = from - 1; i >= floor; i -= 1) {
-    if (--budget.steps < 0) return undefined;
+// Just past the quote that closes the string opened at `open`, or `open + 1`
+// when it does not close: on its own line for `'` and `"`, within a bound for
+// a backtick. An unclosed quote, such as an apostrophe in a comment, is then an
+// ordinary character and cannot swallow the rest of the file.
+function stringEnd(text: string, open: number): number {
+  const quote = text.charCodeAt(open);
+  const limit = Math.min(text.length, open + STRING_SPAN_MAX);
+  for (let i = open + 1; i < limit; i += 1) {
     const code = text.charCodeAt(i);
-    if (isQuote(code)) {
-      if (isEscaped(text, i)) continue;
-      let open = i - 1;
-      while (open >= floor && (text.charCodeAt(open) !== code || isEscaped(text, open))) open -= 1;
-      budget.steps -= i - open;
-      if (open < floor) return undefined;
-      i = open;
-    } else if (isCloser(code)) {
-      depth += 1;
-    } else if (isOpener(code)) {
-      if (depth > 0) depth -= 1;
-      else if (code === OPEN_PAREN) return isCall(text, i) ? i : undefined;
-      else if (code === OPEN_BRACE && opensBlock(text, i)) return undefined;
-    } else if (code === SEMICOLON && depth === 0) {
-      return undefined;
-    }
+    if (code === BACKSLASH) i += 1;
+    else if (code === quote) return i + 1;
+    else if (code === NEWLINE && quote !== BACKTICK) break;
   }
-  return undefined;
+  return open + 1;
 }
 
-function closingParen(text: string, open: number, budget: CallSearchBudget): number | undefined {
-  const limit = Math.min(text.length, open + CALL_LOOKAHEAD);
-  let depth = 0;
-  for (let i = open + 1; i < limit; i += 1) {
-    if (--budget.steps < 0) return undefined;
-    const code = text.charCodeAt(i);
-    if (isQuote(code)) {
-      let close = i + 1;
-      while (close < limit && (text.charCodeAt(close) !== code || isEscaped(text, close))) {
-        close += 1;
-      }
-      budget.steps -= close - i;
-      if (close >= limit) return undefined;
-      i = close;
-    } else if (isOpener(code)) {
-      depth += 1;
-    } else if (isCloser(code)) {
-      if (depth === 0) return code === CLOSE_PAREN ? i + 1 : undefined;
-      depth -= 1;
-    }
+interface Frame {
+  open: number;
+  code: number;
+  block: boolean;
+  statementBreak: boolean;
+  call?: boolean;
+  waiting: number[];
+}
+
+function frameIsCall(text: string, frame: Frame): boolean {
+  frame.call ??= isCall(text, frame.open);
+  return frame.call;
+}
+
+// The frame a hit belongs to: the innermost call parenthesis above it, looking
+// through array brackets and object braces, and past a URL-building call.
+function targetFrame(text: string, stack: readonly Frame[]): Frame | undefined {
+  let found: Frame | undefined;
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const frame = stack[i];
+    if (frame === undefined || frame.statementBreak || frame.block) break;
+    if (frame.code !== OPEN_PAREN) continue;
+    if (!frameIsCall(text, frame)) break;
+    if (found !== undefined) return frame;
+    found = frame;
+    if (!URL_BUILDERS.has(calleeOf(text, frame.open))) return frame;
   }
-  return undefined;
+  return found;
 }
 
 /**
- * The innermost call expression around `[start, end)`, from its opening
- * parenthesis to just past its closing one, or undefined when the span is in
- * no call that opens and closes within the search bounds or the budget runs
- * out. A URL-building call such as `new URL(...)` gives way to the call around
- * it.
+ * For each offset in `offsets`, the innermost call expression around it, from
+ * its opening parenthesis to just past its closing one, or undefined when the
+ * offset is in no call, or the call opens more than a lookback before it or is
+ * longer than a lookahead. A URL-building call such as `new URL(...)` gives way
+ * to the call around it. One pass over the text, whatever the number of offsets.
  */
-export function enclosingCall(
-  text: string,
-  start: number,
-  end: number,
-  budget: CallSearchBudget = callSearchBudget(),
-): Span | undefined {
-  const floor = Math.max(0, start - CALL_LOOKBACK);
-  let open = openingParen(text, backwardStart(text, start, floor), floor, budget);
-  if (open === undefined) return undefined;
-  if (URL_BUILDERS.has(calleeOf(text, open))) {
-    open = openingParen(text, open, floor, budget) ?? open;
+export function enclosingCalls(text: string, offsets: readonly number[]): (Span | undefined)[] {
+  const spans: (Span | undefined)[] = offsets.map(() => undefined);
+  const order = offsets.map((_, i) => i).sort((x, y) => (offsets[x] ?? 0) - (offsets[y] ?? 0));
+  const stack: Frame[] = [];
+  let next = 0;
+  const assign = (upTo: number): void => {
+    while (next < order.length && (offsets[order[next] ?? 0] ?? 0) <= upTo) {
+      const index = order[next] ?? 0;
+      const frame = targetFrame(text, stack);
+      if (frame !== undefined && (offsets[index] ?? 0) - frame.open <= CALL_LOOKBACK) {
+        frame.waiting.push(index);
+      }
+      next += 1;
+    }
+  };
+  // Brackets nested deeper than any call worth reading are counted, not kept.
+  let overflow = 0;
+  for (let i = 0; i < text.length;) {
+    assign(i);
+    const code = text.charCodeAt(i);
+    if (isQuote(code)) {
+      const end = stringEnd(text, i);
+      assign(end - 1);
+      i = end;
+      continue;
+    }
+    if (code === OPEN_PAREN || code === OPEN_BRACKET || code === OPEN_BRACE) {
+      if (stack.length >= STACK_DEPTH_MAX) {
+        overflow += 1;
+      } else {
+        stack.push({
+          open: i,
+          code,
+          block: code === OPEN_BRACE && opensBlock(text, i),
+          statementBreak: false,
+          waiting: [],
+        });
+      }
+    } else if (code === CLOSE_PAREN || code === CLOSE_BRACKET || code === CLOSE_BRACE) {
+      if (overflow > 0) {
+        overflow -= 1;
+      } else {
+        const frame = stack.pop();
+        if (frame !== undefined && code === CLOSE_PAREN && i + 1 - frame.open <= CALL_LOOKAHEAD) {
+          for (const index of frame.waiting) spans[index] = { start: frame.open, end: i + 1 };
+        }
+      }
+    } else if (code === SEMICOLON && overflow === 0) {
+      const top = stack.at(-1);
+      if (top !== undefined) top.statementBreak = true;
+    }
+    i += 1;
   }
-  const close = closingParen(text, open, budget);
-  return close !== undefined && close >= end ? { start: open, end: close } : undefined;
+  return spans;
+}
+
+/** The innermost call expression around `[start, end)`; see `enclosingCalls`. */
+export function enclosingCall(text: string, start: number, end: number): Span | undefined {
+  const span = enclosingCalls(text, [start])[0];
+  return span !== undefined && span.end >= end ? span : undefined;
+}
+
+/** The variable-read scan budget for one file. */
+export interface VariableScanBudget {
+  chars: number;
+}
+
+export function variableScanBudget(): VariableScanBudget {
+  return { chars: VARIABLE_SCAN_CHARS_PER_FILE };
 }
 
 /** The environment variables `text` reads, by name, once each, in text order. */
@@ -243,8 +258,18 @@ export function variableReadsIn(text: string): string[] {
   return [...new Set(found.map((read) => read.name))];
 }
 
-/** Variable references for the call `call` in `text`, capped per call site. */
-export function variableRefsOf(text: string, call: Span): EgressCredentialRef[] {
+/**
+ * Variable references for the call `call` in `text`, capped per call site.
+ * None once `budget` cannot cover the call's text.
+ */
+export function variableRefsOf(
+  text: string,
+  call: Span,
+  budget: VariableScanBudget = variableScanBudget(),
+): EgressCredentialRef[] {
+  const length = call.end - call.start;
+  if (length > budget.chars) return [];
+  budget.chars -= length;
   return variableReadsIn(text.slice(call.start, call.end))
     .slice(0, CREDENTIAL_REFS_PER_CALL_SITE_MAX)
     .map((variableName) => ({ kind: 'variable', variableName }));

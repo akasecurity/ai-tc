@@ -181,6 +181,6 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   },
   {
     tag: '0038_variable_name',
-    sql: 'ALTER TABLE `inspection_findings` ADD `variable_name` text;--> statement-breakpoint\nALTER TABLE `secret_vault` ADD `variable_name` text;',
+    sql: 'ALTER TABLE `inspection_findings` ADD `variable_name` text;--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_variable_name` ON `inspection_findings` (`first_detected_at`) WHERE variable_name IS NOT NULL;--> statement-breakpoint\nALTER TABLE `secret_vault` ADD `variable_name` text;',
   },
 ];

@@ -59,6 +59,9 @@ export interface CaptureResult {
   // The (possibly redacted) text to pass through, or null if blocked
   text: string | null;
   findings: MatchResult[];
+  // The display name of each rule in `findings`, by rule id, as the rule that
+  // matched declares it (custom and pulled rules included).
+  ruleNames?: Record<string, string>;
   // For a 'redact' decision: exactly the findings whose spans the rewritten
   // `text` replaced (warn/log findings in the same field are not in it). A
   // caller substituting its own rewrite — a reversible one — must cover these

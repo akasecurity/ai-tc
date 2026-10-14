@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./scan-worker": "./src/scan-worker.ts",
     "./bare-command": "./src/bare-command.ts",
+    "./vault-glue": "./src/vault-glue.ts",
     "./browser": "./src/mask.ts"
   },
   "scripts": {

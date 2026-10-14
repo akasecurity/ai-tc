@@ -289,6 +289,7 @@ export function createPluginRuntime(
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
   let evidenceOf = evidenceLookup(rules);
+  let nameOf = new Map<string, string>();
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
   // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
   // is known (see ensureInitialized).
@@ -373,6 +374,7 @@ export function createPluginRuntime(
     }
     rules = [...verified, ...unverified];
     evidenceOf = evidenceLookup(rules);
+    nameOf = new Map(rules.map((rule) => [rule.id, rule.name]));
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     // Raise-only, over the one enforcement ladder: an organization can tighten
@@ -478,6 +480,15 @@ export function createPluginRuntime(
       rewritable,
       ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
     });
+  }
+
+  function ruleNamesOf(findings: readonly MatchResult[]): Record<string, string> | undefined {
+    const names: Record<string, string> = {};
+    for (const { ruleId } of findings) {
+      const name = nameOf.get(ruleId);
+      if (name !== undefined && name !== '') names[ruleId] = name;
+    }
+    return Object.keys(names).length === 0 ? undefined : names;
   }
 
   function decide(
@@ -760,6 +771,8 @@ export function createPluginRuntime(
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted, rewritable);
+      const ruleNames = ruleNamesOf(findings);
+      if (ruleNames !== undefined) decision.ruleNames = ruleNames;
       const blockedReferences = await recordBlockedDetections(
         decision,
         excepted,

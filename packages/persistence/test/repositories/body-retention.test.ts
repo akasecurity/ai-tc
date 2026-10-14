@@ -644,6 +644,30 @@ describe('body expiry — finding excerpts', () => {
     expect(nameOf('new')).toBe(name);
   });
 
+  it('clears the variable name on a finding that never held an excerpt', () => {
+    seed(raw, [
+      { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },
+      { id: 'new', kind: 'code_change', ageDays: 1, content: 'y'.repeat(100) },
+    ]);
+    const name = ['STRIPE', 'KEY'].join('_');
+    const named = raw.prepare(
+      `UPDATE inspection_findings SET variable_name = ?, first_detected_at = ? WHERE id = ?`,
+    );
+    named.run(name, NOW - 60 * DAY, 'find-old');
+    named.run(name, NOW - DAY, 'find-new');
+    const rowOf = (id: string) =>
+      raw
+        .prepare(`SELECT context, variable_name FROM inspection_findings WHERE id = ?`)
+        .get(`find-${id}`) as { context: string | null; variable_name: string | null };
+    expect(rowOf('old')).toEqual({ context: null, variable_name: name });
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(bodyOf(raw, 'old').content).toBeNull();
+    expect(rowOf('old').variable_name).toBeNull();
+    expect(rowOf('new').variable_name).toBe(name);
+  });
+
   it('clears the excerpt of a tool call past the horizon, which never had a body', () => {
     seed(raw, [
       { id: 'old-call', kind: 'tool_call', ageDays: 60, content: null },

@@ -106,4 +106,17 @@ describe('the findings page reads — variable name', () => {
     expect(detail?.match.variableName).toBe(NAME);
     expect(detail?.match.maskedValue).toBe('s*********2');
   });
+
+  it('surfaces no name longer than the cap, even one written around the bound', async () => {
+    const id = record(NAME);
+    const recentId = record(NAME);
+    corpusConnection(db)
+      .prepare(`UPDATE inspection_findings SET variable_name = ?`)
+      .run('K'.repeat(MAX_VARIABLE_NAME_LENGTH + 1));
+    const detail = await db.findings.findingInstance(id);
+    expect(detail?.match).not.toHaveProperty('variableName');
+    const recent = await db.findings.recentFindings({ limit: 2 });
+    expect(recent.map((v) => v.id)).toContain(recentId);
+    expect(recent.filter((v) => 'variableName' in v)).toHaveLength(0);
+  });
 });

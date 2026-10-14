@@ -33,7 +33,11 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { exceptionPointer, unscannedTooLargeMessage } from '../exception-guidance.ts';
+import {
+  exceptionPointer,
+  unscannedPastWalkLimitsMessage,
+  unscannedTooLargeMessage,
+} from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookOutput } from './shared.ts';
 import type { ResponseFields } from './tool-response.ts';
@@ -71,11 +75,19 @@ export interface ResponseScanOutcome {
   completedScans: number;
   /**
    * True when some of the result was NOT scanned: a field whose bounded scan
-   * did not finish (`CaptureResult.scanIncomplete`), or text the reader's walk
-   * bounds left out (`ResponseFields.truncated`). Such a result has no findings
-   * from the part nobody checked, and must never read as clean.
+   * did not finish (`timedOut`), or text the reader's walk bounds left out
+   * (`walkTruncated`). Such a result has no findings from the part nobody
+   * checked, and must never read as clean.
    */
   unscanned: boolean;
+  /** A field's bounded scan did not finish (`CaptureResult.scanIncomplete`). */
+  timedOut: boolean;
+  /**
+   * The reader's walk bounds left text out (`ResponseFields.truncated`). Kept
+   * apart from `timedOut` because the two say different things to the user: one
+   * ran out of time, the other never collected the text at all.
+   */
+  walkTruncated: boolean;
 }
 
 /**
@@ -98,6 +110,8 @@ export async function scanResponseFields(
     toolName,
     completedScans: 0,
     unscanned: collected.truncated,
+    timedOut: false,
+    walkTruncated: collected.truncated,
   };
 
   for (const field of collected.fields) {
@@ -109,6 +123,7 @@ export async function scanResponseFields(
     // model — but the field is reported as unscanned rather than as clean.
     if (result.scanIncomplete !== undefined) {
       outcome.unscanned = true;
+      outcome.timedOut = true;
       continue;
     }
     outcome.completedScans += 1;
@@ -182,7 +197,8 @@ export function responseDecision(dialect: Dialect, outcome: ResponseScanOutcome)
       `(${uniqueRuleIds(outcome.warnedFindings)}) — the output reached the model ` +
       `unchanged.${pointer}`;
   }
-  if (outcome.unscanned) {
+  const delivered = 'the output already reached the model unchanged';
+  if (outcome.timedOut) {
     // Scoped to the part that went unchecked whenever any field did finish, so
     // the sentence never claims "nothing in it was checked" beside findings
     // from the part that was.
@@ -190,10 +206,11 @@ export function responseDecision(dialect: Dialect, outcome: ResponseScanOutcome)
       outcome.completedScans > 0
         ? `part of the ${outcome.toolName} result`
         : `${outcome.toolName} result`;
-    const unscanned = unscannedTooLargeMessage(
-      subject,
-      'the output already reached the model unchanged',
-    );
+    const unscanned = unscannedTooLargeMessage(subject, delivered);
+    message = message === undefined ? unscanned : `${message} ${unscanned}`;
+  }
+  if (outcome.walkTruncated) {
+    const unscanned = unscannedPastWalkLimitsMessage(`${outcome.toolName} result`, delivered);
     message = message === undefined ? unscanned : `${message} ${unscanned}`;
   }
   if (message === undefined) return { output: null };

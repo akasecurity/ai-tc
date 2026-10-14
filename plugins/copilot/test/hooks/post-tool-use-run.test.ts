@@ -22,7 +22,10 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
-import { unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
+import {
+  unscannedPastWalkLimitsMessage,
+  unscannedTooLargeMessage,
+} from '../../src/exception-guidance.ts';
 import { runPostToolUse } from '../../src/hooks/post-tool-use-run.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -325,7 +328,10 @@ describe('runPostToolUse on an object-shaped VS Code result', () => {
       { akaHome },
     );
     const text = String((output as { systemMessage?: unknown } | undefined)?.systemMessage);
-    expect(text).toBe(unscannedTooLargeMessage('part of the run_in_terminal result', DELIVERED));
+    // Positive control: the walk-limits sentence, which is not the timeout one.
+    expect(text).toBe(unscannedPastWalkLimitsMessage('run_in_terminal result', DELIVERED));
+    expect(text).not.toContain('time limit');
+    expect(text).not.toMatch(/\bblocked\b/iu);
     expectNoEchoOf(text, FIXTURE.example);
   });
 });

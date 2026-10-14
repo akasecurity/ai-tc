@@ -7,7 +7,10 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
+import {
+  unscannedPastWalkLimitsMessage,
+  unscannedTooLargeMessage,
+} from '../../src/exception-guidance.ts';
 import { responseDecision, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -140,11 +143,28 @@ describe('a result that was not wholly scanned', () => {
     });
   });
 
-  it('reports text the reader left out, even when no field was captured', async () => {
+  // A walk-cap truncation is not a timeout: nothing ran out of time, the text
+  // was never collected. The sentence has to say which.
+  it('reports text the reader left out as past the walk limits, not as a timeout', async () => {
     const outcome = await outcomeOf([], [], true);
-    expect(responseDecision('cli', outcome).notice).toBe(
-      unscannedTooLargeMessage('bash result', DELIVERED),
-    );
+    const notice = String(responseDecision('cli', outcome).notice);
+    expect(notice).toBe(unscannedPastWalkLimitsMessage('bash result', DELIVERED));
+    expect(notice).not.toContain('time limit');
+  });
+
+  it('says both when one field timed out and the walk also left text out', async () => {
+    const outcome = await outcomeOf([CLI_FIELD], [refused()], true);
+    const notice = String(responseDecision('cli', outcome).notice);
+    expect(notice).toContain(unscannedTooLargeMessage('bash result', DELIVERED));
+    expect(notice).toContain(unscannedPastWalkLimitsMessage('bash result', DELIVERED));
+    expectNoEchoOf(notice, RAW);
+  });
+
+  it('reads a timed-out field alone as a timeout, not as past the walk limits', async () => {
+    const outcome = await outcomeOf([CLI_FIELD], [refused()]);
+    const notice = String(responseDecision('cli', outcome).notice);
+    expect(notice).toContain('time limit');
+    expect(notice).not.toContain('structured result');
   });
 
   it('names only the unchecked part when another field finished with a finding', async () => {

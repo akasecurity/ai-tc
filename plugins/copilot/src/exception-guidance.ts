@@ -86,6 +86,20 @@ export function unscannedTooLargeMessage(subject: string, delivered: string): st
   );
 }
 
+// The same capture-only fact when the cause is not time but the bounds a
+// structured result is read under: text past the depth, item-count or size
+// limits was never collected, so it was never scanned. Saying "within the time
+// limit" there would send the user looking for a slow scan that never ran. Like
+// its sibling above it never says blocked, names no rule and offers no
+// exception.
+export function unscannedPastWalkLimitsMessage(subject: string, delivered: string): string {
+  return (
+    `Part of this ${subject} lies past the depth, item-count or size limits AKA reads ` +
+    `a structured result to, so that part was not checked and ${delivered}. ` +
+    'Have the tool return less at once to have all of it scanned.'
+  );
+}
+
 // One trailing sentence for the redact/warn systemMessage branches: redacted
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when

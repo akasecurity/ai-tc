@@ -559,6 +559,19 @@ describe('createStoreOutboundEncoder', () => {
     expect(unbounded.content).toBe(expectedToken(key, value));
   });
 
+  it('sends no alias, and no token at all, while sighting sharing is off', async () => {
+    const key = keyOf(7, 4);
+    const previous = keyOf(6, 5);
+    const value = patShaped(53);
+    const acceptedUntil = new Date(Date.now() + 60_000).toISOString();
+    storeSightingKey(base, key, { sharing: false, previous: [{ key: previous, acceptedUntil }] });
+
+    const result = await encoderOver(base).encodeContent(value);
+
+    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
+    expect(result.content).not.toContain(expectedToken(previous, value));
+  });
+
   it('sends the marker for a pointer the vault does not hold', async () => {
     const key = keyOf(1, 5);
     storeSightingKey(base, key);

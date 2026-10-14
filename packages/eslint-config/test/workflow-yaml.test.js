@@ -158,6 +158,11 @@ describe('parseWorkflow', () => {
       ['an unresolved tag', 'jobs: {}\nname: !custom x\n', /decode differently/],
       ['a %YAML directive', '%YAML 1.1\n---\njobs: {}\n', /`%YAML` directive/],
       ['a %TAG directive', '%TAG !e! tag:example.com,2000:\n---\njobs: {}\n', /`%TAG` directive/],
+      [
+        'a %TAG !! redefinition that a tag resolves through',
+        '%TAG !! tag:example.com,2000:\n---\njobs: !!str x\n',
+        /decode differently/,
+      ],
       ['a merge key', 'base: &b { x: 1 }\njobs:\n  a:\n    <<: *b\n', /merge key/],
       ['a quoted merge key', 'base: &b { x: 1 }\njobs:\n  a:\n    "<<": *b\n', /merge key/],
       ['a numeric key', 'jobs:\n  1: { runs-on: x }\n', /not a plain string/],
@@ -169,6 +174,13 @@ describe('parseWorkflow', () => {
 
     it.each(refused)('%s', (_label, text, message) => {
       expect(() => parseWorkflow(text)).toThrow(message);
+    });
+
+    // Only a handle other than `!!` is refused as a directive. Redefining `!!`
+    // changes nothing until a tag is written through it, and the warning above is
+    // what refuses that.
+    it('accepts a %TAG !! redefinition that no tag resolves through', () => {
+      expect(() => parseWorkflow('%TAG !! tag:example.com,2000:\n---\njobs: {}\n')).not.toThrow();
     });
 
     // Doubling alias after alias is the shape that multiplies, and the failure

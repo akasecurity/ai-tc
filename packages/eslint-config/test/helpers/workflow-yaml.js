@@ -16,8 +16,11 @@ import { isAlias, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
 //
 // What it will not decode it refuses, rather than guess: a document with a parse
 // error or warning (an unresolved tag, a duplicate key, a tab used as indentation),
-// more than one document, a `%YAML` or `%TAG` directive, a mapping key that is not
-// a string, a `<<` merge key, and an alias that points at a node it sits inside.
+// more than one document, a `%YAML` directive, a `%TAG` directive that names a
+// handle other than `!!`, a mapping key that is not a string, a `<<` merge key, and
+// an alias that points at a node it sits inside. A `%TAG !!` that redefines the
+// default prefix is not refused on its own, since nothing resolves through it
+// until a tag is written; the warning for the tag that does is.
 // Anchors and aliases are decoded — GitHub accepts them. A merge key is not: that
 // is a YAML 1.1 extension, GitHub's parser follows 1.2, and a reader that expanded
 // it would report a mapping the runner may never build.
@@ -155,7 +158,7 @@ export function parseWorkflow(source) {
   );
   expect(
     Object.keys(document.directives.tags),
-    'the workflow opens with a `%TAG` directive',
+    'the workflow opens with a `%TAG` directive that names a handle other than `!!`',
   ).toEqual(['!!']);
 
   const root = decode(document.contents, document, {

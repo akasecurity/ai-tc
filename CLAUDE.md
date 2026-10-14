@@ -1752,12 +1752,13 @@ release channel** from the `cli-v*` npm publish:
   repository's run; and the fail-closed, notice and explanation scripts are RUN and their exit
   status and output read, since a pattern cannot tell `exit 0 # exit 1` from `exit 1`. The reader
   refuses what it cannot decode faithfully rather than guess: a parse error or warning, a duplicate
-  key, more than one document, a `%YAML` or `%TAG` directive, a key that is not a string, an alias
-  that points at a node it sits inside, a document that decodes to 20,000 nodes or more (the
-  alias-chain backstop, `MAX_NODES` in `helpers/workflow-yaml.js`; the largest workflow here decodes
-  to under 300, so raise it only if a real workflow approaches it), and a `<<` merge key — GitHub's
-  parser follows YAML 1.2, where that is an ordinary key, so a reader that expanded it would report
-  a mapping the runner may never build. Anchors and aliases are decoded. The version a pinned
+  key, more than one document, a `%YAML` directive, a `%TAG` directive that names a handle other
+  than `!!`, a key that is not a string, an alias that points at a node it sits inside, a document
+  that decodes to 20,000 nodes or more (the alias-chain backstop, `MAX_NODES` in
+  `helpers/workflow-yaml.js`; the largest workflow here decodes to under 300, so raise it only if a
+  real workflow approaches it), and a `<<` merge key — GitHub's parser follows YAML 1.2, where that
+  is an ordinary key, so a reader that expanded it would report a mapping the runner may never
+  build. Anchors and aliases are decoded. The version a pinned
   `uses:` names in its trailing `# v1.2.3` comment is a comment, which the reader keeps beside the
   value it trails. These are an early catch for a mistake, not a control — whoever can change the
   workflow can change its guard. The installation is the ceiling on all of this and nothing in this

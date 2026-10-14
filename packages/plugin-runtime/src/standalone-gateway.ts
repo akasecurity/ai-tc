@@ -215,6 +215,14 @@ export class StandaloneDataGateway
 
   // One SQLite transaction inside the LocalDatabase (fail-open there).
   recordConfigScan(record: ConfigScanRecord): Promise<void> {
+    // The scan event hangs off its session's root by a foreign key, so the root
+    // is planted first, as recordAuditEvent plants it for a row that FKs onto
+    // one. A session start that leaves its root to the transcript reconciler
+    // still records its scan this way; once a root exists the stub is a no-op.
+    const event = record.scanEvent;
+    if (event.rootSessionId !== undefined && event.rootSessionId !== event.id) {
+      this.db.auditEvents.ensureSessionRoot(event.rootSessionId, event.startedAt);
+    }
     this.db.recordConfigScan(record);
     return Promise.resolve();
   }

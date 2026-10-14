@@ -35,6 +35,18 @@ export function sightingTokenScanner(): RegExp {
   return new RegExp(SIGHTING_TOKEN_PATTERN.source, 'g');
 }
 
+/** The most previous-version tokens one sighting carries. */
+export const SIGHTING_ALIASES_MAX = 4;
+
+/**
+ * The same value's sighting tokens under each previous key version still
+ * accepted, beside its current-version token. Absent when there are none.
+ */
+export const SightingAliases = z
+  .array(z.string().regex(SIGHTING_TOKEN_ANCHORED))
+  .min(1)
+  .max(SIGHTING_ALIASES_MAX);
+
 /**
  * One sighting token in a capture's content and the detection that found its
  * value. Further per-value descriptors are added to this object.
@@ -42,6 +54,7 @@ export function sightingTokenScanner(): RegExp {
 export const CaptureSighting = z
   .object({
     token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+    aliases: SightingAliases.optional(),
     ruleId: z.string().min(1),
     category: DetectionCategory,
   })

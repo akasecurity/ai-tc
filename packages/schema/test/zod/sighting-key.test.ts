@@ -158,3 +158,37 @@ describe('StoredSightingKeys', () => {
     ).toBe(false);
   });
 });
+
+describe('previous versions and their overlap window', () => {
+  const until = '2026-10-21T09:00:00.000Z';
+
+  it('keeps the instant each previous version stops being accepted', () => {
+    const parsed = SightingKeyResponse.parse(
+      body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+    );
+    expect(parsed.previous).toEqual([{ keyVersion: 1, key: material(3), acceptedUntil: until }]);
+  });
+
+  it('accepts a previous version without one, from a deployment that does not send it', () => {
+    expect(SightingKeyResponse.parse(body()).previous?.[0]).not.toHaveProperty('acceptedUntil');
+  });
+
+  it('refuses an instant that is not an ISO datetime', () => {
+    for (const acceptedUntil of ['tomorrow', '2026-10-21', 1_766_000_000_000]) {
+      expect(
+        SightingKeyResponse.safeParse(
+          body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil }] }),
+        ).success,
+      ).toBe(false);
+    }
+  });
+
+  it('stores the instant with the map', () => {
+    const stored = StoredSightingKeys.parse({
+      ...body({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: until }] }),
+      fetchedAtMs: 1,
+      endpointFingerprint: 'a'.repeat(64),
+    });
+    expect(stored.previous?.[0]?.acceptedUntil).toBe(until);
+  });
+});

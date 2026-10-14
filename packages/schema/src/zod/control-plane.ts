@@ -1,7 +1,7 @@
 import * as z from 'zod';
 
 import { EgressCredentialRefs, EgressReconcile } from './egress-extraction.ts';
-import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
+import { SIGHTING_TOKEN_ANCHORED, SightingAliases } from './event.ts';
 import type { ActionTaken } from './finding.ts';
 import { ACTION_TAKEN_KEYS, VariableName } from './finding.ts';
 import { AuditEventInput, ToolCallInspection } from './meta.ts';
@@ -1088,10 +1088,14 @@ const sightingKeyMaterial = z
 
 const sightingKeyVersion = z.number().int().min(1);
 
-/** One accepted version of the key: its number and its base64url material. */
+/**
+ * One accepted version of the key: its number, its base64url material, and,
+ * for a previous version, the instant after which it is no longer accepted.
+ */
 export const SightingKeyVersion = z.object({
   keyVersion: sightingKeyVersion,
   key: sightingKeyMaterial,
+  acceptedUntil: z.iso.datetime().optional(),
 });
 export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
 
@@ -1100,7 +1104,8 @@ export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
  *
  * `keyVersion`/`key` are the current version. `previous` lists the versions
  * still accepted during a rotation overlap; it may be absent or empty. No two
- * entries share a version.
+ * entries share a version. A previous version without `acceptedUntil`, or past
+ * it, is not used.
  *
  * A response parser, so it carries no component id and strips unknown keys.
  * A refusal names the field and never the value.
@@ -1183,6 +1188,7 @@ export type SightingProject = z.infer<typeof SightingProject>;
 export const CredentialSighting = z
   .object({
     token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+    aliases: SightingAliases.optional(),
     ruleId: printable(256).min(1),
     category: z.literal('secret'),
     variableName: VariableName.min(1).optional(),

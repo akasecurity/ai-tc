@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CaptureSighting,
   EventMetadata,
+  SIGHTING_ALIASES_MAX,
   SIGHTING_TOKEN_ANCHORED,
+  SightingAliases,
   sightingTokenScanner,
 } from '../../src/zod/event.ts';
 import { POINTER_TOKEN_ANCHORED, pointerTokenScanner } from '../../src/zod/vault.ts';
@@ -50,5 +52,28 @@ describe('capture sightings on the wire', () => {
       CaptureSighting.safeParse({ token: tokenOf('1', FP), ruleId: '', category: 'secret' })
         .success,
     ).toBe(false);
+  });
+});
+
+describe('sighting aliases', () => {
+  const sighting = { token: tokenOf('3', FP), ruleId: 'secrets/github-pat', category: 'secret' };
+  const aliases = (n: number): string[] =>
+    Array.from({ length: n }, (_, i) => tokenOf(String(i + 1), FP));
+
+  it('carries up to the cap of previous-version tokens beside the current one', () => {
+    expect(SIGHTING_ALIASES_MAX).toBe(4);
+    const withAliases = { ...sighting, aliases: aliases(SIGHTING_ALIASES_MAX) };
+    expect(CaptureSighting.parse(withAliases)).toEqual(withAliases);
+    expect(SightingAliases.safeParse(aliases(1)).success).toBe(true);
+  });
+
+  it('refuses more than the cap, an empty list, or an entry that is not a sighting token', () => {
+    expect(
+      CaptureSighting.safeParse({ ...sighting, aliases: aliases(SIGHTING_ALIASES_MAX + 1) })
+        .success,
+    ).toBe(false);
+    expect(CaptureSighting.safeParse({ ...sighting, aliases: [] }).success).toBe(false);
+    expect(CaptureSighting.safeParse({ ...sighting, aliases: [pointer] }).success).toBe(false);
+    expect(CaptureSighting.safeParse({ ...sighting, aliases: ['plain'] }).success).toBe(false);
   });
 });

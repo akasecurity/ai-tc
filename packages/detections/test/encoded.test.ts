@@ -341,8 +341,7 @@ describe('encoded secrets — bounds', () => {
     expect(MAX_DECODED_CHARS).toBe(200_000);
   });
 
-  it('decodes the worst shapes at the search bound within a pinned budget', // the assertion, the timeout only bounds the harness. // vitest's 20 s default on a busy machine; the per-shape bound below is // Six shapes × four runs of ~200,000-character decodes take well over
-  () => {
+  it('decodes the worst shapes at the search bound within a pinned budget', () => { // the assertion, the timeout only bounds the harness. // vitest's 20 s default on a busy machine; the per-shape bound below is // Six shapes × four runs of ~200,000-character decodes take well over
     // Measured with the module memo bypassed (`limits` passed, warmed, minimum
     // of three runs, 200,000-character inputs): uninstrumented, Node 26 on this
     // machine, the worst shape is ~250 ms (single base64 run ~180, single hex

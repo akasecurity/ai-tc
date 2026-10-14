@@ -11,15 +11,35 @@ export {
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_IDENTITY_FILENAME,
   ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
+export type { AttachedIdentityInput, WorkAccountWrite } from './attached-identity.ts';
+export {
+  attachedUserDigestOf,
+  bindingHashOf,
+  codingScopeExtras,
+  codingScopeExtrasAt,
+  credentialDigestOf,
+  forgetWorkAccounts,
+  readAttachedIdentity,
+  readBoundAttachedIdentity,
+  recordValidatedWorkAccount,
+  removeAttachedIdentity,
+  scopeTagOf,
+  WORK_ACCOUNT_LOCK_TIMEOUT_MS,
+  writeAttachedIdentity,
+} from './attached-identity.ts';
 export {
   addAttachmentScopeEntries,
   freshAttachmentScope,
+  markCodingAgentEntries,
   removeAttachmentScopeEntries,
+  turnWorkSubscriptionsOff,
+  turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
 export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
@@ -248,6 +268,12 @@ export {
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions, isParseableBinaryVersion } from './semver.ts';
+export {
+  clearSessionAccountState,
+  pruneSessionAccountState,
+  SESSION_ACCOUNTS_DIRNAME,
+  sessionAccountsDir,
+} from './session-accounts.ts';
 export type { OnboardingAnswers } from './settings.ts';
 export type { EffectiveSettings } from './settings.ts';
 export {

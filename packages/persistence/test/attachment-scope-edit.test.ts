@@ -9,7 +9,10 @@ import { describe, expect, it } from 'vitest';
 import {
   addAttachmentScopeEntries,
   freshAttachmentScope,
+  markCodingAgentEntries,
   removeAttachmentScopeEntries,
+  turnWorkSubscriptionsOff,
+  turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from '../src/attachment-scope-edit.ts';
 
@@ -329,5 +332,196 @@ describe('removeAttachmentScopeEntries', () => {
     const raw = stored();
     removeAttachmentScopeEntries(raw, ENDPOINT, [PAYMENTS]);
     expect(raw).toStrictEqual(stored());
+  });
+});
+
+const ACCOUNT = 'claude:2ef4cd3c-c23c-473a-96be-1275cfc79103';
+const OTHER_ACCOUNT = 'claude:f6793695-e29b-47e4-9473-c77e9ba752e9';
+const account = (identity: string, over: Record<string, unknown> = {}) => ({
+  kind: 'account',
+  identity,
+  enrolledAt: ISO,
+  ...over,
+});
+
+describe('turnWorkSubscriptionsOff', () => {
+  it('an unknown envelope key survives the opt-out', () => {
+    const { next, changed } = turnWorkSubscriptionsOff(stored(), ENDPOINT);
+
+    expect(changed).toBe(true);
+    expect(next).toStrictEqual({ ...stored(), workSubscriptions: 'off' });
+  });
+
+  it('leaves the record it was handed untouched', () => {
+    const raw = stored();
+    turnWorkSubscriptionsOff(raw, ENDPOINT);
+    expect(raw).toStrictEqual(stored());
+  });
+
+  it('changes nothing on a record already off, and hands back the same record', () => {
+    const raw = { ...stored(), workSubscriptions: 'off' };
+    expect(turnWorkSubscriptionsOff(raw, ENDPOINT)).toEqual({ next: raw, changed: false });
+    expect(turnWorkSubscriptionsOff(raw, ENDPOINT).next).toBe(raw);
+  });
+
+  it('writes off over a value this build does not know', () => {
+    const raw = { ...stored(), workSubscriptions: 'paused' };
+    expect(turnWorkSubscriptionsOff(raw, ENDPOINT)).toEqual({
+      next: { ...stored(), workSubscriptions: 'off' },
+      changed: true,
+    });
+  });
+
+  it.each(UNREADABLE_BINDING)(
+    'turns off a record for this deployment with %s, keeping the rest as found',
+    (_label, over) => {
+      const raw = { ...stored(), ...over };
+      expect(turnWorkSubscriptionsOff(raw, ENDPOINT).next).toStrictEqual({
+        ...raw,
+        workSubscriptions: 'off',
+      });
+    },
+  );
+
+  it.each<[string, unknown]>([
+    ['no record at all', undefined],
+    ['a record for another deployment', { ...stored(), endpoint: OTHER_ENDPOINT }],
+    ['a value that is not a record', 'not-a-scope'],
+  ])('starts a new, unbound record from %s', (_label, raw) => {
+    expect(turnWorkSubscriptionsOff(raw, ENDPOINT)).toStrictEqual({
+      next: { endpoint: ENDPOINT, entries: [], workSubscriptions: 'off' },
+      changed: true,
+    });
+  });
+});
+
+describe('turnWorkSubscriptionsOn', () => {
+  it('removes the opt-out, keeping every other key and entry as found', () => {
+    const { next, changed } = turnWorkSubscriptionsOn(
+      { ...stored(), workSubscriptions: 'off' },
+      ENDPOINT,
+    );
+
+    expect(changed).toBe(true);
+    expect(next).toStrictEqual(stored());
+  });
+
+  it('removes a value this build does not know as well', () => {
+    expect(
+      turnWorkSubscriptionsOn({ ...stored(), workSubscriptions: 'paused' }, ENDPOINT).next,
+    ).toStrictEqual(stored());
+  });
+
+  it("removes it from another deployment's record, which reads as off too", () => {
+    const raw = { ...stored(), endpoint: OTHER_ENDPOINT, workSubscriptions: 'off' };
+    expect(turnWorkSubscriptionsOn(raw, ENDPOINT).next).toStrictEqual({
+      ...stored(),
+      endpoint: OTHER_ENDPOINT,
+    });
+  });
+
+  it('changes nothing on a record with no opt-out, and hands back the same record', () => {
+    const raw = stored();
+    expect(turnWorkSubscriptionsOn(raw, ENDPOINT)).toEqual({ next: raw, changed: false });
+    expect(turnWorkSubscriptionsOn(raw, ENDPOINT).next).toBe(raw);
+    expect(turnWorkSubscriptionsOn(undefined, ENDPOINT)).toEqual({
+      next: undefined,
+      changed: false,
+    });
+  });
+
+  it('replaces a stored value that is not a record with an empty one for this deployment', () => {
+    expect(turnWorkSubscriptionsOn('not-a-scope', ENDPOINT)).toStrictEqual({
+      next: { endpoint: ENDPOINT, entries: [] },
+      changed: true,
+    });
+  });
+
+  it('leaves the record it was handed untouched', () => {
+    const raw = { ...stored(), workSubscriptions: 'off' };
+    turnWorkSubscriptionsOn(raw, ENDPOINT);
+    expect(raw).toStrictEqual({ ...stored(), workSubscriptions: 'off' });
+  });
+});
+
+describe('markCodingAgentEntries', () => {
+  it('marks a stored account entry in place, keeping its label, its time and every other key', () => {
+    const raw = {
+      ...stored(),
+      entries: [repo(PAYMENTS), account(ACCOUNT, { label: 'Work', note: 'a newer build' }), NEWER],
+    };
+    const { next, marked } = markCodingAgentEntries(raw, ENDPOINT, [ACCOUNT]);
+
+    expect(marked).toEqual([ACCOUNT]);
+    expect(next).toStrictEqual({
+      ...raw,
+      entries: [
+        repo(PAYMENTS),
+        account(ACCOUNT, { label: 'Work', note: 'a newer build', codingAgents: true }),
+        NEWER,
+      ],
+    });
+  });
+
+  it('leaves an entry already marked, a repository entry and another identity as they are', () => {
+    const raw = {
+      ...stored(),
+      entries: [repo(PAYMENTS), account(ACCOUNT, { codingAgents: true }), account(OTHER_ACCOUNT)],
+    };
+    const result = markCodingAgentEntries(raw, ENDPOINT, [ACCOUNT, PAYMENTS]);
+
+    expect(result.marked).toEqual([]);
+    expect(result.next).toBe(raw);
+  });
+
+  it("marks nothing in another deployment's record", () => {
+    const raw = { ...stored(), endpoint: OTHER_ENDPOINT, entries: [account(ACCOUNT)] };
+    expect(markCodingAgentEntries(raw, ENDPOINT, [ACCOUNT])).toEqual({ next: raw, marked: [] });
+  });
+
+  it('leaves the record it was handed untouched', () => {
+    const raw = { ...stored(), entries: [account(ACCOUNT)] };
+    markCodingAgentEntries(raw, ENDPOINT, [ACCOUNT]);
+    expect(raw).toStrictEqual({ ...stored(), entries: [account(ACCOUNT)] });
+  });
+});
+
+describe('the opt-out and the coding-agents marker through every edit', () => {
+  const MARKED = account(ACCOUNT, { codingAgents: true });
+  const optedOut = () => ({
+    ...stored(),
+    workSubscriptions: 'off',
+    entries: [repo(PAYMENTS), MARKED, NEWER] as unknown[],
+  });
+
+  it('enroll, unenroll and rotation edits keep workSubscriptions and codingAgents', () => {
+    const enrolled = addAttachmentScopeEntries(optedOut(), ENDPOINT, [repo(LEDGER)]).next;
+    expect(enrolled).toStrictEqual({
+      ...optedOut(),
+      entries: [repo(PAYMENTS), MARKED, NEWER, repo(LEDGER)],
+    });
+
+    const unenrolled = removeAttachmentScopeEntries(enrolled, ENDPOINT, [PAYMENTS]).next;
+    expect(unenrolled).toStrictEqual({ ...optedOut(), entries: [MARKED, NEWER, repo(LEDGER)] });
+
+    // A key rotation keeps the stored record whole exactly when it is bound to
+    // the organization and account the key verified as, so the opt-out and the
+    // marker ride along only while such a record still reads as bound.
+    expect(isAttachmentScopeBoundTo(optedOut(), ENDPOINT, WHO)).toBe(true);
+    expect(
+      isAttachmentScopeBoundTo({ ...optedOut(), workSubscriptions: 'paused' }, ENDPOINT, WHO),
+    ).toBe(true);
+
+    // The two new edits keep what each other wrote.
+    const unmarked = { ...stored(), entries: [account(ACCOUNT)] };
+    const marked = markCodingAgentEntries(unmarked, ENDPOINT, [ACCOUNT]).next;
+    expect(turnWorkSubscriptionsOff(marked, ENDPOINT).next).toStrictEqual({
+      ...stored(),
+      workSubscriptions: 'off',
+      entries: [MARKED],
+    });
+    expect(
+      markCodingAgentEntries({ ...unmarked, workSubscriptions: 'off' }, ENDPOINT, [ACCOUNT]).next,
+    ).toStrictEqual({ ...stored(), workSubscriptions: 'off', entries: [MARKED] });
   });
 });

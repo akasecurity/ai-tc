@@ -40,8 +40,10 @@ can be stopped or rewritten. Your prompts and the tool output the model reads
 **are** captured, scanned and recorded, so a secret in either shows up as a
 finding on the dashboard; **neither can be withheld or masked.** A `block` or
 `redact` policy on one of those is recorded as a finding and the text goes to
-the model unchanged, which AKA says on stderr (the CLI) or as a message (VS
-Code) rather than pretending it enforced.
+the model unchanged. AKA says so as a message under VS Code; on the CLI it
+writes the notice to stderr, and whether the CLI shows a successful hook's
+stderr to you has not been confirmed (see below). It never pretends it
+enforced.
 
 The reason is that neither host has a channel for it that has been seen to
 work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
@@ -54,7 +56,9 @@ refused.** A field of 32,768 characters or more is scanned in a separate thread
 under a deadline. If that scan does not finish — or there is no thread to run it
 in — AKA says the text was too large to scan and that it went to the model
 unchanged. It is never treated as clean, and never stopped: neither event has a
-channel to stop it with.
+channel to stop it with. A structured tool result is read only to a fixed
+depth, number of text values and total size; anything past those limits is
+reported as unscanned in the same way.
 
 **There is still no history backfill.** Nothing reads the sessions that
 happened before AKA was installed, or any session's own transcript on disk.

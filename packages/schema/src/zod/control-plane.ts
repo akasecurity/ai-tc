@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { EgressReconcile } from './egress-extraction.ts';
+import { EgressCredentialRefs, EgressReconcile } from './egress-extraction.ts';
 import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
 import type { ActionTaken } from './finding.ts';
 import { ACTION_TAKEN_KEYS, VariableName } from './finding.ts';
@@ -618,6 +618,11 @@ export const EgressIngestHit = z
       dynamic: z.boolean(),
       vendored: z.boolean(),
     }),
+    /**
+     * The credentials this call site uses. Present only while this machine
+     * shares credential sightings and holds a sighting key; absent otherwise.
+     */
+    credentialRefs: EgressCredentialRefs.optional(),
   })
   .meta({ id: 'EgressIngestHit' });
 export type EgressIngestHit = z.infer<typeof EgressIngestHit>;

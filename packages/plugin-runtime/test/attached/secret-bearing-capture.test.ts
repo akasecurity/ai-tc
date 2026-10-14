@@ -93,14 +93,19 @@ const scannerCapture = (filePath: string, content: string): CaptureRecord => ({
   scopeKey: KEY,
 });
 
-const promptCapture = (content: string): CaptureRecord => ({
+const promptCapture = (
+  id: string,
+  content: string,
+  metadata?: CaptureRecord['event']['metadata'],
+): CaptureRecord => ({
   event: {
-    id: 'prompt-1',
+    id,
     sourceTool: 'claude-code',
     kind: 'prompt',
     occurredAt: OCCURRED,
     contentHash: contentHashOf(content),
     content,
+    ...(metadata !== undefined ? { metadata } : {}),
   },
   findings: [],
   scopeKey: KEY,
@@ -184,14 +189,18 @@ describe.each([
     );
   });
 
-  it('is never sent by the outbox drain, even when marked owed', async () => {
+  it('is never sent by the outbox drain, even under a drained kind and marked owed', async () => {
     const gateway = gatewayWith(
       client(() => Promise.reject(new Error('plane down'))),
       attachment,
     );
     try {
-      await gateway.recordCapture(scannerCapture('/repo/.env', DOTENV_TEXT));
-      await gateway.recordCapture(promptCapture('a prompt that was not delivered'));
+      // Filed as a prompt, a kind the drain selects and rebuilds, so the
+      // snapshot check is the only thing that keeps it back.
+      await gateway.recordCapture(
+        promptCapture('prompt-env', DOTENV_TEXT, { filePath: '/repo/.env', wholeFile: true }),
+      );
+      await gateway.recordCapture(promptCapture('prompt-1', 'a prompt that was not delivered'));
     } finally {
       await gateway.close();
     }

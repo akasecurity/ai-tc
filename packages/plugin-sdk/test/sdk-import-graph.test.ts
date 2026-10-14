@@ -418,6 +418,53 @@ describe("the SDK's value imports from the root entry", () => {
   });
 });
 
+describe('the ./account entry', () => {
+  const ACCOUNT_DIR = 'packages/plugin-sdk/src/account/';
+  const NO_ACCOUNT_IMPORTS = new Set([
+    'child_process',
+    'node:child_process',
+    'node:dgram',
+    'node:http',
+    'node:http2',
+    'node:https',
+    'node:net',
+    'node:tls',
+  ]);
+  const inAccount = (r: Reach): string[] =>
+    [...r.modules].filter((file) => file.startsWith(ACCOUNT_DIR)).sort();
+
+  it("is reached by none of the SDK's value imports", () => {
+    expect(inAccount(reach(SDK_SYMBOLS))).toEqual([]);
+  });
+
+  it('is not loaded by the root entry, even without tree-shaking', () => {
+    expect(inAccount(reach('all', { treeShake: false }))).toEqual([]);
+  });
+
+  it('imports no network or child-process module of its own', () => {
+    const account = reach('all', {
+      specifier: '@akasecurity/plugin-sdk/account',
+      treeShake: false,
+    });
+    const own = inAccount(account).flatMap((file) =>
+      factsOf(resolve(REPO_ROOT, file))
+        .imports.map((i) => i.specifier)
+        .filter((specifier) => NO_ACCOUNT_IMPORTS.has(specifier))
+        .map((specifier) => `${file}: ${specifier}`),
+    );
+    expect(own).toEqual([]);
+  });
+
+  it('reaches its own modules, so the cases above are not describing an empty graph', () => {
+    const account = reach('all', {
+      specifier: '@akasecurity/plugin-sdk/account',
+      treeShake: false,
+    });
+    expect(inAccount(account)).toContain(`${ACCOUNT_DIR}claude-validate.ts`);
+    expect(inAccount(account)).toContain(`${ACCOUNT_DIR}account-env.ts`);
+  });
+});
+
 describe('the ./vault-glue entry', () => {
   const plain = reach('all', {
     specifier: '@akasecurity/plugin-sdk/vault-glue',

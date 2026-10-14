@@ -11,7 +11,8 @@
     "./scan-worker": "./src/scan-worker.ts",
     "./bare-command": "./src/bare-command.ts",
     "./vault-glue": "./src/vault-glue.ts",
-    "./browser": "./src/mask.ts"
+    "./browser": "./src/mask.ts",
+    "./account": "./src/account/index.ts"
   },
   "scripts": {
     "gen:bundled-packs": "node scripts/gen-bundled-packs.mjs",

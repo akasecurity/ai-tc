@@ -2,10 +2,23 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { createOwnerOnlyFileSync, ensureDataDirSync, tightenFile } from './paths.ts';
+import type { Occupant } from './paths.ts';
+import {
+  classifyOccupant,
+  createOwnerOnlyFileSync,
+  ensureDataDirSync,
+  KeyUnclaimableError,
+  tightenFile,
+} from './paths.ts';
 
 export const CAPTURE_ID_KEY_FILENAME = 'capture-id.key';
 const KEY_BYTES = 32;
+
+const OCCUPANT_REASON: Record<Occupant['kind'], string> = {
+  symlink: 'a symlink is there; remove it so a key can be created',
+  gone: 'the file was removed while it was being created',
+  unknown: 'the path is occupied but cannot be inspected; check the permissions on its directory',
+};
 
 function readKey(file: string): Buffer | null {
   let raw: string;
@@ -36,6 +49,13 @@ export function loadOrCreateCaptureIdKey(dataDir: string): Buffer {
   const key = randomBytes(KEY_BYTES);
   if (createOwnerOnlyFileSync(file, `${key.toString('base64')}\n`)) return key;
   const winner = readKey(file);
-  if (winner === null) throw new Error(`capture id key file (${file}) could not be created`);
+  if (winner === null) {
+    const occupant = classifyOccupant(file);
+    throw new KeyUnclaimableError(
+      `capture id key: cannot create ${file} — ${OCCUPANT_REASON[occupant.kind]}`,
+      occupant.cause,
+    );
+  }
+  tightenFile(file);
   return winner;
 }

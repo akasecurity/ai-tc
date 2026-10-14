@@ -1,10 +1,11 @@
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from '../src/capture-id-key.ts';
 import { loadOrCreateFingerprintKey, rotateFingerprintKey } from '../src/fingerprint.ts';
+import { KeyUnclaimableError } from '../src/paths.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const store = useTempStore('aka-capture-id-key-');
@@ -32,4 +33,12 @@ describe('loadOrCreateCaptureIdKey', () => {
     expect(() => loadOrCreateCaptureIdKey(store.dataDir)).toThrow(/corrupt/);
     expect(readFileSync(file, 'utf8')).toBe('not a key\n');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails as an unclaimable key, not a corrupt one, when a dangling symlink holds the path',
+    () => {
+      symlinkSync(join(store.dataDir, 'nowhere'), join(store.dataDir, CAPTURE_ID_KEY_FILENAME));
+      expect(() => loadOrCreateCaptureIdKey(store.dataDir)).toThrow(KeyUnclaimableError);
+    },
+  );
 });

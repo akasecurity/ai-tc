@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { join } from 'node:path';
 
 import type { AttachedCredentialAny, WorkspaceSettings } from '@akasecurity/schema';
+import { ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX } from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ATTACHED_IDENTITY_FILENAME } from '../src/attached-derived.ts';
@@ -220,6 +221,27 @@ describe('writeAttachedIdentity', () => {
     expect(existsSync(fileOf())).toBe(false);
   });
 
+  it('keeps the stored record and the session state when a refresh carries an email that does not normalize', () => {
+    attach();
+    const before = readFileSync(fileOf(), 'utf8');
+    const dir = plantSessionAccountState();
+    const written = writeAttachedIdentity(
+      store.dataDir,
+      {
+        endpoint: ENDPOINT,
+        apiKey: ROTATED_KEY,
+        tenantName: TENANT,
+        userEmail: 'member-17',
+        source: 'whoami',
+        stillCurrent: () => true,
+      },
+      NOW,
+    );
+    expect(written).toBe(false);
+    expect(readFileSync(fileOf(), 'utf8')).toBe(before);
+    expect(existsSync(dir)).toBe(true);
+  });
+
   it('reports a write that fails, and leaves no record', () => {
     mkdirSync(fileOf());
     expect(attach()).toBe(false);
@@ -339,6 +361,47 @@ describe('recordValidatedWorkAccount', () => {
     for (let n = 1; n <= 8; n += 1) expect(learn(orgN(n))).toBe('written');
     expect(learn(orgN(9))).toBe('refused');
     expect(readAttachedIdentity(store.dataDir)?.workAccounts).toHaveLength(8);
+  });
+
+  it('keeps every other key and entry as found, an entry this build cannot read included', () => {
+    attach();
+    const unreadable = {
+      kind: 'account',
+      identity: 'example:65f94956-0480-40e0-8f32-57f82813e476',
+      enrolledAt: NOW.toISOString(),
+    };
+    const stored = JSON.parse(readFileSync(fileOf(), 'utf8')) as Record<string, unknown>;
+    const edited = { ...stored, refreshedBy: 'a newer build', workAccounts: [unreadable] };
+    writeFileSync(fileOf(), JSON.stringify(edited));
+    expect(learn()).toBe('written');
+    expect(JSON.parse(readFileSync(fileOf(), 'utf8'))).toStrictEqual({
+      ...edited,
+      workAccounts: [unreadable, learned(WORK_ORG)],
+    });
+  });
+
+  it('counts an entry this build cannot read toward the cap on learned keys', () => {
+    attach();
+    for (let n = 1; n < ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX; n += 1) {
+      expect(learn(orgN(n))).toBe('written');
+    }
+    const stored = JSON.parse(readFileSync(fileOf(), 'utf8')) as { workAccounts: unknown[] };
+    const unreadable = {
+      kind: 'account',
+      identity: 'example:65f94956-0480-40e0-8f32-57f82813e476',
+      enrolledAt: NOW.toISOString(),
+    };
+    writeFileSync(
+      fileOf(),
+      JSON.stringify({ ...stored, workAccounts: [...stored.workAccounts, unreadable] }),
+    );
+    expect(readAttachedIdentity(store.dataDir)?.workAccounts).toHaveLength(
+      ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX - 1,
+    );
+
+    expect(learn(orgN(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX))).toBe('refused');
+    const after = JSON.parse(readFileSync(fileOf(), 'utf8')) as { workAccounts: unknown[] };
+    expect(after.workAccounts).toHaveLength(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX);
   });
 
   it.each([

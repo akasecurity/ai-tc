@@ -1,8 +1,6 @@
-// Pure sessionStart-payload reading, split out of the `session-start.ts` entry
-// script so it can be unit-tested WITHOUT importing the entry (whose top-level
-// `runHookFailOpen(main)` reads stdin and would block test collection forever).
-// Hooks stay thin glue; their logic is tested here. Same split as
-// `pre-tool-use-decision.ts`.
+// Pure sessionStart-payload reading, split out of the handler in
+// `session-start-run.ts` so the payload rules are unit-tested on their own,
+// with no store at all. Same split as `pre-tool-use-decision.ts`.
 //
 // Every reader below takes the DIALECT FIRST, matching ./dialect.ts. Both
 // parameters are consumed as values in some call shapes, so a flipped call can

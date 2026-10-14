@@ -43,6 +43,7 @@ import type { EventMetadata } from '@akasecurity/schema';
 
 import type { Dialect, ToolCall } from './dialect.ts';
 import { readCwd, readSessionId } from './dialect.ts';
+import { readEventName } from './event-name.ts';
 
 /**
  * The watchdog `runHookFailOpen` races the hook body against.
@@ -356,6 +357,44 @@ export async function runHookFailOpen(
     }
   }
   process.exit(0);
+}
+
+// ─── The in-process handler seam ─────────────────────────────────────────────
+
+/**
+ * Where a hook handler reads the machine from, for a caller that is not the
+ * host. Every field defaults to the real machine, so the entry passes nothing.
+ */
+export interface HookHandlerOptions {
+  /** The AKA home the store and settings live under. Defaults to `~/.aka`. */
+  akaHome?: string | undefined;
+  /** The home directory host config is read under. Defaults to the OS home. */
+  homeDir?: string | undefined;
+}
+
+/**
+ * A hook's whole body, minus the process: the event token argv carried (see
+ * ./event-name.ts), the raw stdin text, and where to find the machine. It
+ * answers the one object to emit, or `undefined` for silence.
+ *
+ * A handler reads neither the event token nor stdin itself and never exits,
+ * so a test drives it in-process against a temp home. The entry script is
+ * `runHookEntry(handler)` and nothing else.
+ */
+export type HookHandler = (
+  event: string | undefined,
+  stdin: string,
+  options?: HookHandlerOptions,
+) => Promise<HookOutput | undefined>;
+
+/**
+ * The entry-script form of a {@link HookHandler}: argv's event token and stdin
+ * feed it inside {@link runHookFailOpen}, so the stdin read races the same
+ * watchdog the body does and every fault still writes `failOpen` (or nothing)
+ * and exits 0.
+ */
+export async function runHookEntry(handler: HookHandler, failOpen?: HookOutput): Promise<never> {
+  return runHookFailOpen(async () => handler(readEventName(), await readStdin()), failOpen);
 }
 
 /**

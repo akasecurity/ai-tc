@@ -16,20 +16,28 @@
  * A real `node:sqlite` store in a real temp dir, per CLAUDE.md's Testing
  * section: nothing here is mocked, because what is being checked is SQLite's
  * own semantics around a content-addressed root written after its children.
+ * The root is opened through the hook's own handler (`runSessionStart`), fed
+ * the recorded payload, so what is ordered is what the hook really does.
  */
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
-import { handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { createPluginRuntime, type PluginConfig } from '@akasecurity/plugin-sdk';
+import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import {
+  createPluginRuntime,
+  loadConfig,
+  type PluginConfig,
+  resolveCopilotProvider,
+} from '@akasecurity/plugin-sdk';
 import { HARNESS, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { readSessionStartFacts } from '../../src/hooks/session-start-payload.ts';
+import { runSessionStart } from '../../src/hooks/session-start-run.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures', 'cli');
@@ -38,50 +46,31 @@ function fixture(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(FIXTURES, name), 'utf8')) as Record<string, unknown>;
 }
 
-let dataDir: string;
+let akaHome: string;
 let cwd: string;
 let home: string;
 
 beforeEach(() => {
-  dataDir = mkdtempSync(join(tmpdir(), 'aka-copilot-order-'));
+  akaHome = mkdtempSync(join(tmpdir(), 'aka-copilot-order-'));
   cwd = mkdtempSync(join(tmpdir(), 'aka-copilot-order-cwd-'));
   home = mkdtempSync(join(tmpdir(), 'aka-copilot-order-home-'));
-  mkdirSync(join(dataDir, 'settings'), { recursive: true });
 });
 
 afterEach(() => {
-  removeTrees([dataDir, cwd, home]);
+  removeTrees([akaHome, cwd, home]);
 });
 
+/** The config the handler itself resolves for `akaHome`. */
 function config(): PluginConfig {
-  return {
-    settings: {
-      specVersion: 1,
-      // Standalone with body expiry off, so none of the three detached children
-      // `handleSessionStart` can spawn is reachable from this fixture — a suite
-      // that started a real background process would be measuring that too.
-      runMode: 'standalone',
-      policy: 'redact',
-      historicalAccess: 'session-only',
-      dataSharesInPlace: true,
-      vaultKeyCustody: 'file',
-      vaultInlineReveal: 'masked',
-      redactFallback: 'warn',
-      bodyRetention: { enabled: false, retainDays: 30 },
-    },
-    dataDir,
-    dbPath: join(dataDir, 'aka.db'),
-    settingsDir: join(dataDir, 'settings'),
-    onboarded: true,
-    // What this host resolves: nothing. See plugin-sdk's provider-copilot.ts.
-    provider: { provider: 'unknown' },
-  };
+  return loadConfig(akaHome, resolveCopilotProvider);
 }
 
 /** Write one prompt capture the way the userPromptSubmitted hook will. */
 async function capturePrompt(sessionId: string, text: string): Promise<void> {
   const cfg = config();
-  const runtime = createPluginRuntime(resolveDataGateway(cfg), cfg.settings, { dataDir });
+  const runtime = createPluginRuntime(resolveDataGateway(cfg), cfg.settings, {
+    dataDir: cfg.dataDir,
+  });
   try {
     await runtime.capture({
       kind: 'prompt',
@@ -94,22 +83,18 @@ async function capturePrompt(sessionId: string, text: string): Promise<void> {
   }
 }
 
-async function openSession(sessionId: string, harnessInterface: string | undefined): Promise<void> {
-  await handleSessionStart(
-    {
-      sessionId,
-      cwd,
-      tool: SOURCE_TOOL.Copilot,
-      harnessVersion: '1.0.83',
-      harnessInterface,
-      homeDir: home,
-    },
-    config(),
-  );
+/** Run the sessionStart handler on the recorded CLI payload, re-pointed at `cwd`. */
+async function openSession(sessionId: string): Promise<void> {
+  const payload = { ...fixture('sessionStart.json'), sessionId, cwd };
+  const output = await runSessionStart('sessionStart', JSON.stringify(payload), {
+    akaHome,
+    homeDir: home,
+  });
+  expect(output).toBeUndefined();
 }
 
 function rows(sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(join(dataDir, 'aka.db'));
+  const db = new DatabaseSync(config().dbPath);
   try {
     return db.prepare(sql).all();
   } finally {
@@ -164,7 +149,7 @@ describe('sessionStart arriving after the session’s first prompt', () => {
     // The recorded order: the prompt first, the session root twenty
     // milliseconds later.
     await capturePrompt(sessionId, 'run the shell command: false');
-    await openSession(sessionId, facts.harnessInterface);
+    await openSession(sessionId);
 
     const session = only("SELECT * FROM audit_events WHERE event_type = 'session'");
     expect(session.id).toBe(sessionId);
@@ -189,9 +174,9 @@ describe('sessionStart arriving after the session’s first prompt', () => {
   it('is claimed once however many times the hook runs', async () => {
     const sessionId = 'repeat-session';
     await capturePrompt(sessionId, 'first prompt');
-    await openSession(sessionId, 'cli');
-    await openSession(sessionId, 'cli');
-    await openSession(sessionId, 'cli');
+    await openSession(sessionId);
+    await openSession(sessionId);
+    await openSession(sessionId);
 
     expect(rows("SELECT * FROM audit_events WHERE event_type = 'session'")).toHaveLength(1);
     // The prompt is still there and still attached: a repeat claim must not

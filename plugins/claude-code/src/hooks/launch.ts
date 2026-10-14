@@ -15,26 +15,43 @@
  * Fail-open, by the Claude Code convention: whatever goes wrong here — no
  * cache, a body that cannot be loaded or throws while it loads — the process
  * exits 0 having written nothing to stdout, which the host reads as "no
- * opinion". The body keeps its own fail-open handling for everything after it
+ * opinion". A body that cannot be loaded also writes one fixed line to stderr,
+ * so a hook that scanned nothing is not indistinguishable from one that found
+ * nothing. The cache is turned on through the module namespace rather than a
+ * named import, so a Node without `enableCompileCache` links the launcher and
+ * runs the hook uncached instead of failing to start it. The body keeps its own fail-open handling for everything after it
  * has loaded, and exits on its own. An exit from here is not added to the
  * fail-open count the body keeps: that counter writes through the store layer,
  * and the launcher bundles nothing it does not need before the cache is on.
  */
 import { mkdirSync } from 'node:fs';
-import { enableCompileCache } from 'node:module';
+import * as nodeModule from 'node:module';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { bodyScriptFor, CACHE_DIR_MODE, compileCacheDir } from './launch-paths.ts';
+import { version as PLUGIN_VERSION } from '../../package.json';
+import {
+  BODY_LOAD_FAILED,
+  bodyScriptFor,
+  CACHE_DIR_MODE,
+  compileCacheDir,
+} from './launch-paths.ts';
+
+// Read as possibly absent: present on every Node this plugin supports, but a
+// missing export must cost the cache, never the hook.
+const enableCompileCache = (nodeModule as { enableCompileCache?: (dir: string) => unknown })
+  .enableCompileCache;
 
 async function launch(): Promise<void> {
   try {
     // Created here, owner-only, rather than left to Node: on a machine where
     // this is the first thing to touch ~/.aka, Node's own recursive create
     // would make ~/.aka itself with the default, wider mode.
-    const dir = compileCacheDir(homedir());
-    mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE });
-    enableCompileCache(dir);
+    if (enableCompileCache !== undefined) {
+      const dir = compileCacheDir(homedir(), PLUGIN_VERSION);
+      mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE });
+      enableCompileCache(dir);
+    }
   } catch {
     // No cache: the body is compiled from source, as it would be without one.
   }
@@ -44,5 +61,14 @@ async function launch(): Promise<void> {
 try {
   await launch();
 } catch {
-  process.exit(0);
+  // Exit from the write's callback: process.exit does not wait for a pending
+  // pipe write, so exiting straight after it can drop the line.
+  const exit = (): void => {
+    process.exit(0);
+  };
+  try {
+    process.stderr.write(`${BODY_LOAD_FAILED}\n`, exit);
+  } catch {
+    exit();
+  }
 }

@@ -29,12 +29,20 @@ import { DATA_DIR_MODE } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { bodyScriptFor, CACHE_DIR_MODE, compileCacheDir } from '../../src/hooks/launch-paths.ts';
+import {
+  BODY_LOAD_FAILED,
+  bodyScriptFor,
+  CACHE_DIR_MODE,
+  compileCacheDir,
+} from '../../src/hooks/launch-paths.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
 const PLUGIN_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 const RULE_ID = 'secrets/twilio-key';
+const PLUGIN_VERSION = (
+  JSON.parse(readFileSync(join(PLUGIN_ROOT, 'package.json'), 'utf8')) as { version: string }
+).version;
 
 // The value comes from a bundled rule's own `examples`, so no secret-shaped
 // literal lives in this file.
@@ -84,8 +92,10 @@ describe('the launcher paths', () => {
     );
   });
 
-  it('keeps the cache under ~/.aka, owner-only like the rest of it', () => {
-    expect(compileCacheDir(join('h'))).toBe(join('h', '.aka', 'cache', 'compile'));
+  it('keeps the cache under ~/.aka, per plugin version, owner-only like the rest of it', () => {
+    expect(compileCacheDir(join('h'), '1.2.3')).toBe(
+      join('h', '.aka', 'cache', 'compile', '1.2.3'),
+    );
     expect(CACHE_DIR_MODE).toBe(DATA_DIR_MODE);
   });
 });
@@ -114,10 +124,11 @@ describe('the launcher fails open', () => {
       expect(run.status).toBe(0);
       expect(run.stdout).not.toBe('');
       expect(() => JSON.parse(run.stdout) as unknown).not.toThrow();
+      expect(run.stderr).not.toContain(BODY_LOAD_FAILED);
     });
   });
 
-  it('exits 0 and prints nothing when the body is missing', () => {
+  it('exits 0, prints nothing on stdout and says so on stderr when the body is missing', () => {
     withTempHome((home) => {
       const dir = scriptsCopy(home);
       rmSync(join(dir, 'pre-tool-use.body.js'));
@@ -127,13 +138,15 @@ describe('the launcher fails open', () => {
       });
       expect(run.status).toBe(0);
       expect(run.stdout).toBe('');
+      // One fixed line and nothing else: no path, nothing from the payload.
+      expect(run.stderr).toBe(`${BODY_LOAD_FAILED}\n`);
     });
   });
 
   it.each([
     ['throws while it loads', "throw new Error('body failed to load');\n"],
     ['does not parse', 'export const = ;\n'],
-  ])('exits 0 and prints nothing when the body %s', (_label, body) => {
+  ])('exits 0, prints nothing on stdout and says so on stderr when the body %s', (_label, body) => {
     withTempHome((home) => {
       const dir = scriptsCopy(home);
       writeFileSync(join(dir, 'pre-tool-use.body.js'), body);
@@ -143,6 +156,8 @@ describe('the launcher fails open', () => {
       });
       expect(run.status).toBe(0);
       expect(run.stdout).toBe('');
+      // One fixed line and nothing else: no path, nothing from the payload.
+      expect(run.stderr).toBe(`${BODY_LOAD_FAILED}\n`);
     });
   });
 
@@ -163,7 +178,7 @@ describe('the launcher fails open', () => {
     if (process.platform === 'win32')
       ctx.skip('POSIX permission bits do not deny writes on Windows');
     withTempHome((home) => {
-      const cache = compileCacheDir(home);
+      const cache = compileCacheDir(home, PLUGIN_VERSION);
       mkdirSync(cache, { recursive: true });
       chmodSync(cache, 0o500);
       try {
@@ -188,7 +203,7 @@ describe('the compile cache', () => {
         },
       );
       expect(run.status).toBe(0);
-      const cache = compileCacheDir(home);
+      const cache = compileCacheDir(home, PLUGIN_VERSION);
       expect(existsSync(cache)).toBe(true);
       // Node keeps one subdirectory per runtime version, holding the entries.
       const entries = readdirSync(cache, { recursive: true });
@@ -197,6 +212,7 @@ describe('the compile cache', () => {
         // Created owner-only, including ~/.aka itself on a home that had none.
         expect(statSync(join(home, '.aka')).mode & 0o777).toBe(0o700);
         expect(statSync(join(home, '.aka', 'cache')).mode & 0o777).toBe(0o700);
+        expect(statSync(join(home, '.aka', 'cache', 'compile')).mode & 0o777).toBe(0o700);
         expect(statSync(cache).mode & 0o777).toBe(0o700);
       }
     });

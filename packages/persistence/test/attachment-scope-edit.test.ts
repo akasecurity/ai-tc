@@ -512,7 +512,7 @@ describe('the opt-out and the coding-agents marker through every edit', () => {
       isAttachmentScopeBoundTo({ ...optedOut(), workSubscriptions: 'paused' }, ENDPOINT, WHO),
     ).toBe(true);
 
-    // The two new edits keep what each other wrote.
+    // turnWorkSubscriptionsOff and markCodingAgentEntries keep what each other wrote.
     const unmarked = { ...stored(), entries: [account(ACCOUNT)] };
     const marked = markCodingAgentEntries(unmarked, ENDPOINT, [ACCOUNT]).next;
     expect(turnWorkSubscriptionsOff(marked, ENDPOINT).next).toStrictEqual({

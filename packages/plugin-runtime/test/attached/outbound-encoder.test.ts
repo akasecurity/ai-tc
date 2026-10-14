@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import type { SightingKey } from '@akasecurity/persistence';
 import {
-  createSightingKeyStore,
   dataDir as dataDirOf,
   FileKeyProvider,
   keysDir as keysDirOf,
@@ -36,8 +35,8 @@ import {
   expectedToken,
   keyOf,
   keysOf,
-  materialOf,
   patShaped,
+  storeSightingKey,
 } from '../helpers/sighting-fixtures.ts';
 
 const pointerOf = (category: string, fill: string): string =>
@@ -378,12 +377,7 @@ describe('createStoreOutboundEncoder', () => {
 
   it('resolves a vaulted secret through the audited path, never logging the value', async () => {
     const key = keyOf(6, 4);
-    createSightingKeyStore('file', keysDirOf(base)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(base, key);
     const value = patShaped(41);
     const db = openLocalDatabase(dataDirOf(base));
     try {
@@ -422,12 +416,7 @@ describe('createStoreOutboundEncoder', () => {
 
   it('sends the marker for a pointer the vault does not hold', async () => {
     const key = keyOf(1, 5);
-    createSightingKeyStore('file', keysDirOf(base)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(base, key);
     const result = await encoderOver(base).encodeContent(pointerOf('secret', 'D'));
     expect(result.content).toBe(FAIL_CLOSED_MARKER);
   });

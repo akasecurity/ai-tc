@@ -1,6 +1,12 @@
 import { createHmac } from 'node:crypto';
 
 import type { SightingKey, SightingKeys } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  createSightingKeyStore,
+  keysDir,
+  sightingKeyEndpointFingerprint,
+} from '@akasecurity/persistence';
 
 /** A value the bundled token rule detects, assembled at runtime from a seed. */
 export function patShaped(seed: number): string {
@@ -36,3 +42,33 @@ export function expectedToken(key: SightingKey, raw: string): string {
 
 /** The base64url material for a key, as the stored key map spells it. */
 export const materialOf = (key: SightingKey): string => Buffer.from(key.key).toString('base64url');
+
+export const SIGHTING_TEST_ENDPOINT = 'https://plane.example.test';
+
+/**
+ * Stores `key` under `base` as issued by `issuedBy`, and unless `onboard` is
+ * false first attaches the machine to `attachedTo`.
+ */
+export function storeSightingKey(
+  base: string,
+  key: SightingKey,
+  opts: { attachedTo?: string; issuedBy?: string; onboard?: boolean } = {},
+): void {
+  const attachedTo = opts.attachedTo ?? SIGHTING_TEST_ENDPOINT;
+  if (opts.onboard !== false) {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: attachedTo, attachedAt: '2026-10-01T00:00:00.000Z' },
+      },
+      base,
+    );
+  }
+  createSightingKeyStore('file', keysDir(base)).replace({
+    keyVersion: key.keyVersion,
+    algorithm: 'hmac-sha256',
+    key: materialOf(key),
+    fetchedAtMs: 1,
+    endpointFingerprint: sightingKeyEndpointFingerprint(opts.issuedBy ?? attachedTo),
+  });
+}

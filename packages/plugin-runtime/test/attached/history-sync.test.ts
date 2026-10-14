@@ -8,7 +8,6 @@ import type { SightingKey } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureWireId,
-  createSightingKeyStore,
   dataDir as dataDirOf,
   dbPath as dbPathOf,
   FileKeyProvider,
@@ -35,7 +34,7 @@ import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/s
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
 import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
-import { expectedToken, keyOf, materialOf, patShaped } from '../helpers/sighting-fixtures.ts';
+import { expectedToken, keyOf, patShaped, storeSightingKey } from '../helpers/sighting-fixtures.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 /**
@@ -2269,12 +2268,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
   };
 
   const storeKey = (key: SightingKey): void => {
-    createSightingKeyStore('file', keysDirOf(home)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(home, key, { attachedTo: ENDPOINT, onboard: false });
   };
 
   it('resends a stored secret only as its token, with its metadata', async () => {

@@ -3,12 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SightingKey } from '@akasecurity/persistence';
-import {
-  captureWireId,
-  createSightingKeyStore,
-  dataDir as dataDirOf,
-  keysDir as keysDirOf,
-} from '@akasecurity/persistence';
+import { captureWireId, dataDir as dataDirOf } from '@akasecurity/persistence';
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
 import { contentHashOf } from '@akasecurity/plugin-sdk';
 import type { IngestBatch, IngestEvent, PolicyBundle, Rule } from '@akasecurity/schema';
@@ -23,8 +18,8 @@ import {
   emailShaped,
   expectedToken,
   keyOf,
-  materialOf,
   patShaped,
+  storeSightingKey,
 } from '../helpers/sighting-fixtures.ts';
 
 const KEY = 'github.com/org/api';
@@ -81,13 +76,8 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function storeKey(key: SightingKey): void {
-  createSightingKeyStore('file', keysDirOf(base)).replace({
-    keyVersion: key.keyVersion,
-    algorithm: 'hmac-sha256',
-    key: materialOf(key),
-    fetchedAtMs: 1,
-  });
+function storeKey(key: SightingKey, opts: { issuedBy?: string } = {}): void {
+  storeSightingKey(base, key, opts);
 }
 
 function build(seen: Seen, overrides: Partial<AttachedDataGatewayDeps> = {}): AttachedDataGateway {
@@ -301,5 +291,15 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     await build(seen).recordCapture(capture(`x ${value}`));
     expect(seen.bodies[0]).not.toContain(value);
     expect(seen.bodies[0]).toContain(expectedToken(key, value));
+  });
+
+  it('sends the marker when the stored key was issued by another endpoint', async () => {
+    storeKey(keyOf(2, 2), { issuedBy: 'https://other.example.test' });
+    const seen = emptySeen();
+    await build(seen).recordCapture(capture(`x ${value} y`));
+    expect(seen.bodies[0]).not.toContain(value);
+    const sent = (JSON.parse(seen.bodies[0] ?? '{}') as IngestBatch).events[0];
+    expect(sent?.content).toBe(`x ${FAIL_CLOSED_MARKER} y`);
+    expect(sent?.metadata?.sightings).toBeUndefined();
   });
 });

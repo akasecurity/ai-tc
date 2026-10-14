@@ -1636,7 +1636,7 @@ describe('the local scope key never reaches the client', () => {
 const REFUSED_KEYS = [OUT, undefined, ''] as const;
 
 describe("a finding's location never reaches the client", () => {
-  it('forwards each inspection without its line, column or excerpt, and stores them locally', async () => {
+  it('forwards each inspection without its line, column, excerpt or variable name, and stores them locally', async () => {
     const seen: unknown[] = [];
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls);
@@ -1680,14 +1680,16 @@ describe("a finding's location never reaches the client", () => {
               lines: ['x = innerHTML = y'],
               match: { line: 2, start: 4, end: 15 },
             },
+            variableName: 'PAGE_BODY',
           },
         ],
       },
     ]);
 
-    // Positive control: the local write kept the location.
+    // Positive control: the local write kept the location and the name.
     expect(localCalls[0]?.[0]?.inspections[0]?.line).toBe(2);
     expect(localCalls[0]?.[0]?.inspections[0]?.context).not.toBeNull();
+    expect(localCalls[0]?.[0]?.inspections[0]?.variableName).toBe('PAGE_BODY');
     // The wire carries the inspection as the wire shape names it, and nothing more.
     expect(seen).toHaveLength(1);
     const sent = (seen[0] as { inspections?: unknown[] }).inspections ?? [];

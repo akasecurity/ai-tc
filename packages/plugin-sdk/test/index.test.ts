@@ -239,6 +239,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'uniqueRuleIds',
   'webCaptureReport',
   'withLayer',
+  'withLiteralCredentialRefs',
 ];
 
 describe('package barrel', () => {

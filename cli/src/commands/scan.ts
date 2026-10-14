@@ -315,6 +315,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
         send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
         nestedRepositories,
+        managedSettings: deps.managedSettings,
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit

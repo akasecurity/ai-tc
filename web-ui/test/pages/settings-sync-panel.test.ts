@@ -55,11 +55,23 @@ vi.mock('node:os', async (importActual) => {
 // the two reads disagree, and the disagreement is the case the page must not
 // paper over, so this seam lets a case make ONLY the mode read answer
 // `undefined`. Everything else, the state read included, stays the real one.
+//
+// The page also derives the coding-agent keys through `codingScopeExtrasAt`, for
+// a scoped attachment only. That reader answers none for a machine credential
+// either way, so the answer cannot show whether the page asked; this seam counts
+// its calls instead.
 const modeRead = vi.hoisted(() => ({ unread: false }));
+const extrasReads = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
+    codingScopeExtrasAt: (
+      ...args: Parameters<typeof actual.codingScopeExtrasAt>
+    ): ReturnType<typeof actual.codingScopeExtrasAt> => {
+      extrasReads.calls += 1;
+      return actual.codingScopeExtrasAt(...args);
+    },
     readControlPlaneAttachmentMode: (
       ...args: Parameters<typeof actual.readControlPlaneAttachmentMode>
     ): ReturnType<typeof actual.readControlPlaneAttachmentMode> =>
@@ -100,6 +112,7 @@ beforeEach(() => {
   dir = dataDir();
   emptyStore.seed(dir);
   dropMemoisedDb();
+  extrasReads.calls = 0;
 });
 
 afterEach(() => {
@@ -912,6 +925,7 @@ describe('the settings route — the sync panel with a learned work account', ()
       ['tool_call', 0, 1, 0, 1],
       ['prompt', 0, 1, 0, 1],
     ]);
+    expect(extrasReads.calls).toBeGreaterThan(0);
   });
 
   it('leaves them out once work subscriptions are off', async () => {
@@ -948,5 +962,7 @@ describe('the settings route — the sync panel with a learned work account', ()
       ['llm_call', 0, 2, 0, 2],
       ['tool_call', 0, 2, 0, 2],
     ]);
+    // The page never asks for the coding-agent keys on a machine-wide attachment.
+    expect(extrasReads.calls).toBe(0);
   });
 });

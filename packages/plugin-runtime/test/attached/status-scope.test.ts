@@ -859,8 +859,8 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   });
 
   // The control for the two cases above: a record that recognised nothing
-  // leaves the headline as it was.
-  it('keeps the enrolled list headline as it was while nothing is recognised', () => {
+  // leaves the plain headline.
+  it('keeps the plain enrolled-list headline while nothing is recognised', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     writeRecord();
     expect(lines()).toContain(
@@ -888,8 +888,10 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     expect(out.join('\n')).not.toContain('nothing to send');
   });
 
+  // The address is also the scope record's own binding, so the check can fail:
+  // a line that printed either copy of it would show.
   it('never prints the email, a digest, the scope tag or an agent key', () => {
-    attach('scoped', bound([entry(WORK_REPO)]));
+    attach('scoped', { ...bound([entry(WORK_REPO)]), userEmail: EMAIL });
     learn(LEARNED);
     const stored = record();
     const out = status();

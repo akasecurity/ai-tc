@@ -83,6 +83,7 @@ export async function runSessionStart(
     // under. The session start still writes it at once where its repository is
     // enrolled, and on a machine-wide attachment.
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,
+    // The basis the login view reached, given only for a work login.
     accountBasis: account.basis,
   });
   // A symlinked store path redirects the corpus without failing anything; say

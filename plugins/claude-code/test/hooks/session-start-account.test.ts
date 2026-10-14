@@ -307,4 +307,94 @@ describe('the session root at session start', () => {
     await runSessionStart(payload(t, 'startup'), deps());
     expect(rootOf(t)).toMatchObject({ scopeKey: PERSONAL_KEY });
   });
+
+  // The basis the session start is handed is the one the login view reached,
+  // and only a work login reaches one.
+  it.each([
+    [
+      'a work login',
+      () => {
+        dev.attach();
+        dev.login({ org: dev.workOrg });
+      },
+      'validated',
+    ],
+    [
+      'a work login on an account enrolled by hand',
+      () => {
+        dev.attach({ manual: [`claude:${dev.workOrg}`] });
+        dev.login({ org: dev.workOrg });
+      },
+      'manual',
+    ],
+    [
+      'a work login on a remembered account',
+      async () => {
+        dev.attach();
+        dev.login({ org: dev.workOrg });
+        const learning = dev.transcript(randomUUID());
+        await runSessionStart(payload(learning, 'startup'), deps(firstRun));
+        learning.prompt(earlier(1));
+        learning.org(dev.workOrg, earlier(2));
+        learning.reply(earlier(3));
+        await write(learning, 'learn.md');
+        dev.login({ org: dev.workOrg, organizationType: null });
+      },
+      'remembered',
+    ],
+    [
+      'a personal login',
+      () => {
+        dev.attach();
+        dev.login({ org: dev.workOrg, organizationType: 'claude_pro' });
+      },
+      undefined,
+    ],
+    [
+      'a login whose plan the config does not show',
+      () => {
+        dev.attach();
+        dev.login({ org: dev.workOrg, organizationType: null });
+      },
+      undefined,
+    ],
+    [
+      'a login file that does not parse',
+      () => {
+        dev.attach();
+        dev.unreadableLogin();
+      },
+      undefined,
+    ],
+    [
+      'an opted-out attachment',
+      () => {
+        dev.attach({ workSubscriptions: 'off' });
+        dev.login({ org: dev.workOrg });
+      },
+      undefined,
+    ],
+    [
+      'a machine-wide attachment',
+      () => {
+        dev.attach({ mode: 'machine' });
+        dev.login({ org: dev.workOrg });
+      },
+      undefined,
+    ],
+  ] as const)('the basis handed to the session start for %s', async (_label, setUp, basis) => {
+    await setUp();
+    const handed: Parameters<SessionStartDeps['handleSessionStart']>[0][] = [];
+    await runSessionStart(
+      payload(dev.transcript(randomUUID()), 'startup'),
+      deps({
+        handleSessionStart: (input, config) => {
+          handed.push(input);
+          return handleSessionStart(input, config);
+        },
+      }),
+    );
+    expect(handed).toHaveLength(1);
+    expect(handed[0]?.accountBasis).toBe(basis);
+  });
 });

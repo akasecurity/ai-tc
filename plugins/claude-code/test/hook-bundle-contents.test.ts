@@ -25,15 +25,21 @@ const manifest = JSON.parse(
   readFileSync(join(packageRoot, 'hooks', 'hooks.json'), 'utf8'),
 ) as HooksManifest;
 
-/** Every script a registered hook command runs, by its `scripts/` file name. */
+/**
+ * The bundle behind every script a registered hook command runs. The command
+ * runs `<name>.js`, a launcher that loads `<name>.body.js`, so the body is what
+ * carries the hook's code.
+ */
 const hookScripts = [
   ...new Set(
     Object.values(manifest.hooks)
       .flat()
       .flatMap((entry) => entry.hooks)
-      .flatMap(({ command }) => [...command.matchAll(/scripts\/([\w-]+\.js)/g)].map((m) => m[1])),
+      .flatMap(({ command }) =>
+        [...command.matchAll(/scripts\/([\w-]+)\.js/g)].map((m) => `${String(m[1])}.body.js`),
+      ),
   ),
-].filter((name): name is string => name !== undefined);
+];
 
 // The bundler marks where each bundled module starts with a path comment; the
 // locale files all live under one directory.
@@ -43,7 +49,7 @@ const ZOD_CORE_MODULE = /^\/\/ .*\/zod\/v4\/core\/core\.js$/m;
 describe('the hook bundles carry only the zod they use', () => {
   it('finds the hook scripts the manifest runs', () => {
     expect(hookScripts).toEqual(
-      expect.arrayContaining(['pre-tool-use.js', 'post-tool-use.js', 'stop.js']),
+      expect.arrayContaining(['pre-tool-use.body.js', 'post-tool-use.body.js', 'stop.body.js']),
     );
   });
 

@@ -54,11 +54,13 @@ const RUNTIME_MARKER = 'isolated scanning is off for ';
 
 // The hooks that must be in the derived set. Not a substitute for deriving it:
 // this is the check that the marker itself has not been renamed away, which
-// would otherwise empty the set and make every assertion below vacuous.
+// would otherwise empty the set and make every assertion below vacuous. A
+// hook's code is in its `.body.js`; the `<name>.js` hooks.json runs is the
+// launcher that loads it from the same directory.
 const KNOWN_RUNTIME_SCRIPTS = [
-  'pre-tool-use.js',
-  'post-tool-use.js',
-  'user-prompt-submit.js',
+  'pre-tool-use.body.js',
+  'post-tool-use.body.js',
+  'user-prompt-submit.body.js',
   'filescan.js',
   'backfill.js',
 ];

@@ -98,6 +98,7 @@ async function exerciseStore(): Promise<void> {
       algorithm: 'hmac-sha256',
       key: sightingKey,
       fetchedAtMs: 0,
+      endpointFingerprint: '0'.repeat(64),
     });
   } finally {
     process.umask(previous);

@@ -270,9 +270,11 @@ export {
 } from './vault/key-provider.ts';
 export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
 export {
+  clearSightingKeys,
   createSightingKeyStore,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
 } from './vault/sighting-keys.ts';
 export { SIGHTING_DOMAIN, sightingToken } from './vault/sighting-token.ts';
 export type {

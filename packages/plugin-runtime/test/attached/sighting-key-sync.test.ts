@@ -4,9 +4,12 @@ import { join } from 'node:path';
 
 import {
   applyOnboarding,
+  clearSightingKeys,
   createSightingKeyStore,
   dataDir as dataDirOf,
   keysDir as keysDirOf,
+  readSightingKeys,
+  removeControlPlaneCredential,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -19,6 +22,7 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { endpointFingerprint } from '../../src/attached/history-sync.ts';
 import {
   runSightingKeySync,
   SIGHTING_KEY_MAX_AGE_MS,
@@ -38,8 +42,14 @@ const CONNECTION: ControlPlaneConnection = {
   attachedAt: '2026-10-01T10:00:00.000Z',
 };
 
-const credential = (mode: 'machine' | 'scoped'): AttachedCredentialAny => {
-  const common = { endpoint: CONNECTION.endpoint, apiKey: ['plugin', 'test', 'cred'].join('-') };
+const credential = (
+  mode: 'machine' | 'scoped',
+  endpoint = CONNECTION.endpoint,
+): AttachedCredentialAny => {
+  const common = {
+    endpoint,
+    apiKey: ['plugin', 'test', 'cred'].join('-'),
+  };
   return mode === 'machine'
     ? { specVersion: 1, ...common }
     : { specVersion: 2, mode: 'scoped', ...common };
@@ -60,16 +70,22 @@ const STORED = (fetchedAtMs: number): StoredSightingKeys => ({
   key: material(2),
   previous: [{ keyVersion: 1, key: material(1) }],
   fetchedAtMs,
+  endpointFingerprint: endpointFingerprint(CONNECTION.endpoint),
 });
 
 let base: string;
 
 const store = () => createSightingKeyStore('file', keysDirOf(base));
 
-function attach(mode: 'machine' | 'scoped' = 'machine'): void {
-  applyOnboarding({ runMode: 'attached', controlPlane: CONNECTION }, base, null);
-  writeControlPlaneCredential(settingsDirOf(base), credential(mode));
+function attach(mode: 'machine' | 'scoped' = 'machine', connection = CONNECTION): void {
+  applyOnboarding({ runMode: 'attached', controlPlane: connection }, base, null);
+  writeControlPlaneCredential(settingsDirOf(base), credential(mode, connection.endpoint));
 }
+
+const OTHER: ControlPlaneConnection = {
+  endpoint: 'https://aka.other-org.internal',
+  attachedAt: '2026-10-02T10:00:00.000Z',
+};
 
 const run = (now = NOW) =>
   runSightingKeySync({ base, settingsDir: settingsDirOf(base), now: () => now });
@@ -92,7 +108,11 @@ describe('runSightingKeySync', () => {
     await expect(run()).resolves.toBe('fetched');
 
     expect(getSightingKey).toHaveBeenCalledTimes(1);
-    expect(store().read()).toEqual({ ...FETCHED, fetchedAtMs: NOW });
+    expect(store().read()).toEqual({
+      ...FETCHED,
+      fetchedAtMs: NOW,
+      endpointFingerprint: endpointFingerprint(CONNECTION.endpoint),
+    });
   });
 
   it('refetches a stored key older than a day, replacing it wholesale', async () => {
@@ -102,7 +122,11 @@ describe('runSightingKeySync', () => {
     await expect(run()).resolves.toBe('fetched');
 
     expect(getSightingKey).toHaveBeenCalledTimes(1);
-    expect(store().read()).toEqual({ ...FETCHED, fetchedAtMs: NOW });
+    expect(store().read()).toEqual({
+      ...FETCHED,
+      fetchedAtMs: NOW,
+      endpointFingerprint: endpointFingerprint(CONNECTION.endpoint),
+    });
   });
 
   it('does not fetch while the stored key is younger than a day', async () => {
@@ -175,5 +199,50 @@ describe('runSightingKeySync', () => {
     mkdirSync(join(keysDirOf(base), 'sighting.key'), { recursive: true });
 
     await expect(run()).resolves.toBe('failed');
+  });
+
+  it('refetches a fresh key that another endpoint issued', async () => {
+    attach();
+    store().replace({
+      ...STORED(NOW - 1),
+      endpointFingerprint: endpointFingerprint(OTHER.endpoint),
+    });
+
+    await expect(run()).resolves.toBe('fetched');
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('detached from one deployment and attached to another within the day, serves only the new key', async () => {
+    attach();
+    await run();
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(FETCHED.keyVersion);
+
+    // A detach that left the stored map in place, then an attach elsewhere.
+    applyOnboarding({ runMode: 'standalone', controlPlane: undefined }, base, null);
+    removeControlPlaneCredential(settingsDirOf(base));
+    expect(readSightingKeys(base)).toBeUndefined();
+    attach('machine', OTHER);
+    expect(readSightingKeys(base)).toBeUndefined();
+
+    const fromOther: SightingKeyResponse = {
+      keyVersion: 9,
+      algorithm: 'hmac-sha256',
+      key: material(9),
+    };
+    getSightingKey.mockResolvedValue(fromOther);
+    await expect(run(NOW + 60_000)).resolves.toBe('fetched');
+
+    expect(getSightingKey).toHaveBeenCalledTimes(2);
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(9);
+    expect(store().read()?.endpointFingerprint).toBe(endpointFingerprint(OTHER.endpoint));
+  });
+
+  it('writes a map readSightingKeys accepts for the attached endpoint', async () => {
+    attach();
+    await run();
+    clearSightingKeys(base);
+    expect(readSightingKeys(base)).toBeUndefined();
+    await run();
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(FETCHED.keyVersion);
   });
 });

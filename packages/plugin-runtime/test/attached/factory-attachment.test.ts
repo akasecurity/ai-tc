@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,12 +6,15 @@ import { join } from 'node:path';
 import {
   dataDir as dataDirOf,
   dbPath as dbPathOf,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type * as SchemaModule from '@akasecurity/schema';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import { agentKey, defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -149,5 +153,94 @@ describe('the attachment the factory builds', () => {
     } finally {
       await gateway.close();
     }
+  });
+});
+
+describe('the attachment the factory builds — work accounts', () => {
+  const WORK_KEY = 'github.com/org/api';
+  const LEARNED = `claude:${randomUUID()}`;
+  const MANUAL = `claude:${randomUUID()}`;
+  const EMAIL = ['member', 'example.test'].join('@');
+
+  const scopedCredential = (apiKey = TEST_KEY) =>
+    ({ specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey, mintedAt: AT }) as const;
+
+  // The identity record a scoped attach writes for the credential holding
+  // `apiKey`, and one work account a hook validated under it.
+  function learn(account: string, apiKey = TEST_KEY): void {
+    writeAttachedIdentity(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      apiKey,
+      tenantName: 'Acme',
+      userEmail: EMAIL,
+    });
+    recordValidatedWorkAccount(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      credential: scopedCredential(apiKey),
+      key: account,
+    });
+  }
+
+  function agentKeyOf(account: string): string {
+    const record = readAttachedIdentity(dataDirOf(home));
+    if (record === undefined) throw new Error('no identity record was written');
+    const key = agentKey(record.scopeTag, account);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  async function keysFor(settings: SchemaModule.WorkspaceSettings): Promise<string[]> {
+    const gateway = resolveGatewayForConfig(configFor(settings));
+    try {
+      expect(seen.attachments).toHaveLength(1);
+      return [...(seen.attachments[0] as SchemaModule.ResolvedAttachmentScope).keys].sort();
+    } finally {
+      await gateway.close();
+    }
+  }
+
+  it('adds the agent key of each work account the identity record learned', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED);
+    // The precondition, so the case cannot pass on a record that learned nothing.
+    expect(readAttachedIdentity(dataDirOf(home))?.workAccounts.map((e) => e.identity)).toEqual([
+      LEARNED,
+    ]);
+
+    expect(await keysFor(attachedSettings())).toEqual([WORK_KEY, agentKeyOf(LEARNED)].sort());
+  });
+
+  it('adds nothing from an identity record bound to another key', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED, 'another-key-entirely');
+
+    expect(await keysFor(attachedSettings())).toEqual([WORK_KEY]);
+  });
+
+  it('leaves a learned account out once work subscriptions are off, and keeps one enrolled by hand for coding sessions', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED);
+    const settings: SchemaModule.WorkspaceSettings = {
+      ...attachedSettings(),
+      attachmentScope: {
+        ...SCOPE,
+        workSubscriptions: 'off',
+        entries: [
+          ...SCOPE.entries,
+          { kind: 'account', identity: MANUAL, enrolledAt: AT, codingAgents: true },
+        ],
+      },
+    };
+
+    // The manual entry's bare key is there for its claude.ai chats, and its
+    // agent key for its coding sessions; the learned account is in neither form.
+    expect(await keysFor(settings)).toEqual([WORK_KEY, MANUAL, agentKeyOf(MANUAL)].sort());
+  });
+
+  it('adds nothing on a machine credential, whatever the identity record learned', async () => {
+    writeMachineCredential();
+    learn(LEARNED);
+
+    expect(await keysFor(attachedSettings())).toEqual([]);
   });
 });

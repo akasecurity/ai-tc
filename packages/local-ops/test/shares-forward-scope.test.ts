@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,11 +6,16 @@ import { join } from 'node:path';
 import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
+  dataDir,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   removeControlPlaneCredential,
   settingsDir,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { EgressIngestRequest, RecordProjectEgressInput } from '@akasecurity/schema';
+import { agentKey } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
@@ -36,8 +42,15 @@ import { forwardProjectEgress } from '../src/shares-forward.ts';
 //
 // `reader.keyThrows` makes the project's key derivation throw, so the verdict's
 // own catch is reached by a stated fault rather than by an input that happens to
-// break the real function.
-const reader = vi.hoisted(() => ({ scoped: false, keyThrows: false }));
+// break the real function. `reader.keyIs` makes the project's key derivation
+// answer a given key.
+const reader = vi.hoisted(
+  (): { scoped: boolean; keyThrows: boolean; keyIs: string | undefined } => ({
+    scoped: false,
+    keyThrows: false,
+    keyIs: undefined,
+  }),
+);
 
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
@@ -49,6 +62,7 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
     },
     scopeKeyOfProjectKey: (...args: Parameters<typeof actual.scopeKeyOfProjectKey>) => {
       if (reader.keyThrows) throw new Error('the project key could not be derived');
+      if (reader.keyIs !== undefined) return reader.keyIs;
       return actual.scopeKeyOfProjectKey(...args);
     },
   };
@@ -140,6 +154,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-shares-scope-'));
   reader.scoped = false;
   reader.keyThrows = false;
+  reader.keyIs = undefined;
 });
 
 afterEach(() => {
@@ -362,6 +377,41 @@ describe('forwardProjectEgress — a scoped attachment', () => {
     );
 
     expect(outcome).toEqual({ status: 'no-credential', endpoint: ENDPOINT });
+  });
+
+  // Data Shares stay repository-only: a register whose key is a learned work
+  // account's agent key is never sent.
+  it('reports not-enrolled for a register keyed for a learned work account', async () => {
+    reader.scoped = true;
+    attach(enrolled(WORK_REPO));
+    const account = `claude:${randomUUID()}`;
+    writeAttachedIdentity(dataDir(home), {
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    recordValidatedWorkAccount(dataDir(home), {
+      endpoint: ENDPOINT,
+      credential: { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: TEST_KEY },
+      key: account,
+    });
+    const record = readAttachedIdentity(dataDir(home));
+    if (!record?.workAccounts.some((entry) => entry.identity === account)) {
+      throw new Error('the account was not learned');
+    }
+    reader.keyIs = agentKey(record.scopeTag, account);
+    if (reader.keyIs === undefined) throw new Error('no agent key was built');
+    const transport = recorder();
+
+    const outcome = await forwardProjectEgress(
+      home,
+      input('git:https://github.com/acme/payments-api.git'),
+      { send: transport.send, nestedRepositories: [] },
+    );
+
+    expect(outcome).toEqual({ status: 'not-enrolled', endpoint: ENDPOINT });
+    expect(transport.sent).toHaveLength(0);
   });
 });
 

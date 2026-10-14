@@ -17,7 +17,10 @@ import {
   DB_FILENAME,
   DETECTED_WEB_ACCOUNTS_FILENAME,
   openLocalDatabase,
+  readAttachedIdentity,
   readDetectedWebAccounts,
+  recordValidatedWorkAccount,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
@@ -887,6 +890,32 @@ describe('an enrolled web chat account on a personal device', () => {
     const response = await send('browser-other', personal(), OTHER_ORG);
     expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope', llmCalls: 0 });
     expect(rowCount("root_session_id = 'browser-other' OR id = 'browser-other'")).toBe(0);
+    expect(storeBytes()).not.toContain(MARKER);
+  });
+
+  // The extension decides by the accounts enrolled by hand, never by one this
+  // device recognised as a work subscription: a recognised org never starts
+  // web-chat recording.
+  it('drops an exchange in an account recognised as a work subscription but not enrolled', async () => {
+    attachAs('scoped');
+    writeAttachedIdentity(dir, {
+      endpoint: ENDPOINT,
+      apiKey: KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    recordValidatedWorkAccount(dir, {
+      endpoint: ENDPOINT,
+      credential: CREDENTIALS.scoped,
+      key: ACCOUNT,
+    });
+    expect(readAttachedIdentity(dir)?.workAccounts.map((entry) => entry.identity)).toEqual([
+      ACCOUNT,
+    ]);
+
+    const response = await send('browser-learned', personal({ enrolled: [] }), ORG);
+
+    expect(response).toMatchObject({ accepted: false, skipped: 'out-of-scope', llmCalls: 0 });
     expect(storeBytes()).not.toContain(MARKER);
   });
 

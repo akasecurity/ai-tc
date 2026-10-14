@@ -159,7 +159,13 @@ export interface DataGateway {
   // Idempotent upsert of a session's resolved Inventory dimensions (host /
   // harness / project), returning the content-addressed ids to stamp onto a
   // Session audit row. The writer adds the local user account. Fail-open.
-  ensureInventory(ctx: InventoryContext): Promise<ResolvedInventory>;
+  // `opts.scopeKey` is the key the session's root is stamped with when that is a
+  // coding-agent key: a forwarding gateway may then send the inventory of a
+  // session outside any enrolled repository. It is local only, never sent.
+  ensureInventory(
+    ctx: InventoryContext,
+    opts?: { readonly scopeKey?: string | undefined },
+  ): Promise<ResolvedInventory>;
   // Append an audit-event fact (e.g. the Session root opened on SessionStart)
   // to the local store. Fail-open.
   recordAuditEvent(event: AuditEventInput): Promise<void>;

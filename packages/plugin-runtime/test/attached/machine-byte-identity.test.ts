@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,8 +13,10 @@ import type {
   RecordProjectEgressInput,
   ToolCallInput,
 } from '@akasecurity/schema';
+import { agentKey } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { accountScopeOf, createAccountScope, stampScopeKey } from '../../src/account-scope.ts';
 import { rebuildCapture } from '../../src/attached/capture-rebuild.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
@@ -492,3 +495,64 @@ describe('the history drain sends the unstamped bytes too', () => {
     expect(JSON.stringify(stamped)).not.toContain(KEY);
   });
 });
+
+// What the account scope's inputs do on a machine-wide attachment: nothing. A
+// machine gateway offers no account scope, even one handed to it, so a producer
+// stamps the repository key, and a key passed beside an inventory context
+// changes no byte.
+describe('machine-mode byte identity — the account scope inputs', () => {
+  const ACCOUNT = `claude:${randomUUID()}`;
+  const AGENT = agentKeyOf('0123456789abcdef', ACCOUNT);
+
+  it('ingestInventory: an agent key beside the context sends the context verbatim', async () => {
+    const wire = emptyWire();
+    await build(wire).ensureInventory(INVENTORY, { scopeKey: AGENT });
+    expect(wire.ingestInventory).toEqual([INVENTORY_WIRE]);
+  });
+
+  it('ingestEvents: a capture stamped through a machine gateway sends the unstamped bytes', async () => {
+    const wire = emptyWire();
+    const gateway = build(wire);
+    const scopeKey = stampScopeKey(gateway, KEY, ACCOUNT);
+    expect(scopeKey).toBe(KEY);
+    await gateway.recordCapture({
+      event: CAPTURE,
+      findings: [],
+      ...(scopeKey === undefined ? {} : { scopeKey }),
+    });
+    expect(wire.ingestEvents).toEqual([CAPTURE_WIRE]);
+  });
+
+  it('a machine attachment never offers an account scope, even one built with it', () => {
+    const wire = emptyWire();
+    const gateway = new AttachedDataGateway({
+      dataDir,
+      local: quietLocal(),
+      client: recordingClient(wire),
+      readCachedBundle: () => Promise.resolve(null),
+      forward: passthrough,
+      attachment: { mode: 'machine', keys: new Set<string>() },
+      account: createAccountScope({
+        keys: new Set([AGENT]),
+        scopeTag: '0123456789abcdef',
+        bindingHash: 'fedcba9876543210',
+        context: {
+          attachedUserDigest: 'd'.repeat(64),
+          workSubscriptionsOn: true,
+          learned: [],
+          manual: [],
+        },
+        learn: () => 'refused',
+      }),
+    });
+    expect(accountScopeOf(gateway)).toBeUndefined();
+    expect(stampScopeKey(gateway, KEY, ACCOUNT)).toBe(KEY);
+  });
+});
+
+/** The agent key the schema's builder makes for `account` under `scopeTag`, failing the suite if none. */
+function agentKeyOf(scopeTag: string, account: string): string {
+  const key = agentKey(scopeTag, account);
+  if (key === undefined) throw new Error(`no agent key for ${account}`);
+  return key;
+}

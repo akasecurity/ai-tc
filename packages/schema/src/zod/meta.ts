@@ -18,7 +18,14 @@
 // join used to build the hash input.
 import * as z from 'zod';
 
-import { ActionTaken, DetectionCategory, FindingContext, Severity, Span } from './finding.ts';
+import {
+  ActionTaken,
+  DetectionCategory,
+  FindingContext,
+  Severity,
+  Span,
+  VariableName,
+} from './finding.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -428,11 +435,14 @@ const findingLocationFields = {
   context: FindingContext.nullable().optional(),
 };
 
-// ToolCallInspection plus where the hit sits in the scanned target. The LOCAL
-// write input only: the wire keeps `ToolCallInspection`, and the attached
-// gateway projects each inspection onto it field by field, so the masked
-// excerpt never leaves the machine.
-export const ToolCallInspectionInput = ToolCallInspection.extend(findingLocationFields);
+// ToolCallInspection plus where the hit sits in the scanned target and the
+// variable the secret is assigned to. The LOCAL write input only: the wire keeps
+// `ToolCallInspection`, and the attached gateway projects each inspection onto
+// it field by field, so the masked excerpt and the name never leave the machine.
+export const ToolCallInspectionInput = ToolCallInspection.extend({
+  ...findingLocationFields,
+  variableName: VariableName.optional(),
+});
 export type ToolCallInspectionInput = z.infer<typeof ToolCallInspectionInput>;
 
 // The reconciler → gateway → persistence input for one `tool_call` leaf. Carries
@@ -560,6 +570,8 @@ export const InspectionFindingInput = z.object({
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
   ...findingLocationFields,
+  // The variable a detected secret is assigned to, e.g. `STRIPE_SECRET_KEY`.
+  variableName: VariableName.optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 

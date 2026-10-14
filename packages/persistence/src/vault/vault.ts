@@ -64,6 +64,9 @@ export interface TokenizeMeta {
   category: DetectionCategory;
   maskedMatch: string;
   provider?: string | undefined;
+  // The variable the value was assigned to where it was detected. Recorded on
+  // a new row, and on an existing one only when that row has none.
+  variableName?: string | undefined;
   // True when a PERSON asked for this value to be replaced, rather than a pack
   // enforcing its assignment. Recorded on the row, and STICKY: one value is one
   // row, so a later automatic vaulting of the same value leaves the mark
@@ -214,6 +217,7 @@ export class SecretVault {
         {
           ...existing,
           provider: existing.provider ?? undefined,
+          variableName: meta.variableName,
           userAuthorized: meta.userAuthorized === true,
         },
         now,
@@ -242,6 +246,7 @@ export class SecretVault {
         ruleId: meta.ruleId,
         maskedMatch: meta.maskedMatch,
         provider: meta.provider,
+        variableName: meta.variableName,
         userAuthorized: meta.userAuthorized === true,
         ciphertext: sealed.ciphertext.toString('base64'),
         nonce: sealed.nonce.toString('base64'),
@@ -395,6 +400,7 @@ export class SecretVault {
     return {
       category: row.category as DetectionCategory,
       ...(row.provider === undefined ? {} : { provider: row.provider }),
+      ...(row.variableName === undefined ? {} : { variableName: row.variableName }),
       maskedMatch: row.maskedMatch,
       occurrences: row.occurrenceCount,
       firstSeen: new Date(row.firstSeen).toISOString(),

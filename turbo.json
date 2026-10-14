@@ -371,6 +371,17 @@
         "!$TURBO_ROOT$/plugins/codex/scripts/**",
         "!$TURBO_ROOT$/plugins/antigravity/scripts/**",
         "!$TURBO_ROOT$/plugins/copilot/scripts/**",
+        // The Claude Code mod engine (build/engine.mjs) and the fixtures
+        // test/mod-runtime/prepare.mjs writes beside the mod-runtime suite: all
+        // gitignored in plugins/claude-code/.gitignore, all outside scripts/. The
+        // engine is written by the plugin's own build, so on a commit that misses
+        // that build's cache it lands mid-run, between this suite's baseline dry
+        // run and its last one, and reads as a perturbed tree.
+        "!$TURBO_ROOT$/plugins/claude-code/hooks/engine.js",
+        "!$TURBO_ROOT$/plugins/claude-code/test/mod-runtime/engine.js",
+        "!$TURBO_ROOT$/plugins/claude-code/test/mod-runtime/*.generated.js",
+        "!$TURBO_ROOT$/plugins/claude-code/test/mod-runtime/mod.ts",
+        "!$TURBO_ROOT$/plugins/claude-code/test/mod-runtime/types/**",
         // plugins/browser-extension's tsup outDir, and the copies of it that
         // cli/scripts/bundle-extension.mjs stages into the CLI package. All
         // three are generated and gitignored, and none is named `dist`, so the

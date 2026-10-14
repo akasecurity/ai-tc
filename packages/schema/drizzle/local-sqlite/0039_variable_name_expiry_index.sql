@@ -1,0 +1,1 @@
+CREATE INDEX `idx_inspection_findings_variable_name` ON `inspection_findings` (`first_detected_at`) WHERE variable_name IS NOT NULL;

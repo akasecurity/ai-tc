@@ -260,6 +260,7 @@ export function toToolCallInputs(
         line: f.location.line,
         col: f.location.col,
         context: f.location.context,
+        ...(f.variableName === undefined ? {} : { variableName: f.variableName }),
       }));
     }
 

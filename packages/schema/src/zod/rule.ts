@@ -323,6 +323,9 @@ export const RuleFixture = z
     // Simulated capture kind, so fixtures can assert `appliesTo.eventKinds`.
     eventKind: EventKind.optional(),
     expectedSpans: z.array(z.strictObject({ start: z.number(), end: z.number() })).optional(),
+    // The variable name every finding of the rule must record; null asserts
+    // that none is recorded.
+    expectedVariableName: z.string().nullable().optional(),
   })
   .meta({ id: 'RuleFixture' });
 export type RuleFixture = z.infer<typeof RuleFixture>;

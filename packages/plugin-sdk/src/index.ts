@@ -1,3 +1,4 @@
+export { BUNDLED_PACKS } from './bundled-packs.generated.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
 export type { ResolveConfigInventoryInput } from './config-inventory.ts';

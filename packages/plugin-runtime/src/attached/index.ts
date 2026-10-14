@@ -86,6 +86,7 @@ export { createPostureStore } from './posture-store.ts';
 export type { RenderAttachedStatusDeps } from './status.ts';
 export {
   attachmentScopeLines,
+  deploymentNameForTerminal,
   endpointForTerminal,
   printableForTerminal,
   renderAttachedStatus,

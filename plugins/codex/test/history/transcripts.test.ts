@@ -910,4 +910,29 @@ describe('peekSessionOriginator — cheap live-hook header read', () => {
     expect(() => peekSessionOriginator(file)).not.toThrow();
     expect(peekSessionOriginator(file)).toBeUndefined();
   });
+
+  it('reads the originator off a head line longer than 4 KB', () => {
+    const file = join(dir, 'rollout.jsonl');
+    const longHead = line({
+      timestamp: '2026-07-14T10:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        session_id: 'sess-3',
+        id: 'thread-3',
+        timestamp: '2026-07-14T10:00:00.000Z',
+        cwd: '/home/me/proj',
+        originator: 'codex_cli_rs',
+        cli_version: '0.160.0',
+        base_instructions: { text: 'x'.repeat(60 * 1024) },
+      },
+    });
+    writeFileSync(file, `${longHead}\n${tokenCountLine('2026-07-14T10:00:04.000Z')}\n`);
+    expect(peekSessionOriginator(file)).toBe('codex_cli_rs');
+  });
+
+  it('returns undefined for a head line still being written', () => {
+    const file = join(dir, 'rollout.jsonl');
+    writeFileSync(file, SESSION_META.slice(0, 40));
+    expect(peekSessionOriginator(file)).toBeUndefined();
+  });
 });

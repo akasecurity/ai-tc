@@ -1,5 +1,10 @@
+import { realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { normalizeAccountEmail } from '@akasecurity/schema';
 
+import { resolveCodexProvider } from '../provider-codex.ts';
 import { DEFAULT_ANTHROPIC_HOST } from '../provider-env.ts';
 
 // The one module under src/account that reads process.env, for the Claude Code
@@ -123,4 +128,67 @@ export function readClaudeAccountEnv(): ClaudeAccountEnv {
   } catch {
     return UNREADABLE_CLAUDE_ENV;
   }
+}
+
+/** Variables whose non-empty value bills a Codex thread to a key or token. */
+export const CODEX_CREDENTIAL_ENV = ['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'] as const;
+
+/** Every variable readCodexAccountEnv reads, its provider resolution included. */
+export const CODEX_ACCOUNT_ENV_NAMES = [
+  ...CODEX_CREDENTIAL_ENV,
+  'CODEX_HOME',
+  'OPENAI_BASE_URL',
+] as const;
+
+/** What the Codex account check reads from the environment. */
+export interface CodexAccountEnv {
+  /** The Codex home override when it is set and non-empty, unresolved. */
+  readonly codexHome: string | undefined;
+  readonly credentialEnv: boolean;
+  /** True when the provider resolution names a gateway rather than the default API. */
+  readonly gateway: boolean;
+}
+
+const UNREADABLE_CODEX_ENV: CodexAccountEnv = {
+  codexHome: undefined,
+  credentialEnv: true,
+  gateway: true,
+};
+
+export function readCodexAccountEnv(): CodexAccountEnv {
+  try {
+    const env = process.env;
+    const home = env.CODEX_HOME;
+    return {
+      codexHome: isPresent(home) ? home : undefined,
+      credentialEnv: CODEX_CREDENTIAL_ENV.some((name) => isPresent(env[name])),
+      gateway: resolveCodexProvider().provider === 'gateway',
+    };
+  } catch {
+    return UNREADABLE_CODEX_ENV;
+  }
+}
+
+/** True when a key or token is set for Codex, or its provider is a gateway. */
+export function codexEnvVetoed(env: CodexAccountEnv = readCodexAccountEnv()): boolean {
+  return env.credentialEnv || env.gateway;
+}
+
+/** The Codex home override, resolved and required to be a directory, else the default under `home`. */
+export function resolveCodexHome(
+  env: Pick<CodexAccountEnv, 'codexHome'>,
+  home: string = homedir(),
+): string | undefined {
+  if (env.codexHome === undefined) return join(home, '.codex');
+  try {
+    const real = realpathSync(env.codexHome);
+    return statSync(real).isDirectory() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The Codex home this process's environment names, resolved; undefined when the override is unusable. */
+export function codexHomeDir(home?: string): string | undefined {
+  return resolveCodexHome(readCodexAccountEnv(), home);
 }

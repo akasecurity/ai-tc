@@ -23,52 +23,29 @@
  * has loaded, and exits on its own. An exit from here is not added to the
  * fail-open count the body keeps: that counter writes through the store layer,
  * and the launcher bundles nothing it does not need before the cache is on.
+ *
+ * The work itself is runLauncher (launch-run.ts), which takes everything it
+ * touches as arguments; this file only supplies the real ones.
  */
 import { mkdirSync } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { homedir } from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { version as PLUGIN_VERSION } from '../../package.json';
-import {
-  BODY_LOAD_FAILED,
-  bodyScriptFor,
-  CACHE_DIR_MODE,
-  compileCacheDir,
-} from './launch-paths.ts';
+import { runLauncher } from './launch-run.ts';
 
-// Read as possibly absent: present on every Node this plugin supports, but a
-// missing export must cost the cache, never the hook.
-const enableCompileCache = (nodeModule as { enableCompileCache?: (dir: string) => unknown })
-  .enableCompileCache;
-
-async function launch(): Promise<void> {
-  try {
-    // Created here, owner-only, rather than left to Node: on a machine where
-    // this is the first thing to touch ~/.aka, Node's own recursive create
-    // would make ~/.aka itself with the default, wider mode.
-    if (enableCompileCache !== undefined) {
-      const dir = compileCacheDir(homedir(), PLUGIN_VERSION);
-      mkdirSync(dir, { recursive: true, mode: CACHE_DIR_MODE });
-      enableCompileCache(dir);
-    }
-  } catch {
-    // No cache: the body is compiled from source, as it would be without one.
-  }
-  await import(pathToFileURL(bodyScriptFor(fileURLToPath(import.meta.url))).href);
-}
-
-try {
-  await launch();
-} catch {
-  // Exit from the write's callback: process.exit does not wait for a pending
-  // pipe write, so exiting straight after it can drop the line.
-  const exit = (): void => {
-    process.exit(0);
-  };
-  try {
-    process.stderr.write(`${BODY_LOAD_FAILED}\n`, exit);
-  } catch {
-    exit();
-  }
-}
+await runLauncher({
+  launcherUrl: import.meta.url,
+  pluginVersion: PLUGIN_VERSION,
+  homedir,
+  mkdirSync,
+  // Read as possibly absent: present on every Node this plugin supports, but a
+  // missing export must cost the cache, never the hook.
+  enableCompileCache: (nodeModule as { enableCompileCache?: (dir: string) => unknown })
+    .enableCompileCache,
+  // A specifier the bundler leaves alone, so the body stays its own bundle.
+  importBody: async (href) => {
+    await import(href);
+  },
+  process,
+});

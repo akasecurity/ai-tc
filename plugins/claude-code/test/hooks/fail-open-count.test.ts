@@ -38,7 +38,8 @@ function hookEntries(): string[] {
  * an entry in this sense: it has no main() and counts nothing, because the
  * counter reaches the store layer and the launcher bundles nothing it does not
  * need before the compile cache is on. Its own fail-open exit is driven by
- * test/e2e/hook-launcher.e2e.test.ts.
+ * test/hooks/launch-run.test.ts in-process and by
+ * test/e2e/hook-launcher.e2e.test.ts against the built launcher.
  */
 const LAUNCHER = 'launch';
 

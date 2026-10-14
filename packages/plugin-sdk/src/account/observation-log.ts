@@ -50,7 +50,7 @@ export function sessionScanCachePath(stateDir: string, sessionId: string): strin
   return join(stateDir, `${sessionStateName(sessionId)}.scan.json`);
 }
 
-/** The hash a work view and a start line carry for an account key. */
+/** The hash a work view and a Codex start line carry for an account key. */
 export function sessionAccountHash(accountKey: string): string {
   return createHash('sha256').update(`aka-session-account:v1\n${accountKey}`).digest('hex');
 }

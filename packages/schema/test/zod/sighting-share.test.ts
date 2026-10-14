@@ -6,6 +6,7 @@ import { ManagedSettings } from '../../src/zod/managed.ts';
 import {
   isSightingShareConsentValid,
   resolveSightingSharing,
+  shouldAskSightingShare,
   SIGHTING_SHARE_CONSENT_VERSION,
   SIGHTING_SHARE_PAYLOAD_NOTE,
   type SightingSharing,
@@ -247,5 +248,26 @@ describe('sightingSharingLine', () => {
       endpoint: ENDPOINT,
     });
     expect(sightingSharingLine(state)).toContain('required by your organization');
+  });
+});
+
+describe('shouldAskSightingShare', () => {
+  it('asks only on an attached machine the managed settings do not decide for', () => {
+    const ask = (attachmentMode: AttachmentMode | undefined, pin?: boolean, locked = false) =>
+      shouldAskSightingShare(
+        resolveSightingSharing({
+          settings: settings(false),
+          managed: managed(pin, locked),
+          attachmentMode,
+          endpoint: ENDPOINT,
+        }),
+      );
+    expect(ask(undefined)).toBe(false);
+    expect(ask('scoped')).toBe(true);
+    expect(ask('machine')).toBe(true);
+    expect(ask('scoped', true)).toBe(true);
+    expect(ask('machine', true)).toBe(false);
+    expect(ask('scoped', false)).toBe(false);
+    expect(ask('scoped', undefined, true)).toBe(false);
   });
 });

@@ -7,6 +7,9 @@
  *     --vault-consent <grant|revoke> --sighting-share-consent <grant|revoke> \
  *     --posture <json> --floor
  *
+ * `--sighting-share-ask` writes nothing: it prints whether the wizard should
+ * ask about sharing credential sightings, as a frame.
+ *
  * Each flag is optional and additive: omit one and its current value (or the
  * default) is kept, so a later wizard step is one more flag with no rewrite.
  * Validation lives in @akasecurity/schema (SimpleDetectionPolicy/HistoricalAccess);
@@ -38,6 +41,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   HistoricalAccess,
   MODEL_JUDGE_PAYLOAD_VERSION,
+  shouldAskSightingShare,
   SIGHTING_SHARE_CONSENT_VERSION,
   sightingSharingLine,
   SimpleDetectionPolicy,
@@ -47,6 +51,7 @@ import { parsePosture } from '@akasecurity/setup-wizard';
 
 import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
+import { frameJsonBlock } from './setup-frame-json.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
 // positionals are ignored — the wizard only ever passes the ones it knows.
@@ -75,6 +80,15 @@ function fail(message: string): never {
 }
 
 const flags = parseFlags(process.argv.slice(2));
+// Read-only: whether the wizard should ask about sharing credential sightings.
+// Prints the answer as a frame and writes nothing.
+if (process.argv.includes('--sighting-share-ask')) {
+  process.stdout.write(
+    frameJsonBlock({ askSightingShare: shouldAskSightingShare(readSightingSharing()) }),
+  );
+  process.exit(0);
+}
+
 const answers: Partial<WorkspaceSettings> = {};
 
 const rawPolicy = flags.get('policy');

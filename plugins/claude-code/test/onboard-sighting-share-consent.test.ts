@@ -18,6 +18,7 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
 import { SetupJourney } from './journey/harness.ts';
 
 let journey: SetupJourney;
@@ -84,5 +85,21 @@ describe('--sighting-share-consent', () => {
     const result = journey.onboardSightingShareConsent('maybe');
     expect(result.status).not.toBe(0);
     expect(result.stdout).toContain('invalid --sighting-share-consent "maybe"');
+  });
+});
+
+describe('--sighting-share-ask', () => {
+  it('says not to ask on a standalone machine, and writes nothing', () => {
+    const result = journey.sightingShareAsk();
+    expect(result.status).toBe(0);
+    expect(readFrameJsonBlock(result.stdout)).toEqual({ askSightingShare: false });
+    expect(() => readFileSync(journey.settingsPath, 'utf8')).toThrow();
+  });
+
+  it('says to ask on an attached machine the organization does not decide for', () => {
+    attach();
+    const result = journey.sightingShareAsk();
+    expect(result.status).toBe(0);
+    expect(readFrameJsonBlock(result.stdout)).toEqual({ askSightingShare: true });
   });
 });

@@ -144,6 +144,14 @@ export function resolveSightingSharing(input: SightingSharingInput): SightingSha
   }
 }
 
+/**
+ * Whether the setup wizard asks the user about sharing: only on an attached
+ * machine whose managed settings do not decide the answer.
+ */
+export function shouldAskSightingShare(state: SightingSharing): boolean {
+  return state.mode !== 'standalone' && !state.locked;
+}
+
 /** The connection, in words. */
 export function sightingShareModeLabel(mode: SightingShareMode): string {
   switch (mode) {

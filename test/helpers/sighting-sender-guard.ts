@@ -7,6 +7,8 @@ export interface SourceFile {
   text: string;
 }
 
+// Name-based: a module is found by the word "sighting" in its source, so a sender
+// that never uses that word is not detected and stays enforced by review alone.
 const MENTIONS_SIGHTINGS = /sighting/i;
 
 const IMPORTS_GATE =

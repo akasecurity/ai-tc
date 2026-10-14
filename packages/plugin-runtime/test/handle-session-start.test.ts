@@ -1063,12 +1063,12 @@ describe('handleSessionStart — the Claude Code mod policy snapshot', () => {
   });
 });
 
-// A session start on a gateway that stamps account keys: a root that waits for
-// its account is left to the reconciler, with the config scan kept under a
+// A session start on a gateway that stamps account keys: a root marked as
+// awaiting its account is left unwritten, with the config scan kept under a
 // local stub, and a root keyed by an account is honoured only when it is the
-// key the gateway's own scope stamps, an account the hook has just validated
-// joining that scope first. A gateway without the capability keys and writes
-// the root as before, whatever the inputs say.
+// key the gateway's own scope stamps, an offered account joining that scope
+// first. A gateway without the capability keys the root with the repository key
+// and writes it now, whatever the inputs say.
 describe('handleSessionStart — a root left to the reconciler, or keyed by account', () => {
   const TAG = '0123456789abcdef';
   const BINDING = 'fedcba9876543210';
@@ -1139,7 +1139,7 @@ describe('handleSessionStart — a root left to the reconciler, or keyed by acco
       { type: 'config_scan', stub: false, key: null },
       { type: 'session', stub: true, key: null },
     ]);
-    // The inventory call gets no key: the reconciler passes the root's own.
+    // The inventory call gets no key: the root is not written here.
     expect(inventory).toHaveLength(1);
     expect(inventory[0]).toHaveLength(1);
   });
@@ -1234,9 +1234,9 @@ describe('handleSessionStart — a root left to the reconciler, or keyed by acco
     ]);
   });
 
-  // A hook that has just validated an account hands it over with the binding it
-  // validated against; the gateway this session start builds admits it before
-  // the root is keyed, so the root it keys is honoured.
+  // An account offered with the binding hash it was validated against is
+  // admitted on the gateway this session start builds, before the root is keyed,
+  // so the root it keys is honoured.
   it('admits an offered account on its own gateway first, so a root keyed by it is written now', async () => {
     const inventory: unknown[][] = [];
     setDefaultGatewayFactory(() => accountScoped([], inventory));

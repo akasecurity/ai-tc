@@ -231,7 +231,7 @@ export function anchorOf(
   };
 }
 
-/** What a hook keeps between scans of one transcript: offsets, a time and a flag, never an org. */
+/** What is kept between scans of one transcript: offsets, a time and a flag, never an org. */
 export interface AnchorState {
   readonly offset: number;
   readonly anchorAt?: number | undefined;
@@ -249,11 +249,11 @@ export interface ResolvedAnchor {
 const ORG_CHANGED: SessionAnchor = { kind: 'none', reason: 'org-changed' };
 
 /**
- * The anchor at this hook, scanning only what the host appended since `state`.
- * A boundary other than the one `state` was read under, a boundary whose
- * inheritance differs from that one's, a rewrite under the offset, or an anchor
- * line that does not read back as the same record each rescan from 0. Undefined
- * when the transcript cannot be read.
+ * The anchor under `boundary`, scanning only what the host appended since `state`. A boundary or
+ * an inheritance other than the one `state` was read under, a rewrite under the offset, an
+ * inherited boundary with no anchor yet, or an anchor line that no longer reads as a
+ * credential_org record of this session each rescan from 0. Undefined when the transcript cannot
+ * be read.
  */
 export function resolveSessionAnchor(
   path: string,

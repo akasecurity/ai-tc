@@ -4,10 +4,9 @@ import { claudeKey } from './account-check.ts';
 import type { LoggedObservation } from './observation-log.ts';
 import { classifyObservation, sessionAccountHash } from './observation-log.ts';
 
-// Which account each transcript record ran under, for the reconciler. Pure over
-// the parsed chunk, the session log from the last consumed offset, and the
-// state carried from the previous pass. The carry holds offsets and a hash of a
-// work key, never an org.
+// Which account each transcript record ran under. Pure over the parsed chunk,
+// the session log from the last consumed offset, and the state carried from the
+// previous pass. The carry holds offsets and a hash of a work key, never an org.
 
 export type TranscriptMark =
   | { readonly kind: 'org'; readonly org: string; readonly t: number; readonly pos: number }

@@ -518,6 +518,12 @@ describe.each(CAPTURE_HOOKS)('$script — fails open by EXITING 0 and saying not
     // speak carry it on stdout; `session-start.js` never emits on either host.
     if (event === hook.cli || hook.script === 'session-start.js') {
       noObject(run);
+      // The positive control for the empty stdout: the notice went to stderr
+      // instead, so the silence on stdout is the channel choice, not a hook
+      // that said nothing at all. `session-start.js` has no such notice.
+      if (hook.script !== 'session-start.js') {
+        expect(run.stderr).toContain('could not open its local store');
+      }
     } else {
       const decided = soleObject(run) as Record<string, unknown>;
       expect(String(decided.systemMessage)).toContain('could not open its local store');

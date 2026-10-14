@@ -201,6 +201,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveAntigravityProvider',
   'resolveCodexProvider',
   'resolveConfigInventory',
+  'resolveCopilotProvider',
   'resolveEgress',
   'resolveGitBranch',
   'resolveHeadRoot',

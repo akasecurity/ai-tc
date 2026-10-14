@@ -117,9 +117,11 @@ function overlapIndex(spans: Span[]): (span: Span) => boolean {
  * any category, is not recorded, so a name never carries a detected value.
  *
  * The heuristic reads the line, not the language's syntax. It skips a line
- * that starts as a `//` or `#` comment, but it misses a bracketed or quoted
- * target (`process.env["KEY"] = `), a query-string parameter (`?api_key=`) and
- * a non-ASCII identifier.
+ * that starts as a `//` or `#` comment, but still reads an assignment inside a
+ * trailing comment (`x = 1 # NAME=`). It misses a bracketed or quoted target
+ * (`process.env["KEY"] = `), a query-string parameter (`?api_key=`), a type
+ * annotation containing `,` or `{` (`Record<string, string>`,
+ * `{ a: string }`) and a non-ASCII identifier.
  */
 export function withVariableNames(findings: MatchResult[], text: string): MatchResult[] {
   if (!findings.some((f) => f.category === 'secret')) return findings;

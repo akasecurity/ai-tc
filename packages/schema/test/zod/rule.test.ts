@@ -513,7 +513,7 @@ describe('Rule regex probes answer the same on a repeated parse', () => {
       new Proxy(RegExp, {
         construct(target, args: [string | RegExp, string?]) {
           if (String(args[0]).includes(marker)) built += 1;
-          return Reflect.construct(target, args) as RegExp;
+          return Reflect.construct<[string | RegExp, string?], RegExp>(target, args);
         },
       }),
     );

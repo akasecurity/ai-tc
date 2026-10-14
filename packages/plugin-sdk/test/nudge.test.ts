@@ -89,13 +89,24 @@ describe('concurrent sessions', () => {
 
   it('keeps one marker file per scheme and a bounded id list', () => {
     for (let i = 0; i < 100; i += 1) {
-      claimOnboardingNudge(dir, `s${i}`);
-      claimSessionStart(dir, `s${i}`);
+      claimOnboardingNudge(dir, `s${String(i)}`);
+      claimSessionStart(dir, `s${String(i)}`);
     }
     expect(readdirSync(dir).sort()).toStrictEqual(['nudge-last-session', 'session-start-last']);
     const ids = readFileSync(join(dir, 'nudge-last-session'), 'utf8').split('\n');
     expect(ids).toHaveLength(32);
     expect(ids.at(-1)).toBe('s99');
+  });
+
+  it('evicts the oldest id, so a session that fell out is nudged again', () => {
+    for (let i = 0; i < 100; i += 1) {
+      claimOnboardingNudge(dir, `s${String(i)}`);
+    }
+    const ids = readFileSync(join(dir, 'nudge-last-session'), 'utf8').split('\n');
+    // The cap keeps the newest 32 and drops the rest: s0 is gone, so the same
+    // session id is claimed again rather than recognised.
+    expect(ids).not.toContain('s0');
+    expect(claimOnboardingNudge(dir, 's0')).toBe(true);
   });
 
   it('reads a marker written by an older build that held a single id', () => {

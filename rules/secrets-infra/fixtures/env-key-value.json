@@ -122,5 +122,92 @@
       }
     ],
     "expectedVariableName": "GITHUB_TOKEN"
+  },
+  {
+    "label": "code assignment from a call, not a secret",
+    "text": "const token = getToken();",
+    "shouldMatch": false
+  },
+  {
+    "label": "code assignment from a property chain, not a secret",
+    "text": "secret = config.auth.secret_value",
+    "shouldMatch": false
+  },
+  {
+    "label": "shell variable reference, not a secret",
+    "text": "export GITHUB_TOKEN=$GH_TOKEN_FROM_VAULT",
+    "shouldMatch": false
+  },
+  {
+    "label": "template placeholder, not a secret",
+    "text": "API_KEY=${API_KEY_FROM_CI}",
+    "shouldMatch": false
+  },
+  {
+    "label": "angle-bracket placeholder, not a secret",
+    "text": "PASSWORD=<your-password-here>",
+    "shouldMatch": false
+  },
+  {
+    "label": "command substitution, not a secret",
+    "text": "TOKEN=$(gh auth token --hostname github.com)",
+    "shouldMatch": false
+  },
+  {
+    "label": "boolean literal, not a secret",
+    "text": "SECRET=false",
+    "shouldMatch": false
+  },
+  {
+    "label": "pass inside another word, not a secret",
+    "text": "compass=north-west-1234",
+    "shouldMatch": false
+  },
+  {
+    "label": "literal value after a PASS keyword",
+    "text": "DB_PASS=Tr0ub4dor3xyz",
+    "shouldMatch": true
+  },
+  {
+    "label": "literal token with dots and dashes",
+    "text": "export AUTH_TOKEN=abc123.def-456_ghi789",
+    "shouldMatch": true
+  },
+  {
+    "label": "bcrypt hash value is a literal, not a shell reference",
+    "text": "SECRET=$2a$12$abcdefghijklmnopqrstuvwxyz012345",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 7,
+        "end": 46
+      }
+    ]
+  },
+  {
+    "label": "quoted bcrypt hash value is a literal too",
+    "text": "PASSWORD=\"$2b$10$abcdefabcdefabcdefabcdefabcdef\"",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 10,
+        "end": 47
+      }
+    ]
+  },
+  {
+    "label": "KNOWN GAP (PR #714): pure dotted literal — the pattern cannot tell it from a property chain, so it stays undetected by design",
+    "text": "ACCESS_TOKEN=abc.def.ghi",
+    "shouldMatch": false
+  },
+  {
+    "label": "KNOWN GAP (PR #714): dotted sk.live key — same property-chain indistinguishability, stays undetected by design",
+    "text": "API_KEY=sk.live.abcdef1234567890",
+    "shouldMatch": false
+  },
+  {
+    "label": "KNOWN GAP (PR #714): dot-separated id/secret pair (Twilio-style) — same, stays undetected by design",
+    "text": "TWILIO_TOKEN=abcdef1234567890.abcdef1234567890",
+    "shouldMatch": false
   }
 ]

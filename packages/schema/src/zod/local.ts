@@ -38,6 +38,7 @@ import { type BuiltinPolicyId, RedactFallback } from './policy.ts';
 import type { Rule } from './rule.ts';
 import { SightingShareConsent } from './sighting-share.ts';
 import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
+import { isWebAccountKey } from './web-account.ts';
 
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
@@ -261,6 +262,11 @@ export const ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH = 512;
  *               kept, so one repository cloned over SSH or HTTPS has one key.
  *   `account` — a web-chat workspace identity, `<provider>:<workspace-id>`.
  *
+ * `codingAgents: true` on an `account` entry says the user enrolled the account
+ * for coding-agent sessions signed in to it as well as for its web chats.
+ * Absent, the entry covers web chats only, which is how every entry written
+ * before the marker reads. Any other value fails the entry.
+ *
  * `identity` and `label` refuse control and format characters (`printable`, the
  * rule the whoami fields follow), because both are echoed to a terminal.
  * `identity` must also be non-empty: an event with no identity carries no key,
@@ -277,6 +283,7 @@ export const AttachmentScopeEntry = z.object({
   identity: printable(ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH).min(1),
   label: printable(80).optional(),
   enrolledAt: z.iso.datetime(),
+  codingAgents: z.literal(true).optional(),
 });
 export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
 
@@ -303,6 +310,12 @@ export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
  * isAttachmentScopeBoundTo is what compares the binding with an organization
  * and account.
  *
+ * `workSubscriptions` is the user's opt-out of work-subscription recognition on
+ * this device: absent means on, and `'off'` means off. Any other value present
+ * also reads as `'off'` and does not fail the envelope, so a value this build
+ * does not know sends less and every enrolled entry keeps forwarding. Read it
+ * through workSubscriptionsOn, which takes the stored value raw.
+ *
  * NOT STRICT, so a field added to the envelope later is stripped by this reader
  * rather than failing it. A binding field that is present must be valid,
  * though: one that is not a printable string fails the envelope, the way a bad
@@ -315,6 +328,7 @@ export const AttachmentScope = z.object({
   endpoint: z.string().min(1),
   tenantName: PluginWhoami.shape.tenantName.optional(),
   userEmail: PluginWhoami.shape.userEmail.optional(),
+  workSubscriptions: z.literal('off').optional().catch('off'),
   entries: z.array(AttachmentScopeEntry),
 });
 export type AttachmentScope = z.infer<typeof AttachmentScope>;
@@ -332,7 +346,7 @@ const AttachmentScopeEnvelope = AttachmentScope.extend({ entries: z.array(z.unkn
  * own, keeping the valid ones, so an unknown `kind`, a control character or a
  * bad timestamp costs that entry and nothing else. Unknown keys are stripped
  * from both levels. The binding is kept when the record carries it, and no
- * binding key is added when it does not.
+ * binding key is added when it does not; the same holds for `workSubscriptions`.
  *
  * Never throws: a value that throws while it is read is no scope. Pure; no I/O.
  */
@@ -345,11 +359,12 @@ export function parseAttachmentScope(raw: unknown): AttachmentScope | undefined 
       const entry = AttachmentScopeEntry.safeParse(candidate);
       if (entry.success) entries.push(entry.data);
     }
-    const { endpoint, tenantName, userEmail } = envelope.data;
+    const { endpoint, tenantName, userEmail, workSubscriptions } = envelope.data;
     return {
       endpoint,
       ...(tenantName === undefined ? {} : { tenantName }),
       ...(userEmail === undefined ? {} : { userEmail }),
+      ...(workSubscriptions === undefined ? {} : { workSubscriptions }),
       entries,
     };
   } catch {
@@ -417,6 +432,160 @@ export function isAttachmentScopeBoundTo(
     return false;
   }
 }
+
+/** The version of the attached-identity record this build writes and reads. */
+export const ATTACHED_IDENTITY_SPEC_VERSION = 1;
+
+/** The most work accounts an attached-identity record holds. */
+export const ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX = 8;
+
+// A sha256 digest, and its first 64 bits, as lower-case hex.
+const DIGEST_HEX = /^[0-9a-f]{64}$/;
+const SHORT_DIGEST_HEX = /^[0-9a-f]{16}$/;
+
+/**
+ * Who attached this machine, kept beside the credential it belongs to as digests
+ * only: the deployment, a digest of the credential, a digest of the attached
+ * user's email, the tag that user's agent keys carry, where the record came from
+ * (the attach, or a later whoami), when, and the work accounts validated on this
+ * machine since, each an `account` entry (isLearnedWorkAccount).
+ *
+ * It holds no email, organization name or key. Read a stored one through
+ * parseAttachedIdentity, and ask attachedIdentityHolds whether it counts.
+ *
+ * NOT STRICT, and NO `.meta({ id })`: it is on-disk state, under
+ * WorkspaceSettings' rule.
+ */
+export const AttachedIdentity = z.object({
+  specVersion: z.literal(ATTACHED_IDENTITY_SPEC_VERSION),
+  endpoint: z.string().min(1),
+  credentialDigest: z.string().regex(DIGEST_HEX),
+  attachedUserDigest: z.string().regex(DIGEST_HEX),
+  scopeTag: z.string().regex(SHORT_DIGEST_HEX),
+  source: z.enum(['attach', 'whoami']),
+  checkedAt: z.iso.datetime(),
+  workAccounts: z.array(AttachmentScopeEntry).max(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX),
+});
+export type AttachedIdentity = z.infer<typeof AttachedIdentity>;
+
+// The record with its work accounts left unread, so one bad entry cannot fail
+// the whole record.
+const AttachedIdentityEnvelope = AttachedIdentity.extend({ workAccounts: z.array(z.unknown()) });
+
+/** Whether an entry is a learned work account: an `account` entry whose identity is a web account key. */
+export function isLearnedWorkAccount(entry: AttachmentScopeEntry): boolean {
+  return entry.kind === 'account' && isWebAccountKey(entry.identity);
+}
+
+/**
+ * A stored attached-identity record, validated, or `undefined`.
+ *
+ * The envelope first: anything that is not a record of this version with every
+ * identity field well formed is no record. Then each work account on its own:
+ * an entry that is not a learned work account is dropped and the rest are kept
+ * in stored order, at most ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX of them. Unknown
+ * keys are stripped. Never throws.
+ */
+export function parseAttachedIdentity(raw: unknown): AttachedIdentity | undefined {
+  try {
+    const envelope = AttachedIdentityEnvelope.safeParse(raw);
+    if (!envelope.success) return undefined;
+    const workAccounts: AttachmentScopeEntry[] = [];
+    for (const candidate of envelope.data.workAccounts) {
+      if (workAccounts.length === ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX) break;
+      const entry = AttachmentScopeEntry.safeParse(candidate);
+      if (entry.success && isLearnedWorkAccount(entry.data)) workAccounts.push(entry.data);
+    }
+    return { ...envelope.data, workAccounts };
+  } catch {
+    return undefined;
+  }
+}
+
+/** What an attached-identity record has to match to count (attachedIdentityHolds). */
+export interface AttachedIdentityBinding {
+  /** The endpoint in force, `settings.controlPlane.endpoint`. */
+  readonly endpoint: string | undefined;
+  /** The digest of the key the credential holds. */
+  readonly credentialDigest: string | undefined;
+  /** The credential's attachment mode. */
+  readonly mode: AttachmentMode | undefined;
+}
+
+/**
+ * Whether a stored attached-identity record counts: the attachment is exactly
+ * `'scoped'`, the record parses, and it names this endpoint and this
+ * credential's digest, each compared exactly. Otherwise this machine has no
+ * attached user, no learned work account and no agent key. Pure; never throws.
+ */
+export function attachedIdentityHolds(record: unknown, binding: AttachedIdentityBinding): boolean {
+  try {
+    if (binding.mode !== 'scoped') return false;
+    if (binding.endpoint === undefined || binding.credentialDigest === undefined) return false;
+    const parsed = parseAttachedIdentity(record);
+    return (
+      parsed?.endpoint === binding.endpoint && parsed.credentialDigest === binding.credentialDigest
+    );
+  } catch {
+    return false;
+  }
+}
+
+// When an observation was made, in epoch milliseconds.
+const OBSERVED_AT = z.number().int().nonnegative();
+// The binding hash of the attachment an observation was made under.
+const BINDING_HASH = z.string().regex(SHORT_DIGEST_HEX);
+// A work account's hash. Written only for a work account, never for a personal one.
+const ACCOUNT_HASH = z.string().regex(DIGEST_HEX);
+// A login file's fingerprint, as one string.
+const LOGIN_FILE_FINGERPRINT = z.string().min(1).max(256);
+
+/**
+ * One line of a session's account log: an append-only record of what each hook
+ * saw of the login a coding agent's session runs under.
+ *
+ *   `k`     — a login view: `w` a work login, with its account's hash `h`;
+ *             `n` not one; `v` a veto; `u` unreadable.
+ *   `b`     — a session boundary.
+ *   `inh`   — a resumed session inherits its account.
+ *   `start` — a Codex thread's start: its account's hash, `none`, or `pending`
+ *             while the thread's head is not yet on disk, and the login file's
+ *             fingerprint `fp`. A resume is always `none`, with no `fp`.
+ *   `s`     — on its own, a Codex baseline (the login file changed and still held
+ *             for the thread's account, `fp` beside it) or the thread's sticky
+ *             `none`.
+ *
+ * `t` is when, `bd` the binding hash of the attachment the line was written
+ * under. A line carries an account hash only for a work account, never for a
+ * personal one. NOT STRICT, so a key a newer build adds is stripped rather than
+ * failing the line, except `start` on a baseline or a sticky none: those two
+ * refuse it, so a start line this build cannot read is never taken for either.
+ * NO `.meta({ id })`: on-disk state.
+ */
+export const SessionAccountObservation = z.union([
+  z.object({
+    t: OBSERVED_AT,
+    bd: BINDING_HASH,
+    start: z.enum(['startup', 'clear', 'fork']),
+    s: z.union([ACCOUNT_HASH, z.literal('none'), z.literal('pending')]),
+    fp: LOGIN_FILE_FINGERPRINT,
+  }),
+  z.object({ t: OBSERVED_AT, bd: BINDING_HASH, start: z.literal('resume'), s: z.literal('none') }),
+  z.object({
+    t: OBSERVED_AT,
+    bd: BINDING_HASH,
+    s: ACCOUNT_HASH,
+    fp: LOGIN_FILE_FINGERPRINT,
+    start: z.never().optional(),
+  }),
+  z.object({ t: OBSERVED_AT, bd: BINDING_HASH, s: z.literal('none'), start: z.never().optional() }),
+  z.object({ t: OBSERVED_AT, bd: BINDING_HASH, k: z.literal('w'), h: ACCOUNT_HASH }),
+  z.object({ t: OBSERVED_AT, bd: BINDING_HASH, k: z.enum(['n', 'v']) }),
+  z.object({ t: OBSERVED_AT, k: z.literal('u') }),
+  z.object({ t: OBSERVED_AT, b: z.enum(['startup', 'clear', 'resume']) }),
+  z.object({ t: OBSERVED_AT, bd: BINDING_HASH, inh: z.literal(true) }),
+]);
+export type SessionAccountObservation = z.infer<typeof SessionAccountObservation>;
 
 // The behavior the user consented to when they allowed the browser extension to
 // write down what it observes on a web chat. A grant recorded against an older

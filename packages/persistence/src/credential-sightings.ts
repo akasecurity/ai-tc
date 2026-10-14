@@ -25,6 +25,7 @@ import {
 
 import { readControlPlaneCredential } from './control-plane-credential.ts';
 import { hashProjectKey, scopeKeyOfProjectKey } from './egress-wire.ts';
+import { createTrackedFileLookup } from './git-index.ts';
 import { settingsDir } from './local-layout.ts';
 import { readWorkspaceSettings } from './settings.ts';
 import { readSightingSharing } from './sighting-sharing.ts';
@@ -38,7 +39,6 @@ export interface ScanSighting {
   variableName?: string | undefined;
   /** The absolute path the scan read; used to class the file and never sent. */
   file: string;
-  gitignored: boolean;
   /** The scope key of the repository holding the file, when it has one. */
   scopeKey?: string | undefined;
 }
@@ -51,8 +51,6 @@ export interface SightingScanProject {
   name: string;
   /** The absolute project root. Never sent. */
   root: string;
-  /** Whether the project is a git working tree. */
-  git: boolean;
 }
 
 /** The connection a sender is handed. */
@@ -209,6 +207,7 @@ export async function forwardCredentialSightings(
     const wireProject = { projectKey: hashProjectKey(project.projectKey), name: project.name };
     const home = deps.home ?? homedir();
     const seenAt = (deps.now ?? (() => new Date()))().toISOString();
+    const isTracked = createTrackedFileLookup();
 
     const byKey = new Map<string, CredentialSighting>();
     for (const sighting of input.sightings) {
@@ -218,8 +217,7 @@ export async function forwardCredentialSightings(
         keptLocal++;
         continue;
       }
-      const gitTracked =
-        project.git && !sighting.gitignored && within(project.root, sighting.file) !== undefined;
+      const gitTracked = isTracked(sighting.file);
       const key = `${sighting.token}\u0000${locationClass}`;
       const seen = byKey.get(key);
       if (seen !== undefined) {

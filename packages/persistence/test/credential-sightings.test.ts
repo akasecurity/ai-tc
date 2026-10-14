@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type {
@@ -10,6 +10,7 @@ import { CredentialSightingsRequest as RequestSchema } from '@akasecurity/schema
 import { SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { writeGitRepo } from '../../../test/helpers/git-index.ts';
 import { writeControlPlaneCredential } from '../src/control-plane-credential.ts';
 import type {
   CredentialSightingsSend,
@@ -132,7 +133,7 @@ function recorder(
 }
 
 function project(root: string, overrides: Partial<SightingScanProject> = {}): SightingScanProject {
-  return { projectKey: `git:${REPO_URL}`, name: 'acme/widgets', root, git: true, ...overrides };
+  return { projectKey: `git:${REPO_URL}`, name: 'acme/widgets', root, ...overrides };
 }
 
 function sightingIn(file: string, value: string, overrides: Partial<ScanSighting> = {}) {
@@ -141,7 +142,6 @@ function sightingIn(file: string, value: string, overrides: Partial<ScanSighting
     ruleId: 'aws-access-key',
     variableName: 'AWS_ACCESS_KEY_ID',
     file,
-    gitignored: false,
     scopeKey: REPO_KEY,
     ...overrides,
   } satisfies ScanSighting;
@@ -285,6 +285,7 @@ describe('forwardCredentialSightings', () => {
   it('sends tokens with project, class, variable name and git-tracked, and nothing else', async () => {
     sharingMachine();
     const root = tempDir('aka-project-');
+    writeGitRepo(root, ['src/config.ts']);
     const rec = recorder();
     const file = join(root, 'src', 'config.ts');
     const dotFile = join(root, '.github', 'deploy.yml');
@@ -295,7 +296,7 @@ describe('forwardCredentialSightings', () => {
         project: project(root),
         sightings: [
           sightingIn(file, VALUE_A),
-          sightingIn(dotFile, VALUE_B, { variableName: undefined, gitignored: true }),
+          sightingIn(dotFile, VALUE_B, { variableName: undefined }),
         ],
       },
       deps(rec.send),
@@ -339,6 +340,7 @@ describe('forwardCredentialSightings', () => {
   it('counts a value once per project and location class', async () => {
     sharingMachine();
     const root = tempDir('aka-project-');
+    writeGitRepo(root, ['b.ts', '.vscode/c.json']);
     const rec = recorder();
 
     const outcome = await forwardCredentialSightings(
@@ -346,7 +348,7 @@ describe('forwardCredentialSightings', () => {
       {
         project: project(root),
         sightings: [
-          sightingIn(join(root, 'a.ts'), VALUE_A, { gitignored: true, variableName: undefined }),
+          sightingIn(join(root, 'a.ts'), VALUE_A, { variableName: undefined }),
           sightingIn(join(root, 'b.ts'), VALUE_A),
           sightingIn(join(root, '.vscode', 'c.json'), VALUE_A),
         ],
@@ -363,6 +365,55 @@ describe('forwardCredentialSightings', () => {
     ]);
   });
 
+  it('marks git-tracked only a file in its repository index', async () => {
+    sharingMachine();
+    const root = tempDir('aka-project-');
+    writeGitRepo(root, ['tracked.ts', 'ignored.env']);
+    const outside = tempDir('aka-outside-');
+    const rec = recorder();
+    const values = ['tracked', 'never-added', 'ignored', 'outside'].map((v) => `${VALUE_B}${v}`);
+
+    await forwardCredentialSightings(
+      store.home,
+      {
+        project: project(root),
+        sightings: [
+          sightingIn(join(root, 'tracked.ts'), values[0] ?? ''),
+          sightingIn(join(root, 'new.env'), values[1] ?? ''),
+          sightingIn(join(root, '.env'), values[2] ?? ''),
+          sightingIn(join(outside, 'x.ts'), values[3] ?? ''),
+        ],
+      },
+      { ...deps(rec.send), home: outside },
+    );
+
+    const byToken = new Map(
+      rec.requests.flatMap((r) => r.sightings).map((s) => [s.token, s.gitTracked]),
+    );
+    expect(values.map((v) => byToken.get(sightingToken(independentKey, v)))).toEqual([
+      true,
+      false,
+      false,
+      undefined,
+    ]);
+  });
+
+  it('marks nothing git-tracked when the repository index cannot be read', async () => {
+    sharingMachine();
+    const root = tempDir('aka-project-');
+    mkdirSync(join(root, '.git'));
+    writeFileSync(join(root, '.git', 'index'), 'not an index');
+    const rec = recorder();
+
+    await forwardCredentialSightings(
+      store.home,
+      { project: project(root), sightings: [sightingIn(join(root, 'a.ts'), VALUE_A)] },
+      deps(rec.send),
+    );
+
+    expect(rec.requests[0]?.sightings[0]?.gitTracked).toBe(false);
+  });
+
   it('marks nothing git-tracked in a project that is not a git working tree', async () => {
     sharingMachine();
     const root = tempDir('aka-project-');
@@ -371,7 +422,7 @@ describe('forwardCredentialSightings', () => {
     await forwardCredentialSightings(
       store.home,
       {
-        project: project(root, { projectKey: `path:${root}`, name: 'widgets', git: false }),
+        project: project(root, { projectKey: `path:${root}`, name: 'widgets' }),
         sightings: [sightingIn(join(root, 'a.ts'), VALUE_A)],
       },
       deps(rec.send),
@@ -393,7 +444,7 @@ describe('forwardCredentialSightings', () => {
     const outcome = await forwardCredentialSightings(
       store.home,
       {
-        project: project(home, { projectKey: `path:${home}`, name: 'someone', git: false }),
+        project: project(home, { projectKey: `path:${home}`, name: 'someone' }),
         sightings: [
           sightingIn(join(home, '.aws', 'credentials'), VALUE_A),
           sightingIn(join(tempDir('aka-elsewhere-'), 'elsewhere.txt'), VALUE_B),
@@ -561,7 +612,7 @@ describe('forwardCredentialSightings', () => {
     const outcome = await forwardCredentialSightings(
       store.home,
       {
-        project: project(root, { projectKey: `path:${root}`, git: false }),
+        project: project(root, { projectKey: `path:${root}` }),
         sightings: [sightingIn(join(root, 'a.ts'), VALUE_A)],
       },
       deps(rec.send),

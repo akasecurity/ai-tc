@@ -40,12 +40,11 @@ function scanProject(target: string): SightingScanProject {
       projectKey: `git:${identity.url}`,
       name: identity.name,
       root: worktreeRoot,
-      git: true,
     };
   }
   const dir = statSync(abs).isDirectory() ? abs : dirname(abs);
   const { root, projectKey, project } = resolveNonGitProject(dir, manifestKindOf);
-  return { projectKey, name: project, root, git: false };
+  return { projectKey, name: project, root };
 }
 
 /** Each sighting with the scope key of the repository holding its file. */

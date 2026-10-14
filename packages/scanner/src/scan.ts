@@ -466,7 +466,7 @@ const MAX_SECRET_FILE_BYTES = 512 * 1024;
 function sightingsOf(
   key: SightingKey,
   matches: CaptureResult['findings'],
-  file: { path: string; gitignored: boolean },
+  file: { path: string },
   scopeKey: string | undefined,
 ): ScanSighting[] {
   const found: ScanSighting[] = [];
@@ -478,7 +478,6 @@ function sightingsOf(
         ruleId: match.ruleId,
         ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
         file: file.path,
-        gitignored: file.gitignored,
         scopeKey,
       });
     } catch {
@@ -547,7 +546,6 @@ async function shareSightings(
         projectKey: project.projectKey,
         name: project.project,
         root: project.root,
-        git: project.projectKey.startsWith('git:'),
       },
       sightings,
     },

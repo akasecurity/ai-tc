@@ -17,6 +17,7 @@ import type { CredentialSightingsRequest, Rule } from '@akasecurity/schema';
 import { SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { encodeIndex } from '../../../test/helpers/git-index.ts';
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { forwardScanSightings } from '../src/sightings-forward.ts';
@@ -78,8 +79,9 @@ afterEach(() => {
   removeTrees([root, base]);
 });
 
-function gitRepo(dir: string, url?: string): void {
+function gitRepo(dir: string, url?: string, tracked: string[] = []): void {
   mkdirSync(join(dir, '.git'), { recursive: true });
+  writeFileSync(join(dir, '.git', 'index'), encodeIndex(tracked));
   const remote = url === undefined ? '' : `[remote "origin"]\n\turl = ${url}\n`;
   writeFileSync(join(dir, '.git', 'config'), `[core]\n\tbare = false\n${remote}`);
 }
@@ -151,7 +153,6 @@ describe('scanPathIntoStore — sighting tokens', () => {
         ruleId: 'test/aws-key',
         variableName: 'AWS_ACCESS_KEY_ID',
         file: join(root, 'config.ts'),
-        gitignored: false,
       },
     ]);
     expect(JSON.stringify(result.sightings)).not.toContain(VALUE);
@@ -168,7 +169,7 @@ describe('scanPathIntoStore — sighting tokens', () => {
 
 describe('forwardScanSightings', () => {
   it('sends the tokens of a git project under its Data Shares identity', async () => {
-    gitRepo(root, WORK_URL);
+    gitRepo(root, WORK_URL, ['config.ts', '.gitignore']);
     writeFileSync(join(root, 'config.ts'), `const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
     mkdirSync(join(root, '.github'));
     writeFileSync(join(root, '.github', 'ci.yml'), `token: ${OTHER_VALUE}\n`);
@@ -193,7 +194,7 @@ describe('forwardScanSightings', () => {
           token: sightingToken(KEY, OTHER_VALUE),
           locationClass: 'project-dot-directory',
           project,
-          gitTracked: true,
+          gitTracked: false,
         }),
         expect.objectContaining({
           token: sightingToken(KEY, VALUE),

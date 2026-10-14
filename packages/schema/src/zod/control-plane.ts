@@ -1166,10 +1166,10 @@ export type SightingProject = z.infer<typeof SightingProject>;
  * One secret a scan found, as its sighting token and descriptors.
  *
  * `token` is the only member derived from the value. `gitTracked` is true when
- * the file lies inside a git working tree and no `.gitignore` rule matches it:
- * a file git would commit. It is not read from the git index, so a file not yet
- * added counts as tracked. Strict, so no path, excerpt or masked value can ride
- * along.
+ * the index of the repository holding the file lists it: git tracks it. A file
+ * never added, a file outside any repository, and a file whose repository index
+ * could not be read are all false. Strict, so no path, excerpt or masked value
+ * can ride along.
  */
 export const CredentialSighting = z
   .object({

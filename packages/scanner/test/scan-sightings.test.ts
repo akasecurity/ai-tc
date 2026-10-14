@@ -13,6 +13,7 @@ import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { applyOnboarding, loadConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { encodeIndex } from '../../../test/helpers/git-index.ts';
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { scanAllRepos, scanWorktree } from '../src/scan.ts';
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   writeFileSync(join(repo, 'deploy.ts'), `export const AWS_ACCESS_KEY_ID = '${SOURCE_VALUE}';\n`);
   writeFileSync(join(repo, '.env'), `AWS_ACCESS_KEY_ID=${DOTENV_VALUE}\n`);
   writeFileSync(join(repo, '.gitignore'), '.env\n');
+  writeFileSync(join(repo, '.git', 'index'), encodeIndex(['.gitignore', 'deploy.ts']));
   // The attached gateway would forward each capture; these cases are about the
   // sightings route alone.
   restoreGateway = setDefaultGatewayFactory(standaloneGatewayFactory);

@@ -63,13 +63,12 @@ function input() {
   const plan = planSightingShare(home, { managedSettings: null });
   if (!plan.ok) throw new Error('expected a sharing plan');
   return {
-    project: { projectKey: `path:${root}`, name: 'widgets', root, git: false },
+    project: { projectKey: `path:${root}`, name: 'widgets', root },
     sightings: [
       {
         token: sightingToken(plan.key, ['value', 'for', 'test'].join('-')),
         ruleId: 'test/secret',
         file: join(root, 'a.ts'),
-        gitignored: false,
       },
     ],
   };
@@ -105,7 +104,7 @@ describe('sendScanSightings', () => {
 
     const outcome = await sendScanSightings(
       home,
-      { project: { projectKey: `path:${root}`, name: 'w', root, git: false }, sightings: [] },
+      { project: { projectKey: `path:${root}`, name: 'w', root }, sightings: [] },
       { send, managedSettings: null },
     );
 

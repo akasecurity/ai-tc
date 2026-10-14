@@ -726,7 +726,7 @@ export async function scanPathIntoStore(
     );
     if (matches.length === 0) continue;
     if (opts.sightingKey) {
-      sightings.push(...sightingsOf(opts.sightingKey, matches, file, gitignored));
+      sightings.push(...sightingsOf(opts.sightingKey, matches, file));
     }
 
     // Resolved through the same reading the live path uses (see
@@ -844,7 +844,6 @@ function sightingsOf(
   key: SightingKey,
   matches: readonly MatchResult[],
   file: string,
-  gitignored: boolean,
 ): ScanSighting[] {
   const found: ScanSighting[] = [];
   for (const match of matches) {
@@ -855,7 +854,6 @@ function sightingsOf(
         ruleId: match.ruleId,
         ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
         file,
-        gitignored,
       });
     } catch {
       // Left out; the scan itself goes on.

@@ -23,7 +23,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS, readHookFailOpens } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  readHookFailOpens,
+} from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 

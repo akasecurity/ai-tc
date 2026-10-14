@@ -293,12 +293,18 @@ interface Reach {
   externals: Map<string, Set<string>>;
 }
 
-function reach(symbols: readonly string[]): Reach {
-  const entry = resolveSpecifier(join(REPO_ROOT, 'entry.ts'), '@akasecurity/plugin-sdk');
-  if (entry.kind !== 'module') throw new Error('plugin-sdk root did not resolve to a module');
+// `treeShake: false` models a loader that runs every module it reaches with
+// every import that module makes: plain Node ESM, a test runner, or a bundle
+// built without tree-shaking.
+function reach(
+  symbols: readonly string[] | 'all',
+  { specifier = '@akasecurity/plugin-sdk', treeShake = true } = {},
+): Reach {
+  const entry = resolveSpecifier(join(REPO_ROOT, 'entry.ts'), specifier);
+  if (entry.kind !== 'module') throw new Error(`${specifier} did not resolve to a module`);
   const kept = new Map<string, Names>();
   const externals = new Map<string, Set<string>>();
-  const queue: [string, Names][] = [[entry.file, new Set(symbols)]];
+  const queue: [string, Names][] = [[entry.file, symbols === 'all' ? 'all' : new Set(symbols)]];
 
   const follow = (from: string, specifier: string, names: Names): void => {
     const target = resolveSpecifier(from, specifier);
@@ -310,13 +316,13 @@ function reach(symbols: readonly string[]): Reach {
     }
     if (target.kind === 'leaf') return;
     const named = names === 'all' || names.size > 0;
-    if (!named && isSideEffectFree(target.file)) return;
+    if (!named && treeShake && isSideEffectFree(target.file)) return;
     queue.push([target.file, names]);
   };
 
   for (let next = queue.shift(); next; next = queue.shift()) {
     const [file, incoming] = next;
-    const requested: Names = isSideEffectFree(file) ? incoming : 'all';
+    const requested: Names = treeShake && isSideEffectFree(file) ? incoming : 'all';
     const prior = kept.get(file);
     let merged: Names;
     if (prior === 'all' || requested === 'all') merged = 'all';
@@ -412,11 +418,46 @@ describe("the SDK's value imports from the root entry", () => {
   });
 });
 
+describe('the ./vault-glue entry', () => {
+  const plain = reach('all', {
+    specifier: '@akasecurity/plugin-sdk/vault-glue',
+    treeShake: false,
+  });
+
+  it('serves the glue over an injected vault core', () => {
+    const entry = resolveSpecifier(
+      join(REPO_ROOT, 'entry.ts'),
+      '@akasecurity/plugin-sdk/vault-glue',
+    );
+    if (entry.kind !== 'module') throw new Error('./vault-glue did not resolve to a module');
+    const offered = exportedNames(entry.file);
+    expect(
+      ['createInjectedVaultGlue', 'hasPointer', 'POINTER_UNAVAILABLE_TEXT'].filter(
+        (name) => !offered.has(name),
+      ),
+    ).toEqual([]);
+  });
+
+  it('loads no module that imports node:sqlite, even without tree-shaking', () => {
+    expect(sqliteImporters(plain)).toEqual([]);
+    expect(
+      ['packages/persistence/src/index.ts', 'packages/persistence/src/database.ts'].filter((f) =>
+        plain.modules.has(f),
+      ),
+    ).toEqual([]);
+  });
+
+  it('is needed: the root entry loaded without tree-shaking reaches node:sqlite', () => {
+    const root = reach('all', { treeShake: false });
+    expect(sqliteImporters(root)).toContain('packages/persistence/src/database.ts');
+  });
+});
+
 describe('the walk itself', () => {
   it('sees node:sqlite when a symbol really needs the store', () => {
-    // The vault glue opens the local database, so its graph MUST import the
-    // builtin. If this goes quiet, the walk has stopped seeing the thing the
-    // cases above assert is absent.
+    // `createVaultGlue` in `tokenize.ts` opens the local SQLite database, so its
+    // graph MUST import the builtin. If this goes quiet, the walk has stopped
+    // seeing the thing the cases above assert is absent.
     const vault = reach(['createVaultGlue']);
     expect(sqliteImporters(vault)).toContain('packages/persistence/src/database.ts');
   });

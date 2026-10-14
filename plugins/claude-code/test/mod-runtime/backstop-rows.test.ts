@@ -68,12 +68,13 @@ for (const [door, label] of [
 test('a subagent row is scanned the same way and keeps its agent', async ($, on) => {
   redactSecrets(on);
   const appended = store(on);
-  helper(on, pointerReply);
+  const asked = helper(on, pointerReply);
 
   await $.session.append(row('attachment', `key=${SECRET}`, { agentId: 'agent-7' }));
 
   expect(textOf(appended()[0])).toEqual([`key=${POINTER}`]);
   expect(appended()[0]?.agentId).toBe('agent-7');
+  expect(asked[0]?.stdin.row).toEqual({ door: 'attachment', agentId: 'agent-7' });
 });
 
 test('a subagent prompt row is scanned though a main prompt row is not', async ($, on) => {

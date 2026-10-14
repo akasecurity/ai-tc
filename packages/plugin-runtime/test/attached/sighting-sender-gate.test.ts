@@ -10,10 +10,13 @@ import {
 } from '../../../../test/helpers/sighting-sender-guard.ts';
 
 // The modules under src/attached/ that send credential sightings, as paths relative to
-// it. Empty: nothing here sends sightings yet. A sender is added to this list in
-// the change that adds it, and must import and call readSightingSharing or
-// resolveSightingSharing.
-const SIGHTING_SENDERS: readonly string[] = [];
+// it. A sender is added to this list in the change that adds it, and must import
+// and call readSightingSharing or resolveSightingSharing.
+const SIGHTING_SENDERS: readonly string[] = [
+  'gateway.ts',
+  'history-sync.ts',
+  'outbound-encoder.ts',
+];
 
 // Modules that fetch or hold the sighting key and send no sightings. A module on
 // this list that starts referencing a sighting send fails below and must move to

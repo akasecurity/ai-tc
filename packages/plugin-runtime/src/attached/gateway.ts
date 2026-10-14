@@ -4,6 +4,7 @@ import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persis
 import {
   canonicalRepoUrl,
   llmCallId,
+  readSightingSharing,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
   toolCallId,
@@ -275,6 +276,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
       deps.encoder ??
       createStoreOutboundEncoder(dirname(deps.dataDir), {
         loadRules: async () => (await this.getPolicyBundle()).rules ?? [],
+        // Asked per capture, so a change of the sharing answer applies to the next send.
+        readSharing: () => readSightingSharing(dirname(deps.dataDir)).sharing,
         ...(deps.scanBound === undefined ? {} : { scanBound: deps.scanBound }),
       });
   }

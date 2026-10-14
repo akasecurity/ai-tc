@@ -39,7 +39,13 @@ import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
 import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
-import { expectedToken, keyOf, patShaped, storeSightingKey } from '../helpers/sighting-fixtures.ts';
+import {
+  expectedToken,
+  keyOf,
+  patShaped,
+  setSightingSharing,
+  storeSightingKey,
+} from '../helpers/sighting-fixtures.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 /**
@@ -2524,6 +2530,25 @@ describe('runHistorySync — a held live capture on a default install', () => {
     expect(JSON.stringify(l.captures)).not.toContain(value);
     expect(l.captures.map((c) => c.content)).toEqual([`deploy ${expectedToken(key, value)}`]);
     expect(l.structural).toEqual([]);
+  });
+});
+
+describe('runHistorySync — the sighting-sharing gate on resend', () => {
+  const value = patShaped(113);
+
+  it('resends with the current answer: a capture held while sharing was on goes as a marker once it is off', async () => {
+    attach();
+    storeSightingKey(home, keyOf(2, 4), { attachedTo: ENDPOINT, onboard: false });
+    seedCaptures([{ id: 'cap-held', content: `k ${value}` }]);
+    setSightingSharing(home, false, ENDPOINT);
+    const l = lanesFor();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    const body = JSON.stringify(l.captures);
+    expect(body).not.toContain(value);
+    expect(body).not.toContain('[[aka:fp:');
+    expect(l.captures.map((c) => c.content)).toEqual([`k ${FAIL_CLOSED_MARKER}`]);
   });
 });
 

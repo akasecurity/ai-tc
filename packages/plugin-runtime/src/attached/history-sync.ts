@@ -6,6 +6,7 @@ import {
   HISTORY_SYNC_LEASE_STALE_MS,
   openLocalDatabase,
   readControlPlaneCredentialFile,
+  readSightingSharing,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -398,6 +399,8 @@ export async function runHistorySync(
       createStoreOutboundEncoder(deps.base, {
         db,
         loadRules: () => storeEffectiveRules(deps.dataDir),
+        // Asked per capture: a row held while sharing was on goes with the current answer.
+        readSharing: () => readSightingSharing(deps.base).sharing,
       });
 
     // WHERE THE BACKLOG ENDS. Everything recorded from the attachment onwards is

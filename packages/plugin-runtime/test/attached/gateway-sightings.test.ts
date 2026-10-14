@@ -19,6 +19,7 @@ import {
   expectedToken,
   keyOf,
   patShaped,
+  setSightingSharing,
   storeSightingKey,
 } from '../helpers/sighting-fixtures.ts';
 
@@ -338,4 +339,31 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies[0]).toContain(expectedToken(key, installedValue));
     expect(seen.bodies[0]).toContain('acme/internal-regex');
   }, 90_000);
+
+  it('sends only markers, with no token or sightings anywhere in the body, while sharing is off', async () => {
+    storeSightingKey(base, keyOf(3, 3), { sharing: false });
+    const seen = emptySeen();
+    await build(seen).recordCapture(capture(`a ${value} b`));
+    const body = seen.bodies[0] ?? '';
+    expect(body).not.toContain(value);
+    expect(body).not.toContain('[[aka:fp:');
+    expect(body).not.toContain('sightings');
+    expect(body).toContain(FAIL_CLOSED_MARKER);
+  });
+
+  it('applies a change of the sharing answer to the next capture', async () => {
+    const key = keyOf(4, 1);
+    storeSightingKey(base, key);
+    const seen = emptySeen();
+    const gateway = build(seen);
+    await gateway.recordCapture(capture(`one ${value}`));
+    setSightingSharing(base, false);
+    await gateway.recordCapture(capture(`two ${value}`));
+    setSightingSharing(base, true);
+    await gateway.recordCapture(capture(`three ${value}`));
+    expect(seen.bodies[0]).toContain(expectedToken(key, value));
+    expect(seen.bodies[1]).not.toContain('[[aka:fp:');
+    expect(seen.bodies[1]).toContain(FAIL_CLOSED_MARKER);
+    expect(seen.bodies[2]).toContain(expectedToken(key, value));
+  });
 });

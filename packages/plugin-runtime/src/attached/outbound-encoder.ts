@@ -11,6 +11,7 @@ import {
   keysDir,
   openLocalDatabase,
   readSightingKeys,
+  readSightingSharing,
   readWorkspaceSettings,
   SecretVault,
   sightingToken,
@@ -57,6 +58,12 @@ export interface OutboundEncoderDeps {
    */
   loadRules: () => Promise<readonly Rule[]>;
   createScanner?: (partition: GuardedScanPartition) => SecretSpanScanner;
+  /**
+   * Whether credential sightings may leave this machine now. Asked on every
+   * capture; while it answers false, or throws, every secret span is sent as
+   * {@link FAIL_CLOSED_MARKER} with no token and no sightings.
+   */
+  readSharing: () => boolean;
 }
 
 /** The inputs a capture's wire id is derived from, beside its content hash. */
@@ -106,6 +113,7 @@ const failClosed = { text: FAIL_CLOSED_MARKER };
 
 function currentKey(deps: OutboundEncoderDeps): SightingKey | undefined {
   try {
+    if (!deps.readSharing()) return undefined;
     return deps.readKeys()?.current;
   } catch {
     return undefined;
@@ -295,6 +303,7 @@ export function createStoreOutboundEncoder(
     loadRules: () => Promise<readonly Rule[]>;
     db?: LocalDatabase | undefined;
     scanBound?: BoundedScanRequest | undefined;
+    readSharing?: (() => boolean) | undefined;
   },
 ): OutboundEncoder {
   const { db, scanBound } = opts;
@@ -304,6 +313,7 @@ export function createStoreOutboundEncoder(
       ? {}
       : { createScanner: (p: GuardedScanPartition) => createSecretSpanScanner(p, scanBound) }),
     readKeys: () => readSightingKeys(base),
+    readSharing: opts.readSharing ?? (() => readSightingSharing(base).sharing),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };
       const opened = openLocalDatabase(dataDirOf(base));

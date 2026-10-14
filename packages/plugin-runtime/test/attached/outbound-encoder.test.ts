@@ -59,6 +59,7 @@ function rawEncoderWith(
       throw new Error('no vault in this test');
     },
     loadRules: noInstalledRules,
+    readSharing: () => true,
     ...overrides,
   });
 }
@@ -419,5 +420,46 @@ describe('createStoreOutboundEncoder', () => {
     storeSightingKey(base, key);
     const result = await encoderOver(base).encodeContent(pointerOf('secret', 'D'));
     expect(result.content).toBe(FAIL_CLOSED_MARKER);
+  });
+});
+
+describe('outbound encoder: the sighting-sharing gate', () => {
+  const value = patShaped(101);
+  const pointer = pointerOf('secret', 'E');
+
+  it('sends only markers, no token and no sightings, while sharing is off', async () => {
+    let opened = 0;
+    const result = await encoderWith(keyOf(1, 1), {
+      readSharing: () => false,
+      openVault: () => {
+        opened += 1;
+        throw new Error('the vault is not opened while sharing is off');
+      },
+    }).encodeContent(`a ${value} b ${pointer}`);
+    expect(result).toEqual({
+      content: `a ${FAIL_CLOSED_MARKER} b ${FAIL_CLOSED_MARKER}`,
+      sightings: [],
+    });
+    expect(result.content).not.toContain('[[aka:fp:');
+    expect(opened).toBe(0);
+  });
+
+  it('asks the gate on every capture, so a change applies to the next one', async () => {
+    let sharing = true;
+    const encoder = encoderWith(keyOf(2, 2), { readSharing: () => sharing });
+    expect((await encoder.encodeContent(value)).content).toContain('[[aka:fp:v2.');
+    sharing = false;
+    expect((await encoder.encodeContent(value)).content).toBe(FAIL_CLOSED_MARKER);
+    sharing = true;
+    expect((await encoder.encodeContent(value)).content).toContain('[[aka:fp:v2.');
+  });
+
+  it('treats a gate that throws as sharing off', async () => {
+    const result = await encoderWith(keyOf(1, 3), {
+      readSharing: () => {
+        throw new Error('settings unreadable');
+      },
+    }).encodeContent(value);
+    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
   });
 });

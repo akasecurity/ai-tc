@@ -123,7 +123,7 @@ describe('AttachmentScopeEntry.codingAgents', () => {
     ]);
   });
 
-  it('reads an entry with no marker as before, adding none', () => {
+  it('reads an entry with no marker without adding one', () => {
     const unmarked = { kind: 'account', identity: ACCOUNT, enrolledAt: ISO };
     const [entry] = parseAttachmentScope(record({ entries: [unmarked] }))?.entries ?? [];
     expect(entry).toStrictEqual(unmarked);

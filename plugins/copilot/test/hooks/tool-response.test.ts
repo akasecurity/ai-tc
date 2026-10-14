@@ -188,6 +188,36 @@ describe('an object-shaped VS Code result', () => {
     expect(scannableResponseFields('vscode', nested(RESULT_WALK_MAX_DEPTH, {}))).toEqual(NOTHING);
   });
 
+  it('holds the depth bound the way the sibling walk does: by the depth of the LEAF', () => {
+    // The bound is `depth > RESULT_WALK_MAX_DEPTH` on the node itself, so what
+    // decides is how deep the text sits, not how deep its container does. A
+    // node past the bound marks the result truncated only when it could have
+    // carried text — a container test (`depth >= MAX` on the parent) would
+    // also flag a number or an empty string one level down, which left
+    // nothing unscanned.
+    const past = RESULT_WALK_MAX_DEPTH + 1;
+    expect(scannableResponseFields('vscode', nested(past, 7))).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', nested(past, null))).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', nested(past, ''))).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', nested(past, {}))).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', nested(past, []))).toEqual(NOTHING);
+    // The positive controls: text past the bound, bare or still wrapped, is
+    // reported — so the five rows above are not passing on a walk that never
+    // flags anything.
+    expect(scannableResponseFields('vscode', nested(past, { inner: 'x' }))).toEqual({
+      fields: [],
+      truncated: true,
+    });
+    expect(scannableResponseFields('vscode', nested(past, ['x']))).toEqual({
+      fields: [],
+      truncated: true,
+    });
+    // A sibling at a readable depth is still read beside a truncated one.
+    expect(
+      scannableResponseFields('vscode', { shallow: 'kept', deep: nested(past - 1, 'lost') }),
+    ).toEqual({ fields: [{ path: ['shallow'], text: 'kept' }], truncated: true });
+  });
+
   it('stops at the leaf-count bound and says it did', () => {
     const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
     expect(scannableResponseFields('vscode', at)).toMatchObject({ truncated: false });

@@ -1,10 +1,13 @@
-// The large-input bound preToolUse passes to its runtime. A field at or above
-// the threshold is scanned in a worker under a hard deadline, and one whose
-// scan does not finish is REFUSED (`CaptureResult.scanIncomplete`) — the one
-// place this hook denies because it could not decide. Without it a large
-// enough field keeps the in-process scan busy past the watchdog or the host's
-// timeout, and both of those end in silence, which hands the call to the host's
-// own permission flow with nothing scanned.
+// The large-input bound the scanning hooks pass to their runtime — preToolUse,
+// userPromptSubmitted and postToolUse. A field at or above the threshold is
+// scanned in a worker under a hard deadline, and one whose scan does not finish
+// comes back with `CaptureResult.scanIncomplete` set. preToolUse REFUSES it —
+// the one place that hook denies because it could not decide. The prompt and
+// result hooks have no channel to refuse on, so they report the field as too
+// large to scan instead, never as clean. Without the bound a large enough field
+// keeps the in-process scan busy past the watchdog or the host's timeout, and
+// both of those end in silence: the call goes to the host's own permission
+// flow, or the text to the model, with nothing scanned and nothing said.
 //
 // Pure (no I/O) so it unit-tests without a hook process: hook entry files run
 // main() on import and must NEVER be imported by tests.
@@ -15,7 +18,7 @@ import {
   LARGE_INPUT_THRESHOLD_CHARS,
 } from '@akasecurity/plugin-sdk';
 
-// When preToolUse stops spending time on bounded scans, in milliseconds since
+// When a hook stops spending time on bounded scans, in milliseconds since
 // the hook process started (performance.now()'s origin). Every bounded scan in
 // the process draws on it, so several large fields cannot add up past it.
 //
@@ -23,8 +26,9 @@ import {
 // the 30 s both dialects allow, because the watchdog is armed after the process
 // starts and resolves the race with silence: a refusal still being decided
 // when it fires is never written. The 9 s between this and the watchdog cover
-// module load, a contended store, the decision and the emit — and a full
-// bounded scan of every field a call carries (two at most) fits under it.
+// module load, a contended store, the decision and the emit. On preToolUse a
+// full bounded scan of every field a call carries (two at most) fits under it;
+// a structured tool result's many leaves all draw on this one deadline.
 export const HOOK_SCAN_DEADLINE_MS = 15_000;
 
 /**

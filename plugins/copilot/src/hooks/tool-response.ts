@@ -81,6 +81,11 @@ export interface ResponseFields {
  * are the Claude Code sibling's MCP argument walk's, where a capture of a
  * benign leaf was measured at ~0.04 ms and one carrying a finding at ~0.19 ms,
  * putting the leaf-count ceiling at well under a second of scanning.
+ *
+ * These caps are the only bound on a leaf under the large-input threshold
+ * (`LARGE_INPUT_THRESHOLD_CHARS`): such a leaf is scanned in-process, with no
+ * deadline, one capture after another. Only a leaf at or above the threshold
+ * is scanned in a worker under the hook's deadline.
  */
 export const RESULT_WALK_MAX_DEPTH = 6;
 export const RESULT_WALK_MAX_LEAVES = 2_000;
@@ -135,6 +140,19 @@ function leafFields(response: object): ResponseFields {
   let remaining = RESULT_WALK_MAX_TOTAL_CHARS;
 
   const walk = (node: unknown, path: string[], depth: number): void => {
+    // The same depth test as the sibling's walk (`depth > MCP_MAX_DEPTH`): a
+    // string leaf at depth RESULT_WALK_MAX_DEPTH is read, one below it is not.
+    // Only a node that could have carried text marks the result truncated — an
+    // empty container or a number past the bound left nothing unscanned.
+    if (depth > RESULT_WALK_MAX_DEPTH) {
+      if (
+        (typeof node === 'string' && node !== '') ||
+        (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
+      ) {
+        truncated = true;
+      }
+      return;
+    }
     if (typeof node === 'string') {
       if (node === '') return;
       if (
@@ -153,11 +171,6 @@ function leafFields(response: object): ResponseFields {
     const entries: [string, unknown][] = Array.isArray(node)
       ? node.map((item, index): [string, unknown] => [String(index), item])
       : Object.entries(node);
-    if (entries.length === 0) return;
-    if (depth >= RESULT_WALK_MAX_DEPTH) {
-      truncated = true;
-      return;
-    }
     for (const [key, value] of entries) walk(value, [...path, key], depth + 1);
   };
 

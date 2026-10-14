@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 
 import type { HistorySyncCounts, LocalDatabase } from '@akasecurity/persistence';
 import {
+  codingScopeExtras,
   HISTORY_SYNC_LEASE_STALE_MS,
   openLocalDatabase,
   readControlPlaneCredentialFile,
@@ -354,15 +355,31 @@ export async function runHistorySync(
     // an absent, garbled or foreign-endpoint scope resolves to no keys, and no
     // keys is an empty filter that every scoped statement matches nothing with.
     //
+    // A scoped pass also sends the coding-agent keys derived from the identity
+    // record bound to this credential (`codingScopeExtras`), re-derived from the
+    // same settings read every time the scope is: an opt-out, or a record that
+    // stops holding, takes them out of the next page.
+    //
     // A MACHINE ATTACHMENT IS UNTOUCHED. `scopeFilterOf` answers `undefined`
     // there, which every ledger method reads as "run today's statement", so a
-    // machine pass issues the same SQL and sends the same bytes as before.
+    // machine pass issues the same SQL, sends the same bytes as before and reads
+    // no identity record.
     const mode = attachmentModeOf(state.credential);
-    const scopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>
+    const credential = state.credential;
+    const storedScopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>
       resolveScope({ mode, scope: live.attachmentScope, endpoint: connection.endpoint });
+    const scopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>
+      mode === 'machine'
+        ? storedScopeOf(live)
+        : resolveScope(
+            { mode, scope: live.attachmentScope, endpoint: connection.endpoint },
+            codingScopeExtras(deps.dataDir, live, credential),
+          );
     const passScope = scopeOf(settings);
-    // Taken once: it scopes the consent re-mark below, which runs once per pass.
-    const passFilter = scopeFilterOf(passScope);
+    // Taken once, and from the stored entries alone: it scopes the consent
+    // re-mark below, which repeats the consent seed, and no seed marks a
+    // coding-agent key owed. The live path marks those, when it stamps the row.
+    const passFilter = scopeFilterOf(storedScopeOf(settings));
     // THE LIVE SCOPE, for both lanes: re-read from settings before every page
     // either one reads (a page of sessions, a page of one session's rows, a batch
     // of captures). A pass runs for up to two minutes, and an unenroll that lands
@@ -371,7 +388,9 @@ export async function runHistorySync(
     // deployment's. One read per page, never one per row. Machine mode has no
     // scope to change, so it answers the pass-start scope and reads nothing. A
     // settings file that cannot be read gives the unonboarded defaults, which
-    // resolve to no keys, so a failed read sends nothing.
+    // name no deployment: they resolve to no keys, and no identity record holds
+    // for them, so a failed read sends nothing. A detach that lands mid-pass
+    // reads the same way.
     const liveScope = (): ResolvedAttachmentScope =>
       mode === 'machine' ? passScope : scopeOf(readWorkspaceSettings(deps.base));
 

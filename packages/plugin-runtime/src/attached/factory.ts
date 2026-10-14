@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
 
-import { readControlPlaneCredential } from '@akasecurity/persistence';
+import { codingScopeExtras, readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -80,14 +80,20 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     // valid only for the endpoint the connection names. Resolved per gateway
     // and never cached, so an enrollment change reaches the next resolve.
     //
+    // A scoped attachment's scope also holds the coding-agent keys derived from
+    // the identity record bound to this credential (`codingScopeExtras`): one per
+    // work account the device recognised, while work subscriptions are on, and
+    // one per account enrolled by hand for coding sessions. A machine attachment
+    // reads no identity record.
+    //
     // Inside the `try` on purpose: a throw while resolving lands in the catch
     // below and returns the LOCAL gateway, which forwards nothing. That is the
     // safe direction for a scoping fault, and no client has been built yet.
-    const attachment = resolveScope({
-      mode: attachmentModeOf(credential),
-      scope: config.settings.attachmentScope,
-      endpoint: connection.endpoint,
-    });
+    const mode = attachmentModeOf(credential);
+    const attachment = resolveScope(
+      { mode, scope: config.settings.attachmentScope, endpoint: connection.endpoint },
+      mode === 'machine' ? [] : codingScopeExtras(config.dataDir, config.settings, credential),
+    );
 
     const client = createRemoteClient({
       endpoint: connection.endpoint,

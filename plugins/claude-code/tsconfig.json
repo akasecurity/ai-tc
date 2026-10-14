@@ -3,6 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["src", "test", "eval"],
+  "include": ["src", "test", "eval", "bench"],
   "exclude": ["test/mod-runtime"]
 }

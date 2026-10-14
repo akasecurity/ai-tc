@@ -67,6 +67,13 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+Each command in the Claude Code plugin's `hooks/hooks.json` runs a launcher
+(`src/hooks/launch.ts`) that enables Node's compile cache and then loads the hook from
+`<name>.body.js`. That path sits before every catch the hook has: when the body cannot be
+loaded, the launcher writes one fixed line to stderr (`aka: hook body failed to load;
+scanning skipped`), nothing to stdout, and exits 0. `plugins/claude-code/test/e2e/hook-launcher.e2e.test.ts`
+drives it.
+
 **One path fails CLOSED on purpose: a field too large to scan in time.** Every capture path
 that answers to a deadline builds its runtime with `largeInput`, so a field of
 `LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard deadline,

@@ -1,7 +1,7 @@
 // Control-plane contracts for installing marketplace rule packs.
 // Installing a published pack (by registry coordinate) snapshots that immutable
 // version's rules and serves them in the policy bundle.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { Namespace, PackId, SemVer } from './registry.ts';
 

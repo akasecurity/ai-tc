@@ -2747,8 +2747,8 @@ describe('ignore flags subtract from what an invocation covers', () => {
       ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       [
-        'eslint src test eval build hooks types *.config.*',
-        ['src', 'test', 'eval', 'build', 'hooks', 'types'],
+        'eslint src test eval bench build hooks types *.config.*',
+        ['src', 'test', 'eval', 'bench', 'build', 'hooks', 'types'],
       ],
       ['eslint src *.config.*', ['src']],
       // tools/installer ships no `src` at all: the thing under test is the

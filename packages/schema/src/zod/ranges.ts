@@ -6,7 +6,7 @@
 // Depends on nothing but zod — the widget contracts in security.ts import from
 // here, never the reverse.
 
-import { z } from 'zod';
+import * as z from 'zod';
 
 export const TIME_RANGES = ['7d', '30d', '3m', '6m'] as const;
 

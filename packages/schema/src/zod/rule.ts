@@ -1,5 +1,5 @@
 // Rule file format specVersion 1 — versioned so the format can evolve without breaking community packs
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { BuiltinPolicyId } from './builtin-policy-id.ts';
 import { EventKind } from './event.ts';
@@ -36,16 +36,43 @@ export const KeywordMatcher = z.strictObject({
   caseSensitive: z.boolean().default(false),
 });
 
+// The probes below each compile the pattern, and a regex's first exec is where
+// the engine builds its matcher, so they are the bulk of what parsing a regex
+// rule costs. Every answer is a pure function of the pattern and its flags, and
+// one process commonly parses the same rule more than once (the compiled-in
+// packs, then the same rules read back from the local store), so each answer is
+// kept per (probe, flags, pattern). Bounded: past the cap the table is cleared
+// rather than grown, which costs a recomputation and never a wrong answer. The
+// key length-prefixes the flags, so no flags/pattern pair can spell another's.
+const PROBE_MEMO_LIMIT = 4096;
+const probeMemo = new Map<string, boolean | number | undefined>();
+
+function memoProbe<T extends boolean | number | undefined>(
+  probe: string,
+  pattern: string,
+  flags: string,
+  compute: () => T,
+): T {
+  const key = `${probe}:${String(flags.length)}:${flags}${pattern}`;
+  if (probeMemo.has(key)) return probeMemo.get(key) as T;
+  const value = compute();
+  if (probeMemo.size >= PROBE_MEMO_LIMIT) probeMemo.clear();
+  probeMemo.set(key, value);
+  return value;
+}
+
 // Rejects patterns before they ever reach the engine or the publish pipeline.
 // `g`/`y` are stripped so exec() always starts at index 0, independent of a
 // shared regex's mutable `lastIndex`.
 function isValidRegex(pattern: string, flags: string): boolean {
-  try {
-    new RegExp(pattern, flags);
-    return true;
-  } catch {
-    return false;
-  }
+  return memoProbe('valid', pattern, flags, () => {
+    try {
+      new RegExp(pattern, flags);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // A whole-match pattern that can match the empty string (e.g. "\d*", "a?",
@@ -63,12 +90,14 @@ function probeFlags(flags: string): string {
 }
 
 function matchesEmptyString(pattern: string, flags: string): boolean {
-  try {
-    const re = new RegExp(pattern, probeFlags(flags));
-    return re.exec('')?.[0].length === 0;
-  } catch {
-    return false;
-  }
+  return memoProbe('empty', pattern, flags, () => {
+    try {
+      const re = new RegExp(pattern, probeFlags(flags));
+      return re.exec('')?.[0].length === 0;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // Does this matcher's span come from the whole match? Group 0 IS the whole
@@ -90,13 +119,15 @@ function spansWholeMatch(captureGroup: number | undefined): boolean {
 // what rejects a pattern that is genuinely malformed, and a limitation here
 // must not read as an authoring error.
 function captureGroupCount(pattern: string, flags: string): number | undefined {
-  try {
-    const probe = new RegExp(`${pattern}|`, probeFlags(flags));
-    const result = probe.exec('');
-    return result ? result.length - 1 : undefined;
-  } catch {
-    return undefined;
-  }
+  return memoProbe('groups', pattern, flags, () => {
+    try {
+      const probe = new RegExp(`${pattern}|`, probeFlags(flags));
+      const result = probe.exec('');
+      return result ? result.length - 1 : undefined;
+    } catch {
+      return undefined;
+    }
+  });
 }
 
 // The longest pattern in the bundled rule packs is ~650 characters (a

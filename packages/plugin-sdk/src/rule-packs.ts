@@ -28,9 +28,13 @@ export function registerRulePack(packId: string, rawRules: unknown[]): void {
   registerPack({ id: packId, rules });
 }
 
-/** Register every bundled pack with the detection engine. */
+/**
+ * Register every bundled pack with the detection engine. The rules are the ones
+ * `bundledDetections()` parsed, so a process that both registers the packs and
+ * records the inventory (every hook does) validates each bundled rule once.
+ */
 export function registerBundledPacks(): void {
-  for (const pack of BUNDLED_PACKS) registerRulePack(pack.packId, pack.rawRules);
+  for (const pack of bundledDetections()) registerPack({ id: pack.packId, rules: pack.rules });
 }
 
 // Memoized: the bundled JSON is inlined at build time, so the parsed inventory

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { AttachmentMode } from './control-plane.ts';
 import type { WorkspaceSettings } from './local.ts';

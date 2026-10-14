@@ -48,6 +48,21 @@ describe('registerBundledPacks', () => {
     const findings = scan('export AWS_KEY=AKIAIOSFODNN7EXAMPLE');
     expect(findings.some((f) => f.category === 'secret')).toBe(true);
   });
+
+  it('registers the rules bundledDetections() parsed rather than parsing them again', () => {
+    // Every hook both registers the packs and records the inventory, and the
+    // Rule schema's regex refinements compile each pattern, so a second parse
+    // is a per-call cost. Identity is what shows the engine holds the
+    // inventory's own parsed objects.
+    registerBundledPacks();
+    const parsed = bundledDetections().flatMap((pack) => pack.rules);
+    const loaded = getLoadedRules();
+    expect(loaded.length).toBe(parsed.length);
+    // The same objects, in the same order — not equal copies.
+    parsed.forEach((rule, i) => {
+      expect(loaded[i], rule.id).toBe(rule);
+    });
+  });
 });
 
 describe('bundledDetections', () => {

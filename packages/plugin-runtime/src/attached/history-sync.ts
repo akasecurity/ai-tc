@@ -362,8 +362,8 @@ export async function runHistorySync(
     //
     // A MACHINE ATTACHMENT IS UNTOUCHED. `scopeFilterOf` answers `undefined`
     // there, which every ledger method reads as "run today's statement", so a
-    // machine pass issues the same SQL, sends the same bytes as before and reads
-    // no identity record.
+    // machine pass issues the machine statements, sends their bytes and reads no
+    // identity record.
     const mode = attachmentModeOf(state.credential);
     const credential = state.credential;
     const storedScopeOf = (live: WorkspaceSettings): ResolvedAttachmentScope =>

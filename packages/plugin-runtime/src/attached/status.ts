@@ -28,6 +28,7 @@ import {
   parseAttachmentScope,
   parseWebAccountKey,
   resolveScope,
+  WEB_ACCOUNT_PROVIDER,
   workSubscriptionsOn,
 } from '@akasecurity/schema';
 
@@ -146,7 +147,7 @@ const USER_LINES = {
  * coding agent's line is written.
  */
 const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
-  claude: 'Claude Code sessions signed in to it forward from any folder',
+  [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
 };
 
 /**

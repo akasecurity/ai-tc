@@ -12,10 +12,12 @@ import {
   type PluginConfig,
   resolveRepoAttribution,
 } from '@akasecurity/plugin-sdk';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { agentKey, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree, removeTrees } from '../../../test/helpers/remove-tree.ts';
+import type { AccountScopeReader, StampedScopeKey } from '../src/account-scope.ts';
+import { createAccountScope } from '../src/account-scope.ts';
 import {
   EXCEPTION_RETENTION_MS,
   handleSessionStart,
@@ -1058,5 +1060,218 @@ describe('handleSessionStart — the Claude Code mod policy snapshot', () => {
 
     // The store wrote its own on open; the organization policy was not synced in.
     expect(readModPolicySnapshot(dir)?.categoryActions.pii).toBe('log');
+  });
+});
+
+// A session start on a gateway that stamps account keys: a root that waits for
+// its account is left to the reconciler, with the config scan kept under a
+// local stub, and a root keyed by an account is honoured only when it is the
+// key the gateway's own scope stamps, an account the hook has just validated
+// joining that scope first. A gateway without the capability keys and writes
+// the root as before, whatever the inputs say.
+describe('handleSessionStart — a root left to the reconciler, or keyed by account', () => {
+  const TAG = '0123456789abcdef';
+  const BINDING = 'fedcba9876543210';
+  const REPO_KEY = 'github.com/org/payments-api';
+  const ACCOUNT = `claude:${randomUUID()}`;
+  const AGENT = agentKeyOf(TAG, ACCOUNT) as StampedScopeKey;
+
+  function agentKeyOf(scopeTag: string, account: string): string {
+    const key = agentKey(scopeTag, account);
+    if (key === undefined) throw new Error(`no agent key for ${account}`);
+    return key;
+  }
+
+  /**
+   * The real local store behind a delegating gateway that offers an account
+   * scope over `keys` and records the arguments of each inventory call.
+   */
+  function accountScoped(keys: readonly string[], inventory: unknown[][]): DataGateway {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const calls: string[] = [];
+    const scope = createAccountScope({
+      keys: new Set(keys),
+      scopeTag: TAG,
+      bindingHash: BINDING,
+      context: {
+        attachedUserDigest: 'd'.repeat(64),
+        workSubscriptionsOn: true,
+        learned: [],
+        manual: [],
+      },
+      learn: () => 'refused',
+    });
+    const gateway = delegatingGateway(inner, calls);
+    const ensure = gateway.ensureInventory.bind(gateway);
+    const offered: AccountScopeReader = { accountScope: () => scope };
+    return Object.assign(gateway, offered, {
+      ensureInventory: (...args: Parameters<DataGateway['ensureInventory']>) => {
+        inventory.push(args);
+        return ensure(...args);
+      },
+    });
+  }
+
+  /** Every row the session start wrote: its type, whether it is a stub, and its key. */
+  function written(sessionId: string): { type: string; stub: boolean; key: string | null }[] {
+    const db = open();
+    try {
+      return (
+        db
+          .prepare(
+            `SELECT event_type AS type, attributes IS NULL AS stub, scope_key AS key
+               FROM audit_events WHERE id = :id OR root_session_id = :id ORDER BY event_type`,
+          )
+          .all({ id: sessionId }) as { type: string; stub: number; key: string | null }[]
+      ).map((row) => ({ type: row.type, stub: row.stub === 1, key: row.key }));
+    } finally {
+      db.close();
+    }
+  }
+
+  it('writes no root when the root awaits its account, and keeps the config scan under a local stub', async () => {
+    const inventory: unknown[][] = [];
+    setDefaultGatewayFactory(() => accountScoped([], inventory));
+
+    await handleSessionStart(start('s-deferred', { rootAwaitsAccount: true }), config(dir));
+
+    expect(written('s-deferred')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: true, key: null },
+    ]);
+    // The inventory call gets no key: the reconciler passes the root's own.
+    expect(inventory).toHaveLength(1);
+    expect(inventory[0]).toHaveLength(1);
+  });
+
+  it('writes the root at once, keyed by its repository, when the repository is in scope', async () => {
+    setDefaultGatewayFactory(() => accountScoped([REPO_KEY], []));
+
+    await handleSessionStart(start('s-in-repo', { rootAwaitsAccount: true }), config(dir));
+
+    expect(written('s-in-repo')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: REPO_KEY },
+    ]);
+  });
+
+  it('never leaves the root to the reconciler on a gateway without an account scope', async () => {
+    await handleSessionStart(start('s-plain', { rootAwaitsAccount: true }), config(dir));
+
+    expect(written('s-plain')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: REPO_KEY },
+    ]);
+  });
+
+  it('still records neither the root nor the config scan for a session this machine must not record', async () => {
+    setDefaultGatewayFactory(() => accountScoped([], []));
+
+    await handleSessionStart(
+      start('s-unrecorded-deferred', { rootAwaitsAccount: true, recordSession: false }),
+      config(dir),
+    );
+
+    expect(written('s-unrecorded-deferred')).toEqual([]);
+  });
+
+  it('keys the root by the agent key its account scope stamps, and sends the inventory under it', async () => {
+    const inventory: unknown[][] = [];
+    setDefaultGatewayFactory(() => accountScoped([AGENT], inventory));
+
+    await handleSessionStart(start('s-agent', { rootScopeKey: AGENT }), config(dir));
+
+    expect(written('s-agent')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: AGENT },
+    ]);
+    expect(inventory).toHaveLength(1);
+    expect(inventory[0]?.[1]).toEqual({ scopeKey: AGENT });
+  });
+
+  it('keys the root by its repository when the repository is in scope, whatever key is offered', async () => {
+    const inventory: unknown[][] = [];
+    setDefaultGatewayFactory(() => accountScoped([REPO_KEY, AGENT], inventory));
+
+    await handleSessionStart(start('s-repo-first', { rootScopeKey: AGENT }), config(dir));
+
+    expect(written('s-repo-first')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: REPO_KEY },
+    ]);
+    expect(inventory[0]).toHaveLength(1);
+  });
+
+  it.each<[string, string]>([
+    ['an arbitrary string', 'github.com/someone/elsewhere'],
+    ['an agent key under another tag', agentKeyOf('ffffffffffffffff', ACCOUNT)],
+    ['an agent key out of scope', agentKeyOf(TAG, `claude:${randomUUID()}`)],
+  ])(
+    'ignores an offered key that is not the one its account scope stamps (%s)',
+    async (_name, offered) => {
+      const inventory: unknown[][] = [];
+      setDefaultGatewayFactory(() => accountScoped([AGENT], inventory));
+
+      await handleSessionStart(
+        start('s-ignored', { rootScopeKey: offered as StampedScopeKey }),
+        config(dir),
+      );
+
+      expect(written('s-ignored')).toEqual([
+        { type: 'config_scan', stub: false, key: null },
+        { type: 'session', stub: false, key: REPO_KEY },
+      ]);
+      expect(inventory[0]).toHaveLength(1);
+    },
+  );
+
+  it('ignores an offered key on a gateway without an account scope', async () => {
+    await handleSessionStart(start('s-no-scope', { rootScopeKey: AGENT }), config(dir));
+
+    expect(written('s-no-scope')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: REPO_KEY },
+    ]);
+  });
+
+  // A hook that has just validated an account hands it over with the binding it
+  // validated against; the gateway this session start builds admits it before
+  // the root is keyed, so the root it keys is honoured.
+  it('admits an offered account on its own gateway first, so a root keyed by it is written now', async () => {
+    const inventory: unknown[][] = [];
+    setDefaultGatewayFactory(() => accountScoped([], inventory));
+
+    await handleSessionStart(
+      start('s-admitted', {
+        admitAccount: { accountKey: ACCOUNT, bindingHash: BINDING },
+        rootScopeKey: AGENT,
+      }),
+      config(dir),
+    );
+
+    expect(written('s-admitted')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: AGENT },
+    ]);
+    expect(inventory[0]?.[1]).toEqual({ scopeKey: AGENT });
+  });
+
+  it('admits nothing offered under another binding, and keys the root by its repository', async () => {
+    const inventory: unknown[][] = [];
+    setDefaultGatewayFactory(() => accountScoped([], inventory));
+
+    await handleSessionStart(
+      start('s-other-binding', {
+        admitAccount: { accountKey: ACCOUNT, bindingHash: 'another-binding-hash' },
+        rootScopeKey: AGENT,
+      }),
+      config(dir),
+    );
+
+    expect(written('s-other-binding')).toEqual([
+      { type: 'config_scan', stub: false, key: null },
+      { type: 'session', stub: false, key: REPO_KEY },
+    ]);
+    expect(inventory[0]).toHaveLength(1);
   });
 });

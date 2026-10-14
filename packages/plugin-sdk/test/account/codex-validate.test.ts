@@ -321,6 +321,18 @@ describe('startCodexSession', () => {
     expect(authOpens()).toBe(0);
   });
 
+  it('a resume while opted out still ends the thread, and opting back in does not revive it', () => {
+    machine.writeHead();
+    machine.writeAuth();
+    expect(start('startup').mayAdmit).toBe(true);
+    const optedOut = machine.context({ on: false });
+    const resumed = start('resume', optedOut);
+    expect(later(machine.context())).toMatchObject({ check: { none: 'resumed' }, mayAdmit: false });
+    expect(lines().at(-1)).toMatchObject({ kind: 'start', start: 'resume', s: 'none' });
+    expect(resumed).toMatchObject({ check: { none: 'resumed' }, mayAdmit: false });
+    expect(later(optedOut).check).toEqual({ none: 'opted-out' });
+  });
+
   it('keeps the earlier decision on compact', () => {
     const ctx = workThread();
     expect(start('compact', ctx).check).toMatchObject({ key: workKey(), basis: 'remembered' });

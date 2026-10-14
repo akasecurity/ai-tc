@@ -141,5 +141,65 @@
     "text": "bash -lc 'git push -f origin feature-x'",
     "shouldMatch": true,
     "eventKind": "tool_use"
+  },
+  {
+    "label": "fish -c wrapper",
+    "text": "fish -c \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tcsh -c wrapper",
+    "text": "tcsh -c 'git push -f origin feature-x'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "pwsh -c wrapper",
+    "text": "pwsh -c \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bash with valued short flag",
+    "text": "bash -o pipefail -c \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bash with long flag",
+    "text": "bash --norc -c \"git push --force origin main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed eval mention",
+    "text": "echo 'eval \"git push --force origin main\"'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed ssh mention",
+    "text": "echo 'ssh host \"git push --force origin main\"'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "grep of an eval mention",
+    "text": "grep -n 'eval \"git push --force origin main\"' script.sh",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "commit message naming an eval",
+    "text": "git commit -m 'warning: eval \"git push --force origin main\" is dangerous'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "wish is not a shell",
+    "text": "wish -c \"git push --force origin main\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

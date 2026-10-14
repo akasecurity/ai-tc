@@ -16,6 +16,7 @@ import {
   redact,
   scan,
   shieldPointers,
+  withVariableNames,
 } from '@akasecurity/detections';
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
 import {
@@ -677,7 +678,10 @@ export async function scanPathIntoStore(
     // original text, so redaction and stored spans below still line up — and
     // drop any finding that touches a shielded span.
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
+    const matches = withVariableNames(
+      dropShieldedFindings(await matchText(shielded.text), shielded.spans),
+      shielded.text,
+    );
     if (matches.length === 0) continue;
 
     // Resolved through the same reading the live path uses (see
@@ -758,6 +762,7 @@ export async function scanPathIntoStore(
         // filePath), unlike the plugin's in-flight captures, so — unlike
         // runtime.ts's isAtRest branch — a finding_key is unconditional here.
         findingKey: computeFindingKey({ ruleId: m.ruleId, filePath: file, valueFingerprint }),
+        ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
         location: locate(m),
       };
     });

@@ -21,6 +21,13 @@
  *   unless the mode is full, the item asked for it and the vault answered.
  *   Mode `off` (no valid vault consent, or the setting off) answers no items:
  *   every pointer is left as written.
+ *
+ * A request with `"pane":true` is a press of Show in the findings pane, a
+ * reveal the person asked for one value at a time. Under valid consent each item
+ * that asks is resolved whatever `vaultInlineReveal` says (the setting governs
+ * inline drawing only), through the same audited resolve, and the mode answered
+ * is `full`; without valid consent it is `off`. A pane request may carry no
+ * items: the answer's mode then tells the pane whether it may offer Show.
  * Exit 1 with nothing on stdout means "no answer": the mod shows the pointers
  * unchanged.
  *
@@ -43,8 +50,9 @@ interface Item {
   reveal: boolean;
 }
 
-function parseItems(raw: unknown): Item[] | null {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_ITEMS) return null;
+function parseItems(raw: unknown, allowEmpty: boolean): Item[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_ITEMS) return null;
+  if (raw.length === 0 && !allowEmpty) return null;
   const items: Item[] = [];
   for (const entry of raw as unknown[]) {
     if (typeof entry !== 'object' || entry === null) return null;
@@ -63,13 +71,13 @@ function categoryOf(token: string): string {
 export async function runModReveal(stdin: string): Promise<HelperRun> {
   try {
     const input = parseJson(stdin);
-    const items = input?.v === 1 ? parseItems(input.items) : null;
+    const pane = input?.pane === true;
+    const items = input?.v === 1 ? parseItems(input.items, pane) : null;
     if (items === null) return { code: 1, stdout: '' };
 
     const config = loadConfig();
-    const mode = isVaultConsentValid(config.settings.vaultConsent)
-      ? config.settings.vaultInlineReveal
-      : 'off';
+    const consented = isVaultConsentValid(config.settings.vaultConsent);
+    const mode = !consented ? 'off' : pane ? 'full' : config.settings.vaultInlineReveal;
     if (mode === 'off')
       return { code: 0, stdout: `${JSON.stringify({ v: 1, mode, items: [] })}\n` };
 

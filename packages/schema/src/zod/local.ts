@@ -24,6 +24,7 @@ import type { AttachmentMode } from './control-plane.ts';
 import { PluginWhoami, printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
+import { MAX_VARIABLE_NAME_LENGTH } from './finding.ts';
 import type {
   AuditEventInput,
   CaptureAttributes,
@@ -897,10 +898,12 @@ export function toEventRow(event: IngestEvent): EventRow {
 // @akasecurity/plugin-sdk's createPluginRuntime capture().
 //
 // `location` is local-only for the same reason: the masked excerpt is stored on
-// this machine and never forwarded (see FindingLocation).
+// this machine and never forwarded (see FindingLocation). So is `variableName`,
+// the variable a detected secret is assigned to.
 export type DetectedFindingWithKey = DetectedFinding & {
   findingKey?: string | null;
   location?: FindingLocation;
+  variableName?: string;
 };
 
 // DetectedFinding (already masked + assigned id/eventId/actionTaken by the SDK)
@@ -1027,6 +1030,10 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     line: input.line ?? null,
     col: input.col ?? null,
     context: input.context ? JSON.stringify(input.context) : null,
+    variableName:
+      input.variableName !== undefined && input.variableName.length <= MAX_VARIABLE_NAME_LENGTH
+        ? input.variableName
+        : null,
   };
 }
 
@@ -1142,6 +1149,26 @@ export interface FindingView {
   occurredAt: string;
   sourceTool: string;
   kind: string;
+  // The variable the secret was assigned to, when it was detected in an
+  // assignment.
+  variableName?: string;
+}
+
+// A finding's match as the read surfaces print it: the masked value, prefixed
+// by the variable it was assigned to when there is one. With `maxWidth`, the
+// name is shortened (or dropped) to fit and the masked value is kept whole.
+export function findingMatchLabel(
+  view: Pick<FindingView, 'maskedMatch' | 'variableName'>,
+  maxWidth?: number,
+): string {
+  const { maskedMatch, variableName } = view;
+  if (variableName === undefined) return maskedMatch;
+  const separator = ' = ';
+  const room =
+    maxWidth === undefined ? variableName.length : maxWidth - separator.length - maskedMatch.length;
+  if (variableName.length <= room) return `${variableName}${separator}${maskedMatch}`;
+  if (room < 2) return maskedMatch;
+  return `${variableName.slice(0, room - 1)}…${separator}${maskedMatch}`;
 }
 
 export interface HealthSummary {

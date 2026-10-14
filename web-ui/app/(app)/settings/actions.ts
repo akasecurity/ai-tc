@@ -8,6 +8,7 @@ import {
   type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearSightingKeys,
   controlPlaneCredentialPath,
   type CredentialFileRead,
   dataDir,
@@ -889,6 +890,8 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // detached by the two writes above, and a leftover cache is not worth
   // reporting a completed detach as a failure.
   clearAttachmentDerivedState(dataDir());
+  // The sighting key lives in the keys dir or the keychain, not the data dir.
+  clearSightingKeys();
   // Best-effort, macOS only, same as `aka detach`: without this, a machine
   // attached from the CLI and detached from here keeps a LaunchAgent that
   // re-invokes `aka sync-history --run` every 30 minutes, across reboots,

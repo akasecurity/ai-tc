@@ -24,6 +24,7 @@ import type { AttachmentMode } from './control-plane.ts';
 import { PluginWhoami, printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
+import { MAX_VARIABLE_NAME_LENGTH } from './finding.ts';
 import type {
   AuditEventInput,
   CaptureAttributes,
@@ -35,6 +36,7 @@ import type {
 } from './meta.ts';
 import { type BuiltinPolicyId, RedactFallback } from './policy.ts';
 import type { Rule } from './rule.ts';
+import { SightingShareConsent } from './sighting-share.ts';
 import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
@@ -42,14 +44,14 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
 // redactFallback; v8 added bodyRetention and webChatCapture; v9 added
-// attachmentScope. Nothing reads it, and nothing re-stamps it — the
+// attachmentScope; v10 added sightingShareConsent. Nothing reads it, and nothing re-stamps it — the
 // `.default()` below only fills when the key is absent, and applyOnboarding's
 // merge preserves whatever an existing settings.json already carries. So an
 // already-onboarded machine keeps the version that first wrote its file,
 // however often this is bumped. Every field added so far has been
 // optional/defaulted (backward compatible), which is why no migration has been
 // needed. Re-stamp this on write before relying on it to gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 9;
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 10;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -572,6 +574,15 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
+  // Records that the user agreed to share credential sightings with the
+  // deployment the grant names. Absent until granted; `aka detach` clears it.
+  // Whether sharing is actually on is resolveSightingSharing's answer, which
+  // also weighs the attachment mode, the endpoint and the managed settings.
+  //
+  // `.catch` reads a grant this schema cannot parse, such as one recorded
+  // before grants named a deployment, as no grant. Without it the whole file
+  // fails to parse and every setting falls back to its default.
+  sightingShareConsent: SightingShareConsent.optional().catch(undefined),
   // The identities a SCOPED attachment forwards and the deployment they were
   // enrolled for (see AttachmentScope). Absent until something is enrolled.
   //
@@ -902,10 +913,12 @@ export function toEventRow(event: IngestEvent): EventRow {
 // @akasecurity/plugin-sdk's createPluginRuntime capture().
 //
 // `location` is local-only for the same reason: the masked excerpt is stored on
-// this machine and never forwarded (see FindingLocation).
+// this machine and never forwarded (see FindingLocation). So is `variableName`,
+// the variable a detected secret is assigned to.
 export type DetectedFindingWithKey = DetectedFinding & {
   findingKey?: string | null;
   location?: FindingLocation;
+  variableName?: string;
 };
 
 // DetectedFinding (already masked + assigned id/eventId/actionTaken by the SDK)
@@ -1032,6 +1045,10 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     line: input.line ?? null,
     col: input.col ?? null,
     context: input.context ? JSON.stringify(input.context) : null,
+    variableName:
+      input.variableName !== undefined && input.variableName.length <= MAX_VARIABLE_NAME_LENGTH
+        ? input.variableName
+        : null,
   };
 }
 
@@ -1147,6 +1164,26 @@ export interface FindingView {
   occurredAt: string;
   sourceTool: string;
   kind: string;
+  // The variable the secret was assigned to, when it was detected in an
+  // assignment.
+  variableName?: string;
+}
+
+// A finding's match as the read surfaces print it: the masked value, prefixed
+// by the variable it was assigned to when there is one. With `maxWidth`, the
+// name is shortened (or dropped) to fit and the masked value is kept whole.
+export function findingMatchLabel(
+  view: Pick<FindingView, 'maskedMatch' | 'variableName'>,
+  maxWidth?: number,
+): string {
+  const { maskedMatch, variableName } = view;
+  if (variableName === undefined) return maskedMatch;
+  const separator = ' = ';
+  const room =
+    maxWidth === undefined ? variableName.length : maxWidth - separator.length - maskedMatch.length;
+  if (variableName.length <= room) return `${variableName}${separator}${maskedMatch}`;
+  if (room < 2) return maskedMatch;
+  return `${variableName.slice(0, room - 1)}…${separator}${maskedMatch}`;
 }
 
 export interface HealthSummary {

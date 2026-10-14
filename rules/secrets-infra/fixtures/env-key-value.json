@@ -8,7 +8,8 @@
         "start": 8,
         "end": 44
       }
-    ]
+    ],
+    "expectedVariableName": "API_KEY"
   },
   {
     "label": "SECRET env",
@@ -19,7 +20,8 @@
         "start": 14,
         "end": 38
       }
-    ]
+    ],
+    "expectedVariableName": "SECRET"
   },
   {
     "label": "API_KEY without value",
@@ -70,6 +72,55 @@
         "start": 16,
         "end": 31
       }
-    ]
+    ],
+    "expectedVariableName": "PASSWORD"
+  },
+  {
+    "label": "double-quoted value records the variable name",
+    "text": "STRIPE_SECRET_KEY=\"not-a-real-value-1234\"",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 19,
+        "end": 40
+      }
+    ],
+    "expectedVariableName": "STRIPE_SECRET_KEY"
+  },
+  {
+    "label": "exported single-quoted value records the variable name",
+    "text": "export DB_PASSWORD='not-a-real-value-1234'",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 20,
+        "end": 41
+      }
+    ],
+    "expectedVariableName": "DB_PASSWORD"
+  },
+  {
+    "label": "spaces around the equals sign record the variable name",
+    "text": "API_TOKEN = not-a-real-value-1234",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 33
+      }
+    ],
+    "expectedVariableName": "API_TOKEN"
+  },
+  {
+    "label": "exported, spaced and quoted records the variable name",
+    "text": "  export GITHUB_TOKEN = \"not-a-real-value-1234\"",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 25,
+        "end": 46
+      }
+    ],
+    "expectedVariableName": "GITHUB_TOKEN"
   }
 ]

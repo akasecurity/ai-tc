@@ -109,3 +109,34 @@ describe('renderMultiRepoSummary', () => {
     expect(renderMultiRepoSummary(summary)).not.toContain('See findings.');
   });
 });
+
+describe('the host-supplied footer', () => {
+  const FOOTER = 'Credential sightings: off (standalone).';
+
+  it('is the last line of every worktree shape, and absent when not given', () => {
+    const clean = worktree();
+    const found = worktree({ findings: 1, bySeverity: { low: 1 }, byRule: { 'x/y': 1 } });
+    for (const summary of [clean, found]) {
+      const out = renderWorktreeSummary(summary, { followUp: 'Next.', footer: FOOTER });
+      expect(out.split('\n').at(-1)).toBe(`  ${FOOTER}`);
+      expect(renderWorktreeSummary(summary)).not.toContain(FOOTER);
+    }
+  });
+
+  it('is the last line of every multi-repo shape', () => {
+    const shapes = [
+      multiRepo(),
+      multiRepo({ repos: [{ rootDir: '/r', summary: worktree() }] }),
+      multiRepo({
+        repos: [{ rootDir: '/r', summary: worktree({ findings: 1 }) }],
+        totalFindings: 1,
+        bySeverity: { low: 1 },
+      }),
+    ];
+    for (const summary of shapes) {
+      expect(renderMultiRepoSummary(summary, { footer: FOOTER }).split('\n').at(-1)).toBe(
+        `  ${FOOTER}`,
+      );
+    }
+  });
+});

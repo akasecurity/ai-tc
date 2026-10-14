@@ -124,3 +124,8 @@ export function withTempHome<T>(fn: (home: string) => T, prefix = 'aka-hook-e2e-
 export function tempHomeEnv(home: string): Record<string, string> {
   return { HOME: home, USERPROFILE: home };
 }
+
+/** The host environment, for a test that spawns a built script directly. */
+export function hostEnv(): NodeJS.ProcessEnv {
+  return HOST_ENV;
+}

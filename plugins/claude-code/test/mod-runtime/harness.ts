@@ -8,6 +8,7 @@ export type Hooks = Parameters<Parameters<typeof test>[1]>[1];
 // Spelled by joining so no path or address literal sits in the source.
 export const HOME = ['', 'home', 'test'].join('/');
 export const SNAPSHOT_PATH = [HOME, '.aka', 'data', 'mod-policy.json'].join('/');
+export const FINDINGS_PATH = [HOME, '.aka', 'data', 'mod-findings', 'session-1.jsonl'].join('/');
 export const EMAIL = ['a', 'example.com'].join('@');
 
 const ALL_CATEGORIES = [
@@ -51,12 +52,18 @@ export interface FileAnswer {
 
 // What the file system beneath the plugin answers for the snapshot path: a value
 // where the file is, a refusal (as a missing file is) where it is not.
-export function fileSystem(on: Hooks, file: () => FileAnswer | undefined): string[] {
+export function fileSystem(
+  on: Hooks,
+  file: () => FileAnswer | undefined,
+  findings: () => FileAnswer | undefined = () => undefined,
+): string[] {
   const reads: string[] = [];
   mock.env(on, { HOME });
+  const answerFor = (path: string): FileAnswer | undefined =>
+    path === FINDINGS_PATH ? findings() : path === SNAPSHOT_PATH ? file() : undefined;
   on('fs.stat', (_$, e) => {
-    const answer = file();
-    if (answer === undefined || e.path !== SNAPSHOT_PATH) return { deny: 'ENOENT' };
+    const answer = answerFor(e.path);
+    if (answer === undefined) return { deny: 'ENOENT' };
     return {
       value: {
         kind: 'file' as const,
@@ -68,7 +75,7 @@ export function fileSystem(on: Hooks, file: () => FileAnswer | undefined): strin
   });
   on('fs.read', (_$, e) => {
     reads.push(e.path);
-    const answer = file();
+    const answer = answerFor(e.path);
     return answer === undefined ? { deny: 'ENOENT' } : { value: answer.text };
   });
   return reads;

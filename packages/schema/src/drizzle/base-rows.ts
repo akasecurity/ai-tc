@@ -217,4 +217,5 @@ export interface BaseInspectionFindingRow {
   line: number | null;
   col: number | null;
   context: string | null;
+  variableName: string | null;
 }

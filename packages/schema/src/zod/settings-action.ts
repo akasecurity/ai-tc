@@ -126,6 +126,16 @@ export const SaveSettingsInput = z.object({
 export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
 
 /**
+ * `setSightingShareConsent` — the user's answer to sharing credential sightings
+ * with their organization. The bare answer: the grant record is stamped
+ * server-side.
+ */
+export const SetSightingShareConsentInput = z.object({
+  choice: z.enum(['granted', 'revoked']),
+});
+export type SetSightingShareConsentInput = z.infer<typeof SetSightingShareConsentInput>;
+
+/**
  * `attachToControlPlane` — register this machine against an organization's
  * deployment.
  *

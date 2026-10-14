@@ -34,7 +34,7 @@ import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
-import { FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
 import { expectedToken, keyOf, materialOf, patShaped } from '../helpers/sighting-fixtures.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
@@ -2349,6 +2349,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
       encoder: {
         encodeContent: (content) => Promise.resolve({ content, sightings: [] }),
         encodeEvent: (event) => Promise.resolve({ ...event, content: 'encoded' }),
+        close: () => Promise.resolve(),
       },
     });
 
@@ -2372,7 +2373,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
     expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
     expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
-    expect(sent?.id).toBe(captureWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
+    expect(sent?.id).toBe(encodedWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
     expect(resent?.id).toBe(sent?.id);
   });
 
@@ -2428,6 +2429,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
           attempts += 1;
           return Promise.resolve(undefined);
         },
+        close: () => Promise.resolve(),
       },
     });
 

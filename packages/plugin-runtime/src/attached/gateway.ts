@@ -63,6 +63,7 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
 import type { OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
@@ -527,9 +528,15 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     }
   }
 
+  /**
+   * The encoded event, or undefined to hold the capture owed. Bounded by the
+   * decision-path budget on its own, before the forward and outside the breaker,
+   * so a slow scan holds the capture rather than delaying the hook or counting
+   * as a deployment failure.
+   */
   private async encodeForWire(event: IngestEvent): Promise<IngestEvent | undefined> {
     try {
-      return await this.encoder.encodeEvent(event);
+      return await withTimeout(this.encoder.encodeEvent(event), DECISION_PATH_BUDGET_MS);
     } catch {
       return undefined;
     }
@@ -1242,6 +1249,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
   }
 
   async close(): Promise<void> {
+    await this.encoder.close();
     return this.deps.local.close();
   }
 

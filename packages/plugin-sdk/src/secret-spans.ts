@@ -4,6 +4,7 @@ import type { DetectionCategory, Rule } from '@akasecurity/schema';
 
 import type { BoundedScanRequest, GuardedScanner, GuardedScanPartition } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
+import { ISOLATED_SCAN_BUDGET_MS, ISOLATED_START_BUDGET_MS } from './isolated-scan.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { bundledDetections } from './rule-packs.ts';
 import { ruleProbeKey } from './rule-quarantine.ts';
@@ -73,20 +74,23 @@ export function findSecretSpans(text: string): SecretSpan[] {
 
 /**
  * The secret-category rules to scan with: `installed` (the machine's effective
- * ruleset beyond the compiled-in packs) and every bundled secret rule, one per
- * id with an installed copy first. A regex rule that is not a bundled pattern is
- * `unverified` and only ever runs under the bounded scan.
+ * ruleset beyond the compiled-in packs) and every bundled secret rule. Rules
+ * sharing an id are all kept unless their matchers are identical, so a rule
+ * reusing a bundled id adds a matcher and never replaces the bundled one. A
+ * regex rule that is not a bundled pattern is `unverified` and only ever runs
+ * under the bounded scan.
  */
 export function secretRulePartition(installed: readonly Rule[]): GuardedScanPartition {
   const bundled = bundledSecretRules();
   const bundledPatterns = new Set(bundled.map(ruleProbeKey));
-  const byId = new Map<string, Rule>();
-  for (const rule of [...installed, ...bundled]) {
-    if (rule.category === 'secret' && !byId.has(rule.id)) byId.set(rule.id, rule);
+  const byMatcher = new Map<string, Rule>();
+  for (const rule of [...bundled, ...installed]) {
+    const identity = `${rule.id}\n${JSON.stringify(rule.matcher)}`;
+    if (rule.category === 'secret' && !byMatcher.has(identity)) byMatcher.set(identity, rule);
   }
   const verified: Rule[] = [];
   const unverified: Rule[] = [];
-  for (const rule of byId.values()) {
+  for (const rule of byMatcher.values()) {
     if (rule.matcher.type === 'regex' && !bundledPatterns.has(ruleProbeKey(rule))) {
       unverified.push(rule);
     } else {
@@ -104,7 +108,11 @@ export interface SecretSpanScanner {
 
 const NO_VERDICT_STORE = { setRuleProbeVerdict: (): Promise<void> => Promise.resolve() };
 
-const DEFAULT_SECRET_SCAN_BOUND: BoundedScanRequest = { budgetMs: 1_000, startBudgetMs: 1_000 };
+/** The SDK's own isolated-scan allowances, so a contended machine is not read as a failed scan. */
+export const DEFAULT_SECRET_SCAN_BOUND: BoundedScanRequest = {
+  budgetMs: ISOLATED_SCAN_BUDGET_MS,
+  startBudgetMs: ISOLATED_START_BUDGET_MS,
+};
 
 /**
  * A scanner over `partition`: in-process when every rule is verified, and

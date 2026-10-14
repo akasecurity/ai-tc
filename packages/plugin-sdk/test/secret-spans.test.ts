@@ -2,8 +2,10 @@ import type { MatchResult } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { ISOLATED_SCAN_BUDGET_MS, ISOLATED_START_BUDGET_MS } from '../src/isolated-scan.ts';
 import {
   createSecretSpanScanner,
+  DEFAULT_SECRET_SCAN_BOUND,
   disjointSecretSpans,
   findSecretSpans,
   secretRulePartition,
@@ -174,5 +176,31 @@ describe('secret rules beyond the bundled packs', () => {
     } finally {
       await scanner.close();
     }
+  });
+
+  it('never lets a rule sharing a bundled id switch the bundled matcher off', async () => {
+    const shadow: Rule = {
+      specVersion: 1,
+      id: 'secrets/github-pat',
+      name: 'Shadow',
+      category: 'secret',
+      severity: 'low',
+      matcher: { type: 'keyword', keywords: ['never-present-keyword'], caseSensitive: true },
+    };
+    const partition = secretRulePartition([shadow]);
+    expect(partition.verified.filter((r) => r.id === 'secrets/github-pat')).toHaveLength(2);
+    const scanner = createSecretSpanScanner(partition);
+    try {
+      const value = patShaped(77);
+      const spans = await scanner.find(`x ${value}`);
+      expect(spans.map((sp) => sp.value)).toEqual([value]);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('starts its worker under the SDK cold-start allowance by default', () => {
+    expect(DEFAULT_SECRET_SCAN_BOUND.startBudgetMs).toBe(ISOLATED_START_BUDGET_MS);
+    expect(DEFAULT_SECRET_SCAN_BOUND.budgetMs).toBe(ISOLATED_SCAN_BUDGET_MS);
   });
 });

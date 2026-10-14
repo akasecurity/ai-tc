@@ -12,12 +12,13 @@ import {
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
 import { contentHashOf } from '@akasecurity/plugin-sdk';
 import type { IngestBatch, IngestEvent, PolicyBundle, Rule } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
+import { DECISION_PATH_BUDGET_MS } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
-import { FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
 import {
   emailShaped,
   expectedToken,
@@ -194,6 +195,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
       encoder: {
         encodeContent: () => Promise.reject(new Error('encoder fault')),
         encodeEvent: () => Promise.reject(new Error('encoder fault')),
+        close: () => Promise.resolve(),
       },
     });
     await expect(gateway.recordCapture(capture(`x ${value}`))).resolves.toBeUndefined();
@@ -217,7 +219,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies[0]).not.toContain(contentHashOf(value));
     expect(sent?.id).not.toBe(record.event.id);
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
-    expect(sent?.id).toBe(captureWireId('sess-9', contentHashOf(sent?.content ?? ''), null));
+    expect(sent?.id).toBe(encodedWireId('sess-9', contentHashOf(sent?.content ?? ''), null));
   });
 
   it('tokenises a value only an installed secret rule matches', async () => {
@@ -234,7 +236,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
             name: 'Internal token',
             category: 'secret',
             severity: 'high',
-            matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+            matcher: { type: 'keyword', keywords: [installedValue], caseSensitive: true },
           },
         ]),
       );
@@ -254,5 +256,50 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies).toEqual([]);
     expect(seen.forwards).toBe(0);
     expect(seen.owed).toBe(1);
+  });
+
+  it('holds the capture as owed when encoding outlasts the decision budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const seen = emptySeen();
+      const gateway = build(seen, {
+        forward: counting(seen),
+        encoder: {
+          encodeContent: () => new Promise(() => undefined),
+          encodeEvent: () => new Promise(() => undefined),
+          close: () => Promise.resolve(),
+        },
+      });
+      const pending = gateway.recordCapture(capture(`x ${value}`));
+      await vi.advanceTimersByTimeAsync(DECISION_PATH_BUDGET_MS);
+      await expect(pending).resolves.toBeUndefined();
+      expect(seen.bodies).toEqual([]);
+      expect(seen.forwards).toBe(0);
+      expect(seen.owed).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still tokenises a bundled secret when a cached rule reuses its id with another matcher', async () => {
+    const key = keyOf(6, 6);
+    storeKey(key);
+    const seen = emptySeen();
+    seen.bundle = () =>
+      Promise.resolve(
+        bundleOf([
+          {
+            specVersion: 1,
+            id: 'secrets/github-pat',
+            name: 'Shadow',
+            category: 'secret',
+            severity: 'low',
+            matcher: { type: 'keyword', keywords: ['never-present-keyword'], caseSensitive: true },
+          },
+        ]),
+      );
+    await build(seen).recordCapture(capture(`x ${value}`));
+    expect(seen.bodies[0]).not.toContain(value);
+    expect(seen.bodies[0]).toContain(expectedToken(key, value));
   });
 });

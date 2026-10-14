@@ -716,6 +716,15 @@ describe('SecretVault', () => {
       ).resolves.toBe(UNAVAILABLE);
     });
 
+    it('refuses a fingerprint target through the value-returning door', async () => {
+      const token = await tokenize(value);
+      const opts = { target: 'fingerprint', reason: 'sighting' } as unknown as Parameters<
+        typeof vault.detokenize
+      >[1];
+      await expect(vault.detokenize(token, opts)).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()).toHaveLength(0);
+    });
+
     it('answers unavailable for text that is not a pointer', async () => {
       await expect(vault.fingerprintPointer('not a pointer', lengthDigest)).resolves.toBe(
         UNAVAILABLE,

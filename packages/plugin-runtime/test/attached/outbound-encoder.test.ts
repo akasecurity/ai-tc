@@ -28,6 +28,7 @@ import type {
 import {
   createOutboundEncoder,
   createStoreOutboundEncoder,
+  encodedWireId,
   FAIL_CLOSED_MARKER,
 } from '../../src/attached/outbound-encoder.ts';
 import {
@@ -139,11 +140,34 @@ describe('outbound encoder: values', () => {
     expect(result.content).toBe(`xx ${FAIL_CLOSED_MARKER} yy`);
   });
 
-  it('replaces the whole content with the marker when the scan fails', async () => {
-    const result = await encoderWith(keyOf(1, 8), {
+  it('holds the capture when the scan cannot start or finish', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 8), {
       createScanner: scannerOf(() => Promise.reject(new Error('scan fault'))),
-    }).encodeContent(`keep ${value} out`);
-    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
+    });
+    await expect(encoder.encodeContent(`keep ${value} out`)).resolves.toBeUndefined();
+  });
+
+  it('reuses one scanner across captures and closes it with the encoder', async () => {
+    let created = 0;
+    let closed = 0;
+    const encoder = rawEncoderWith(keyOf(1, 9), {
+      createScanner: () => {
+        created += 1;
+        return {
+          find: () => Promise.resolve([]),
+          close: () => {
+            closed += 1;
+            return Promise.resolve();
+          },
+        };
+      },
+    });
+    await encoder.encodeContent('one');
+    await encoder.encodeContent('two');
+    expect(created).toBe(1);
+    expect(closed).toBe(0);
+    await encoder.close();
+    expect(closed).toBe(1);
   });
 
   it('holds the capture when the effective rules cannot be loaded', async () => {
@@ -287,7 +311,8 @@ describe('outbound encoder: events', () => {
     expect(encoded.contentHash).not.toBe(contentHashOf(value));
     expect(encoded.contentHash).toBe(contentHashOf(encoded.content));
     expect(encoded.id).not.toBe(raw.id);
-    expect(encoded.id).toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
+    expect(encoded.id).toBe(encodedWireId('sess-1', contentHashOf(encoded.content), null));
+    expect(encoded.id).not.toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
     expect(JSON.stringify(encoded)).not.toContain(contentHashOf(value));
   });
 
@@ -298,7 +323,7 @@ describe('outbound encoder: events', () => {
     const first = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     const again = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     expect(again.id).toBe(first.id);
-    expect(first.id).toBe(captureWireId('sess-2', contentHashOf(first.content), ''));
+    expect(first.id).toBe(encodedWireId('sess-2', contentHashOf(first.content), ''));
   });
 
   it('holds an event when the effective rules cannot be loaded', async () => {

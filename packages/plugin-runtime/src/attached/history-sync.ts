@@ -538,6 +538,7 @@ export async function runHistorySync(
       });
     } finally {
       ledger.release(pid);
+      await encoder.close();
     }
   } catch {
     // `failed` rather than a message: the caught value is the one thing here

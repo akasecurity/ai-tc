@@ -481,6 +481,24 @@ describe('toToolCallInputs', () => {
     expect(inspections[0]?.confidence).toBeTypeOf('number');
   });
 
+  it('carries the variable a secret is assigned to, never the value', () => {
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
+    const name = ['TWILIO', 'API', 'KEY'].join('_');
+    const exchange = baseExchange({
+      toolCalls: [
+        {
+          toolUseId: 't1',
+          toolName: 'x',
+          target: `export ${name}${String.fromCharCode(61)}${SECRET_EXAMPLE}`,
+        },
+      ],
+    });
+    const [input] = toToolCallInputs(exchange, SESSION, scanner);
+    const inspection = input?.inspections.find((i) => i.ruleId === RULE_ID);
+    expect(inspection?.variableName).toBe(name);
+    expectNoEchoOf(inspection?.variableName ?? '', SECRET_EXAMPLE);
+  });
+
   it('leaves inspections empty for a tool call with no target, and never calls the scanner', () => {
     const exchange = baseExchange({ toolCalls: [{ toolUseId: 't1', toolName: 'x' }] });
     const throwingScanner: TargetScanner = () => {

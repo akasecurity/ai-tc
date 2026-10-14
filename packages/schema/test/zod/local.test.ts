@@ -10,6 +10,7 @@ import {
   canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
+  findingMatchLabel,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeValid,
@@ -61,7 +62,7 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     // it. The version is a changelog marker that nothing reads, which is exactly
     // why a change to it needs a test that names the number. The next field that
     // bumps it changes this literal on purpose.
-    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(9);
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(10);
   });
 
   it('enables in-place Data Shares extraction by default', () => {
@@ -1418,5 +1419,33 @@ describe('isScopeKeyEnrolled', () => {
     expect(isScopeKeyEnrolled({ controlPlane: undefined, attachmentScope: undefined }, KEY)).toBe(
       false,
     );
+  });
+});
+
+describe('findingMatchLabel', () => {
+  it('prefixes the masked match with the variable it was assigned to', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: name })).toBe(
+      `${name} = s*****y`,
+    );
+  });
+
+  it('is the masked match alone when there is no variable name', () => {
+    expect(findingMatchLabel({ maskedMatch: 's*****y' })).toBe('s*****y');
+  });
+
+  it('fits a width by shortening the name and keeping the masked match whole', () => {
+    const name = ['GOOGLE', 'APPLICATION', 'CREDENTIALS'].join('_');
+    const label = findingMatchLabel({ maskedMatch: 's*****y', variableName: name }, 28);
+    expect(label).toHaveLength(28);
+    expect(label).toBe('GOOGLE_APPLICATIO… = s*****y');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: 'KEY' }, 28)).toBe(
+      'KEY = s*****y',
+    );
+  });
+
+  it('drops the name when the masked match leaves no room for it', () => {
+    const masked = 's'.repeat(26);
+    expect(findingMatchLabel({ maskedMatch: masked, variableName: 'API_KEY' }, 28)).toBe(masked);
   });
 });

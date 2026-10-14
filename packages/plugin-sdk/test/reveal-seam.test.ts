@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { dataDir } from '../src/data-dir.ts';
-import type { VaultGlue } from '../src/tokenize.ts';
 import { createVaultGlue } from '../src/tokenize.ts';
+import type { VaultGlue } from '../src/vault-glue.ts';
 
 const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 

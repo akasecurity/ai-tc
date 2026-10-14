@@ -147,6 +147,56 @@ Rules merged here are published as **first-party, verified** packs, so rule PRs 
 extra review — please make matchers precise and include realistic negative fixtures
 so we don't ship false positives.
 
+## False positives from this repo's own test data
+
+This tree deliberately carries thousands of secret-shaped and PII-shaped values: rule
+examples and fixtures, test fixtures, values written inline in tests, and the build
+output that bundles every rule's examples. The root [`.akaignore`](.akaignore) keeps
+them out of AKA's own scans of this repository. Each entry in it says why it is there.
+
+**Folder scans read it. The live hooks do not.**
+
+- **Read:** `aka scan`, the dashboard's Scan page, `/aka:scan`, and the worktree scan the
+  plugins' background sync runs. A matched file is never read, so it records no finding.
+- **Not read:** the hooks that run while you work with an agent in this repo. Prompts, tool
+  input such as an edit to a fixture, tool output such as a `cat` of one, and history
+  backfill are all scanned whatever `.akaignore` says. For a value that keeps being
+  flagged there, use a detection exception (`aka exception`). It lets that exact value
+  through instead of blocking or redacting it, though the finding is still recorded.
+  It is keyed on the value, not on a path.
+
+**Scan from the repository root.** Patterns are relative to the root, and a scan aimed at a
+subdirectory never reads the root file. `aka scan rules`, for example, reports every rule
+example, while `aka scan .` skips them.
+
+**Where test data belongs.** Put it somewhere already covered, and nothing needs editing:
+
+- a package's or tool's `test/` tree (fixtures included);
+- `cli/test/` or `web-ui/test/`;
+- the repo-root `test/` tree;
+- a package's `bench/` tree (`packages/*/bench/`; a `bench/` anywhere else is scanned);
+- a rule's `examples` and fixtures under `rules/`.
+
+A plugin's `test/` tree is covered too, **except its `fixtures/`**. Those hold recordings of
+real sessions, and raw browser captures are recorded there, so they stay scanned on purpose.
+Test values come from a rule's own `examples` rather than being written by hand (see
+"Testing" in [`CLAUDE.md`](CLAUDE.md)), so a value that looks real in a fixture is a
+finding worth reading.
+
+**What this does not catch.** A real credential committed into an ignored test file is not
+reported by a folder scan. The agent hooks still scan the write that introduced it, and
+GitHub secret scanning still covers these paths.
+
+**Changing the file.** Every entry is anchored to the location it describes. The guard in
+`test/helpers/repo-akaignore.ts` runs under both walkers that read the file, from
+`packages/local-ops` and `packages/scanner`. It requires two things:
+
+- the set of tracked and planted files the file skips equals the set the guard states;
+- every entry changes that set on its own.
+
+A new entry therefore needs a matching change to the guard's `intendedSkip`, and it needs
+a planted file when nothing tracked sits where the entry points.
+
 ## Pull requests
 
 1. Fork and branch from `main`. For a non-trivial change, link the issue it resolves

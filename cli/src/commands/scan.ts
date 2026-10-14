@@ -16,10 +16,15 @@ import {
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
-import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  MAX_EGRESS_CALL_SITES_PER_PROJECT,
+  openLocalDatabase,
+  readSightingSharing,
+} from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
 import { createSharesSender } from '@akasecurity/remote';
-import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
+import type { ManagedSettings } from '@akasecurity/schema';
+import { Severity, sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -33,7 +38,8 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // CI surface (both opt-in; the default text output and exit-0 behavior are
 // unchanged):
 //   --format json         machine-readable result on stdout (findings carry the
-//                         masked match + span, never the raw secret; `inventory`
+//                         masked match + span, never the raw secret, and the
+//                         variable the secret is assigned to or null; `inventory`
 //                         reports the project row + file tree recorded for the
 //                         repo containing the target, null outside a git repo;
 //                         `egress` reports the destinations/endpoints/call sites
@@ -119,6 +125,8 @@ export function renderEgressLine(egress: EgressRecordResult): string {
  */
 export interface ScanDeps {
   send?: SharesForwardSender;
+  /** Replaces the managed settings file; `null` reads a machine with no administrator. */
+  managedSettings?: ManagedSettings | null;
 }
 
 /**
@@ -313,6 +321,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
         maskedMatch: d.maskedMatch,
         actionTaken: d.actionTaken,
         confidence: d.confidence,
+        variableName: d.variableName ?? null,
       })),
     );
     const inventoryJson = inventory
@@ -354,6 +363,9 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
     const reported = reportedForward(await runForward());
     if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
+    process.stdout.write(
+      `${sightingSharingLine(readSightingSharing(home, deps.managedSettings))}\n`,
+    );
   }
 
   if (failOn !== undefined) {

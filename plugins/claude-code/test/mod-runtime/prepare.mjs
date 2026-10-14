@@ -43,6 +43,12 @@ const TEST_ENGINE = `
     if (text.includes('__ENGINE_THROWS__')) throw new Error('injected engine fault');
     return realPlanPromptWith(text, policy);
   }
+  import { bandFindings as realBandFindings } from './src/mod/engine-entry.ts';
+  import type { ViewFinding } from './src/mod/engine-entry.ts';
+  export function bandFindings(all: readonly ViewFinding[], now: number) {
+    if (all.some((f) => f.label.includes('__ENGINE_THROWS__'))) throw new Error('injected engine fault');
+    return realBandFindings(all, now);
+  }
   import { toolCallNeedsHelper as realToolCallNeedsHelper } from './src/mod/engine-entry.ts';
   export function toolCallNeedsHelper(
     toolName: string,

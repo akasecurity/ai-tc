@@ -18,8 +18,9 @@ import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { dataDir } from '../src/data-dir.ts';
 import type { PolicyResolver } from '../src/policy-resolver.ts';
 import { createPolicyResolver } from '../src/policy-resolver.ts';
-import type { VaultCore, VaultGlue } from '../src/tokenize.ts';
-import { createVaultGlue, POINTER_UNAVAILABLE_TEXT } from '../src/tokenize.ts';
+import { createVaultGlue } from '../src/tokenize.ts';
+import type { VaultCore, VaultGlue } from '../src/vault-glue.ts';
+import { POINTER_UNAVAILABLE_TEXT } from '../src/vault-glue.ts';
 
 const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 const OTHER = 'AKIAI44QH8DHBEXAMPLE';

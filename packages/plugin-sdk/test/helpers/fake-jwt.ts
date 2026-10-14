@@ -7,18 +7,26 @@ import { attachedUserDigestOf, sessionAccountsDir } from '@akasecurity/persisten
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import type { AccountContext } from '../../src/account/account-check.ts';
-import {
-  AUTH_CLAIMS,
-  CODEX_DROPPED_FIELDS,
-  CODEX_PRESENCE_FIELDS,
-  PROFILE_CLAIMS,
-} from '../../src/account/codex-login.ts';
 import type { ContextOptions } from './transcript-builder.ts';
 import { fixtureEmail, T0 } from './transcript-builder.ts';
 
 // Codex login and rollout fixtures. A token is three base64url segments
 // assembled at run time from the claims a case names: nothing token-shaped is
 // committed, and no signature is made or checked.
+
+// The login file's field names and the id_token's claim namespaces, spelled out
+// here rather than imported from the reader, so a misspelling in the reader
+// fails its cases instead of moving the fixture with it.
+export const FIXTURE_DROPPED_FIELDS = ['access_token', 'refresh_token'] as const;
+export const FIXTURE_PRESENCE_FIELDS = [
+  'OPENAI_API_KEY',
+  'personal_access_token',
+  'agent_identity',
+  'bedrock_api_key',
+  'bedrock_access_keys',
+] as const;
+export const FIXTURE_AUTH_CLAIMS = 'https://api.openai.com/auth';
+export const FIXTURE_PROFILE_CLAIMS = 'https://api.openai.com/profile';
 
 const b64url = (text: string): string => Buffer.from(text, 'utf8').toString('base64url');
 
@@ -120,8 +128,8 @@ export function codexClaims(
     ...(fixture.emailVerified === undefined ? {} : { email_verified: fixture.emailVerified }),
     ...(fixture.profileEmail === undefined
       ? {}
-      : { [PROFILE_CLAIMS]: { email: fixture.profileEmail } }),
-    [AUTH_CLAIMS]: auth,
+      : { [FIXTURE_PROFILE_CLAIMS]: { email: fixture.profileEmail } }),
+    [FIXTURE_AUTH_CLAIMS]: auth,
   };
 }
 
@@ -135,8 +143,8 @@ export function writeCodexAuth(
 ): CodexLoginWritten {
   const accountId = fixture.accountId ?? randomUUID();
   const jwt = fakeJwt(codexClaims({ ...fixture, accountId }));
-  const [firstHidden, secondHidden] = CODEX_DROPPED_FIELDS;
-  const [apiKeyField] = CODEX_PRESENCE_FIELDS;
+  const [firstHidden, secondHidden] = FIXTURE_DROPPED_FIELDS;
+  const [apiKeyField] = FIXTURE_PRESENCE_FIELDS;
   const secrets = [opaque('fixture-first'), opaque('fixture-second')] as const;
   const body: Record<string, unknown> = {
     ...(fixture.authMode === null ? {} : { auth_mode: fixture.authMode ?? 'chatgpt' }),

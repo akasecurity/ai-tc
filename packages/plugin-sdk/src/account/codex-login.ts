@@ -52,6 +52,7 @@ const PRESENCE: ReadonlySet<string> = new Set(CODEX_PRESENCE_FIELDS);
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NOFOLLOW = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+const READ_FLAGS = constants.O_RDONLY | NOFOLLOW;
 
 export interface CodexLogin {
   /** The login's account id, lower-cased. */
@@ -215,18 +216,20 @@ function parseAuth(
  * another login mode, or anything malformed (a symlink, a loose mode, a
  * foreign owner, an oversized, torn or non-UTF-8 file, or a bad id_token).
  * Windows has no uid and no meaningful mode bits, so there only the symlink
- * refusal applies; `platform` is the running one except in tests.
+ * refusal applies; `platform` and `openFlags` are the running ones except in
+ * tests, which pass flags without no-follow to see the symlink refusal alone.
  */
 export function inspectCodexLogin(
   codexHome: string,
   attachedUserDigest: string | undefined,
   platform: NodeJS.Platform = process.platform,
+  openFlags: number = READ_FLAGS,
 ): CodexLoginRead {
   const path = codexAuthPath(codexHome);
   let fd: number;
   try {
     if (platform === 'win32' && lstatSync(path).isSymbolicLink()) return MALFORMED;
-    fd = openSync(path, constants.O_RDONLY | NOFOLLOW);
+    fd = openSync(path, openFlags);
   } catch (error) {
     return isNotFound(error) ? ABSENT : MALFORMED;
   }

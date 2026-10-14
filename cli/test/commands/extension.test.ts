@@ -17,12 +17,21 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   controlPlaneCredentialPath,
   dataDir,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
   openLocalDatabase,
+  readDetectedWebAccounts,
+  readWorkspaceSettings,
+  recordDetectedWebAccount,
   settingsDir,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { WebCaptureStatus } from '@akasecurity/schema';
-import { toCaptureStatusAttributes, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
+import {
+  SOURCE_TOOL,
+  toCaptureStatusAttributes,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -34,6 +43,8 @@ import {
   NATIVE_HOST_COMMAND,
   resolveExtensionDist,
   resolveHostScript,
+  runAccount,
+  runExtension,
   runInstall,
   runNativeHost,
   runStatus,
@@ -821,10 +832,32 @@ describe('runStatus — the network-capture block', () => {
       mintedAt: CONNECTION.attachedAt,
     });
     const out = run();
-    expect(out).toContain('network capture: off on a personal device');
-    expect(out).toContain('nothing from a chat is recorded or sent');
+    expect(out).toContain('network capture: on a personal device, only in enrolled accounts');
+    expect(out).toContain('enrolled with `aka enroll --account` are recorded and sent');
+    expect(out).toContain('typed prompts never are');
     expect(out).not.toContain('chatgpt');
     expect(out).not.toContain('claude-ai');
+  });
+
+  it('says whether web chat accounts are recorded, after the capture block', () => {
+    writeSettings(consentedSettings());
+    const off = run();
+    expect(off).toContain(
+      '\nweb chat accounts: not recorded — `aka extension account --on` records them\n',
+    );
+    expect(off.indexOf('network capture')).toBeLessThan(off.indexOf('web chat accounts'));
+    writeSettings({
+      ...(consentedSettings() as object),
+      account: true,
+      accountConsent: {
+        acknowledgedAt: '2026-01-01T00:00:00.000Z',
+        version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+      },
+    });
+    vi.restoreAllMocks();
+    expect(run()).toContain(
+      '\nweb chat accounts: recorded — `aka enroll --list-detected` lists them\n',
+    );
   });
 
   it('prints the unreadable-attachment block on a credential it cannot read', () => {
@@ -903,5 +936,172 @@ describe('runStatus — the network-capture block', () => {
         '  run `aka extension install` to set it up\n',
     );
     expect(out).not.toContain('network capture');
+  });
+});
+
+describe('aka extension account — the account grant', () => {
+  let home: string;
+  const ACCOUNT = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+  const NOW = new Date('2026-10-09T12:00:00.000Z');
+  const CAPTURE_CONSENT = {
+    acknowledgedAt: '2026-01-01T00:00:00.000Z',
+    version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'aka-extension-account-'));
+  });
+
+  afterEach(() => {
+    removeTree(home);
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  function writeSettings(webChatCapture?: unknown): void {
+    const dir = settingsDir(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        specVersion: 3,
+        runMode: 'standalone',
+        policy: 'redact',
+        historicalAccess: 'session-only',
+        dataSharesInPlace: true,
+        vaultKeyCustody: 'file',
+        vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
+        ...(webChatCapture !== undefined ? { webChatCapture } : {}),
+      }),
+    );
+  }
+
+  function captured(action: () => void): { out: string; err: string } {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    action();
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    const err = stderr.mock.calls.map((c) => String(c[0])).join('');
+    stdout.mockRestore();
+    stderr.mockRestore();
+    return { out, err };
+  }
+
+  it('--on grants it, keeping the capture consent and the reply setting as they were', () => {
+    writeSettings({ responses: 'always', account: false, consent: CAPTURE_CONSENT });
+    const { out } = captured(() => {
+      runAccount(home, 'on', NOW);
+    });
+    expect(readWorkspaceSettings(home).webChatCapture).toEqual({
+      responses: 'always',
+      account: true,
+      consent: CAPTURE_CONSENT,
+      accountConsent: {
+        acknowledgedAt: NOW.toISOString(),
+        version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+      },
+    });
+    expect(out).toContain('Recording on.');
+    expect(out).toContain('holds nothing\nfrom the chat and no account name or email');
+    expect(out).toContain('This does not turn web-chat capture on.');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('--on does not grant capture on a machine that never answered', () => {
+    writeSettings();
+    captured(() => {
+      runAccount(home, 'on', NOW);
+    });
+    const block = readWorkspaceSettings(home).webChatCapture;
+    expect(block?.account).toBe(true);
+    expect(block?.consent).toBeUndefined();
+  });
+
+  it('--on again keeps the time the grant was first given', () => {
+    const first = {
+      acknowledgedAt: '2026-10-01T00:00:00.000Z',
+      version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+    };
+    writeSettings({ responses: 'always', account: true, accountConsent: first });
+    captured(() => {
+      runAccount(home, 'on', NOW);
+    });
+    expect(readWorkspaceSettings(home).webChatCapture?.accountConsent).toEqual(first);
+  });
+
+  it('--off drops the grant, deletes the record, and keeps the capture consent', () => {
+    writeSettings({
+      responses: 'always',
+      account: true,
+      consent: CAPTURE_CONSENT,
+      accountConsent: {
+        acknowledgedAt: NOW.toISOString(),
+        version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+      },
+    });
+    recordDetectedWebAccount(dataDir(home), ACCOUNT, SOURCE_TOOL.ClaudeAi);
+    expect(readDetectedWebAccounts(dataDir(home))).toHaveLength(1);
+    const { out } = captured(() => {
+      runAccount(home, 'off');
+    });
+    expect(readWorkspaceSettings(home).webChatCapture).toEqual({
+      responses: 'always',
+      account: false,
+      consent: CAPTURE_CONSENT,
+    });
+    expect(existsSync(join(dataDir(home), DETECTED_WEB_ACCOUNTS_FILENAME))).toBe(false);
+    expect(out).toContain('Recording off.');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('--off writes no block on a machine that never answered', () => {
+    writeSettings();
+    captured(() => {
+      runAccount(home, 'off');
+    });
+    expect(readWorkspaceSettings(home).webChatCapture).toBeUndefined();
+  });
+
+  it('with no flag, says whether accounts are recorded, and changes nothing', () => {
+    writeSettings({ responses: 'always', account: false });
+    expect(
+      captured(() => {
+        runAccount(home, 'show');
+      }).out,
+    ).toContain('web chat accounts: not recorded');
+    captured(() => {
+      runAccount(home, 'on', NOW);
+    });
+    expect(
+      captured(() => {
+        runAccount(home, 'show');
+      }).out,
+    ).toContain('web chat accounts: recorded on this machine');
+  });
+
+  it('is dispatched by runExtension, and refuses --on with --off', () => {
+    writeSettings();
+    captured(() => {
+      runExtension(['account', '--on', '--home', home]);
+    });
+    expect(readWorkspaceSettings(home).webChatCapture?.account).toBe(true);
+
+    const { err } = captured(() => {
+      runExtension(['account', '--on', '--off', '--home', home]);
+    });
+    expect(err).toContain('takes --on or --off, not both');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps --on and --off to the account subcommand', () => {
+    writeSettings();
+    const { err } = captured(() => {
+      runExtension(['status', '--on', '--home', home]);
+    });
+    expect(err).toContain('belong to `aka extension account`');
+    expect(process.exitCode).toBe(1);
+    expect(readWorkspaceSettings(home).webChatCapture).toBeUndefined();
   });
 });

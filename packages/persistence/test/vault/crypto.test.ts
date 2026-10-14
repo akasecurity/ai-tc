@@ -302,7 +302,9 @@ describe('mintPointer', () => {
     for (const category of DetectionCategory.options) {
       for (const keyVersion of [1, 0xffff_ffff]) {
         const token = mintPointer(master, keyVersion, category);
-        expect(POINTER_TOKEN_ANCHORED.test(token), `${category} @ ${keyVersion}`).toBe(true);
+        expect(POINTER_TOKEN_ANCHORED.test(token), `${category} @ ${String(keyVersion)}`).toBe(
+          true,
+        );
       }
     }
   });

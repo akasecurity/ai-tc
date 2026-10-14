@@ -30,9 +30,11 @@ import { SESSION_ACCOUNTS_DIRNAME } from '../src/session-accounts.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 // Every lock the record's writers take, with the timeout each asked for. The
-// real lock still runs underneath.
+// real lock runs underneath unless a test sets `failWith`, which makes the next
+// lock throw a FileLockError of that reason before running anything.
 const locks = vi.hoisted(() => ({
   calls: [] as { file: string; timeoutMs: number | undefined }[],
+  failWith: undefined as FileLock.FileLockFailure | undefined,
 }));
 vi.mock('../src/file-lock.ts', async (importActual) => {
   const actual = await importActual<typeof FileLock>();
@@ -40,6 +42,9 @@ vi.mock('../src/file-lock.ts', async (importActual) => {
     ...actual,
     withFileLock: <T>(file: string, fn: () => T, options?: FileLock.FileLockOptions): T => {
       locks.calls.push({ file, timeoutMs: options?.timeoutMs });
+      if (locks.failWith !== undefined) {
+        throw new actual.FileLockError(locks.failWith, file, 'refused by the test');
+      }
       return actual.withFileLock(file, fn, options);
     },
   };
@@ -110,6 +115,7 @@ const plantSessionAccountState = (): string => {
 
 afterEach(() => {
   locks.calls.length = 0;
+  locks.failWith = undefined;
 });
 
 describe('the digests', () => {
@@ -426,6 +432,34 @@ describe('recordValidatedWorkAccount', () => {
     expect(result).toBe('timeout');
     expect(readAttachedIdentity(store.dataDir)?.workAccounts).toEqual([]);
   });
+
+  it('answers refused, not a timeout, for a data dir that does not exist, creating nothing', () => {
+    const missing = join(store.dataDir, 'never-created');
+    let result: WorkAccountWrite | undefined;
+    expect(() => {
+      result = recordValidatedWorkAccount(
+        missing,
+        { endpoint: ENDPOINT, credential: scoped(), key: WORK_ORG },
+        NOW,
+      );
+    }).not.toThrow();
+    expect(result).toBe('refused');
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it.each([
+    ['unavailable', 'refused'],
+    ['timeout', 'timeout'],
+  ] as const)(
+    'answers %s from the lock as %s, so only contention is worth a retry',
+    (reason, answer) => {
+      attach();
+      locks.failWith = reason;
+      expect(learn()).toBe(answer);
+      locks.failWith = undefined;
+      expect(readAttachedIdentity(store.dataDir)?.workAccounts).toEqual([]);
+    },
+  );
 
   it("waits at most 200 ms for the record's lock", () => {
     attach();

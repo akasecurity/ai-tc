@@ -27,7 +27,7 @@ import {
 
 import { ATTACHED_IDENTITY_FILENAME } from './attached-derived.ts';
 import { readControlPlaneCredentialFile } from './control-plane-credential.ts';
-import { withFileLock } from './file-lock.ts';
+import { FileLockError, withFileLock } from './file-lock.ts';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 import { clearSessionAccountState } from './session-accounts.ts';
 
@@ -50,8 +50,10 @@ export const WORK_ACCOUNT_LOCK_TIMEOUT_MS = 200;
 /**
  * What recordValidatedWorkAccount did: `'written'` it added the key, `'present'`
  * the record already held it, `'refused'` it will not hold it (the record does
- * not count, the key is not a coding agent's account, or the record is full),
- * `'timeout'` the lock was not taken and nothing was written.
+ * not count, the key is not a coding agent's account, the record is full, or the
+ * lock cannot be taken for a reason waiting does not cure, such as a data dir
+ * that does not exist), `'timeout'` the lock itself timed out and nothing was
+ * written. Only `'timeout'` is worth a retry.
  */
 export type WorkAccountWrite = 'written' | 'present' | 'refused' | 'timeout';
 
@@ -279,8 +281,10 @@ export function removeAttachedIdentity(dataDir: string): boolean {
  * machine. A key that already reads as a learned work account is not added
  * again, and a record already holding ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX entries,
  * readable or not, takes no more. The lock is waited on for
- * WORK_ACCOUNT_LOCK_TIMEOUT_MS at most; when it is not taken nothing is written
- * and the answer is `'timeout'`. Every other key and entry is kept as found.
+ * WORK_ACCOUNT_LOCK_TIMEOUT_MS at most; when the lock itself times out nothing is
+ * written and the answer is `'timeout'`. Any other failure to take it, such as a
+ * data dir that does not exist or will not take a create, answers `'refused'`,
+ * which a caller must not retry. Every other key and entry is kept as found.
  * Never throws.
  */
 export function recordValidatedWorkAccount(
@@ -292,7 +296,8 @@ export function recordValidatedWorkAccount(
   },
   now: Date = new Date(),
 ): WorkAccountWrite {
-  // Whether the lock was taken: a throw before it was is a timeout.
+  // Only the lock timing out is a timeout. Any other throw, before the lock or
+  // once it is taken, is refused, which a caller must not retry.
   const lock = { taken: false };
   try {
     const provider = parseWebAccountKey(input.key)?.provider;
@@ -324,8 +329,9 @@ export function recordValidatedWorkAccount(
       },
       { timeoutMs: WORK_ACCOUNT_LOCK_TIMEOUT_MS },
     );
-  } catch {
-    return lock.taken ? 'refused' : 'timeout';
+  } catch (err) {
+    if (lock.taken) return 'refused';
+    return err instanceof FileLockError && err.reason === 'timeout' ? 'timeout' : 'refused';
   }
 }
 

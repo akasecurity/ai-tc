@@ -83,9 +83,15 @@ export { readStorePosture } from './posture-snapshot.ts';
 export type { PostureState, PostureStore } from './posture-store.ts';
 export { readDeviceIdentity } from './posture-store.ts';
 export { createPostureStore } from './posture-store.ts';
-export type { RenderAttachedStatusDeps } from './status.ts';
+export type {
+  ClaudeCodeLoginState,
+  ClaudeCodeLoginView,
+  ClaudeCodeLoginViewInput,
+  RenderAttachedStatusDeps,
+} from './status.ts';
 export {
   attachmentScopeLines,
+  claudeCodeLoginView,
   deploymentNameForTerminal,
   endpointForTerminal,
   printableForTerminal,

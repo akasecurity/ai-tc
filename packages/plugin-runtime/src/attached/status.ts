@@ -1,21 +1,35 @@
 import {
+  bindingHashOf,
   codingScopeExtras,
   credentialDigestOf,
+  managedScopedRefusal,
   readAttachedIdentity,
+  readBoundAttachedIdentity,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import { readHookFailOpens } from '@akasecurity/plugin-sdk';
+import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import {
+  accountContextFor,
+  claudeLoginCheck,
+  isAccountMatch,
+} from '@akasecurity/plugin-sdk/account';
 import type {
+  AccountBasis,
+  AccountCheckReason,
+  AttachedIdentity,
   AttachmentMode,
   AttachmentScope,
   AttachmentScopeEntry,
   ControlPlaneConnection,
+  ManagedSettings,
   WebAccountProvider,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
   agentKey,
+  ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX,
   attachedIdentityHolds,
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
@@ -72,6 +86,14 @@ export interface RenderAttachedStatusDeps {
   settingsDir: string;
   dataDir: string;
   now?: () => number;
+  /** Whether stdout is a terminal. Off one, the login reasons collapse to one line. */
+  isTTY?: boolean | undefined;
+  /** The administrator's overlay. `null` means unmanaged; absent reads the system paths. */
+  managedSettings?: ManagedSettings | null | undefined;
+  /** Where Claude Code keeps its login and settings files. Absent, no Claude Code login is read. */
+  claudePaths?: ClaudeLoginPaths | undefined;
+  /** The project whose Claude Code settings layers can veto the login. Defaults to the working directory. */
+  cwd?: string | undefined;
 }
 
 /**
@@ -120,7 +142,7 @@ const OUTCOME_LINES: Record<PolicySyncOutcome, string> = {
  */
 const MODE_LINES: Record<AttachmentMode, string> = {
   machine: 'machine (activity from anywhere on this machine)',
-  scoped: 'scoped (activity only from what is enrolled)',
+  scoped: 'scoped (activity from what is enrolled, and from work-subscription sessions)',
 };
 
 /**
@@ -129,7 +151,8 @@ const MODE_LINES: Record<AttachmentMode, string> = {
  * not stored spell out their own advice, and the lines for one this build cannot
  * read carry none.
  */
-const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
+const ENROLL_HINT =
+  '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account` for a work subscription this device does not recognise)';
 
 /**
  * The `user` line when no identity record counts for this credential. What a
@@ -149,6 +172,189 @@ const USER_LINES = {
 const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
 };
+
+/**
+ * The `work` line, by whether recognition is on, each naming the command that
+ * changes it, on a personal device whose connection nobody manages.
+ */
+const WORK_LINES = {
+  on: '  work       subscriptions on — `aka unenroll --work-subscriptions` turns them off on this device',
+  off: '  work       subscriptions off — you turned them off; `aka enroll --work-subscriptions` turns them back on',
+} as const;
+
+/**
+ * What follows "on" or "off" on a scoped device whose connection an
+ * administrator now manages. Both commands refuse there, so none is named.
+ */
+const WORK_LINE_FIXED =
+  "— fixed while an administrator manages this machine's connection; re-attaching makes it machine-wide";
+
+/** The one line a machine-wide attachment gains when an administrator manages its connection. */
+const MANAGED_MACHINE_LINE =
+  "  personal device  not available — an administrator manages this machine's connection, so it is attached machine-wide and there is no work-subscription opt-out";
+
+/** The this-login block off a terminal: no reason and no key. */
+const THIS_LOGIN_COLLAPSED = '  this login details on an interactive terminal';
+
+/** What the Claude Code login signed in now is, as `aka status` and `aka enroll --list-detected` show it. */
+export type ClaudeCodeLoginState =
+  | 'manual'
+  | 'remembered'
+  | 'would-validate'
+  | 'off'
+  | 'cap-reached'
+  | 'email'
+  | 'plan'
+  | 'plan-unconfirmed'
+  | 'plan-stale'
+  | 'env-mismatch'
+  | 'veto'
+  | 'attached-user-unknown'
+  | 'signed-out'
+  | 'absent'
+  | 'unreadable';
+
+export interface ClaudeCodeLoginView {
+  /** The login's account key, for the user's own terminal; undefined with no organization. */
+  readonly key: string | undefined;
+  readonly planState: AccountPlanState | undefined;
+  readonly state: ClaudeCodeLoginState;
+}
+
+export interface ClaudeCodeLoginViewInput {
+  /** The identity record, only when it holds for this endpoint and credential. */
+  readonly identity: AttachedIdentity | undefined;
+  /** The stored `attachmentScope`, raw. */
+  readonly scope: unknown;
+  readonly endpoint: string;
+  /** The project whose Claude Code settings layers can veto the login. */
+  readonly cwd: string;
+  readonly paths: ClaudeLoginPaths;
+}
+
+const FORWARDS = 'a work subscription for the attached user — its sessions forward from any folder';
+
+/**
+ * The this-login reason for each state, given the key as it prints. An
+ * exhaustive Record, so a state added later fails typecheck here.
+ */
+const CLAUDE_CODE_LOGIN_LINES: Record<ClaudeCodeLoginState, (key: string) => string> = {
+  manual: () => 'an account you enrolled by hand — its sessions forward from any folder',
+  remembered: () => FORWARDS,
+  'would-validate': () => FORWARDS,
+  off: () =>
+    'a work subscription for the attached user — not sent, because work subscriptions are off on this device',
+  'cap-reached': () =>
+    `a work subscription for the attached user — not sent, because this device already recognises ${String(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX)} work accounts`,
+  email: () => 'signed in with a different email than the AKA user who attached this device',
+  plan: () => 'personal plan — sessions follow the repository rule',
+  'plan-unconfirmed': (key) =>
+    `plan not confirmed by Claude Code — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  'plan-stale': (key) =>
+    `plan not confirmed for this organization — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  'env-mismatch': () =>
+    "the desktop app names another login than Claude Code's login file — sessions follow the repository rule",
+  veto: () => 'an API key or another provider is in use',
+  'attached-user-unknown': () =>
+    'not checked — this device does not know yet which AKA user attached it',
+  'signed-out': () => 'not signed in to a Claude account',
+  absent: () => 'login file not found',
+  unreadable: () => 'login file could not be read',
+};
+
+/** A login that counts, by the basis it would count on. */
+const MATCH_STATE_OF: Record<AccountBasis, ClaudeCodeLoginState> = {
+  manual: 'manual',
+  remembered: 'remembered',
+  validated: 'would-validate',
+};
+
+/**
+ * Each reason a check can give, as the state shown. The login-level check
+ * compares the login with its own organization and reads no Codex file, so a
+ * session's reasons and Codex's never reach here; they read as unreadable.
+ */
+const LOGIN_STATE_OF: Record<AccountCheckReason, ClaudeCodeLoginState> = {
+  'no-session-account': 'signed-out',
+  veto: 'veto',
+  unreadable: 'unreadable',
+  'env-mismatch': 'env-mismatch',
+  'login-changed': 'unreadable',
+  'org-changed': 'unreadable',
+  email: 'email',
+  plan: 'plan',
+  'plan-unconfirmed': 'plan-unconfirmed',
+  'plan-stale': 'plan-stale',
+  'attached-user-unknown': 'attached-user-unknown',
+  'opted-out': 'off',
+  resumed: 'unreadable',
+  provider: 'veto',
+  absent: 'absent',
+  mode: 'unreadable',
+  malformed: 'unreadable',
+  'account-mismatch': 'unreadable',
+  'auth-changed': 'unreadable',
+  'cap-reached': 'cap-reached',
+};
+
+/**
+ * The Claude Code login signed in now, checked on demand through the readers
+ * the hooks use: the login file, the settings layers and the environment, never
+ * a transcript, and no network. Persists nothing. On an opted-out device a login
+ * that would count reads as `off`. Without an identity record that holds, the
+ * key and the plan state are still given. Never throws.
+ */
+export function claudeCodeLoginView(input: ClaudeCodeLoginViewInput): ClaudeCodeLoginView {
+  try {
+    const { identity } = input;
+    const ctx = accountContextFor({
+      identity,
+      scope: input.scope,
+      bindingHash:
+        identity === undefined
+          ? ''
+          : bindingHashOf(input.endpoint, identity.credentialDigest, identity.attachedUserDigest),
+      inScope: () => false,
+    });
+    const report = claudeLoginCheck({ ctx, cwd: input.cwd, paths: input.paths });
+    const shown = { key: report.key, planState: report.planState };
+    if (report.key === undefined && !report.found) return { ...shown, state: 'absent' };
+    if (isAccountMatch(report.check)) {
+      return { ...shown, state: MATCH_STATE_OF[report.check.basis] };
+    }
+    if (report.check.none !== 'opted-out' || ctx === undefined) {
+      return { ...shown, state: LOGIN_STATE_OF[report.check.none] };
+    }
+    // Off on this device: say whether the login would count were it on.
+    const on = claudeLoginCheck({
+      ctx: { ...ctx, workSubscriptionsOn: true },
+      cwd: input.cwd,
+      paths: input.paths,
+    });
+    return { ...shown, state: isAccountMatch(on.check) ? 'off' : LOGIN_STATE_OF[on.check.none] };
+  } catch {
+    return { key: undefined, planState: undefined, state: 'unreadable' };
+  }
+}
+
+/** The Claude Code this-login line. The key prints on the user's own terminal, as `aka enroll --list` prints it. */
+function claudeCodeLoginLine(view: ClaudeCodeLoginView): string {
+  const key =
+    view.key === undefined
+      ? 'claude:<organization-id>'
+      : printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return `Claude Code — ${CLAUDE_CODE_LOGIN_LINES[view.state](key)}`;
+}
+
+/**
+ * The this-login block: one line per coding agent under one label, or the
+ * collapsed line off a terminal, and nothing when no login was read.
+ */
+function thisLoginLines(isTTY: boolean, hostLines: readonly string[]): string[] {
+  if (hostLines.length === 0) return [];
+  if (!isTTY) return [THIS_LOGIN_COLLAPSED];
+  return hostLines.map((line, at) => `${at === 0 ? '  this login ' : '             '}${line}`);
+}
 
 /**
  * The last line of every scope block: what the record does not limit. A scoped
@@ -239,6 +445,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ? attachmentModeOf(state.credential)
       : undefined;
     const plane = deploymentNameForTerminal(connection);
+    // Whether an administrator manages this machine's connection. Such a machine
+    // attaches machine-wide only, and a scoped device that became managed keeps
+    // its stored choice, which neither command may change, until it is re-attached.
+    const managed =
+      mode !== undefined && managedScopedRefusal(deps.base, deps.managedSettings) !== null;
     // The coding-agent keys a scoped attachment forwards beside its stored
     // entries, from the identity record bound to this credential, and what the
     // block says about them. Read only for a scoped credential: a machine-wide
@@ -255,8 +466,31 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
             connection.endpoint,
             credentialDigestOf(state.credential.apiKey),
             extras,
+            managed,
           )
         : undefined;
+    // Who a login is compared with: the identity record, only when it holds for
+    // this credential.
+    const heldIdentity =
+      state.usable && mode === 'scoped'
+        ? readBoundAttachedIdentity(deps.dataDir, connection.endpoint, state.credential)
+        : undefined;
+    // One line per coding agent whose login the caller asked to have read.
+    const loginLines: string[] = [];
+    if (work !== undefined && deps.claudePaths !== undefined) {
+      loginLines.push(
+        claudeCodeLoginLine(
+          claudeCodeLoginView({
+            identity: heldIdentity,
+            scope: settings.attachmentScope,
+            endpoint: connection.endpoint,
+            cwd: deps.cwd ?? process.cwd(),
+            paths: deps.claudePaths,
+          }),
+        ),
+      );
+    }
+    const thisLogin = thisLoginLines(deps.isTTY === true, loginLines);
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -293,6 +527,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       lines.push(`  credential ${printableForTerminal(state.credentialEndpoint, 200)}`);
     }
     if (mode !== undefined) lines.push(`  mode       ${MODE_LINES[mode]}`);
+    if (mode === 'machine' && managed) lines.push(MANAGED_MACHINE_LINE);
     // With a label, `plane` names the label. The scope record is bound to the
     // endpoint by exact string, so the endpoint gets its own line and a user can
     // compare it with the one a record names. Without a label, `plane` is it.
@@ -308,7 +543,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       // still ends with what the record does not limit.
       ...(work === undefined
         ? []
-        : [...work, ...attachmentScopeLines(settings.attachmentScope, connection.endpoint)]),
+        : [
+            ...work,
+            ...thisLogin,
+            ...attachmentScopeLines(settings.attachmentScope, connection.endpoint),
+          ]),
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
@@ -444,12 +683,26 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   return lines;
 }
 
-/** One enrolled identity: its key, its label when it has one, and the day it was enrolled. */
+/** One enrolled identity: its key, its label when it has one, the day it was enrolled, and what an account covers. */
 function entryLine(entry: AttachmentScopeEntry): string {
   // `max` is the schema's own bound on an identity, so a conforming key is never cut.
   const identity = printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
   const label = entry.label === undefined ? '' : ` (${printableForTerminal(entry.label)})`;
-  return `${identity}${label}, enrolled ${printableForTerminal(entry.enrolledAt.slice(0, 10))}`;
+  const enrolled = printableForTerminal(entry.enrolledAt.slice(0, 10));
+  return `${identity}${label}, enrolled ${enrolled}${codingCoverage(entry, identity)}`;
+}
+
+/**
+ * What a claude.ai account entry covers: Claude Code sessions too when it
+ * carries the coding-agent marker, and its chats alone when it does not.
+ */
+function codingCoverage(entry: AttachmentScopeEntry, shown: string): string {
+  const provider =
+    entry.kind === 'account' ? parseWebAccountKey(entry.identity)?.provider : undefined;
+  if (provider !== WEB_ACCOUNT_PROVIDER.Claude) return '';
+  return entry.codingAgents === true
+    ? ' — covers Claude Code sessions'
+    : ` — claude.ai chats only — run \`aka enroll --account ${shown}\` again to include Claude Code sessions`;
 }
 
 /** How many stored entries validation dropped from a record that itself parsed. */
@@ -477,7 +730,9 @@ function named(value: string | undefined): boolean {
  * record bound to another key is said to be one, apart from no record at all.
  *
  * Recognition is on unless the scope record turns it off (`workSubscriptionsOn`):
- * no field is on, and any stored value is off.
+ * no field is on, and any stored value is off. On a scoped device whose
+ * connection an administrator now manages, the line says the choice is fixed and
+ * names no command, since both refuse there.
  *
  * A learned account is listed only while its agent key is among `extras`, the
  * keys the forward paths add to the scope, so the list is what is forwarded. Its
@@ -492,6 +747,7 @@ function workSubscriptionLines(
   endpoint: string,
   credentialDigest: string,
   extras: readonly AttachmentScopeEntry[],
+  managed: boolean,
 ): string[] {
   try {
     const record = readAttachedIdentity(dataDir);
@@ -507,9 +763,7 @@ function workSubscriptionLines(
         : record === undefined
           ? USER_LINES.unknown
           : USER_LINES.untied,
-      on
-        ? '  work       subscriptions on'
-        : '  work       subscriptions off — turned off on this device',
+      workLine(on, managed),
     ];
     if (bound === undefined || !on) return lines;
     const forwarded = new Set(extras.map((entry) => entry.identity));
@@ -533,6 +787,12 @@ function workSubscriptionLines(
   } catch {
     return [USER_LINES.unknown];
   }
+}
+
+/** The `work` line: on or off, with the command that changes it, or why none can. */
+function workLine(on: boolean, managed: boolean): string {
+  if (managed) return `  work       subscriptions ${on ? 'on' : 'off'} ${WORK_LINE_FIXED}`;
+  return on ? WORK_LINES.on : WORK_LINES.off;
 }
 
 /**

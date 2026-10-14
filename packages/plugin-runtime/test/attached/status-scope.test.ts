@@ -202,13 +202,17 @@ describe('renderAttachedStatus — the attachment mode', () => {
 
   it('names a scoped attachment', () => {
     attach('scoped', bound());
-    expect(status()).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(status()).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
   });
 
   it('names a scoped attachment without naming the kind of entry it enrolls', () => {
     attach('scoped', bound([{ kind: 'account', identity: ACCOUNT, enrolledAt: ENROLLED_AT }]));
     const out = status();
-    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(out).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
     expect(out).toContain(`\n             ${ACCOUNT}, enrolled 2026-10-07\n`);
     expect(out).not.toContain('repositories only');
   });
@@ -309,7 +313,9 @@ describe('renderAttachedStatus — a machine that became managed after a scoped 
     UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
 
     const out = status();
-    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(out).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
     expect(out).toContain(`\n             ${WORK_REPO}, enrolled 2026-10-07\n`);
   });
 });
@@ -343,7 +349,9 @@ describe('renderAttachedStatus — the enrolled scope', () => {
     attach('scoped', bound());
     const out = status();
     expect(out).toContain(`\n${EMPTY_HEADLINE}\n`);
-    expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
+    expect(out).toContain(
+      '(run `aka enroll` inside a work repository to add it, or `aka enroll --account` for a work subscription this device does not recognise)',
+    );
   });
 
   it.each<[string, Record<string, unknown>, string]>([
@@ -821,7 +829,9 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   // An attachment made before this build has no field at all, and starts on.
   it('says work subscriptions are on when the scope record does not mention them', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
-    expect(lines()).toContain('  work       subscriptions on');
+    expect(lines()).toContain(
+      '  work       subscriptions on — `aka unenroll --work-subscriptions` turns them off on this device',
+    );
   });
 
   it.each<[string, unknown]>([
@@ -829,11 +839,13 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     ['on', 'on'],
     ['a number', 42],
   ])(
-    'says work subscriptions are off for a stored %s, and still lists the enrolled repository',
+    'says work subscriptions are off for a stored %s, how to turn them back on, and still lists the enrolled repository',
     (_name, value) => {
       attach('scoped', { ...bound([entry(WORK_REPO)]), workSubscriptions: value });
       const out = lines();
-      expect(out).toContain('  work       subscriptions off — turned off on this device');
+      expect(out).toContain(
+        '  work       subscriptions off — you turned them off; `aka enroll --work-subscriptions` turns them back on',
+      );
       expect(out).toContain(`             ${WORK_REPO}, enrolled 2026-10-07`);
     },
   );

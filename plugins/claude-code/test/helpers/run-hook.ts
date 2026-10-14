@@ -38,6 +38,12 @@ export interface RunHookOptions {
   /** Extra env vars layered on top of the inherited process env. */
   env?: Readonly<Record<string, string>>;
   timeoutMs?: number;
+  /**
+   * Where the built scripts live, when a case drives a modified COPY of
+   * `scripts/` (one with the scan worker removed, say). Defaults to the build
+   * output itself.
+   */
+  scriptsDir?: string;
 }
 
 // The host env, read once so spawned scripts inherit PATH/node — the one
@@ -52,7 +58,7 @@ const HOST_ENV = process.env;
 // use this package's vitest.config.ts globalSetup already builds before any
 // test file runs, so this is a defensive fallback, not the primary guard).
 export function runHook(name: string, stdin: string, options: RunHookOptions = {}): HookResult {
-  const scriptPath = join(SCRIPTS_DIR, `${name}.js`);
+  const scriptPath = join(options.scriptsDir ?? SCRIPTS_DIR, `${name}.js`);
   if (!existsSync(scriptPath)) {
     throw new Error(
       `runHook('${name}'): ${scriptPath} does not exist. scripts/ is gitignored and only ` +
@@ -177,4 +183,9 @@ export function withTempHome<T>(fn: (home: string) => T, prefix = 'aka-hook-e2e-
 // repeating the HOME/USERPROFILE pair at every call site.
 export function tempHomeEnv(home: string): Record<string, string> {
   return { HOME: home, USERPROFILE: home };
+}
+
+/** The host environment, for a test that spawns a built script directly. */
+export function hostEnv(): NodeJS.ProcessEnv {
+  return HOST_ENV;
 }

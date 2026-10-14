@@ -59,6 +59,9 @@ export interface CaptureResult {
   // The (possibly redacted) text to pass through, or null if blocked
   text: string | null;
   findings: MatchResult[];
+  // The display name of each rule in `findings`, by rule id, as the rule that
+  // matched declares it (custom and pulled rules included).
+  ruleNames?: Record<string, string>;
   // For a 'redact' decision: exactly the findings whose spans the rewritten
   // `text` replaced (warn/log findings in the same field are not in it). A
   // caller substituting its own rewrite — a reversible one — must cover these
@@ -89,9 +92,10 @@ export interface CaptureResult {
   // scanner can diff them against a path's previously-open at-rest keys to
   // auto-resolve findings that no longer reproduce (see packages/scanner's
   // re-scan resolver). Absent for in-flight (prompt/response) captures, which
-  // carry no finding_key. Left unset (not []) when capture() takes the
-  // 'with-findings' early-return (findings.length === 0) — callers that need
-  // "no findings produced" should treat an absent value as an empty list.
+  // carry no finding_key. Left unset (not []) when capture() takes an early
+  // return: persist 'never', whatever the capture found, and persist
+  // 'with-findings' when it found nothing (findings.length === 0) — callers that
+  // need "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
   // What a redact this capture could NOT carry out resolved to instead: the
   // configured `redactFallback`, because the caller declared the field
@@ -114,6 +118,20 @@ export interface CaptureResult {
   // every degraded finding in it took the same fallback. Where the ceiling caps
   // them differently, this is the strongest of what they resolved to.
   redactDegradedTo?: ActionTaken;
+  // Set when the field was NOT scanned to completion, so the decision is a
+  // refusal rather than a verdict on its content: `action` is 'block', `text`
+  // is null and `findings` is empty. Only a runtime built with `largeInput`
+  // produces it, and only for a field at or above that threshold.
+  //
+  //   - 'timeout': the bounded scan ran out of time — its own budget, or what
+  //     the caller had left.
+  //   - 'unavailable': no worker could run it (missing, crashed, or too slow to
+  //     start).
+  //
+  // A caller must check it before reading an empty `findings` as "clean": the
+  // two look identical otherwise, and a hook that skips clean fields would let
+  // exactly these through.
+  scanIncomplete?: 'timeout' | 'unavailable';
 }
 
 // AkaPluginAdapter signature

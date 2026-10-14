@@ -28,5 +28,20 @@
     "label": "UPDATE..SET with %d placeholder",
     "text": "q = \"UPDATE users SET active = %d\" % flag",
     "shouldMatch": true
+  },
+  {
+    "label": "LIKE with a %s placeholder after WHERE",
+    "text": "query = \"SELECT * FROM users WHERE name LIKE '%s'\" % name",
+    "shouldMatch": true
+  },
+  {
+    "label": "a SELECT..FROM does not reach a placeholder past a later SELECT with no FROM",
+    "text": "run(\"SELECT name FROM users\"); print(\"Select %s\" % choice)",
+    "shouldMatch": false
+  },
+  {
+    "label": "JSON dictionary whose values start with SQL words",
+    "text": "{\"id-1\":\"select 1\",\"id-2\":\"where 2\",\"id-3\":\"update 3\"}",
+    "shouldMatch": false
   }
 ]

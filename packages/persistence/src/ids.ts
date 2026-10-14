@@ -207,10 +207,20 @@ export function captureWireId(
 // canonicalIdentity join order) so a future local-store egress scan derives
 // the id the same way on every pass.
 
+const DOT = '.'.charCodeAt(0);
+
 // Normalise a destination host so equivalent hosts (mixed case, trailing dot)
 // collapse to the same canonical form before being hashed.
+//
+// Drops the trailing dots with a scan back from the end rather than
+// `replace(/\.+$/, '')`, which is quadratic on a long run of dots that does
+// not end the string: the engine retries `\.+$` from each dot of the run and
+// every attempt walks to the end of it.
 export function normalizeHost(host: string): string {
-  return host.trim().toLowerCase().replace(/\.+$/, '');
+  const lowered = host.trim().toLowerCase();
+  let end = lowered.length;
+  while (end > 0 && lowered.charCodeAt(end - 1) === DOT) end -= 1;
+  return lowered.slice(0, end);
 }
 
 // sha256(['share_destination', host]): identity = the host AS GIVEN — callers pass normalizeHost(host)

@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
+import { MOD_POLICY_SNAPSHOT_FILENAME } from '../src/mod-policy-snapshot.ts';
 import { DB_FILENAME } from '../src/paths.ts';
 import { descriptorProbe } from './helpers/descriptors.ts';
 import { corruptStore } from './helpers/fault-injection.ts';
@@ -365,7 +366,12 @@ describe('openLocalDatabase sweeps abandoned snapshot staging', () => {
     } finally {
       raw.close();
     }
-    expect(readdirSync(store.dataDir).sort()).toEqual([DB_FILENAME]);
+    // The mod policy snapshot is the one file an open keeps beside the store.
+    expect(
+      readdirSync(store.dataDir)
+        .filter((f) => f !== MOD_POLICY_SNAPSHOT_FILENAME)
+        .sort(),
+    ).toEqual([DB_FILENAME]);
   }
 
   // A staging area exactly as a killed process leaves one: the directory, and

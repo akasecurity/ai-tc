@@ -168,7 +168,7 @@ jobs:
       - name: Smoke-test built scripts (self-contained, fail-open)
         run: |
           cd plugins/claude-code
-          for f in session-start user-prompt-submit pre-tool-use post-tool-use stop; do
+          for f in session-start user-prompt-submit pre-tool-use post-tool-use stop scan-worker; do
             test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
           done
           test -f scripts/path-gate.sh || { echo "::error::missing scripts/path-gate.sh"; exit 1; }

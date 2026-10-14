@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   exactFingerprintValue,
@@ -387,6 +387,55 @@ describe('a minted version never reuses one the store already references', () =>
     expect(() => rotateFingerprintKey(dir)).toThrow(/key versions/);
     // The existing key is untouched — a refused rotation is inert.
     expect(readFingerprintKey(dir)?.material.equals(before.material)).toBe(true);
+  });
+
+  describe('on a Node that cannot load node:sqlite', () => {
+    // The floor read resolves the builtin when it runs, and `@types/node`
+    // types that lookup as always present and always answering. Neither holds
+    // everywhere: Node before 22.3 has no `process.getBuiltinModule`, and a Node
+    // without the builtin answers `undefined` rather than throwing. Both must
+    // still refuse the mint, and the error must name the runtime, not blame
+    // the store.
+    beforeEach(() => {
+      ensureDataDirSync(dir);
+      new DatabaseSync(join(dir, 'aka.db')).close();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('names the builtin when the lookup answers undefined', () => {
+      vi.spyOn(process, 'getBuiltinModule').mockReturnValue(undefined);
+      expect(() => loadOrCreateFingerprintKey(dir)).toThrow(
+        /key versions: this Node runtime cannot load node:sqlite/,
+      );
+      expect(existsSync(keyFile())).toBe(false);
+    });
+
+    it('names the builtin when the lookup itself does not exist', () => {
+      const own = Object.getOwnPropertyDescriptor(process, 'getBuiltinModule');
+      Object.defineProperty(process, 'getBuiltinModule', { value: undefined, configurable: true });
+      try {
+        expect(() => loadOrCreateFingerprintKey(dir)).toThrow(
+          /key versions: this Node runtime cannot load node:sqlite/,
+        );
+      } finally {
+        if (own) Object.defineProperty(process, 'getBuiltinModule', own);
+      }
+      expect(existsSync(keyFile())).toBe(false);
+    });
+
+    it('keeps the floor-unreadable code, so callers still fail secure', () => {
+      vi.spyOn(process, 'getBuiltinModule').mockReturnValue(undefined);
+      let thrown: unknown;
+      try {
+        loadOrCreateFingerprintKey(dir);
+      } catch (err) {
+        thrown = err;
+      }
+      expect((thrown as { code?: unknown } | undefined)?.code).toBe('floor-unreadable');
+    });
   });
 
   it('treats a genuinely absent table as no floor, not as a failure', () => {

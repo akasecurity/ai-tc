@@ -51,6 +51,20 @@ describe('describeForward', () => {
     expect(line?.text).not.toContain('aka attach');
   });
 
+  it('notes a project a scoped machine keeps local, with no remedy this page cannot offer', () => {
+    const line = describeForward({ status: 'not-enrolled', endpoint: ENDPOINT });
+    // One outcome covers the project and any repository nested in it that the
+    // scan walked into: the server answers the same for either, so the line
+    // names both rather than blaming the project when a nested one is the cause.
+    expect(line).toEqual({
+      text: 'Not forwarded to Acme Prod: the project or a repository nested in it is not enrolled — its scans stay on this machine.',
+      tone: 'note',
+    });
+    // Enrolling is a terminal verb with no control on this page, and a note is
+    // not a refusal: the scoped machine is doing what it was asked to.
+    expect(line?.text).not.toContain('aka enroll');
+  });
+
   it.each(RemoteFailureKind.options)('explains a %s refusal, as a warning', (kind) => {
     expect(describeForward({ status: 'failed', endpoint: ENDPOINT, kind })).toEqual({
       text: `Not forwarded to Acme Prod: ${FORWARD_FAILURE_LINES[kind]}.`,
@@ -67,6 +81,7 @@ describe('describeForward', () => {
       { status: 'disabled', endpoint: ENDPOINT, reason: 'opt-out' },
       { status: 'disabled', endpoint: ENDPOINT, reason: 'data-shares-off' },
       { status: 'no-credential', endpoint: ENDPOINT },
+      { status: 'not-enrolled', endpoint: ENDPOINT },
       { status: 'forwarded', endpoint: ENDPOINT, callSites: 1 },
       { status: 'failed', endpoint: ENDPOINT, kind: 'unreachable' },
     ];

@@ -16,8 +16,8 @@ import { isParseableBinaryVersion } from '@akasecurity/persistence';
 import { BASELINE_HOOK_EVENTS, HOST_FLOORS } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { SUBAGENT_TOOLS } from '../../src/hooks/model-guard.ts';
 import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
+import { SUBAGENT_TOOLS } from '../../src/hooks/subagent-tools.ts';
 import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
 interface HooksManifest {
@@ -31,12 +31,18 @@ const manifest = JSON.parse(
   ),
 ) as HooksManifest;
 
-/** One manifest entry's matcher, as the regex the harness applies. */
+/**
+ * One manifest entry's matcher, as the regex the harness applies. Claude
+ * Code tests a matcher holding regex syntax UNANCHORED — `Bas|Zzz.*` fires on
+ * `Bash` — so it is compiled here exactly as written. Wrapping it in `^(?:…)$`
+ * would hide every tool name the harness matches by substring (`Task` selecting
+ * `TaskCreate`), which is the case the controls below exist to catch.
+ */
 function entryMatcher(entry: { matcher?: string } | undefined, event: string): RegExp {
   expect(entry, `${event} is registered`).toBeDefined();
   const matcher = entry?.matcher;
   expect(matcher, `${event} declares a matcher`).toBeTypeOf('string');
-  return new RegExp(`^(?:${matcher ?? ''})$`);
+  return new RegExp(matcher ?? '');
 }
 
 /**
@@ -59,6 +65,9 @@ function preToolUseEntryRunning(script: string): { matcher?: string } | undefine
   );
 }
 
+// Tools whose names contain a matched tool's name, and which neither hook reads.
+const SUBSTRING_NEIGHBOURS = ['TaskCreate', 'TaskUpdate', 'TaskOutput', 'BashOutput'];
+
 describe('the PreToolUse matcher selects every tool the hook can act on', () => {
   it('matches each tool in the static field table', () => {
     // DERIVED rather than listed here, which is the whole point: a tool added
@@ -72,10 +81,10 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
   });
 
   it('matches every tool the model guard treats as a subagent spawn', () => {
-    // DERIVED from the guard's own set, not restated. A rename has to reach
-    // three places — that set, the field table and this matcher — and a test
-    // cross-checking only two of them leaves the third for a human to notice,
-    // which is exactly how `Task` outlived the rename.
+    // DERIVED from the shared set, not restated. A rename has to reach that
+    // set, the field table and both matchers — and a test cross-checking only
+    // some of them leaves the rest for a human to notice, which is exactly how
+    // `Task` outlived the rename.
     const matcher = matcherFor('PreToolUse');
     const missed = [...SUBAGENT_TOOLS].filter((tool) => !matcher.test(tool));
     expect(missed, 'spawn tools the guard can never see').toEqual([]);
@@ -112,6 +121,7 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     const matcher = matcherFor('PreToolUse');
     expect(matcher.test('Glob')).toBe(false);
     expect(matcher.test('TodoWrite')).toBe(false);
+    for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
   });
 });
 
@@ -123,8 +133,15 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
     const missed = SCANNED_RESPONSE_TOOL_NAMES.filter((tool) => !matcher.test(tool));
     expect(missed, 'tools whose output is never scanned').toEqual([]);
     expect(SCANNED_RESPONSE_TOOL_NAMES).toEqual(
-      expect.arrayContaining(['Bash', 'Read', 'WebFetch', 'Grep']),
+      expect.arrayContaining(['Bash', 'Read', 'WebFetch', 'Grep', 'WebSearch', 'Agent', 'Task']),
     );
+  });
+
+  it('matches every subagent tool, whose report the hook scans', () => {
+    const matcher = matcherFor('PostToolUse');
+    const missed = [...SUBAGENT_TOOLS].filter((tool) => !matcher.test(tool));
+    expect(missed, 'subagent reports that are never scanned').toEqual([]);
+    expect(SCANNED_RESPONSE_TOOL_NAMES).toEqual(expect.arrayContaining([...SUBAGENT_TOOLS]));
   });
 
   it('matches the mcp__* family, which the static table cannot speak for', () => {
@@ -140,6 +157,7 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
     expect(matcher.test('Glob')).toBe(false);
     expect(matcher.test('Edit')).toBe(false);
     expect(matcher.test('mcp_server_tool')).toBe(false);
+    for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
   });
 });
 

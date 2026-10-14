@@ -11,6 +11,7 @@
  *     HookUniversalOutputWire field every hook output shares) is a DIFFERENT,
  *     stronger signal that stops the whole turn — using it here would kill
  *     the session over one flagged prompt instead of just rejecting it.
+ *     The same block refuses a prompt too large to scan within the time limit.
  *   {"systemMessage":"..."}              → warning shown, prompt continues
  *   no output                            → allow
  *
@@ -23,8 +24,11 @@
  * exposes no model-switch event, so unlike Claude Code there is no point at
  * which the switch itself can be denied — this is the only seam, and it acts a
  * turn later than the switch it is reacting to. It blocks no LLM API call
- * either; what it enforces is that a governed session does not keep running on
- * a prohibited model.
+ * either; what it enforces is that a session does not keep running on a
+ * prohibited model where the organization's model policy governs it: everywhere
+ * on a machine-wide attachment, and only in enrolled repositories on a scoped
+ * one, keyed from the directory each turn runs in. A turn the policy does not
+ * govern is scanned like any other.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed setup, surface a one-line pointer to it. And it is the
@@ -34,15 +38,10 @@
  * Fail-open: any error → no output, exit 0.
  */
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
-import {
-  claimOnboardingNudge,
-  createPluginRuntime,
-  loadConfig,
-  uniqueRuleIds,
-} from '@akasecurity/plugin-sdk';
+import { claimOnboardingNudge, createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import {
   baseMetadata,
@@ -59,6 +58,7 @@ import {
   storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
+import { decideUserPromptSubmit } from './user-prompt-submit-decision.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
@@ -106,7 +106,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A prompt at or above the large-input threshold is scanned under a deadline
+  // and refused if that scan does not finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
   let result: CaptureResult;
   try {
     result = await runtime.capture({
@@ -120,27 +125,9 @@ async function main(): Promise<void> {
     await runtime.close();
   }
 
-  if (result.action === 'block' || result.action === 'redact') {
-    // A redact policy blocks here too: this surface has no prompt-rewrite
-    // channel, so the only way to honor "the raw value must not reach the
-    // model" is to stop the prompt with removal-based guidance.
-    await emit({
-      decision: 'block',
-      reason: blockMessage({
-        subject: 'prompt',
-        ruleIds: uniqueRuleIds(result.findings),
-        blockedRef: result.blockedReferences?.[0],
-      }),
-    });
-    return;
-  }
-  if (result.action === 'warn') {
-    // A warn never escalates: the prompt continues, flagged. A warned value is
-    // ledgered like a blocked one, so when a reference exists the message
-    // points at the same out-of-band approve flow.
-    await emit({
-      systemMessage: `AKA flagged sensitive content (${uniqueRuleIds(result.findings)}) — sent unchanged.${exceptionPointer(result.blockedReferences)}`,
-    });
+  const decision = decideUserPromptSubmit(result);
+  if (decision !== null) {
+    await emit(decision);
     return;
   }
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  readSightingKeys,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -17,13 +18,14 @@ import { SYNC_STATE_FILENAME } from '../../src/attached/sync-state.ts';
 const getPolicyBundle = vi.fn();
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
+const getSightingKey = vi.fn();
 
 // Only the client is faked; the rest of the package — the failure classifier
 // the attached code reads verdicts through — stays real, so a fake that
 // throws a status is classified the way production classifies it.
 vi.mock('@akasecurity/remote', async (importActual) => ({
   ...(await importActual<typeof Remote>()),
-  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand }),
+  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand, getSightingKey }),
 }));
 
 /** What the two jobs did, in the order they did it. */
@@ -58,6 +60,8 @@ beforeEach(() => {
   pollCommand.mockReset();
   ackCommand.mockReset();
   ackCommand.mockResolvedValue(undefined);
+  getSightingKey.mockReset();
+  getSightingKey.mockRejectedValue(new Error('ECONNREFUSED'));
   order = [];
   base = mkdtempSync(join(tmpdir(), 'aka-entry-home-'));
   mkdirSync(dataDirOf(base), { recursive: true });
@@ -126,10 +130,14 @@ describe('runAttachedSync', () => {
  * block left the workspace green.
  */
 describe('runAttachedSync — the device-command pass', () => {
-  const scanning = (): (() => Promise<{ projects: number }>) => () => {
-    order.push('scan');
-    return Promise.resolve({ projects: 1 });
-  };
+  // A machine-wide attachment never asks for the root key, so it is none.
+  const scanning = () => ({
+    rootScopeKey: () => undefined,
+    run: () => {
+      order.push('scan');
+      return Promise.resolve({ projects: 1 });
+    },
+  });
 
   it('services a command, so the block is reached at all', async () => {
     attach();
@@ -228,6 +236,10 @@ describe('runAttachedSync — the device-command pass', () => {
 describe('runAttachedSync — what a refused credential does to the command pass', () => {
   const refusal = (status: number): Error & { status: number } =>
     Object.assign(new Error('refused'), { status });
+  const idle = () => ({
+    rootScopeKey: () => undefined,
+    run: () => Promise.resolve({ projects: 1 }),
+  });
 
   it('does not poll after the policy pull learned the key is REVOKED', async () => {
     // A 401 is the credential itself no longer being accepted, which is not a
@@ -239,9 +251,10 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).not.toHaveBeenCalled();
+    expect(getSightingKey).not.toHaveBeenCalled();
     // The skip must not cost the verdict a human acts on.
     expect(JSON.parse(readFileSync(statePath(), 'utf8'))).toMatchObject({
       outcome: 'unauthorized',
@@ -259,7 +272,7 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).toHaveBeenCalledTimes(1);
   });
@@ -272,8 +285,47 @@ describe('runAttachedSync — what a refused credential does to the command pass
     pollCommand.mockResolvedValue(null);
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
-    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+    await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runAttachedSync — the sighting-key pass', () => {
+  it('fetches the sighting key on an attached machine, even when the policy pull failed', async () => {
+    attach();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    getSightingKey.mockResolvedValue({
+      keyVersion: 1,
+      algorithm: 'hmac-sha256',
+      key: Buffer.alloc(32, 7).toString('base64url'),
+    });
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(1);
+  });
+
+  it('still runs the command pass when the sighting-key fetch fails', async () => {
+    attach();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, {
+      scan: { rootScopeKey: () => undefined, run: () => Promise.resolve({ projects: 1 }) },
+    });
+
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+    expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fetch on a standalone machine', async () => {
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(getSightingKey).not.toHaveBeenCalled();
   });
 });

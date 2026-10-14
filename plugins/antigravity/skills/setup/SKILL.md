@@ -188,6 +188,48 @@ broadens nothing about what AKA may access. Those granular scope and revocation 
 stay inspectable on request and in the dashboard, under **Settings → Historical access**,
 whose own copy repeats the model-API disclosure.
 
+## 1b. Ask about sharing credential sightings — attached machines only
+
+First check whether to ask at all. This reads the attachment and any managed
+settings and writes nothing:
+
+```bash
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-ask
+```
+
+Read `askSightingShare` from its AKA_FRAME_JSON region. When it is `false` —
+the machine is standalone, or its organization's managed settings already
+decide the answer — **skip this step entirely**: do not ask, do not mention
+it, and record nothing. Only when it is `true` does the user see the question.
+
+Before the options, state in your own words: this machine is attached to an
+organization, and the question is whether to report the credentials AKA's
+scans find here to that organization. Say what a sighting carries, exactly:
+A credential sighting carries only a hash or ciphertext of the value, never the value itself.
+Say that this answer covers credential sightings only: it changes nothing else
+an attached machine sends, which is described in the dashboard's Settings. The
+answer can be changed later on the dashboard's Settings page.
+
+Ask it per the execution contract's decision rules: a conversational turn with
+numbered options, waiting for the user's reply.
+
+**Share credential sightings with your organization?** — "Report the credentials scans find on this machine to the organization it is attached to?"
+
+Offer exactly two options, with **Don't share** as the default:
+
+1. **Don't share** _(default)_ — "credential sightings stay on this machine"
+2. **Share with my organization** — "report the credentials scans find here, as hashes or ciphertext"
+
+Record the answer straight away and relay the AKA_SHOW line it prints:
+
+```bash
+# Share with my organization
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent grant
+
+# Don't share (also clears any earlier grant)
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent revoke
+```
+
 ## 2. Save the answer, then branch
 
 Branch on the answer from step 1. On the **Yes, take a look** path the onboarding
@@ -960,6 +1002,31 @@ pointer inside a shell command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
+
+**Nothing in the session says where its activity goes.** On a machine attached
+to the organization's control plane, the Claude Code and Codex plugins print one
+line at session start: forwarding everything, forwarding for the enrolled
+repository the session is in, or local-only. This host has no SessionStart
+event, and `PreInvocation`, which AKA uses in its place, can only add steps for
+the model; it has no field for a message to the user, so no such line is
+printed here. `aka status` shows whether this machine is attached, whether it
+sends everything or only enrolled repositories, and which repositories are
+enrolled.
+
+The two other notices a session start can raise are not seen on this host
+either. They are written to the hook's stderr, which Antigravity does not show:
+that this plugin is older than another AKA binary on the machine (usually an
+`aka` CLI updated without the plugin), and that a store left on the retired
+"warn only" handling had its block and redact categories kept at warn. No
+command reports the first for this plugin, since it is installed from a local
+directory rather than a marketplace, so after updating the `aka` CLI, reinstall
+this plugin at the same version. For the second, re-running this setup sets the
+per-category enforcement.
+
+This plugin's hooks also warn, on the same unseen stderr, when a path in the
+AKA store (`~/.aka`) is a symlink that sends what is recorded somewhere else.
+That warning is not seen on this host either. `aka init` reports the same
+symlinks, so run it if the store may have been redirected.
 
 **The model-judge step needs an `agy` with the streaming stdin interface.** It
 runs `agy --input-format stream-json --output-format stream-json` and writes the

@@ -14,7 +14,7 @@
  * stdin:  { tool_name, tool_input, session_id, ... }
  * stdout (exit 0):
  *   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",...}}
- *     → tool call blocked
+ *     → tool call blocked (also when a field is too large to scan in time)
  *   {"hookSpecificOutput":{...,"permissionDecision":"allow","updatedInput":{...}}}
  *     → tool runs with redacted input
  *   no output → allow unchanged
@@ -24,6 +24,7 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
@@ -82,7 +83,13 @@ async function main(): Promise<void> {
     return;
   }
   const gateway = opened.gateway;
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
 
   const toolInput = { ...(rawToolInput as Record<string, unknown>) };
   // apply_patch's input is durable content the agent authors, recorded as
@@ -99,8 +106,8 @@ async function main(): Promise<void> {
   // apply_patch gets NO key. It is recorded whole (persist 'always') and names
   // its files inside the patch body (`tool_input.command`), which this hook does
   // not parse, so the cwd's key could name a checkout the patch never wrote. A
-  // scoped attachment is meant to keep a keyless capture local, so no key is a
-  // coverage gap and never a leak; that check is not part of this change.
+  // scoped attachment keeps a keyless capture local (the gateway's verdict), so
+  // no key is a coverage gap and never a leak.
   // Same rule as Copilot's apply_patch. Beside the metadata, never inside it.
   const scopeKey = toolName === 'apply_patch' ? undefined : captureScopeKey(input);
 
@@ -125,6 +132,9 @@ async function main(): Promise<void> {
         },
       );
       scanned.push({ spec, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();

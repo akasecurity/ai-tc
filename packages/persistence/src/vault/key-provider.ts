@@ -442,7 +442,7 @@ export type SecurityExec = (args: string[], stdin?: string) => string;
  */
 const SECURITY_TIMEOUT_MS = 5_000;
 
-const runSecurity: SecurityExec = (args, stdin) =>
+export const runSecurity: SecurityExec = (args, stdin) =>
   execFileSync('/usr/bin/security', args, {
     encoding: 'utf8',
     input: stdin,
@@ -498,6 +498,19 @@ function securityFailureMeta(err: unknown): string {
   return parts.length > 0 ? parts.join(', ') : 'unknown error';
 }
 
+export interface KeychainItem {
+  service: string;
+  account: string;
+  /** Prefixes every error this item's reads and writes raise. */
+  label: string;
+}
+
+const VAULT_ITEM: KeychainItem = {
+  service: KEYCHAIN_SERVICE,
+  account: KEYCHAIN_ACCOUNT,
+  label: 'vault',
+};
+
 /**
  * Builds an `add-generic-password` line for `security -i`, which reads
  * COMMANDS on stdin.
@@ -516,14 +529,24 @@ function securityFailureMeta(err: unknown): string {
  * itself, because which characters those are is measured, not obvious.
  */
 function writeCommand(keyring: Keyring, update: boolean, keychain?: string): string {
-  const hex = Buffer.from(serializeKeyring(keyring), 'utf8').toString('hex');
+  return keychainWriteLine(VAULT_ITEM, serializeKeyring(keyring), update, keychain);
+}
+
+/** The `security -i` line that stores `payload` as `item`; see {@link writeCommand}. */
+export function keychainWriteLine(
+  item: KeychainItem,
+  payload: string,
+  update: boolean,
+  keychain?: string,
+): string {
+  const hex = Buffer.from(payload, 'utf8').toString('hex');
   const parts = [
     'add-generic-password',
     ...(update ? ['-U'] : []),
     '-s',
-    KEYCHAIN_SERVICE,
+    item.service,
     '-a',
-    KEYCHAIN_ACCOUNT,
+    item.account,
     '-X',
     hex,
   ];
@@ -537,12 +560,60 @@ function writeCommand(keyring: Keyring, update: boolean, keychain?: string): str
     // NUL is here for the ordinary reason: it terminates the token.
     if (/['\\\n\r\0]/.test(keychain)) {
       throw new Error(
-        'vault: keychain path contains a quote, backslash, line break or NUL, which security -i cannot carry intact',
+        `${item.label}: keychain path contains a quote, backslash, line break or NUL, which security -i cannot carry intact`,
       );
     }
     parts.push(`'${keychain}'`);
   }
   return `${parts.join(' ')}\n`;
+}
+
+/**
+ * The stored payload of `item`, or null when no such item exists. Any other
+ * failure throws with exit metadata only: on this path the child's stdout is
+ * the payload itself.
+ */
+export function readKeychainItem(
+  exec: SecurityExec,
+  item: KeychainItem,
+  target: readonly string[],
+): string | null {
+  try {
+    return exec(['find-generic-password', '-s', item.service, '-a', item.account, '-w', ...target]);
+  } catch (err) {
+    // Only "no such item" may read as absence. A locked keychain or a denied
+    // ACL also exits non-zero.
+    if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return null;
+    // eslint-disable-next-line preserve-caught-error -- caught error's stdout is the payload; see securityFailureMeta
+    throw new Error(
+      `${item.label}: keychain read failed (${securityFailureMeta(err)}); refusing to treat the failure as an absent item`,
+    );
+  }
+}
+
+/** Deletes `item`. An item that does not exist is not an error. */
+export function deleteKeychainItem(
+  exec: SecurityExec,
+  item: KeychainItem,
+  target: readonly string[],
+): void {
+  try {
+    exec(['delete-generic-password', '-s', item.service, '-a', item.account, ...target]);
+  } catch (err) {
+    if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return;
+    // eslint-disable-next-line preserve-caught-error -- exit metadata only; see securityFailureMeta
+    throw new Error(`${item.label}: keychain delete failed (${securityFailureMeta(err)})`);
+  }
+}
+
+/** Runs one {@link keychainWriteLine}, reporting a failure by exit metadata only. */
+export function runKeychainWrite(exec: SecurityExec, item: KeychainItem, line: string): void {
+  try {
+    exec(['-i'], line);
+  } catch (err) {
+    // eslint-disable-next-line preserve-caught-error -- caught error may echo the write payload; see securityFailureMeta
+    throw new Error(`${item.label}: keychain write failed (${securityFailureMeta(err)})`);
+  }
 }
 
 /**
@@ -637,29 +708,10 @@ export class KeychainKeyProvider implements KeyProvider {
 
   /** The keyring, or null when no item exists yet. A corrupt item throws. */
   #read(): Keyring | null {
-    let raw: string;
-    try {
-      raw = this.#exec([
-        'find-generic-password',
-        '-s',
-        KEYCHAIN_SERVICE,
-        '-a',
-        KEYCHAIN_ACCOUNT,
-        '-w',
-        ...this.#target,
-      ]);
-    } catch (err) {
-      // Only "no such item" may read as absence. A locked keychain or a
-      // denied ACL also exits non-zero, and reading those as absence would
-      // route into the mint path and orphan every existing ciphertext.
-      if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return null;
-      // Exit metadata only, and no `cause`: on this path the child's stdout is
-      // the keyring itself, so the caught error is not something to carry along.
-      // eslint-disable-next-line preserve-caught-error -- caught error's stdout is the keyring; see securityFailureMeta
-      throw new Error(
-        `vault: keychain read failed (${securityFailureMeta(err)}); refusing to treat the failure as an absent keyring`,
-      );
-    }
+    // A failure other than "no such item" throws: reading it as absence would
+    // route into the mint path and orphan every existing ciphertext.
+    const raw = readKeychainItem(this.#exec, VAULT_ITEM, this.#target);
+    if (raw === null) return null;
     const body = raw.trim();
     if (body.length === 0) return null;
     try {
@@ -697,15 +749,7 @@ export class KeychainKeyProvider implements KeyProvider {
   // `-U` updates the item in place, deliberately replacing the stored map with
   // one that contains it — used only for rotation, under the rotation lock.
   #replace(keyring: Keyring): Keyring {
-    const line = writeCommand(keyring, true, this.#keychain);
-    try {
-      this.#exec(['-i'], line);
-    } catch (err) {
-      // Exit metadata only: a rotation failure must not carry the payload it
-      // was writing out to whatever logs it.
-      // eslint-disable-next-line preserve-caught-error -- caught error may echo the write payload; see securityFailureMeta
-      throw new Error(`vault: keychain write failed (${securityFailureMeta(err)})`);
-    }
+    runKeychainWrite(this.#exec, VAULT_ITEM, writeCommand(keyring, true, this.#keychain));
     return keyring;
   }
 }

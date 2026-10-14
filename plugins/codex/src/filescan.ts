@@ -16,6 +16,7 @@
  * Fail-open: any error prints a friendly note and exits 0 so the command
  * never surfaces a stack trace.
  */
+import { readSightingSharing } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import {
   renderMultiRepoSummary,
@@ -23,7 +24,7 @@ import {
   scanAllRepos,
   scanWorktree,
 } from '@akasecurity/scanner';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
 
@@ -64,6 +65,8 @@ const FOLLOW_UP = 'Run the aka-findings skill to review details.';
 try {
   const { dir, discover, root, depth } = parseFlags(process.argv.slice(2));
   const cfg = loadConfig();
+  // Whether credential sightings leave this machine, closing every report.
+  const footer = sightingSharingLine(readSightingSharing());
 
   if (discover) {
     // Never the home directory implicitly: --discover without --root sweeps
@@ -73,13 +76,17 @@ try {
       searchRoots: [root ?? process.cwd()],
       ...(depth !== undefined ? { maxDepth: depth } : {}),
     });
-    process.stdout.write(`${fenced(renderMultiRepoSummary(summary, { followUp: FOLLOW_UP }))}\n`);
+    process.stdout.write(
+      `${fenced(renderMultiRepoSummary(summary, { followUp: FOLLOW_UP, footer }))}\n`,
+    );
   } else {
     const summary = await scanWorktree(cfg, {
       sourceTool: SOURCE_TOOL.Codex,
       ...(dir !== undefined ? { rootDir: dir } : {}),
     });
-    process.stdout.write(`${fenced(renderWorktreeSummary(summary, { followUp: FOLLOW_UP }))}\n`);
+    process.stdout.write(
+      `${fenced(renderWorktreeSummary(summary, { followUp: FOLLOW_UP, footer }))}\n`,
+    );
   }
 } catch {
   process.stdout.write(

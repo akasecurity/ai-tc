@@ -415,8 +415,8 @@ export function baseMetadata(
  * from a cwd the PAYLOAD carries, on both dialects, and never from the hook
  * process's own.
  * - The slug's CLI fallback is a display guess, and a wrong one only mislabels
- *   a row. A key is what a scoped attachment is meant to decide by, so it must
- *   come from the event itself.
+ *   a row. A scoped attachment's verdict is decided by the key, so it must come
+ *   from the event itself.
  * - Under VS Code the process cwd is the home directory anyway.
  * - This host never runs a session start, so there is no session-root key the
  *   fallback would need to match.
@@ -482,8 +482,8 @@ export const VSCODE_FILE_WRITERS: ReadonlySet<string> = new Set([
  *   files inside a patch body this hook does not read, and any tool added to the
  *   set of code_change tools without being taught here. The payload cwd's key
  *   would stamp a write into a personal checkout with an enrolled key, so the
- *   default is no key. Such content is meant to stay local on a scoped
- *   attachment, a coverage gap rather than a leak.
+ *   default is no key. Such content stays local on a scoped attachment (the
+ *   gateway keeps a keyless capture local), a coverage gap rather than a leak.
  *
  * Every other call names no file this hook reads, and is keyed by the payload
  * cwd alone (see `captureScopeKey`).

@@ -4,12 +4,21 @@ import { allRows } from '../internal/rows.ts';
 import { failOpenTransaction } from '../internal/transactions.ts';
 
 // One recorded scan of one file: its identity on disk (path), the cheap change
-// signals (mtime, content hash), and the ruleset it was scanned under.
+// signals (mtime, content hash), the ruleset it was scanned under, and the
+// repository it was in when it was read.
 export interface ScanLedgerEntry {
   path: string; // absolute path
   mtime: string; // ISO timestamp at scan time
   contentHash: string;
   rulesetHash: string;
+  // The canonical `host/owner/repo` of the repository the file was in when it
+  // was read. Absent for a file in no repository with a remote, which is stored
+  // as NULL: an entry without one REPLACES the key an earlier read recorded.
+  scopeKey?: string | undefined;
+  // The absolute directory of that repository, the one holding its `.git`.
+  // Absent for a file in no repository, which is stored as NULL like the key
+  // and replaces the root an earlier read recorded.
+  scopeRoot?: string | undefined;
 }
 
 // What the scanner needs to decide "unchanged, skip": the previous mtime (skip
@@ -17,6 +26,12 @@ export interface ScanLedgerEntry {
 export interface ScanLedgerState {
   mtime: string;
   contentHash: string;
+  // The repository the file was in when it was last read, for a scan to compare
+  // with the one an unchanged file is in now. Absent for a row that recorded none.
+  scopeKey?: string | undefined;
+  // The directory of that repository. Absent for a file that was in none, and
+  // for a row written before roots were kept.
+  scopeRoot?: string | undefined;
 }
 
 /**
@@ -32,31 +47,51 @@ export class SqliteScanLedgerRepository {
   private readonly upsertStmt: StatementSync;
   private readonly readStmt: StatementSync;
   private readonly pathsStmt: StatementSync;
+  private readonly pathKeysStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.upsertStmt = db.prepare(
-      `INSERT INTO scan_ledger (path, mtime, content_hash, ruleset_hash, scanned_at)
-       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scannedAt)
+      `INSERT INTO scan_ledger
+         (path, mtime, content_hash, ruleset_hash, scope_key, scope_root, scanned_at)
+       VALUES (:path, :mtime, :contentHash, :rulesetHash, :scopeKey, :scopeRoot, :scannedAt)
        ON CONFLICT (path) DO UPDATE SET
          mtime = excluded.mtime,
          content_hash = excluded.content_hash,
          ruleset_hash = excluded.ruleset_hash,
+         scope_key = excluded.scope_key,
+         scope_root = excluded.scope_root,
          scanned_at = excluded.scanned_at`,
     );
     this.readStmt = db.prepare(
-      `SELECT path, mtime, content_hash AS contentHash
+      `SELECT path, mtime, content_hash AS contentHash, scope_key AS scopeKey,
+              scope_root AS scopeRoot
        FROM scan_ledger WHERE ruleset_hash = :rulesetHash`,
     );
     this.pathsStmt = db.prepare(`SELECT path FROM scan_ledger`);
+    this.pathKeysStmt = db.prepare(`SELECT path, scope_key AS scopeKey FROM scan_ledger`);
   }
 
   // Previously scanned files under THIS ruleset, keyed by path. Rows from an
   // older ruleset are simply absent, which reads as "never scanned".
   entriesForRuleset(rulesetHash: string): Map<string, ScanLedgerState> {
-    const rows = allRows<{ path: string; mtime: string; contentHash: string }>(this.readStmt, {
-      rulesetHash,
-    });
-    return new Map(rows.map((r) => [r.path, { mtime: r.mtime, contentHash: r.contentHash }]));
+    const rows = allRows<{
+      path: string;
+      mtime: string;
+      contentHash: string;
+      scopeKey: string | null;
+      scopeRoot: string | null;
+    }>(this.readStmt, { rulesetHash });
+    return new Map(
+      rows.map((r) => [
+        r.path,
+        {
+          mtime: r.mtime,
+          contentHash: r.contentHash,
+          ...(r.scopeKey !== null ? { scopeKey: r.scopeKey } : {}),
+          ...(r.scopeRoot !== null ? { scopeRoot: r.scopeRoot } : {}),
+        },
+      ]),
+    );
   }
 
   // Every ledgered path, whatever ruleset it was scanned under — the set a
@@ -65,6 +100,15 @@ export class SqliteScanLedgerRepository {
   // would never notice it is gone.
   allPaths(): string[] {
     return allRows<{ path: string }>(this.pathsStmt).map((r) => r.path);
+  }
+
+  // Every ledgered path with the repository it was in when it was last read,
+  // whatever ruleset it was scanned under: what a deletion sweep needs to say
+  // which repository a vanished file belonged to. `undefined` for a row with no
+  // key, which is every row written before the column existed.
+  pathKeys(): Map<string, string | undefined> {
+    const rows = allRows<{ path: string; scopeKey: string | null }>(this.pathKeysStmt);
+    return new Map(rows.map((r) => [r.path, r.scopeKey ?? undefined]));
   }
 
   upsertEntries(entries: ScanLedgerEntry[]): void {
@@ -79,6 +123,8 @@ export class SqliteScanLedgerRepository {
           mtime: entry.mtime,
           contentHash: entry.contentHash,
           rulesetHash: entry.rulesetHash,
+          scopeKey: entry.scopeKey ?? null,
+          scopeRoot: entry.scopeRoot ?? null,
           scannedAt,
         });
       }

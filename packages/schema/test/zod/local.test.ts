@@ -10,6 +10,7 @@ import {
   canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
+  findingMatchLabel,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeValid,
@@ -58,7 +59,7 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     // it. The version is a changelog marker that nothing reads, which is exactly
     // why a change to it needs a test that names the number. The next field that
     // bumps it changes this literal on purpose.
-    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(9);
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(10);
   });
 
   it('enables in-place Data Shares extraction by default', () => {
@@ -259,6 +260,7 @@ describe('row mappers (tenant-free local store)', () => {
       conversationId: 'conv_1',
       inspectionMs: 7,
       redactDegradedTo: 'warn',
+      scanIncomplete: 'timeout',
     };
     const event: IngestEvent = {
       id: EVENT,
@@ -280,6 +282,7 @@ describe('row mappers (tenant-free local store)', () => {
       'model',
       'redact_degraded_to',
       'repo',
+      'scan_incomplete',
       'source_tool',
       'tool_name',
       'trace_id',
@@ -410,28 +413,36 @@ describe('isHistorySyncConsentValid', () => {
 // FOOTNOTE_DISCLOSURE, keyed on TriageHit.shape) only after a field crossed to
 // the model API with the workspace fully green.
 //
-// The disclosure here has no single Zod shape to derive from — it is four pieces
-// of hand-written prose in three packages — so this pins the literal instead and
-// makes the failure message carry the checklist. Bumping the constant WILL fail
-// this test; the fix is to re-read every surface below, confirm each still
-// describes what the new payload sends, and then update the number here.
+// The disclosure here has no single Zod shape to derive from — it is
+// hand-written prose on the surfaces listed below, in code and in documents —
+// so this pins the literal instead and makes the failure message carry the
+// checklist. Bumping the constant WILL fail this test; the fix is to re-read
+// every surface below, confirm each still describes what the new payload
+// sends, and then update the number here.
 //
 //   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
-//   cli/src/commands/sync-history.ts  grant/revoke/describe output
+//   cli/src/commands/enroll.ts        earlierActivity — what enrolling a
+//                                     repository queues and sends under a grant
+//   cli/src/commands/sync-history.ts  grant/revoke/describe output and the
+//                                     help, each in its machine-wide and
+//                                     its personal-device wording
 //   packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
 //                                     HISTORY_SYNC_SECTION_DESCRIPTION,
 //                                     HISTORY_SYNC_CHOICES,
-//                                     HISTORY_SYNC_STALE_NOTICE
+//                                     HISTORY_SYNC_STALE_NOTICE, and each
+//                                     one's _SCOPED twin
 //   packages/plugin-runtime/src/attached/status.ts
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
 //   SECURITY.md                       the "Data in transit" section's
-//                                     sync-history paragraph — pinned by no
-//                                     other test; at-rest-docs.test.ts scopes
-//                                     to "## Data at rest" and
-//                                     privacy-claims.test.ts reads only the
-//                                     three READMEs
+//                                     sync-history paragraph, which no test
+//                                     pins (at-rest-docs.test.ts scopes to
+//                                     "## Data at rest"), and the enroll-
+//                                     queueing sentence in its scoped-
+//                                     attachment paragraph, which the
+//                                     claude-code plugin's privacy-claims
+//                                     test pins word for word
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,
@@ -1329,4 +1340,32 @@ describe('syncLaneRetentionOf', () => {
       expect(syncLaneRetentionOf(settings, throwingKeys())).toEqual({ kind: 'hold-all' });
     },
   );
+});
+
+describe('findingMatchLabel', () => {
+  it('prefixes the masked match with the variable it was assigned to', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: name })).toBe(
+      `${name} = s*****y`,
+    );
+  });
+
+  it('is the masked match alone when there is no variable name', () => {
+    expect(findingMatchLabel({ maskedMatch: 's*****y' })).toBe('s*****y');
+  });
+
+  it('fits a width by shortening the name and keeping the masked match whole', () => {
+    const name = ['GOOGLE', 'APPLICATION', 'CREDENTIALS'].join('_');
+    const label = findingMatchLabel({ maskedMatch: 's*****y', variableName: name }, 28);
+    expect(label).toHaveLength(28);
+    expect(label).toBe('GOOGLE_APPLICATIO… = s*****y');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: 'KEY' }, 28)).toBe(
+      'KEY = s*****y',
+    );
+  });
+
+  it('drops the name when the masked match leaves no room for it', () => {
+    const masked = 's'.repeat(26);
+    expect(findingMatchLabel({ maskedMatch: masked, variableName: 'API_KEY' }, 28)).toBe(masked);
+  });
 });

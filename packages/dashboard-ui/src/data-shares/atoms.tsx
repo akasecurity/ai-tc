@@ -178,7 +178,7 @@ export function DestMark({
 
 /** Renders a URL, highlighting `${…}` template segments. */
 export function TemplateUrl({ url, big }: { url: string; big?: boolean }) {
-  const parts = url.split(/(\$\{[^}]+\})/g);
+  const parts = templateParts(url);
   return (
     <span className={cn('break-all font-mono', big ? 'text-ui' : 'text-xs')}>
       {parts.map((p, i) =>
@@ -192,6 +192,33 @@ export function TemplateUrl({ url, big }: { url: string; big?: boolean }) {
       )}
     </span>
   );
+}
+
+// What `url.split(/(\$\{[^}]+\})/g)` returns, found with indexOf rather than
+// that pattern: tried from every `$` of a run with no closing `}`, it scans to
+// the end of the string each time, which is quadratic in the run's length.
+//
+// Literal text and segments alternate, starting and ending with literal text
+// (empty where a segment touches either end). A segment runs from a `${` to
+// the first `}` after it with at least one character between, so an empty `${}`
+// stays literal text, and once no `}` is left no segment can start at all.
+function templateParts(url: string): string[] {
+  const parts: string[] = [];
+  let literalFrom = 0;
+  let open = url.indexOf('${');
+  while (open !== -1) {
+    const close = url.indexOf('}', open + 2);
+    if (close === -1) break;
+    if (close === open + 2) {
+      open = url.indexOf('${', open + 1);
+    } else {
+      parts.push(url.slice(literalFrom, open), url.slice(open, close + 1));
+      literalFrom = close + 1;
+      open = url.indexOf('${', literalFrom);
+    }
+  }
+  parts.push(url.slice(literalFrom));
+  return parts;
 }
 
 /** Small `{ }` "Template" pill shown next to templated endpoint URLs. */

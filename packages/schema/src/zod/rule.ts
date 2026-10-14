@@ -244,7 +244,9 @@ export type PostValidatorRef = z.infer<typeof PostValidatorRef>;
 // What a rule's matched text is. 'value': the match is itself sensitive (a key,
 // a password, an email), so it is masked everywhere it is shown. 'code': the
 // match is a code pattern (`exec(`, `innerHTML =`), so a finding's excerpt
-// leaves it readable. A rule that omits the field is treated as 'value'.
+// leaves it readable. A rule that omits the field is classified by ruleEvidence
+// in @akasecurity/detections, which also reads a rule in a value category as
+// 'value' whatever it declares.
 export const RuleEvidence = z.enum(['code', 'value']).meta({ id: 'RuleEvidence' });
 export type RuleEvidence = z.infer<typeof RuleEvidence>;
 
@@ -290,6 +292,9 @@ export const RuleFixture = z
     // Simulated capture kind, so fixtures can assert `appliesTo.eventKinds`.
     eventKind: EventKind.optional(),
     expectedSpans: z.array(z.strictObject({ start: z.number(), end: z.number() })).optional(),
+    // The variable name every finding of the rule must record; null asserts
+    // that none is recorded.
+    expectedVariableName: z.string().nullable().optional(),
   })
   .meta({ id: 'RuleFixture' });
 export type RuleFixture = z.infer<typeof RuleFixture>;
@@ -319,7 +324,7 @@ export const Rule = z
     postValidators: z.array(PostValidatorRef).optional(),
     requiresNearby: RequiresNearby.optional(),
     examples: z.array(z.string()).optional(),
-    // Whether the matched text is itself sensitive. Absent means 'value'.
+    // Whether the matched text is itself sensitive (see RuleEvidence).
     evidence: RuleEvidence.optional(),
   })
   .meta({ id: 'Rule' });

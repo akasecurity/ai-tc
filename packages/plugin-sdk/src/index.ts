@@ -196,6 +196,7 @@ export {
   canonicalizeScanPath,
   HOME_SECRET_FILES,
   isProtectedScanPath,
+  isSecretBearingFileSnapshot,
   protectedScanRoots,
   scanFileKind,
   SOURCE_EXTENSIONS,

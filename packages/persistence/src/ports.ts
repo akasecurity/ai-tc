@@ -20,6 +20,7 @@ import type {
   EnforcementActionsResponse,
   FileDetail,
   FindingInstanceDetail,
+  FindingsOverview,
   FindingsTimeseriesResponse,
   FindingView,
   GetActivityStatsResponse,
@@ -126,6 +127,39 @@ export interface FindingInstancesView {
    * type is this?" and "what does the drawer show?".
    */
   findingInstance(id: string): Promise<FindingInstanceDetail | null>;
+  /**
+   * Whole-store counts for the Findings page's summary strip, in the same unit
+   * as listFindingInstances: each field equals that read's `totals.findings`
+   * under the matching filters. Untouched by any filter, range or session.
+   */
+  findingsOverview(): Promise<FindingsOverview>;
+}
+
+/**
+ * What one finding's excerpt is read from: the excerpt stored when it was
+ * detected, and — for a finding recorded before excerpts existed — the event's
+ * stored text and the finding's offsets into it, so a caller holding the
+ * masking rules can try to rebuild one. Raw store bytes: `content` is the
+ * at-rest copy, redacted only where enforcement reached, and must be masked
+ * before anything shows it.
+ */
+export interface FindingContextSource {
+  // The stored FindingContext JSON, or null.
+  context: string | null;
+  content: string | null;
+  spanStart: number;
+  spanEnd: number;
+  ruleId: string;
+  category: string;
+  // Whether `content` is a whole file (a scan, or a capture marked so).
+  wholeFile: boolean;
+  toolName: string | null;
+  eventType: string;
+}
+
+/** One finding's excerpt source, by a primary-key seek. */
+export interface FindingContextView {
+  findingContextSource(id: string): FindingContextSource | null;
 }
 
 /** Aggregated dashboard reads — independent of the findings row shape. */

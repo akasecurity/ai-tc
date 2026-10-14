@@ -2,8 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { CaptureInput, PluginConfig, ScanLedgerEntry } from '@akasecurity/plugin-sdk';
-import { contentHashOf } from '@akasecurity/plugin-sdk';
+import type {
+  CaptureInput,
+  PluginConfig,
+  RepoAttribution,
+  ScanLedgerEntry,
+} from '@akasecurity/plugin-sdk';
+import { contentHashOf, resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scanAllRepos, scanWorktree } from '../src/scan.ts';
@@ -49,10 +54,22 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
   })),
 }));
 
-vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint, scanIsolationDegraded })),
-}));
+vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  // Called through, so every case resolves the real fixture repositories. A
+  // spy, so the scope-key cases can count how often the scan reads one.
+  const real = actual.resolveRepoAttribution as (cwd: string) => RepoAttribution;
+  return {
+    ...actual,
+    createPluginRuntime: vi.fn(() => ({
+      capture,
+      close,
+      rulesetFingerprint,
+      scanIsolationDegraded,
+    })),
+    resolveRepoAttribution: vi.fn(real),
+  };
+});
 
 // dataSharesInPlace mirrors the schema default, so this suite exercises the
 // same egress-enabled path a real scan takes. The egress writes themselves are
@@ -622,5 +639,235 @@ describe('gitignored provenance', () => {
     expect(app?.metadata?.gitignored).toBeUndefined();
     expect(summary.findings).toBe(2);
     expect(summary.gitignoredFindings).toBe(1);
+  });
+});
+
+describe('scope key of each captured file', () => {
+  // An scp-form remote's userinfo reads as an email address to a scanner, so
+  // the fixtures build it from parts.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  // A `.git` directory holding `gitConfig` at `dir`. An empty config is a
+  // repository with no remote.
+  function gitRepo(dir: string, gitConfig: string): void {
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'config'), gitConfig);
+  }
+  const origin = (url: string): string => `[remote "origin"]\n\turl = ${url}\n`;
+  // The capture of the one file named `name`. No fixture name in this describe
+  // ends with another, so a basename finds its file whatever the separator.
+  const inputOf = (name: string): CaptureInput | undefined =>
+    capturedInputs().find((i) => i.metadata?.filePath?.endsWith(name));
+  // Every directory the scan read a repository from, sorted.
+  const reads = (): string[] =>
+    vi
+      .mocked(resolveRepoAttribution)
+      .mock.calls.map(([cwd]) => cwd)
+      .sort();
+
+  it("keys every capture from a repository root by that repository's canonical key", async () => {
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    write('src/work-a.ts', 'const workA = 1;');
+    write('work-b.ts', 'const workB = 2;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(2);
+    expect(inputOf('work-a.ts')?.scopeKey).toBe('github.com/acme/work');
+    expect(inputOf('work-b.ts')?.scopeKey).toBe('github.com/acme/work');
+  });
+
+  it('keys a scan root inside a repository by the repository around it', async () => {
+    // The device-command scan passes the session's working directory, which
+    // can be a package directory of a monorepo with no `.git` of its own.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    write('packages/api/src/api-a.ts', 'const api = 1;');
+    const pkg = join(tmp, 'packages', 'api');
+
+    await scanWorktree(config, { rootDir: pkg, sourceTool: 'claude-code' });
+
+    expect(inputOf('api-a.ts')?.scopeKey).toBe('github.com/acme/work');
+  });
+
+  it('stamps no key from a root outside any repository', async () => {
+    write('src/loose-a.ts', 'const loose = 1;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(1);
+    expect(capturedInputs()[0]).not.toHaveProperty('scopeKey');
+  });
+
+  it('stamps no key from a repository with no remote', async () => {
+    gitRepo(tmp, '');
+    write('src/local-a.ts', 'const local = 1;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(1);
+    expect(capturedInputs()[0]).not.toHaveProperty('scopeKey');
+  });
+
+  it("keys a nested clone's files by the clone's own remote, not the scan root's", async () => {
+    // The walk skips a `.git` directory but descends into the directory that
+    // holds one, so a personal clone kept inside a work checkout is scanned as
+    // part of it.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    gitRepo(join(tmp, 'tools', 'mine'), origin('https://github.com/me/personal.git'));
+    write('src/work-a.ts', 'const work = 1;');
+    write('tools/helper-a.ts', 'const helper = 2;');
+    write('tools/mine/mine-a.ts', 'const mineA = 3;');
+    write('tools/mine/src/mine-b.ts', 'const mineB = 4;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(4);
+    expect(inputOf('mine-a.ts')?.scopeKey).toBe('github.com/me/personal');
+    expect(inputOf('mine-b.ts')?.scopeKey).toBe('github.com/me/personal');
+    // Beside the clone but not in it: still the root repository's file.
+    expect(inputOf('helper-a.ts')?.scopeKey).toBe('github.com/acme/work');
+    expect(inputOf('work-a.ts')?.scopeKey).toBe('github.com/acme/work');
+  });
+
+  it('keys a submodule by its own remote: a `.git` file marks a repository too', async () => {
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    // A submodule checkout: its `.git` is a FILE pointing into the parent's
+    // `.git/modules`, where the submodule's own config lives.
+    const modules = join(tmp, '.git', 'modules', 'lib');
+    mkdirSync(modules, { recursive: true });
+    writeFileSync(join(modules, 'config'), origin('https://github.com/acme/lib.git'));
+    write('lib/src/lib-a.ts', 'const lib = 1;');
+    writeFileSync(join(tmp, 'lib', '.git'), 'gitdir: ../.git/modules/lib\n');
+    write('src/app-a.ts', 'const app = 2;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(2);
+    expect(inputOf('lib-a.ts')?.scopeKey).toBe('github.com/acme/lib');
+    expect(inputOf('app-a.ts')?.scopeKey).toBe('github.com/acme/work');
+  });
+
+  it("leaves a nested repository with no remote keyless, never the enclosing one's key", async () => {
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    gitRepo(join(tmp, 'scratch'), '');
+    write('scratch/notes/scratch-a.ts', 'const scratch = 1;');
+    write('src/work-a.ts', 'const work = 2;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(2);
+    expect(inputOf('work-a.ts')?.scopeKey).toBe('github.com/acme/work');
+    expect(inputOf('scratch-a.ts')).toBeDefined();
+    expect(inputOf('scratch-a.ts')).not.toHaveProperty('scopeKey');
+  });
+
+  it('keys each discovered repository by its own remote, and a clone nested in one by its own', async () => {
+    gitRepo(join(tmp, 'repo-a'), origin('https://github.com/acme/alpha.git'));
+    gitRepo(join(tmp, 'repo-b'), origin(`${gitUser}github.com:me/personal.git`));
+    // Discovery stops at repo-a's `.git`, so this clone is never listed as a
+    // repository of its own: it is reached only by walking repo-a.
+    gitRepo(join(tmp, 'repo-a', 'deps', 'fork'), origin('https://github.com/me/fork.git'));
+    write('repo-a/src/alpha-a.ts', 'const alpha = 1;');
+    write('repo-b/src/personal-b.ts', 'const personal = 2;');
+    write('repo-a/deps/fork/fork-a.ts', 'const fork = 3;');
+
+    const summary = await scanAllRepos(config, { searchRoots: [tmp], sourceTool: 'claude-code' });
+
+    const repoDirs = summary.repos.map((r) => r.rootDir).sort();
+    expect(repoDirs).toEqual([join(tmp, 'repo-a'), join(tmp, 'repo-b')].sort());
+    expect(inputOf('fork-a.ts')?.scopeKey).toBe('github.com/me/fork');
+    expect(inputOf('alpha-a.ts')?.scopeKey).toBe('github.com/acme/alpha');
+    expect(inputOf('personal-b.ts')?.scopeKey).toBe('github.com/me/personal');
+  });
+
+  it("keys a nested clone's files by its own remote though the resolver once answered for that directory as an ordinary one", async () => {
+    // The resolver remembers each directory by its path string for the life of
+    // the process. Asked about `tools/mine` while it was an ordinary directory of
+    // the work checkout, it remembered the checkout's answer under that string.
+    // The directory then became a clone with another remote, and its files carry
+    // the clone's key, not what the resolver remembered.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    const mine = join(tmp, 'tools', 'mine');
+    mkdirSync(mine, { recursive: true });
+    expect(resolveRepoAttribution(mine).scopeKey).toBe('github.com/acme/work');
+    gitRepo(mine, origin('https://github.com/me/personal.git'));
+    write('tools/mine/mine-a.ts', 'const mineA = 1;');
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this directory with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(mine).scopeKey).toBe('github.com/acme/work');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(inputOf('mine-a.ts')?.scopeKey).toBe('github.com/me/personal');
+  });
+
+  it("keys a scan root's files by its own remote though the resolver once answered for that directory as an ordinary one", async () => {
+    // The same, for the scan root: a package directory of the work checkout that
+    // the resolver answered for, and that is then cloned over with another remote.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    const pkg = join(tmp, 'packages', 'api');
+    mkdirSync(pkg, { recursive: true });
+    expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
+    gitRepo(pkg, origin('https://github.com/me/personal.git'));
+    write('packages/api/src/api-a.ts', 'const api = 1;');
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this scan root with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
+
+    await scanWorktree(config, { rootDir: pkg, sourceTool: 'claude-code' });
+
+    expect(inputOf('api-a.ts')?.scopeKey).toBe('github.com/me/personal');
+  });
+
+  it('reads each repository once per scan, however many of its files it captures', async () => {
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    gitRepo(join(tmp, 'tools', 'mine'), origin('https://github.com/me/personal.git'));
+    write('root-a.ts', 'const rootA = 1;');
+    write('src/root-b.ts', 'const rootB = 2;');
+    write('src/deep/root-c.ts', 'const rootC = 3;');
+    write('tools/mine/mine-a.ts', 'const mineA = 4;');
+    write('tools/mine/src/mine-b.ts', 'const mineB = 5;');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(capturedInputs()).toHaveLength(5);
+    expect(reads()).toEqual([tmp, join(tmp, 'tools', 'mine')].sort());
+  });
+
+  it('reads each repository once on a re-run that skips every file unread, and rewrites no row', async () => {
+    // A skipped file is not read, but the key it has now is compared with the one
+    // its row recorded, so the repository around it is read once per scan,
+    // however many files are skipped. The key is the same, so no row is rewritten.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    write('src/work-a.ts', 'const work = 1;');
+    write('src/work-b.ts', 'const work = 2;');
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    // Each row names the repository's directory as well as its key.
+    expect(recordedEntries().map((e) => e.scopeRoot)).toEqual([tmp, tmp]);
+    scanLedger.mockResolvedValue(
+      new Map(
+        recordedEntries().map((e) => [
+          e.path,
+          {
+            mtime: e.mtime,
+            contentHash: e.contentHash,
+            ...(e.scopeKey !== undefined ? { scopeKey: e.scopeKey } : {}),
+            ...(e.scopeRoot !== undefined ? { scopeRoot: e.scopeRoot } : {}),
+          },
+        ]),
+      ),
+    );
+    capture.mockClear();
+    recordScanned.mockClear();
+    vi.mocked(resolveRepoAttribution).mockClear();
+
+    const summary = await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(summary.skipped).toBe(2);
+    expect(capture).not.toHaveBeenCalled();
+    expect(reads()).toEqual([tmp]);
+    expect(recordedEntries()).toEqual([]);
   });
 });

@@ -1213,3 +1213,44 @@ jobs:
       # that covers the repo root. Going to turbo directly would drop both.
       - name: Lint
         run: pnpm lint
+
+  # Claude Code mod runtime: the redaction mod ships as hooks/mod.ts plus a
+  # bundled engine, and only Claude Code itself can say whether it loads and
+  # rewrites a prompt. `claude plugin test` runs the fixture plugin that
+  # test/mod-runtime/prepare.mjs stages from the BUILT plugin.
+  #
+  # The CLI is pinned exactly: a mod-runtime contract that moves under us would
+  # turn this red for a reason no commit here caused. Bump it deliberately.
+  # No credentials are needed — the test drives the mod runtime directly, with
+  # no model call — so there is no secret and the job runs on forks too.
+  claude-code-mods:
+    name: Claude Code · Mod runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.294
+
+      - name: Build plugin
+        run: pnpm --filter @akasecurity/ai-tc-claude-code build
+
+      # An empty config dir, so nothing on the runner can leak into the run.
+      - name: Mod runtime tests
+        run: |
+          CLAUDE_CONFIG_DIR="$(mktemp -d)"
+          export CLAUDE_CONFIG_DIR
+          pnpm --filter @akasecurity/ai-tc-claude-code test:mod-runtime

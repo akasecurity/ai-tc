@@ -10,6 +10,59 @@
     "shouldMatch": true
   },
   {
+    "label": "child_process.exec called through the module object",
+    "text": "const cmd = req.query.cmd;\nchild_process.exec(cmd);",
+    "shouldMatch": true
+  },
+  {
+    "label": "cp.execSync with request body argument",
+    "text": "const cp = require('child_process');\ncp.execSync(req.body.x);",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 40,
+        "end": 49
+      }
+    ]
+  },
+  {
+    "label": "exec destructured from require('child_process')",
+    "text": "const { exec } = require('child_process');\nexec(input);",
+    "shouldMatch": true
+  },
+  {
+    "label": "execSync chained directly off require('node:child_process')",
+    "text": "require('node:child_process').execSync(process.argv[2]);",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 30,
+        "end": 39
+      }
+    ]
+  },
+  {
+    "label": "bare exec on the line after a comment ending in a period",
+    "text": "// Run the user query command.\nexec(req.query.cmd);",
+    "shouldMatch": true
+  },
+  {
+    "label": "optional-chained exec on an allowlisted receiver",
+    "text": "cp?.exec(req.query.cmd);",
+    "shouldMatch": true
+  },
+  {
+    "label": "bundler-emitted node_child_process alias",
+    "text": "const node_child_process = require('node:child_process');\nconst cmd = req.query.cmd;\nnode_child_process.execSync(cmd, { stdio });",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 104, "end": 113 }]
+  },
+  {
+    "label": "member chain ending in an allowlisted receiver",
+    "text": "mod.child_process.exec(req.query.cmd);",
+    "shouldMatch": true
+  },
+  {
     "label": "exec with literal string argument",
     "text": "exec('ls -la', (err, stdout) => console.log(stdout));",
     "shouldMatch": false
@@ -24,5 +77,30 @@
     "text": "// runs user query command\nexec(req.query.cmd, callback);",
     "shouldMatch": false,
     "filePath": "src/example.go"
+  },
+  {
+    "label": "RegExp literal .exec on a variable named exec",
+    "text": "const exec = input.stdout;\nconst ms = Number(/([\\d.]+) ms/.exec(exec ?? '')?.[1] ?? NaN);",
+    "shouldMatch": false
+  },
+  {
+    "label": "RegExp instance .exec in a match loop",
+    "text": "const t = req.query.filter;\nwhile ((m = re.exec(t)) !== null) {\n  out.push(m[1]);\n}",
+    "shouldMatch": false
+  },
+  {
+    "label": "optional-chained .execSync on a non-child_process receiver",
+    "text": "const result = runner?.execSync(req.query.cmd);",
+    "shouldMatch": false
+  },
+  {
+    "label": "receiver that only ends in cp is not child_process",
+    "text": "const out = scp.exec(req.query.cmd);",
+    "shouldMatch": false
+  },
+  {
+    "label": "a $-prefixed identifier is not exec",
+    "text": "const out = $exec(req.query.cmd);",
+    "shouldMatch": false
   }
 ]

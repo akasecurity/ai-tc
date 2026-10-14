@@ -8,7 +8,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { SOURCE_TOOL, WEB_ACCOUNT_PROVIDER_OF, webAccountKey } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CompiledEndpoint } from '../../src/bridge.ts';
@@ -175,6 +175,26 @@ for (const adapter of declaring) {
         expect(fixture.kind).toBe('conversation');
         expect(fixture.direction).toBe('response');
         expect(classifyCompiled(compiled, fixture.url)).toBe('conversation');
+      });
+
+      // The account a site's request names is read off the recorded capture,
+      // not a hand-built URL: a route change that moves the organization
+      // segment fails here. And the adapter and the schema's provider table
+      // must agree — a site with an account provider reads one, and a site
+      // with none reads nothing the host could turn into a key.
+      it('the account its requests name is an account key exactly when the site has a provider', () => {
+        for (const file of [REQUEST_FIXTURE, STREAM_FIXTURE]) {
+          const fixture = loadFixture(adapter.id, file);
+          const workspace = adapter.workspaceOf?.(matchedExchangeFor(adapter, fixture.url));
+          const key = webAccountKey(adapter.id, workspace);
+          if (WEB_ACCOUNT_PROVIDER_OF[adapter.id] === undefined) {
+            expect(key, `${adapter.id}/${file}`).toBeUndefined();
+          } else {
+            expect(key, `${adapter.id}/${file}`).toBe(
+              `${String(WEB_ACCOUNT_PROVIDER_OF[adapter.id])}:${String(workspace)}`,
+            );
+          }
+        }
       });
 
       it('adapter.parseRequest() satisfies its own required request paths', () => {

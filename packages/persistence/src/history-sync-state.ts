@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { AttachmentMode } from '@akasecurity/schema';
+
 import { ATTACHED_HISTORY_SYNC_STATE_FILENAME } from './attached-derived.ts';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 
@@ -41,6 +43,13 @@ const OUTCOMES: ReadonlySet<string> = new Set<HistorySyncOutcome>([
 ]);
 
 /**
+ * The counts scopes a reader keeps: exactly the attachment modes this build
+ * knows, read off the enum itself so the two cannot drift apart. Anything else
+ * is dropped as unrecorded; see readHistorySyncState.
+ */
+const COUNTS_SCOPES: ReadonlySet<string> = new Set<string>(AttachmentMode.options);
+
+/**
  * The persisted form.
  *
  * Every field is a number or a member of a frozen enum. There is no free-form
@@ -57,6 +66,25 @@ export interface HistorySyncState {
   skippedTotal: number;
   startedAtMs: number | null;
   completedAtMs: number | null;
+  /**
+   * Which rows the counts above cover: `'scoped'` when the pass that wrote them
+   * counted through its enrolled scope, `'machine'` when it counted with no
+   * scope, so whichever repository a row was recorded in.
+   *
+   * ABSENT means "not recorded", never either mode. A build from before this
+   * field writes none, and the CLI and each plugin are installed separately,
+   * each with its own copy of this writer, so on one machine an older plugin's
+   * pass can replace a newer CLI's file with numbers counted machine-wide. A
+   * reader that must not present those as a scope's numbers asks for `'scoped'`
+   * exactly.
+   *
+   * ADDED WITHOUT A VERSION BUMP, deliberately: a reader from before it checks
+   * the fields it knows by name and builds its result from those alone, so it
+   * still reads a file that carries this one. Bumping `specVersion` would make
+   * every older reader on the machine report no progress at all. A frozen copy
+   * of that reader in this package's tests pins it.
+   */
+  countsScope?: AttachmentMode | undefined;
 }
 
 const SPEC_VERSION = 1;
@@ -74,6 +102,10 @@ export function historySyncStatePath(dataDir: string): string {
  * shorter file that parses as smaller numbers — progress silently running
  * backwards. The AUTHORITATIVE progress is a count over the store either way;
  * this file only saves recomputing it.
+ *
+ * `countsScope` is written only when the caller passes one: `JSON.stringify`
+ * drops a member whose value is undefined, so a pass without it writes exactly
+ * the file a build from before the field wrote.
  */
 export function writeHistorySyncState(
   dataDir: string,
@@ -95,6 +127,13 @@ export function writeHistorySyncState(
  * hand-edited or partially written one must produce silence, not a wrong
  * number. A state written by a newer build with an outcome this one does not
  * know fails the same way — status then says nothing rather than guessing.
+ *
+ * `countsScope` is the one field DROPPED rather than refused when it is
+ * anything but a mode this build knows. Every number is still well-formed then;
+ * what is lost is only the claim about which rows they cover, and a reader that
+ * needs that claim asks for `'scoped'` exactly, so a dropped marker reads as
+ * "not recorded", the answer a file from before the marker gives. An absent
+ * marker is left out of the result, never returned as a key holding undefined.
  */
 export function readHistorySyncState(dataDir: string): HistorySyncState | null {
   try {
@@ -117,6 +156,7 @@ export function readHistorySyncState(dataDir: string): HistorySyncState | null {
       skippedTotal: r.skippedTotal,
       startedAtMs: r.startedAtMs,
       completedAtMs: r.completedAtMs,
+      ...(isCountsScope(r.countsScope) ? { countsScope: r.countsScope } : {}),
     };
   } catch {
     return null;
@@ -129,4 +169,8 @@ function isCount(v: unknown): v is number {
 
 function isNullableCount(v: unknown): v is number | null {
   return v === null || isCount(v);
+}
+
+function isCountsScope(v: unknown): v is AttachmentMode {
+  return typeof v === 'string' && COUNTS_SCOPES.has(v);
 }

@@ -76,6 +76,7 @@ function DetailBody({
   onExpand,
   overlayClose = false,
   renderedAt,
+  locale,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
@@ -91,6 +92,13 @@ function DetailBody({
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /**
+   * The locale numbers and times below are formatted in: the one the host
+   * resolved for this request. Required for the reason `renderedAt` is — a view
+   * that falls back to the renderer's own locale renders one string on the
+   * server and another in the browser. See ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const harness = PROVIDERS[session.harness];
   const tools = toolEntries(session.tools);
@@ -166,7 +174,7 @@ function DetailBody({
           </MetaItem>
           <MetaItem label="Started">
             <MetaLine
-              text={`${startLabel(session.startedAt)} · ${dayLabel(session.startedAt, new Date(renderedAt))}`}
+              text={`${startLabel(session.startedAt, locale)} · ${dayLabel(session.startedAt, new Date(renderedAt))}`}
             />
           </MetaItem>
           <MetaItem label="Duration">
@@ -302,7 +310,11 @@ function DetailBody({
             <WidgetEmpty message="No events recorded for this session yet" />
           )
         ) : (
-          <AuditTimelineView events={session.events} {...(linkHref ? { linkHref } : {})} />
+          <AuditTimelineView
+            events={session.events}
+            locale={locale}
+            {...(linkHref ? { linkHref } : {})}
+          />
         )}
       </div>
 
@@ -337,6 +349,7 @@ export function SessionDetailView({
   onExpand,
   overlayClose,
   renderedAt,
+  locale,
 }: {
   session: ActivitySession | null;
   isLoading: boolean;
@@ -370,6 +383,13 @@ export function SessionDetailView({
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /**
+   * The locale numbers and times below are formatted in: the one the host
+   * resolved for this request. Required for the reason `renderedAt` is — a view
+   * that falls back to the renderer's own locale renders one string on the
+   * server and another in the browser. See ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   if (error) {
     return (
@@ -405,6 +425,7 @@ export function SessionDetailView({
       {...(onExpand ? { onExpand } : {})}
       {...(overlayClose ? { overlayClose } : {})}
       renderedAt={renderedAt}
+      locale={locale}
     />
   );
 }

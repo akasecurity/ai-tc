@@ -18,7 +18,14 @@
 // join used to build the hash input.
 import { z } from 'zod';
 
-import { ActionTaken, DetectionCategory, Severity, Span } from './finding.ts';
+import {
+  ActionTaken,
+  DetectionCategory,
+  FindingContext,
+  Severity,
+  Span,
+  VariableName,
+} from './finding.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -347,6 +354,27 @@ export const CaptureAttributes = z
     // here too. The full statement is on EventMetadata.redactDegradedTo; it is
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
+    // Why a capture has no content and no findings: its field was refused
+    // because its bounded scan did not finish (see EventMetadata.scanIncomplete,
+    // whose value this is). Absent on every capture that was scanned, so a
+    // reader can tell a refused row from an empty clean one.
+    scan_incomplete: z.enum(['timeout', 'unavailable']).optional(),
+    // The scope key this capture was stamped with: the canonical repository
+    // (`host/owner/repo`) of the path the capture names (a relative path is read
+    // against its working directory), else of its own working directory, or a
+    // chat account's identity. The store's local `scope_key` column reads it, so
+    // a scoped attachment has a per-row key to work from. Absent when no key
+    // could be derived.
+    //
+    // LOCAL ONLY. That is the contract for every path that sends a row. Producers
+    // stamp it in every attachment mode, and the two structural choke points strip
+    // it: the attached gateway's `reKeyForForward` on the live path, and the
+    // history drain's `rebuildAuditEvent`, which drops it through `withoutScopeKey`.
+    // A capture row's bag reaches the wire through `rebuildCapture`, which builds
+    // the metadata from named keys and never names this one; `toCaptureAttributes`,
+    // which builds the bag from a wire event, never emits it. What a scoped
+    // attachment does with the key is not part of this shape's contract.
+    scope_key: z.string().optional(),
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;
@@ -398,6 +426,25 @@ export const ToolCallInspection = z.object({
 });
 export type ToolCallInspection = z.infer<typeof ToolCallInspection>;
 
+// The fields that place a finding in the text it was detected in (see
+// FindingLocation). Optional on every input so a writer that has no source
+// text — or predates location capture — stays valid.
+const findingLocationFields = {
+  line: z.number().int().positive().optional(),
+  col: z.number().int().positive().optional(),
+  context: FindingContext.nullable().optional(),
+};
+
+// ToolCallInspection plus where the hit sits in the scanned target and the
+// variable the secret is assigned to. The LOCAL write input only: the wire keeps
+// `ToolCallInspection`, and the attached gateway projects each inspection onto
+// it field by field, so the masked excerpt and the name never leave the machine.
+export const ToolCallInspectionInput = ToolCallInspection.extend({
+  ...findingLocationFields,
+  variableName: VariableName.optional(),
+});
+export type ToolCallInspectionInput = z.infer<typeof ToolCallInspectionInput>;
+
 // The reconciler → gateway → persistence input for one `tool_call` leaf. Carries
 // the NATURAL key (`sessionId` + `toolUseId`); the content-addressed
 // `toolCallId(sessionId, toolUseId)` is minted inside `@akasecurity/persistence` (same
@@ -413,7 +460,7 @@ export const ToolCallInput = z.object({
   attributes: ToolCallAttributes,
   // Secrets detected in the tool's (masked) target — written as linked
   // `inspection_findings`. Empty for a clean tool call.
-  inspections: z.array(ToolCallInspection).default([]),
+  inspections: z.array(ToolCallInspectionInput).default([]),
 });
 export type ToolCallInput = z.infer<typeof ToolCallInput>;
 
@@ -522,6 +569,9 @@ export const InspectionFindingInput = z.object({
   // Optional: when omitted, the writer derives it from the referenced audit
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
+  ...findingLocationFields,
+  // The variable a detected secret is assigned to, e.g. `STRIPE_SECRET_KEY`.
+  variableName: VariableName.optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 
@@ -604,8 +654,9 @@ export const SessionTokenReport = z.object({
   totalTokens: z.number().int().nonnegative(),
   // Σ of the PRICED rollups only; null when no rollup had a known price.
   estimatedCostUsd: z.number().nullable(),
-  // True whenever any rollup has a null cost (unknown provider/model), so the
-  // total understates real spend — the UI renders `≥ $X` instead of a falsely
+  // True whenever any call priced to null (an unknown provider/model, or a call
+  // over a long-context threshold whose rate is unpublished), so the total
+  // understates real spend — the UI renders `≥ $X` instead of a falsely
   // precise figure rather than silently dropping the unpriced calls.
   costIsPartial: z.boolean(),
 });

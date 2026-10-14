@@ -124,7 +124,14 @@ describe('renderAttachedStatus — the attached block', () => {
     attach({ label: 'Example Org production' });
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
     expect(out).toContain('Example Org production');
-    expect(out).not.toContain(ENDPOINT);
+    // The `plane` line names the label and not the hostname. The hostname is
+    // still on the block, on its own `endpoint` line, so a user can compare it
+    // with the endpoint a recorded scope names.
+    const lines = out.split('\n');
+    const plane = lines.find((line) => line.startsWith('  plane '));
+    expect(plane).toContain('Example Org production');
+    expect(plane).not.toContain(ENDPOINT);
+    expect(lines).toContain(`  endpoint   ${ENDPOINT}`);
   });
 
   it('renders keyPrefix — the non-secret display half — when present', () => {

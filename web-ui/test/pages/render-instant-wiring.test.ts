@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emptyStore } from '../helpers/store-templates.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
+import { setRequestHeaders } from '../setup/next-headers-stub.ts';
 
 // Every route that renders a relative label captures ONE instant per request
 // and hands it to each consumer below it. `exceptions-page.test.ts` pins that
@@ -70,13 +71,13 @@ afterEach(() => {
 });
 
 /**
- * Every `renderedAt` prop anywhere in the tree, in document order. Walks props
- * as well as children, since a route may hand the instant to a component it
- * passes as a prop rather than nests.
+ * Every value of the prop named `key` anywhere in the tree, in document order.
+ * Walks props as well as children, since a route may hand a value to a
+ * component it passes as a prop rather than nests.
  */
-function collectRenderedAt(node: unknown, into: number[] = []): number[] {
+function collectProp(node: unknown, key: string, into: unknown[] = []): unknown[] {
   if (Array.isArray(node)) {
-    for (const child of node) collectRenderedAt(child, into);
+    for (const child of node) collectProp(child, key, into);
     return into;
   }
   if (node === null || typeof node !== 'object') return into;
@@ -88,9 +89,14 @@ function collectRenderedAt(node: unknown, into: number[] = []): number[] {
   if (props === null || typeof props !== 'object') return into;
 
   const bag = props as Record<string, unknown>;
-  if (typeof bag.renderedAt === 'number') into.push(bag.renderedAt);
-  for (const value of Object.values(bag)) collectRenderedAt(value, into);
+  if (key in bag) into.push(bag[key]);
+  for (const value of Object.values(bag)) collectProp(value, key, into);
   return into;
+}
+
+/** Every `renderedAt` prop anywhere in the tree, in document order. */
+function collectRenderedAt(node: unknown): number[] {
+  return collectProp(node, 'renderedAt').filter((v): v is number => typeof v === 'number');
 }
 
 // The seven routes, each called the way Next calls it. An empty store is
@@ -170,21 +176,29 @@ const ROUTES = [
   },
 ] as const;
 
-// `vault/page.tsx` and `settings/page.tsx` are synchronous and take no
-// arguments; the other five take `searchParams` as a promise, the way Next
-// hands it.
+// `vault/page.tsx` and `settings/page.tsx` take no arguments (vault is
+// synchronous, settings async); the other five take `searchParams` as a
+// promise, the way Next hands it.
 // `await`ing a non-promise return still resolves, so only the call shape
 // differs.
-async function render(route: (typeof ROUTES)[number]): Promise<number[]> {
+interface Route {
+  name: string;
+  prepare: () => void;
+  load: () => Promise<{ default: unknown }>;
+}
+
+async function renderElement(route: Route): Promise<unknown> {
   route.prepare();
   const mod = await route.load();
-  const element =
-    route.name === 'vault' || route.name === 'settings'
-      ? await (mod.default as () => unknown)()
-      : await (mod.default as (props: { searchParams: Promise<object> }) => unknown)({
-          searchParams: Promise.resolve({}),
-        });
-  return collectRenderedAt(element);
+  return route.name === 'vault' || route.name === 'settings'
+    ? await (mod.default as () => unknown)()
+    : await (mod.default as (props: { searchParams: Promise<object> }) => unknown)({
+        searchParams: Promise.resolve({}),
+      });
+}
+
+async function render(route: Route): Promise<number[]> {
+  return collectRenderedAt(await renderElement(route));
 }
 
 describe.each(ROUTES)('the $name route captures its render instant per request', (route) => {
@@ -215,5 +229,103 @@ describe.each(ROUTES)('the $name route captures its render instant per request',
     const firstAt = first.at(0) ?? Number.NaN;
     const secondAt = second.at(0) ?? Number.NaN;
     expect(secondAt - firstAt).toBe(2 * 60 * 60 * 1000);
+  });
+});
+
+// ─── The locale, the instant's sibling ───────────────────────────────────────
+//
+// Each route also resolves ONE locale per request, from the request's
+// Accept-Language header, and hands it to every consumer that formats a count
+// or a time (app/lib/render-locale.ts). The prop is required, so a MISSING one
+// is a compile error; what compiles is a route that passes a literal, or that
+// resolves the locale without reading the request — every reader then gets
+// en-US whatever their browser says. So the header here names de-DE BELOW a
+// lower-weighted first entry: a route that ignored the header, or read only its
+// first tag, would hand down something else.
+
+/** Every `locale` prop anywhere in the tree. */
+function collectLocale(node: unknown): string[] {
+  return collectProp(node, 'locale').filter((v): v is string => typeof v === 'string');
+}
+
+const LOCALE_ROUTES: readonly Route[] = [
+  ...ROUTES.filter((route) => route.name !== 'data-shares' && route.name !== 'vault'),
+  {
+    name: 'policies',
+    prepare: () => undefined,
+    load: () => import('../../app/(app)/policies/page.tsx'),
+  },
+];
+
+describe.each(LOCALE_ROUTES)('the $name route resolves its locale per request', (route) => {
+  afterEach(() => {
+    setRequestHeaders({});
+  });
+
+  it('hands every consumer the locale the request asked for', async () => {
+    setRequestHeaders({ 'accept-language': 'en;q=0.4, de-DE' });
+    const found = collectLocale(await renderElement(route));
+    // The positive control, as above: an empty list satisfies `every`.
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.every((locale) => locale === 'de-DE')).toBe(true);
+  });
+
+  it('falls back to en-US for a request that names no locale', async () => {
+    const found = collectLocale(await renderElement(route));
+    expect(found.length).toBeGreaterThan(0);
+    expect(found.every((locale) => locale === 'en-US')).toBe(true);
+  });
+});
+
+// A Server Component formats some values ITSELF rather than handing a consumer
+// the locale — the summary strips' counts and the Security chart's date labels
+// — so the prop walk above cannot see whether those read the request. ar-EG is
+// the header here because it formats even an EMPTY store's values differently:
+// its digits are Arabic-Indic (`0` is `٠`) and its month names Arabic, so a
+// value formatted in any Latin-digit locale is caught without seeding a row.
+describe('a Server Component formats its own values in the request’s locale', () => {
+  const ARABIC_DIGIT = /[\u0660-\u0669]/;
+  const LATIN = /[0-9A-Za-z]/;
+
+  beforeEach(() => {
+    setRequestHeaders({ 'accept-language': 'ar-EG' });
+  });
+  afterEach(() => {
+    setRequestHeaders({});
+  });
+
+  /** The `value` of every summary-strip cell in the tree. */
+  function stripValues(node: unknown): string[] {
+    return collectProp(node, 'items')
+      .flat()
+      .map((item) => (item as { value?: unknown }).value)
+      .filter((v): v is string => typeof v === 'string');
+  }
+
+  it.each([
+    { name: 'activity', load: () => import('../../app/(app)/activity/page.tsx') },
+    { name: 'detections', load: () => import('../../app/(app)/detections/page.tsx') },
+  ])('the $name summary strip', async ({ name, load }) => {
+    const values = stripValues(await renderElement({ name, prepare: () => undefined, load }));
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) {
+      expect(value).toMatch(ARABIC_DIGIT);
+      expect(value).not.toMatch(LATIN);
+    }
+  });
+
+  it('the security chart’s date labels', async () => {
+    const security = ROUTES.find((route) => route.name === 'security');
+    if (security === undefined) throw new Error('no security route');
+    const labels = collectProp(await renderElement(security), 'points')
+      .flat()
+      .map((point) => (point as { label?: unknown }).label)
+      .filter((v): v is string => typeof v === 'string');
+    // Zero-filled buckets exist on an empty store, one per day of the range.
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) {
+      expect(label).toMatch(ARABIC_DIGIT);
+      expect(label).not.toMatch(LATIN);
+    }
   });
 });

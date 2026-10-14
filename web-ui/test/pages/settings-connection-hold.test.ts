@@ -57,8 +57,8 @@ function pinning(values: ManagedSettings['values']): ManagedSettings {
 
 type ClientProps = ComponentProps<typeof SettingsClient>;
 
-function renderPage(): ClientProps {
-  const element = SettingsPage() as ReactElement;
+async function renderPage(): Promise<ClientProps> {
+  const element = (await SettingsPage()) as ReactElement;
   const head = element.props as { children: ReactElement[] };
   const client = head.children.find((child: ReactElement) => child.type === SettingsClient);
   if (client === undefined) throw new Error('the page no longer renders SettingsClient');
@@ -76,31 +76,31 @@ afterEach(() => {
 });
 
 describe('the settings route and a held connection', () => {
-  it('reports an unmanaged connection as not held', () => {
-    expect(renderPage().connectionHeld).toBe(false);
+  it('reports an unmanaged connection as not held', async () => {
+    expect((await renderPage()).connectionHeld).toBe(false);
   });
 
-  it('reports a fleet pin as held, though nothing in the managed context is locked', () => {
+  it('reports a fleet pin as held, though nothing in the managed context is locked', async () => {
     administer(pinning({ runMode: 'attached', controlPlane: { endpoint: PINNED } }));
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.managed.lockedFields).toEqual([]);
     expect(props.settings.runMode).toBe('attached');
     expect(props.connectionHeld).toBe(true);
   });
 
-  it('reports a mode pinned to standalone as held', () => {
+  it('reports a mode pinned to standalone as held', async () => {
     administer(pinning({ runMode: 'standalone' }));
-    expect(renderPage().connectionHeld).toBe(true);
+    expect((await renderPage()).connectionHeld).toBe(true);
   });
 
-  it('does not report a pin on the deployment alone as held — that detach is the user’s', () => {
+  it('does not report a pin on the deployment alone as held — that detach is the user’s', async () => {
     applyOnboarding(
       { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ATTACHED_AT } },
       akaHome(),
       null,
     );
     administer(pinning({ controlPlane: { endpoint: PINNED } }));
-    const props = renderPage();
+    const props = await renderPage();
     expect(props.settings.runMode).toBe('attached');
     expect(props.connectionHeld).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -61,75 +61,57 @@ describe('claimSessionStart', () => {
 });
 
 /**
- * The duplicate claim under concurrent sessions is INTENDED — pinned here so a
- * later change cannot quietly turn it into a lock.
- *
- * Each claim scheme is one shared file holding the last session id that claimed
- * it. Two concurrent Claude Code sessions therefore overwrite each other's id,
- * and a session that has already claimed can claim again. The observable
- * symptom is a second onboarding nudge, or a second store-unavailable warning,
- * with two or more sessions open.
- *
- * That is safe because every caller is idempotent: the SessionStart inventory
- * upserts are content-addressed and the audit root is INSERT OR IGNORE, so
- * re-running a pass costs a repeated no-op. The alternative — a per-session
- * marker, or a lock around the read-modify-write — buys nothing and either
- * leaks a file per session or adds a cross-process lock to a hook path whose
- * first principle is never to break the host session.
- *
- * A change that makes any assertion below fail is a behaviour change, not a bug
- * fix. If the duplicate is ever judged unacceptable, this block is where the
- * decision to reverse it gets recorded.
+ * Concurrent sessions share each marker file. It holds the most recent session
+ * ids, not only the last one, so a session another session overtook is still
+ * recognised and is not claimed a second time.
  */
-describe('concurrent sessions — the accepted duplicate claim', () => {
-  it('re-nudges a session whose marker another session overwrote', () => {
+describe('concurrent sessions', () => {
+  it('does not re-nudge a session another session overtook', () => {
     expect(claimOnboardingNudge(dir, 's1')).toBe(true);
-    // The uncontended gate works — the positive control. Without it, the
-    // duplicate below would be indistinguishable from a claim that never
-    // suppressed anything in the first place.
     expect(claimOnboardingNudge(dir, 's1')).toBe(false);
-
-    // A second tab starts and claims the same shared marker.
     expect(claimOnboardingNudge(dir, 's2')).toBe(true);
-
-    // s1 asks again and is nudged a second time, because the marker no longer
-    // names it. Intended. A lock or a per-session marker would return false
-    // here.
-    expect(claimOnboardingNudge(dir, 's1')).toBe(true);
+    expect(claimOnboardingNudge(dir, 's1')).toBe(false);
   });
 
-  it('re-runs the SessionStart pass for a session another session displaced', () => {
+  it('does not re-run the SessionStart pass for a displaced session', () => {
     expect(claimSessionStart(dir, 's1')).toBe(true);
-    expect(claimSessionStart(dir, 's1')).toBe(false);
     expect(claimSessionStart(dir, 's2')).toBe(true);
-    expect(claimSessionStart(dir, 's1')).toBe(true);
+    expect(claimSessionStart(dir, 's1')).toBe(false);
   });
 
-  it('lets two alternating sessions claim on every turn', () => {
-    // The cost of the race stated in full: alternating sessions never suppress,
-    // because each one displaces the other's id before it can ask again. Both
-    // claims per round are the accepted outcome.
+  it('claims once per session when sessions alternate', () => {
+    const claims: boolean[] = [];
     for (let round = 0; round < 3; round += 1) {
-      expect(claimOnboardingNudge(dir, 's1')).toBe(true);
-      expect(claimOnboardingNudge(dir, 's2')).toBe(true);
+      claims.push(claimOnboardingNudge(dir, 's1'), claimOnboardingNudge(dir, 's2'));
     }
+    expect(claims).toStrictEqual([true, true, false, false, false, false]);
   });
 
-  it('keeps one marker file per scheme however many sessions claim', () => {
-    for (const session of ['s1', 's2', 's3', 's4']) {
-      claimOnboardingNudge(dir, session);
-      claimSessionStart(dir, session);
+  it('keeps one marker file per scheme and a bounded id list', () => {
+    for (let i = 0; i < 100; i += 1) {
+      claimOnboardingNudge(dir, `s${String(i)}`);
+      claimSessionStart(dir, `s${String(i)}`);
     }
-
-    // Exactly two files, whatever the session count — the property that makes
-    // the single-marker scheme cheap, and the one a per-session marker would
-    // trade away. An exact set, not a ceiling: a floor would let a third scheme
-    // appear here unnoticed.
     expect(readdirSync(dir).sort()).toStrictEqual(['nudge-last-session', 'session-start-last']);
+    const ids = readFileSync(join(dir, 'nudge-last-session'), 'utf8').split('\n');
+    expect(ids).toHaveLength(32);
+    expect(ids.at(-1)).toBe('s99');
+  });
 
-    // Each marker holds one session id — the last claimer, not an accumulated
-    // list. The two schemes track their claimers independently.
-    expect(readFileSync(join(dir, 'nudge-last-session'), 'utf8')).toBe('s4');
-    expect(readFileSync(join(dir, 'session-start-last'), 'utf8')).toBe('s4');
+  it('evicts the oldest id, so a session that fell out is nudged again', () => {
+    for (let i = 0; i < 100; i += 1) {
+      claimOnboardingNudge(dir, `s${String(i)}`);
+    }
+    const ids = readFileSync(join(dir, 'nudge-last-session'), 'utf8').split('\n');
+    // The cap keeps the newest 32 and drops the rest: s0 is gone, so the same
+    // session id is claimed again rather than recognised.
+    expect(ids).not.toContain('s0');
+    expect(claimOnboardingNudge(dir, 's0')).toBe(true);
+  });
+
+  it('reads a marker written by an older build that held a single id', () => {
+    writeFileSync(join(dir, 'nudge-last-session'), 's1');
+    expect(claimOnboardingNudge(dir, 's1')).toBe(false);
+    expect(claimOnboardingNudge(dir, 's2')).toBe(true);
   });
 });

@@ -70,6 +70,7 @@ function route(sessions: ActivitySessionSummary[]) {
       showEmpty: false,
       expanded: false,
       renderedAt: RENDERED_AT,
+      locale: 'en-US',
     }),
   );
 }

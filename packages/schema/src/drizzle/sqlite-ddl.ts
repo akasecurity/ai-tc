@@ -175,4 +175,16 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0036_secret_vault_identity_fingerprint',
     sql: "ALTER TABLE `secret_vault` ADD `value_identity_fingerprint` text DEFAULT '' NOT NULL;--> statement-breakpoint\nUPDATE `secret_vault` SET `value_identity_fingerprint` = `value_fingerprint`;\n",
   },
+  {
+    tag: '0037_finding_location',
+    sql: 'ALTER TABLE `inspection_findings` ADD `line` integer;--> statement-breakpoint\nALTER TABLE `inspection_findings` ADD `col` integer;--> statement-breakpoint\nALTER TABLE `inspection_findings` ADD `context` text;--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_context` ON `inspection_findings` (`first_detected_at`) WHERE context IS NOT NULL;',
+  },
+  {
+    tag: '0038_variable_name',
+    sql: 'ALTER TABLE `inspection_findings` ADD `variable_name` text;--> statement-breakpoint\nALTER TABLE `secret_vault` ADD `variable_name` text;',
+  },
+  {
+    tag: '0039_variable_name_expiry_index',
+    sql: 'CREATE INDEX `idx_inspection_findings_variable_name` ON `inspection_findings` (`first_detected_at`) WHERE variable_name IS NOT NULL;',
+  },
 ];

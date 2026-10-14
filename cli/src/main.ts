@@ -8,6 +8,7 @@ import { runCheckUpdates } from './commands/check-updates.ts';
 import { runCompletion } from './commands/completion.ts';
 import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
 import { runDetections } from './commands/detections.ts';
+import { runEnroll, runUnenroll } from './commands/enroll.ts';
 import { runException } from './commands/exception.ts';
 import { hostChildScript, runExtension, runNativeHost } from './commands/extension.ts';
 import { runInit } from './commands/init.ts';
@@ -46,6 +47,12 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
     runDetach(argv);
   },
   status: (argv) => runStatus(argv),
+  enroll: async (argv) => {
+    await runEnroll(argv);
+  },
+  unenroll: async (argv) => {
+    await runUnenroll(argv);
+  },
   prune: (argv) => {
     runPrune(argv);
   },

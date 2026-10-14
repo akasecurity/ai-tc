@@ -67,6 +67,51 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+**One path fails CLOSED on purpose: a field too large to scan in time.** Every capture path
+that answers to a deadline builds its runtime with `largeInput`, so a field of
+`LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard deadline,
+and every bounded scan in one hook process — or one native-host request — draws on one
+deadline. Each sits inside whatever would otherwise answer for that path first:
+
+- **Claude Code and Codex** (`plugins/{claude-code,codex}/src/hooks/large-input.ts`): 6 s
+  from process start for UserPromptSubmit and PreToolUse, PostToolUse's existing 7 s
+  field-loop deadline — inside the host's 10 s.
+- **Antigravity PreToolUse** (`plugins/antigravity/src/hooks/large-input.ts`): 5.5 s from
+  process start, inside `runHookFailOpen`'s 8 s WATCHDOG rather than the host's 10 s,
+  because the watchdog resolves an undecided body with `{"decision":"allow"}` — a refusal
+  still being decided when it fires is printed as an allow.
+- **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
+  start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
+  dialects.
+- **The browser extension's native host** (`captureLargeInput` in
+  `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
+  capture, with a 500 ms worker start budget drawn from it, because `background.ts`
+  answers a relay the host has not answered within `RELAY_TIMEOUT_MS` (3 s) with an error,
+  and the content script lets the original message through on an error.
+
+A field whose bounded scan times out or finds no worker comes back as a `block` with
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
+UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
+explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
+withholds the output, and the native host answers `action: 'block'` with
+`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
+exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
+interrupted (§5), so without the bound a large enough field keeps the hook busy past
+whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
+those passes the call through unscanned, except Antigravity's kill, which denies it with no
+reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
+nothing else in this section changes: a throw, bad stdin, an unopenable store and a
+PostToolUse field the loop deadline never reached all still pass (silently, or with
+Antigravity's explicit allow), and a native host that does not answer at all still lets the
+message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
+a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
+rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
+and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
+worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
+it through the built native host — so every bundle that runs this path also has to SHIP the
+worker, since a missing one refuses every large field.
+
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
 fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
@@ -218,7 +263,7 @@ The product is **standalone by default**: it runs on Node + the SQLite store und
 ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
 
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
-- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
+- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`/`process.getBuiltinModule()`) form.
 
 Ten files carry a genuine local-only opt-out:
 
@@ -326,12 +371,12 @@ Sigstore.
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                          |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                         |
-| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                        |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()` or `getBuiltinModule()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                                                  |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                                                |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -400,10 +445,10 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 
 Five properties are load-bearing and easy to break by accident:
 
-- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once. The one exception is the opt-in large-input bound (§1), and only on a path that answers to a deadline — a hook or the extension's native host: a field of `LARGE_INPUT_THRESHOLD_CHARS` or more is scanned in a worker whatever the ruleset, because that is the field whose in-process scan can outlast the host. A field below the threshold still pays nothing.
 - **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
-- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever. The large-input bound is the exception, and it is safe there for the reason it is not here: its start has its own budget (`LARGE_INPUT_START_BUDGET_MS`, or the native host's 500 ms) clipped to what is left of the caller's deadline, because that path quarantines nothing and names no culprit — a slow start costs one refused field, never a rule.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
 The first two are **counted, not timed** — a different claim from the fifth, which forbids an
@@ -459,7 +504,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 - **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
 - **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never CONCLUSIVELY timed here (no worker, the pre-flight's pass budget spent, or a wall breach the work clock refused to corroborate) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
 
-Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
+Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `vault-glue.ts`'s self-scan both pass the rules `mask.ts`'s `bundledMaskingRules()` returns — `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
 **The bound is around `scan()`, and the folder scan makes a SECOND unbounded pass that it does not cover.** `scanPathIntoStore` runs `extractFileEgress` — `@akasecurity/detections`' URL/IP and manifest-SDK extraction — on the CALLING thread, before the guarded scan and independent of it. Nothing there can be interrupted, and the exposure is the worse of the two callers': `aka scan` at least runs to a terminal a human can Ctrl-C, while the dashboard's Scan Server Action has no harness timeout at all. So the property extraction owes is not "no catastrophic regex" but the stronger **linear in file length**, since the walker hands it whole files up to `MAX_BYTES` (1 MB) and a merely POLYNOMIAL pass is already minutes at that size. Six had to be fixed to make that true, and only the first two were regexes. **The other four are the shape to recognise, because none of them needs crafted input and none of them looks like a ReDoS: work proportional to the FILE, done once per HIT, in a file whose hit count grows with its size.** A minified bundle puts every hit on one line, so redacting that line per hit is quadratic (118,798 ms of CPU for an ordinary 1 MB bundle carrying 25,641 URLs, against 60 ms memoized); mapping a hit's offset into the redacted line by re-redacting the prefix is quadratic the moment anything on the line is masked, which is to say on exactly the files this product is pointed at (15,333 ms for a 500 KB bundle carrying one token, against 15 ms); and a manifest's line number counted from offset zero, and its quoted key found by scanning from the section start, are each quadratic in its dependency count — an ordinary pretty-printed 1 MB `package.json` cost 1,459 ms and a single-line `pom.xml` 73,925 ms, against 42 ms and 30 ms now. Anything new on this path is linear or it is a denial of service; `packages/detections/test/security/egress-redos.test.ts` holds every pass at the 1 MB cap, and `packages/local-ops/test/performance/fs-scan-egress.test.ts` holds the pipeline that feeds them. Both charge CPU rather than wall time, for the reason the per-rule gate does, and both carry a control proving their input is still adversarial — a budget case fed a harmless string passes for ever.
 
@@ -737,9 +782,11 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass, and the shares-forward outcome state
                      machine — forwardProjectEgress is what a scan surface calls to
                      forward the register it just recorded (attached? opted out?
-                     switch on? credential? then send), with the transport injected by
-                     the caller, plus the one copy of the failure sentences both
-                     surfaces render; network ONLY via package-manager shell-outs — no fetch)
+                     switch on? credential? and, on a scoped attachment, is the project
+                     enrolled along with every repository nested in it? then send),
+                     with the transport injected by the caller, plus the one copy of
+                     the failure sentences both surfaces render; network ONLY via
+                     package-manager shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
                      Consumed by @akasecurity/detections' tabular suite as a
@@ -800,7 +847,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      is the one module inside it that sends; everything else
                      builds requests and parses answers.
                      TWO clients, split by whether the caller holds a credential.
-                     `createRemoteClient` speaks the ten routes an ATTACHED
+                     `createRemoteClient` speaks the eleven routes an ATTACHED
                      machine is scoped to and requires a key. `createAttachClient`
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
@@ -931,6 +978,22 @@ design-doc/section/ADR/PR citations, team-member names, or other internal narrat
 Keep prose factual and reader-facing; if you need to record rationale, put it in a commit
 message — not in shipped comments or strings.
 
+This is available to each package, and adopted per package: `comment-narration/no-process-narration`
+in `@akasecurity/eslint-config` walks the comment table and refuses plan and spec paths, LLD
+references, unit and task numbers, `§` section refs beside a plan cue, PR/issue and
+review-response numbers, commit SHAs and dated decisions. Nothing consumes it yet — an adopting
+package spreads it in its own `eslint.config.mjs` and passes `conventionsFile: 'CLAUDE.md'`, since
+the rule's message names `AGENTS.md` by default and this repo's conventions live here. It is spread per package (like `noDrizzleImports`) rather than
+folded into `base`, so a package adopts it in the change that clears its own backlog. Four
+probes are deliberately narrow, because a ban that cries wolf gets a disable directive: a SHA must
+carry a hex letter (a dated model-id suffix such as `-20241022` is not a SHA) and is skipped on a
+frozen-artifact banner, where the SHA is the identity of what is pinned; a date must sit next to a
+process cue (a fixture or retention date is not a decision); and a `§` must sit beside a plan cue,
+because the shorthand inside a repo is the bare section number — an exemption list of standard
+names left 40 false positives against 5 true ones over 1,812 files. Where a package has a
+standing reason, `allowPatterns` exempts a comment and `disableProbes` switches off one probe —
+both review-visible.
+
 ## Frontend UI components
 
 Shared, reusable UI **primitives** live in `packages/ui-kit` (`@akasecurity/ui-kit`). Shared,
@@ -998,11 +1061,15 @@ assembled from a non-literal.
 
 `tonalInkTokens` is no longer only the tonal ban: it is the WHOLE
 `no-restricted-syntax` value those three packages get, assembled by
-`reactSyntaxBans()` from four groups (network, drizzle, tonal, ambient clock)
-because a later entry replaces the rule's options rather than merging them. A
-per-file opt-out is therefore written as `reactSyntaxBans({ … })` with one group
-switched off, never as a hand-listed subset — the other three come along by
-construction, so lifting one ban cannot silently lift four.
+`reactSyntaxBans()` from five groups (network, drizzle, tonal, ambient clock,
+ambient locale) because a later entry replaces the rule's options rather than
+merging them. A per-file opt-out is therefore written as `reactSyntaxBans({ … })`
+with one group switched off, never as a hand-listed subset — the other four come
+along by construction, so lifting one ban cannot silently lift five. A widening is
+an option too, so it does NOT come along: in `dashboard-ui`/`ui-kit` `src/**` the
+per-file form is `presentationalSyntaxBans({ … })`, which keeps both widenings on,
+and in web-ui's `app/**` an entry has to pass `ambientLocaleEveryModule: true`
+itself (see the clock exemption below, and `web-ui/eslint.config.mjs`).
 
 ### A time label is a function of two instants, and a client component is given both
 
@@ -1058,16 +1125,60 @@ where the one site this sweep did not find by hand was living
 reached through an imported helper goes unseen; the required argument is what
 covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
 one sanctioned reader, and its exemption is written in that package's
-`eslint.config.mjs` through `reactSyntaxBans({ allowAmbientClock: true })`.
+`eslint.config.mjs` through `presentationalSyntaxBans({ allowAmbientClock: true })`
+— the presentational form, because a per-file entry re-states the whole rule and
+one written through bare `reactSyntaxBans` would also drop the locale ban's
+`src/**` widening for that file.
 
-**What none of this reaches is a LOCALE-formatted string.** `toLocaleString` and
-its siblings render in the renderer's own locale and time zone, and the server's
-need not be the browser's, so passing one instant does not reconcile them. Two
-sites carry that honestly rather than pretending otherwise: `SessionListView`'s
-`title` keeps its `suppressHydrationWarning` for the locale half alone (the clock
-half is pinned now), and `HarnessOverview`'s `formatEvent` says so in its own
-doc comment. `suppressHydrationWarning` silences a warning without reconciling
-anything, so it is never a substitute for passing an instant.
+**A locale-formatted string is the same class, and it is closed the same way.**
+`toLocaleString()` and its siblings, called with no locale, format in the
+RENDERER's own locale, and the server's need not be the browser's: a Node host on
+en-US emits `6,456` where a de-DE browser hydrates `6.456`, and passing one
+instant does nothing for that. A server component has the mirror-image defect — it
+renders once, but in the Node process's locale rather than the reader's. So the
+locale is a second value a route captures per request and passes down:
+
+- **`renderLocale()`** (`web-ui/app/lib/render-locale.ts`) reads the request's
+  `Accept-Language` header and resolves it through `resolveLocale`
+  (`packages/dashboard-ui/src/lib/locale.ts`) to the highest-weighted tag this
+  runtime can format, else `en-US`. It is the sibling of `renderInstant()`, and
+  for the same reason a function rather than a constant.
+- Every shared formatter takes the locale as a **required** argument —
+  `formatNumber` (`lib/numberFormat.ts`), `formatDateTime` (`lib/dateFormat.ts`),
+  `startLabel`, `eventTime`, `fmtDateTime` — and every view that formats a count
+  or a time takes a required `locale: string` prop, beside `renderedAt`. A
+  default would hide every call site that forgot one, exactly as it would for the
+  instant.
+- The **ambient-locale** selectors are the ban that stops a call site formatting
+  around those helpers: an argument-less `toLocale*String()`, its `[]` and
+  `undefined` spellings, and the `Intl` formatter constructors in the same three
+  forms. Unlike the clock ban, nothing in a UI package legitimately reads the
+  runtime's locale, so it is widened to every module in `dashboard-ui` and
+  `ui-kit` (`src/**`) and in `web-ui`'s `app/**` and `middleware.ts` — server
+  components included, which is where the server-locale form lived. That
+  widening is held against each package's REAL resolved config by
+  `packages/eslint-config/test/package-walls.test.js`; `ambient-locale.test.js`
+  tests the selectors and cannot see a config that stopped applying them. A NAMED locale passes, which is
+  what lets the deliberate pins stay: compact notation (`compactCount`,
+  `compactNumber`) is pinned to `en-US` because K/M/B/T is a product-wide
+  convention shared with the CLI and the plugins, and `relativeTime` is pinned to
+  `en` because its words are the dashboard's English copy rather than a format.
+
+Two things this does not reach. The time ZONE is still each renderer's own; the
+dashboard answers only loopback requests (`web-ui/middleware.ts`), so the browser
+and the server share a machine and a zone, and a request carries no zone to pass.
+And the same locale can still format differently under two ICU builds — Node's and
+the browser's — so a CLDR change between them is a residual mismatch no prop
+closes. Two suites hold the rest, one per layer.
+`web-ui/test/pages/locale-hydration.test.ts` server-renders the route CLIENT
+components and the dashboard views — never a `page.tsx` — under one runtime
+default and hydrates them under another (`test/helpers/runtime-locale.ts` moves
+the default); its first cases are the control that a bare `toLocaleString()` is
+reported through the same harness. `web-ui/test/pages/render-instant-wiring.test.ts`
+calls the pages themselves, and is what proves a route reads the request's
+`Accept-Language` and hands that locale to every consumer.
+`suppressHydrationWarning` silences a warning without reconciling anything, so it
+is never a substitute for passing an instant or a locale.
 
 ## Detection rules
 
@@ -1854,7 +1965,7 @@ three with 24 CPU burners added on its 8 cores:
 
 | Property                                    | Measured                             | Gate                   |
 | ------------------------------------------- | ------------------------------------ | ---------------------- |
-| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal         | ±15% band ✅           |
+| Store growth, 5k → 10k                      | **1,066.6 B/event** marginal         | ±15% band ✅           |
 | `recordCapture` 2k → 20k                    | ratio **1.02–1.08** (fastest of 200) | ratio < 3 ✅           |
 | `openLocalDatabase` 2k → 20k                | ratio **0.72–1.03** (fastest of 20)  | ratio < 3 ✅           |
 | `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200)   | backstop ≤ 1,000 ms ✅ |
@@ -1880,7 +1991,9 @@ had to be retaken, because the marginal creeps with size — 902.8 B/event acros
 `idx_audit_capture_rollup` is bytes per row like any other index, and the 5k→10k marginal
 went 902.8 → 1,048.6 — past the old ceiling of 1,038.2, which is how it announced itself.
 That is the index being paid for rather than a regression, and the figures above describe
-the corpus before it.
+the corpus before it. Migration 0037 moved it again, 1,048.6 → 1,066.6 (+1.7%): three nullable
+`inspection_findings` columns and a partial index, paid for even by findings that leave all
+three empty. Inside the band, so nothing failed — which is exactly why it was re-taken anyway.
 
 **Nor across a CORPUS change, which is the harder one to remember because the test's own
 size did not move.** That centre was 797.9 until the generator's finding rate went from
@@ -2004,9 +2117,14 @@ itself. All three are product calls, not tuning.
 **A VIRTUAL generated column is only faster than the bag when an index stores its value.**
 The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
 columns — model, provider, the four token counts and the tier, cache-split and web-search
-members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
-once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
-fold equal to the per-call fold across every bag shape). Naming those columns against the
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)`, per
+long-context band and per set of billed columns, and priced once per group, which the cost
+model's linearity makes exact (activity.test.ts holds the SQL fold equal to the per-call fold
+across every bag shape). The band is in the key because one request's prompt selects it, never
+a sum; the billed columns are, because a summed group billing a column its model has no rate
+for prices to null as a whole, and without them one such call would null the priced calls
+beside it. That last part costs the all-time read ~9 ms at 50k calls (34 → 43 ms, fastest of
+the run), still under folding the bags in JS. Naming those columns against the
 TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
 VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
 `idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,
@@ -2070,14 +2188,28 @@ for one of the unbounded tables is a deliberate edit rather than a silent one.
 **A THIRD sweep expires BODIES, and it is on neither list because the lists are about
 ROWS.** Local body expiry (`bodyRetention` in settings, OFF by default, 30 days when
 switched on) clears `audit_events.content` past a horizon and stamps `content_expired_at`;
-the row, its timestamps and severity, and every finding derived from it are untouched, so
-`audit_events` stays among the tables nothing sweeps. That is where the bytes are — one
+the row, its timestamps and severity, and every finding derived from it are kept, so
+`audit_events` stays among the tables nothing sweeps. The one thing a finding loses is its
+masked excerpt (`inspection_findings.context`, the lines the dashboard drawer shows): it is a
+copy of the body's lines, so it goes with the body, and a `tool_call` finding's excerpt —
+which has no body to follow — goes once its event is past the same horizon. Its `line` and
+`col` stay. An excerpt beside a body the sync lane holds stays with that body. That is where the bytes are — one
 measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
 row — so this is the difference between a store that settles and one that grows at
 ~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:
-a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` is never expired while an
-attach or a history-sync grant could still claim it retroactively, which `canSweepSyncLane`
-is the single place that decides. **It deletes no row**, and `retention-surface.test.ts`
+a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` expires only when nothing
+could still make it owed. `canSweepSyncLane` is the yes-or-no (a standalone machine with no
+half attachment and no history-sync grant lets the lane age out like any other body), and
+`syncLaneRetentionFor` in plugin-runtime refines it through `syncLaneRetentionOf` once an
+attachment can be scoped. It is the one helper the background pass and `aka prune` both
+call, each handing it the settings it read, so the same settings and credential give the same answer. A
+machine attachment, half an attachment, and a history-sync grant with no scoped attachment
+hold every unsynced body, and so does every failure: an unreadable credential, a scope
+record that is absent, for another deployment or partly invalid, or a throw. A scoped
+attachment holds the bodies of its enrolled repositories and any body still marked owed (an
+earlier machine attachment's undelivered forward leaves that mark, and enrolling its
+repository later makes it reachable), and lets every other body age out, since nothing can
+forward those from a scoped machine. **It deletes no row**, and `retention-surface.test.ts`
 now runs it in the same pass as the other two so that membership is a live assertion
 rather than a claim. **It frees no disk by itself**: SQLite returns the pages to its
 freelist, so new captures reuse them and the file stops growing, but the file does not
@@ -2514,8 +2646,10 @@ opposite.
 
 **Outside `packages/persistence` the harness is deliberately NOT available, and the
 decision is not "nobody got round to it".** It lives under `test/`, and the package's
-`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
-`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+`exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"` (the store-free modules the
+plugin-sdk runtime path needs: a subset of the root entry's bindings that never loads
+`database.ts`, both held by `packages/persistence/test/sqlite-free-entry.test.ts`) — which is exactly
+what makes `UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
 that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
 package would gain a supported route to the raw `DatabaseSync`, and
 `test-only-seam.test.js` would stay green throughout because the new callers are tests.
@@ -2602,8 +2736,10 @@ not reach for a `./testing` export instead.
   through, exported from `src/database.ts`, and the only test-only seam in shipped
   source. It is
   symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
-  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
-  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  is `"." -> "./src/index.ts"` plus `"./sqlite-free"` — a subset of the root entry's
+  bindings that never loads `database.ts`, both held by
+  `packages/persistence/test/sqlite-free-entry.test.ts` — so no other package can reach the
+  module that defines it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
   property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
   enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
   the **real** connection, so `close()` reaches it.

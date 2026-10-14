@@ -16,10 +16,15 @@ import {
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
-import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  MAX_EGRESS_CALL_SITES_PER_PROJECT,
+  openLocalDatabase,
+  readSightingSharing,
+} from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
 import { createSharesSender } from '@akasecurity/remote';
-import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
+import type { ManagedSettings } from '@akasecurity/schema';
+import { Severity, sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -33,7 +38,8 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // CI surface (both opt-in; the default text output and exit-0 behavior are
 // unchanged):
 //   --format json         machine-readable result on stdout (findings carry the
-//                         masked match + span, never the raw secret; `inventory`
+//                         masked match + span, never the raw secret, and the
+//                         variable the secret is assigned to or null; `inventory`
 //                         reports the project row + file tree recorded for the
 //                         repo containing the target, null outside a git repo;
 //                         `egress` reports the destinations/endpoints/call sites
@@ -52,8 +58,15 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // destination hosts, endpoints and file/line call sites, with no source text and
 // the project key replaced by a digest — and it can only ever reach the
 // deployment this home's own settings name. `--no-forward` skips it for one
-// invocation; an unattached machine sends nothing and prints no line. The
-// forward can fail every way a network call can and none of them change the
+// invocation; an unattached machine sends nothing and prints no line.
+//
+// A SCOPED attachment forwards a register only when the project's repository
+// is enrolled for that deployment AND so is every repository the walk found
+// nested in the target, because their call sites are folded into the project's
+// register. Otherwise nothing is sent and the outcome is `not-enrolled`, which
+// is a by-design refusal reported as information, never a failure.
+//
+// The forward can fail every way a network call can and none of them change the
 // exit code, the findings, or the egress counts: it runs after the work that
 // matters is already on disk.
 //
@@ -112,6 +125,8 @@ export function renderEgressLine(egress: EgressRecordResult): string {
  */
 export interface ScanDeps {
   send?: SharesForwardSender;
+  /** Replaces the managed settings file; `null` reads a machine with no administrator. */
+  managedSettings?: ManagedSettings | null;
 }
 
 /**
@@ -146,6 +161,16 @@ export function renderForwardLine(outcome: ReportedForward): string {
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
         'no usable credential; re-attach with `aka attach`'
+      );
+    // Not a fault: a scoped attachment keeps a project local unless its
+    // repository, and every repository nested in it, is enrolled. A project
+    // with no code-host remote never is.
+    case 'not-enrolled':
+      return (
+        `Data shares: not forwarded to ${outcome.endpoint} — ` +
+        'the project or a repository nested in it is not enrolled; its scans stay on this machine ' +
+        '(`aka enroll --list` shows what is sent; ' +
+        '`aka enroll` adds a repository with a code-host remote)'
       );
     case 'forwarded':
       return (
@@ -262,12 +287,16 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   // or unreachable deployment delays the forward line and never the summary
   // the command was run for. JSON mode is one object and must wait for both.
   const recorded = egress;
+  // Every repository the walk passed through below the target. Their call
+  // sites are in the register, so a scoped attachment holds it to each of them.
+  const nestedRepositories = result.nestedRepositories;
   const runForward = async (): Promise<SharesForwardOutcome | null> => {
     if (recorded === null) return null;
     try {
       return await forwardProjectEgress(home, recorded.input, {
         send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
+        nestedRepositories,
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit
@@ -292,6 +321,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
         maskedMatch: d.maskedMatch,
         actionTaken: d.actionTaken,
         confidence: d.confidence,
+        variableName: d.variableName ?? null,
       })),
     );
     const inventoryJson = inventory
@@ -333,6 +363,9 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
     const reported = reportedForward(await runForward());
     if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
+    process.stdout.write(
+      `${sightingSharingLine(readSightingSharing(home, deps.managedSettings))}\n`,
+    );
   }
 
   if (failOn !== undefined) {

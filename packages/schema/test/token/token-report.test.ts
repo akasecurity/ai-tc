@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CostModel } from '../../src/token/cost-model.ts';
+import { defaultCostModel } from '../../src/token/cost-model.ts';
 import {
   aggregateTokenUsage,
   buildTokenReports,
@@ -97,6 +98,58 @@ describe('buildTokenReports', () => {
     expect(report.estimatedCostUsd).toBe(1); // only the anthropic rollup is priced
     expect(report.costIsPartial).toBe(true);
     expect(report.rollups).toHaveLength(2);
+  });
+
+  it('one model priced for some calls and not others: priced sum, costIsPartial true', () => {
+    // A model priced under its long-context threshold and unpriced over it.
+    const banded: CostModel = {
+      normalizeModelId: (provider, model) => ({ provider, model }),
+      costFor: ({ usage }) => ((usage.inputTokens ?? 0) > 272_000 ? null : 1),
+    };
+    const report = only(
+      buildTokenReports(
+        [
+          leaf('s1', { provider: 'openai', model: 'gpt-5.4', input_tokens: 100_000 }),
+          leaf('s1', { provider: 'openai', model: 'gpt-5.4', input_tokens: 300_000 }),
+        ],
+        banded,
+      ),
+    );
+    expect(only(report.rollups).estimatedCostUsd).toBe(1);
+    expect(report.estimatedCostUsd).toBe(1);
+    expect(report.costIsPartial).toBe(true);
+    expect(aggregateTokenUsage([report]).costIsPartial).toBe(true);
+  });
+
+  it('prices a cache-write total with no 1h/5m split as a 5-minute write, toward the band too', () => {
+    const haiku = (attributes: LlmCallAttributes) =>
+      only(
+        buildTokenReports(
+          [leaf('s1', { provider: 'anthropic', model: 'claude-haiku-5-5', ...attributes })],
+          defaultCostModel,
+        ),
+      ).estimatedCostUsd;
+    // 60K input + 50K written is a 110K prompt: over Haiku 5.5's 100K line, so
+    // input bills at 0.50 and the 5-minute write at 0.625.
+    const unsplit = haiku({ input_tokens: 60_000, cache_creation_input_tokens: 50_000 });
+    expect(unsplit).toBeCloseTo((60_000 * 0.5 + 50_000 * 0.625) / 1_000_000, 10);
+    // The same call reported with its split prices identically.
+    expect(
+      haiku({
+        input_tokens: 60_000,
+        cache_creation_input_tokens: 50_000,
+        ephemeral_5m_input_tokens: 50_000,
+      }),
+    ).toBeCloseTo(unsplit ?? Number.NaN, 10);
+    // Only the part of the total the split leaves out is added: 30K at 1h, 20K
+    // unsplit as 5m, 60K input over the line.
+    expect(
+      haiku({
+        input_tokens: 60_000,
+        cache_creation_input_tokens: 50_000,
+        ephemeral_1h_input_tokens: 30_000,
+      }),
+    ).toBeCloseTo((60_000 * 0.5 + 30_000 * 1 + 20_000 * 0.625) / 1_000_000, 10);
   });
 
   it('defaults a missing provider/model to "unknown" (and prices it null)', () => {

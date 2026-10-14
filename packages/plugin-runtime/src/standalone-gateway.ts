@@ -26,6 +26,7 @@ import {
   buildTokenReports,
   defaultCostModel,
   readFingerprintKey,
+  shippedRegexMatchers,
 } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
@@ -55,6 +56,7 @@ import type {
 } from '@akasecurity/schema';
 
 import { PLUGIN_RECORDER_BINARY } from './recorder.ts';
+import type { StoredRootKeyReader } from './session-root-key.ts';
 
 /**
  * Standalone mode: the plugin on its own. All data lives in the shared SQLite
@@ -70,7 +72,7 @@ import { PLUGIN_RECORDER_BINARY } from './recorder.ts';
  * installed row; updates are manual).
  */
 export class StandaloneDataGateway
-  implements DataGateway, LocalStoreMaintenance, CaptureStatusReader
+  implements DataGateway, LocalStoreMaintenance, CaptureStatusReader, StoredRootKeyReader
 {
   private readonly db: LocalDatabase;
   // Kept for the fingerprint key lookup (exception.key lives beside the store).
@@ -83,13 +85,16 @@ export class StandaloneDataGateway
     detections: InstalledPackInput[] = [],
     meta?: { recordedBy?: string },
   ) {
-    this.db = openLocalDatabase(dataDir);
+    this.db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
     this.dataDir = dataDir;
     this.db.installedPacks.recordInventory(detections, meta);
   }
 
   recordCapture(record: CaptureRecord): Promise<void> {
-    this.db.recordCapture(record.event, record.findings);
+    // The scope key travels beside the event (CaptureRecord.scopeKey) and goes
+    // to the writer as an argument of its own: the writer, not the event, is
+    // what puts it on the row.
+    this.db.recordCapture(record.event, record.findings, record.scopeKey);
     return Promise.resolve();
   }
 
@@ -200,6 +205,10 @@ export class StandaloneDataGateway
         maskedMatch: insp.maskedMatch,
         actionTaken: insp.actionTaken,
         confidence: insp.confidence,
+        ...(insp.line === undefined ? {} : { line: insp.line }),
+        ...(insp.col === undefined ? {} : { col: insp.col }),
+        ...(insp.context === undefined ? {} : { context: insp.context }),
+        ...(insp.variableName === undefined ? {} : { variableName: insp.variableName }),
       });
     }
   }
@@ -216,6 +225,15 @@ export class StandaloneDataGateway
 
   readSessionProvider(sessionId: string): Promise<string | undefined> {
     return Promise.resolve(this.db.auditEvents.sessionProvider(sessionId));
+  }
+
+  // The key the store holds for a session root, which is not always the key of
+  // the root event just recorded: roots are first-write-wins, so a second root
+  // event for a session leaves the stored one as it was. The attached gateway
+  // decides what to forward from this, because it is the row the history drain
+  // will decide by.
+  readSessionScopeKey(sessionId: string): string | undefined {
+    return this.db.auditEvents.sessionScopeKey(sessionId);
   }
 
   readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {
@@ -543,6 +561,10 @@ export class StandaloneDataGateway
 
   scanLedgerPaths(): Promise<string[]> {
     return Promise.resolve(this.db.scanLedger.allPaths());
+  }
+
+  scanLedgerPathKeys(): Promise<Map<string, string | undefined>> {
+    return Promise.resolve(this.db.scanLedger.pathKeys());
   }
 
   recordScanned(entries: ScanLedgerEntry[]): Promise<void> {

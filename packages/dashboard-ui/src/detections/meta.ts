@@ -22,6 +22,7 @@ import {
   EyeIcon,
   FingerprintIcon,
   GlobeIcon,
+  LinkIcon,
   LockIcon,
   PolicyIcon,
   RedactIcon,
@@ -31,7 +32,9 @@ import {
 } from '../shared/icons.tsx';
 
 // The default policy shown when a detection has no policy assigned. Enforcement
-// defaults to monitor (log-only) until the user picks another action.
+// defaults to monitor (log-only) until the user picks another action. A host
+// whose unassigned detections resolve to something else names that policy with
+// `unassignedPolicy` instead (see UnassignedPolicy).
 export const PLACEHOLDER_POLICY = 'monitor';
 
 /** A one-line code-ish summary of a matcher, shown on rule cards. */
@@ -152,6 +155,30 @@ export function policyMeta(id: string): PolicyMeta {
   const table: Partial<Record<string, PolicyMeta>> = POLICY_META;
   const known = Object.hasOwn(POLICY_META, id) ? table[id] : undefined;
   return known ?? { id, label: id, icon: PolicyIcon, tone: 'neutral', desc: '' };
+}
+
+/**
+ * How a host names the policy a detection with no assigned policy follows, for a
+ * host where that is not Monitor. `label` is the short pill text; `description`
+ * is the sentence the detail pane shows in place of an archetype's.
+ */
+export interface UnassignedPolicy {
+  label: string;
+  description: string;
+}
+
+// The presentation of a host's unassigned policy, in the same shape as an
+// archetype's so the pill and the detail pane render it the same way. LinkIcon
+// rather than the custom-policy fallback's PolicyIcon, so an unassigned
+// detection cannot be mistaken for one assigned a custom policy of that name.
+export function unassignedPolicyMeta(policy: UnassignedPolicy): PolicyMeta {
+  return {
+    id: '',
+    label: policy.label,
+    icon: LinkIcon,
+    tone: 'neutral',
+    desc: policy.description,
+  };
 }
 
 // ─── Category metadata ────────────────────────────────────────────────────────

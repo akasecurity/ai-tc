@@ -376,3 +376,78 @@ describe('ensureSessionRoot', () => {
     expect(row?.attributes ?? '').toContain('demo');
   });
 });
+
+describe('sessionScopeKey', () => {
+  const ENROLLED = 'github.com/org/api';
+  const PERSONAL = 'github.com/me/dotfiles';
+
+  const root = (id: string, attributes?: Record<string, unknown>) => ({
+    id,
+    eventType: 'session' as const,
+    startedAt: '2026-06-01T00:00:00.000Z',
+    ...(attributes === undefined ? {} : { attributes }),
+  });
+
+  it('reads the key stored on a session root', () => {
+    db.auditEvents.insertAuditEvent(root('s-key', { scope_key: ENROLLED, provider: 'anthropic' }));
+
+    expect(db.auditEvents.sessionScopeKey('s-key')).toBe(ENROLLED);
+  });
+
+  // Roots are first-write-wins, so the key a caller just handed in is not
+  // necessarily the one the store holds. This read is what tells them apart.
+  it('answers the FIRST authoritative root key, not a later root event', () => {
+    db.auditEvents.insertAuditEvent(root('s-first', { scope_key: PERSONAL }));
+    db.auditEvents.insertAuditEvent(root('s-first', { scope_key: ENROLLED }));
+
+    expect(db.auditEvents.sessionScopeKey('s-first')).toBe(PERSONAL);
+  });
+
+  it('answers the key of the root that healed a stub', () => {
+    db.auditEvents.ensureSessionRoot('s-heal-key', '2026-06-01T00:00:00.000Z');
+    expect(db.auditEvents.sessionScopeKey('s-heal-key')).toBeUndefined();
+
+    db.auditEvents.insertAuditEvent(root('s-heal-key', { scope_key: ENROLLED }));
+
+    expect(db.auditEvents.sessionScopeKey('s-heal-key')).toBe(ENROLLED);
+  });
+
+  it('answers nothing for a root with no key', () => {
+    db.auditEvents.insertAuditEvent(root('s-nokey', { provider: 'anthropic' }));
+
+    expect(db.auditEvents.sessionScopeKey('s-nokey')).toBeUndefined();
+  });
+
+  it('answers nothing for a stub, and for an id the store does not hold', () => {
+    // SESSION_ID is the beforeEach stub.
+    expect(db.auditEvents.sessionScopeKey(SESSION_ID)).toBeUndefined();
+    expect(db.auditEvents.sessionScopeKey('s-absent')).toBeUndefined();
+  });
+
+  // The column the history drain reads is a string compare against the enrolled
+  // keys, so only a string is a key here either.
+  it.each([
+    ['a number', 7],
+    ['a boolean', true],
+    ['an object', { key: ENROLLED }],
+    ['null', null],
+  ])('answers nothing when the stored key is %s', (_label, stored) => {
+    db.auditEvents.insertAuditEvent(root('s-odd', { scope_key: stored }));
+
+    expect(db.auditEvents.sessionScopeKey('s-odd')).toBeUndefined();
+  });
+
+  // A leaf's id is not a root's, so a lookup by one never reads a leaf's key.
+  it('answers nothing for a row that is not a session root', () => {
+    db.auditEvents.insertLlmCall({
+      sessionId: SESSION_ID,
+      messageId: 'm-leaf',
+      parentId: SESSION_ID,
+      rootSessionId: SESSION_ID,
+      startedAt: '2026-06-01T00:00:01.000Z',
+      attributes: { output_tokens: 1, scope_key: ENROLLED },
+    });
+
+    expect(db.auditEvents.sessionScopeKey(llmCallId(SESSION_ID, 'm-leaf'))).toBeUndefined();
+  });
+});

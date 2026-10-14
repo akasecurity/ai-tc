@@ -3,6 +3,7 @@ import {
   EnforcementCardView,
   type FindingsChartPoint,
   FindingsOverTimeCardView,
+  formatDateTime,
   type MttrChartPoint,
   MttrTrendCardView,
   PageHead,
@@ -18,12 +19,13 @@ import {
   type WebCaptureSiteRow,
 } from '@akasecurity/dashboard-ui';
 import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
-import { readEffectiveSettings } from '@akasecurity/persistence';
+import { readEffectiveSettings, settingsDir, webChatWithholding } from '@akasecurity/persistence';
 import type { EnforcementActionKind, Severity } from '@akasecurity/schema';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { renderInstant } from '../../lib/rendered-at';
 import {
   enforcementHref,
@@ -44,20 +46,27 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Security' };
 
-// Resolve the ISO date bucket to a short axis label, exactly as the dashboard's
-// useFindingsTimeseries hook does (UTC so the label matches the bucket).
-const bucketLabel = new Intl.DateTimeFormat('en-US', {
+// The ISO date bucket as a short axis label in the request's locale (`Jun 8` ·
+// `8. Juni`). UTC, so the label names the day the bucket is keyed on.
+const BUCKET_LABEL: Intl.DateTimeFormatOptions = {
   month: 'short',
   day: 'numeric',
   timeZone: 'UTC',
-});
+};
 
 /**
  * The DRIFTING web-chat capture sites, as the card renders them — empty
  * whenever there is nothing to act on, which is when the card is not rendered
  * at all.
  *
- * Two gates, and each answers a different way of being wrong:
+ * Three gates, and each answers a different way of being wrong:
+ *
+ *  - WITHHOLDING, the reading the native host, `aka extension status` and the
+ *    extension's popup make. A machine that records nothing from a web chat (a
+ *    personal device, or one whose credential cannot be read) stores no
+ *    further status, so a row it holds is from before it stopped and is
+ *    superseded by nothing. The card would ask the user to reload a tab whose
+ *    report is never kept.
  *
  *  - CONSENT, the same one `aka extension status` applies. A machine whose
  *    web-chat capture consent has been revoked — or invalidated wholesale by a
@@ -80,7 +89,9 @@ const bucketLabel = new Intl.DateTimeFormat('en-US', {
  * measured against the same instant every other age on the page is.
  */
 function webCaptureDriftRows(now: number): WebCaptureSiteRow[] {
-  const webChat = webChatCaptureOf(readEffectiveSettings().settings);
+  const { settings } = readEffectiveSettings();
+  if (webChatWithholding(settingsDir(), settings) !== null) return [];
+  const webChat = webChatCaptureOf(settings);
   if (!isWebChatCaptureConsentValid(webChat.consent)) return [];
   return webCaptureReport(db().captureStatus.latest(now))
     .filter((s) => s.drift)
@@ -100,6 +111,8 @@ export default async function SecurityPage({
 }) {
   const range = parseTimeRange((await searchParams).range);
   const label = rangeLabel(range);
+  // The one locale every count and date label on the page is formatted in.
+  const locale = await renderLocale();
   const security = db().security;
 
   const [
@@ -142,12 +155,12 @@ export default async function SecurityPage({
     // plots it as a series — resolve the absent case here rather than leaving the
     // chart to read a hole as a gap in the data.
     low: p.low ?? 0,
-    label: bucketLabel.format(new Date(p.timestamp)),
+    label: formatDateTime(Date.parse(p.timestamp), locale, BUCKET_LABEL),
   }));
 
   const mttrPoints: MttrChartPoint[] = mttrTrend.points.map((p) => ({
     ...p.bySeverity,
-    label: bucketLabel.format(new Date(p.timestamp)),
+    label: formatDateTime(Date.parse(p.timestamp), locale, BUCKET_LABEL),
   }));
 
   // One instant for the whole route. The feed below is a SERVER component, so
@@ -229,6 +242,7 @@ export default async function SecurityPage({
             error={null}
             rangeLabel={label}
             actionHrefs={actionHrefs}
+            locale={locale}
           />
           <SeverityCardView
             {...severity}
@@ -236,6 +250,7 @@ export default async function SecurityPage({
             error={null}
             severityHrefs={severityHrefs}
             statusHrefs={statusHrefs}
+            locale={locale}
           />
           {/* Scan coverage is deliberately unlinked: its number is a curated
               capability constant, not a measurement of anything in the store, so no
@@ -260,6 +275,7 @@ export default async function SecurityPage({
             isLoading={false}
             error={null}
             sourceHrefs={sourceHrefs}
+            locale={locale}
           />
         </div>
 

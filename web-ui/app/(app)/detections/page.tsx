@@ -1,5 +1,6 @@
 import {
   type DetectionPolicyFloor,
+  formatNumber,
   PageHead,
   showsVaultDrift,
   type SummaryStatItem,
@@ -14,6 +15,7 @@ import { isAttached, isVaultConsentValid } from '@akasecurity/schema';
 
 import { ActivityIcon, BracesIcon, ListIcon, ShieldCheckIcon } from '../../components/icons';
 import { db } from '../../lib/db';
+import { renderLocale } from '../../lib/render-locale';
 import { DetectionsClient } from './DetectionsClient';
 import {
   type DetectionsSearchParams,
@@ -79,16 +81,19 @@ export default async function DetectionsPage({
       : (list.items[0]?.id ?? '');
   const detail = selectedId ? await detections.getDetectionDetail(selectedId) : null;
 
+  // The reader's locale, not the server's: this is a Server Component, so a
+  // bare toLocaleString() would format in the Node process's locale.
+  const locale = await renderLocale();
   const statItems: SummaryStatItem[] = [
     {
       icon: ListIcon,
-      value: stats.detections.toLocaleString(),
+      value: formatNumber(stats.detections, locale),
       label: 'Detections',
       tone: 'primary',
     },
     {
       icon: BracesIcon,
-      value: stats.rules.toLocaleString(),
+      value: formatNumber(stats.rules, locale),
       label: 'Rules',
       tone: 'violet',
     },
@@ -96,13 +101,13 @@ export default async function DetectionsPage({
       icon: ShieldCheckIcon,
       // Both halves formatted the same way: this cell and the Detections cell
       // above render the same number, so they must not disagree about it.
-      value: `${stats.active.toLocaleString()} / ${stats.detections.toLocaleString()}`,
+      value: `${formatNumber(stats.active, locale)} / ${formatNumber(stats.detections, locale)}`,
       label: 'Active',
       tone: 'ok',
     },
     {
       icon: ActivityIcon,
-      value: stats.findingsLast30d.toLocaleString(),
+      value: formatNumber(stats.findingsLast30d, locale),
       label: 'Findings · 30d',
       tone: 'neutral',
     },

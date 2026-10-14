@@ -13,12 +13,16 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  ruleProbeKey,
+} from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -95,6 +99,22 @@ function frame(message: unknown): Buffer {
   const header = Buffer.alloc(4);
   header.writeUInt32LE(body.length, 0);
   return Buffer.concat([header, body]);
+}
+
+/**
+ * Every frame in a native-messaging stdout buffer, parsed. The inverse of
+ * `frame` above, and written here for the same reason: the BUILT host's framing
+ * is what is under test.
+ */
+function unframe(buffer: Buffer): unknown[] {
+  const messages: unknown[] = [];
+  let at = 0;
+  while (at + 4 <= buffer.length) {
+    const length = buffer.readUInt32LE(at);
+    messages.push(JSON.parse(buffer.subarray(at + 4, at + 4 + length).toString('utf8')));
+    at += 4 + length;
+  }
+  return messages;
 }
 
 afterAll(() => {
@@ -234,6 +254,76 @@ describe('the built scan worker', () => {
     // extension would print, on every machine, if the worker URL pointed at a
     // source path that was never packaged.
     expect(stderr).not.toContain('the scan worker script was not found');
+  });
+});
+
+// A prompt at or above the large-input threshold is scanned in this same worker
+// whatever the ruleset, under a deadline the relay can still answer inside —
+// so on a host that lost its worker, every such prompt is REFUSED rather than
+// let through. That makes the worker shipping beside host.js a condition of
+// sending a long prompt at all, and these two rows drive both sides of it
+// through the built host.
+describe('a prompt past the large-input threshold, through the built host', () => {
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+
+  function capture(hostDir: string): Record<string, unknown> {
+    const home = tempDir('aka-ext-large-home-');
+    const result = spawnSync(process.execPath, [join(hostDir, HOST_SCRIPT)], {
+      input: frame({
+        type: 'capture',
+        requestId: 'e2e-large-1',
+        sessionId: 'e2e-large-session',
+        tool: 'chatgpt',
+        kind: 'prompt',
+        text: LARGE,
+      }),
+      encoding: 'buffer',
+      env: { ...processEnv(), HOME: home, USERPROFILE: home },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const replies = unframe(result.stdout);
+    expect(replies).toHaveLength(1);
+    return replies[0] as Record<string, unknown>;
+  }
+
+  it('is scanned by the shipped worker and judged on its content', () => {
+    // Benign text, so a judged prompt is a `log` — and a refusal here would
+    // mean the worker beside host.js could not be found or started.
+    expect(capture(HOST_DIR)).toEqual({
+      type: 'capture',
+      requestId: 'e2e-large-1',
+      ok: true,
+      action: 'log',
+      ruleIds: [],
+    });
+  });
+
+  it('is refused as an explicit block when the worker is missing', () => {
+    // A copy of the built host without its worker: the state an install that
+    // never shipped it is in. The row above is the control — same prompt,
+    // same build, only the worker removed.
+    const dir = tempDir('aka-ext-no-worker-');
+    const hostDir = join(dir, 'native-host');
+    cpSync(HOST_DIR, hostDir, {
+      recursive: true,
+      filter: (source) => basename(source) !== WORKER_SCRIPT,
+    });
+    expect(existsSync(join(hostDir, HOST_SCRIPT))).toBe(true);
+    expect(existsSync(join(hostDir, WORKER_SCRIPT))).toBe(false);
+
+    const reply = capture(hostDir);
+    expect(reply).toEqual({
+      type: 'capture',
+      requestId: 'e2e-large-1',
+      ok: true,
+      action: 'block',
+      text: null,
+      ruleIds: [],
+      scanIncomplete: 'unavailable',
+    });
+    expect(JSON.stringify(reply)).not.toContain('lorem ipsum');
   });
 });
 

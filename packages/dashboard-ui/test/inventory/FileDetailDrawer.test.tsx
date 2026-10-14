@@ -84,7 +84,7 @@ afterEach(() => {
 describe('FileDetailDrawer LLM-access picker, live', () => {
   it('reaches onChange on a real click', () => {
     const onChange = vi.fn();
-    mountDrawer(<FileDetailDrawer file={fileDetail()} onChange={onChange} />);
+    mountDrawer(<FileDetailDrawer file={fileDetail()} locale="en-US" onChange={onChange} />);
 
     act(() => {
       optionButton(document.body, 'No LLM').click();
@@ -99,7 +99,12 @@ describe('FileDetailDrawer LLM-access picker, refused', () => {
   it('refuses every option: aria-disabled, reason visible and linked, onChange never called', () => {
     const onChange = vi.fn();
     mountDrawer(
-      <FileDetailDrawer file={fileDetail()} onChange={onChange} accessRefusal={REASON} />,
+      <FileDetailDrawer
+        file={fileDetail()}
+        locale="en-US"
+        onChange={onChange}
+        accessRefusal={REASON}
+      />,
     );
 
     const button = optionButton(document.body, 'No LLM');

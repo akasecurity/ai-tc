@@ -16,6 +16,7 @@ import {
   redact,
   scan,
   shieldPointers,
+  withVariableNames,
 } from '@akasecurity/detections';
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
 import {
@@ -26,9 +27,12 @@ import {
 } from '@akasecurity/persistence';
 import {
   assignedRulePolicies,
+  bundledMaskingRules,
   childRel,
+  createFindingLocator,
   createPolicyResolver,
   evaluateIgnore,
+  evidenceLookup,
   type IgnoreLayer,
   type PolicyResolver,
   readIgnoreLayer,
@@ -269,6 +273,14 @@ export interface CollectFilesOptions {
   // AKA's own home (`~/.aka` by default). A SECOND base rather than a subpath of
   // `home`, because `--home` relocates this one alone.
   akaHome?: string | undefined;
+  // Told every directory BELOW the target that this walk lists and that holds a
+  // `.git` entry — a nested clone (a directory), a submodule or a linked
+  // worktree (a file) — spelled as the caller spelled the target, like every
+  // yielded path. Read off the listing the walk already made, so it costs no
+  // I/O, and only what the walk enters is reported: a skipped, protected or
+  // `.akaignore`'d directory is never listed. The target itself is never
+  // reported.
+  onNestedRepository?: ((dir: string) => void) | undefined;
 }
 
 export function* collectFiles(
@@ -308,9 +320,12 @@ export function* collectFiles(
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, canonicalTarget, '', [], [], false, protectedRoots);
+  yield* visit(target, canonicalTarget, protectedRoots, opts.onNestedRepository);
 }
 
+// One directory being walked: its listing, the next entry to visit, and the
+// ignore state its entries are judged against.
+//
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
 // beneath it can be re-included, so we stop evaluating and mark everything.
 // (The skip stack needs no equivalent: a skipped directory is never entered.)
@@ -318,63 +333,100 @@ export function* collectFiles(
 // `dirRel` is `dir` as a posix path relative to the scan target ('' at the
 // target itself), built by appending one component per descent. It is what both
 // layer stacks are addressed through, so it is threaded rather than recomputed.
+//
+// `dirCanonical` is `dir`'s canonical twin, so the protected comparison is made
+// against on-disk identity while everything yielded keeps the caller's
+// spelling. The two are the SAME STRING on an unaliased tree, which is what the
+// per-entry branch below tests for.
+interface WalkFrame {
+  dir: string;
+  dirCanonical: string;
+  dirRel: string;
+  dirents: Dirent[];
+  next: number;
+  markLayers: readonly IgnoreLayer[];
+  skipLayers: readonly IgnoreLayer[];
+  inIgnoredDir: boolean;
+}
+
+// Depth-first and in listing order, with an explicit stack rather than
+// recursion: a tree can nest as deep as the platform's path limit allows, which
+// on a long-path Windows host is thousands of levels, and a recursive generator
+// costs stack frames per level on every resumption.
 function* visit(
-  dir: string,
-  // `dir`'s canonical twin, threaded so the protected comparison is made
-  // against on-disk identity while everything yielded keeps the caller's
-  // spelling. The two are the SAME STRING on an unaliased tree, which is what
-  // the per-entry branch below tests for.
-  dirCanonical: string,
-  dirRel: string,
-  markLayers: readonly IgnoreLayer[],
-  skipLayers: readonly IgnoreLayer[],
-  inIgnoredDir: boolean,
+  root: string,
+  rootCanonical: string,
   protectedRoots: readonly string[],
+  // See CollectFilesOptions.onNestedRepository.
+  onNestedRepository: ((dir: string) => void) | undefined,
 ): Generator<CollectedFile> {
-  // The listing comes FIRST, before either ignore file is read. Two reasons,
-  // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
-  // walkTree — the walker this one is aligned with — has always been in this
-  // order, and every directory that turns out to be unlistable was otherwise
-  // paying two `readFileSync` attempts and up to two array copies to build
-  // layer stacks for entries that will never be read. That is exactly the
-  // hostile shape this walk now has coverage for.
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    // THE ROOT IS NOT BEST-EFFORT. `dirRel` is '' only at the scan target, and
-    // a target the user named and we could not read is a FAILED scan, not an
-    // empty one: `statSync` succeeds on a directory with no read bit (measured:
-    // mode 0000 gives `isDirectory() === true` and `readdirSync` EACCES), so
-    // swallowing this yields zero files, and `scanPathIntoStore` then records
-    // `scanned: 0, findings: 0` — the Scan page rendering "no findings" for a
-    // folder that was never opened. A false negative on the whole target is
-    // worse than the error the caller used to see, so the root rethrows.
-    if (dirRel === '') throw err;
-    // A SUBTREE is best-effort, matching the other two walkers: one unreadable
-    // directory costs its own subtree, never the whole scan. Unwrapped, a
-    // permission-denied directory, an antivirus lock, a transient EMFILE — or a
-    // path past the platform's ceiling, which is how the adversarial corpus
-    // finds this — aborts `collectFiles` mid-generator and takes every file
-    // already walked with it.
-    //
-    // That subtree is dropped SILENTLY, which is the same posture
-    // `@akasecurity/scanner`'s walkTree documents. Reporting it to the caller
-    // is worth doing and is a change to this function's contract, so it is
-    // tracked separately rather than smuggled in here.
-    return;
-  }
+  const stack: WalkFrame[] = [];
 
-  const dirMarkLayers = withLayer(
-    markLayers,
-    inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
-  );
-  const dirSkipLayers = withLayer(
-    skipLayers,
-    readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length),
-  );
+  const enter = (
+    dir: string,
+    dirCanonical: string,
+    dirRel: string,
+    markLayers: readonly IgnoreLayer[],
+    skipLayers: readonly IgnoreLayer[],
+    inIgnoredDir: boolean,
+  ): void => {
+    // The listing comes FIRST, before either ignore file is read: a directory
+    // that turns out to be unlistable then pays no `readFileSync` attempts and
+    // no layer copies for entries that will never be read. `@akasecurity/scanner`'s
+    // walkTree, the walker this one is aligned with, has the same order.
+    let dirents: Dirent[];
+    try {
+      dirents = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      // THE ROOT IS NOT BEST-EFFORT. `statSync` succeeds on a directory with no
+      // read bit (mode 0000 gives `isDirectory() === true` and `readdirSync`
+      // EACCES), so swallowing this would yield zero files and record a scan of
+      // a folder that was never opened as "no findings". The root rethrows.
+      if (dirRel === '') throw err;
+      // A SUBTREE is best-effort, matching the other two walkers: one unreadable
+      // directory (permission denied, an antivirus lock, a transient EMFILE, a
+      // path past the platform's ceiling) costs its own subtree, never the
+      // files already walked. It is dropped silently, as walkTree does.
+      return;
+    }
 
-  for (const entry of dirents) {
+    // A repository nested below the target, told by the `.git` entry this
+    // listing already holds. `dirRel` is '' only at the target, whose repository
+    // is the scan's own project.
+    if (
+      onNestedRepository !== undefined &&
+      dirRel !== '' &&
+      dirents.some((entry) => entry.name === '.git')
+    ) {
+      onNestedRepository(dir);
+    }
+
+    stack.push({
+      dir,
+      dirCanonical,
+      dirRel,
+      dirents,
+      next: 0,
+      markLayers: withLayer(
+        markLayers,
+        inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
+      ),
+      skipLayers: withLayer(skipLayers, readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length)),
+      inIgnoredDir,
+    });
+  };
+
+  enter(root, rootCanonical, '', [], [], false);
+  for (let frame = stack.at(-1); frame !== undefined; frame = stack.at(-1)) {
+    const entry = frame.dirents[frame.next];
+    if (entry === undefined) {
+      stack.pop();
+      continue;
+    }
+    frame.next++;
+    const { dir, dirCanonical, dirRel, inIgnoredDir } = frame;
+    const dirMarkLayers = frame.markLayers;
+    const dirSkipLayers = frame.skipLayers;
     const path = join(dir, entry.name);
     // One extra `join` only where the walk root was an alias. On every other
     // tree the two are the same reference, so this is a pointer comparison per
@@ -405,14 +457,13 @@ function* visit(
       }
       const dirIgnored =
         inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, true) === 'ignored';
-      yield* visit(
+      enter(
         path,
         canonical,
         childRel(dirRel, entry.name),
         dirMarkLayers,
         dirSkipLayers,
         dirIgnored,
-        protectedRoots,
       );
     } else if (entry.isFile()) {
       // THE guarantee for a walked tree: a prefix match, so it covers a
@@ -508,6 +559,13 @@ export interface ScanPathResult {
   // `file` is the ABSOLUTE walked path here; the recording pass relativizes it
   // to the project root before anything reaches the store.
   egress: { files: FileEgressHits[] };
+  // Every directory strictly below the target that the walk listed and that
+  // holds a `.git` entry — a nested clone, a submodule, a linked worktree — in
+  // walk order, spelled like the walked paths. The walk folds such a
+  // repository's files, and with them its egress, into the target's project.
+  // The Data Shares forward is handed this list so that a scoped attachment
+  // can hold the register to each repository in it.
+  nestedRepositories: string[];
 }
 
 // What the egress pass extracts from one already-read file, or null when the
@@ -614,6 +672,9 @@ export async function scanPathIntoStore(
     return fingerprintKey;
   }
 
+  // Every nested repository the walk lists, for the Data Shares forward.
+  const nestedRepositories: string[] = [];
+
   // Absolutize the walk root before any path reaches computeFindingKey /
   // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
   // path, but the plugin's worktree scanner keys on ABSOLUTE paths and
@@ -624,6 +685,9 @@ export async function scanPathIntoStore(
   // and is a no-op on the already-absolute paths the web-ui folder picker passes.
   for (const { path: file, gitignored } of collectFiles(resolve(target), {
     akaHome: opts.akaHome,
+    onNestedRepository: (dir) => {
+      nestedRepositories.push(dir);
+    },
   })) {
     let text: string;
     try {
@@ -644,7 +708,10 @@ export async function scanPathIntoStore(
     // original text, so redaction and stored spans below still line up — and
     // drop any finding that touches a shielded span.
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
+    const matches = withVariableNames(
+      dropShieldedFindings(await matchText(shielded.text), shielded.spans),
+      shielded.text,
+    );
     if (matches.length === 0) continue;
 
     // Resolved through the same reading the live path uses (see
@@ -688,6 +755,18 @@ export async function scanPathIntoStore(
       ),
       metadata,
     };
+    // Line, column and the masked excerpt, from the raw text while it is still
+    // here: `content` above is redacted, so its offsets shift wherever a span
+    // was masked. A rule supplied through the scanText seam is not visible
+    // here, so its evidence falls to the bundled classification.
+    const locate = createFindingLocator({
+      text,
+      basis: 'file',
+      hits: matches,
+      evidenceOf: evidenceLookup(opts.rules ?? []),
+      backstopRules: bundledMaskingRules(),
+      enforcedHits: new Set(enforced.map(({ match }) => match)),
+    });
     const findings: DetectedFindingWithKey[] = resolved.map(({ match: m, action }) => {
       const maskedMatch = maskMatch(m.rawMatch);
       const key = resolveFingerprintKey();
@@ -696,11 +775,8 @@ export async function scanPathIntoStore(
       // the masked match when it is not (no dataDir, or a corrupt key file) —
       // mirrors createPluginRuntime's capture(), so the two callers derive
       // byte-identical finding_keys for the same (ruleId, filePath, value).
-      // Without a fingerprint key the finding key falls back to the masked
-      // preview. That is a residual: a preview can differ between a clean and an
-      // invisibly padded occurrence (an email's domain and local-part length are
-      // shown), so such a finding may key differently. With a key, both share
-      // one identity.
+      // Either way a clean and an invisibly padded occurrence of one secret key
+      // alike: the fingerprint and maskMatch both ignore the same padding set.
       const valueFingerprint = key ? fingerprintValue(key, m.rawMatch) : maskedMatch;
       return {
         id: randomUUID(),
@@ -716,11 +792,19 @@ export async function scanPathIntoStore(
         // filePath), unlike the plugin's in-flight captures, so — unlike
         // runtime.ts's isAtRest branch — a finding_key is unconditional here.
         findingKey: computeFindingKey({ ruleId: m.ruleId, filePath: file, valueFingerprint }),
+        ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
+        location: locate(m),
       };
     });
     db.recordCapture(event, findings);
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;
   }
-  return { scanned, findings: findingCount, files, egress: { files: egressFiles } };
+  return {
+    scanned,
+    findings: findingCount,
+    files,
+    egress: { files: egressFiles },
+    nestedRepositories,
+  };
 }

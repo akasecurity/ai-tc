@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { loadConfig, shippedRegexMatchers } from '@akasecurity/plugin-sdk';
 import { runApply } from '@akasecurity/setup-wizard';
 
 import { isModelJudgeConsentValid } from './triage/consent.ts';
@@ -70,7 +70,9 @@ async function main(): Promise<void> {
       streamPath !== undefined ? readFileSync(streamPath, 'utf8') : readFileSync(0, 'utf8'),
     runJudge: (hits) => runJudge(hits, { spawn: spawnCodex, loadRubric }),
     openDb: () => {
-      const db = openLocalDatabase(loadConfig().dataDir);
+      const db = openLocalDatabase(loadConfig().dataDir, {
+        shippedRegexMatchers: shippedRegexMatchers(),
+      });
       return {
         policies: db.policies,
         exceptions: db.exceptions,

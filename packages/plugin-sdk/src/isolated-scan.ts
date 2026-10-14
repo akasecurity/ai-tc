@@ -110,7 +110,9 @@ const ATTRIBUTION_MIN_SHARE = 0.5;
 
 /** The two ways a job ends without an answer. Shared by both job kinds. */
 export type IsolatedFailure =
-  // The deadline fired and the worker was terminated. `culpritIndex` indexes
+  // The deadline fired and the worker was terminated — or the caller's own
+  // `deadlineAt` ran out first, possibly before any worker started (see
+  // IsolatedScanJobOptions). `culpritIndex` indexes
   // `ScanWorkerData.unverified`, and is set only on an attributing scan that
   // was inside a single rule long enough to blame it. A probe never sets it:
   // the rule under measurement is the culprit and the caller already knows it.
@@ -199,17 +201,40 @@ export type CompleteIsolatedScanOptions = {
   [K in keyof Required<IsolatedScanOptions>]: IsolatedScanOptions[K];
 };
 
-export interface IsolatedScanner {
+/** Per-job settings for {@link IsolatedScanner.scan}. */
+export interface IsolatedScanJobOptions {
   /**
-   * Scan one field under the deadline. `attribute` makes the worker walk the
-   * unverified rules one at a time first so a hang can be named; it costs a
-   * whole extra pass, so only a retry of a scan that already timed out asks
-   * for it.
+   * Walk the unverified rules one at a time first so a hang can be named. It
+   * costs a whole extra pass, so only a retry of a scan that already timed out
+   * asks for it.
    */
+  attribute?: boolean | undefined;
+  /** This job's scan budget, in place of the scanner's `budgetMs`. */
+  budgetMs?: number | undefined;
+  /** How long this job waits for a worker to start, in place of the scanner's `startBudgetMs`. */
+  startBudgetMs?: number | undefined;
+  /**
+   * A `performance.now()` instant this job must not outlive, for a caller whose
+   * own time is running out. Both the wait for a worker to start and the scan's
+   * budget are clipped to it, and a job still unanswered at the instant ends as
+   * a `timeout` — including one whose worker had not started yet, since what
+   * ran out was the caller's time rather than the start budget. A job that
+   * reaches the front of the queue with the instant already passed ends the
+   * same way without starting a thread.
+   *
+   * This is the one place startup IS charged to a deadline, and only because
+   * the caller asked: a job carrying it answers to a host timeout, not to the
+   * quarantine, so misreading a slow start costs one answer and never a rule.
+   */
+  deadlineAt?: number | undefined;
+}
+
+export interface IsolatedScanner {
+  /** Scan one field under the deadline. */
   scan(
     text: string,
     context?: ScanContext,
-    opts?: { attribute?: boolean },
+    opts?: IsolatedScanJobOptions,
   ): Promise<IsolatedScanOutcome>;
   /** Measure one rule against the adversarial timing battery, under the deadline. */
   probe(rule: Rule): Promise<IsolatedProbeOutcome>;
@@ -227,43 +252,67 @@ let resolvedWorkerUrl: URL | null | undefined;
  * on a machine with no `node_modules`, and the worker is one more script beside
  * them — so `./scan-worker.js` resolves against the emitting hook. In the repo
  * (and under vitest) this module is still `src/isolated-scan.ts` and its
- * neighbour is `scan-worker.ts`, which Node loads by stripping the types.
+ * neighbour is the worker's TypeScript source, which Node loads by stripping
+ * the types.
  *
  * `.js` is tried first so a published bundle can never be shadowed by a stray
  * source file. `undefined` — neither present, or a location that is not a file
- * path at all — is a real answer: the caller falls back rather than scanning
- * unbounded.
+ * path at all, including a module URL a relative path cannot be resolved
+ * against (`data:`, say) — is a real answer: the caller falls back rather than
+ * scanning unbounded.
  *
- * Each URL is spelled as a literal `new URL('./…', import.meta.url)`, which
- * static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL built
- * from a variable is not followed, and neither is one written as an arrow
+ * The built worker is spelled as a literal `new URL('./…', import.meta.url)`,
+ * which static file tracers (Vercel's `@vercel/nft`, say) follow exactly. A URL
+ * built from a variable is not followed, and neither is one written as an arrow
  * function's expression body, so a bundle traced from either ships without the
  * worker and drops every rule that needs isolation. A template string is
  * followed, but as a file pattern that can pull in whatever else matches it,
- * so it is not used either. Webpack (`next build`, `next dev`) follows the same literal and
- * FAILS the build when the file is not beside the source — in the repo the
- * neighbour is `scan-worker.ts` — so each call carries `webpackIgnore`. A
- * comment is not part of the syntax tree nft reads, so nft still traces it.
- * Do not drop the comment. test/worker-url-literal.test.ts pins both.
+ * so it is not used either. Webpack (`next build`, `next dev`) follows the same
+ * literal and FAILS the build when the file is not beside the source, so the
+ * call carries `webpackIgnore`. A comment is not part of the syntax tree nft
+ * reads, so nft still traces it. Do not drop the comment.
+ *
+ * The source fallback is derived from that URL at runtime rather than spelled,
+ * so no bundle that inlines this module carries the source worker's path as a
+ * literal, and a downstream check for the quoted `'./scan-worker.ts'` passes.
+ * The branch itself still ships: in a bundle it probes a sibling `.ts` that no
+ * published artifact contains, which costs one extra existence check when the
+ * built worker is missing. A non-minified esbuild bundle of the worker itself
+ * also names its source file in a module-origin comment, so a check that no
+ * source worker reference ships has to match the quoted reference, or be
+ * scoped to the hook scripts rather than the worker.
+ * test/worker-url-literal.test.ts pins the one literal, its comment, the
+ * absence of a second, and the probe order.
  */
 function resolveWorkerUrl(): URL | undefined {
   if (resolvedWorkerUrl !== undefined) return resolvedWorkerUrl ?? undefined;
-  const candidates = [
-    new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url),
-    new URL(/* webpackIgnore: true */ './scan-worker.ts', import.meta.url),
-  ];
-  for (const candidate of candidates) {
-    try {
+  resolvedWorkerUrl = null;
+  try {
+    const built = new URL(/* webpackIgnore: true */ './scan-worker.js', import.meta.url);
+    for (const candidate of [built, sourceTwin(built)]) {
       if (existsSync(fileURLToPath(candidate))) {
         resolvedWorkerUrl = candidate;
-        return candidate;
+        break;
       }
-    } catch {
-      // Not a file: URL — a single-file executable, say. Nothing to probe.
     }
+  } catch {
+    // Not a file: URL, or not one a relative path resolves against — a
+    // single-file executable, or a module loaded from a `data:` URL. Nothing to
+    // probe.
   }
-  resolvedWorkerUrl = null;
-  return undefined;
+  return resolvedWorkerUrl ?? undefined;
+}
+
+/**
+ * `url` with the `.js` ending its path swapped for `.ts`; the query and the
+ * fragment are kept. For the unbundled package this names the worker's unbuilt
+ * source beside this module. In a bundle it names a sibling that no published
+ * artifact contains, since each bundle builds its worker from its own entry.
+ */
+export function sourceTwin(url: URL): URL {
+  const twin = new URL(url);
+  twin.pathname = twin.pathname.replace(/\.js$/, '.ts');
+  return twin;
 }
 
 function messageOf(error: unknown): string {
@@ -277,6 +326,8 @@ interface PendingJob {
   // its replacement.
   worker: Worker;
   budgetMs: number;
+  // The caller's own limit (IsolatedScanJobOptions.deadlineAt), if it set one.
+  deadlineAt: number | undefined;
   startedAt: number;
   // The last index the worker announced, and when it announced it. -1 means
   // "not inside the attributable stage" — before the first rule, past the last
@@ -465,13 +516,19 @@ export function createIsolatedScanner(
     if (job.timer !== undefined) return;
     job.startedAt = performance.now();
     job.progressAt = job.startedAt;
+    const budget =
+      job.deadlineAt === undefined
+        ? job.budgetMs
+        : Math.max(0, Math.min(job.budgetMs, job.deadlineAt - job.startedAt));
     job.timer = setTimeout(() => {
       onDeadline(job);
-    }, job.budgetMs);
+    }, budget);
   }
 
   interface JobSpec {
     budgetMs: number;
+    startBudgetMs?: number | undefined;
+    deadlineAt?: number | undefined;
     build: (id: number) => ScanJob | ProbeJob;
     reply: (message: ScanWorkerMessage) => boolean;
   }
@@ -487,6 +544,16 @@ export function createIsolatedScanner(
       fail({ status: 'unavailable', reason: `the scan worker crashed: ${broken}` });
       return;
     }
+
+    const now = performance.now();
+    const deadlineAt = spec.deadlineAt;
+    if (deadlineAt !== undefined && deadlineAt <= now) {
+      // Checked before a thread is built: a caller out of time gets its answer
+      // without paying for a start it could never use.
+      fail({ status: 'timeout', culpritIndex: undefined, elapsedMs: 0 });
+      return;
+    }
+
     const started = ensureWorker();
     if (!(started instanceof Worker)) {
       broken = started.error;
@@ -495,11 +562,11 @@ export function createIsolatedScanner(
     }
 
     const id = nextJobId++;
-    const now = performance.now();
     const job: PendingJob = {
       id,
       worker: started,
       budgetMs: spec.budgetMs,
+      deadlineAt,
       startedAt: now,
       progressIndex: -1,
       progressAt: now,
@@ -515,14 +582,21 @@ export function createIsolatedScanner(
       beginDeadline(job);
     } else {
       // A worker that never finishes loading must not hang here either.
+      const startBudget = spec.startBudgetMs ?? startBudgetMs;
+      const callerLimited = deadlineAt !== undefined && deadlineAt - now < startBudget;
+      const startWaitMs = callerLimited ? deadlineAt - now : startBudget;
       job.startupTimer = setTimeout(() => {
         if (pending !== job) return;
         kill(job.worker);
-        failPending({
-          status: 'unavailable',
-          reason: `the scan worker did not start within ${String(startBudgetMs)}ms`,
-        });
-      }, startBudgetMs);
+        failPending(
+          callerLimited
+            ? { status: 'timeout', culpritIndex: undefined, elapsedMs: performance.now() - now }
+            : {
+                status: 'unavailable',
+                reason: `the scan worker did not start within ${String(startBudget)}ms`,
+              },
+        );
+      }, startWaitMs);
     }
 
     try {
@@ -559,7 +633,9 @@ export function createIsolatedScanner(
       return enqueue<IsolatedScanOutcome>((resolve) => {
         runOne(
           {
-            budgetMs,
+            budgetMs: scanOpts?.budgetMs ?? budgetMs,
+            startBudgetMs: scanOpts?.startBudgetMs,
+            deadlineAt: scanOpts?.deadlineAt,
             build: (id) => ({
               kind: 'scan',
               id,

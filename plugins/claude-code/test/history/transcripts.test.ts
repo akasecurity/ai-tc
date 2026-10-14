@@ -124,6 +124,33 @@ describe('parseTranscript', () => {
     expect(msgs.map((m) => m.text)).not.toContain('ancient prompt');
     expect(msgs).toHaveLength(3);
   });
+
+  it("carries each record's own cwd onto its message, and none when the record names none", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'user',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: { role: 'user', content: 'from work' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-20T10:00:02.000Z',
+        message: { role: 'user', content: 'no cwd here' },
+      }),
+    ].join('\n');
+
+    const msgs = parseTranscript(jsonl);
+    expect(msgs.map((m) => m.cwd)).toEqual(['/Users/me/work', '/Users/me/work', undefined]);
+    // Absent, not undefined, so a cwd-less message keeps its exact old shape.
+    expect(msgs[2]).not.toHaveProperty('cwd');
+  });
 });
 
 describe('parseTranscriptToolCalls', () => {
@@ -243,6 +270,194 @@ describe('parseTranscriptToolCalls', () => {
   it('honors the sinceMs window', () => {
     const after = Date.parse('2026-06-21T00:00:00.000Z');
     expect(parseTranscriptToolCalls(TOOL_TRANSCRIPT, after)).toHaveLength(0);
+  });
+
+  it("carries the issuing assistant record's own cwd, or none when it names none", () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-work',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_W', name: 'Bash', input: { command: 'ls' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-bare',
+        timestamp: '2026-06-20T10:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_N', name: 'Bash', input: { command: 'pwd' } }],
+        },
+      }),
+    ].join('\n');
+
+    const calls = parseTranscriptToolCalls(jsonl);
+    expect(calls.find((c) => c.toolUseId === 'toolu_W')?.cwd).toBe('/Users/me/work');
+    expect(calls.find((c) => c.toolUseId === 'toolu_N')?.cwd).toBeUndefined();
+  });
+
+  it('lists the file a file tool names, and nothing for any other tool', () => {
+    const jsonl = JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: 'a-files',
+      cwd: '/Users/me/work',
+      timestamp: '2026-06-20T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_E',
+            name: 'Edit',
+            input: { file_path: '/Users/me/other/a.ts' },
+          },
+          {
+            type: 'tool_use',
+            id: 'toolu_NB',
+            name: 'NotebookEdit',
+            input: { notebook_path: '/Users/me/other/nb.ipynb' },
+          },
+          {
+            type: 'tool_use',
+            id: 'toolu_B',
+            name: 'Bash',
+            input: { command: 'cat /Users/me/other/a.ts' },
+          },
+        ],
+      },
+    });
+
+    const calls = parseTranscriptToolCalls(jsonl);
+    const filesOf = (id: string): readonly string[] | undefined =>
+      calls.find((c) => c.toolUseId === id)?.filePaths;
+    expect(filesOf('toolu_E')).toEqual(['/Users/me/other/a.ts']);
+    expect(filesOf('toolu_NB')).toEqual(['/Users/me/other/nb.ipynb']);
+    // A path inside a command line is not a file the call names.
+    expect(filesOf('toolu_B')).toBeUndefined();
+  });
+
+  // One assistant record issuing one tool_use per entry, each under its own id.
+  function callsFor(
+    tools: { id: string; name: string; input: Record<string, unknown> }[],
+  ): ReturnType<typeof parseTranscriptToolCalls> {
+    return parseTranscriptToolCalls(
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-named',
+        cwd: '/Users/me/work',
+        timestamp: '2026-06-20T10:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: tools.map((t) => ({ type: 'tool_use', ...t })),
+        },
+      }),
+    );
+  }
+
+  it('lists the file any tool names, as the input spells it, whether or not it is a file tool', () => {
+    const calls = callsFor([
+      { id: 'toolu_mcp', name: 'mcp__fs__read', input: { file_path: '/Users/me/other/a.ts' } },
+      {
+        id: 'toolu_mcp_nb',
+        name: 'mcp__nb__run',
+        input: { notebook_path: '/Users/me/other/n.ipynb' },
+      },
+      { id: 'toolu_rel', name: 'mcp__fs__read', input: { file_path: 'src/a.ts' } },
+      {
+        id: 'toolu_rel_nb',
+        name: 'mcp__nb__run',
+        input: { notebook_path: '../other/n.ipynb' },
+      },
+      { id: 'toolu_none', name: 'mcp__fs__stat', input: { name: 'a.ts' } },
+    ]);
+    const filesOf = (id: string): readonly string[] | undefined =>
+      calls.find((c) => c.toolUseId === id)?.filePaths;
+
+    expect(filesOf('toolu_mcp')).toEqual(['/Users/me/other/a.ts']);
+    expect(filesOf('toolu_mcp_nb')).toEqual(['/Users/me/other/n.ipynb']);
+    // A relative path names a file too: it is listed as given, and the key rules
+    // read it against the call's cwd (and give it no key without an absolute one).
+    expect(filesOf('toolu_rel')).toEqual(['src/a.ts']);
+    expect(filesOf('toolu_rel_nb')).toEqual(['../other/n.ipynb']);
+    expect(filesOf('toolu_none')).toBeUndefined();
+  });
+
+  it('records the path a Grep, Glob or LS searches as its search root, as the input spells it', () => {
+    const calls = callsFor([
+      { id: 'toolu_grep', name: 'Grep', input: { pattern: 'x', path: '/Users/me/other' } },
+      { id: 'toolu_glob', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
+      { id: 'toolu_ls', name: 'LS', input: { path: '/Users/me/other/src' } },
+      { id: 'toolu_grep_rel', name: 'Grep', input: { pattern: 'x', path: 'src' } },
+      { id: 'toolu_grep_none', name: 'Grep', input: { pattern: 'x' } },
+      // `path` means a search root only on these three tools.
+      { id: 'toolu_mcp_path', name: 'mcp__fs__list', input: { path: '/Users/me/other' } },
+    ]);
+    const rootOf = (id: string): string | undefined =>
+      calls.find((c) => c.toolUseId === id)?.searchRoot;
+
+    expect(rootOf('toolu_grep')).toBe('/Users/me/other');
+    expect(rootOf('toolu_glob')).toBe('/Users/me/other');
+    expect(rootOf('toolu_ls')).toBe('/Users/me/other/src');
+    // A relative root is kept as given; the key rules read it against the cwd.
+    expect(rootOf('toolu_grep_rel')).toBe('src');
+    expect(rootOf('toolu_grep_none')).toBeUndefined();
+    expect(rootOf('toolu_mcp_path')).toBeUndefined();
+    // A search root is not a file the call names.
+    expect(calls.find((c) => c.toolUseId === 'toolu_grep')?.filePaths).toBeUndefined();
+  });
+
+  it('marks a Glob whose own pattern is absolute, or climbs out of its root, as keyless, and nothing else', () => {
+    const calls = callsFor([
+      { id: 'toolu_abs', name: 'Glob', input: { pattern: '/Users/me/other/**/*.ts' } },
+      {
+        id: 'toolu_abs_path',
+        name: 'Glob',
+        input: { pattern: '/Users/me/other/*.ts', path: '/Users/me/work' },
+      },
+      { id: 'toolu_rel', name: 'Glob', input: { pattern: '**/*.ts', path: '/Users/me/other' } },
+      // A relative pattern with a parent segment names a place outside its root, in
+      // whichever position or spelling the segment appears.
+      { id: 'toolu_up', name: 'Glob', input: { pattern: '../other/**/*.ts' } },
+      { id: 'toolu_up_mid', name: 'Glob', input: { pattern: 'src/../../other/*.ts' } },
+      { id: 'toolu_up_win', name: 'Glob', input: { pattern: '..\\other\\*.ts' } },
+      { id: 'toolu_up_end', name: 'Glob', input: { pattern: 'src/..' } },
+      { id: 'toolu_up_only', name: 'Glob', input: { pattern: '..' } },
+      { id: 'toolu_up_brace', name: 'Glob', input: { pattern: '{../other,src}/*.ts' } },
+      // Dots that are not a parent segment do not count.
+      { id: 'toolu_dots', name: 'Glob', input: { pattern: 'src/**/*..ts' } },
+      { id: 'toolu_ellipsis', name: 'Glob', input: { pattern: '.../*.ts' } },
+      // A Grep pattern is a regular expression, not a location.
+      { id: 'toolu_grep', name: 'Grep', input: { pattern: '/Users/me/other' } },
+      { id: 'toolu_grep_up', name: 'Grep', input: { pattern: '../other' } },
+    ]);
+    const keylessOf = (id: string): boolean | undefined =>
+      calls.find((c) => c.toolUseId === id)?.keyless;
+
+    expect(keylessOf('toolu_abs')).toBe(true);
+    expect(keylessOf('toolu_abs_path')).toBe(true);
+    expect(keylessOf('toolu_rel')).toBe(false);
+    for (const id of [
+      'toolu_up',
+      'toolu_up_mid',
+      'toolu_up_win',
+      'toolu_up_end',
+      'toolu_up_only',
+      'toolu_up_brace',
+    ]) {
+      expect(keylessOf(id), id).toBe(true);
+    }
+    expect(keylessOf('toolu_dots')).toBe(false);
+    expect(keylessOf('toolu_ellipsis')).toBe(false);
+    expect(keylessOf('toolu_grep')).toBe(false);
+    expect(keylessOf('toolu_grep_up')).toBe(false);
   });
 });
 

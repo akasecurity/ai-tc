@@ -23,6 +23,8 @@
 //   - SqliteFindingsRepository.listFindingLocations (the same scan chain)
 //   - SqliteFindingsRepository.findingInstance (per-finding status column,
 //     via FINDING_ROW_COLUMNS_SQL)
+//   - SqliteFindingsRepository.findingsOverview (latest status, joined as the
+//     derived table and classified by deriveFindingStatus)
 //   - SqliteFindingsRepository.healthSummary (latest status)
 //   - SqliteResolutionsRepository.openAtRestKeysForPath /
 //     resolvedAtRestKeysForPath (latest status)

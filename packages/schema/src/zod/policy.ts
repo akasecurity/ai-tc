@@ -145,11 +145,14 @@ export const PolicyBundle = z
     ruleVersions: z.record(z.string(), z.string()).optional(),
     // Model ids (the raw `model` string a harness reports, e.g.
     // `claude-opus-4-1`) the tenant has PROHIBITED. The plugin refuses to switch
-    // a session onto one (PreModelSwitch) and refuses a turn that would run on
-    // one (UserPromptSubmit). Optional so an older backend — and an older
-    // on-disk cache — still parses; consumers read `?? []`, which is the
-    // unenforced behaviour that predates this field and the safe direction to
-    // default.
+    // a session onto one (PreModelSwitch), refuses a turn that would run on one
+    // (UserPromptSubmit) and refuses a subagent spawn onto one (PreToolUse),
+    // wherever the organization governs the event: everywhere on a
+    // machine-wide attachment, and only in enrolled repositories on a scoped
+    // one (the plugin runtime's `governanceApplies`).
+    // Optional so an older backend — and an older on-disk cache — still
+    // parses; consumers read `?? []`, which is the unenforced behaviour that
+    // predates this field and the safe direction to default.
     //
     // Ids, not display names: the governance decision is keyed on the exact
     // string the harness reports (`model_status_override.versionId` in the

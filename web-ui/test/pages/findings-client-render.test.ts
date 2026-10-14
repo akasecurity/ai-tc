@@ -18,15 +18,17 @@
 // their counts) never reaches the markup, because a static render never opens
 // one.
 //
-// The tally's locale behaviour is out of reach for a different reason: the
-// separator in `6,456` is the RUNNER's, so the assertion below goes through
-// toLocaleString rather than a literal. That the mismatch is ACKNOWLEDGED — a
-// doc line on `Tally`, the form HarnessOverview's formatEvent uses — is a
-// property of the source, and this suite reads markup. Nothing here pins it.
+// The counts are formatted in the `locale` the route hands down, so the
+// separator in `6,456` is the PROP's rather than the runner's, and the
+// assertions below are literals. The de-DE case runs under a runtime whose
+// default locale is moved to en-US, so a count formatted in the runtime's own
+// locale instead of the prop's cannot pass it on any runner. That the server
+// render and the hydration then agree is locale-hydration.test.ts's.
 import type {
   FindingFacets,
   FindingInstanceDetail,
   FindingLocationSummary,
+  FindingsOverview,
   FindingTypeSummary,
   ListFindingInstancesResponse,
   ListFindingLocationsResponse,
@@ -36,6 +38,8 @@ import type React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+
+import { withRuntimeLocale } from '../../../test/helpers/runtime-locale.ts';
 
 // FindingsClient reaches the router through the shared navigation hook, which
 // throws outside a real Next app. Nothing calls it under a static render.
@@ -153,6 +157,16 @@ function locations(items: FindingLocationSummary[]): ListFindingLocationsRespons
   };
 }
 
+// Every count distinct, so a cell reading the wrong field shows a number that
+// belongs to a different label.
+const OVERVIEW: FindingsOverview = {
+  findings: 1234,
+  open: 78,
+  handled: 321,
+  resolved: 9,
+  dismissed: 56,
+};
+
 const COMMON = {
   filters: EMPTY_FILTERS,
   query: '',
@@ -163,8 +177,22 @@ const COMMON = {
   repo: '',
   file: '',
   renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+  locale: 'en-US',
   deployment: null,
+  overview: OVERVIEW,
 };
+
+// The page's Cards other than the summary strip — the panels. The strip is a
+// Card of its own above every view, so a bare count of `data-slot="card"` mixes
+// it in with the panels the cases below are about. Its own count is asserted to
+// be exactly one, so subtracting it can never quietly absorb a stray panel.
+function panelCardCount(html: string): number {
+  const all = html.match(/data-slot="card"/g)?.length ?? 0;
+  const strip =
+    html.match(/<div data-slot="card"[^>]*><div data-slot="summary-stat"/g)?.length ?? 0;
+  expect(strip, 'expected exactly one summary strip').toBe(1);
+  return all - strip;
+}
 
 function render(props: Record<string, unknown>): string {
   return renderToStaticMarkup(
@@ -239,8 +267,7 @@ describe('findings client — the By-type view', () => {
     expect(html).toContain(AWS);
     // Two cards here means two borders and two radii where the header meets the
     // table — the panel wraps nothing, the table carries the header itself.
-    const cards = html.match(/data-slot="card"/g) ?? [];
-    expect(cards).toHaveLength(2); // the types list, and the findings panel
+    expect(panelCardCount(html)).toBe(2); // the types list, and the findings panel
   });
 
   it('says why the detail side is empty rather than showing a blank card', () => {
@@ -272,12 +299,16 @@ describe('findings client — the By-type view', () => {
     // The findings total spans every listed type; the type count is the list's
     // own length. Both describe the whole scope, which is why they sit here and
     // not beside a filter that cannot move them.
-    //
-    // Asserted THROUGH toLocaleString rather than against a literal `6,456`:
-    // the thousands separator is the RUNNER's, so a hardcoded one fails
-    // wherever LANG is not en-*.
-    expect(html).toContain((6456).toLocaleString());
+    expect(html).toContain('6,456');
     expect(html).toContain('types');
+  });
+
+  it('formats the tally in the locale the route resolved, not the runtime’s', () => {
+    // The runtime default is pinned to en-US for the render, so a tally built
+    // with a bare toLocaleString() would read `6,456` here on every runner.
+    const html = withRuntimeLocale('en-US', () => grouped({ locale: 'de-DE' }));
+    expect(html).toContain('>6.456<');
+    expect(html).not.toContain('6,456');
   });
 });
 
@@ -366,7 +397,7 @@ describe('findings client — the other views', () => {
     expect(html).toContain('MASK-f1');
     // Two cards, not a border inside a border: the panel's header is a slot in
     // the table's own card rather than a wrapper around it.
-    expect((html.match(/data-slot="card"/g) ?? []).length).toBe(2);
+    expect(panelCardCount(html)).toBe(2);
   });
 
   // Two different empties, and the panel has to tell them apart the way the list
@@ -398,7 +429,7 @@ describe('findings client — the other views', () => {
     // had changed.
     const sub = /<p[^>]*>((?:(?!<\/p>).)*findings(?:(?!<\/p>).)*)<\/p>/.exec(html)?.[1] ?? '';
     expect(sub, 'no subtitle found to read the tally from').not.toBe('');
-    expect(sub).toContain((6456).toLocaleString());
+    expect(sub).toContain('6,456');
     expect(sub).toContain('locations');
     expect(sub).not.toContain('types');
   });
@@ -448,5 +479,36 @@ describe('findings client — the Deployment controls', () => {
       deployment: { canRetry: true },
     });
     expect(html.match(/>Deployment</g) ?? []).toHaveLength(2);
+  });
+});
+
+describe('findings client — the summary strip', () => {
+  // Each cell's value and label as one string, read from the `title` the strip
+  // carries per cell, so a value is checked against its OWN label rather than
+  // merely being somewhere on the page.
+  function stripCells(html: string): string[] {
+    return [...html.matchAll(/data-slot="summary-stat".*?title="([^"]+)"/gs)].map(
+      (m) => m[1] ?? '',
+    );
+  }
+
+  // What this case pins is each value beside its own label, in order, in the
+  // en-US locale COMMON hands the route.
+  const EXPECTED = ['1,234 Findings', '78 Open', '321 Handled', '9 Resolved', '56 Dismissed'];
+
+  it.for<[string, () => string]>([
+    ['By type', () => grouped()],
+    ['flat', () => render({ view: 'flat', flat: instances([instance('f1')]) })],
+    ['By location', () => files()],
+  ])('heads the %s view with the five whole-store counts', ([, draw]) => {
+    expect(stripCells(draw())).toEqual(EXPECTED);
+  });
+
+  it('formats the strip in the same locale as the tally beside it', () => {
+    // One reader, one separator: the strip and the tally both read the route's
+    // locale, under a runtime whose own default is something else.
+    const html = withRuntimeLocale('en-US', () => grouped({ locale: 'de-DE' }));
+    expect(stripCells(html)[0]).toBe('1.234 Findings');
+    expect(html).toContain('>6.456<');
   });
 });

@@ -16,6 +16,7 @@ import {
   createDecipheriv,
   createHmac,
   hkdfSync,
+  randomBytes,
   timingSafeEqual,
 } from 'node:crypto';
 
@@ -221,4 +222,15 @@ export function formatPointer(
   tag: Uint8Array,
 ): string {
   return `[[aka:${category}:${encodeKeyVersion(keyVersion)}.${base32Encode(pointerId)}.${base32Encode(tag)}]]`;
+}
+
+/**
+ * A new pointer under `master`: a random pointer id, tagged with the sign
+ * subkey derived from `master`. For a vault core that mints pointers without a
+ * store; the token resolves only through whatever holds the value it stands for.
+ */
+export function mintPointer(master: Uint8Array, keyVersion: number, category: string): string {
+  const pointerId = randomBytes(POINTER_ID_BYTES);
+  const tag = signPointer(deriveSubkeys(master).sign, keyVersion, pointerId, category);
+  return formatPointer(category, keyVersion, pointerId, tag);
 }

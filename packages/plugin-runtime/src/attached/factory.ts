@@ -4,7 +4,7 @@ import { readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
-import { isAttached } from '@akasecurity/schema';
+import { attachmentModeOf, isAttached, resolveScope } from '@akasecurity/schema';
 
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
@@ -15,6 +15,7 @@ import { writePostureReportState } from './posture-report-state.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
+import { deploymentNameForTerminal } from './status.ts';
 
 /**
  * What a resolving caller knows about itself, threaded to every gateway
@@ -72,6 +73,22 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     const credential = readControlPlaneCredential(config.settingsDir, connection);
     if (credential === null) return local;
 
+    // WHAT THIS GATEWAY MAY FORWARD, resolved once, here, from the two halves of
+    // the attachment this function already holds. The MODE comes from the
+    // credential: a machine credential carries none, and means machine. The
+    // enrolled keys come from the settings this config was loaded with, and are
+    // valid only for the endpoint the connection names. Resolved per gateway
+    // and never cached, so an enrollment change reaches the next resolve.
+    //
+    // Inside the `try` on purpose: a throw while resolving lands in the catch
+    // below and returns the LOCAL gateway, which forwards nothing. That is the
+    // safe direction for a scoping fault, and no client has been built yet.
+    const attachment = resolveScope({
+      mode: attachmentModeOf(credential),
+      scope: config.settings.attachmentScope,
+      endpoint: connection.endpoint,
+    });
+
     const client = createRemoteClient({
       endpoint: connection.endpoint,
       apiKey: credential.apiKey,
@@ -93,6 +110,10 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       dataDir: config.dataDir,
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
+      attachment,
+      // What the session-start line names the deployment, read from the
+      // connection this gateway forwards to, never from the credential.
+      deploymentName: deploymentNameForTerminal(connection),
       posture: createPostureReporter({
         // THROUGH THE BREAKER, and wrapped HERE rather than around
         // `PostureReporter.send`. The reporter swallows every error by
@@ -119,11 +140,15 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),
         now: () => Date.now(),
+        // The mode THIS gateway enforces, from the attachment resolved above,
+        // so the report cannot name a mode the forward paths are not using.
+        attachmentMode: attachment.mode,
         // The reporting build's identity, when the caller knows it (the plugin
         // adapters do; an embedder or a test may not). Composed with the SAME
         // policy store the sync child writes, so the block names the bundle
-        // actually in force. Key omitted rather than set undefined — the
-        // reporter keys on presence.
+        // actually in force. The dependency key is omitted when no build is
+        // known, and the reporter's optional call (`deps.pluginBlock?.()`)
+        // then adds no block.
         ...(meta?.pluginBuild === undefined
           ? {}
           : { pluginBlock: createPluginBlock(meta.pluginBuild, store) }),

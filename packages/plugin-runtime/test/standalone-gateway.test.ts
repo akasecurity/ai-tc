@@ -94,6 +94,32 @@ describe('StandaloneDataGateway', () => {
     await gw.close();
   });
 
+  it('stores the record scope key on the capture row, and none when the record carries none', async () => {
+    // The key rides the record beside the event. This is the hop where a
+    // gateway could drop it on the way to the writer, and nothing else in
+    // standalone mode would notice.
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordCapture({
+      event: event({ contentHash: 'hash-keyed' }),
+      findings: [],
+      scopeKey: 'github.com/acme/widgets',
+    });
+    await gw.recordCapture({ event: event({ contentHash: 'hash-unkeyed' }), findings: [] });
+    await gw.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const rows = raw
+      .prepare(
+        "SELECT content_hash, scope_key FROM audit_events WHERE event_type = 'prompt' ORDER BY content_hash",
+      )
+      .all() as { content_hash: string; scope_key: string | null }[];
+    raw.close();
+    expect(rows).toEqual([
+      { content_hash: 'hash-keyed', scope_key: 'github.com/acme/widgets' },
+      { content_hash: 'hash-unkeyed', scope_key: null },
+    ]);
+  });
+
   it('synthesizes a local policy bundle from the seeded policies (empty store → bundled fallback)', async () => {
     const gw = new StandaloneDataGateway(dir);
     const bundle = await gw.getPolicyBundle();
@@ -541,6 +567,36 @@ describe('StandaloneDataGateway — scan ledger', () => {
   });
 });
 
+describe('StandaloneDataGateway — the repository a ledgered file was in', () => {
+  it('records the key a scan read the file under, and lists it beside every path', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordScanned([
+      {
+        path: '/repo/a.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h1',
+        rulesetHash: 'rs1',
+        scopeKey: 'github.com/acme/work',
+      },
+      {
+        path: '/repo/b.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h2',
+        rulesetHash: 'rs2',
+      },
+    ]);
+
+    // Whatever ruleset a row was written under, like the path list.
+    expect(await gw.scanLedgerPathKeys()).toEqual(
+      new Map<string, string | undefined>([
+        ['/repo/a.ts', 'github.com/acme/work'],
+        ['/repo/b.ts', undefined],
+      ]),
+    );
+    await gw.close();
+  });
+});
+
 describe('rule probe verdict', () => {
   it('returns undefined for an unseen rule key', async () => {
     const gw = new StandaloneDataGateway(dir);
@@ -866,5 +922,148 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
     } finally {
       check.close();
     }
+  });
+});
+
+describe('readSessionScopeKey', () => {
+  const ENROLLED = 'github.com/org/api';
+  const PERSONAL = 'github.com/me/dotfiles';
+
+  // Roots are first-write-wins, so the attached gateway cannot read the key it
+  // just handed in and call it the stored one. This is the read that tells them
+  // apart.
+  it('reads back the key of the first root recorded, and nothing for a session it never saw', async () => {
+    const gateway = new StandaloneDataGateway(dir);
+    try {
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:30:00.000Z',
+        attributes: { scope_key: PERSONAL },
+      });
+      await gateway.recordAuditEvent({
+        id: 's-key',
+        eventType: 'session',
+        startedAt: '2026-09-02T10:31:00.000Z',
+        attributes: { scope_key: ENROLLED },
+      });
+
+      expect(gateway.readSessionScopeKey('s-key')).toBe(PERSONAL);
+      expect(gateway.readSessionScopeKey('s-absent')).toBeUndefined();
+    } finally {
+      await gateway.close();
+    }
+  });
+});
+
+describe("StandaloneDataGateway — a tool call's finding location", () => {
+  it('stores the line, column and excerpt the reconciler located', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    const context = {
+      basis: 'excerpt' as const,
+      firstLine: 1,
+      lines: ['run innerHTML = x'],
+      match: { line: 1, start: 4, end: 15 },
+    };
+    // The leaf hangs off its session root, which has to exist first.
+    await gw.recordAuditEvent({
+      id: 'sess-loc',
+      eventType: 'session',
+      startedAt: new Date().toISOString(),
+    });
+    await gw.recordToolCalls([
+      {
+        sessionId: 'sess-loc',
+        toolUseId: 'tool-loc',
+        parentId: 'sess-loc',
+        rootSessionId: 'sess-loc',
+        startedAt: new Date().toISOString(),
+        attributes: { tool_name: 'Bash', tool_use_id: 'tool-loc' },
+        inspections: [
+          {
+            ruleId: 'code-flaws/xss-inner-html',
+            ruleName: 'innerHTML assignment',
+            ruleVersion: '1',
+            category: 'code_flaw',
+            severity: 'high',
+            span: { start: 4, end: 15 },
+            maskedMatch: 'i*********=',
+            actionTaken: 'log',
+            confidence: 0.8,
+            line: 1,
+            col: 5,
+            context,
+          },
+        ],
+      },
+    ]);
+    await gw.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT line, col, context FROM inspection_findings`).get() as {
+        line: number;
+        col: number;
+        context: string;
+      };
+      expect(row.line).toBe(1);
+      expect(row.col).toBe(5);
+      expect(JSON.parse(row.context)).toEqual(context);
+    } finally {
+      raw.close();
+    }
+  });
+});
+
+describe("StandaloneDataGateway — a tool call finding's variable name", () => {
+  async function recordNamed(variableName: string | undefined): Promise<string | null> {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordAuditEvent({
+      id: 'sess-name',
+      eventType: 'session',
+      startedAt: new Date().toISOString(),
+    });
+    await gw.recordToolCalls([
+      {
+        sessionId: 'sess-name',
+        toolUseId: 'tool-name',
+        parentId: 'sess-name',
+        rootSessionId: 'sess-name',
+        startedAt: new Date().toISOString(),
+        attributes: { tool_name: 'Bash', tool_use_id: 'tool-name' },
+        inspections: [
+          {
+            ruleId: 'secrets/aws-access-key',
+            ruleName: 'AWS access key',
+            ruleVersion: '1',
+            category: 'secret',
+            severity: 'critical',
+            span: { start: 18, end: 38 },
+            maskedMatch: 'AKIA****************',
+            actionTaken: 'log',
+            confidence: 0.9,
+            ...(variableName === undefined ? {} : { variableName }),
+          },
+        ],
+      },
+    ]);
+    await gw.close();
+    const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT variable_name FROM inspection_findings`).get() as {
+        variable_name: string | null;
+      };
+      return row.variable_name;
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('stores the variable name the reconciler derived', async () => {
+    expect(await recordNamed('AWS_ACCESS_KEY_ID')).toBe('AWS_ACCESS_KEY_ID');
+  });
+
+  it('stores no name for a finding that carries none', async () => {
+    expect(await recordNamed(undefined)).toBeNull();
   });
 });

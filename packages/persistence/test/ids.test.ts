@@ -191,6 +191,24 @@ describe('shareDestinationId (caller-normalized host)', () => {
   });
 });
 
+describe('normalizeHost', () => {
+  it('trims and lowercases, then drops every trailing dot and nothing else', () => {
+    expect(normalizeHost('  Api.Example.COM...  ')).toBe('api.example.com');
+    expect(normalizeHost('a..b.')).toBe('a..b');
+    expect(normalizeHost('.example.com')).toBe('.example.com');
+    expect(normalizeHost('example.com. .')).toBe('example.com. ');
+    expect(normalizeHost(' ... ')).toBe('');
+    expect(normalizeHost('')).toBe('');
+  });
+
+  it('takes one pass however long a run of dots the host holds', { timeout: 5000 }, () => {
+    // A pattern anchored at the end of the string is retried from every dot of
+    // a run that is not trailing, which costs the square of the run's length.
+    const host = `a${'.'.repeat(300_000)}x`;
+    expect(normalizeHost(host)).toBe(host);
+  });
+});
+
 describe('shareEndpointId / shareCallSiteId', () => {
   it('shareEndpointId is stable for the golden vector', () => {
     expect(shareEndpointId('dest_abc', 'POST', 'https://api.newrelic.com/v1/ingest')).toBe(

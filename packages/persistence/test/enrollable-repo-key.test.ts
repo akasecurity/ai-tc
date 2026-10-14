@@ -1,0 +1,141 @@
+import { pathToFileURL } from 'node:url';
+
+import { AttachmentScopeEntry } from '@akasecurity/schema';
+import { describe, expect, it } from 'vitest';
+
+import { canonicalRepoUrl, enrollableRepoKey } from '../src/egress-wire.ts';
+
+// The key for a repository named by hand. Keys are compared byte for byte
+// against what a checkout stamps on its events, so a key that is almost right is
+// worse than none: it looks like a key and matches nothing. Every spelling below
+// is one a person can plausibly type.
+
+const ESC = String.fromCharCode(27);
+// Built from a char code, so spelling the Windows path below involves no escape
+// sequence.
+const BACKSLASH = String.fromCharCode(92);
+const KEY = 'github.com/acme/payments-api';
+
+const ACCEPTED: [string, string, string][] = [
+  ['an https clone URL', 'https://github.com/acme/payments-api', KEY],
+  ['an https clone URL with .git', 'https://github.com/acme/payments-api.git', KEY],
+  ['an https clone URL with a trailing slash', 'https://github.com/acme/payments-api/', KEY],
+  ['a clone URL with a capitalised host', 'https://GitHub.com/acme/payments-api.git', KEY],
+  ['an scp-style clone URL', 'github.com:acme/payments-api.git', KEY],
+  ['an ssh:// clone URL on a port', 'ssh://github.com:2222/acme/payments-api.git', KEY],
+  [
+    'a self-hosted forge on a port',
+    'https://git.example.com:8443/team/payments-api.git',
+    'git.example.com/team/payments-api',
+  ],
+  [
+    'an ssh config alias host',
+    'github.com-work:acme/payments-api.git',
+    'github.com-work/acme/payments-api',
+  ],
+  ['a typed canonical key', KEY, KEY],
+  [
+    'a typed key whose path keeps its case',
+    'github.com/Acme/Payments-API',
+    'github.com/Acme/Payments-API',
+  ],
+  ['a typed key in surrounding whitespace', `  ${KEY}  `, KEY],
+  [
+    'a typed key under nested groups',
+    'gitlab.com/acme/platform/payments-api',
+    'gitlab.com/acme/platform/payments-api',
+  ],
+  [
+    'a typed key on a host given as an address',
+    '10.0.0.5/team/payments-api',
+    '10.0.0.5/team/payments-api',
+  ],
+];
+
+const REFUSED: [string, string][] = [
+  // Almost canonical, typed: refused rather than repaired, so the difference is
+  // visible instead of silently rewritten.
+  ['a typed key with a capitalised host', 'GitHub.com/Org/Repo'],
+  ['a typed key with a trailing slash', `${KEY}/`],
+  ['a typed key with a .git suffix', `${KEY}.git`],
+  // A host and one path segment is refused: on GitHub it names an owner, not a
+  // repository, and a host alone names nothing.
+  ['a typed host and one path segment', 'github.com/org'],
+  ['a clone URL with one path segment', 'https://github.com/org'],
+  ['a host alone', 'github.com'],
+  // One path segment from a clone URL as well: from the text alone, a repository
+  // kept at the top of its host cannot be told from an owner.
+  ['an scp clone URL with one path segment', 'git@git.example.com:payments.git'],
+  ['an ssh:// clone URL with one path segment', 'ssh://git@git.example.com:29418/payments'],
+  ['an https clone URL with one path segment', 'https://git.example.com/payments.git'],
+  // A trailing-dot host names the same host, so it would be a second key for it.
+  ['a typed trailing-dot host', 'github.com./acme/payments-api'],
+  ['a clone URL with a trailing-dot host', 'https://github.com./acme/payments-api.git'],
+  // A typed relative path reads as a key whose host is `.`, `..` or `-`.
+  ['a host of two dots', '../acme/payments-api'],
+  ['a host of one dot', './acme/payments-api'],
+  ['a relative path', './payments-api'],
+  ['a parent-relative path', '../payments-api'],
+  ['a host that is a hyphen', '-/acme/payments-api'],
+  ['a host label that begins with a hyphen', '-github.com/acme/payments-api'],
+  ['an empty path segment', 'github.com/acme//payments-api'],
+  ['a dot-dot path segment', 'github.com/acme/../payments-api'],
+  // Absolute and Windows paths, a file URL, and text that cannot be a key at all
+  // (a query, nothing or only whitespace, a control character, an over-long key)
+  // are refused. A bare relative path such as `src/acme/payments-api` is not
+  // listed: it can read as a key whose host has no dot, and be accepted.
+  ['an absolute POSIX path', '/home/dev/payments-api'],
+  ['a Windows path', ['C:', 'Users', 'dev', 'payments-api'].join(BACKSLASH)],
+  ['a file URL', pathToFileURL('/srv/git/payments-api.git').href],
+  ['a query in the path', `${KEY}?ref=main`],
+  ['an empty string', ''],
+  ['only whitespace', '   '],
+  ['a control character', `${KEY}${ESC}[2J`],
+  ['a key longer than a scope entry may hold', `github.com/acme/${'x'.repeat(600)}`],
+];
+
+describe('enrollableRepoKey', () => {
+  it.each(ACCEPTED)('accepts %s', (_label, input, key) => {
+    expect(enrollableRepoKey(input)).toBe(key);
+  });
+
+  it.each(REFUSED)('refuses %s', (_label, input) => {
+    expect(enrollableRepoKey(input)).toBeUndefined();
+  });
+
+  it('refuses a one-segment clone URL by name although a checkout of it is keyed', () => {
+    // The trade the two-segment rule makes: a checkout cloned from this URL
+    // stamps this key on its events, and naming the URL by hand is refused.
+    const url = 'git@git.example.com:payments.git';
+    expect(canonicalRepoUrl(url)).toBe('git.example.com/payments');
+    expect(enrollableRepoKey(url)).toBeUndefined();
+  });
+
+  it('keys an owner URL like a repository, and refuses it by name all the same', () => {
+    // The other half of that trade: this key is well formed, but no repository
+    // cloned from GitHub carries it, so storing it would report an enrollment
+    // that matches nothing.
+    const url = 'https://github.com/acme';
+    expect(canonicalRepoUrl(url)).toBe('github.com/acme');
+    expect(enrollableRepoKey(url)).toBeUndefined();
+  });
+
+  it.each(ACCEPTED)(
+    'gives, for %s, a key that is itself accepted unchanged and can be stored',
+    (_l, input) => {
+      // Idempotent, and inside the scope entry's own rule, so a key this returns
+      // is one a second typing of it would accept again and the settings file
+      // can hold.
+      const key = enrollableRepoKey(input);
+      expect(key).toBeDefined();
+      expect(enrollableRepoKey(key ?? '')).toBe(key);
+      expect(
+        AttachmentScopeEntry.safeParse({
+          kind: 'repo',
+          identity: key,
+          enrolledAt: '2026-10-07T09:00:00.000Z',
+        }).success,
+      ).toBe(true);
+    },
+  );
+});

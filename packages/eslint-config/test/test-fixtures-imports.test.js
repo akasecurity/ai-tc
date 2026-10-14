@@ -13,8 +13,10 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // CLI and all three plugins.
 //
 // What keeps that from happening today is that `src/index.ts` does not
-// re-export the directory and the manifest exposes `.` alone — a property any
-// one line can undo. Until this suite existed the rule was stated in a comment
+// re-export the directory and the manifest exposes only `.` and
+// `./sqlite-free`, the second a subset of the first's bindings (held by
+// `packages/persistence/test/sqlite-free-entry.test.ts`) — a property any one
+// line can undo. Until this suite existed the rule was stated in a comment
 // at the top of `src/test-fixtures/index.ts` and checked by nobody, and it had
 // already drifted: the comment named `*.test.ts` and `*.bench.ts` while the
 // first non-spec importer, `test/helpers/corpus.ts`, was neither.
@@ -154,7 +156,8 @@ describe('the test-and-benchmark-only fixture directory', () => {
     const entry = readFileSync(join(REPO_ROOT, ENTRY), 'utf8');
 
     // What makes the rule structural rather than a request. The manifest below
-    // exposes `.` alone, so the directory is unreachable from another package —
+    // exposes only `.` and `./sqlite-free`, neither of which reaches the
+    // directory, so it is unreachable from another package —
     // re-export it here and every consumer of `@akasecurity/persistence` can
     // import the dataset, at which point no rule about THIS repo helps.
     const reachesFixtures = importSpecifiers(entry).some((spec) =>

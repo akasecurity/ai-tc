@@ -32,6 +32,10 @@ const noManagedSettingsGuard = fileURLToPath(
 //
 // `server-only` is aliased to an empty module: app/lib/db imports it, and the
 // real package throws at import time when loaded outside a React Server bundler.
+// `next/headers` is aliased to a stub for the same reason one level later: a
+// route's `headers()` call throws outside Next's request scope, and the page
+// suites call routes as plain functions. The stub answers with no headers unless
+// a test sets some, so a route resolves its default locale.
 //
 // `include` is pinned to test/ so `vitest run` never globs a built `.next/`
 // (left by any `next build`) into the run.
@@ -53,6 +57,7 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     alias: {
       'server-only': fileURLToPath(new URL('./test/setup/server-only-stub.ts', import.meta.url)),
+      'next/headers': fileURLToPath(new URL('./test/setup/next-headers-stub.ts', import.meta.url)),
     },
   },
 });

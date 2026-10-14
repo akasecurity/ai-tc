@@ -9,6 +9,7 @@ import {
   RedactFallback,
   TriageHit,
   VAULT_CONSENT_VERSION,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
   WORKSPACE_SETTINGS_SPEC_VERSION,
 } from '@akasecurity/schema';
@@ -36,10 +37,15 @@ import {
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
   HISTORY_SYNC_CHOICES,
+  HISTORY_SYNC_CHOICES_SCOPED,
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_DESCRIPTION,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_LABEL,
   HISTORY_SYNC_STALE_BADGE,
   HISTORY_SYNC_STALE_NOTICE,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
   managedUnrecognizedNotice,
@@ -59,11 +65,15 @@ import {
   VAULT_STALE_NOTICE,
   vaultChoiceOf,
   vaultConsentStale,
+  WEB_CHAT_ACCOUNT_CHOICES,
+  WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION,
   WEB_CHAT_CHOICES,
   WEB_CHAT_SECTION_DESCRIPTION,
   WEB_CHAT_SECTION_LABEL,
   WEB_CHAT_STALE_BADGE,
   WEB_CHAT_STALE_NOTICE,
+  WEB_CHAT_WITHHELD_BADGES,
+  WEB_CHAT_WITHHELD_NOTICES,
   webChatCaptureStale,
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,
@@ -132,6 +142,16 @@ const FORM_COPY: Record<string, string> = {
     HISTORY_SYNC_CHOICES.flatMap((c) => [
       [`HISTORY_SYNC_CHOICES.${c.value}.label`, c.label],
       [`HISTORY_SYNC_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
+  ...Object.fromEntries(
+    HISTORY_SYNC_CHOICES_SCOPED.flatMap((c) => [
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.label`, c.label],
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.description`, c.description],
     ]),
   ),
   ...Object.fromEntries(
@@ -758,7 +778,7 @@ describe('the connection section', () => {
     // the form stays on screen with the key still in it.
     const order: string[] = [];
     const clearKey = () => order.push('cleared');
-    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+    const onAttach = (...args: (string | undefined)[]) => order.push(`sent:${args.join('|')}`);
 
     submitAttach(
       { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },
@@ -1578,5 +1598,183 @@ describe('WorkspaceSettingsFormView width ownership', () => {
     expect(VIEW_SOURCE).toMatch(/\bw-20\b/); // the decoy is really in this file
     expect(rootClassName()).not.toContain('w-20');
     expect(rootClassName()).toContain('flex-col'); // and the root is what we got
+  });
+});
+
+describe('web-chat row on a machine that records nothing from a web chat', () => {
+  const settingsWith = (granted: boolean): WorkspaceSettings => ({
+    specVersion: WORKSPACE_SETTINGS_SPEC_VERSION,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...(granted
+      ? {
+          webChatCapture: {
+            responses: 'with-findings',
+            account: false,
+            consent: {
+              acknowledgedAt: '2026-07-30T00:00:00.000Z',
+              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+            },
+          },
+        }
+      : {}),
+  });
+
+  const render = (props: Partial<WorkspaceSettingsFormViewProps>, granted = true): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: settingsWith(granted),
+        onSave: () => undefined,
+        ...props,
+      }),
+    );
+
+  it('says why, and marks a grant that is not in force, on a personal device', () => {
+    const html = render({ webChatWithheld: 'personal-device' });
+    expect(html).toContain('data-slot="web-chat-withheld-notice"');
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['personal-device']);
+    expect(html).toContain(WEB_CHAT_WITHHELD_BADGES['personal-device']);
+  });
+
+  it('words an unreadable attachment as its own reason', () => {
+    const html = render({ webChatWithheld: 'unreadable-attachment' });
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['unreadable-attachment']);
+    expect(html).toContain(WEB_CHAT_WITHHELD_BADGES['unreadable-attachment']);
+  });
+
+  it('says a personal device still records in an enrolled account, and never a typed prompt', () => {
+    const notice = WEB_CHAT_WITHHELD_NOTICES['personal-device'];
+    expect(notice).toContain('`aka enroll --account`');
+    expect(notice).toMatch(/prompts you type are not recorded/i);
+    expect(WEB_CHAT_WITHHELD_BADGES['personal-device']).not.toBe(
+      WEB_CHAT_WITHHELD_BADGES['unreadable-attachment'],
+    );
+  });
+
+  it('carries no badge when there is no grant to contradict', () => {
+    const html = render({ webChatWithheld: 'personal-device' }, false);
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['personal-device']);
+    expect(html).not.toContain(WEB_CHAT_WITHHELD_BADGES['personal-device']);
+  });
+
+  it('says nothing more than the grant on a machine that records', () => {
+    // The control: the same granted row, unwithheld.
+    const html = render({});
+    expect(html).not.toContain('data-slot="web-chat-withheld-notice"');
+    for (const badge of Object.values(WEB_CHAT_WITHHELD_BADGES)) expect(html).not.toContain(badge);
+  });
+
+  it('keeps enforcement out of what is withheld', () => {
+    for (const notice of Object.values(WEB_CHAT_WITHHELD_NOTICES)) {
+      expect(notice).toMatch(/still blocked, redacted or warned on/i);
+    }
+  });
+});
+
+describe('the web chat account grant row', () => {
+  const base = (webChatCapture?: WorkspaceSettings['webChatCapture']): WorkspaceSettings => ({
+    specVersion: 3,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...(webChatCapture === undefined ? {} : { webChatCapture }),
+  });
+  // `null` is a machine whose mode the host did not report.
+  const render = (
+    settings: WorkspaceSettings,
+    attachmentMode: 'scoped' | 'machine' | null = 'scoped',
+  ): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        ...(attachmentMode === null ? {} : { attachmentMode }),
+      }),
+    );
+  // Anchored on the choice copy, as the capture row's cases are: the radios
+  // carry no value attribute.
+  const checked = (html: string, value: 'granted' | 'revoked'): boolean => {
+    const copy = WEB_CHAT_ACCOUNT_CHOICES.find((choice) => choice.value === value)?.description;
+    if (copy === undefined) throw new Error(`no ${value} choice`);
+    const at = html.indexOf(copy);
+    return html.slice(html.lastIndexOf('<label', at), at).includes('checked');
+  };
+
+  it('renders its own row, with the disclosure, on a personal device', () => {
+    const html = render(base());
+    expect(html).toContain('name="webChatAccountConsent"');
+    expect(html).toContain('data-slot="web-chat-account-disclosure"');
+    expect(html).toContain(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION.slice(0, 60));
+  });
+
+  // Enrolling is a personal device's, so another machine is not offered a grant
+  // whose only use is enrolling, and its page never names the enroll verb.
+  it('is not offered on another machine with no grant', () => {
+    for (const mode of ['machine', null] as const) {
+      const html = render(base(), mode);
+      expect(html).not.toContain('name="webChatAccountConsent"');
+      expect(html).not.toContain('aka enroll');
+    }
+  });
+
+  it('is still shown wherever the grant is on, so it can be revoked', () => {
+    const html = render(
+      base({
+        responses: 'with-findings',
+        account: true,
+        accountConsent: {
+          acknowledgedAt: '2026-07-30T00:00:00.000Z',
+          version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+        },
+      }),
+      'machine',
+    );
+    expect(html).toContain('name="webChatAccountConsent"');
+  });
+
+  it('names exactly what it records, and what it does not', () => {
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/organization id/);
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/first and last seen/);
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/nothing from the chat/i);
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/never sent anywhere/i);
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/does not turn web chat capture on/i);
+    expect(WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION).toMatch(/deletes the record/i);
+    expect(WEB_CHAT_ACCOUNT_CHOICES.map((choice) => choice.value)).toEqual(['revoked', 'granted']);
+  });
+
+  it('seeds from validity, independently of the capture grant', () => {
+    const capture = {
+      acknowledgedAt: '2026-07-30T00:00:00.000Z',
+      version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+    };
+    const accountConsent = {
+      acknowledgedAt: '2026-07-30T00:00:00.000Z',
+      version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+    };
+    const capturedOnly = render(
+      base({ responses: 'with-findings', account: false, consent: capture }),
+    );
+    const accountOnly = render(base({ responses: 'with-findings', account: true, accountConsent }));
+    // A switch on beside no grant, or a grant beside the switch off, is not granted.
+    const switchOnly = render(base({ responses: 'with-findings', account: true }));
+    expect(checked(capturedOnly, 'revoked')).toBe(true);
+    expect(checked(accountOnly, 'granted')).toBe(true);
+    expect(checked(switchOnly, 'revoked')).toBe(true);
+  });
+
+  it('emits only the choice string', () => {
+    type Emitted = Parameters<WorkspaceSettingsFormViewProps['onSave']>[0]['webChatAccountConsent'];
+    expectTypeOf<Emitted>().toEqualTypeOf<'granted' | 'revoked' | 'unchanged'>();
   });
 });

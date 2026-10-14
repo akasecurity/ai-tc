@@ -5,6 +5,10 @@ import pluginN from 'eslint-plugin-n';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import tseslint from 'typescript-eslint';
 
+import { commentNarrationPlugin } from './no-process-narration.js';
+
+export { commentNarrationPlugin, noProcessNarration } from './no-process-narration.js';
+
 // ai-tc is local-first: the OSS surface makes no network calls and talks to no
 // AKA service — all data lives in the local SQLite store under ~/.aka. Banning
 // the network primitives keeps that guarantee enforced by lint instead of by
@@ -148,12 +152,15 @@ export function noNetworkImports(opts = {}) {
 
 /**
  * The `no-restricted-syntax` rule value that bans *dynamic* access to the
- * network modules — `import('node:http')` and `require('axios')`, plus any npm-
- * client subpath (`import('axios/lib/adapters/http.js')`) — which the static
+ * network modules — `import('node:http')`, `require('axios')` and
+ * `process.getBuiltinModule('node:https')` (however the method is reached: off
+ * `process`, computed, optional or destructured), plus any npm-client subpath
+ * (`import('axios/lib/adapters/http.js')`) — which the static
  * `no-restricted-imports` rule cannot see. Intentionally NOT matched, since an
  * esquery selector cannot follow a binding and the ban targets accidents rather
- * than deliberate evasion: a non-literal specifier (`import(url)`, a template
- * literal), `require.resolve(...)`, and an aliased/indirected require
+ * than deliberate evasion: a non-literal specifier (`import(url)`,
+ * `getBuiltinModule(id)`, a template literal), `require.resolve(...)`, and an
+ * aliased/indirected require or loader
  * (`const req = createRequire(...); req('node:http')`). `allow` drops specific
  * specifiers, symmetric with `noNetworkImports`, so a file that opts out of a
  * static import can opt out of the dynamic form too.
@@ -194,6 +201,10 @@ function networkSyntaxSelectors(opts = {}) {
     },
     {
       selector: `CallExpression[callee.name='require'] > Literal[value=/^(${pattern})$/]`,
+      message: NO_NETWORK_MESSAGE,
+    },
+    {
+      selector: `CallExpression:matches([callee.name='getBuiltinModule'], [callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule']) > Literal[value=/^(${pattern})$/]`,
       message: NO_NETWORK_MESSAGE,
     },
   ];
@@ -317,6 +328,29 @@ export function drizzleWallRules(opts = {}) {
   };
 }
 
+// Code comments carry the durable reason a reader needs, never the development
+// history that produced the code. Comment CONTENT is unreachable from an AST
+// selector, so this is a rule rather than a `no-restricted-syntax` entry.
+//
+// Spread per package (like `noDrizzleImports`) rather than folded into `base`:
+// the existing violations are a backlog, and a package adopts the rule in the
+// same change that clears its own.
+/**
+ * @param {{ conventionsFile?: string, allowPatterns?: string[], disableProbes?: string[] }} [opts]
+ * @returns {import('eslint').Linter.RulesRecord}
+ */
+export function commentNarrationRules(opts = {}) {
+  return { 'comment-narration/no-process-narration': ['error', opts] };
+}
+
+/** @type {import('typescript-eslint').ConfigArray} */
+export const noCommentNarration = [
+  {
+    plugins: { 'comment-narration': commentNarrationPlugin },
+    rules: commentNarrationRules(),
+  },
+];
+
 /** @type {import('typescript-eslint').ConfigArray} */
 export const noDrizzleImports = [{ rules: drizzleWallRules() }];
 
@@ -431,10 +465,73 @@ function ambientClockSelectors(opts = {}) {
   ];
 }
 
+const AMBIENT_LOCALE_MESSAGE =
+  "Formatting a number or a date without a locale reads the RENDERER's own locale. A " +
+  '`use client` component renders TWICE — on the server and again when the browser ' +
+  'hydrates it — and the two need not share a locale, so the text differs and React ' +
+  'discards the server HTML for the subtree; a server component renders once, but in the ' +
+  "Node process's locale rather than the reader's. Take the `locale` the route resolved " +
+  'from the request (`renderLocale()` in web-ui) as a prop and format through ' +
+  '`formatNumber` / `formatDateTime` from @akasecurity/dashboard-ui, or name a locale ' +
+  "literal where the format is a fixed convention rather than the reader's.";
+
+/**
+ * The `no-restricted-syntax` entries that reject a number or date formatted in
+ * the RUNTIME's default locale — inside a module carrying the `use client`
+ * directive, or, with `everyModule: true`, inside every module in scope.
+ *
+ * "The runtime's default" is the three spellings that select it: no locale
+ * argument at all, an empty array, and a literal `undefined`. They are rejected
+ * on `toLocaleString` / `toLocaleDateString` / `toLocaleTimeString` and on the
+ * `Intl` formatter constructors, called with or without `new`. A NAMED locale —
+ * a variable such as the `locale` prop, or a literal such as the `'en-US'`
+ * compact notation is pinned to — is not a default and passes.
+ *
+ * Unlike the clock, nothing in a UI package has to read the runtime's locale:
+ * a server component that wants the reader's takes it from the request. So the
+ * widening is safe for `web-ui`'s routes as well as the two presentational
+ * packages, where for the clock it is not.
+ *
+ * Known limits, in the shape the clock ban states its own: a locale argument
+ * that is a variable holding `undefined`, an aliased method
+ * (`const f = n.toLocaleString; f()`), a constructor reached through a renamed
+ * `Intl`, and `localeCompare` (collation, not display) are not matched. Nor is
+ * any spelling the selectors cannot read a name or an argument off: a computed
+ * member (`n['toLocaleString']()`, `new Intl['NumberFormat']()`), since the
+ * property is then a literal with no `name`; a spread first argument
+ * (`n.toLocaleString(...[])`); and a detached call
+ * (`Number.prototype.toLocaleString.call(n)`, `.apply`). Each is the same bypass
+ * as an alias.
+ *
+ * @param {{ everyModule?: boolean }} [opts]
+ * @returns {{ selector: string, message: string }[]}
+ */
+function ambientLocaleSelectors(opts = {}) {
+  const { everyModule = false } = opts;
+  const scope = everyModule ? '' : "Program:has(> ExpressionStatement[directive='use client']) ";
+  const callees = [
+    'CallExpression[callee.property.name=/^toLocale(?:String|DateString|TimeString)$/]',
+    ':matches(CallExpression, NewExpression)[callee.object.name="Intl"]' +
+      '[callee.property.name=/^(?:NumberFormat|DateTimeFormat|RelativeTimeFormat|PluralRules|ListFormat|DisplayNames)$/]',
+  ];
+  const defaults = [
+    '[arguments.length=0]',
+    "[arguments.0.type='ArrayExpression'][arguments.0.elements.length=0]",
+    "[arguments.0.type='Identifier'][arguments.0.name='undefined']",
+  ];
+  return callees.flatMap((callee) =>
+    defaults.map((arg) => ({
+      selector: `${scope}${callee}${arg}`,
+      message: AMBIENT_LOCALE_MESSAGE,
+    })),
+  );
+}
+
 // The assembled `no-restricted-syntax` value for the packages that render in a
 // browser: ui-kit, dashboard-ui and web-ui. Named for the tonal guard it was
 // introduced to carry; it is the ONE entry these packages get, so it also carries
-// the ambient-clock ban and, below, the two bans it must not drop.
+// the ambient-clock and ambient-locale bans and, below, the two bans it must not
+// drop.
 //
 // It re-lists the network AND drizzle selectors rather than only its own, because
 // a flat-config `rules` entry REPLACES the rule's options instead of merging them
@@ -451,11 +548,16 @@ function ambientClockSelectors(opts = {}) {
  * That is exactly what a per-file opt-out has to do, which is why the only
  * supported way to write one is to call this with the group turned off:
  *
- *   { files: ['src/lib/useRenderClock.ts'],
- *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowAmbientClock: true }) } }
+ *   { files: ['test/helpers/loopback.ts'],
+ *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowNetwork: ['node:http'] }) } }
  *
- * The other three groups come along by construction, so an opt-out for one ban
- * cannot become an opt-out for four by omission.
+ * The other groups come along by construction, so an opt-out for one ban
+ * cannot become an opt-out for all five by omission. A WIDENING does not: it is
+ * an option too, so an entry that does not name it narrows that file back to
+ * the directive-scoped floor. In `dashboard-ui`/`ui-kit` `src/**` that is what
+ * `presentationalSyntaxBans` is for — its own doc has the exemption written
+ * through it — and in web-ui's `app/**` an entry has to pass
+ * `ambientLocaleEveryModule: true` itself.
  *
  * `allowNetwork` is the same idea for the network group, and takes module names
  * rather than a boolean: a file that legitimately binds a loopback socket needs
@@ -471,19 +573,53 @@ function ambientClockSelectors(opts = {}) {
  * `allowAmbientClock` wins if both are set, since a file that opted all the
  * way out has nothing left to widen.
  *
+ * `allowAmbientLocale` and `ambientLocaleEveryModule` are the same pair for the
+ * ambient-locale group (`ambientLocaleSelectors`), and `allowAmbientLocale`
+ * wins the same way.
+ *
  * @param {{ allowAmbientClock?: boolean, allowNetwork?: readonly string[],
- *   ambientClockEveryModule?: boolean }} [opts]
+ *   ambientClockEveryModule?: boolean, allowAmbientLocale?: boolean,
+ *   ambientLocaleEveryModule?: boolean }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function reactSyntaxBans(opts = {}) {
-  const { allowAmbientClock = false, allowNetwork = [], ambientClockEveryModule = false } = opts;
+  const {
+    allowAmbientClock = false,
+    allowNetwork = [],
+    ambientClockEveryModule = false,
+    allowAmbientLocale = false,
+    ambientLocaleEveryModule = false,
+  } = opts;
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
     ...networkSyntaxSelectors({ allow: allowNetwork }),
     ...drizzleSyntaxSelectors(),
     ...tonalInkSelectors(),
     ...(allowAmbientClock ? [] : ambientClockSelectors({ everyModule: ambientClockEveryModule })),
+    ...(allowAmbientLocale
+      ? []
+      : ambientLocaleSelectors({ everyModule: ambientLocaleEveryModule })),
   ]);
+}
+
+/**
+ * `reactSyntaxBans` for a PRESENTATIONAL package (`dashboard-ui`, `ui-kit`): the
+ * ambient-clock and ambient-locale widenings are ON unless an option turns them
+ * off. Every `src/**` value those packages get goes through here — the
+ * package-wide entry and any per-file opt-out alike — because a per-file entry
+ * re-states the WHOLE rule, so one written through bare `reactSyntaxBans` to
+ * lift one ban silently narrows the other widening back to the directive-scoped
+ * floor for that file.
+ *
+ * @param {Parameters<typeof reactSyntaxBans>[0]} [opts]
+ * @returns {import('eslint').Linter.RuleEntry}
+ */
+export function presentationalSyntaxBans(opts = {}) {
+  return reactSyntaxBans({
+    ambientClockEveryModule: true,
+    ambientLocaleEveryModule: true,
+    ...opts,
+  });
 }
 
 /** @type {import('eslint').Linter.Config[]} */
@@ -496,17 +632,18 @@ export const tonalInkTokens = [
 ];
 
 /**
- * The same assembled value, with the ambient-clock ban widened to every
- * module in the package rather than only ones carrying `use client`. For
- * `dashboard-ui` and `ui-kit`: both are pure-presentational packages that
- * never legitimately capture a render instant (that is `web-ui`'s
- * `renderInstant()`, outside either), so the directive is not what should
- * decide whether a clock read there is caught — see `ambientClockSelectors`.
+ * The same assembled value, with the ambient-clock and ambient-locale bans
+ * widened to every module in the package rather than only ones carrying
+ * `use client`. For `dashboard-ui` and `ui-kit`: both are pure-presentational
+ * packages that never legitimately capture a render instant (that is
+ * `web-ui`'s `renderInstant()`, outside either) or read the runtime's locale,
+ * so the directive is not what should decide whether either is caught — see
+ * `ambientClockSelectors` and `ambientLocaleSelectors`.
  */
 export const tonalInkTokensPresentational = [
   {
     rules: {
-      'no-restricted-syntax': reactSyntaxBans({ ambientClockEveryModule: true }),
+      'no-restricted-syntax': presentationalSyntaxBans(),
     },
   },
 ];
@@ -595,6 +732,20 @@ export const rootConfigFiles = [
     ...tseslint.configs.disableTypeChecked,
   },
 ];
+
+// The same switch for whole directories of tracked source that no tsconfig owns:
+// code a host loads by its own rules (a Claude Code mod imports a module the
+// host provides, which is not in the repo) and Node build scripts. They stay
+// behind the no-network ban, which is syntactic, and lose only the type-aware
+// rules that cannot resolve. Spread AFTER the block that turns `projectService`
+// on, and name the globs (root-anchored, e.g. `hooks/**`).
+/**
+ * @param {string[]} files
+ * @returns {import('eslint').Linter.Config[]}
+ */
+export function untypedSource(files) {
+  return [{ files, ...tseslint.configs.disableTypeChecked }];
+}
 
 // A standalone config that enforces ONLY the no-network guarantee — the four
 // bans above and nothing else. Point a second lint pass at it (see cli's

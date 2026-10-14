@@ -9,13 +9,13 @@
 // Type-only: the scanner is an injected seam (see TargetScanner below), so
 // this module never touches @akasecurity/detections or the bundled packs
 // itself — it stays pure and cheap to unit-test.
-import type { ScanFinding } from '@akasecurity/plugin-sdk';
+import type { LocatedScanFinding } from '@akasecurity/plugin-sdk';
 import type {
   LlmCallAttributes,
   LlmCallInput,
   ToolCallAttributes,
   ToolCallInput,
-  ToolCallInspection,
+  ToolCallInspectionInput,
   WebExchange,
 } from '@akasecurity/schema';
 import { RESPONSE_TEXT_MAX_BYTES } from '@akasecurity/schema';
@@ -55,7 +55,7 @@ const TARGET_SCAN_MAX_BYTES = 64 * 1024;
 const MAX_TOOL_CALLS = 256;
 
 /** How a tool-call target is inspected on the host. Injected so this module stays pure. */
-export type TargetScanner = (text: string) => { masked: string; findings: ScanFinding[] };
+export type TargetScanner = (text: string) => { masked: string; findings: LocatedScanFinding[] };
 
 /**
  * Cut `text` to at most `maxBytes` UTF-8 bytes, on a character boundary.
@@ -133,6 +133,7 @@ export function toLlmCallInput(
   exchange: WebExchange,
   sessionId: string,
   tool: WebSourceTool,
+  scopeKey?: string,
 ): LlmCallInput | null {
   const messageId = trimmed(exchange.messageId);
   if (messageId === undefined) return null;
@@ -187,6 +188,10 @@ export function toLlmCallInput(
   // omitted, never false.
   if (exchange.truncated) attrs.response_truncated = true;
 
+  // The account the request named, as its scope key: local-only, stripped on
+  // every forward, and what a scoped attachment decides this leaf by.
+  if (scopeKey !== undefined) attrs.scope_key = scopeKey;
+
   return {
     sessionId,
     messageId,
@@ -215,6 +220,7 @@ export function toToolCallInputs(
   exchange: WebExchange,
   sessionId: string,
   scanTarget: TargetScanner,
+  scopeKey?: string,
 ): ToolCallInput[] {
   const conversationId = trimmed(exchange.conversationId);
   const seen = new Set<string>();
@@ -237,7 +243,7 @@ export function toToolCallInputs(
     const toolName = trimmed(tc.toolName);
     if (toolName !== undefined) attrs.tool_name = toolName;
 
-    let inspections: ToolCallInspection[] = [];
+    let inspections: ToolCallInspectionInput[] = [];
     if (tc.target !== undefined) {
       // Mask the target, THEN size-cap the masked value — masking first
       // guarantees a secret is redacted whole before truncation. What is
@@ -257,6 +263,10 @@ export function toToolCallInputs(
         maskedMatch: f.maskedMatch,
         actionTaken: 'log',
         confidence: f.confidence,
+        line: f.location.line,
+        col: f.location.col,
+        context: f.location.context,
+        ...(f.variableName === undefined ? {} : { variableName: f.variableName }),
       }));
     }
 
@@ -264,6 +274,8 @@ export function toToolCallInputs(
     if (tc.inputSize !== undefined) attrs.input_size = tc.inputSize;
     if (tc.outputSize !== undefined) attrs.output_size = tc.outputSize;
     if (conversationId !== undefined) attrs.run_key = conversationId;
+    // As on the llm_call leaf: the request's account, local-only.
+    if (scopeKey !== undefined) attrs.scope_key = scopeKey;
 
     inputs.push({
       sessionId,

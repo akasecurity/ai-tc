@@ -37,6 +37,7 @@ function render(props: Partial<Parameters<typeof SeverityCardView>[0]> = {}) {
       total={35}
       isLoading={false}
       error={null}
+      locale="en-US"
       {...props}
     />,
   );

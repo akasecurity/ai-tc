@@ -1,3 +1,4 @@
+export { BUNDLED_PACKS } from './bundled-packs.generated.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
 export type { ResolveConfigInventoryInput } from './config-inventory.ts';
@@ -18,6 +19,7 @@ export type {
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
+  ProjectEgressContext,
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
@@ -29,6 +31,8 @@ export {
 } from './data-gateway.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
+export type { FindingContextHit, FindingLocator, FindingLocatorInput } from './finding-context.ts';
+export { createFindingLocator, evidenceLookup } from './finding-context.ts';
 export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';
@@ -39,7 +43,12 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
-export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
+export type {
+  BoundedScanRequest,
+  GuardedScanner,
+  GuardedScanOptions,
+  GuardedScanPartition,
+} from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
 export type { HookFailOpens } from './hook-fail-opens.ts';
 export {
@@ -83,6 +92,7 @@ export type {
   CompleteIsolatedScanOptions,
   IsolatedFailure,
   IsolatedProbeOutcome,
+  IsolatedScanJobOptions,
   IsolatedScanner,
   IsolatedScanOptions,
   IsolatedScanOutcome,
@@ -93,8 +103,10 @@ export {
   ISOLATED_SCAN_BUDGET_MS,
   ISOLATED_START_BUDGET_MS,
 } from './isolated-scan.ts';
-export type { ScanFinding } from './mask.ts';
-export { maskText, scanText } from './mask.ts';
+export type { LocatedScanFinding, ScanFinding } from './mask.ts';
+export { bundledMaskingRules, maskText, scanText } from './mask.ts';
+export type { PromptRedactionMode } from './mod-host-mode.ts';
+export { promptRedactionLines, promptRedactionMode } from './mod-host-mode.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
   buildModelRefusalEvent,
@@ -147,10 +159,12 @@ export {
   RawEgressError,
   safeMaskedMatch,
 } from './raw-egress.ts';
+export type { RepoAttribution } from './repo.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,
+  resolveRepoAttribution,
   resolveRepoIdentity,
   resolveRepoNwo,
   resolveWorktreeRoot,
@@ -159,32 +173,34 @@ export {
   bundledDetections,
   registerBundledPacks,
   registerRulePack,
+  shippedRegexMatchers,
   uniqueRuleIds,
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
-export type { CaptureOptions, DecisionOptions, PluginRuntime } from './runtime.ts';
-export { createPluginRuntime } from './runtime.ts';
+export type {
+  CaptureOptions,
+  DecisionOptions,
+  DeferredCapture,
+  LargeInputScanOptions,
+  PluginRuntime,
+  PluginRuntimeOptions,
+} from './runtime.ts';
+export {
+  createPluginRuntime,
+  LARGE_INPUT_SCAN_BUDGET_MS,
+  LARGE_INPUT_START_BUDGET_MS,
+  LARGE_INPUT_THRESHOLD_CHARS,
+} from './runtime.ts';
+export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';
-export type {
-  CreateVaultGlueOptions,
-  DetokenizeTextOptions,
-  DetokenizeTextResult,
-  ModelDerefGrantResolver,
-  SubstitutePointersResult,
-  TokenizeTextResult,
-  TokenizeValueMeta,
-  VaultCore,
-  VaultGlue,
-} from './tokenize.ts';
+export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,
   describePointerSafe,
   detokenizeText,
-  hasPointer,
-  POINTER_UNAVAILABLE_TEXT,
   substituteModelPointers,
   tokenizeText,
   tokenizeValue,
@@ -196,6 +212,17 @@ export type {
   CaptureInput,
   CaptureResult,
 } from './types.ts';
+export type {
+  DetokenizeTextOptions,
+  DetokenizeTextResult,
+  ModelDerefGrantResolver,
+  SubstitutePointersResult,
+  TokenizeTextResult,
+  TokenizeValueMeta,
+  VaultCore,
+  VaultGlue,
+} from './vault-glue.ts';
+export { hasPointer, POINTER_UNAVAILABLE_TEXT } from './vault-glue.ts';
 export { maskMatch } from '@akasecurity/detections';
 // The read-time token cost/rollup logic moved to `@akasecurity/schema` (pure, no
 // Node-API deps) so the OSS Activity surfaces + CLI/TUI can price tokens without

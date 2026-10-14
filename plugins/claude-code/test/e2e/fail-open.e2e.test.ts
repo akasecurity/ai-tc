@@ -23,7 +23,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  readHookFailOpens,
+} from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -407,6 +411,19 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
     return realpathSync(victim);
   }
 
+  // Where a hook's once-per-session warning lands. SessionStart puts it on its
+  // systemMessage, the one channel its host shows the user; every other hook
+  // writes it to stderr, because its stdout carries at most one decision object.
+  function warningChannel(hookName: string, result: { stdout: string; stderr: string }): string {
+    if (hookName !== 'session-start') return result.stderr;
+    try {
+      const message = (JSON.parse(result.stdout) as { systemMessage?: unknown }).systemMessage;
+      return typeof message === 'string' ? message : '';
+    } catch {
+      return '';
+    }
+  }
+
   for (const hook of HOOKS) {
     describe(hook.name, () => {
       it('valid input, symlinked ~/.aka → exit 0 AND the redirection is surfaced', (ctx) => {
@@ -426,10 +443,13 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           // …and the warning is really there. Without this the row would pass
           // just as happily against the silence this behaviour replaced, which
           // is the whole defect: exit 0 and no output IS the broken state here.
-          expect(result.stderr).toContain('is a symlink');
-          expect(result.stderr).toContain(victim);
+          const warning = warningChannel(hook.name, result);
+          expect(warning).toContain('is a symlink');
+          expect(warning).toContain(victim);
           // The mode the store inherits is the half a reader can act on.
-          expect(result.stderr).toContain('NOT owner-only');
+          expect(warning).toContain('NOT owner-only');
+          // Said once: SessionStart's warning moved off stderr, not beside it.
+          if (hook.name === 'session-start') expect(result.stderr).not.toContain('is a symlink');
 
           // The harm the warning is about, pinned so the row cannot go quiet
           // because the redirection stopped rather than because it is now said.
@@ -460,7 +480,7 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           expectNoActionKey(result.stdout);
           // Reported rather than swallowed: a link to nothing is exactly the
           // state where staying quiet reads as a healthy home.
-          expect(result.stderr).toContain('does not exist');
+          expect(warningChannel(hook.name, result)).toContain('does not exist');
         });
       }, 35_000);
     });
@@ -1121,4 +1141,58 @@ describe('a field too large to scan in time is refused, not passed', () => {
       });
     });
   }
+});
+
+describe('post-tool-use counts a response the bounds cut short as a fail-open', () => {
+  // RESPONSE_MAX_TOTAL_CHARS is 5,000,000. The secret sits on the last line,
+  // so it is past the cap in the longer stdout and inside it in the shorter.
+  // Filler lines keep every chunk cut on a newline.
+  //
+  // This is the integration check that the size bound counts a fail-open. The
+  // longer case's count is also what a scan-deadline cut would produce, so it
+  // cannot tell the two apart; the unit suite (test/hooks/tool-response.test.ts)
+  // pins the boundary itself, asserting collectResponseFields reports
+  // `truncated` for this same 5,000,050-character stdout and not for 4,999,000.
+  const line = `build step ${'q'.repeat(88)}\n`;
+  const stdoutOf = (length: number): string => {
+    const tail = `TWILIO_KEY=${SECRET}\n`;
+    const fill = line.repeat(Math.ceil(length / line.length)).slice(0, length - tail.length);
+    return fill + tail;
+  };
+  const run = (home: string, stdout: string) =>
+    runHook(
+      'post-tool-use',
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'make' },
+        tool_response: { stdout, stderr: '', interrupted: false, isImage: false },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostToolUse',
+      }),
+      { env: tempHomeEnv(home), timeoutMs: 60_000 },
+    );
+
+  it('a 5,000,050-character stdout leaves the secret unscanned and counts it', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const stdout = stdoutOf(5_000_050);
+      expect(stdout).toHaveLength(5_000_050);
+      const result = run(home, stdout);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(readHookFailOpens(join(home, '.aka', 'data'))).toMatchObject({ failOpens: 1 });
+    });
+  }, 120_000);
+
+  it('a 4,999,000-character stdout is scanned whole and counts nothing', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = run(home, stdoutOf(4_999_000));
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('"updatedToolOutput"');
+      expectNoEchoOf(result.stdout, SECRET);
+      expect(readHookFailOpens(join(home, '.aka', 'data'))).toBeNull();
+    });
+  }, 120_000);
 });

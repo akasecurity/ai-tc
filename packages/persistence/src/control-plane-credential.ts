@@ -345,6 +345,28 @@ export function readControlPlaneAttachmentMode(
 }
 
 /**
+ * Whether this machine is attached as a personal device: it holds a scoped
+ * credential for `connection`'s deployment.
+ *
+ * The answer `aka sync-history` words its help by. It reads only the credential
+ * and not whether the settings say attached, so a half attachment that still
+ * holds a scoped credential counts. False for no connection, no usable
+ * credential, a credential bound to another endpoint, and a settings directory
+ * that cannot be read. Never throws.
+ *
+ * Not what decides whether a web chat is recorded: false is the wrong answer
+ * there for a credential that cannot be read, so the native host, `aka
+ * extension status` and the dashboard ask `webChatWithholding`, which fails
+ * closed.
+ */
+export function isScopedAttachment(
+  settingsDir: string,
+  connection: ControlPlaneConnection | undefined,
+): boolean {
+  return readControlPlaneAttachmentMode(settingsDir, connection) === 'scoped';
+}
+
+/**
  * The plain-language reason `writeControlPlaneCredential` refused an endpoint,
  * beneath `refusing to store a control-plane credential for <origin>:` — never
  * the raw endpoint, since the `userinfo` case exists to keep a password

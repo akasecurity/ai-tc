@@ -72,3 +72,42 @@ describe('claudeAdapter', () => {
     expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('claudeAdapter.workspaceOf', () => {
+  const ORG = '0a1b2c3d-0000-4000-8000-00000000000a';
+  const CONVERSATION = '0a1b2c3d-0000-4000-8000-00000000000b';
+  const completion = (org: string): string =>
+    `https://claude.ai/api/organizations/${org}/chat_conversations/${CONVERSATION}/completion`;
+  const endpoint = claudeAdapter.endpoints[0];
+  if (endpoint === undefined) throw new Error('the claude adapter declares no endpoint');
+  const read = (url: string): string | undefined => claudeAdapter.workspaceOf?.({ url, endpoint });
+
+  it('reads the organization the completion request names', () => {
+    expect(read(completion(ORG))).toBe(ORG);
+  });
+
+  it('reads each request on its own, so a switch between turns is seen on the next one', () => {
+    const other = '0a1b2c3d-0000-4000-8000-00000000000c';
+    expect(read(completion(ORG))).toBe(ORG);
+    expect(read(completion(other))).toBe(other);
+  });
+
+  it('ignores a query string', () => {
+    expect(read(`${completion(ORG)}?rendering_mode=messages`)).toBe(ORG);
+  });
+
+  it('reads nothing off a route that is not the completion route', () => {
+    expect(
+      read(`https://claude.ai/api/organizations/${ORG}/chat_conversations/${CONVERSATION}`),
+    ).toBeUndefined();
+    expect(read(`https://claude.ai/api/organizations/${ORG}/projects`)).toBeUndefined();
+    expect(
+      read(`https://claude.ai/organizations/${ORG}/chat_conversations/${CONVERSATION}/completion`),
+    ).toBeUndefined();
+  });
+
+  it('reads nothing off a url it cannot parse', () => {
+    expect(read('not a url')).toBeUndefined();
+    expect(read('')).toBeUndefined();
+  });
+});

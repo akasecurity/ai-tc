@@ -662,6 +662,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/helpers/remove-tree.ts',
   'test/helpers/repo-akaignore.ts',
   'test/helpers/runtime-locale.ts',
+  'test/helpers/sighting-sender-guard.ts',
   'test/helpers/store-template.ts',
   'test/helpers/turbo-inputs.ts',
   'test/setup/no-managed-settings.ts',

@@ -251,6 +251,10 @@ interface InFlight {
   // nobody set rather than one nothing was found for.
   model: string | undefined;
   conversationId: string | undefined;
+  // The workspace this request's own URL names (ProviderAdapter.workspaceOf),
+  // carried to the host beside the exchange. Undefined for a route that names
+  // none, or an adapter that reads none.
+  workspace: string | undefined;
   // The tap stopped pulling at its own ceiling: a finished exchange whose text
   // is short of the reply.
   truncatedOnWire: boolean;
@@ -350,11 +354,21 @@ export function createBridge(options: BridgeOptions): Bridge {
       parseFailures += 1;
     }
 
+    let workspace: string | undefined;
+    try {
+      workspace = adapter.workspaceOf?.({ url: message.url, endpoint: matched.source });
+    } catch {
+      // A workspace that cannot be read is an exchange with no account, which
+      // the host judges exactly like one from a route that names none.
+      workspace = undefined;
+    }
+
     inFlight.set(message.id, {
       startedAt: now(),
       assembler,
       model,
       conversationId,
+      workspace,
       truncatedOnWire: false,
       broken: false,
     });
@@ -424,7 +438,13 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     live = true;
     try {
-      void relay({ type: 'exchange', sessionId, tool: adapter.id, exchange });
+      void relay({
+        type: 'exchange',
+        sessionId,
+        tool: adapter.id,
+        exchange,
+        ...(entry.workspace === undefined ? {} : { workspace: entry.workspace }),
+      });
     } catch {
       // An unreachable relay loses this exchange; the next one still tries.
     }

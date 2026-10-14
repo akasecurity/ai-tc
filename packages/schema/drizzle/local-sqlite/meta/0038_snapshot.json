@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e9fc785c-69f4-480a-809c-c124801d4f1c",
+  "id": "305f0c35-6f8c-442f-afca-13f909e20410",
   "prevId": "2646ecfc-85f3-4bf2-b05b-30ebc0dffbab",
   "tables": {
     "audit_events": {
@@ -1532,14 +1532,6 @@
           ],
           "isUnique": false,
           "where": "context IS NOT NULL"
-        },
-        "idx_inspection_findings_variable_name": {
-          "name": "idx_inspection_findings_variable_name",
-          "columns": [
-            "first_detected_at"
-          ],
-          "isUnique": false,
-          "where": "variable_name IS NOT NULL"
         }
       },
       "foreignKeys": {

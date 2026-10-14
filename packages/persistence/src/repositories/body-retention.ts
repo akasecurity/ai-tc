@@ -133,7 +133,7 @@ export class SqliteBodyRetentionRepository {
   private readonly heldByScopeStmt: StatementSync;
   private readonly expireStmt: StatementSync;
   private readonly expireContextsStmt: StatementSync;
-  private readonly expireNamesStmt: StatementSync;
+  private expireNamesStmt: StatementSync | undefined;
 
   constructor(private readonly db: DatabaseSync) {
     // LENGTH over the CAST, never over the TEXT: LENGTH() on a TEXT value stops
@@ -234,22 +234,6 @@ export class SqliteBodyRetentionRepository {
              AND e.started_at < :cutoff
            LIMIT :limit)`,
     );
-    // The names the statement above cannot reach: a finding recorded with a
-    // name and no excerpt. Same horizon and residual, over its own partial
-    // index, since `INDEXED BY` the excerpt index refuses a query that no
-    // longer implies `context IS NOT NULL`.
-    this.expireNamesStmt = this.db.prepare(
-      `UPDATE inspection_findings SET variable_name = NULL
-        WHERE id IN (
-          SELECT f.id
-            FROM inspection_findings f INDEXED BY idx_inspection_findings_variable_name
-            JOIN audit_events e ON e.id = f.audit_event_id
-           WHERE f.variable_name IS NOT NULL
-             AND f.first_detected_at < :cutoff
-             AND e.content IS NULL
-             AND e.started_at < :cutoff
-           LIMIT :limit)`,
-    );
   }
 
   /**
@@ -308,7 +292,7 @@ export class SqliteBodyRetentionRepository {
     }
 
     this.expireFindingCopies(this.expireContextsStmt, opts.cutoff, batchSize, maxRows);
-    this.expireFindingCopies(this.expireNamesStmt, opts.cutoff, batchSize, maxRows);
+    this.expireFindingCopies(this.namesStatement(), opts.cutoff, batchSize, maxRows);
 
     return {
       rowsExpired,
@@ -316,6 +300,27 @@ export class SqliteBodyRetentionRepository {
       rowsHeldBySync: this.countHeldBySync(lane, opts.cutoff),
       done,
     };
+  }
+
+  // The names the excerpt statement cannot reach: a finding recorded with a
+  // name and no excerpt. Same horizon and residual, over its own partial index,
+  // since `INDEXED BY` the excerpt index refuses a query that no longer implies
+  // `context IS NOT NULL`. Prepared on first use rather than at construction,
+  // so a store missing the index still opens.
+  private namesStatement(): StatementSync {
+    this.expireNamesStmt ??= this.db.prepare(
+      `UPDATE inspection_findings SET variable_name = NULL
+        WHERE id IN (
+          SELECT f.id
+            FROM inspection_findings f INDEXED BY idx_inspection_findings_variable_name
+            JOIN audit_events e ON e.id = f.audit_event_id
+           WHERE f.variable_name IS NOT NULL
+             AND f.first_detected_at < :cutoff
+             AND e.content IS NULL
+             AND e.started_at < :cutoff
+           LIMIT :limit)`,
+    );
+    return this.expireNamesStmt;
   }
 
   // Clear the body copies on findings that outlived their body, one bounded

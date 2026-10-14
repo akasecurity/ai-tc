@@ -644,6 +644,31 @@ describe('body expiry — finding excerpts', () => {
     expect(nameOf('new')).toBe(name);
   });
 
+  it('upgrades a store that applied 0038 without the name index, then expires a name-only finding', () => {
+    const index = 'idx_inspection_findings_variable_name';
+    const indexTag = '0039_variable_name_expiry_index';
+    raw.exec(`DROP INDEX ${index}`);
+    raw.prepare(`DELETE FROM migration_ledger WHERE tag = ?`).run(indexTag);
+    expect(() => new SqliteBodyRetentionRepository(raw)).not.toThrow();
+
+    const db = store.open();
+    const hasIndex = raw
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`)
+      .get(index);
+    expect(hasIndex).toBeDefined();
+    seed(raw, [{ id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) }]);
+    raw
+      .prepare(`UPDATE inspection_findings SET variable_name = ?, first_detected_at = ?`)
+      .run(['API', 'KEY'].join('_'), NOW - 60 * DAY);
+
+    db.bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    const row = raw
+      .prepare(`SELECT variable_name FROM inspection_findings WHERE id = ?`)
+      .get('find-old') as { variable_name: string | null };
+    expect(row.variable_name).toBeNull();
+  });
+
   it('clears the variable name on a finding that never held an excerpt', () => {
     seed(raw, [
       { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },

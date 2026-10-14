@@ -1,3 +1,11 @@
+export type { AttachModeDecision } from './attach-mode.ts';
+export {
+  decideAttachMode,
+  holdsScopedFor,
+  mayBePersonalDevice,
+  settledDecisionHolds,
+  writesSettingsFirst,
+} from './attach-mode.ts';
 export {
   ATTACHED_DERIVED_FILENAMES,
   ATTACHED_FORWARD_DROPS_FILENAME,
@@ -8,6 +16,12 @@ export {
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
+export {
+  addAttachmentScopeEntries,
+  freshAttachmentScope,
+  removeAttachmentScopeEntries,
+  UnreadableAttachmentScopeError,
+} from './attachment-scope-edit.ts';
 export type {
   CredentialFileRead,
   CredentialState,
@@ -16,6 +30,8 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  isScopedAttachment,
+  readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
@@ -24,7 +40,13 @@ export {
 } from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
-export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
+export {
+  canonicalRepoUrl,
+  enrollableRepoKey,
+  hashProjectKey,
+  scopeKeyOfProjectKey,
+  toEgressIngestRequest,
+} from './egress-wire.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FileLockFailure, FileLockOptions } from './file-lock.ts';
@@ -48,7 +70,11 @@ export {
   parseForwardHealth,
   readForwardHealth,
 } from './forward-health.ts';
-export { seedCaptureBacklogOwed } from './history-backfill.ts';
+export {
+  captureBackfillScope,
+  seedCaptureBacklogOwed,
+  seedEnrolledCapturesOwed,
+} from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
 export {
@@ -90,6 +116,7 @@ export {
   managedAttachRefusal,
   managedConnectionHold,
   managedDetachRefusal,
+  managedScopedRefusal,
 } from './managed-connection.ts';
 export {
   lockedAmong,
@@ -98,6 +125,18 @@ export {
   overlayManagedSettings,
   readManagedSettings,
 } from './managed-settings.ts';
+export type { ModPolicyInput, ModPolicySources } from './mod-policy-snapshot.ts';
+export {
+  buildModPolicySnapshot,
+  MOD_POLICY_SNAPSHOT_FILENAME,
+  modPolicyInputFromStore,
+  modPolicySnapshotPath,
+  readModPolicySnapshot,
+  refreshModPolicySnapshot,
+  regexProbeKey,
+  vetRulesForMod,
+  writeModPolicySnapshot,
+} from './mod-policy-snapshot.ts';
 export {
   createOwnerOnlyFileSync,
   DATA_DIR_MODE,
@@ -123,6 +162,8 @@ export type {
   DashboardViews,
   DetectionsReadPort,
   EventsReadPort,
+  FindingContextSource,
+  FindingContextView,
   FindingsReadPort,
   InstalledPacksReadPort,
   InventoryReadPort,
@@ -207,6 +248,7 @@ export {
   readWorkspaceSettings,
   SETTINGS_FILENAME,
 } from './settings.ts';
+export { readSightingSharing } from './sighting-sharing.ts';
 export type { StoreSkew } from './store-skew.ts';
 export { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
 export type { SymlinkedStorePath } from './store-symlinks.ts';
@@ -217,6 +259,7 @@ export {
   bindingInput,
   deriveSubkeys,
   formatPointer,
+  mintPointer,
   signPointer,
   verifyPointerTag,
 } from './vault/crypto.ts';
@@ -228,6 +271,14 @@ export {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
+export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
+export {
+  clearSightingKeys,
+  createSightingKeyStore,
+  readSightingKeys,
+  SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
+} from './vault/sighting-keys.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,
@@ -237,3 +288,4 @@ export type {
 } from './vault/vault.ts';
 export { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from './vault/vault.ts';
 export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';
+export { webChatWithholding } from './web-chat-withholding.ts';

@@ -52,6 +52,7 @@ function render(props: Partial<Parameters<typeof SessionListView>[0]> = {}) {
       isLoading={false}
       error={null}
       renderedAt={Date.parse('2026-07-05T09:00:00.000Z')}
+      locale="en-US"
       {...props}
     />,
   );
@@ -102,5 +103,20 @@ describe('SessionListView day-groups sessions against the instant it is handed',
 
     expect(html).toContain('Yesterday');
     expect(html).not.toContain('>Today<');
+  });
+});
+
+// A server that hosts these routes may refuse a search term over its limit;
+// that host passes the limit so the box stops there. The local store has no such
+// limit, so the web-ui passes none and keeps an uncapped box.
+describe('SessionListView caps its search box at the limit the host passes', () => {
+  it('sets maxlength on the search input when searchMaxLength is given', () => {
+    // Arbitrary, and anchored on the <input>: a view that hard-coded a real
+    // host's limit, or put the attribute on another element, fails here.
+    expect(render({ searchMaxLength: 37 })).toMatch(/<input[^>]*maxlength="37"/i);
+  });
+
+  it('leaves the search input uncapped by default', () => {
+    expect(render()).not.toMatch(/maxlength/i);
   });
 });

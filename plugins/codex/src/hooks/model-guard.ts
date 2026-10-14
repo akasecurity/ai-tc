@@ -7,9 +7,12 @@
 // rather than a shortcut. Codex exposes no model-switch event, so a switch
 // cannot be refused before it takes effect; what is left is refusing a TURN
 // whose session is already on a prohibited model. A user who switches keeps the
-// model for the rest of the current turn and is refused from the next one.
+// model for the rest of the current turn and, where the organization's model
+// policy governs the turn (everywhere on a machine-wide attachment, only in
+// enrolled repositories on a scoped one), is refused from the next one.
 import { randomUUID } from 'node:crypto';
 
+import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   buildModelRefusalEvent,
@@ -19,6 +22,8 @@ import {
   readSessionModel,
 } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
+
+import { captureScopeKey } from './shared.ts';
 
 /**
  * The model this Codex session is running on, or undefined when it cannot be
@@ -81,21 +86,45 @@ export async function refuseProhibitedTurn(
 }
 
 /**
- * The whole containment step: decide, and on a refusal close the gateway and
- * emit. Returns true when the turn was refused and the caller must stop.
+ * The whole containment step: decide, ask whether the organization governs this
+ * turn, and on a governed refusal record it, close the gateway and emit. Returns
+ * true when the turn was refused and the caller must stop.
  *
  * `emit` is a parameter rather than an import so this module stays free of the
  * stdout contract and testable without one.
+ *
+ * `cwd` is the payload's own, and only the refusal path reads it. It is keyed by
+ * `captureScopeKey`, from the directory the turn's capture is keyed from, and
+ * that one key does two things: it asks the gateway whether the organization's
+ * model policy governs this turn (`governanceApplies`), and it stamps the
+ * refusal row when it does. A machine-wide attachment, a standalone store and
+ * any gateway that does not answer the question are governed everywhere. A
+ * scoped attachment is governed only in its enrolled repositories: anywhere
+ * else, a turn the list would refuse is allowed silently, records no row, and
+ * leaves the gateway OPEN for the caller's scan, exactly as any allowed turn
+ * does. The question is asked only once the list has refused, so an allowed
+ * turn pays no `.git` walk and no lookup for it. `cwd` is REQUIRED rather than
+ * optional: the hook entry is the only production caller and no test can import
+ * an entry, so the compiler is the one check that the entry passes it.
  */
 export async function handleProhibitedTurn(
   gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
   dataDir: string,
   sessionId: string | undefined,
   transcriptPath: string | undefined,
+  cwd: string | undefined,
   emit: (output: { decision: 'block'; reason: string }) => Promise<void>,
 ): Promise<boolean> {
   const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
   if (blocked === null) return false;
+  // Keyed ONCE, and the one key both asks and stamps, so the verdict and the
+  // row can never disagree about where the turn ran. Total by contract, so it
+  // cannot cost the refusal it keys.
+  const scopeKey = captureScopeKey({ cwd });
+  // Not governed here: allowed, silently and with no row, and the gateway stays
+  // OPEN because the caller goes on to scan this turn over it. Only the model
+  // policy is scoped; the scan's detections run either way.
+  if (!governanceApplies(gateway, scopeKey)) return false;
   // Recorded while the gateway is still open, and best-effort: a refusal that
   // cannot be written down is still a refusal, so a failed write must not reach
   // the entry's outer catch and turn this block into a fail-open allow.
@@ -108,6 +137,7 @@ export async function handleProhibitedTurn(
         seam: 'turn',
         sourceTool: SOURCE_TOOL.Codex,
         occurredAt: new Date().toISOString(),
+        scopeKey,
       }),
     );
   } catch {

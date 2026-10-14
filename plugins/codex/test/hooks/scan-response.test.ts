@@ -7,6 +7,7 @@
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToolText } from '../../src/exception-guidance.ts';
 import { responseEmitPayload, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
 
@@ -141,5 +142,87 @@ describe('scanResponseFields — deadline', () => {
       { at: 1, now: () => 0 },
     );
     expect(outcome.unscannedFields).toBe(0);
+  });
+});
+
+// A field whose bounded large-input scan did not finish is `block` with
+// `scanIncomplete` set and NO findings: the no-findings skip would pass it to
+// the model unscanned, so it is checked first and the result withheld. Codex
+// has no field-level splice, so it goes the way a flagged field does: the
+// whole result is replaced by `reason`.
+describe('a field whose bounded scan did not finish', () => {
+  const fields: ScannableResponseField[] = [
+    { path: ['stdout'], text: 'a very large output' },
+    { path: ['stderr'], text: 'err text' },
+  ];
+  const capture = (scanIncomplete: 'timeout' | 'unavailable') => (text: string) =>
+    Promise.resolve<CaptureResult>(
+      text === 'a very large output'
+        ? { action: 'block', text: null, findings: [], scanIncomplete }
+        : { action: 'log', text: null, findings: [] },
+    );
+
+  it.each(['timeout', 'unavailable'] as const)(
+    'withholds the result with the too-large reason (%s)',
+    async (scanIncomplete) => {
+      const outcome = await scanResponseFields('Bash', fields, capture(scanIncomplete));
+      expect(outcome.tooLargeFields).toEqual(['stdout']);
+      expect(outcome.withheldFindings).toEqual([]);
+      expect(outcome.unscannedFields).toBe(0);
+
+      const payload = responseEmitPayload(outcome) as {
+        decision: string;
+        reason: string;
+        systemMessage: string;
+      };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toBe(tooLargeToolText('Bash'));
+      expect(payload.reason).not.toContain('a very large output');
+      expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+      // No rule ran to completion, so nothing an exception could approve.
+      expect(payload.systemMessage).not.toContain('aka exception approve');
+    },
+  );
+});
+
+// A refused field beside a redact-escalated one, nothing blocked outright. Codex
+// withholds the whole result either way, so the banner is a withhold — and the
+// redact's ledger row is the only one there is, so the approve line must carry
+// it rather than degrade to the bare command.
+describe('a refused field beside a redacted one', () => {
+  it('keeps the redact ref on the approve line', async () => {
+    const email = ['user1', 'example.com'].join('@');
+    const stderr = `contact ${email}`;
+    const fields: ScannableResponseField[] = [
+      { path: ['stdout'], text: 'a very large output' },
+      { path: ['stderr'], text: stderr },
+    ];
+    const outcome = await scanResponseFields('Bash', fields, (text) =>
+      Promise.resolve<CaptureResult>(
+        text === 'a very large output'
+          ? { action: 'block', text: null, findings: [], scanIncomplete: 'timeout' }
+          : {
+              action: 'redact',
+              text: null,
+              findings: [finding('core-pii/email', email, stderr)],
+              blockedReferences: [
+                { reference: 'redref', ruleId: 'core-pii/email', maskedValue: 'u***' },
+              ],
+            },
+      ),
+    );
+    expect(outcome.tooLargeFields).toEqual(['stdout']);
+
+    const payload = responseEmitPayload(outcome) as {
+      decision: string;
+      reason: string;
+      systemMessage: string;
+    };
+    expect(payload.decision).toBe('block');
+    // A flagged rule is the more specific reason when there is one.
+    expect(payload.reason).toContain('core-pii/email');
+    expect(payload.systemMessage).toContain('Redacted: core-pii/email');
+    expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+    expect(payload.systemMessage).toContain('(u***) intentionally: aka exception approve redref');
   });
 });

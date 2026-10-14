@@ -29,7 +29,7 @@ const STATS: PolicyStatsResponse = {
 
 const STAT = 'data-slot="summary-stat"';
 const SKELETON = 'data-slot="skeleton"';
-const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections governed'];
+const LABELS = ['Policies', 'Built-in', 'Custom scripts', 'Detections assigned'];
 
 function count(html: string, needle: string): number {
   return html.split(needle).length - 1;
@@ -56,7 +56,7 @@ function values(html: string, text: string): number {
 
 describe('PolicyStatsView', () => {
   it('renders every stat against its label once settled', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={STATS} />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} />);
 
     // The positive control: without it the absence assertions below would hold
     // just as well on markup that rendered nothing at all.
@@ -70,17 +70,17 @@ describe('PolicyStatsView', () => {
   });
 
   it('renders a dash per stat the store could not answer', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={null} />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={null} />);
 
     expect(count(html, STAT)).toBe(4);
     expect(values(html, '—')).toBe(4);
     // Settled, not loading: the labels are still there to say WHAT is unknown.
-    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, 'Detections assigned')).toBe(1);
     expect(count(html, SKELETON)).toBe(0);
   });
 
   it('withholds only the values while loading, keeping every label', () => {
-    const html = renderToStaticMarkup(<PolicyStatsView stats={undefined} loading />);
+    const html = renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={undefined} loading />);
 
     // A dash here would be the regression: it claims a settled answer of
     // nothing for a read that has not come back.
@@ -97,15 +97,30 @@ describe('PolicyStatsView', () => {
     expect(count(html, SKELETON)).toBe(4);
   });
 
+  it('says governed, not assigned, when the host counts unassigned detections', () => {
+    // A host whose count also holds the detections with no policy of their own,
+    // under the policy they run at, counts every detection it has: each one is
+    // governed by some policy, but not every one was assigned it.
+    const html = renderToStaticMarkup(
+      <PolicyStatsView locale="en-US" stats={STATS} countsUnassigned />,
+    );
+
+    expect(values(html, 'Detections governed')).toBe(1);
+    expect(values(html, '7')).toBe(1);
+    expect(html).not.toContain('assigned');
+  });
+
   it('carries the shared gap by default, and lets a caller replace it', () => {
     // The gap under the strip is what a page and its skeleton must agree on
     // exactly, so it is a default they share rather than a literal each spells.
     // Asserting the default by PASSING it would hold whether or not the prop is
     // wired at all — so the seam is shown by an override that must win.
     const card = (html: string) => tagWithAttr(html, 'data-slot="card"');
-    expect(card(renderToStaticMarkup(<PolicyStatsView stats={STATS} />))).toContain('mb-3');
+    expect(card(renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} />))).toContain(
+      'mb-3',
+    );
     const overridden = card(
-      renderToStaticMarkup(<PolicyStatsView stats={STATS} className="mb-0" />),
+      renderToStaticMarkup(<PolicyStatsView locale="en-US" stats={STATS} className="mb-0" />),
     );
     expect(overridden).toContain('mb-0');
     expect(overridden).not.toContain('mb-3');

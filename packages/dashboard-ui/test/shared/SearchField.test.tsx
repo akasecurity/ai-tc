@@ -185,3 +185,74 @@ describe('SearchField', () => {
     expect(html).toContain('placeholder="Search types…"');
   });
 });
+
+// A host whose server refuses a longer term passes that length as `maxLength`,
+// so the box stops typing there. The value asserted is arbitrary on purpose: a
+// field that hard-coded the one limit a real host passes would pass a test
+// that only ever asserted that limit.
+describe('SearchField maxLength', () => {
+  const field = (extra: { value?: string; maxLength?: number }) => (
+    <SearchField
+      value=""
+      onValueChange={vi.fn()}
+      label="Search sessions"
+      placeholder="Search…"
+      surface="card"
+      {...extra}
+    />
+  );
+  const markup = (extra: Parameters<typeof field>[0]) => renderToStaticMarkup(field(extra));
+  const hint = (): HTMLElement | null => mounted.host.querySelector('[data-slot="search-limit"]');
+
+  it('forwards the cap the host passes onto the input', () => {
+    expect(markup({ maxLength: 37 })).toMatch(/<input[^>]*maxlength="37"/i);
+    renderRoot(mounted.root, field({ maxLength: 37 }));
+    expect(input().maxLength).toBe(37);
+  });
+
+  it('leaves the input uncapped when no cap is passed', () => {
+    expect(markup({})).not.toMatch(/maxlength/i);
+  });
+
+  // A cap that is not a positive integer would kill the box (0), be ignored by
+  // the browser (negative, NaN) or be rounded by it (1.5) — none of which is
+  // the host's server limit, so the field behaves as uncapped instead.
+  for (const bad of [0, -1, Number.NaN, 1.5]) {
+    it(`treats maxLength=${String(bad)} as no cap`, () => {
+      const html = markup({ value: 'x'.repeat(40), maxLength: bad });
+      expect(html).not.toMatch(/maxlength/i);
+      expect(html).not.toContain('Search is limited');
+    });
+  }
+
+  // The cap bounds what the user types, never `value`: a host that seeds a
+  // longer term (from a URL, say) sees it rendered whole, and slicing it here
+  // would change what every host shows with no host asking for it.
+  it('never slices a value longer than the cap', () => {
+    renderRoot(mounted.root, field({ value: 'x'.repeat(600), maxLength: 20 }));
+    expect(input().value).toHaveLength(600);
+  });
+
+  // A paste the browser cut, or a keystroke it dropped at the cap, is otherwise
+  // invisible — and to a screen-reader user, unannounced.
+  it('says nothing about the cap while the term is under it', () => {
+    renderRoot(mounted.root, field({ value: 'x'.repeat(36), maxLength: 37 }));
+    expect(hint()).toBeNull();
+    expect(input().hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  for (const length of [37, 38]) {
+    it(`names the cap and describes the input by it at ${String(length)} of 37 characters`, () => {
+      renderRoot(mounted.root, field({ value: 'x'.repeat(length), maxLength: 37 }));
+      const el = hint();
+      expect(el?.textContent).toBe('Search is limited to 37 characters');
+      expect(el?.id).not.toBe('');
+      expect(input().getAttribute('aria-describedby')).toBe(el?.id);
+    });
+  }
+
+  it('says nothing about a cap when none is passed, however long the term', () => {
+    renderRoot(mounted.root, field({ value: 'x'.repeat(600) }));
+    expect(hint()).toBeNull();
+  });
+});

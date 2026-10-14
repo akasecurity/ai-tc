@@ -178,6 +178,18 @@ export function withoutDroppedFiles(
   };
 }
 
+/**
+ * `path` with every trailing `/` removed, in one pass back from its end. A
+ * pattern anchored at the end of the string (`/\/+$/`) is retried from every
+ * slash of a run that is not trailing, which costs the square of the run's
+ * length on a prefix the caller supplies.
+ */
+export function withoutTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end--;
+  return path.slice(0, end);
+}
+
 function toEndpointSummary(row: EndpointRow): EndpointSummary {
   return {
     id: row.id,
@@ -534,7 +546,7 @@ export class SqliteSharesRepository implements SharesReadPort {
    */
   private reconcileCallSites(projectKey: string, reconcile: EgressReconcile): void {
     if (reconcile.mode === 'walk') {
-      const prefix = reconcile.walkedPrefix.replace(/\/+$/, '');
+      const prefix = withoutTrailingSlashes(reconcile.walkedPrefix);
       this.db
         .prepare(
           `DELETE FROM share_call_site

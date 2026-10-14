@@ -84,6 +84,20 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     summary: 'Show what this machine is attached to, and whether policy is current',
   },
   {
+    name: 'enroll',
+    argHint: '[path | --repo <url> | --list]',
+    summary: 'Choose which repositories a scoped attachment sends; --list shows them',
+    // In `args`, not `flags`, like `sync-history`'s switches: the help prints a
+    // command's own flags on the one line under it.
+    args: ['--repo', '--list'],
+  },
+  {
+    name: 'unenroll',
+    argHint: '[path | --repo <url>]',
+    summary: 'Stop sending a repository from a scoped attachment',
+    args: ['--repo'],
+  },
+  {
     name: 'sync-history',
     argHint: '[--on | --off] [--run]',
     summary: 'Whether to send activity recorded before this machine attached',

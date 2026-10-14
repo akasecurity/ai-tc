@@ -4,6 +4,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
@@ -375,5 +376,132 @@ describe('scanHistory — onHit sink', () => {
     // The throw is contained — the sweep still records the finding normally.
     expect(summary.findings).toBe(1);
     expect(summary.scanned).toBe(2);
+  });
+});
+
+describe('scanHistory — the scope key of each backfilled message', () => {
+  // An scp-form remote's userinfo reads as an email address to a scanner, so
+  // the fixture builds it from parts.
+  const AT = String.fromCharCode(64);
+  const gitUser = `git${AT}`;
+  let dataDir: string;
+  let root: string;
+  let workRepo: string;
+  let scratch: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-scan-key-data-'));
+    root = mkdtempSync(join(tmpdir(), 'aka-scan-key-tx-'));
+    workRepo = mkdtempSync(join(tmpdir(), 'aka-scan-key-repo-'));
+    mkdirSync(join(workRepo, '.git'), { recursive: true });
+    writeFileSync(
+      join(workRepo, '.git', 'config'),
+      `[remote "origin"]\n\turl = ${gitUser}github.com:acme/work.git\n`,
+    );
+    scratch = mkdtempSync(join(tmpdir(), 'aka-scan-key-scratch-'));
+  });
+  afterEach(() => {
+    for (const d of [dataDir, root, workRepo, scratch]) rmSync(d, { recursive: true, force: true });
+  });
+
+  const userMessage = (timestamp: string, text: string): string =>
+    JSON.stringify({
+      timestamp,
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    });
+
+  // Rollout A opens in the work checkout, then a turn moves to a scratch
+  // directory. Rollout B names no directory at all.
+  function seedScoped(): void {
+    const dir = join(root, '2026', '06', '20');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'rollout-a.jsonl'),
+      [
+        JSON.stringify({
+          timestamp: '2026-06-20T11:59:00.000Z',
+          type: 'session_meta',
+          payload: { session_id: 'sess-a', cwd: workRepo },
+        }),
+        userMessage('2026-06-20T12:00:00.000Z', `work note ${BACKFILL_SECRET}`),
+        JSON.stringify({
+          timestamp: '2026-06-20T12:00:01.000Z',
+          type: 'turn_context',
+          payload: { turn_id: 'turn-2', cwd: scratch },
+        }),
+        userMessage('2026-06-20T12:00:02.000Z', `scratch note ${BACKFILL_SECRET}`),
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'rollout-b.jsonl'),
+      userMessage('2026-06-20T12:00:04.000Z', `bare note ${BACKFILL_SECRET}`),
+    );
+  }
+
+  it('leaves a capture keyless when its rollout names a relative cwd, though the sweep runs inside a keyed checkout', async () => {
+    // A relative cwd is walked from this process's own directory, which a
+    // rollout does not choose, so it would borrow whatever repository the sweep
+    // happens to run in. The control rollout names the same checkout absolutely.
+    mkdirSync(join(workRepo, 'src'), { recursive: true });
+    const dir = join(root, '2026', '06', '20');
+    mkdirSync(dir, { recursive: true });
+    const rollout = (name: string, cwd: string, second: string): void => {
+      writeFileSync(
+        join(dir, `rollout-${name}.jsonl`),
+        [
+          JSON.stringify({
+            timestamp: `2026-06-20T11:59:${second}.000Z`,
+            type: 'session_meta',
+            payload: { session_id: `sess-${name}`, cwd },
+          }),
+          userMessage(`2026-06-20T12:00:${second}.000Z`, `note ${name} ${BACKFILL_SECRET}`),
+        ].join('\n'),
+      );
+    };
+    rollout('abs', workRepo, '00');
+    rollout('dot', '.', '01');
+    rollout('sub', 'src', '02');
+    const cfg = config(dataDir, 'full');
+
+    const home = process.cwd();
+    process.chdir(workRepo);
+    try {
+      await scanHistory(cfg, { dir: root, now: NOW });
+    } finally {
+      process.chdir(home);
+    }
+
+    const db = new DatabaseSync(cfg.dbPath);
+    try {
+      const rows = db
+        .prepare(
+          "SELECT scope_key AS key FROM audit_events WHERE event_type = 'prompt' ORDER BY started_at",
+        )
+        .all() as { key: string | null }[];
+      expect(rows.map((r) => r.key)).toEqual(['github.com/acme/work', null, null]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keys a capture by its turn's repository, and leaves scratch and cwd-less ones keyless", async () => {
+    seedScoped();
+    const cfg = config(dataDir, 'full');
+
+    await scanHistory(cfg, { dir: root, now: NOW });
+
+    const db = new DatabaseSync(cfg.dbPath);
+    try {
+      const rows = db
+        .prepare(
+          "SELECT scope_key AS key, root_session_id AS root FROM audit_events WHERE event_type = 'prompt' ORDER BY started_at",
+        )
+        .all() as { key: string | null; root: string | null }[];
+      expect(rows.map((r) => r.key)).toEqual(['github.com/acme/work', null, null]);
+      // No sessionId was added to the capture: one would re-key the row and its dedup.
+      expect(rows.every((r) => r.root === null)).toBe(true);
+    } finally {
+      db.close();
+    }
   });
 });

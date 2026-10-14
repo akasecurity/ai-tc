@@ -6,6 +6,7 @@ import type {
   FindingGroupAggregate,
   FindingInstanceDetail,
   FindingLocationSummary,
+  FindingsOverview,
   FindingStatus,
   FindingTypeSummary,
   FindingView,
@@ -43,6 +44,7 @@ import {
   foldGroupStatus,
   isoToEpochMillis,
   matchesInstanceFilters,
+  MAX_VARIABLE_NAME_LENGTH,
   newLocationAccumulator,
   sortFindingTypes,
   toInstanceDetail,
@@ -53,11 +55,19 @@ import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-curso
 import { allRows, countBy, countScalar, iterateRows } from '../internal/rows.ts';
 import type {
   DashboardViews,
+  FindingContextSource,
+  FindingContextView,
   FindingInstancesView,
   FindingsReadPort,
   FindingTypesView,
 } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resolution-sql.ts';
+
+// Both write paths bound the name, but this read is not parsed through Zod, so
+// a row written around them must not surface an unbounded one.
+function storedName(name: string | null): { variableName?: string } {
+  return name !== null && name.length <= MAX_VARIABLE_NAME_LENGTH ? { variableName: name } : {};
+}
 
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
@@ -116,6 +126,10 @@ interface FindingGroupRowJoined {
   sync_failed_at: number | null;
   sync_failure: string | null;
   outbox_owed: number | null;
+  // Where the match sits in the scanned text (null before location capture).
+  line: number | null;
+  col: number | null;
+  variable_name: string | null;
 }
 
 // Per-row FindingStatus — a thin snake_case adapter over @akasecurity/schema's
@@ -159,6 +173,9 @@ function toFlatFindingRow(r: FindingGroupRowJoined): FlatFindingRow {
     repo: r.repo ?? '',
     file: r.file ?? '',
     ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+    ...(r.line === null ? {} : { line: r.line }),
+    ...(r.col === null ? {} : { col: r.col }),
+    ...storedName(r.variable_name),
     eventId: r.event_id,
     ...(r.session_id === null ? {} : { sessionId: r.session_id }),
     status: deriveInstanceStatus(r),
@@ -324,7 +341,8 @@ const FINDING_ROW_COLUMNS_SQL = `f.id AS id, d.rule_id AS rule_id, d.category AS
               ${latestResolutionStatusSql('f')} AS latest_status,
               e.synced_at AS synced_at, e.sync_claimed_at AS sync_claimed_at,
               e.sync_failed_at AS sync_failed_at, e.sync_failure AS sync_failure,
-              e.outbox_owed AS outbox_owed`;
+              e.outbox_owed AS outbox_owed,
+              f.line AS line, f.col AS col, f.variable_name AS variable_name`;
 
 const DAY_MS = 86_400_000;
 
@@ -340,6 +358,7 @@ interface FindingRowJoined {
   occurred_at: number;
   source_tool: string;
   kind: string;
+  variable_name: string | null;
 }
 
 /**
@@ -352,7 +371,12 @@ interface FindingRowJoined {
  * writes the old table by name. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteFindingsRepository
-  implements FindingsReadPort, DashboardViews, FindingTypesView, FindingInstancesView
+  implements
+    FindingsReadPort,
+    DashboardViews,
+    FindingTypesView,
+    FindingInstancesView,
+    FindingContextView
 {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -399,7 +423,7 @@ export class SqliteFindingsRepository
         `SELECT f.id, f.audit_event_id AS event_id, d.rule_id, d.category, d.severity,
                 f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
                 e.source_tool AS source_tool,
-                e.event_type AS kind
+                e.event_type AS kind, f.variable_name
          FROM audit_events e
          CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
          CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -422,6 +446,7 @@ export class SqliteFindingsRepository
         occurredAt: epochMillisToIso(r.occurred_at),
         sourceTool: r.source_tool,
         kind: r.kind,
+        ...storedName(r.variable_name),
       })),
     );
   }
@@ -908,6 +933,42 @@ export class SqliteFindingsRepository
   }
 
   /**
+   * One finding's excerpt source (see FindingContextSource). A primary-key
+   * seek, like `findingInstance`, and the only findings read that touches the
+   * event's text — which is why the list never projects the excerpt and the
+   * drawer asks for it here, one finding at a time.
+   */
+  findingContextSource(id: string): FindingContextSource | null {
+    const row = this.db
+      .prepare(
+        `SELECT f.context AS context, e.content AS content,
+                f.span_start AS spanStart, f.span_end AS spanEnd,
+                d.rule_id AS ruleId, d.category AS category,
+                json_extract(e.attributes, '$.whole_file') AS wholeFile,
+                e.tool_name AS toolName, e.event_type AS eventType
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+          WHERE f.id = ?`,
+      )
+      .get(id) as
+      | {
+          context: string | null;
+          content: string | null;
+          spanStart: number;
+          spanEnd: number;
+          ruleId: string;
+          category: string;
+          wholeFile: number | null;
+          toolName: string | null;
+          eventType: string;
+        }
+      | undefined;
+    if (row === undefined) return null;
+    return { ...row, wholeFile: row.wholeFile === 1 };
+  }
+
+  /**
    * The one statement both instance-level scans run: every finding in scope,
    * joined to its event and definition, newest first.
    *
@@ -1064,6 +1125,70 @@ export class SqliteFindingsRepository
         },
       ]),
     );
+  }
+
+  /**
+   * The Findings page's summary strip: whole-store counts over exactly the rows
+   * the instance reads list (the four capture kinds), each equal to what
+   * listFindingInstances totals for the same filters — see FindingsOverview.
+   *
+   * ONE grouped aggregate whose keys are the raw classifier inputs, not the
+   * answers: the statement groups by the three inputs deriveFindingStatus
+   * reads, and each group is then classified here by that same function. So
+   * SQL never restates the status rule, and the strip cannot disagree with the
+   * list about which status a finding has. The group count is bounded by a
+   * handful of status inputs, not by the store, so only the scan grows with it
+   * — the same linear cost every other unscoped read on the page already pays.
+   *
+   * The definitions join selects nothing. It is there because the list's scan
+   * joins it too, so a finding whose definition row is missing is left out of
+   * both rather than counted here and absent there.
+   *
+   * The latest-resolution join is the derived-table form, which
+   * resolution-sql.ts recommends for an aggregate over many findings.
+   */
+  findingsOverview(): Promise<FindingsOverview> {
+    const rows = allRows<{
+      kind: string;
+      keyed: number;
+      latest_status: string | null;
+      c: number;
+    }>(
+      this.db.prepare(
+        `SELECT e.event_type AS kind, (f.finding_key IS NOT NULL) AS keyed,
+                latest.status AS latest_status, count(*) AS c
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+           LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+             ON latest.finding_key = f.finding_key
+          WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+          GROUP BY e.event_type, keyed, latest.status`,
+      ),
+    );
+
+    // Keyed by every status, so a status added to the vocabulary is a compile
+    // error here rather than a finding the strip silently counts nowhere.
+    const byStatus: Record<FindingStatus, number> = {
+      open: 0,
+      handled: 0,
+      resolved: 0,
+      dismissed: 0,
+    };
+    let findings = 0;
+    for (const row of rows) {
+      const status = deriveFindingStatus({
+        kind: row.kind,
+        // The classifier only asks whether a key exists, never what it is. The
+        // stand-in is non-empty so a truthiness test of the key reads it as
+        // present, exactly as it would a real one.
+        findingKey: row.keyed ? 'keyed' : null,
+        latestResolutionStatus: row.latest_status,
+      });
+      findings += row.c;
+      byStatus[status] += row.c;
+    }
+    return Promise.resolve({ findings, ...byStatus });
   }
 
   healthSummary(): Promise<HealthSummary> {

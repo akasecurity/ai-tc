@@ -1,10 +1,17 @@
 import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
-import { llmCallId, toEgressIngestRequest, toolCallId } from '@akasecurity/persistence';
+import {
+  canonicalRepoUrl,
+  llmCallId,
+  scopeKeyOfProjectKey,
+  toEgressIngestRequest,
+  toolCallId,
+} from '@akasecurity/persistence';
 import type {
   CaptureRecord,
   CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
+  ProjectEgressContext,
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
@@ -30,19 +37,33 @@ import type {
   ProjectFilesScan,
   RecordProjectEgressInput,
   ReportedCaptureDocument,
+  ResolvedAttachmentScope,
   ResolvedInventory,
   Rule,
   RuleProbeVerdict,
+  ScopeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
   StorePostureSnapshot,
   ToolCallInput,
   ToolCallInspection,
+  ToolCallInspectionInput,
 } from '@akasecurity/schema';
-import { AUDIT_EVENT_BATCH_MAX, mergeRaiseOnly, ruleCategoryMap } from '@akasecurity/schema';
+import {
+  AUDIT_EVENT_BATCH_MAX,
+  mergeRaiseOnly,
+  ruleCategoryMap,
+  scopeVerdict,
+} from '@akasecurity/schema';
 
+import type { GovernanceScope } from '../governance-scope.ts';
+import type { StoredRootKeyReader } from '../session-root-key.ts';
+import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
+import { withoutScopeKey } from './scope-strip.ts';
+import { withScopedRepo } from './scoped-repo.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
 /**
@@ -102,8 +123,13 @@ export interface AttachedDataGatewayDeps {
    * `CaptureStatusReader` for the same reason: `readCaptureStatuses` below
    * delegates to it, so a `local` that cannot answer would make the
    * delegation a lie too.
+   *
+   * `StoredRootKeyReader` because a scoped attachment decides a session root by
+   * the key the local store holds for it, read back after the local write (see
+   * `rootVerdict`). A `local` that could not answer would leave every root, and
+   * so every leaf under one, refused.
    */
-  local: DataGateway & LocalStoreMaintenance & CaptureStatusReader;
+  local: DataGateway & LocalStoreMaintenance & CaptureStatusReader & StoredRootKeyReader;
   client: AttachedClient;
   // Reads the out-of-band-pulled organization policy bundle from the on-disk cache.
   // Null when the cache is cold (no pull yet) — the local bundle then stands
@@ -122,6 +148,33 @@ export interface AttachedDataGatewayDeps {
    * site instead of a machine that quietly loses events.
    */
   dataDir: string;
+  /**
+   * What this gateway may forward: the attachment's mode, and for a scoped
+   * attachment the enrolled keys. The factory resolves it ONCE per gateway,
+   * from the credential it just read and the settings already in hand.
+   *
+   * Every forwarding method asks it (through `verdictFor`) AFTER its local
+   * write and BEFORE `forward.run`. So a row it refuses is written, never
+   * offered, and never stamped owed or delivered. Machine mode answers
+   * `'forward'` without reading a key, which is what keeps a machine
+   * attachment's traffic exactly what it was.
+   *
+   * It also answers `governanceAppliesTo`, the question of where the
+   * organization's model policy applies.
+   *
+   * REQUIRED, for the reason `local` and `dataDir` are. An optional member
+   * would let a construction site omit it, and neither default is safe to
+   * reach by leaving a line out: scoped-with-no-keys silently stops a machine
+   * attachment forwarding, and machine silently forwards everything from a
+   * scoped one.
+   */
+  attachment: ResolvedAttachmentScope;
+  /**
+   * The deployment's name as a terminal shows it, for the session-start line
+   * (`forwardingScope`). Optional: a gateway built without one offers no line,
+   * which is the answer a gateway that cannot name where it forwards should give.
+   */
+  deploymentName?: string;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -180,9 +233,13 @@ function bundledRulesFlat(): readonly Rule[] {
  * already written, so nothing is copied anywhere to enqueue it.
  *
  * `getPolicyBundle` composes the local bundle with the out-of-band-pulled
- * control-plane bundle, raise-only — see mergeRaiseOnly.
+ * control-plane bundle, raise-only — see mergeRaiseOnly. It is the same bundle
+ * on either attachment mode. Where the organization's model policy applies is a
+ * separate question, answered per event by `governanceAppliesTo`.
  */
-export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
+export class AttachedDataGateway
+  implements DataGateway, LocalStoreMaintenance, GovernanceScope, ForwardingScopeReader
+{
   /**
    * The control plane's OWN resolution of this session's inventory, captured by
    * ensureInventory. Null until the first successful forward — and it stays
@@ -192,7 +249,274 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    */
   private remoteInventory: ResolvedInventory | null = null;
 
+  /**
+   * The verdict this instance reached for each session ROOT it recorded, keyed
+   * by root id, from the key the local store holds for that root (see
+   * `rootVerdict`). It is what a child row is held to (see `auditVerdict`).
+   *
+   * Per instance on purpose. An instance is resolved per hook process, per
+   * native-host request, and per reconcile or backfill pass, and the
+   * reconcilers record each session's root before its leaves. Never written in
+   * machine mode, where nothing reads it.
+   */
+  private readonly rootVerdicts = new Map<string, ScopeVerdict>();
+
   constructor(private readonly deps: AttachedDataGatewayDeps) {}
+
+  // ---------------------------------------------------------------------
+  // The scope verdict: whether a row written locally may also be forwarded.
+  // ---------------------------------------------------------------------
+
+  /**
+   * The one question every forward asks, answered TOTALLY: `'forward'` or
+   * `'local'`, never a throw.
+   *
+   * The key is read INSIDE the guard, through a thunk, because reading it is
+   * part of what can fail: a damaged bag, or a canonicalizer meeting an input
+   * it never expected. A throw out of here would not be neutral. It would
+   * reject `recordCapture` into the runtime's swallow, make the scanner read a
+   * failed write and withhold its ledger commit, or drop a whole reconcile
+   * pass. So a throw is answered `'local'`: the direction that degrades to
+   * standalone behaviour, never to over-forwarding.
+   *
+   * Machine mode answers before any key is read, so a machine attachment pays
+   * nothing for scoping and forwards exactly what it always has.
+   *
+   * `governanceAppliesTo` answers from this same verdict, so it agrees with
+   * forwarding key for key.
+   */
+  private verdictFor(keyOf: () => string | undefined): ScopeVerdict {
+    try {
+      if (this.deps.attachment.mode === 'machine') return 'forward';
+      return scopeVerdict(this.deps.attachment, keyOf());
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
+   * The verdict for an audit row, with the session-root rule on top.
+   *
+   * A session ROOT has two halves. What the rows that hang off it are held to is
+   * the key its row holds in the local store, recorded per root (see
+   * `rootVerdict`), not the key on the root event just handed in: roots are
+   * first-write-wins in the store, so when two producers record a root for one
+   * session (the session-start hook, then a reconcile pass) the second leaves the
+   * stored row as it was. That stored row, not this event, is what a history
+   * drain pass would decide, if the root started before the attach; the drain
+   * never offers one that started after it (`started_at < backlogBefore`).
+   * Whether this root EVENT is itself sent takes both keys: the stored one AND
+   * its own. The event's attributes (cwd, project, repo) describe where it was
+   * recorded from, so a root event keyed to a personal directory is never sent
+   * under an enrolled stored root, though the enrolled leaves still forward under
+   * it: the instance that wrote the stored root is expected to have forwarded it.
+   * If it did not (the root was written while standalone or under another
+   * attachment, or its forward failed), the plane refuses those leaves. A root
+   * that started before the attach is shipped, ahead of its leaves, by the
+   * history drain; one that started after it is never offered by the drain. Any
+   * other row with a root reference (`rootSessionId`, else `parentId`) forwards
+   * only when its own key is in scope AND this instance recorded an in-scope
+   * verdict for that root. The audit-event route has real foreign keys on both
+   * columns and stubs no missing root, so a leaf sent after its root was kept
+   * local is refused there, and a refused forward counts toward the breaker that
+   * guards every other one. A root this instance never recorded is therefore
+   * `'local'`: the only answer that cannot orphan a row. A row with no root
+   * reference at all has nothing to orphan, and is decided by its own key.
+   *
+   * What this costs is stated rather than discovered. A session whose stored
+   * root is not keyed to an enrolled repository keeps its token and tool
+   * records local, even the ones that ran inside one. A row recorded by an
+   * instance that did not record its root cannot see the root's verdict, so it
+   * stays local on a scoped attachment. Captures are not held to this: their
+   * route plants a missing root itself, so they decide per event.
+   */
+  private auditVerdict(event: AuditEventInput): ScopeVerdict {
+    try {
+      if (this.deps.attachment.mode === 'machine') return 'forward';
+      if (event.eventType !== 'session') {
+        return this.leafVerdict(event.attributes, rootReferenceOf(event));
+      }
+      // The stored root's verdict is recorded FIRST and whatever this event's own
+      // key says, since it is what the leaves are held to. The event is sent only
+      // when its own key is in scope too.
+      if (this.rootVerdict(event.id) === 'local') return 'local';
+      return this.verdictFor(() => scopeKeyOf(event.attributes));
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
+   * A session root's verdict, from the key the local store holds for it.
+   *
+   * Read back ONCE per root per instance, after the local write, and recorded.
+   * The write comes first so the row exists and a stub a leaf planted ahead of
+   * it has been healed; the read is the store's answer, which is the first
+   * authoritative root the session ever had. No key, a row that is not a root,
+   * and a store that cannot answer all mean `'local'`: the read happens inside
+   * `verdictFor`'s guard, so a throw is an answer and never a rejection.
+   *
+   * Scoped mode only: `auditVerdict` answers a machine attachment before it
+   * gets here, so a machine attachment pays no store read.
+   */
+  private rootVerdict(rootId: string): ScopeVerdict {
+    const recorded = this.rootVerdicts.get(rootId);
+    if (recorded !== undefined) return recorded;
+    const verdict = this.verdictFor(() => this.deps.local.readSessionScopeKey(rootId));
+    this.rootVerdicts.set(rootId, verdict);
+    return verdict;
+  }
+
+  /** A child row's verdict: its own key in scope AND its root's recorded verdict. */
+  private leafVerdict(
+    attributes: Record<string, unknown> | undefined,
+    rootId: string | undefined,
+  ): ScopeVerdict {
+    try {
+      if (this.deps.attachment.mode === 'machine') return 'forward';
+      if (this.verdictFor(() => scopeKeyOf(attributes)) === 'local') return 'local';
+      if (rootId === undefined) return 'forward';
+      return this.rootVerdicts.get(rootId) === 'forward' ? 'forward' : 'local';
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
+   * The leaves of a batch that may be forwarded, filtered BEFORE `forwardBatch`
+   * and never inside it. That loop tallies everything it does not deliver as a
+   * forward drop, and a row this attachment may not send is not a lost one. Each
+   * leaf is held to its root by the same reference `auditVerdict` uses
+   * (`rootReferenceOf`).
+   * Machine mode hands back the batch itself, so the batch path is exactly what
+   * it was. A throw forwards nothing.
+   */
+  private forwardableLeaves<T extends LlmCallInput | ToolCallInput>(
+    inputs: readonly T[],
+  ): readonly T[] {
+    try {
+      if (this.deps.attachment.mode === 'machine') return inputs;
+      return inputs.filter(
+        (input) => this.leafVerdict(input.attributes, rootReferenceOf(input)) === 'forward',
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The verdict for the repositories nested in a scanned project, answered
+   * TOTALLY: `'forward'` or `'local'`, never a throw.
+   *
+   * A walk descends into a nested clone or submodule and folds its files into
+   * the project it is walking, so one register can carry several
+   * repositories' call sites under one project key. Each of them must be in
+   * scope for it to forward. One key out of scope, or a nested repository with
+   * no remote (an `undefined` key), keeps the whole register local.
+   *
+   * An ABSENT list is `'local'` too. Only the code that walked the tree can say
+   * what is nested in it, and every scan passes the list, empty when nothing
+   * is nested. A register nobody vouched for is not one a scoped attachment
+   * may send.
+   *
+   * Machine mode answers before reading the context, so a machine attachment
+   * forwards exactly what it always has.
+   */
+  private nestedVerdict(context: ProjectEgressContext | undefined): ScopeVerdict {
+    try {
+      if (this.deps.attachment.mode === 'machine') return 'forward';
+      const keys = context?.nestedScopeKeys;
+      if (keys === undefined) return 'local';
+      for (const key of keys) {
+        if (this.verdictFor(() => key) === 'local') return 'local';
+      }
+      return 'forward';
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
+   * The register a scoped attachment sends, once the project and the repositories
+   * nested in it are in scope: the register itself, with `reconcile.deletedFiles`
+   * cut to the deleted paths whose own repository is in scope. `undefined` sends
+   * nothing. TOTAL, like `verdictFor`, and for its reasons.
+   *
+   * The deletion sweep takes its paths from the scan ledger, not from the walk,
+   * and the ledger holds every file the scanner ever read under the root, nested
+   * clones' included. So a clone that was removed, or one an ignore file now
+   * hides, is in no walk and never reaches `nestedVerdict`, yet its ledgered
+   * paths come back as deleted. The scan names the repository of each deleted
+   * path (`context.deletedFileKeys`, one entry per path in the register's order)
+   * and each is held to the same verdict as any other key. A path whose key is
+   * absent, or out of scope, is not sent.
+   *
+   * The list is asked for here, and only here: it is an async read of the scan
+   * ledger that the scan makes on being called, so a machine attachment, which
+   * returns before this, and a register already kept local never cause it.
+   *
+   * Anything the scan did not vouch for sends no deleted path, and the register
+   * itself still goes: no list, a list that throws or whose read is rejected, or a
+   * list whose length is not the register's. Deleting is the only thing a dropped
+   * path could have done on the server, so the cost of a refusal is a stored row
+   * that stays, never a path that leaves.
+   *
+   * Machine mode returns `input` itself, the same object and unread, so a machine
+   * attachment's request is exactly what it was. A register that lists no deleted
+   * path, or that is not a ledger register, has nothing to cut and is returned
+   * as it came, with the list unread.
+   */
+  private async registerForWire(
+    input: RecordProjectEgressInput,
+    context: ProjectEgressContext | undefined,
+  ): Promise<RecordProjectEgressInput | undefined> {
+    try {
+      if (this.deps.attachment.mode === 'machine') return input;
+      const { reconcile } = input;
+      if (reconcile.mode !== 'ledger' || reconcile.deletedFiles.length === 0) return input;
+      const deleted = reconcile.deletedFiles;
+      let kept: string[] = [];
+      try {
+        const keys = await context?.deletedFileKeys?.();
+        if (keys?.length === deleted.length) {
+          kept = deleted.filter((_path, at) => this.verdictFor(() => keys[at]) === 'forward');
+        }
+      } catch {
+        kept = [];
+      }
+      return { ...input, reconcile: { ...reconcile, deletedFiles: kept } };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The event `recordCapture` sends for a capture the verdict let through, or
+   * `undefined` to send nothing. TOTAL, like `verdictFor`, and for its reasons.
+   *
+   * Machine mode sends `record.event` itself, the same object, so a machine
+   * attachment's body is exactly what it was. A scoped attachment sends a COPY
+   * whose `metadata.repo` names the repository of the capture's own key
+   * (`withScopedRepo`). A hook's slug names the session's directory, while a
+   * capture that names a file is keyed by that file's repository, so on a
+   * scoped attachment the slug could otherwise label an enrolled repository's
+   * capture with a personal repository's name. The key here is the one the
+   * verdict just admitted, so the name sent is always an enrolled
+   * repository's.
+   *
+   * A throw sends nothing and leaves the row unmarked, the direction every
+   * fault on this path takes: toward standalone behaviour, never toward
+   * forwarding something unchecked.
+   */
+  private captureForWire(record: CaptureRecord): IngestEvent | undefined {
+    try {
+      if (this.deps.attachment.mode === 'machine') return record.event;
+      const key = record.scopeKey;
+      return key === undefined ? undefined : withScopedRepo(record.event, key);
+    } catch {
+      return undefined;
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Writes: local first, then forward.
@@ -203,6 +527,19 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // it writes are what the device's own /health, /audit and exception flows
     // read, and what the posture channel measures.
     await this.deps.local.recordCapture(record);
+    // THE SCOPE VERDICT, after the local write and before anything that could
+    // stamp the row. A refused capture returns HERE, which keeps it out of the
+    // owed branch below. That branch marks every non-delivery owed, and an owed
+    // capture is sent later, text included, by the drain. A refusal is not a
+    // non-delivery: it is a row this attachment must never send.
+    if (this.verdictFor(() => record.scopeKey) === 'local') return;
+    // WHAT IS SENT: the event itself in machine mode, and on a scoped
+    // attachment a copy naming its key's repository (see `captureForWire`).
+    // `record.event` is untouched, and it is what both stamps below are handed:
+    // the row id they derive reads the session, content hash and file path,
+    // never the slug.
+    const wireEvent = this.captureForWire(record);
+    if (wireEvent === undefined) return;
     // ONLY the event crosses; `record.findings` stays on this machine. There is
     // no field on `IngestBatch`/`Event` that could carry them, and that is the
     // contract rather than an oversight: the plane re-derives its own findings
@@ -223,7 +560,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     const forwarded = await this.deps.forward.run(
       () =>
         this.deps.client.ingestEvents({
-          events: [record.event],
+          events: [wireEvent],
           ...(record.dedupe ? { dedupe: record.dedupe } : {}),
         }),
       { decisionPath: true },
@@ -321,28 +658,55 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // let the control plane resolve what it can from the descriptors. The reason is
     // recorded by the policy itself, into the file `/aka:status` reads, which
     // is where a human sees it.
-    const remote = await this.deps.forward.run(() => this.deps.client.ingestInventory(ctx));
-    // UNCONDITIONAL, including on failure. One gateway instance serves many
-    // sessions — `reconcileHistory` walks them in a loop — so keeping the
-    // previous session's resolution when this one's forward fails would stamp
-    // THIS session's forwarded events with the PREVIOUS session's host,
-    // harness and project. That insert succeeds, silently attributing a whole
-    // session's activity to the wrong repository, which is worse than not
-    // forwarding it. Clearing is the only safe failure mode.
     //
-    // This line and `reKeyForForward`'s null branch are a PAIR, and clearing is
-    // only safe because that branch now OMITS the three ids rather than sending
-    // the local ones. Retaining was correct while it still sent them — the
-    // the control plane rejects a local id, so a cleared resolution orphaned the whole
-    // session, which is why this guard read `if (remote.ok)` on its own branch.
-    // Change one of the two and this comment is the warning that the other
-    // needs the same edit.
+    // ON A SCOPED ATTACHMENT this call is the one thing here the scope verdict
+    // gates. `InventoryContext.project` is the session's repository url and
+    // name, so it is sent only when that repository is enrolled and the
+    // session's tool is one whose root is ever keyed. The key is the same
+    // canonicalization of the same url the session root's key is stamped from
+    // (`inventoryKey`), and a tool the root rule never keys is never sent: a web
+    // chat session, whose stand-in home directory may itself be a checkout.
     //
-    // `ok: false` covers a refusal, a timeout, a transport error and an open
-    // breaker alike: an unresolved remote inventory has ONE behaviour whatever
-    // the cause, and the cause is recorded by the forward policy for
-    // `/aka:status` rather than steering anything here.
-    this.remoteInventory = remote.ok ? remote.value : null;
+    // WHAT THIS CANNOT SEE is the working directory. A root is keyed only from
+    // an ABSOLUTE directory, and the context does not carry the directory, so a
+    // session whose relative directory resolved its project from the hook's own
+    // process directory is still judged by that project here, while its root
+    // stays local.
+    //
+    // The posture report below is NOT gated: it is the device's liveness
+    // channel, and a scoped machine whose sessions are all personal must still
+    // report, or it reads as silent.
+    if (this.verdictFor(() => inventoryKey(ctx)) === 'forward') {
+      const remote = await this.deps.forward.run(() => this.deps.client.ingestInventory(ctx));
+      // UNCONDITIONAL, including on failure. One gateway instance serves many
+      // sessions — `reconcileHistory` walks them in a loop — so keeping the
+      // previous session's resolution when this one's forward fails would stamp
+      // THIS session's forwarded events with the PREVIOUS session's host,
+      // harness and project. That insert succeeds, silently attributing a whole
+      // session's activity to the wrong repository, which is worse than not
+      // forwarding it. Clearing is the only safe failure mode.
+      //
+      // This line and `reKeyForForward`'s null branch are a PAIR, and clearing is
+      // only safe because that branch now OMITS the three ids rather than sending
+      // the local ones. Retaining was correct while it still sent them — the
+      // the control plane rejects a local id, so a cleared resolution orphaned the whole
+      // session, which is why this guard read `if (remote.ok)` on its own branch.
+      // Change one of the two and this comment is the warning that the other
+      // needs the same edit.
+      //
+      // `ok: false` covers a refusal, a timeout, a transport error and an open
+      // breaker alike: an unresolved remote inventory has ONE behaviour whatever
+      // the cause, and the cause is recorded by the forward policy for
+      // `/aka:status` rather than steering anything here.
+      this.remoteInventory = remote.ok ? remote.value : null;
+    } else {
+      // A REFUSED inventory clears too, for the reason a failed one does: the
+      // next session this instance serves must not inherit an earlier session's
+      // resolution. It is the same pair as above (this line and
+      // `reKeyForForward`'s null branch), so a forward after a refusal carries
+      // no inventory ids rather than another session's.
+      this.remoteInventory = null;
+    }
 
     const snapshot = await (async (): Promise<StorePostureSnapshot | null> => {
       try {
@@ -379,6 +743,15 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     event: AuditEventInput & { inspections?: ToolCallInspection[] },
   ): Promise<void> {
     await this.deps.local.recordAuditEvent(event);
+    // The scope verdict, with the root rule on top (see `auditVerdict`). A
+    // refusal returns before the stamp, deliberately: a stamp claims delivery.
+    // This call's verdict is held only in this instance's memory (a session
+    // root's, for the rows recorded after it), not on the row. A refused row
+    // that started before the attach is offered again by the history drain,
+    // which decides it from the stored key; one that started after it is never
+    // offered by the drain (`started_at < backlogBefore`) and stays on this
+    // machine.
+    if (this.auditVerdict(event) === 'local') return;
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
     );
@@ -402,6 +775,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // drift `markAuditEventsDelivered` takes the event rather than an id to
     // prevent.
     const event = llmAuditEvent(input);
+    if (this.auditVerdict(event) === 'local') return;
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
     );
@@ -642,7 +1016,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // here would replace that with N separate local writes.
   async recordLlmCalls(inputs: readonly LlmCallInput[]): Promise<void> {
     await this.deps.local.recordLlmCalls(inputs);
-    await this.forwardBatch(inputs, (input) => llmAuditEvent(input));
+    // Refusals leave BEFORE the batch, never inside it: see `forwardableLeaves`.
+    await this.forwardBatch(this.forwardableLeaves(inputs), (input) => llmAuditEvent(input));
   }
 
   // `input.inspections` (secrets detected client-side in the tool's masked
@@ -653,7 +1028,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // way — this only stops the FINDING row itself from being dropped.
   async recordToolCalls(inputs: readonly ToolCallInput[]): Promise<void> {
     await this.deps.local.recordToolCalls(inputs);
-    await this.forwardBatch(inputs, (input) => toolAuditEvent(input));
+    await this.forwardBatch(this.forwardableLeaves(inputs), (input) => toolAuditEvent(input));
   }
 
   // Forwarded as a `config_scan` audit event: there is no dedicated
@@ -679,6 +1054,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // local store.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
+    // NO KEY, BY DESIGN, so a scoped attachment keeps every config scan local.
+    // Its counts and failing sources describe user-scope configuration (skills,
+    // hooks and servers under the home directory), which no enrolled repository
+    // owns. The key is passed as absent rather than read off the event, so a
+    // scan event that ever did carry one would still stay local.
+    if (this.verdictFor(() => undefined) === 'local') return;
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(record.scanEvent, this.remoteInventory)),
     );
@@ -705,11 +1086,36 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * payload onto the wire-boundary-safe shape (no snippet, hashed
    * projectKey), and its result is discarded: `forward.run` never throws or
    * rejects, so there is nothing here to act on.
+   *
+   * `context.nestedScopeKeys` is what the scanner knows and the register does
+   * not say: the key of every repository nested below the scan root, whose
+   * files the walk folded into this register. On a scoped attachment the
+   * register is forwarded only when the project's own key AND every one of
+   * those is in scope (see `nestedVerdict`), and its deleted paths are cut to the
+   * ones whose own repository is in scope (`context.deletedFileKeys`, see
+   * `registerForWire`). Machine mode never reads either, and the local write
+   * never receives the context and gets the register whole.
    */
-  async recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary> {
+  async recordProjectEgress(
+    input: RecordProjectEgressInput,
+    context?: ProjectEgressContext,
+  ): Promise<EgressWriteSummary> {
     const summary = await this.deps.local.recordProjectEgress(input);
+    // Keyed by the scan's own project key BEFORE it is hashed. A `git:<remote>`
+    // key canonicalizes to the repository key; a `path:` key (a project with no
+    // remote) has none, and stays local on a scoped attachment. The local
+    // summary is returned either way, since the scanner reads a throw as a
+    // failed write.
+    if (this.verdictFor(() => scopeKeyOfProjectKey(input.projectKey)) === 'local') return summary;
+    // Then every repository nested in it. Decided after the project's own key,
+    // so a project already out of scope is refused without reading the list.
+    if (this.nestedVerdict(context) === 'local') return summary;
+    // Last, once the register is known to be sendable at all: which of its
+    // deleted paths are.
+    const register = await this.registerForWire(input, context);
+    if (register === undefined) return summary;
     await this.deps.forward.run(() =>
-      this.deps.client.recordProjectEgress(toEgressIngestRequest(input)),
+      this.deps.client.recordProjectEgress(toEgressIngestRequest(register)),
     );
     return summary;
   }
@@ -775,6 +1181,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 
   async scanLedgerPaths(): Promise<string[]> {
     return this.deps.local.scanLedgerPaths();
+  }
+
+  // Delegated, like the path list. An inner gateway that cannot say answers an
+  // empty map, which gives every deleted path no key.
+  async scanLedgerPathKeys(): Promise<Map<string, string | undefined>> {
+    return (await this.deps.local.scanLedgerPathKeys?.()) ?? new Map();
   }
 
   async recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
@@ -877,6 +1289,12 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // and the spread above would otherwise drop the field silently — which is
       // exactly what it did, leaving the whole control inert on every device
       // while every test around it stayed green.
+      //
+      // WHOLE ON EVERY ATTACHMENT. A scoped attachment does not narrow the list
+      // here: the port's `getPolicyBundle()` takes no event, and the runtime
+      // reads this bundle once to build detection, so the detections it carries
+      // apply to every event on the machine. Where a prohibition applies is
+      // answered per event by `governanceAppliesTo` below.
       prohibitedModels: cached.prohibitedModels,
       // NAMED for the same reason as the line above, and it is the same defect
       // if it is not: `...local` above spreads the DEVICE's bundle, so a field
@@ -937,6 +1355,61 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   }
 
   // ---------------------------------------------------------------------
+  // GovernanceScope — where the organization's model policy applies
+  // ---------------------------------------------------------------------
+
+  /**
+   * Whether the organization's governance applies to an event keyed `scopeKey`:
+   * the question a model-guard site asks once it has decided to refuse.
+   *
+   * THE FORWARD VERDICT, through `verdictFor`: the answer is whether a capture
+   * with the same key would be forwarded. A machine-wide attachment governs
+   * every event, keyless included, exactly as before. A scoped one governs an
+   * event only when its key names an enrolled repository. An event in a
+   * personal repository, in no repository, with an empty key, or met by a fault
+   * is not governed.
+   *
+   * The event's OWN key, never its session root's. The root rule in
+   * `auditVerdict` decides whether a row can be forwarded without orphaning it;
+   * this decides whether a refusal applies, which is a question about where the
+   * event happened.
+   *
+   * Answered from memory: no store read, no bundle read, nothing sent.
+   */
+  governanceAppliesTo(scopeKey: string | undefined): boolean {
+    return this.verdictFor(() => scopeKey) === 'forward';
+  }
+
+  /**
+   * Where this gateway forwards, for the session-start line: the deployment's
+   * name, and on a scoped attachment the key the local store holds for root
+   * `rootId` with this gateway's verdict on it. Null when the gateway was built
+   * without a name. No credential, nothing sent.
+   *
+   * On a scoped attachment the verdict is the one this instance RECORDED when the
+   * root was written through it, and null when it recorded none. A session start
+   * whose pass stopped before the root has no answer to give: the history
+   * reconcile writes a missing root later, keyed the same way, and forwards the
+   * session's records under it, so saying local-only there would be wrong as
+   * often as right. Never recorded from here, so asking before the root is
+   * written cannot hold the root's records local either.
+   */
+  forwardingScope(rootId: string): ForwardingScope | null {
+    const { deploymentName, attachment } = this.deps;
+    if (deploymentName === undefined) return null;
+    if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const verdict = this.rootVerdicts.get(rootId);
+    if (verdict === undefined) return null;
+    let rootKey: string | undefined;
+    try {
+      rootKey = this.deps.local.readSessionScopeKey(rootId);
+    } catch {
+      rootKey = undefined;
+    }
+    return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
+  }
+
+  // ---------------------------------------------------------------------
   // LocalStoreMaintenance — by delegation (D3).
   //
   // Implementing these is what actually closes the skipped-local-maintenance
@@ -991,7 +1464,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 }
 
 /**
- * Rewrite an outgoing audit event's inventory ids into the BACKEND's id space.
+ * Rewrite an outgoing audit event's inventory ids into the BACKEND's id space,
+ * and drop the local scope key.
  *
  * Only ids the control plane actually resolved are substituted; a field it did not
  * resolve is OMITTED rather than left as the local value, so a partial remote
@@ -1003,8 +1477,18 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
  * from: an AuditEventInput carries ids, and `pgAuditValues` writes them straight
  * into FK columns with no re-resolution step. That is why an unresolved id has
  * to be omitted here rather than passed along hopefully.
+ *
+ * THE SCOPE KEY GOES ON BOTH BRANCHES, and before either. `attributes.scope_key`
+ * is a local-only fact a producer stamps in every attachment mode, and the
+ * request's attributes member is an open record, so this is the one place on the
+ * LIVE path between a stamped row and the receiving side's storage. Every live
+ * audit-event route passes through here: the single route, the batch, the
+ * batch's per-item fallback and config scans. That is why the strip lives here
+ * rather than at each call site. The history drain is the other path: its
+ * `attributesOf` strips the key from a stored row's bag. See `scope-strip.ts`.
  */
 function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedInventory | null): T {
+  const outbound = withoutScopeKey(event);
   // No remote resolution: DROP the local ids rather than send them. They are a
   // different id space by construction — the device content-addresses
   // `['inventory', …]` while the control plane hashes them under its own scope —
@@ -1015,7 +1499,7 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   // them wrong costs the whole session. All three are `.optional()` on
   // AuditEventInput, so omitting them is valid on the wire.
   if (remote === null) {
-    const stripped: T = { ...event };
+    const stripped: T = { ...outbound };
     delete stripped.hostId;
     delete stripped.harnessId;
     delete stripped.sourceProjectId;
@@ -1029,7 +1513,7 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   // answer of `{}` is schema-valid and would forward every local id — precisely
   // the outcome the null branch above deletes them to avoid, reached by the
   // path that looks like it succeeded.
-  const rekeyed = { ...event };
+  const rekeyed = { ...outbound };
   delete rekeyed.hostId;
   delete rekeyed.harnessId;
   delete rekeyed.sourceProjectId;
@@ -1037,6 +1521,49 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
   if (remote.harnessId !== undefined) rekeyed.harnessId = remote.harnessId;
   if (remote.sourceProjectId !== undefined) rekeyed.sourceProjectId = remote.sourceProjectId;
   return rekeyed;
+}
+
+/**
+ * The session root a row hangs off: its `rootSessionId`, else its `parentId`.
+ *
+ * ONE RULE for the single-row verdict (`auditVerdict`) and the batch filter
+ * (`forwardableLeaves`), so the two cannot hold a leaf to different roots. The
+ * parameter admits both references as optional because an audit event does,
+ * though a batch input carries both today.
+ */
+function rootReferenceOf(row: {
+  readonly rootSessionId?: string | undefined;
+  readonly parentId?: string | undefined;
+}): string | undefined {
+  return row.rootSessionId ?? row.parentId;
+}
+
+/**
+ * The scope key a structural producer stamped into an attributes bag, or
+ * undefined. Read with `Object.hasOwn`, and only a string counts: the bag is
+ * free-form JSON on its way back out of the store, and anything else under that
+ * name is no key at all, which the verdict answers `'local'`. The spelling is
+ * the one `withoutScopeKey` strips (`scope-strip.ts`).
+ */
+function scopeKeyOf(attributes: Record<string, unknown> | undefined): string | undefined {
+  if (attributes == null || !Object.hasOwn(attributes, 'scope_key')) return undefined;
+  const key = attributes.scope_key;
+  return typeof key === 'string' ? key : undefined;
+}
+
+/**
+ * The key a session's inventory is held to: the canonical repository of the
+ * context's project, for a tool whose root is ever keyed, and none otherwise.
+ *
+ * The harness identity IS the tool (`resolveInventoryContext` sets it from the
+ * session's own), so it is what tells a web chat session from a coding one. A
+ * context that names no harness cannot be shown to be the second, and gets no
+ * key. A throw is the verdict's to answer: this runs inside its guard.
+ */
+function inventoryKey(ctx: InventoryContext): string | undefined {
+  const tool = ctx.harness?.identityKey;
+  if (tool === undefined || !sessionToolIsKeyed(tool)) return undefined;
+  return canonicalRepoUrl(ctx.project?.url ?? '');
 }
 
 /**
@@ -1087,6 +1614,24 @@ function toolAuditEvent(
     parentId: input.parentId,
     rootSessionId: input.rootSessionId,
     attributes: input.attributes,
-    inspections: input.inspections,
+    inspections: input.inspections.map(toWireInspection),
+  };
+}
+
+// The wire inspection, named field by field. A local inspection also carries
+// where the hit sits and its masked excerpt (ToolCallInspectionInput); those
+// stay on this machine, so they are left out here rather than relying on the
+// client's schema to strip them.
+export function toWireInspection(insp: ToolCallInspectionInput): ToolCallInspection {
+  return {
+    ruleId: insp.ruleId,
+    ruleName: insp.ruleName,
+    ruleVersion: insp.ruleVersion,
+    category: insp.category,
+    severity: insp.severity,
+    span: insp.span,
+    maskedMatch: insp.maskedMatch,
+    actionTaken: insp.actionTaken,
+    confidence: insp.confidence,
   };
 }

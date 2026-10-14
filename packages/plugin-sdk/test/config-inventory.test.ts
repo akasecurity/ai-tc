@@ -371,6 +371,34 @@ describe('resolveConfigInventory — MCP servers', () => {
     expect(viaSlash.mcpServers.map((m) => m.name)).toEqual(['local2']);
   });
 
+  it('matches projects[cwd] with every trailing slash dropped, not by resolving it', () => {
+    // A directory that does not exist, so realpath cannot rescue the match and
+    // only the trim can.
+    const gone = join(project, 'gone');
+    writeJson(join(home, '.claude.json'), {
+      projects: { [gone]: { mcpServers: { local: { command: 'mcp-local' } } } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: `${gone}///`, homeDir: home });
+    expect(scan.mcpServers.map((m) => m.name)).toEqual(['local']);
+  });
+
+  it('takes one pass over a cwd holding a long run of slashes', { timeout: 5000 }, () => {
+    // Trimming trailing slashes with a pattern anchored at the end of the string
+    // retries it from every slash of a run that is not trailing, which costs the
+    // square of the run's length. The trim runs only when ~/.claude.json carries
+    // a projects map, so the file has to hold one for the scan to reach it.
+    writeJson(join(home, '.claude.json'), {
+      projects: { [project]: { mcpServers: { local: { command: 'mcp-local' } } } },
+    });
+
+    const scan = resolveConfigInventory({
+      cwd: `${project}${'/'.repeat(300_000)}x`,
+      homeDir: home,
+    });
+    expect(scan.mcpServers).toEqual([]);
+  });
+
   it('a malformed project .mcp.json becomes an error entry (its only parse)', () => {
     write(join(project, '.mcp.json'), '{ not json');
 

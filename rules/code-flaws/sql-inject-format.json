@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b(?:select\\b[^\\n]*?\\bfrom\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b[^\\n]*?=)[^\\n]*?(?:[%][sd]|\\{[^}]+\\})",
+    "pattern": "\\b(?=(select\\b(?:(?!\\b(?:select\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b))[^\\n])*?\\bfrom\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b))\\1(?:(?!\\b(?:select\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b))[^\\n])*?(?:[%][sd]|\\{[^{}\\n]+\\})|\\b(?=(where\\b(?:(?!\\bwhere\\b)[^\\n])*?=))\\2(?:(?!\\bwhere\\b)[^\\n])*?(?:[%][sd]|\\{[^{}\\n]+\\})",
     "flags": "gi"
   },
   "examples": [

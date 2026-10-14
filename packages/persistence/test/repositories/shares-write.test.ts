@@ -17,6 +17,7 @@ import { applyMigrations } from '../../src/migrations.ts';
 import {
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
   SqliteSharesRepository,
+  withoutTrailingSlashes,
 } from '../../src/repositories/shares.ts';
 import { resolvedHit } from '../helpers/egress-hits.ts';
 
@@ -345,6 +346,19 @@ describe('recordProjectEgress — walk mode', () => {
 
     expect(callSites('git:alpha')).toEqual([
       { projectKey: 'git:alpha', file: 'src/b.ts', line: 2 },
+    ]);
+  });
+
+  it('reads a walked prefix with trailing slashes as the directory itself', () => {
+    walk('git:alpha', [
+      hit({ file: 'src/a.ts', line: 1 }),
+      hit({ host: 'api.openai.com', file: 'lib/b.ts', line: 2 }),
+    ]);
+
+    walk('git:alpha', [], 'src///');
+
+    expect(callSites('git:alpha')).toEqual([
+      { projectKey: 'git:alpha', file: 'lib/b.ts', line: 2 },
     ]);
   });
 
@@ -911,5 +925,22 @@ describe('recordProjectEgress — failure handling', () => {
       { projectKey: 'git:alpha', file: 'src/a.ts', line: 1 },
     ]);
     expect(hosts()).toEqual(['api.stripe.com']);
+  });
+});
+
+describe('withoutTrailingSlashes', () => {
+  it('drops every trailing slash and nothing else', () => {
+    expect(withoutTrailingSlashes('src///')).toBe('src');
+    expect(withoutTrailingSlashes('src/a.ts')).toBe('src/a.ts');
+    expect(withoutTrailingSlashes('///')).toBe('');
+    expect(withoutTrailingSlashes('')).toBe('');
+    expect(withoutTrailingSlashes('/src/')).toBe('/src');
+  });
+
+  it('takes one pass however long a run of slashes the path holds', { timeout: 5000 }, () => {
+    // A pattern anchored at the end of the string is retried from every slash of
+    // a run that is not trailing, which costs the square of the run's length.
+    const path = `${'/'.repeat(300_000)}x`;
+    expect(withoutTrailingSlashes(path)).toBe(path);
   });
 });

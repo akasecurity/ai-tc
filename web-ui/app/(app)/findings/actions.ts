@@ -1,6 +1,9 @@
 'use server';
 
+import { loadFindingContext } from '@akasecurity/local-ops';
 import {
+  type FindingContext,
+  FindingContextQuery,
   ListFindingInstancesQuery,
   type ListFindingInstancesResponse,
   ListFindingLocationsQuery,
@@ -43,4 +46,18 @@ export async function loadMoreFindingLocations(
 ): Promise<ListFindingLocationsResponse> {
   const query = ListFindingLocationsQuery.parse(raw);
   return db().findings.listFindingLocations(query);
+}
+
+// The open finding's masked excerpt, fetched once the drawer opens rather than
+// carried on every list row (see SqliteFindingsRepository.findingContextSource).
+// A failed read answers null — the drawer then says the code was not kept —
+// rather than rejecting, so a store fault never becomes a framework error page.
+export async function loadFindingContextAction(raw: unknown): Promise<FindingContext | null> {
+  const parsed = FindingContextQuery.safeParse(raw);
+  if (!parsed.success) return null;
+  try {
+    return await Promise.resolve(loadFindingContext(db().findings, parsed.data.id));
+  } catch {
+    return null;
+  }
 }

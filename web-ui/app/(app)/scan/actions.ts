@@ -183,6 +183,10 @@ export async function runScan(
       const outcome = await forwardProjectEgress(defaultDataDir(), egress.input, {
         send: createSharesSender(),
         enabled: options.forward !== false,
+        // Every repository the walk passed through below the target. Their
+        // call sites are in the register, so a scoped attachment holds it to
+        // each of them.
+        nestedRepositories: result.nestedRepositories,
       });
       // A machine attached to nothing has nothing to report about, and the field
       // stays absent rather than carrying a status: that keeps what a standalone

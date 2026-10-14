@@ -43,6 +43,7 @@ export function ActivityClient({
   showEmpty,
   expanded,
   renderedAt,
+  locale,
 }: {
   sessions: ActivitySessionSummary[];
   detail: ActivitySession | null;
@@ -73,6 +74,12 @@ export function ActivityClient({
    * of this component instead of merely matching hydration once.
    */
   renderedAt: number;
+  /**
+   * The locale the SERVER resolved from the request's Accept-Language header.
+   * Every count and time below is formatted in it, on the server and again in
+   * the browser, so the two renders agree. See app/lib/render-locale.ts.
+   */
+  locale: string;
 }) {
   const renderClock = useRenderClock(renderedAt);
   const pathname = usePathname();
@@ -165,6 +172,7 @@ export function ActivityClient({
     isLoading: false,
     error: null,
     renderedAt: renderClock,
+    locale,
     // Tool chips deep-link to the flat findings view filtered to that
     // tool. `?tool=` is a real filter on the capturing event's recorded
     // tool name, where the previous `?q=via Bash` was a text match
@@ -192,6 +200,7 @@ export function ActivityClient({
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">
         <SessionListView
           renderedAt={renderClock}
+          locale={locale}
           sessions={sessions}
           selectedId={selectedId}
           onSelect={(id) => {

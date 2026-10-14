@@ -135,9 +135,11 @@ describe('the opt-out cannot become an opt-out for everything', () => {
     const withoutClock = reactSyntaxBans({ allowAmbientClock: true });
     expect(withoutClock.length).toBe(withClock.length - 2);
 
+    // Identified by message rather than by the directive anchor in the
+    // selector: the ambient-locale group is directive-scoped too, and must stay.
     const kept = new Set(withoutClock.slice(1).map((e) => e.selector));
     for (const entry of withClock.slice(1)) {
-      const isClockEntry = entry.selector.includes("directive='use client'");
+      const isClockEntry = entry.message.includes('reading the clock');
       expect(kept.has(entry.selector)).toBe(!isClockEntry);
     }
   });

@@ -1,4 +1,5 @@
 import type { FindingView, ModelTokenUsage, TokenUsageSummary } from '@akasecurity/schema';
+import { findingMatchLabel } from '@akasecurity/schema';
 import { Box, Text, useApp, useInput } from 'ink';
 import type { ReactElement } from 'react';
 import { useState } from 'react';
@@ -349,7 +350,7 @@ function FindingsView({
     { text: f.category },
     { text: f.ruleId, color: COLOR.dim },
     { text: f.actionTaken, color: actionColor(f.actionTaken) },
-    { text: truncate(f.maskedMatch, MATCH_W) },
+    { text: truncate(findingMatchLabel(f, MATCH_W), MATCH_W) },
   ]);
   return (
     <Box flexDirection="column">

@@ -438,7 +438,7 @@ describe('toToolCallInputs', () => {
     // requires immediately before the secret would never be there.
     const prefix = `${'x'.repeat(489)} `;
     const target = `${prefix}${SECRET_EXAMPLE}`;
-    const scanner: TargetScanner = (text) => scanText(text);
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
     const exchange = baseExchange({
       toolCalls: [{ toolUseId: 't1', toolName: 'search', target }],
     });
@@ -463,7 +463,7 @@ describe('toToolCallInputs', () => {
   });
 
   it('writes one inspection per finding with actionTaken log', () => {
-    const scanner: TargetScanner = (text) => scanText(text);
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
     const exchange = baseExchange({
       toolCalls: [{ toolUseId: 't1', toolName: 'x', target: SECRET_EXAMPLE }],
     });
@@ -479,6 +479,24 @@ describe('toToolCallInputs', () => {
     expect(inspections[0]?.span).toBeDefined();
     expect(inspections[0]?.maskedMatch).toBeTypeOf('string');
     expect(inspections[0]?.confidence).toBeTypeOf('number');
+  });
+
+  it('carries the variable a secret is assigned to, never the value', () => {
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
+    const name = ['TWILIO', 'API', 'KEY'].join('_');
+    const exchange = baseExchange({
+      toolCalls: [
+        {
+          toolUseId: 't1',
+          toolName: 'x',
+          target: `export ${name}${String.fromCharCode(61)}${SECRET_EXAMPLE}`,
+        },
+      ],
+    });
+    const [input] = toToolCallInputs(exchange, SESSION, scanner);
+    const inspection = input?.inspections.find((i) => i.ruleId === RULE_ID);
+    expect(inspection?.variableName).toBe(name);
+    expectNoEchoOf(inspection?.variableName ?? '', SECRET_EXAMPLE);
   });
 
   it('leaves inspections empty for a tool call with no target, and never calls the scanner', () => {

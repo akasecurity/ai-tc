@@ -36,10 +36,15 @@ import {
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
   HISTORY_SYNC_CHOICES,
+  HISTORY_SYNC_CHOICES_SCOPED,
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_DESCRIPTION,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
   HISTORY_SYNC_SECTION_LABEL,
   HISTORY_SYNC_STALE_BADGE,
   HISTORY_SYNC_STALE_NOTICE,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
   managedUnrecognizedNotice,
@@ -64,6 +69,8 @@ import {
   WEB_CHAT_SECTION_LABEL,
   WEB_CHAT_STALE_BADGE,
   WEB_CHAT_STALE_NOTICE,
+  WEB_CHAT_WITHHELD_BADGE,
+  WEB_CHAT_WITHHELD_NOTICES,
   webChatCaptureStale,
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,
@@ -132,6 +139,16 @@ const FORM_COPY: Record<string, string> = {
     HISTORY_SYNC_CHOICES.flatMap((c) => [
       [`HISTORY_SYNC_CHOICES.${c.value}.label`, c.label],
       [`HISTORY_SYNC_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  HISTORY_SYNC_ROW_DESCRIPTION,
+  HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
+  HISTORY_SYNC_STALE_NOTICE_SCOPED,
+  ...Object.fromEntries(
+    HISTORY_SYNC_CHOICES_SCOPED.flatMap((c) => [
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.label`, c.label],
+      [`HISTORY_SYNC_CHOICES_SCOPED.${c.value}.description`, c.description],
     ]),
   ),
   ...Object.fromEntries(
@@ -758,7 +775,7 @@ describe('the connection section', () => {
     // the form stays on screen with the key still in it.
     const order: string[] = [];
     const clearKey = () => order.push('cleared');
-    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+    const onAttach = (...args: (string | undefined)[]) => order.push(`sent:${args.join('|')}`);
 
     submitAttach(
       { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },
@@ -1578,5 +1595,71 @@ describe('WorkspaceSettingsFormView width ownership', () => {
     expect(VIEW_SOURCE).toMatch(/\bw-20\b/); // the decoy is really in this file
     expect(rootClassName()).not.toContain('w-20');
     expect(rootClassName()).toContain('flex-col'); // and the root is what we got
+  });
+});
+
+describe('web-chat row on a machine that records nothing from a web chat', () => {
+  const settingsWith = (granted: boolean): WorkspaceSettings => ({
+    specVersion: WORKSPACE_SETTINGS_SPEC_VERSION,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...(granted
+      ? {
+          webChatCapture: {
+            responses: 'with-findings',
+            account: false,
+            consent: {
+              acknowledgedAt: '2026-07-30T00:00:00.000Z',
+              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+            },
+          },
+        }
+      : {}),
+  });
+
+  const render = (props: Partial<WorkspaceSettingsFormViewProps>, granted = true): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: settingsWith(granted),
+        onSave: () => undefined,
+        ...props,
+      }),
+    );
+
+  it('says why, and marks a grant that is not in force, on a personal device', () => {
+    const html = render({ webChatWithheld: 'personal-device' });
+    expect(html).toContain('data-slot="web-chat-withheld-notice"');
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['personal-device']);
+    expect(html).toContain(WEB_CHAT_WITHHELD_BADGE);
+  });
+
+  it('words an unreadable attachment as its own reason', () => {
+    const html = render({ webChatWithheld: 'unreadable-attachment' });
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['unreadable-attachment']);
+  });
+
+  it('carries no badge when there is no grant to contradict', () => {
+    const html = render({ webChatWithheld: 'personal-device' }, false);
+    expect(html).toContain(WEB_CHAT_WITHHELD_NOTICES['personal-device']);
+    expect(html).not.toContain(WEB_CHAT_WITHHELD_BADGE);
+  });
+
+  it('says nothing more than the grant on a machine that records', () => {
+    // The control: the same granted row, unwithheld.
+    const html = render({});
+    expect(html).not.toContain('data-slot="web-chat-withheld-notice"');
+    expect(html).not.toContain(WEB_CHAT_WITHHELD_BADGE);
+  });
+
+  it('keeps enforcement out of what is withheld', () => {
+    for (const notice of Object.values(WEB_CHAT_WITHHELD_NOTICES)) {
+      expect(notice).toMatch(/still blocked, redacted or warned on/i);
+    }
   });
 });

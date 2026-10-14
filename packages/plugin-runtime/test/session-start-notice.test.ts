@@ -1,0 +1,89 @@
+import { describe, expect, it } from 'vitest';
+
+import { sessionStartNotice } from '../src/handle-session-start.ts';
+
+// The one string a session start shows its user. The adapters put it on
+// systemMessage verbatim, so its shape is the user-facing contract.
+describe('sessionStartNotice', () => {
+  it('is undefined when there is nothing to say', () => {
+    expect(
+      sessionStartNotice({ staleBinaryNotice: null, forwardingLine: null, warnEraNotice: null }),
+    ).toBeUndefined();
+  });
+
+  it('is the forwarding line alone, unprefixed', () => {
+    const localOnly =
+      'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
+
+    expect(
+      sessionStartNotice({
+        staleBinaryNotice: null,
+        forwardingLine: localOnly,
+        warnEraNotice: null,
+      }),
+    ).toBe(localOnly);
+  });
+
+  it('is the stale-session notice alone, with its [aka] prefix', () => {
+    expect(
+      sessionStartNotice({
+        staleBinaryNotice: 'a newer AKA is installed',
+        forwardingLine: null,
+        warnEraNotice: null,
+      }),
+    ).toBe('[aka] a newer AKA is installed');
+  });
+
+  it('puts the forwarding line first, one notice per line', () => {
+    expect(
+      sessionStartNotice({
+        staleBinaryNotice: 'a newer AKA is installed',
+        forwardingLine: 'AKA: forwarding everything to Acme (machine-wide)',
+        warnEraNotice: null,
+      }),
+    ).toBe('AKA: forwarding everything to Acme (machine-wide)\n[aka] a newer AKA is installed');
+  });
+
+  it('puts the warn-era notice last, as it is worded', () => {
+    expect(
+      sessionStartNotice({
+        staleBinaryNotice: 'a newer AKA is installed',
+        forwardingLine: 'AKA: forwarding everything to Acme (machine-wide)',
+        warnEraNotice: 'AKA: the global "warn only" handling was retired.',
+      }),
+    ).toBe(
+      'AKA: forwarding everything to Acme (machine-wide)\n' +
+        '[aka] a newer AKA is installed\n' +
+        'AKA: the global "warn only" handling was retired.',
+    );
+  });
+
+  it("appends the adapter's own notices last, without their trailing newline", () => {
+    expect(
+      sessionStartNotice(
+        {
+          staleBinaryNotice: null,
+          forwardingLine: 'AKA: forwarding everything to Acme (machine-wide)',
+          warnEraNotice: null,
+        },
+        ['[aka] a store path is a symlink.\n'],
+      ),
+    ).toBe('AKA: forwarding everything to Acme (machine-wide)\n[aka] a store path is a symlink.');
+  });
+
+  it('is an adapter notice alone when the session start has nothing to say', () => {
+    expect(
+      sessionStartNotice({ staleBinaryNotice: null, forwardingLine: null, warnEraNotice: null }, [
+        '[aka] a store path is a symlink.\n',
+      ]),
+    ).toBe('[aka] a store path is a symlink.');
+  });
+
+  it('skips an empty adapter notice', () => {
+    expect(
+      sessionStartNotice({ staleBinaryNotice: null, forwardingLine: null, warnEraNotice: null }, [
+        '\n',
+      ]),
+    ).toBeUndefined();
+  });
+});

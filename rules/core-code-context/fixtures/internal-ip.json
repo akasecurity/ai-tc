@@ -23,5 +23,35 @@
     "label": "not IP",
     "text": "10.999.999.999",
     "shouldMatch": false
+  },
+  {
+    "label": "six-part dotted number starting 10.",
+    "text": "firmware 10.2.4.1.0.9 is current",
+    "shouldMatch": false
+  },
+  {
+    "label": "OID-shaped number starting 192.168.",
+    "text": "oid 192.168.1.1.4.1.8 assigned",
+    "shouldMatch": false
+  },
+  {
+    "label": "address.port socket as printed by netstat -an",
+    "text": "tcp4  0  0  10.0.0.7.62345  ESTABLISHED",
+    "shouldMatch": true
+  },
+  {
+    "label": "internal IP embedded in a wildcard-DNS hostname",
+    "text": "curl http://svc.10.0.0.7.nip.io/",
+    "shouldMatch": true
+  },
+  {
+    "label": "internal address as the tail of a longer dotted number",
+    "text": "firmware 4.10.0.0.1 is current",
+    "shouldMatch": false
+  },
+  {
+    "label": "out-of-range final octet",
+    "text": "host 10.0.0.256 is invalid",
+    "shouldMatch": false
   }
 ]

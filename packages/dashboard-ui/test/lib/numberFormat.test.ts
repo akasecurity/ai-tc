@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
-import { compactCount, numberFormat } from '../../src/lib/numberFormat.ts';
+import { compactCount, formatNumber } from '../../src/lib/numberFormat.ts';
 
 /**
  * The child's own deadline, and the budget the case that spawns it runs under.
@@ -21,10 +21,9 @@ const CASE_TIMEOUT_MS = 20_000;
  *
  * It has to be a child process: Intl resolves its default locale once, when the
  * runtime starts, so nothing a test does in-process can change it. And it has to
- * be changed at all, because on an en-US runner a pinned formatter and an
- * unpinned one produce identical output — an in-process assertion here is green
- * whether or not the locale is pinned, which is what the case this replaced
- * turned out to be.
+ * be changed at all, because on an en-US runner a formatter that honours its
+ * `locale` argument and one that ignores it for the runtime default produce
+ * identical en-US output — an in-process assertion here is green either way.
  *
  * The child is given ONLY the two locale variables, never the parent's
  * environment: reading `process.env` is banned across this workspace, and
@@ -32,9 +31,14 @@ const CASE_TIMEOUT_MS = 20_000;
  * imports one local module). A host where that bare environment cannot start a
  * process returns null, and the caller skips rather than reddening.
  */
-function formatUnder(
-  lang: string,
-): { pinned: string; compact: string; hostDefault: string } | null {
+interface ChildFormats {
+  enUS: string;
+  deDE: string;
+  compact: string;
+  hostDefault: string;
+}
+
+function formatUnder(lang: string): ChildFormats | null {
   const spec = new URL('../../src/lib/numberFormat.ts', import.meta.url).href;
   try {
     const out = execFileSync(
@@ -42,7 +46,8 @@ function formatUnder(
       [
         '-e',
         `import(process.argv[1]).then((m) => process.stdout.write(JSON.stringify({
-           pinned: m.numberFormat.format(1234),
+           enUS: m.formatNumber(1234, 'en-US'),
+           deDE: m.formatNumber(1234, 'de-DE'),
            compact: m.compactCount(1234),
            hostDefault: new Intl.NumberFormat().format(1234),
          })))`,
@@ -50,49 +55,65 @@ function formatUnder(
       ],
       { env: { LANG: lang, LC_ALL: lang }, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS },
     );
-    return JSON.parse(out) as { pinned: string; compact: string; hostDefault: string };
+    return JSON.parse(out) as ChildFormats;
   } catch {
     return null;
   }
 }
 
-describe('numberFormat', () => {
-  it('groups thousands', () => {
-    expect(numberFormat.format(1234)).toBe('1,234');
-    expect(numberFormat.format(486)).toBe('486');
+describe('formatNumber', () => {
+  it('groups thousands in the locale it is given', () => {
+    expect(formatNumber(1234, 'en-US')).toBe('1,234');
+    expect(formatNumber(486, 'en-US')).toBe('486');
+    expect(formatNumber(1234, 'de-DE')).toBe('1.234');
+    expect(formatNumber(1234567, 'de-DE')).toBe('1.234.567');
   });
 
-  // The property that makes both formatters usable in a client component: the
-  // same string on the server and in the browser. An unpinned formatter reads
-  // each renderer's OWN locale, so a Node host on en-US emits `1,234` where a
-  // de-DE browser hydrates `1.234` — and passing a render instant reconciles a
-  // clock and does nothing for this.
+  it('falls back to en-US for a locale that is not a tag, rather than throwing', () => {
+    // The control: Intl itself throws on each of these.
+    for (const bad of ['', 'en_US', 'not a locale']) {
+      expect(() => new Intl.NumberFormat(bad)).toThrow(RangeError);
+      expect(formatNumber(1234, bad)).toBe('1,234');
+    }
+  });
+
+  it('keeps one formatter per locale apart', () => {
+    // A cache keyed on anything coarser than the locale would hand the second
+    // caller the first caller's separator.
+    expect(formatNumber(11155, 'en-US')).toBe('11,155');
+    expect(formatNumber(11155, 'de-DE')).toBe('11.155');
+    expect(formatNumber(11155, 'en-US')).toBe('11,155');
+  });
+
+  // The property that makes the formatter usable in a client component: the
+  // string depends on the locale PASSED, never on the renderer's own. A Node host
+  // on en-US and a de-DE browser then render the same text for the same prop.
   //
   // The host's own default is the CONTROL. Without it this case cannot fail on a
-  // runner that already defaults to en-US, which is every runner this repo uses:
-  // an in-process assertion that `numberFormat.format(1234)` is '1,234' is green
-  // whether or not the locale is pinned.
+  // runner that already defaults to en-US, which is every runner this repo uses.
   it(
     'formats the same under a host locale that is not en-US',
     { timeout: CASE_TIMEOUT_MS },
     (ctx) => {
       const de = formatUnder('de_DE.UTF-8');
       // Two ways a host cannot answer this: it could not start the child at all,
-      // or it started one that ignored LANG — and on the second, a pinned and an
-      // unpinned formatter agree, so there is nothing here to observe. Skipping
-      // says so; a pass would claim a check that never ran. The `return` is
-      // unreachable (ctx.skip throws) and is what narrows `de` below.
+      // or it started one that ignored LANG — and on the second, a formatter that
+      // honours its argument and one that reads the runtime agree, so there is
+      // nothing here to observe. Skipping says so; a pass would claim a check
+      // that never ran. The `return` is unreachable (ctx.skip throws) and is what
+      // narrows `de` below.
       if (de === null || de.hostDefault === '1,234') {
         ctx.skip(
           de === null
             ? 'this host could not start a child with a bare environment'
-            : 'this host ignored LANG, so a pinned and an unpinned formatter agree here',
+            : 'this host ignored LANG, so the passed and the runtime locale agree here',
         );
         return;
       }
       expect(de.hostDefault).toBe('1.234');
-      expect(de.pinned).toBe('1,234');
-      // The compact form rides the same pin, and its decimal separator is the
+      expect(de.enUS).toBe('1,234');
+      expect(de.deDE).toBe('1.234');
+      // The compact form is pinned to en-US, and its decimal separator is the
       // half that would move.
       expect(de.compact).toBe('1.2k');
     },

@@ -125,4 +125,53 @@ describe('capture_state on a host that has heard nothing yet', () => {
     expect(sites.find((s) => s.tool === 'claude-ai')?.state).toBe('active');
     expect(sites.find((s) => s.tool === 'chatgpt')?.state).toBe('unreported');
   });
+
+  it('reads no stored status on a machine that withholds web chats', async () => {
+    // The same stored row as above. A stored scope is what a personal device
+    // carries, and such a machine answers only from this process's own
+    // reports, which here are none.
+    const db = openLocalDatabase(dir);
+    try {
+      db.auditEvents.insertAuditEvent({
+        id: randomUUID(),
+        eventType: 'capture_status',
+        startedAt: new Date().toISOString(),
+        attributes: toCaptureStatusAttributes(
+          {
+            patched: true,
+            live: true,
+            blind: false,
+            sendsSeenDom: 1,
+            exchangesSeenNet: 1,
+            parseFailures: 0,
+            unparsedBodies: 0,
+            shapeMisses: [],
+            conversationEndpoints: 1,
+            closed: false,
+            enforcement: 'watching',
+          },
+          'claude-ai',
+        ),
+      });
+    } finally {
+      db.close();
+    }
+
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-empty-withheld' },
+      (tool) => {
+        const base = config(tool, webChatSettings());
+        return {
+          ...base,
+          settings: {
+            ...base.settings,
+            attachmentScope: { endpoint: 'https://cp.example', entries: [] },
+          },
+        };
+      },
+    );
+    expect(response).toMatchObject({ type: 'capture_state', withheld: 'personal-device' });
+    const sites = (response as { sites: { tool: string; state: string }[] }).sites;
+    expect(sites.find((s) => s.tool === 'claude-ai')?.state).toBe('unreported');
+  });
 });

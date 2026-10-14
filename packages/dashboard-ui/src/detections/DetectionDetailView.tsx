@@ -12,6 +12,10 @@
 //   - policyFloor     : what an attached machine's organization requires for THIS
 //     detection. Folded into the same restricted set, so the options offered are
 //     the options the store will accept.
+//   - unassignedPolicy : how this host names the policy an unassigned detection
+//     follows, when that is not Monitor. Absent ⇒ unassigned reads as Monitor.
+//   - onUnassignPolicy : present with unassignedPolicy ⇒ the picker offers an
+//     option that returns the detection to unassigned.
 //   - policyError     : a write the store refused, in the user's words. Rendered
 //     at the control that produced it, because a refusal reported nowhere is
 //     indistinguishable from a picker that quietly ignores you.
@@ -52,12 +56,16 @@ import {
   MATCHER_META,
   matcherSummary,
   policyMeta,
+  type UnassignedPolicy,
+  unassignedPolicyMeta,
 } from './meta.ts';
 import {
   DETECTION_STAYS_ON_REASON,
   type DetectionPolicyFloor,
   effectivePolicyId,
   isDisableRefused,
+  policyFloorReason,
+  unassignedPolicyFor,
   unavailableUnderFloor,
 } from './policy-floor.ts';
 import { PolicyPicker } from './PolicyPicker.tsx';
@@ -114,6 +122,8 @@ export function DetectionDetailView({
   onChangePolicy,
   unavailablePolicies,
   policyFloor,
+  unassignedPolicy,
+  onUnassignPolicy,
   policyError,
   enabledError,
   onOpenUpdate,
@@ -142,6 +152,23 @@ export function DetectionDetailView({
    * policy for is not re-assignable here at all.
    */
   policyFloor?: DetectionPolicyFloor | null | undefined;
+  /**
+   * How this host names the policy a detection with no assigned policy follows,
+   * for a host whose unassigned detections do not resolve to Monitor. When it
+   * applies, the picker shows no archetype as selected and the description card
+   * carries this label and description. A LOCKED policyFloor still wins; an
+   * unlocked one is only a minimum, so the host copy stays. Omit it and an
+   * unassigned detection renders as Monitor exactly as before.
+   */
+  unassignedPolicy?: UnassignedPolicy | undefined;
+  /**
+   * Returns this detection to unassigned. With unassignedPolicy, the picker
+   * offers an option labelled with the host's label ahead of the archetypes,
+   * pressed while the detection is unassigned, and refused under a locked floor
+   * or editRefusal like every archetype. Absent ⇒ no such option, since a host
+   * that cannot unassign has nothing for it to do.
+   */
+  onUnassignPolicy?: (() => void) | undefined;
   /** A refused or failed policy write, already worded for the reader. */
   policyError?: string | null | undefined;
   /** The same, for a refused or failed enable/disable write. */
@@ -233,7 +260,10 @@ export function DetectionDetailView({
   // requires, and enforcement raises it. The description card below explains the
   // archetype the picker shows as selected, so the two must be the same one.
   const policyId = effectivePolicyId(d.policyId, policyFloor);
-  const policy = policyMeta(policyId);
+  // The host's unassigned policy when that is what this detection follows (see
+  // unassignedPolicyFor); the list row makes the same call.
+  const unassigned = unassignedPolicyFor(d.policyId, policyFloor, unassignedPolicy);
+  const policy = unassigned ? unassignedPolicyMeta(unassigned) : policyMeta(policyId);
   const PolicyMetaIcon = policy.icon;
   // Two sources of restriction, merged rather than chosen between: a host can
   // both be unable to deliver an archetype AND be under an organization's floor.
@@ -256,6 +286,20 @@ export function DetectionDetailView({
     editRestrictions === undefined
       ? undefined
       : { ...unavailablePolicies, ...floorRestrictions, ...editRestrictions };
+  // Refused by the same two constraints that take every archetype, with the
+  // same precedence; an unlocked floor leaves it live, as it still applies to
+  // whatever the host's policy resolves to.
+  const unassignReason =
+    editRefusal ?? (policyFloor?.locked ? policyFloorReason(policyFloor) : undefined);
+  const unassignedOption =
+    unassignedPolicy && onUnassignPolicy
+      ? {
+          meta: unassignedPolicyMeta(unassignedPolicy),
+          selected: unassigned !== undefined,
+          onSelect: onUnassignPolicy,
+          reason: unassignReason,
+        }
+      : undefined;
   // A governed detection may not be switched off — "not running" is below every
   // archetype, so the organization naming it at all is what settles this (see
   // isDisableRefused). Gated on the host having a write path at the toggle too:
@@ -473,7 +517,12 @@ export function DetectionDetailView({
             <SectionLabel>Enforcement policy</SectionLabel>
             <span className="text-xs text-text-3">applied to every matching request</span>
           </div>
-          <PolicyPicker value={policyId} onChange={onChangePolicy} unavailable={restricted} />
+          <PolicyPicker
+            value={unassigned ? undefined : policyId}
+            onChange={onChangePolicy}
+            unavailable={restricted}
+            unassignedOption={unassignedOption}
+          />
           {policyError && (
             // At the control, not in a page-level banner: the user's next move is
             // to pick something else, and a message they have to go and find
@@ -489,7 +538,10 @@ export function DetectionDetailView({
               className="mt-px size-4 shrink-0"
               style={{ color: toneColors(policy.tone)[0] }}
             />
-            <div className="text-xs leading-snug text-text-2">{policy.desc}</div>
+            <div className="text-xs leading-snug text-text-2">
+              {unassigned && <div className="font-semibold text-text">{policy.label}</div>}
+              {policy.desc}
+            </div>
           </div>
         </div>
 

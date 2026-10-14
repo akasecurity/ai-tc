@@ -246,6 +246,13 @@ describe('Rule rejects unrecognized keys at every level', () => {
     expect(inSpan.success).toBe(false);
   });
 
+  it('accepts a fixture expectedVariableName as a name or null', () => {
+    const base = { label: 'l', text: 't', shouldMatch: true };
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: 'API_KEY' }).success).toBe(true);
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: null }).success).toBe(true);
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: 1 }).success).toBe(false);
+  });
+
   it('accepts a fixture eventKind only when it is an EventKind', () => {
     const base = { label: 'l', text: 't', shouldMatch: true };
     for (const eventKind of ['prompt', 'response', 'code_change', 'tool_use']) {
@@ -427,5 +434,17 @@ describe('RuleProbeVerdict', () => {
   it('rejects any other value', () => {
     expect(RuleProbeVerdict.safeParse('unknown').success).toBe(false);
     expect(RuleProbeVerdict.safeParse('').success).toBe(false);
+  });
+});
+
+describe('Rule.evidence', () => {
+  it('accepts code or value, and is optional', () => {
+    expect(Rule.safeParse(validRule()).success).toBe(true);
+    expect(Rule.safeParse(validRule({ evidence: 'code' })).success).toBe(true);
+    expect(Rule.safeParse(validRule({ evidence: 'value' })).success).toBe(true);
+  });
+
+  it('refuses any other evidence', () => {
+    expect(Rule.safeParse(validRule({ evidence: 'snippet' })).success).toBe(false);
   });
 });

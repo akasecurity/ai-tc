@@ -3,7 +3,10 @@
 // same views). Built on @akasecurity/ui-kit primitives; bundler-agnostic (no
 // svgr/asset imports). Data-fetching stays in the apps — these take data via props.
 export { COLORS } from './lib/colors.ts';
+export { formatDateTime } from './lib/dateFormat.ts';
 export type { IconComponent } from './lib/icons.ts';
+export { DEFAULT_LOCALE, resolveLocale } from './lib/locale.ts';
+export { compactCount, formatNumber } from './lib/numberFormat.ts';
 export { relativeTime, relativeTimeShort } from './lib/relativeTime.ts';
 export {
   BLOCKED_WINDOW_MS,
@@ -35,6 +38,13 @@ export {
   Sparkline,
   useMeasuredWidth,
 } from './shared/charts.tsx';
+export {
+  MODEL_FAMILY_MARKS,
+  ModelMark,
+  modelMarkFor,
+  type ModelMarkGlyph,
+  type ModelMarkProps,
+} from './shared/ModelMark.tsx';
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { RefusalReason, refusedControlProps } from './shared/Refusal.tsx';
@@ -122,14 +132,17 @@ export { UserCell, UsersCell } from './findings/UserCell.tsx';
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).
 export {
+  AlertIcon,
   AlertOctagonIcon,
   BoltIcon,
   BracesIcon,
+  CheckCircleIcon,
   ExternalShareIcon,
   LayersIcon,
   LockIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SlashCircleIcon,
   TerminalIcon,
   XIcon,
 } from './shared/icons.tsx';
@@ -144,6 +157,7 @@ export {
   PolicyTag,
   PublisherTag,
   TonePill,
+  UnassignedPolicyTag,
   UpdateBadge,
 } from './detections/atoms.tsx';
 export { DetectionDetailView } from './detections/DetectionDetailView.tsx';
@@ -162,6 +176,8 @@ export {
   type ProvenanceState,
   provenanceState,
   PUBLISHER_META,
+  type UnassignedPolicy,
+  unassignedPolicyMeta,
 } from './detections/meta.ts';
 export {
   DETECTION_STAYS_ON_REASON,
@@ -170,9 +186,10 @@ export {
   isDisableRefused,
   isPolicyGoverned,
   policyFloorReason,
+  unassignedPolicyFor,
   unavailableUnderFloor,
 } from './detections/policy-floor.ts';
-export { PolicyPicker } from './detections/PolicyPicker.tsx';
+export { PolicyPicker, type UnassignedPolicyOption } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
 export { MatcherModal, type RuleFixtures, RuleInspectorBody } from './detections/RuleInspector.tsx';
 export { UpdateModal } from './detections/UpdateModal.tsx';
@@ -336,6 +353,12 @@ export {
 } from './updates/UpdateStatusCardView.tsx';
 
 // Settings views — the web twin of the `/aka:setup` wizard's editable knobs.
+export {
+  SIGHTING_SHARE_CHOICES,
+  type SightingShareChoice,
+  SightingSharingView,
+  type SightingSharingViewProps,
+} from './settings/SightingSharingView.tsx';
 export {
   type SyncKindRow,
   type SyncLastOutcome,

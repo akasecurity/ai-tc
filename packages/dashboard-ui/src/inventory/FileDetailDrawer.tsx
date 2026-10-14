@@ -17,6 +17,7 @@ export function FileDetailDrawer({
   file,
   onChange,
   accessRefusal,
+  locale,
 }: {
   file: FileDetail;
   onChange: (v: AccessLevel) => void;
@@ -26,6 +27,12 @@ export function FileDetailDrawer({
    * and `onChange` is never called. Absent ⇒ identical to today.
    */
   accessRefusal?: string | undefined;
+  /**
+   * The locale timestamps here are formatted in: the one the host resolved for
+   * this request. Required — the renderer's own locale differs between the
+   * server render and hydration. See ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const om = originMeta[file.origin];
   const project = file.project;
@@ -118,7 +125,7 @@ export function FileDetailDrawer({
           </MetaItem>
           <MetaItem label="Language">{project.language}</MetaItem>
           <MetaItem label="Last activity">
-            {fmtDateTime(file.blockedAt ?? project.updatedAt)}
+            {fmtDateTime(file.blockedAt ?? project.updatedAt, locale)}
           </MetaItem>
         </div>
       </div>

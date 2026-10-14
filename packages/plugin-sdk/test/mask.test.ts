@@ -65,3 +65,55 @@ describe('scanText', () => {
     expect(f?.ruleVersion).toBe('1');
   });
 });
+
+describe('scanText — where each finding sits', () => {
+  it('locates every finding in the scanned target, with a masked excerpt', () => {
+    const { findings } = scanText(
+      `echo start\naws configure set aws_access_key_id ${AWS_KEY}`,
+      undefined,
+      { locate: true },
+    );
+    const finding = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(finding?.location.line).toBe(2);
+    expect(finding?.location.col).toBe('aws configure set aws_access_key_id '.length + 1);
+    expect(finding?.location.context?.basis).toBe('excerpt');
+    expect(finding?.location.context?.lines.join('\n')).not.toContain(AWS_KEY);
+    expect(finding?.location.context?.lines[0]).toContain('[REDACTED:SECRET]');
+  });
+
+  it('builds no location unless asked, so a caller that only masks pays nothing for one', () => {
+    const { findings } = scanText(`aws configure set aws_access_key_id ${AWS_KEY}`);
+    // Control: there is a finding to locate.
+    expect(findings.length).toBeGreaterThan(0);
+    for (const finding of findings) expect(finding).not.toHaveProperty('location');
+  });
+});
+
+describe('scanText — the variable a secret is assigned to', () => {
+  const NAME = ['AWS', 'ACCESS', 'KEY', 'ID'].join('_');
+  const EQ = String.fromCharCode(61);
+
+  it('records the variable name on a located finding, never the value', () => {
+    const { findings } = scanText(['export ', NAME, EQ, AWS_KEY].join(''), undefined, {
+      locate: true,
+    });
+    const finding = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(finding?.variableName).toBe(NAME);
+    expect(finding?.variableName).not.toContain(AWS_KEY);
+  });
+
+  it('records no name for a secret that is not assigned', () => {
+    const { findings } = scanText(`aws configure set aws_access_key_id ${AWS_KEY}`, undefined, {
+      locate: true,
+    });
+    const finding = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(finding).toBeDefined();
+    expect(finding).not.toHaveProperty('variableName');
+  });
+
+  it('computes no name unless the findings are located for storage', () => {
+    const { findings } = scanText(['export ', NAME, EQ, AWS_KEY].join(''));
+    expect(findings.length).toBeGreaterThan(0);
+    for (const finding of findings) expect(finding).not.toHaveProperty('variableName');
+  });
+});

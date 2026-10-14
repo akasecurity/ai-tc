@@ -38,7 +38,9 @@ import {
 // `RemoteFailureKind`: a device-side vocabulary nothing sends, so it carries NO
 // id — an id registers the shape in Zod's global registry, and a consumer
 // walking that registry would publish it into a generated document as a
-// component no route uses.
+// component no route uses. `AttachmentMode` is a third no-id shape: a
+// credential vocabulary that the device report carries inline, as a member of
+// `StorePostureSnapshot`, and never as a component of its own.
 
 // ─── The credential file ─────────────────────────────────────────────────────
 
@@ -87,6 +89,91 @@ export const AttachedCredential = z.object({
   mintedAt: z.iso.datetime().optional(),
 });
 export type AttachedCredential = z.infer<typeof AttachedCredential>;
+
+// How much of this machine's activity an attachment forwards.
+//
+//   `machine` — everything, as every attachment has since attaching existed.
+//   `scoped`  — only what the attachment's enrolled scope covers; the rest stays
+//               in the local store.
+//
+// Recorded on the CREDENTIAL, not in settings.json: this file is the one half
+// of an attachment that settings writers, the managed overlay and older builds
+// never rewrite. A settings field holding the mode could be dropped by any of
+// them, and with an absent mode meaning machine-wide, each drop would widen what
+// is sent.
+//
+// NO `.meta({ id })`, though one wire does carry it now: a scoped attachment's
+// device report sends `StorePostureSnapshot.attachmentMode`. There it is a
+// member of that request body, published INLINE as its two strings, and not
+// one of the body's components. An id would register it as a component of its
+// own, and this vocabulary belongs to the credential file, whose shapes never
+// enter the registry.
+export const AttachmentMode = z.enum(['machine', 'scoped']);
+export type AttachmentMode = z.infer<typeof AttachmentMode>;
+
+// The credential version a scoped attachment is written at. Separate from
+// ATTACHED_CREDENTIAL_SPEC_VERSION, which stays 1: a machine attachment keeps
+// writing exactly the file it always has.
+export const ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION = 2;
+
+// The machine-wide credential under its versioned name. The SAME schema object
+// as `AttachedCredential`, not a copy, so the two names can never disagree.
+export const AttachedCredentialV1 = AttachedCredential;
+export type AttachedCredentialV1 = AttachedCredential;
+
+// A scoped attachment's credential: v1's members at specVersion 2, plus the
+// mode.
+//
+// A NEW VERSION, NOT A FIELD ON v1. Every build already installed parses
+// `specVersion` as the literal 1, so it reads this file as `malformed` and falls
+// back to standalone — a build that cannot enforce scope forwards nothing on a
+// scoped machine. A `mode` key on a v1 file would do the opposite:
+// `AttachedCredential` is not strict, so those builds would strip the key and
+// read the machine as machine-wide.
+//
+// Built with `.extend`, so v2's endpoint, key, prefix and mint-time rules ARE
+// v1's; changing one changes both.
+//
+// READ by `readControlPlaneCredentialFile` in @akasecurity/persistence, which
+// parses `AttachedCredentialAny`. Every path that forwards what this machine
+// recorded — the attached gateway, the history drain, the Data Shares forward
+// and the device-command channel's scan — decides from the credential's mode
+// and the enrolled scope before it sends. (The policy pull, the posture report
+// and the command poll and ack send without a verdict, by design.) A reader may
+// accept this version only together with that enforcement; one that accepted it
+// alone would forward everything a scoped machine captures. A build that
+// predates scoped attachments parses v1 alone and reads this file as
+// `malformed` — @akasecurity/plugin-sdk's frozen-reader suite holds a copy of
+// that reader to the bytes the writer emits.
+//
+// NO `.meta({ id })` on this shape or the union below. EVER. Same bearer
+// credential, same rule as `AttachedCredential`.
+export const AttachedCredentialV2 = AttachedCredential.extend({
+  specVersion: z.literal(ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION),
+  mode: z.literal('scoped'),
+});
+export type AttachedCredentialV2 = z.infer<typeof AttachedCredentialV2>;
+
+// Either version, dispatched on `specVersion`. Any other version is refused, so
+// a credential written by a newer build still reads as `malformed`.
+export const AttachedCredentialAny = z.discriminatedUnion('specVersion', [
+  AttachedCredentialV1,
+  AttachedCredentialV2,
+]);
+export type AttachedCredentialAny = z.infer<typeof AttachedCredentialAny>;
+
+/**
+ * The attachment mode a credential records: v1 is machine-wide, and v2 carries
+ * its mode, which is always `scoped`.
+ *
+ * Only an exact v1 answers `machine`. Anything else answers `scoped`, the
+ * direction that forwards less, so a value that reached here without a parse —
+ * a cast, or a member added to the union without this being revisited — can
+ * never widen what is sent. Pure; no I/O.
+ */
+export function attachmentModeOf(credential: AttachedCredentialAny): AttachmentMode {
+  return credential.specVersion === ATTACHED_CREDENTIAL_SPEC_VERSION ? 'machine' : 'scoped';
+}
 
 // ─── Whether an endpoint is safe to send a credential to ─────────────────────
 
@@ -209,8 +296,9 @@ export function originOnly(endpoint: string): string {
  *                      mode could not be tightened. A planted credential rather
  *                      than a permissions accident.
  *   `unreadable`     — present but could not be read.
- *   `malformed`      — not JSON, or not an `AttachedCredential` (which includes
- *                      an unknown `specVersion`, a `z.literal`).
+ *   `malformed`      — not JSON, or not a credential this build reads
+ *                      (`AttachedCredentialAny`, keyed on `specVersion`), so an
+ *                      unknown version is refused rather than half-read.
  *   `unsafe-endpoint`— minted against an endpoint this build will not send a
  *                      credential to.
  *   `endpoint-mismatch` — a valid credential for a DIFFERENT deployment than the
@@ -420,6 +508,14 @@ export const StorePostureSnapshot = z
     // OPTIONAL, not nullable: a reporter that predates this member keeps
     // getting its 200 without a payload change.
     plugin: StorePosturePlugin.optional(),
+    // OPTIONAL, and sent only by a scoped attachment, always as `scoped`. A
+    // machine attachment omits it, so its body is byte for byte the one it
+    // sent before this member existed. Absent therefore means machine-wide OR
+    // a reporter older than this member, never "scoped". Both values parse, so
+    // a sender that one day spells `machine` breaks no receiver; any other
+    // value fails the whole snapshot, which is why the reporter sends a
+    // constant and never the raw mode.
+    attachmentMode: AttachmentMode.optional(),
   })
   .meta({ id: 'StorePostureSnapshot' });
 export type StorePostureSnapshot = z.infer<typeof StorePostureSnapshot>;
@@ -970,3 +1066,64 @@ export const DeviceCommandAckBody = z.discriminatedUnion('outcome', [
     .strict(),
 ]);
 export type DeviceCommandAckBody = z.infer<typeof DeviceCommandAckBody>;
+
+// ─── The sighting key ────────────────────────────────────────────────────────
+
+/** Bytes of HMAC key material in one sighting-key version. */
+export const SIGHTING_KEY_BYTES = 32;
+
+// The canonical unpadded base64url encoding of exactly 32 bytes: 43 characters,
+// the last of which carries 4 data bits and 2 zero bits.
+const SIGHTING_KEY_MATERIAL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+
+const sightingKeyMaterial = z
+  .string()
+  .regex(SIGHTING_KEY_MATERIAL, 'must be the base64url encoding of exactly 32 bytes');
+
+const sightingKeyVersion = z.number().int().min(1);
+
+/** One accepted version of the key: its number and its base64url material. */
+export const SightingKeyVersion = z.object({
+  keyVersion: sightingKeyVersion,
+  key: sightingKeyMaterial,
+});
+export type SightingKeyVersion = z.infer<typeof SightingKeyVersion>;
+
+/**
+ * `GET /v1/sighting-key` — the HMAC key this machine uses for sightings.
+ *
+ * `keyVersion`/`key` are the current version. `previous` lists the versions
+ * still accepted during a rotation overlap; it may be absent or empty. No two
+ * entries share a version.
+ *
+ * A response parser, so it carries no component id and strips unknown keys.
+ * A refusal names the field and never the value.
+ */
+export const SightingKeyResponse = z
+  .object({
+    keyVersion: sightingKeyVersion,
+    algorithm: z.literal('hmac-sha256'),
+    key: sightingKeyMaterial,
+    previous: z.array(SightingKeyVersion).optional(),
+  })
+  .refine(
+    (body) => {
+      const versions = [body.keyVersion, ...(body.previous ?? []).map((p) => p.keyVersion)];
+      return new Set(versions).size === versions.length;
+    },
+    { message: 'key versions must be distinct', path: ['previous'] },
+  );
+export type SightingKeyResponse = z.infer<typeof SightingKeyResponse>;
+
+/**
+ * The sighting key as this machine stores it: the response it was given, the
+ * epoch-ms instant it was fetched, and the sha256 hex of the endpoint it was
+ * fetched from. A local custody shape, never on a wire.
+ */
+export const StoredSightingKeys = SightingKeyResponse.and(
+  z.object({
+    fetchedAtMs: z.number().int().nonnegative(),
+    endpointFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+);
+export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;

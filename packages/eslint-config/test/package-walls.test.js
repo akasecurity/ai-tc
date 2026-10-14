@@ -132,6 +132,30 @@ const AMBIENT_CLOCK_TEST_FILES = [
   { name: '@akasecurity/ui-kit test', dir: 'packages/ui-kit', file: 'test/badge.test.ts' },
 ];
 
+// The ambient-locale ban's widenings, held the same way and for the same
+// reason: ambient-locale.test.js drives rule VALUES built in the test, so
+// deleting either widening from the config that ships it — the `src/**` entry
+// in `presentationalUiPackage`, or the `app/**` + `middleware.ts` entry in
+// web-ui's own eslint.config.mjs — left that suite green while `pnpm lint`
+// stopped catching a bare `toLocaleString()`. `dashboard-ui`/`ui-kit` `src/**`
+// and web-ui's `app/**` are reached through WALLED_PACKAGES' own targets; these
+// are the files on either side of web-ui's widening that nothing else resolves.
+//
+// `dashboard-ui useRenderClock` is the one `src/**` file carrying its own
+// `no-restricted-syntax` entry (its clock exemption). A per-file entry re-states
+// the whole rule, so an exemption written without the locale widening narrows
+// that file back to the directive-scoped floor while the package-wide target
+// above stays green.
+const AMBIENT_LOCALE_FILES = [
+  {
+    name: 'dashboard-ui useRenderClock',
+    dir: 'packages/dashboard-ui',
+    file: 'src/lib/useRenderClock.ts',
+  },
+  { name: 'web-ui middleware', dir: 'web-ui', file: 'middleware.ts' },
+  { name: 'web-ui test', dir: 'web-ui', file: 'test/pages/locale-hydration.test.ts' },
+];
+
 // The workspace packages that deliberately do NOT carry the drizzle wall, with
 // the reason each is out. Every other workspace package is in WALLED_PACKAGES,
 // and the coverage assertion below holds the two together — so a package added
@@ -173,7 +197,12 @@ const resolved = new Map();
 // config file", which names neither the package nor the reason.
 // Every per-package resolution this suite performs, in one place: what
 // RESOLVE_TIMEOUT_MS is sized against, and what grows when any table above does.
-const RESOLVE_TARGETS = [...WALLED_PACKAGES, ...RELAXED_FILES, ...AMBIENT_CLOCK_TEST_FILES];
+const RESOLVE_TARGETS = [
+  ...WALLED_PACKAGES,
+  ...RELAXED_FILES,
+  ...AMBIENT_CLOCK_TEST_FILES,
+  ...AMBIENT_LOCALE_FILES,
+];
 
 beforeAll(async () => {
   for (const pkg of RESOLVE_TARGETS) {
@@ -414,4 +443,51 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
     ).toBe(true);
     expect(unaccountedIn(nativeStyle)).toEqual([]);
   });
+});
+
+// The ambient-locale widenings (see AMBIENT_LOCALE_FILES above), against the
+// REAL resolved config for each file rather than a rule value built in a test.
+describe('the ambient-locale ban is widened for dashboard-ui/ui-kit src and web-ui app, and only there', () => {
+  // No `use client` directive: a server component or a presentational helper,
+  // which the directive-scoped floor cannot see.
+  const NO_DIRECTIVE_LOCALE_READ = 'export function f(n) { return n.toLocaleString(); }';
+  const DIRECTIVE_SCOPED_LOCALE_READ =
+    "'use client';\nexport function F(n) { return n.toLocaleString(); }";
+
+  it.each([
+    '@akasecurity/dashboard-ui',
+    '@akasecurity/ui-kit',
+    'dashboard-ui useRenderClock',
+    'web-ui',
+    'web-ui middleware',
+  ])('%s catches it with no directive, where directive scoping alone would miss it', (name) => {
+    expect(firedIn(name, NO_DIRECTIVE_LOCALE_READ, 'no-restricted-syntax')).toBe(1);
+  });
+
+  it.each(['@akasecurity/dashboard-ui test', '@akasecurity/ui-kit test', 'web-ui test'])(
+    '%s does NOT widen into test/**, where a stand-in has to read the runtime default',
+    (name) => {
+      expect(firedIn(name, NO_DIRECTIVE_LOCALE_READ, 'no-restricted-syntax')).toBe(0);
+    },
+  );
+
+  it.each(['@akasecurity/dashboard-ui test', '@akasecurity/ui-kit test', 'web-ui test'])(
+    '%s still catches the directive-scoped case — the floor is kept',
+    (name) => {
+      expect(firedIn(name, DIRECTIVE_SCOPED_LOCALE_READ, 'no-restricted-syntax')).toBe(1);
+    },
+  );
+});
+
+// The clock exemption on that same file must stay an exemption: a fix that put
+// the locale widening back by dropping `allowAmbientClock` would ban the one
+// sanctioned clock reader.
+it('dashboard-ui useRenderClock keeps its clock exemption', () => {
+  expect(
+    firedIn(
+      'dashboard-ui useRenderClock',
+      'export function f(n = Date.now()) { return n; }',
+      'no-restricted-syntax',
+    ),
+  ).toBe(0);
 });

@@ -62,6 +62,7 @@ describe('HarnessOverview buckets its event rows against the instant it is given
         onSelect={noop}
         onSelectProject={noop}
         renderedAt={renderedAt}
+        locale="en-US"
       />,
     );
   }

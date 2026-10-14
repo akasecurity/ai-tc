@@ -6,6 +6,7 @@
  * stdin:   the host's payload, in either dialect (see ./dialect.ts).
  * stdout (exit 0), CLI:
  *   {"permissionDecision":"deny","permissionDecisionReason":"…"}  → blocked
+ *     (also when a field is too large to scan in time, on both dialects)
  *   {"modifiedArgs":{…}}                                          → redacted
  *   (nothing)                                                     → no opinion
  * stdout (exit 0), VS Code:
@@ -40,6 +41,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import type { Dialect } from './dialect.ts';
 import { detectDialect, readSessionId, readToolCall } from './dialect.ts';
 import { readEventName } from './event-name.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
@@ -47,7 +49,14 @@ import {
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
-import { baseMetadata, parseJson, readStdin, runHookFailOpen, writeNotice } from './shared.ts';
+import {
+  baseMetadata,
+  callScopeKey,
+  parseJson,
+  readStdin,
+  runHookFailOpen,
+  writeNotice,
+} from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -129,10 +138,20 @@ async function main(): Promise<HookOutput | undefined> {
   const pointerDeny = decideInputPointerDeny(dialect, call.name, toolInput, fields);
   if (pointerDeny) return pointerDeny;
 
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
   const kind = kindFor(dialect, call.name);
   const metadata = baseMetadata(dialect, input) ?? {};
   metadata.toolName = call.name;
+  // A VS Code single-file write by its own target, a patch or any other
+  // code_change by nothing, every other call by the payload cwd only; see
+  // callScopeKey. Resolved once, outside the field loop.
+  const scopeKey = callScopeKey(kind, dialect, input, call);
 
   const scanned: ScannedField[] = [];
   try {
@@ -141,7 +160,7 @@ async function main(): Promise<HookOutput | undefined> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Copilot, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because
@@ -153,6 +172,9 @@ async function main(): Promise<HookOutput | undefined> {
         },
       );
       scanned.push({ spec, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();

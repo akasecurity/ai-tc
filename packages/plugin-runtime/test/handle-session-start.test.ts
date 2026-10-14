@@ -1,10 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 
-import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, type DataGateway, type PluginConfig } from '@akasecurity/plugin-sdk';
+import { openLocalDatabase, readModPolicySnapshot } from '@akasecurity/persistence';
+import {
+  bundledDetections,
+  type DataGateway,
+  type PluginConfig,
+  resolveRepoAttribution,
+} from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -282,6 +289,8 @@ describe('handleSessionStart (standalone)', () => {
     writeFileSync(filePath, 'x');
     await expect(handleSessionStart(start('s1'), config(filePath))).resolves.toEqual({
       staleBinaryNotice: null,
+      forwardingLine: null,
+      warnEraNotice: null,
     });
   });
 
@@ -472,18 +481,20 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     return { ...base, settings: { ...base.settings, policy: 'warn' } };
   }
 
-  it('surfaces the stderr disclosure once when rows are actually capped', async () => {
+  it('returns the disclosure once when rows are actually capped, and writes none to stderr', async () => {
     const seed = openLocalDatabase(dir);
     seed.policies.upsertCategoryAction('secret', 'block');
     seed.close();
 
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await handleSessionStart(start('s1'), warnConfig(dir));
-    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(true);
-
-    stderrSpy.mockClear();
-    await handleSessionStart(start('s2'), warnConfig(dir));
+    const first = await handleSessionStart(start('s1'), warnConfig(dir));
+    expect(first.warnEraNotice).toContain('warn only');
+    // On the result, for the adapter's user-facing channel: stderr from a
+    // SessionStart hook reaches only the host's debug log.
     expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+
+    const second = await handleSessionStart(start('s2'), warnConfig(dir));
+    expect(second.warnEraNotice).toBeNull();
     stderrSpy.mockRestore();
   });
 
@@ -492,10 +503,8 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     seed.policies.upsertCategoryAction('secret', 'block');
     seed.close();
 
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
-    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
-    stderrSpy.mockRestore();
+    const result = await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
+    expect(result.warnEraNotice).toBeNull();
   });
 
   it('is fail-open: a thrown cap never breaks the session, stays silent, and does not skip later steps', async () => {
@@ -510,6 +519,8 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     try {
       await expect(handleSessionStart(start('s1'), warnConfig(dir))).resolves.toEqual({
         staleBinaryNotice: null,
+        forwardingLine: null,
+        warnEraNotice: null,
       });
       expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
 
@@ -704,6 +715,108 @@ describe('handleSessionStart — local-store maintenance capability', () => {
   });
 });
 
+// Each notice is decided on its own, so a fault in one costs that one. The
+// gateway is a real store behind a delegating object that also offers a
+// forwarding scope, which is what an attached gateway does.
+describe('handleSessionStart — each notice survives the others failing', () => {
+  const MACHINE_LINE = 'AKA: forwarding everything to Acme (machine-wide)';
+
+  function forwardingGateway(overrides: Record<string, unknown> = {}): DataGateway {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, []) as unknown as Record<string, unknown>;
+    gateway.forwardingScope = () => ({ deploymentName: 'Acme', mode: 'machine' });
+    return Object.assign(gateway, overrides) as unknown as DataGateway;
+  }
+
+  it('returns the line and the stale notice together', async () => {
+    // The control for the cases below: with nothing failing, both arrive.
+    await recordNewerBinary('aka-cli@0.9.1');
+    setDefaultGatewayFactory(() => forwardingGateway());
+
+    const result = await handleSessionStart(
+      start('s-both', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    expect(result.staleBinaryNotice).toContain('aka-cli v0.9.1');
+  });
+
+  it('keeps the line when the stale-session check throws', async () => {
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({
+        staleBinaryNotice: () => {
+          throw new Error('mirror unreadable');
+        },
+      }),
+    );
+
+    const result = await handleSessionStart(
+      start('s-stale-throws', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result).toEqual({
+      staleBinaryNotice: null,
+      forwardingLine: MACHINE_LINE,
+      warnEraNotice: null,
+    });
+  });
+
+  it('keeps every notice when closing the gateway fails', async () => {
+    await recordNewerBinary('aka-cli@0.9.1');
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({ close: () => Promise.reject(new Error('close failed')) }),
+    );
+
+    const result = await handleSessionStart(
+      start('s-close-rejects', { harnessVersion: '0.9.0' }),
+      config(dir),
+    );
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    expect(result.staleBinaryNotice).toContain('aka-cli v0.9.1');
+  });
+
+  it('keeps the line when the inventory pass throws before the root is written', async () => {
+    const calls: string[] = [];
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, calls) as unknown as Record<string, unknown>;
+    gateway.forwardingScope = () => ({ deploymentName: 'Acme', mode: 'machine' });
+    gateway.ensureInventory = () => Promise.reject(new Error('inventory failed'));
+    setDefaultGatewayFactory(() => gateway as unknown as DataGateway);
+
+    const result = await handleSessionStart(start('s-pass-throws'), config(dir));
+
+    expect(result.forwardingLine).toBe(MACHINE_LINE);
+    // The pass really did stop before the root: nothing was recorded.
+    expect(calls).not.toContain('recordAuditEvent');
+    expect(calls).toContain('close');
+  });
+
+  // The line is read after the pass and before the store closes, so a
+  // gateway that answers from its store is still open when asked.
+  it('reads the line before the gateway closes', async () => {
+    const order: string[] = [];
+    setDefaultGatewayFactory(() =>
+      forwardingGateway({
+        forwardingScope: () => {
+          order.push('forwardingScope');
+          return { deploymentName: 'Acme', mode: 'machine' };
+        },
+        close: () => {
+          order.push('close');
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    await handleSessionStart(start('s-order'), config(dir));
+
+    expect(order).toEqual(['forwardingScope', 'close']);
+  });
+});
+
 describe('handleSessionStart — gateway resolution meta', () => {
   // What each adapter hands over reaches the factory intact: `recordedBy` for
   // the inventory stamp and `pluginBuild` for the attached posture report.
@@ -725,9 +838,11 @@ describe('handleSessionStart — gateway resolution meta', () => {
       config(dir),
     );
 
-    // toStrictEqual: toEqual ignores an explicit-undefined member, and "the
-    // key is absent" vs "the key is undefined" is the exactOptionalPropertyTypes
-    // distinction the factory's presence-keyed spread depends on.
+    // toStrictEqual: toEqual ignores an explicit-undefined member, so this is
+    // what fails if the entry starts handing over a key that holds `undefined`.
+    // The factory tests the value (`meta?.pluginBuild === undefined`) and
+    // `GatewayMeta.pluginBuild` admits `| undefined`, so the factory would read
+    // either form alike: what this pins is the entry's own spread.
     expect(captured).toStrictEqual({
       recordedBy: 'plugin@0.9.8',
       pluginBuild: { package: '@akasecurity/ai-tc-claude-code', version: '0.9.8' },
@@ -744,5 +859,204 @@ describe('handleSessionStart — gateway resolution meta', () => {
     await handleSessionStart(start('s-meta-none', { harnessVersion: '0.9.8' }), config(dir));
 
     expect(captured).toStrictEqual({ recordedBy: 'plugin@0.9.8' });
+  });
+});
+
+describe('handleSessionStart — the session root scope key', () => {
+  function rootRow(sessionId: string): { attrs: Record<string, unknown>; key: string | null } {
+    const db = open();
+    try {
+      const row = db
+        .prepare(
+          "SELECT attributes, scope_key AS key FROM audit_events WHERE event_type = 'session' AND id = :id",
+        )
+        .get({ id: sessionId }) as { attributes: string; key: string | null };
+      return { attrs: JSON.parse(row.attributes) as Record<string, unknown>, key: row.key };
+    } finally {
+      db.close();
+    }
+  }
+
+  it("stamps the canonical repo key onto the root, equal to a hook's key in the same cwd", async () => {
+    await handleSessionStart(start('s-key'), config(dir));
+
+    const { attrs, key } = rootRow('s-key');
+    // The fixture's scp-form origin for org/payments-api, canonicalized.
+    expect(attrs.scope_key).toBe('github.com/org/payments-api');
+    // The local generated column reads the same value.
+    expect(key).toBe('github.com/org/payments-api');
+    // A hook in this cwd keys identically, and a scoped attachment's decision
+    // about a structural leaf is to compare exactly these two keys.
+    expect(attrs.scope_key).toBe(resolveRepoAttribution(cwd).scopeKey);
+
+    // The config_scan row describes the machine, not a repository: never keyed.
+    const db = open();
+    try {
+      const scan = db
+        .prepare("SELECT scope_key AS key FROM audit_events WHERE event_type = 'config_scan'")
+        .get() as { key: string | null };
+      expect(scan.key).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keys a linked-worktree session like its main checkout', async () => {
+    await handleSessionStart(start('s-wt', { cwd: linkedWorktree('wt-key') }), config(dir));
+
+    expect(rootRow('s-wt').attrs.scope_key).toBe('github.com/org/payments-api');
+  });
+
+  it.each([
+    ['a repository with no remote', ''],
+    ['a local-path remote', '[remote "origin"]\n\turl = /srv/git/payments-api.git\n'],
+    [
+      'a file:// remote',
+      `[remote "origin"]\n\turl = ${pathToFileURL('/srv/git/payments-api.git').href}\n`,
+    ],
+  ])('stamps no key for %s, though the project still resolves', async (_label, gitConfig) => {
+    writeFileSync(join(cwd, '.git', 'config'), gitConfig);
+
+    await handleSessionStart(start('s-nokey'), config(dir));
+
+    const { attrs, key } = rootRow('s-nokey');
+    expect(attrs).not.toHaveProperty('scope_key');
+    expect(key).toBeNull();
+    // The project still resolves, by path. Only the key is withheld, because a
+    // path identity is machine-local.
+    const db = open();
+    try {
+      expect(count(db, 'source_project')).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ['a relative cwd', '.'],
+    ['a relative subdirectory', 'src'],
+    ['an empty cwd', ''],
+  ])(
+    'stamps no key for %s, though the hook process runs inside a keyed checkout',
+    async (_label, relativeCwd) => {
+      // A relative cwd is walked from the hook process's own directory, which
+      // the session does not choose, so it would borrow that directory's
+      // repository. Here the process IS in a checkout with a forge remote.
+      mkdirSync(join(cwd, 'src'), { recursive: true });
+      const home = process.cwd();
+      process.chdir(cwd);
+      try {
+        // The control: the same checkout, named absolutely, is keyed.
+        await handleSessionStart(start('s-abs'), config(dir));
+        expect(rootRow('s-abs').attrs.scope_key).toBe('github.com/org/payments-api');
+
+        await handleSessionStart(start('s-rel', { cwd: relativeCwd }), config(dir));
+      } finally {
+        // Restored before the shared afterEach removes the fixtures: a process
+        // still standing inside one cannot delete it on Windows.
+        process.chdir(home);
+      }
+
+      const { attrs, key } = rootRow('s-rel');
+      expect(attrs).not.toHaveProperty('scope_key');
+      expect(key).toBeNull();
+      // Only the key is withheld; the cwd is recorded as the session reported it.
+      expect(attrs.cwd).toBe(relativeCwd);
+    },
+  );
+
+  it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
+    'never keys a %s web-chat root, even when its stand-in cwd is a checkout',
+    async (tool) => {
+      // The browser host passes the home directory as a web chat session's
+      // cwd. Here that directory is a checkout with a forge remote, as a home
+      // directory kept under version control is.
+      await handleSessionStart(start('s-web', { tool }), config(dir));
+
+      const { attrs, key } = rootRow('s-web');
+      expect(attrs).not.toHaveProperty('scope_key');
+      expect(key).toBeNull();
+      // Only the key is withheld. The project still resolves exactly as it
+      // did, so a machine attachment sends the same root as before.
+      const db = open();
+      try {
+        expect(count(db, 'source_project')).toBe(1);
+      } finally {
+        db.close();
+      }
+    },
+  );
+});
+
+describe('handleSessionStart — a session this machine must not record', () => {
+  it('writes no session root and no config scan, and still runs the inventory pass', async () => {
+    writeFileSync(join(cwd, 'main.ts'), '');
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const calls: string[] = [];
+    setDefaultGatewayFactory(() => delegatingGateway(inner, calls));
+
+    await handleSessionStart(start('s-unrecorded', { recordSession: false }), config(dir));
+
+    // The inventory pass is what an attached gateway sends the device report
+    // from, so it must still run; the maintenance passes run as well.
+    expect(calls).toContain('ensureInventory');
+    expect(calls).toContain('sweepTerminalExceptions');
+    expect(calls).not.toContain('recordAuditEvent');
+    expect(calls).not.toContain('recordConfigScan');
+    const db = open();
+    expect(count(db, 'audit_events')).toBe(0);
+    db.close();
+  });
+
+  it('records both when the option is omitted', async () => {
+    // The control: the same session start, recorded, so the zero above is the
+    // option's doing.
+    await handleSessionStart(start('s-recorded'), config(dir));
+    const db = open();
+    expect(count(db, 'audit_events')).toBe(2); // the session root + its config_scan
+    db.close();
+  });
+});
+
+describe('handleSessionStart — the Claude Code mod policy snapshot', () => {
+  // A gateway whose effective bundle carries a policy the store alone does not
+  // hold, as an attached machine's organization policy does.
+  function orgPolicyGateway(): DataGateway {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, []) as DataGateway & Record<string, unknown>;
+    gateway.getPolicyBundle = async () => {
+      const local = await inner.getPolicyBundle();
+      return {
+        ...local,
+        policies: [
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { category: 'pii' },
+            action: 'block',
+            enabled: true,
+          },
+          ...local.policies,
+        ],
+      };
+    };
+    return gateway;
+  }
+
+  it('is written from the effective bundle, organization policy included', async () => {
+    setDefaultGatewayFactory(() => orgPolicyGateway());
+
+    await handleSessionStart(start('s-mod'), config(dir));
+
+    expect(readModPolicySnapshot(dir)?.categoryActions.pii).toBe('block');
+  });
+
+  it('is not written for a harness that ships no mod', async () => {
+    setDefaultGatewayFactory(() => orgPolicyGateway());
+
+    await handleSessionStart(start('s-codex', { tool: SOURCE_TOOL.Codex }), config(dir));
+
+    // The store wrote its own on open; the organization policy was not synced in.
+    expect(readModPolicySnapshot(dir)?.categoryActions.pii).toBe('log');
   });
 });

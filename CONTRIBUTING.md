@@ -1,7 +1,28 @@
 # Contributing to AI Traffic Control
 
-Thanks for your interest in contributing to `ai-tc`. This guide covers how to get
-set up, the conventions we enforce, and how to contribute detection rules.
+Thanks for your interest in contributing to `ai-tc`. This guide covers how to report
+issues, get set up, the conventions we enforce, and how to contribute detection rules.
+
+## Opening issues
+
+Use the [issue forms](https://github.com/akasecurity/ai-tc/issues/new/choose); blank
+issues are disabled.
+
+- **Bug report** — something in the CLI, dashboard, plugin, or detection engine is broken.
+  Include `aka --version`, your OS and Node.js version, and the steps to reproduce it.
+- **Feature request** — describe the problem first, then the solution you'd like.
+- **Detection rule false positive / false negative** — give the rule ID and a
+  **fabricated** sample that reproduces the behavior. A good sample often becomes a
+  fixture in the fix.
+
+**Never paste real secrets, tokens, or personal data**, even a value that was correctly
+detected. Redact logs, and build fabricated samples with the same shape as the real value.
+
+**Security vulnerabilities do not go in public issues.** Report them by email to
+security@akasecurity.io. See [SECURITY.md](SECURITY.md).
+
+Search existing issues before you open a new one. For a non-trivial change, open an issue
+before the PR so the approach can be agreed first.
 
 ## Getting started
 
@@ -126,9 +147,60 @@ Rules merged here are published as **first-party, verified** packs, so rule PRs 
 extra review — please make matchers precise and include realistic negative fixtures
 so we don't ship false positives.
 
+## False positives from this repo's own test data
+
+This tree deliberately carries thousands of secret-shaped and PII-shaped values: rule
+examples and fixtures, test fixtures, values written inline in tests, and the build
+output that bundles every rule's examples. The root [`.akaignore`](.akaignore) keeps
+them out of AKA's own scans of this repository. Each entry in it says why it is there.
+
+**Folder scans read it. The live hooks do not.**
+
+- **Read:** `aka scan`, the dashboard's Scan page, `/aka:scan`, and the worktree scan the
+  plugins' background sync runs. A matched file is never read, so it records no finding.
+- **Not read:** the hooks that run while you work with an agent in this repo. Prompts, tool
+  input such as an edit to a fixture, tool output such as a `cat` of one, and history
+  backfill are all scanned whatever `.akaignore` says. For a value that keeps being
+  flagged there, use a detection exception (`aka exception`). It lets that exact value
+  through instead of blocking or redacting it, though the finding is still recorded.
+  It is keyed on the value, not on a path.
+
+**Scan from the repository root.** Patterns are relative to the root, and a scan aimed at a
+subdirectory never reads the root file. `aka scan rules`, for example, reports every rule
+example, while `aka scan .` skips them.
+
+**Where test data belongs.** Put it somewhere already covered, and nothing needs editing:
+
+- a package's or tool's `test/` tree (fixtures included);
+- `cli/test/` or `web-ui/test/`;
+- the repo-root `test/` tree;
+- a package's `bench/` tree (`packages/*/bench/`; a `bench/` anywhere else is scanned);
+- a rule's `examples` and fixtures under `rules/`.
+
+A plugin's `test/` tree is covered too, **except its `fixtures/`**. Those hold recordings of
+real sessions, and raw browser captures are recorded there, so they stay scanned on purpose.
+Test values come from a rule's own `examples` rather than being written by hand (see
+"Testing" in [`CLAUDE.md`](CLAUDE.md)), so a value that looks real in a fixture is a
+finding worth reading.
+
+**What this does not catch.** A real credential committed into an ignored test file is not
+reported by a folder scan. The agent hooks still scan the write that introduced it, and
+GitHub secret scanning still covers these paths.
+
+**Changing the file.** Every entry is anchored to the location it describes. The guard in
+`test/helpers/repo-akaignore.ts` runs under both walkers that read the file, from
+`packages/local-ops` and `packages/scanner`. It requires two things:
+
+- the set of tracked and planted files the file skips equals the set the guard states;
+- every entry changes that set on its own.
+
+A new entry therefore needs a matching change to the guard's `intendedSkip`, and it needs
+a planted file when nothing tracked sits where the entry points.
+
 ## Pull requests
 
-1. Fork and branch from `main`.
+1. Fork and branch from `main`. For a non-trivial change, link the issue it resolves
+   (`Closes #123`).
 2. Keep PRs focused; write a clear description.
 3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm format:check` pass.
 4. Be responsive to review feedback.
@@ -269,7 +341,7 @@ post-merge `push` run. CodeQL is the one to watch, since it is two matrix legs w
 Turning the queue on needs repository-admin rights and cannot be done from a PR. It is
 also only as strong as the set of checks that are actually required — the measured gap
 noted above — since the queue merges an entry once the required checks pass, and a check
-that is not required is not one of them. Enabling it while only two of the eight are
+that is not required is not one of them. Enabling it while only two of the nine are
 required buys the freshness guarantee for those two and nothing else. Raising that set is
 tracked separately.
 

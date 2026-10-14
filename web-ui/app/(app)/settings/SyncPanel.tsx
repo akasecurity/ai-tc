@@ -20,7 +20,11 @@ import type { SyncPanelData } from './sync-panel-data.ts';
  * faster than a batch spends renders on identical numbers. The read it drives
  * is the one the store's per-kind partition was given an `INDEXED BY` for —
  * that index is what keeps this a walk in index order rather than a scan of the
- * largest table in the store, every four seconds.
+ * largest table in the store, every four seconds. A scoped attachment's read
+ * keeps the same `INDEXED BY` and, on the way, tests each visited row's scope
+ * key and, for a session, model call or tool call, its session root's key (one
+ * primary-key probe), so it costs more per row than a machine-wide one; the
+ * ledger's plan tests pin both reads to that walk.
  */
 export const SYNC_POLL_MS = 4_000;
 
@@ -50,7 +54,16 @@ export const SYNC_START_GRACE_MS = 20_000;
  * them would put one `busy` flag across both, so asking for a pass would
  * disable the settings form.
  */
-export function SyncPanel({ sync, renderedAt }: { sync: SyncPanelData; renderedAt: number }) {
+export function SyncPanel({
+  sync,
+  renderedAt,
+  locale,
+}: {
+  sync: SyncPanelData;
+  renderedAt: number;
+  /** The locale the server resolved for the request; see app/lib/render-locale.ts. */
+  locale: string;
+}) {
   const router = useRouter();
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
@@ -94,6 +107,7 @@ export function SyncPanel({ sync, renderedAt }: { sync: SyncPanelData; renderedA
     <SyncPanelView
       {...sync}
       renderedAt={now}
+      locale={locale}
       busy={busy}
       startError={startError ?? undefined}
       onSyncNow={() => {

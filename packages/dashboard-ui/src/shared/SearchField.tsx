@@ -12,7 +12,7 @@
 // Props-driven and bundler-agnostic like the rest of this package — the host
 // owns the query state (debounced, URL-backed or plain local) and this renders it.
 import { cn } from '@akasecurity/ui-kit';
-import { useRef } from 'react';
+import { useId, useRef } from 'react';
 
 import { SearchIcon, XIcon } from './icons.tsx';
 
@@ -46,6 +46,7 @@ export function SearchField({
   className,
   iconClassName,
   clearLabel = 'Clear search',
+  maxLength,
 }: {
   value: string;
   onValueChange: (next: string) => void;
@@ -81,8 +82,41 @@ export function SearchField({
    * web-ui/test/search-field-labels.test.ts derives which pages those are.
    */
   clearLabel?: string;
+  /**
+   * The longest term the host will send, when its server refuses a longer one.
+   * Omitted leaves the box uncapped, which is right wherever the query never
+   * leaves the machine. Must be a positive integer; anything else (0, a
+   * negative, NaN, a fraction) is treated as omitted.
+   *
+   * A TYPING AID, not a limit. It becomes the native `maxlength`, and browsers
+   * do not agree on what that counts: most count UTF-16 code units (a string's
+   * `.length`, which is what a Zod `.max()` counts), but Safari counts grapheme
+   * clusters, so one pasted emoji of eight code units counts as one; and input
+   * still being composed by an IME may not be held to it at all. So a host
+   * whose server refuses a longer term must still cut what it SENDS by
+   * `.length`.
+   *
+   * It bounds what the user types or pastes, never `value`: this field does not
+   * slice `value`, so a host that seeds a longer one itself (from a URL, say)
+   * sees it rendered whole while it searches only the cut. A host that wants
+   * the box and the search to agree cuts the `value` it seeds as well.
+   *
+   * While the term is at or over the cap, a hint names it and the input is
+   * described by it — otherwise a cut paste or a dropped keystroke is invisible,
+   * and unannounced to a screen reader. The hint renders as the field's next
+   * sibling, so a host passing a cap gives it room in its own layout.
+   */
+  maxLength?: number;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const hintId = useId();
+  // Forwarded only when it can mean a server's limit: 0 would accept nothing,
+  // and a negative or NaN is ignored by the browser, both silently.
+  const cap =
+    typeof maxLength === 'number' && Number.isInteger(maxLength) && maxLength > 0
+      ? maxLength
+      : undefined;
+  const atCap = cap !== undefined && value.length >= cap;
 
   const clear = () => {
     onValueChange('');
@@ -95,74 +129,87 @@ export function SearchField({
   };
 
   return (
-    // The focus ring sits HERE rather than on the input, so it wraps the whole
-    // control — glyph, text and clear button — and so it is still drawn while
-    // the input suppresses its own outline. An input that suppresses the native
-    // outline and puts nothing back is a control whose focus is invisible.
-    <div
-      className={cn(
-        'flex items-center gap-2 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40',
-        // `className` sits BEFORE the surface, and the order is the whole of
-        // what makes the `className` docblock true. `cn` is tailwind-merge,
-        // which resolves a conflict LAST-WINS — so with the surface last, a
-        // call site passing `border-border` or `bg-surface` loses to it rather
-        // than replacing it. Geometry is unaffected either way, because it
-        // conflicts with nothing in either of the other two strings.
-        //
-        // Reordering these two lines silently puts the edge back in the call
-        // site's hands, and no rendered assertion in this repo would notice:
-        // `surface="card"` stays intact, so the call-site table still passes.
-        // theme/field-boundary.test.ts pins the order for that reason.
-        className,
-        SURFACE_CLASS[surface],
+    <>
+      {/* The focus ring sits HERE rather than on the input, so it wraps the whole
+        control — glyph, text and clear button — and so it is still drawn while
+        the input suppresses its own outline. An input that suppresses the native
+        outline and puts nothing back is a control whose focus is invisible. */}
+      <div
+        className={cn(
+          'flex items-center gap-2 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40',
+          // `className` sits BEFORE the surface, and the order is the whole of
+          // what makes the `className` docblock true. `cn` is tailwind-merge,
+          // which resolves a conflict LAST-WINS — so with the surface last, a
+          // call site passing `border-border` or `bg-surface` loses to it rather
+          // than replacing it. Geometry is unaffected either way, because it
+          // conflicts with nothing in either of the other two strings.
+          //
+          // Reordering these two lines silently puts the edge back in the call
+          // site's hands, and no rendered assertion in this repo would notice:
+          // `surface="card"` stays intact, so the call-site table still passes.
+          // theme/field-boundary.test.ts pins the order for that reason.
+          className,
+          SURFACE_CLASS[surface],
+        )}
+      >
+        <SearchIcon
+          aria-hidden
+          focusable={false}
+          className={cn('size-4 shrink-0 text-text-3', iconClassName)}
+        />
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(ev) => {
+            onValueChange(ev.target.value);
+          }}
+          onKeyDown={(ev) => {
+            // `type="search"` would give this natively, but it also injects a
+            // second, browser-drawn clear button beside ours. So the type stays
+            // `text` and the shortcut is supplied here — otherwise clearing costs
+            // a keyboard user a Tab where a pointer user gets one click.
+            if (ev.key === 'Escape' && value !== '') {
+              // Nothing above this listens for Escape today; stopping it here
+              // keeps a later Dialog or Sheet ancestor from also closing on the
+              // keystroke that was meant for the field.
+              ev.preventDefault();
+              ev.stopPropagation();
+              clear();
+            }
+          }}
+          // A query is a proper noun about as often as it is a word; the red
+          // underline under a rule id or a hostname is noise either way.
+          spellCheck={false}
+          maxLength={cap}
+          placeholder={placeholder}
+          aria-label={label}
+          aria-describedby={atCap ? hintId : undefined}
+          className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-hidden"
+        />
+        {value !== '' && (
+          <button
+            type="button"
+            aria-label={clearLabel}
+            onClick={clear}
+            // `size-6` is the target, `size-3.5` the glyph inside it: WCAG 2.5.8
+            // asks for 24x24 CSS px, and a button sized to its own icon is 14.
+            // The field is h-8.5 at its densest, so 24 fits without growing it.
+            className="grid size-6 shrink-0 cursor-pointer place-items-center rounded text-text-3 hover:text-text focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
+          >
+            <XIcon aria-hidden focusable={false} className="size-3.5" />
+          </button>
+        )}
+      </div>
+      {/* A sibling of the bordered box rather than inside it, so it does not crowd
+        the text, and so the host's own layout places and spaces it. It is only
+        mounted at the cap — a host that passes no cap renders exactly what it
+        did before. */}
+      {atCap && (
+        <p id={hintId} data-slot="search-limit" className="text-label text-text-3">
+          {`Search is limited to ${String(cap)} characters`}
+        </p>
       )}
-    >
-      <SearchIcon
-        aria-hidden
-        focusable={false}
-        className={cn('size-4 shrink-0 text-text-3', iconClassName)}
-      />
-      <input
-        ref={inputRef}
-        type="text"
-        value={value}
-        onChange={(ev) => {
-          onValueChange(ev.target.value);
-        }}
-        onKeyDown={(ev) => {
-          // `type="search"` would give this natively, but it also injects a
-          // second, browser-drawn clear button beside ours. So the type stays
-          // `text` and the shortcut is supplied here — otherwise clearing costs
-          // a keyboard user a Tab where a pointer user gets one click.
-          if (ev.key === 'Escape' && value !== '') {
-            // Nothing above this listens for Escape today; stopping it here
-            // keeps a later Dialog or Sheet ancestor from also closing on the
-            // keystroke that was meant for the field.
-            ev.preventDefault();
-            ev.stopPropagation();
-            clear();
-          }
-        }}
-        // A query is a proper noun about as often as it is a word; the red
-        // underline under a rule id or a hostname is noise either way.
-        spellCheck={false}
-        placeholder={placeholder}
-        aria-label={label}
-        className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-hidden"
-      />
-      {value !== '' && (
-        <button
-          type="button"
-          aria-label={clearLabel}
-          onClick={clear}
-          // `size-6` is the target, `size-3.5` the glyph inside it: WCAG 2.5.8
-          // asks for 24x24 CSS px, and a button sized to its own icon is 14.
-          // The field is h-8.5 at its densest, so 24 fits without growing it.
-          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded text-text-3 hover:text-text focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-        >
-          <XIcon aria-hidden focusable={false} className="size-3.5" />
-        </button>
-      )}
-    </div>
+    </>
   );
 }

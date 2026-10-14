@@ -4,7 +4,8 @@
  * stdin:  { toolCall: { name, args }, stepIdx, conversationId, workspacePaths,
  *           transcriptPath, artifactDirectoryPath }
  * stdout (exit 0):
- *   {"decision":"deny","reason":"..."} → the tool call is blocked
+ *   {"decision":"deny","reason":"..."} → the tool call is blocked (also when
+ *                                        a field is too large to scan in time)
  *   {"decision":"allow"}               → the call runs unchanged
  *
  * There is no `updatedInput` equivalent, so a redact policy DENIES rather than
@@ -19,6 +20,7 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
   ALLOW,
@@ -28,6 +30,7 @@ import {
 } from './pre-tool-use-decision.ts';
 import {
   baseMetadata,
+  captureScopeKey,
   getString,
   parseJson,
   readStdin,
@@ -79,7 +82,13 @@ async function main(): Promise<unknown> {
     return ALLOW;
   }
   const gateway = opened.gateway;
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
 
   // A file write is durable content the agent authors, recorded as
   // 'code_change' with the default persist ('always' — the at-rest trail the
@@ -95,6 +104,13 @@ async function main(): Promise<unknown> {
   // carries the path it was written to. Absent on run_command.
   const targetFile = getString(call.args, 'TargetFile');
   if (targetFile) metadata.filePath = targetFile;
+  // A target is keyed by the checkout that holds it, whatever root it sits under
+  // or none, never by the first root the slug above comes from; a relative one
+  // is read against the one root there is, and with several roots it has no key.
+  // A run_command names no path and is keyed only when every root agrees. See
+  // captureScopeKey. Beside the metadata, never inside it: the key is a local
+  // attribute and the metadata is a wire shape.
+  const scopeKey = captureScopeKey(input, targetFile);
 
   const scanned: ScannedField[] = [];
   try {
@@ -103,7 +119,7 @@ async function main(): Promise<unknown> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata, scopeKey },
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // This host's PreToolUse has no `updatedInput`, so NO argument can be
@@ -117,6 +133,9 @@ async function main(): Promise<unknown> {
         },
       );
       scanned.push({ spec, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();

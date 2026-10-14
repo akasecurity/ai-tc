@@ -62,6 +62,12 @@ export interface ProjectPaneProps {
   // Present only when the project was opened from a harness — closes back to
   // that harness's overview. Omitted in the by-type view, where there's no harness.
   onClose?: (() => void) | undefined;
+  /**
+   * The locale timestamps here are formatted in: the one the host resolved for
+   * this request. Required — the renderer's own locale differs between the
+   * server render and hydration. See ../lib/locale.ts.
+   */
+  locale: string;
 }
 
 /** Directory portion of a repo-relative file path (empty for a root-level file). */
@@ -387,7 +393,8 @@ function BlockedRow({
   onSetAccess,
   onOpenFile,
   accessRefusal,
-}: Pick<ProjectPaneProps, 'onSetAccess' | 'onOpenFile' | 'accessRefusal'> & {
+  locale,
+}: Pick<ProjectPaneProps, 'onSetAccess' | 'onOpenFile' | 'accessRefusal' | 'locale'> & {
   file: FileSummary;
 }) {
   const dir = dirOf(file.path);
@@ -405,7 +412,7 @@ function BlockedRow({
         </div>
         <div className="mt-0.5 text-xs text-text-3">
           {file.note}
-          {file.blockedAt ? ` · blocked ${fmtDateTime(file.blockedAt)}` : ''}
+          {file.blockedAt ? ` · blocked ${fmtDateTime(file.blockedAt, locale)}` : ''}
         </div>
       </div>
       <AccessControl
@@ -448,6 +455,7 @@ function BlockedStrip({
   onSetAccess,
   onOpenFile,
   accessRefusal,
+  locale,
 }: ProjectPaneProps) {
   return (
     <div className="border-b border-border bg-surface-2">
@@ -481,6 +489,7 @@ function BlockedStrip({
               onSetAccess={onSetAccess}
               onOpenFile={onOpenFile}
               accessRefusal={accessRefusal}
+              locale={locale}
             />
           ))}
         </div>

@@ -4,7 +4,11 @@ import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
-import type { SaveSettingsInput, WebChatCaptureConsentChoice } from '@akasecurity/schema';
+import type {
+  AttachedCredentialV2,
+  SaveSettingsInput,
+  WebChatCaptureConsentChoice,
+} from '@akasecurity/schema';
 import {
   HISTORY_SYNC_PAYLOAD_VERSION,
   VAULT_CONSENT_VERSION,
@@ -42,10 +46,20 @@ vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 // `applyOnboarding` alone is wrapped; every other export is the real one, so the
 // store, the schema merge and the file lock are all genuine.
 const beforeMerge = vi.hoisted(() => ({ run: undefined as (() => void) | undefined }));
+// The credential reader is wrapped too, for the scoped-backfill cases: they arm
+// `credentialRead` with a usable scoped read rather than writing a scoped
+// credential file. Unarmed, every call reaches the real reader.
+const credentialRead = vi.hoisted<{ value: unknown }>(() => ({ value: undefined }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
+    readControlPlaneCredentialFile: (
+      ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
+    ): ReturnType<typeof actual.readControlPlaneCredentialFile> =>
+      (credentialRead.value as
+        ReturnType<typeof actual.readControlPlaneCredentialFile> | undefined) ??
+      actual.readControlPlaneCredentialFile(...args),
     applyOnboarding: (
       answers: Parameters<typeof actual.applyOnboarding>[0],
       base?: string,
@@ -87,6 +101,7 @@ beforeEach(() => {
 // itself is removed by the helper when this file finishes, not here.
 afterEach(() => {
   beforeMerge.run = undefined;
+  credentialRead.value = undefined;
 });
 
 const ENDPOINT = 'https://plane.example.com';
@@ -528,6 +543,133 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     // by design, precisely so a non-object payload is refused at runtime rather
     // than throwing on the first field read.
     expectTypeOf<SaveSettingsInput['vaultConsent']>().toEqualTypeOf<string>();
+  });
+});
+
+// The capture backfill a 'granted' save runs is scoped like the drain's read: on
+// a SCOPED attachment only the enrolled repositories' captures are marked.
+describe('saveSettings — the capture backfill and the attachment scope', () => {
+  const WORK = 'github.com/acme/work';
+  const PERSONAL = 'github.com/someone/dotfiles';
+  const acknowledgedAt = '2020-06-01T00:00:00.000Z';
+
+  /** An attached machine with a valid grant, WORK enrolled, and one capture per repository. */
+  const arrange = async (): Promise<string> => {
+    const { applyOnboarding, dataDir, openLocalDatabase } =
+      await import('@akasecurity/persistence');
+    const base = join(home, '.aka');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: acknowledgedAt },
+        historySyncConsent: {
+          acknowledgedAt,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: ENDPOINT,
+        },
+        attachmentScope: {
+          endpoint: ENDPOINT,
+          entries: [{ kind: 'repo', identity: WORK, enrolledAt: acknowledgedAt }],
+        },
+      },
+      base,
+    );
+    const db = openLocalDatabase(dataDir(base));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', '2020-05-01T00:00:00.000Z');
+      for (const [id, scopeKey] of [
+        ['s-1-work', WORK],
+        ['s-1-personal', PERSONAL],
+      ] as const) {
+        db.auditEvents.insertAuditEvent({
+          id,
+          eventType: 'prompt',
+          rootSessionId: 's-1',
+          parentId: 's-1',
+          startedAt: '2020-05-01T00:01:00.000Z',
+          content: `text of ${id}`,
+          contentHash: 'c'.repeat(64),
+          attributes: { source_tool: 'claude-code', scope_key: scopeKey },
+        });
+      }
+    } finally {
+      db.close();
+    }
+    return base;
+  };
+
+  const owedIds = async (base: string): Promise<string[]> => {
+    const { dataDir, openLocalDatabase } = await import('@akasecurity/persistence');
+    const db = openLocalDatabase(dataDir(base));
+    try {
+      return db.historySync
+        .pendingCaptureRows(10, Date.parse(acknowledgedAt) + 1)
+        .map((r) => r.id)
+        .sort();
+    } finally {
+      db.close();
+    }
+  };
+
+  const grantAgain = () =>
+    saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+
+  it("marks only the enrolled repository's captures on a scoped attachment", async () => {
+    const base = await arrange();
+    credentialRead.value = {
+      usable: true,
+      credential: {
+        specVersion: 2,
+        mode: 'scoped',
+        endpoint: ENDPOINT,
+        apiKey: 'placeholder',
+        mintedAt: acknowledgedAt,
+      } satisfies AttachedCredentialV2,
+    };
+
+    const res = await grantAgain();
+
+    expect(res.ok).toBe(true);
+    expect(await owedIds(base)).toEqual(['s-1-work']);
+  });
+
+  // A machine attachment's grant covers every capture; a stored scope does not
+  // narrow it. The credential is a real machine one on disk, so this reaches the
+  // backfill's mode check rather than its no-credential fallback.
+  it('marks every capture on a machine attachment, whatever scope is stored', async () => {
+    const { settingsDir, writeControlPlaneCredential } = await import('@akasecurity/persistence');
+    const base = await arrange();
+    writeControlPlaneCredential(settingsDir(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: 'placeholder',
+      mintedAt: acknowledgedAt,
+    });
+
+    const res = await grantAgain();
+
+    expect(res.ok).toBe(true);
+    expect(await owedIds(base)).toEqual(['s-1-personal', 's-1-work']);
+  });
+
+  // No readable credential, no mode to scope by: the backfill marks as it
+  // always has, and the drain's scoped read stays the guarantee.
+  it('marks every capture when no credential can be read', async () => {
+    const base = await arrange();
+
+    const res = await grantAgain();
+
+    expect(res.ok).toBe(true);
+    expect(await owedIds(base)).toEqual(['s-1-personal', 's-1-work']);
   });
 });
 

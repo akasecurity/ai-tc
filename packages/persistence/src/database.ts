@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type {
   AuditEventInput,
+  CaptureAttributes,
   ConfigInventoryReport,
   ConfigScanRecord,
   DetectedFindingWithKey,
@@ -45,6 +46,8 @@ import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
+import type { ModPolicySources } from './mod-policy-snapshot.ts';
+import { refreshModPolicySnapshot } from './mod-policy-snapshot.ts';
 import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
@@ -94,9 +97,10 @@ export type { InventoryContext, InventoryFacets, ResolvedInventory } from '@akas
  * Three properties are load-bearing:
  *
  * - **Symbol-keyed and NOT re-exported from `src/index.ts`.** The package's
- *   `exports` map is `"." -> "./src/index.ts"` and nothing else, so no other
- *   package can reach `database.ts` to name this. Test-only is structural here,
- *   not a request.
+ *   `exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"`, which
+ *   serves a subset of the root's bindings and never loads this module (both
+ *   held by `test/sqlite-free-entry.test.ts`), so no other package can reach
+ *   `database.ts` to name this. Test-only is structural here, not a request.
  * - **A plain enumerable data property, never a getter.** Test helpers hand out
  *   `{ ...db, close }` wrappers (`test/helpers/temp-store.ts`), and object
  *   spread copies own enumerable properties — symbol keys included. Make it
@@ -196,7 +200,14 @@ export interface LocalDatabase {
   // inspection_definitions row from its ruleId. Fail-open: a locked/corrupt DB
   // or a bad row rolls back and is swallowed — dropping telemetry never breaks
   // a session.
-  recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
+  //
+  // `scopeKey`, when non-empty, lands in the row's attribute bag as
+  // `scope_key`, and so in its `scope_key` column, added AFTER the shared
+  // `toCaptureAttributes` mapper has run. It is an argument rather than an
+  // event field because the event is the wire shape, and the mapper is a
+  // shared, published function whose every key is stored by whoever calls it:
+  // this write is the one place the key may reach a row.
+  recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[], scopeKey?: string): void;
   // Close every open at-rest finding of one rule with a `dismissed`
   // disposition, and return how many finding keys that wrote. The keys are
   // selected and their rows inserted under one `BEGIN IMMEDIATE`, which takes
@@ -282,6 +293,19 @@ export interface LocalDatabase {
 // intra-inventory edge (a harness/user runs on a host).
 function linkHost(input: InventoryInput, hostId: string | undefined): InventoryInput {
   return hostId ? { ...input, hostId } : input;
+}
+
+// The capture row's attribute bag: exactly what the shared mapper emits, plus
+// `scope_key` when the caller handed in a non-empty key. The key is merged HERE,
+// after `toCaptureAttributes`, and never taught to that mapper: the mapper is a
+// shared, published function, so a key it learned would be stored by every
+// caller that maps an event through it, not just by this local write. A blank
+// key is no key. `''` names no repository, and storing it would give the row a
+// value instead of the NULL every other unkeyed row reads.
+function captureAttributesOf(event: IngestEvent, scopeKey: string | undefined): CaptureAttributes {
+  const attributes = toCaptureAttributes(event);
+  if (scopeKey === undefined || scopeKey === '') return attributes;
+  return { ...attributes, scope_key: scopeKey };
 }
 
 // Closing is cleanup: a failure here (already closed, or the close itself
@@ -404,7 +428,12 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * when BOTH halves hold: see `describeStoreSkew` and `isSchemaShapedFailure`.
  * Everything else propagates exactly as it arrived.
  */
-function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
+function openAndInitialize(
+  file: string,
+  base: string,
+  skipTags: ReadonlySet<string> | undefined,
+  shippedRegexMatchers: readonly { pattern: string; flags: string }[],
+) {
   let db = openWithPragmas(file);
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
@@ -429,12 +458,25 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     applyMigrations(db, file, { skipTags });
     tightenPerms(file);
 
-    const policies = new SqlitePoliciesRepository(db);
+    // Rewrites the Claude Code mod's policy snapshot after any write to the
+    // installed ruleset, a pack's policy, a category policy or an exception.
+    // These repositories are the one door every writer (the plugin hooks, the
+    // CLI, the web-ui server actions) goes through, so the hook is here and
+    // not at each caller. It reads `repositories` lazily: nothing writes until
+    // the object below exists, and a call before then is a no-op.
+    const modPolicy: { current?: ModPolicySources } = {};
+    const onPolicyStateChange = (): void => {
+      if (modPolicy.current !== undefined)
+        refreshModPolicySnapshot(dirname(file), modPolicy.current);
+    };
+    const policies = new SqlitePoliciesRepository(db, onPolicyStateChange);
     // The layout base, so the pack-policy write path can see whether this
     // machine is attached and what its control plane requires. See
     // SqliteInstalledPacksRepository's constructor for why it is optional there
     // and threaded from here.
-    const installedPacks = new SqliteInstalledPacksRepository(db, base);
+    const installedPacks = new SqliteInstalledPacksRepository(db, base, onPolicyStateChange);
+    const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
+    const exceptions = new SqliteExceptionsRepository(db, undefined, onPolicyStateChange);
     const repositories = {
       events: new SqliteEventsRepository(db),
       findings: new SqliteFindingsRepository(db),
@@ -443,9 +485,9 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       scanLedger: new SqliteScanLedgerRepository(db),
       historySync: new SqliteHistorySyncRepository(db),
       secretVault: new SqliteSecretVaultRepository(db),
-      exceptions: new SqliteExceptionsRepository(db),
+      exceptions,
       resolutions: new SqliteResolutionsRepository(db),
-      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      ruleProbeCache,
       bodyRetention: new SqliteBodyRetentionRepository(db),
       security: new SqliteSecurityRepository(db),
       detections: new SqliteDetectionsRepository(db),
@@ -462,6 +504,13 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
       inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
       inspectionFindings: new SqliteInspectionFindingsRepository(db),
       configInventory: new SqliteConfigInventoryRepository(db),
+    };
+    modPolicy.current = {
+      installedRuleset: () => installedPacks.installedRuleset(),
+      readPolicies: () => policies.listPolicies(),
+      activeExceptionRuleIds: () => exceptions.activeRuleIds(),
+      probeVerdict: (key) => ruleProbeCache.getVerdict(key)?.verdict,
+      bundledRegexMatchers: () => shippedRegexMatchers,
     };
     policies.seedDefaults();
     return { db, ...repositories };
@@ -496,6 +545,20 @@ export interface OpenLocalDatabaseOptions {
    * indexes has to work without it.
    */
   applyDeferredMigrations?: boolean | undefined;
+  /**
+   * The regex matchers the RUNNING BINARY ships (build-time bundled packs, which
+   * CI has timed). The Claude Code mod scans on the host's own thread, where a
+   * runaway pattern cannot be interrupted, so a regex rule enters its policy
+   * snapshot only on evidence it is fast, and "the binary ships it" is the
+   * strongest evidence there is. It is passed in by the caller, which knows its
+   * own build, and never read back from the store: `available_packs` is a
+   * mutable table any writer (another binary, a legacy writer) can fill, so
+   * treating its contents as shipped would let an untimed pattern in. A caller
+   * that passes nothing (the CLI, the web-ui) gets an empty set: a snapshot
+   * written on its store write admits a regex only on a cached `safe` verdict
+   * or an earlier snapshot's vetting, which the plugin's own sync restores.
+   */
+  shippedRegexMatchers?: readonly { pattern: string; flags: string }[] | undefined;
 }
 
 // The set a default open skips, allocated once.
@@ -551,6 +614,7 @@ export function openLocalDatabase(
     // settings/ and data/, and the pack-policy floor needs both halves.
     dirname(dir),
     options.applyDeferredMigrations === true ? undefined : DEFERRED_TAGS,
+    options.shippedRegexMatchers ?? [],
   );
 
   // The one derivation of a capture's row id, shared by the write and the
@@ -678,7 +742,11 @@ export function openLocalDatabase(
     return dismissed;
   }
 
-  function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
+  function recordCapture(
+    event: IngestEvent,
+    detected: DetectedFindingWithKey[],
+    scopeKey?: string,
+  ): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
     failOpenTransaction(db, () => {
@@ -707,7 +775,7 @@ export function openLocalDatabase(
         rootSessionId: sessionId,
         content: event.content,
         contentHash: event.contentHash,
-        attributes: toCaptureAttributes(event),
+        attributes: captureAttributesOf(event, scopeKey),
       });
 
       // Definitions first, keyed by (ruleId, version) — mirrors
@@ -760,6 +828,14 @@ export function openLocalDatabase(
           actionTaken: finding.actionTaken,
           confidence: finding.confidence,
           findingKey: finding.findingKey ?? undefined,
+          ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
+          ...(finding.location === undefined
+            ? {}
+            : {
+                line: finding.location.line,
+                col: finding.location.col,
+                context: finding.location.context,
+              }),
         });
       }
     });

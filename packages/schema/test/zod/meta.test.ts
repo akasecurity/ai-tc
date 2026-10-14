@@ -12,6 +12,7 @@ import {
 import {
   AuditEventType,
   canonicalIdentity,
+  CaptureAttributes,
   HostAttributes,
   InventoryInput,
   InventoryObjectType,
@@ -358,5 +359,18 @@ describe('meta row mappers', () => {
       confidence: 0.99,
     });
     expect(JSON.stringify(row)).not.toContain('rawMatch');
+  });
+});
+
+describe('CaptureAttributes', () => {
+  it('declares scope_key as an optional string', () => {
+    const parsed = CaptureAttributes.parse({ scope_key: 'github.com/acme/work' });
+    expect(parsed.scope_key).toBe('github.com/acme/work');
+    expect(CaptureAttributes.parse({}).scope_key).toBeUndefined();
+    // The bag ends in `.catchall(z.unknown())`, so an undeclared key reads back
+    // unchanged and both assertions above hold with or without the
+    // declaration. Refusing a wrong type is the only thing declaring it buys
+    // at runtime, so that is what pins it.
+    expect(CaptureAttributes.safeParse({ scope_key: 42 }).success).toBe(false);
   });
 });

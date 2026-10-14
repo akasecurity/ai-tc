@@ -13,6 +13,7 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { COLORS } from '../lib/colors.ts';
+import { formatNumber } from '../lib/numberFormat.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 
 /** One counted lane, as the store reports it. */
@@ -73,6 +74,15 @@ export type SyncPanelState =
   | { status: 'consent-stale' }
   | { status: 'credential-unusable'; detail: string }
   | { status: 'nothing-recorded' }
+  // A SCOPED attachment whose enrolled repositories hold nothing to count. Its
+  // own member rather than `nothing-recorded`, because a scoped attachment
+  // counts only what its scope covers: its store can be full of activity from
+  // repositories it does not enroll, and "Nothing recorded yet" over that store
+  // would be false. `enrolled` is how many identities the scope enrolls for
+  // this deployment, as this build resolves it (repositories, and web-chat
+  // accounts, though nothing writes an account entry yet; a list this build
+  // cannot read resolves to 0), so a scope with none can say how to add one.
+  | { status: 'nothing-in-scope'; enrolled: number }
   | { status: 'ready'; kinds: readonly SyncKindRow[] };
 
 export interface SyncPanelViewProps {
@@ -87,6 +97,12 @@ export interface SyncPanelViewProps {
    * call site that forgot to pass one.
    */
   renderedAt: number;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. REQUIRED for the reason `renderedAt` is — the renderer's own locale
+   * differs between the server render and hydration. See ../lib/locale.ts.
+   */
+  locale: string;
   /** A pass currently holds the lease. */
   running: boolean;
   /**
@@ -113,6 +129,14 @@ export interface SyncPanelViewProps {
    */
   startError?: string | undefined;
   localOnly?: readonly SyncLocalOnlyLine[] | undefined;
+  /**
+   * The machine is attached as a personal device, which sends activity only
+   * from the repositories enrolled on it, so the header and the line saying
+   * what is sent from now on name them. Set by the host from the credential's
+   * mode, and only for one: absent reads as machine-wide, the wording that
+   * says more is sent, never less.
+   */
+  scoped?: boolean | undefined;
 }
 
 const OUTCOME_LINE: Record<SyncLastOutcome, string> = {
@@ -122,11 +146,8 @@ const OUTCOME_LINE: Record<SyncLastOutcome, string> = {
   refused: 'Your deployment refused this machine’s key. Re-attach to resume.',
 };
 
-function count(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
-function KindRow({ row }: { row: SyncKindRow }) {
+function KindRow({ row, locale }: { row: SyncKindRow; locale: string }) {
+  const count = (n: number): string => formatNumber(n, locale);
   // Green only when everything known has gone. Anything else is in progress,
   // not a warning — a machine mid-drain is working correctly.
   const color = row.queued === 0 && row.notSent === 0 ? COLORS.ok : COLORS.primary;
@@ -153,7 +174,9 @@ function KindRow({ row }: { row: SyncKindRow }) {
 }
 
 /**
- * What this machine has sent to its deployment, and what it still owes.
+ * What this machine has sent to its deployment, and what it still owes: of all
+ * its activity on a machine-wide attachment, and of only what the repositories
+ * enrolled on it hold on a personal device (`scoped`), where the header says so.
  *
  * Props-driven and bundler-agnostic like every view here: it fetches nothing and
  * decides nothing about which machine it is describing.
@@ -164,14 +187,22 @@ export function SyncPanelView({
   lastOutcome,
   lastPassAt,
   renderedAt,
+  locale,
   running,
   paused,
   onSyncNow,
   busy,
   startError,
   localOnly,
+  scoped,
 }: SyncPanelViewProps) {
-  const canSync = state.status === 'ready' || state.status === 'nothing-recorded';
+  // Wherever a pass could be asked for: the machine shares its history and its
+  // key works. A scoped attachment with nothing in its scope is one of those, as
+  // a machine with nothing recorded is.
+  const canSync =
+    state.status === 'ready' ||
+    state.status === 'nothing-recorded' ||
+    state.status === 'nothing-in-scope';
   // Only where a pass could otherwise be asked for. In every other state the
   // machine is not sending for a reason the reader can act on, and a second
   // "paused" beside it would be two answers to one question.
@@ -182,7 +213,16 @@ export function SyncPanelView({
         <CardHeading>
           <CardTitle>Sync</CardTitle>
           <CardDescription>
-            What this machine has sent to {deployment}, and what it still owes.
+            {/* The bars on a personal device count only what is enrolled there, so
+                the header does not claim the whole machine's history. */}
+            {scoped === true ? (
+              <>
+                What this machine has sent to {deployment} from what is enrolled, and what it still
+                owes.
+              </>
+            ) : (
+              <>What this machine has sent to {deployment}, and what it still owes.</>
+            )}
           </CardDescription>
         </CardHeading>
         {running && <Tag dot={COLORS.primary}>Sending…</Tag>}
@@ -192,7 +232,12 @@ export function SyncPanelView({
       <CardContent className="flex flex-col gap-3">
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
-            Existing activity is not shared. Only what this machine records from now on is sent.
+            {/* What is sent from now on is the attachment's own, and a personal
+                device's attachment sends activity only from its enrolled
+                repositories. */}
+            {scoped === true
+              ? 'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.'
+              : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}
         {state.status === 'consent-stale' && (
@@ -206,8 +251,23 @@ export function SyncPanelView({
         {state.status === 'nothing-recorded' && (
           <p className="text-ui text-text-2">Nothing recorded yet.</p>
         )}
+        {state.status === 'nothing-in-scope' && state.enrolled === 0 && (
+          <p className="text-ui text-text-2">
+            No repository on this machine is enrolled for {deployment}, so none of this machine’s
+            activity is sent to it. Run{' '}
+            <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">aka enroll</code>{' '}
+            inside a work repository to add one.
+          </p>
+        )}
+        {state.status === 'nothing-in-scope' && state.enrolled > 0 && (
+          <p className="text-ui text-text-2">
+            Nothing from an enrolled repository has been sent or queued yet. Activity anywhere else
+            on this machine stays on it.
+          </p>
+        )}
 
-        {state.status === 'ready' && state.kinds.map((row) => <KindRow key={row.kind} row={row} />)}
+        {state.status === 'ready' &&
+          state.kinds.map((row) => <KindRow key={row.kind} row={row} locale={locale} />)}
 
         {lastOutcome !== undefined && (
           <p className={cn('text-label', lastOutcome === 'ok' ? 'text-text-3' : 'text-text-2')}>
@@ -253,7 +313,8 @@ export function SyncPanelView({
             {localOnly.map((line) => (
               <p key={line.id} className="text-label text-text-3">
                 <span className="text-text-2">{line.label}</span>
-                {line.count !== undefined && <> · {count(line.count)} here</>} — {line.detail}
+                {line.count !== undefined && <> · {formatNumber(line.count, locale)} here</>} —{' '}
+                {line.detail}
               </p>
             ))}
           </div>

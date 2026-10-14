@@ -105,6 +105,40 @@ describe('rebuildAuditEvent', () => {
     expect(rebuildAuditEvent(row({ attributes: '"a string"' }))).not.toHaveProperty('attributes');
     expect(rebuildAuditEvent(row({ attributes: '[1,2]' }))).not.toHaveProperty('attributes');
   });
+
+  // `scope_key` is the local routing fact a producer stamps. The request's
+  // attributes member is an open record, so this strip is all that keeps the
+  // drain from delivering it for the receiving side to store.
+  it('drops the local scope key from the bag it forwards, and keeps the rest', () => {
+    const built = rebuildAuditEvent(
+      row({
+        attributes: JSON.stringify({
+          repo: 'acme/api',
+          scope_key: 'github.com/acme/api',
+          branch: 'main',
+        }),
+      }),
+    );
+    expect(built?.attributes).toEqual({ repo: 'acme/api', branch: 'main' });
+    expect(JSON.stringify(built)).not.toContain('scope_key');
+  });
+
+  it('drops the bag entirely when the scope key was all it held', () => {
+    const built = rebuildAuditEvent(
+      row({ attributes: JSON.stringify({ scope_key: 'github.com/acme/api' }) }),
+    );
+    expect(built).toBeDefined();
+    expect(built).not.toHaveProperty('attributes');
+  });
+
+  // The other half of "only the key": an unstamped bag, an empty one included,
+  // leaves exactly as it did before stamping existed.
+  it('leaves a bag without the key exactly as stored, an empty one included', () => {
+    expect(rebuildAuditEvent(row({ attributes: '{}' }))?.attributes).toEqual({});
+    expect(
+      rebuildAuditEvent(row({ attributes: JSON.stringify({ repo: 'acme/api' }) }))?.attributes,
+    ).toEqual({ repo: 'acme/api' });
+  });
 });
 
 describe('rebuildAuditEvent — detections on a tool call', () => {

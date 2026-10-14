@@ -68,6 +68,7 @@ function baseProps(overrides: Partial<ProjectPaneProps> = {}): ProjectPaneProps 
     blocked: [],
     showBlocked: false,
     onToggleBlocked: vi.fn(),
+    locale: 'en-US',
     ...overrides,
   };
 }

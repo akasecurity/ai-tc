@@ -7,6 +7,7 @@
 import type { ActivitySessionSummary, Harness } from '@akasecurity/schema';
 import { Button, cn, Skeleton } from '@akasecurity/ui-kit';
 
+import { formatDateTime } from '../lib/dateFormat.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { BranchIcon, ClockIcon, ListIcon, RepoIcon, ShieldCheckIcon } from '../shared/icons.tsx';
 import { Provider } from '../shared/Provider.tsx';
@@ -16,16 +17,28 @@ import { Metric, StatusDot } from './atoms.tsx';
 import { durationLabel, groupSessionsByDay } from './format.ts';
 import { HarnessSelect } from './HarnessSelect.tsx';
 
+/** The full start instant in a row's tooltip: the fields `toLocaleString()` prints. */
+const STARTED_AT_TITLE: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+};
+
 function SessionRow({
   session,
   selected,
   onSelect,
   renderedAt,
+  locale,
 }: {
   session: ActivitySessionSummary;
   selected: boolean;
   onSelect: () => void;
   renderedAt: number;
+  locale: string;
 }) {
   const flagged = session.findings > 0;
   return (
@@ -59,16 +72,11 @@ function SessionRow({
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        {/* The label reads `renderedAt`, so the clock half of this element now
-            matches across server and client. The `title` does not and cannot:
-            toLocaleString renders in the RENDERER's locale and time zone, and
-            the server's are not the browser's. suppressHydrationWarning is kept
-            for that half alone — it silences the warning without reconciling
-            the attribute, so it is not a substitute for passing an instant. */}
+        {/* The label reads `renderedAt` and the `title` reads `locale`, so both
+            halves of this element match across server and client. */}
         <span
           className="text-xs font-semibold text-text-2"
-          title={new Date(session.startedAt).toLocaleString()}
-          suppressHydrationWarning
+          title={formatDateTime(Date.parse(session.startedAt), locale, STARTED_AT_TITLE)}
         >
           {relativeTime(session.startedAt, renderedAt)}
         </span>
@@ -106,6 +114,7 @@ export function SessionListView({
   onSelect,
   query,
   onQuery,
+  searchMaxLength,
   harness,
   harnessOptions,
   onHarness,
@@ -116,12 +125,17 @@ export function SessionListView({
   showEmpty = false,
   onToggleEmpty,
   renderedAt,
+  locale,
 }: {
   sessions: ActivitySessionSummary[];
   selectedId: string;
   onSelect: (id: string) => void;
   query: string;
   onQuery: (q: string) => void;
+  /** The longest search term the host's server accepts; omitted leaves the box
+   * uncapped (the local store has no such limit). A typing aid, not a limit:
+   * the host still cuts what it sends — see SearchField's `maxLength`. */
+  searchMaxLength?: number;
   harness: Harness[];
   /** Harnesses to offer in the filter — omitted shows the full enum. */
   harnessOptions?: Harness[];
@@ -143,6 +157,11 @@ export function SessionListView({
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /**
+   * The locale the rows' times are formatted in: the one the host resolved for
+   * this request. Required for the reason `renderedAt` is. See ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const days = groupSessionsByDay(sessions, new Date(renderedAt));
   const filtersActive = query.trim() !== '' || harness.length > 0;
@@ -166,15 +185,18 @@ export function SessionListView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border p-3">
+      {/* A column with a gap rather than a margin on the field, so the limit hint
+          SearchField renders at the cap is spaced like the controls around it. */}
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border p-3">
         <SearchField
           value={query}
           onValueChange={onQuery}
           label="Search sessions and events"
           placeholder="Search sessions & events…"
           surface="card"
-          className="mb-2 h-8.5 px-2.5"
+          className="h-8.5 px-2.5"
           iconClassName="size-3.5"
+          {...(searchMaxLength === undefined ? {} : { maxLength: searchMaxLength })}
         />
         <HarnessSelect
           value={harness}
@@ -219,6 +241,7 @@ export function SessionListView({
                       key={session.id}
                       session={session}
                       renderedAt={renderedAt}
+                      locale={locale}
                       selected={session.id === selectedId}
                       onSelect={() => {
                         onSelect(session.id);

@@ -6,9 +6,16 @@
 // crypto, …) would break that bundle. The rest of plugin-sdk (config, gateway,
 // fingerprint, …) stays Node-only and is consumed only by the CLI-hook plugins
 // and the native-messaging host, never by the content script directly.
-import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
-import type { DetectionCategory, Severity, Span } from '@akasecurity/schema';
+import {
+  getLoadedRules,
+  maskMatch,
+  redact,
+  scan,
+  withVariableNames,
+} from '@akasecurity/detections';
+import type { DetectionCategory, FindingLocation, Rule, Severity, Span } from '@akasecurity/schema';
 
+import { createFindingLocator, evidenceLookup } from './finding-context.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 
@@ -38,6 +45,15 @@ function ensureBundledPacks(): boolean {
   }
 }
 
+/**
+ * The bundled rules, for re-scanning a finding's excerpt before it is stored —
+ * or null when the bundled packs cannot be loaded, in which case no excerpt is
+ * built (see finding-context.ts).
+ */
+export function bundledMaskingRules(): Rule[] | null {
+  return ensureBundledPacks() ? getLoadedRules() : null;
+}
+
 // One detected secret, enriched with the rule identity the reconciler needs to
 // write an `inspection_finding` (Layer 2b): the rule's name + version (for the
 // inspection_definition), the category/severity, the span, the MASKED match, and
@@ -51,6 +67,15 @@ export interface ScanFinding {
   span: Span;
   maskedMatch: string;
   confidence: number;
+}
+
+// A ScanFinding with where the hit sits in the scanned text, its masked
+// excerpt and the variable the secret is assigned to, for a caller that stores
+// it (`scanText(…, { locate: true })`). Local only: a forwarding caller drops
+// them (see ToolCallInspectionInput).
+export interface LocatedScanFinding extends ScanFinding {
+  location: FindingLocation;
+  variableName?: string;
 }
 
 // Scan `text` with the bundled detection packs, returning BOTH the redacted string
@@ -71,9 +96,22 @@ export interface ScanFinding {
 // packs can't be loaded at all — returning the raw text would leak the very secret we
 // set out to mask, so we return a blanket `[REDACTED]` and NO findings. A masking bug
 // degrades to over-redaction, never a leak.
+//
+// `locate` builds each finding's location and excerpt, which costs a bounded
+// re-scan per finding; only a caller that stores the excerpt asks for it.
 export function scanText(
   text: string,
   ruleVersions?: Record<string, string>,
+): { masked: string; findings: ScanFinding[] };
+export function scanText(
+  text: string,
+  ruleVersions: Record<string, string> | undefined,
+  options: { locate: true },
+): { masked: string; findings: LocatedScanFinding[] };
+export function scanText(
+  text: string,
+  ruleVersions?: Record<string, string>,
+  options: { locate?: boolean } = {},
 ): { masked: string; findings: ScanFinding[] } {
   // Packs unusable (a malformed bundled pack) → fail-secure without re-paying the parse.
   if (!ensureBundledPacks()) return { masked: '[REDACTED]', findings: [] };
@@ -83,10 +121,23 @@ export function scanText(
     // one — a pointer must never be re-detected as a secret (same-length
     // filler keeps every other offset valid against the original text).
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
-    if (matches.length === 0) return { masked: text, findings: [] };
+    const unshielded = dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
+    if (unshielded.length === 0) return { masked: text, findings: [] };
+    const matches =
+      options.locate === true ? withVariableNames(unshielded, shielded.text) : unshielded;
 
     const byId = new Map(rules.map((r) => [r.id, r]));
+    // Spans are offsets into `text`: the shield keeps every offset valid.
+    const locate =
+      options.locate === true
+        ? createFindingLocator({
+            text,
+            basis: 'excerpt',
+            hits: matches,
+            evidenceOf: evidenceLookup(rules),
+            backstopRules: rules,
+          })
+        : undefined;
     const findings: ScanFinding[] = matches.map((m) => {
       const rule = byId.get(m.ruleId);
       return {
@@ -98,6 +149,8 @@ export function scanText(
         span: m.span,
         maskedMatch: maskMatch(m.rawMatch),
         confidence: m.confidence,
+        ...(locate === undefined ? {} : { location: locate(m) }),
+        ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
       };
     });
     return { masked: redact(text, matches), findings };

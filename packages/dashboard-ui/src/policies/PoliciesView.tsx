@@ -10,16 +10,30 @@ import type { PolicyDetail, PolicyListItem, PolicyStatsResponse } from '@akasecu
 import { Card, cn, Tag, toneColors } from '@akasecurity/ui-kit';
 
 import { policyMeta } from '../detections/meta.ts';
+import { formatNumber } from '../lib/numberFormat.ts';
 import { ListIcon, LockIcon, PolicyIcon, ShieldCheckIcon, TerminalIcon } from '../shared/icons.tsx';
 import { type SummaryStatItem, SummaryStripView } from '../shared/SummaryStripView.tsx';
 
 /**
  * Stat value once settled: the number, or an em dash when still unknown.
- * Locale-grouped like Activity's and Detections' values, so the three strips
- * the same band of chrome is shared by do not format one quantity three ways.
+ * Grouped in the request's locale like Activity's and Detections' values, so the
+ * three strips the same band of chrome is shared by do not format one quantity
+ * three ways.
  */
-function statValue(n: number | undefined): string {
-  return n === undefined ? '—' : n.toLocaleString();
+function statValue(n: number | undefined, locale: string): string {
+  return n === undefined ? '—' : formatNumber(n, locale);
+}
+
+/**
+ * What a policy's detection count means is the host's to say. By default it is
+ * the detections explicitly assigned that policy. A host whose counts also hold
+ * the detections with no policy of their own, under the policy they run at,
+ * passes `countsUnassigned`, and the copy then speaks of detections that use a
+ * policy rather than ones assigned it. The local store is that kind of host: it
+ * counts an unassigned detection under Monitor.
+ */
+interface CountsUnassignedProp {
+  countsUnassigned?: boolean | undefined;
 }
 
 /**
@@ -35,35 +49,44 @@ export function PolicyStatsView({
   stats,
   loading = false,
   className,
-}: {
+  locale,
+  countsUnassigned = false,
+}: CountsUnassignedProp & {
   stats: PolicyStatsResponse | null | undefined;
   loading?: boolean;
   /** Caller-owned spacing, forwarded to the strip, which carries no margin. */
   className?: string | undefined;
+  /**
+   * The locale the counts are formatted in: the one the host resolved for this
+   * request. Required — this is a client component, and the renderer's own
+   * locale differs between the server render and hydration. See
+   * ../lib/locale.ts.
+   */
+  locale: string;
 }) {
   const items: SummaryStatItem[] = [
     {
       icon: PolicyIcon,
-      value: statValue(stats?.policies),
+      value: statValue(stats?.policies, locale),
       label: 'Policies',
       tone: 'primary',
     },
     {
       icon: ShieldCheckIcon,
-      value: statValue(stats?.builtin),
+      value: statValue(stats?.builtin, locale),
       label: 'Built-in',
       tone: 'neutral',
     },
     {
       icon: TerminalIcon,
-      value: statValue(stats?.custom),
+      value: statValue(stats?.custom, locale),
       label: 'Custom scripts',
       tone: 'violet',
     },
     {
       icon: ListIcon,
-      value: statValue(stats?.detectionsGoverned),
-      label: 'Detections governed',
+      value: statValue(stats?.detectionsGoverned, locale),
+      label: countsUnassigned ? 'Detections governed' : 'Detections assigned',
       tone: 'ok',
     },
   ];
@@ -74,10 +97,12 @@ function PolicyRow({
   policy,
   selected,
   onSelect,
+  countsUnassigned,
 }: {
   policy: PolicyListItem;
   selected: boolean;
   onSelect: () => void;
+  countsUnassigned: boolean;
 }) {
   const { icon: Icon, tone } = policyMeta(policy.id);
   const [fg, bg] = toneColors(tone);
@@ -103,7 +128,7 @@ function PolicyRow({
           {policy.name}
         </span>
         <span className="mt-px block text-xs text-text-3">
-          {count} detection{count === 1 ? '' : 's'}
+          {count} {countsUnassigned ? (count === 1 ? 'detection' : 'detections') : 'assigned'}
         </span>
       </span>
       {policy.kind === 'builtin' && (
@@ -120,7 +145,8 @@ export function PolicyListView({
   onSelect,
   loading = false,
   error = null,
-}: {
+  countsUnassigned = false,
+}: CountsUnassignedProp & {
   items: PolicyListItem[];
   activeId?: string | undefined;
   onSelect: (id: string) => void;
@@ -150,6 +176,7 @@ export function PolicyListView({
               onSelect={() => {
                 onSelect(policy.id);
               }}
+              countsUnassigned={countsUnassigned}
             />
           ))
         )}
@@ -159,7 +186,10 @@ export function PolicyListView({
 }
 
 /** The right detail pane body (the app wraps this in a scrolling Card). */
-export function PolicyDetailView({ policy }: { policy: PolicyDetail }) {
+export function PolicyDetailView({
+  policy,
+  countsUnassigned = false,
+}: CountsUnassignedProp & { policy: PolicyDetail }) {
   const { icon: Icon, tone } = policyMeta(policy.id);
   const [fg, bg] = toneColors(tone);
   const isBuiltin = policy.kind === 'builtin';
@@ -203,18 +233,22 @@ export function PolicyDetailView({ policy }: { policy: PolicyDetail }) {
           )}
         </div>
 
-        {/* Applied by */}
+        {/* The detections this policy applies to */}
         <div>
           <div className="mb-2.5 flex items-center gap-2">
             <span className="text-label font-semibold uppercase tracking-wider text-text-3">
-              Applied by
+              {countsUnassigned ? 'Applied by' : 'Assigned to'}
             </span>
             <span className="rounded-full bg-surface-3 px-2 py-0.5 text-xs font-semibold text-text-2">
               {detections.length}
             </span>
           </div>
           {detections.length === 0 ? (
-            <p className="py-2 text-sm text-text-3">No detections use this policy yet.</p>
+            <p className="py-2 text-sm text-text-3">
+              {countsUnassigned
+                ? 'No detections use this policy yet.'
+                : 'No detections are assigned this policy yet.'}
+            </p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {detections.map((d) => (
@@ -224,7 +258,9 @@ export function PolicyDetailView({ policy }: { policy: PolicyDetail }) {
                   dot={d.enabled ? 'var(--color-ok)' : 'var(--color-border-strong)'}
                 >
                   {d.name}
-                  <span className="font-mono text-text-3">{d.ruleCount} rules</span>
+                  <span className="font-mono text-text-3">
+                    {d.ruleCount} rule{d.ruleCount === 1 ? '' : 's'}
+                  </span>
                 </Tag>
               ))}
             </div>

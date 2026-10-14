@@ -75,7 +75,7 @@ const BASE_EVENTS = 5_000;
 const DOUBLE_EVENTS = 10_000;
 
 /**
- * The band the marginal cost must land in: ±15% of a measured 1,048.6 B/event
+ * The band the marginal cost must land in: ±15% of a measured 1,066.6 B/event
  * for the generator's 240-character events.
  *
  * TIGHT, and it can be, because this is not a timing measurement. The corpus is
@@ -91,7 +91,14 @@ const DOUBLE_EVENTS = 10_000;
  * across 5k→10k, 923.2 across 10k→20k. The slope still creeps as the store
  * grows, ~2.3% over that range.
  *
- * **What moved it last was the SCHEMA**, which is why this paragraph now says
+ * **The SCHEMA moved it again with migration 0037**, which adds three nullable
+ * columns to `inspection_findings` (a finding's line, column and masked excerpt)
+ * and a partial index over the rows that hold an excerpt. The generator writes
+ * findings with none of the three, so this is the cost of the empty columns
+ * alone: 1,048.6 → 1,066.6 B/event, about 18 B/event or 1.7%. Measured twice,
+ * 5,853,184 B at 5k and 11,186,176 B at 10k both times.
+ *
+ * **Before that, the SCHEMA moved it**, which is why this paragraph now says
  * "and the schema": migration 0029 adds `idx_audit_capture_rollup`, a partial
  * covering index over (event_type, started_at, repo, id) for the four capture
  * kinds, and an index is bytes per row like anything else. The marginal went
@@ -131,8 +138,9 @@ const DOUBLE_EVENTS = 10_000;
  * `metadata` is parsed by `EventMetadata` before the row is written, so Zod
  * strips the unknown key and the "mutated" corpus measures 1,046.1 B/event,
  * within 0.3% of the unmutated centre. That is a control which silently tests
- * nothing. Planted as a second body it reads 1,364.0 B/event and fails the
- * 1,205.9 ceiling above with 13% to spare. Replant it, rather than trusting
+ * nothing. Planted as a second body it reads 1,375.4 B/event and fails the
+ * 1,226.6 ceiling above with 12% to spare (replanted at the 0037 centre; it
+ * read 1,364.0 against 1,205.9 before). Replant it, rather than trusting
  * this paragraph, the next time the pair, the corpus or the schema changes —
  * and check the planted form still survives validation, which is the trap that
  * ate the last one.
@@ -144,7 +152,7 @@ const DOUBLE_EVENTS = 10_000;
  * the corpus stopped writing what it claims to, and a growth test over a store
  * that is not growing proves nothing.
  */
-const MEASURED_MARGINAL_BYTES_PER_EVENT = 1048.6;
+const MEASURED_MARGINAL_BYTES_PER_EVENT = 1066.6;
 const MARGINAL_TOLERANCE = 0.15;
 const MIN_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 - MARGINAL_TOLERANCE);
 const MAX_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 + MARGINAL_TOLERANCE);

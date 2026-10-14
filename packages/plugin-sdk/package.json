@@ -3,10 +3,14 @@
   "version": "0.8.0",
   "private": true,
   "type": "module",
+  "sideEffects": [
+    "./src/scan-worker.ts"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./scan-worker": "./src/scan-worker.ts",
     "./bare-command": "./src/bare-command.ts",
+    "./vault-glue": "./src/vault-glue.ts",
     "./browser": "./src/mask.ts"
   },
   "scripts": {
@@ -20,12 +24,12 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "ignore": "^7.0.10",
+    "ignore": "^7.0.12",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.9",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "typescript": "^5.8.0",

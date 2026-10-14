@@ -10,15 +10,18 @@
 //     PreToolUse's `hookSpecificOutput.permissionDecision`. UserPromptSubmit
 //     reads a different field, so borrowing the sibling's shape is silently a
 //     no-opinion (allow).
-//   - A `redact` policy BLOCKS here. Claude Code exposes no prompt-rewrite
-//     channel on this event, so warning and passing the prompt through would
+//   - A `redact` policy BLOCKS here. A command hook has no prompt-rewrite
+//     channel on this event (the prompt.submit mod in hooks/mod.ts does, and
+//     runs first where the host loads it: this hook then sees the placeholder
+//     and allows it; where it does not, this block stands), so warning and
+//     passing the prompt through would
 //     send the raw value to the model under a message claiming it was masked.
 //     Blocking is the only outcome that is at least as strong as the policy.
 //     True in-place redaction happens in pre-tool-use via updatedInput.
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { blockMessage, exceptionPointer, tooLargeToScanMessage } from '../exception-guidance.ts';
 import { resubmitMessage } from './resubmit-message.ts';
 
 // The two payloads this hook may write. Both are already arms of `HookOutput`
@@ -67,6 +70,12 @@ export async function decideUserPromptSubmit(
   result: CaptureResult,
   deps: UserPromptSubmitDeps = {},
 ): Promise<UserPromptSubmitOutput | null> {
+  // A prompt whose bounded scan did not finish is refused before anything else
+  // reads the result: it arrives as a `block` with no findings, so the branch
+  // below would name no rule and offer a vault rewrite of nothing.
+  if (result.scanIncomplete !== undefined) {
+    return { decision: 'block', reason: tooLargeToScanMessage('prompt') };
+  }
   if (result.action === 'block' || result.action === 'redact') {
     const ruleIds = uniqueRuleIds(result.findings);
     const blockedRef = result.blockedReferences?.[0];

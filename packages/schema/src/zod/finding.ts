@@ -30,6 +30,11 @@ export const Span = z
   .meta({ id: 'Span' });
 export type Span = z.infer<typeof Span>;
 
+// The longest variable name detection records, and the longest any store
+// accepts, beside a detected secret.
+export const MAX_VARIABLE_NAME_LENGTH = 128;
+export const VariableName = z.string().max(MAX_VARIABLE_NAME_LENGTH);
+
 // The canonical finding shape, and the component named 'Finding'. Carries no
 // scoping columns — a finding is identified by its own id and its parent event.
 // Consumed directly by @akasecurity/persistence and the web-ui.
@@ -193,12 +198,61 @@ export type ResolutionMethod = z.infer<typeof ResolutionMethod>;
 
 // ─── Object shapes ────────────────────────────────────────────────────────────
 
+// What a finding's line number counts in. 'file' when the scanned text was a
+// whole file (a file write, the worktree scanner, the folder scan), so the line
+// is the file's own; 'excerpt' when it was a fragment (an edit's replacement
+// text, a prompt, a shell command), so the line counts within that fragment.
+export const FindingContextBasis = z.enum(['file', 'excerpt']).meta({ id: 'FindingContextBasis' });
+export type FindingContextBasis = z.infer<typeof FindingContextBasis>;
+
+// The masked lines around a finding, built when the finding is detected. Every
+// value a detection rule recognises in `lines` is replaced by a
+// `[REDACTED:<CATEGORY>]` placeholder, and a window in which any line holds one
+// is cut to the matched line alone; only the matched text of a rule whose
+// evidence is code is left readable. Text no rule recognises is shown as written. `match` locates the
+// matched text for highlighting and is null when it is redacted.
+export const FindingContext = z
+  .object({
+    basis: FindingContextBasis,
+    // 1-based line number of `lines[0]`.
+    firstLine: z.number().int().positive(),
+    lines: z.array(z.string()).min(1).max(5),
+    match: z
+      .object({
+        // 1-based line number, within [firstLine, firstLine + lines.length).
+        line: z.number().int().positive(),
+        // Offsets into that entry of `lines`, end exclusive.
+        start: z.number().int().nonnegative(),
+        end: z.number().int().nonnegative(),
+      })
+      .nullable(),
+  })
+  .meta({ id: 'FindingContext' });
+export type FindingContext = z.infer<typeof FindingContext>;
+
+// Where a finding sits in the text it was detected in: 1-based line and column
+// of the match start (the column in UTF-16 code units, so a BOM or a character
+// outside the BMP counts differently from an editor), plus the masked excerpt (null when none could be built
+// safely). Local-store only — never part of a forwarded payload.
+export const FindingLocation = z.object({
+  line: z.number().int().positive(),
+  col: z.number().int().positive(),
+  context: FindingContext.nullable(),
+});
+export type FindingLocation = z.infer<typeof FindingLocation>;
+
 export const FindingMatch = z
   .object({
     // Masked preview of the matched value. Never raw content.
     maskedValue: z.string(),
-    // Redacted source-line prefix. Currently empty (pending privacy review).
+    // Deprecated: always empty. Superseded by `context`.
     contextPrefix: z.string(),
+    // The masked lines around the match. Absent when the finding predates
+    // context capture or none could be built safely.
+    context: FindingContext.optional(),
+    // The variable the matched value is assigned to. Absent when the match is
+    // not the right-hand side of an assignment.
+    variableName: VariableName.optional(),
   })
   .meta({ id: 'FindingMatch' });
 export type FindingMatch = z.infer<typeof FindingMatch>;
@@ -239,6 +293,11 @@ export const FindingInstance = z
     provider: FindingProvider,
     repo: z.string(),
     file: z.string(),
+    // 1-based line and column of the match start in the scanned text (the
+    // column in UTF-16 code units). Absent for findings that predate location
+    // capture or have no source text.
+    line: z.number().int().positive().optional(),
+    col: z.number().int().positive().optional(),
     // Who the capturing event is attributed to. Optional: a single-user store
     // has no one to attribute a finding to and never sets it.
     user: FindingUser.optional(),
@@ -317,6 +376,28 @@ export const FindingStats = z
   })
   .meta({ id: 'FindingStats' });
 export type FindingStats = z.infer<typeof FindingStats>;
+
+// FindingsOverview: the Findings page's summary strip — whole-store counts,
+// untouched by the page's filters, range and session scope.
+//
+// Every field counts FINDINGS, the unit the flat list counts, and each one is
+// exactly the `totals.findings` that list reports for the same filters: `open`
+// is `?view=flat&status=open`, and `handled`, `resolved` and `dismissed` are
+// the same with their own status. That is what lets a number on the strip and
+// the list it heads be compared at all.
+//
+// The four status counts cover every FindingStatus, and every finding has
+// exactly one, so they always add up to `findings`.
+export const FindingsOverview = z
+  .object({
+    findings: z.number().int().nonnegative(),
+    open: z.number().int().nonnegative(),
+    handled: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+    dismissed: z.number().int().nonnegative(),
+  })
+  .meta({ id: 'FindingsOverview' });
+export type FindingsOverview = z.infer<typeof FindingsOverview>;
 
 export const FindingFacetItem = z
   .object({
@@ -530,6 +611,11 @@ export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
 // the vault reads. The types read caps at 100 and is set separately: the two
 // are distinct contracts, so neither cap is derived from the other.
 export const MAX_FLAT_FINDINGS_LIMIT = 200;
+
+// One finding's excerpt, by its id — the drawer's read. A whole-input shape so
+// a Server Action parses everything it was posted before reading a field.
+export const FindingContextQuery = z.object({ id: z.string().min(1).max(256) });
+export type FindingContextQuery = z.infer<typeof FindingContextQuery>;
 
 export const ListFindingInstancesQuery = z.object({
   severity: z.array(Severity).optional(),

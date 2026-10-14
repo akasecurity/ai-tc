@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./engine": "./src/engine.ts"
   },
   "scripts": {
     "lint": "eslint src test bench *.config.*",
@@ -18,7 +19,7 @@
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
     "@akasecurity/extract": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.9",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "typescript": "^5.8.0",

@@ -6,8 +6,9 @@
 // imports — line numbers come from counting newlines in the raw text. Callers
 // gate what reaches extractEgress: code files only (EGRESS_CODE_EXTENSIONS),
 // never lockfiles, never text containing NUL bytes.
-import type { HttpMethod, Transport } from '@akasecurity/schema';
+import type { EgressCredentialRef, HttpMethod, Span, Transport } from '@akasecurity/schema';
 
+import { callSearchBudget, enclosingCall, variableRefsOf } from './credential-refs.ts';
 import { isPrivateOrReservedIPv4, isValidIPv4 } from './registry.ts';
 
 /** One URL or bare-IP destination reference found in a file's text. */
@@ -26,6 +27,10 @@ export interface RawEndpointHit {
   line: number;
   /** Redacted, capped at SNIPPET_MAX characters. */
   snippet: string;
+  /** The call expression the hit sits in, as offsets into the text. */
+  call?: Span;
+  /** The environment variables that call reads; absent when it reads none. */
+  credentialRefs?: EgressCredentialRef[];
 }
 
 // Source extensions URL/IP extraction runs on, mirroring the scanner's walker
@@ -385,6 +390,18 @@ export function extractEgress(text: string): RawEndpointHit[] {
   const redactedOf = memoizeByLine((index) => redactedLineOf(lineTextOf(index)));
   const snippetAt = (index: number, offset: number): string =>
     snippetWindow(redactedOf(index), offset - (lineStarts[index] ?? 0));
+  const refsByCall = new Map<number, EgressCredentialRef[]>();
+  const budget = callSearchBudget();
+  const callOf = (start: number, end: number): Pick<RawEndpointHit, 'call' | 'credentialRefs'> => {
+    const call = enclosingCall(text, start, end, budget);
+    if (call === undefined) return {};
+    let refs = refsByCall.get(call.start);
+    if (refs === undefined) {
+      refs = variableRefsOf(text, call);
+      refsByCall.set(call.start, refs);
+    }
+    return refs.length === 0 ? { call } : { call, credentialRefs: refs };
+  };
 
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const start = match.index;
@@ -405,6 +422,7 @@ export function extractEgress(text: string): RawEndpointHit[] {
       method: inferMethod(text, start, start + matched.length),
       line: index + 1,
       snippet: snippetAt(index, start),
+      ...callOf(start, start + matched.length),
     });
   }
 
@@ -416,7 +434,13 @@ export function extractEgress(text: string): RawEndpointHit[] {
     const parsed = parseBareIp(match[0], ipContextOf(index));
     if (parsed === null) continue;
 
-    hits.push({ ...parsed, method: 'REF', line: index + 1, snippet: snippetAt(index, start) });
+    hits.push({
+      ...parsed,
+      method: 'REF',
+      line: index + 1,
+      snippet: snippetAt(index, start),
+      ...callOf(start, start + match[0].length),
+    });
   }
 
   return hits.sort(compareHits);

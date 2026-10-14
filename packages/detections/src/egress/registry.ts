@@ -16,7 +16,7 @@ import type {
 // data and the excluded-host list are covered separately, by
 // EGRESS_VERSION_MATERIAL embedding PROVIDER_REGISTRY and EXCLUDED_HOST_SUFFIXES
 // verbatim.
-const EXTRACTOR_VERSION = '3';
+const EXTRACTOR_VERSION = '4';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never

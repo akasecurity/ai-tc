@@ -11,6 +11,7 @@ import { createRemoteClient } from '@akasecurity/remote';
 import type { StoredSightingKeys } from '@akasecurity/schema';
 import { isAttached } from '@akasecurity/schema';
 
+import { endpointFingerprint } from './history-sync.ts';
 import { withTimeout } from './with-timeout.ts';
 
 /** A stored key at least this old is fetched again. */
@@ -34,9 +35,16 @@ export interface RunSightingKeySyncDeps {
   store?: SightingKeyStore | undefined;
 }
 
-/** Whether `stored` was fetched within the last day, by a clock that has not run backwards past it. */
-function isFresh(stored: StoredSightingKeys | undefined, nowMs: number): boolean {
-  if (stored === undefined) return false;
+/**
+ * Whether `stored` was issued by the endpoint with `fingerprint` and fetched
+ * within the last day, by a clock that has not run backwards past it.
+ */
+function isFresh(
+  stored: StoredSightingKeys | undefined,
+  fingerprint: string,
+  nowMs: number,
+): boolean {
+  if (stored?.endpointFingerprint !== fingerprint) return false;
   const age = nowMs - stored.fetchedAtMs;
   return age >= 0 && age < SIGHTING_KEY_MAX_AGE_MS;
 }
@@ -72,7 +80,8 @@ export async function runSightingKeySync(
     const nowMs = (deps.now ?? Date.now)();
     const store =
       deps.store ?? createSightingKeyStore(settings.vaultKeyCustody, keysDir(deps.base));
-    if (isFresh(readStored(store), nowMs)) return 'fresh';
+    const fingerprint = endpointFingerprint(connection.endpoint);
+    if (isFresh(readStored(store), fingerprint, nowMs)) return 'fresh';
 
     const { apiKey } = state.credential;
     const client = createRemoteClient({
@@ -81,7 +90,7 @@ export async function runSightingKeySync(
       timeoutMs: SIGHTING_KEY_REQUEST_TIMEOUT_MS,
     });
     const response = await withTimeout(client.getSightingKey(), SIGHTING_KEY_REQUEST_TIMEOUT_MS);
-    store.replace({ ...response, fetchedAtMs: nowMs });
+    store.replace({ ...response, fetchedAtMs: nowMs, endpointFingerprint: fingerprint });
     return 'fetched';
   } catch {
     return 'failed';

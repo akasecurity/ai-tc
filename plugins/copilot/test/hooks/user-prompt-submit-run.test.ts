@@ -287,6 +287,17 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
 describe('runUserPromptSubmit declines without opening the store', () => {
   const cli = (prompt: string): string =>
     JSON.stringify({ ...fixture('cli', 'userPromptSubmitted.json'), prompt, cwd });
+  // The same payload with every key `detectDialect` reads removed, so neither
+  // dialect can be told. The control below sends it WITH its session id.
+  const noDialect = (prompt: string): string => {
+    const payload: Record<string, unknown> = {
+      ...fixture('cli', 'userPromptSubmitted.json'),
+      prompt,
+      cwd,
+    };
+    delete payload.sessionId;
+    return JSON.stringify(payload);
+  };
 
   it.each([
     ['a foreign event token', 'preToolUse', cli('hello')],
@@ -295,6 +306,7 @@ describe('runUserPromptSubmit declines without opening the store', () => {
     ['malformed JSON', 'userPromptSubmitted', '{not json'],
     ['a JSON array', 'userPromptSubmitted', '[]'],
     ['no event token', undefined, cli('hello')],
+    ['a payload whose dialect cannot be told', 'userPromptSubmitted', noDialect('hello')],
   ])('on %s', async (_label, event, stdin) => {
     expect(await runUserPromptSubmit(event, stdin, { akaHome })).toBeUndefined();
     expect(existsSync(akaHome)).toBe(false);

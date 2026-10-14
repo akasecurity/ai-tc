@@ -79,10 +79,6 @@ function isOwnEvent(event: string): event is HookEvent {
   return OWN_EVENTS.has(event);
 }
 
-// Same reasoning as pre-tool-use.ts: a payload whose dialect cannot be told is
-// read as the CLI's, the host where a wrong guess costs the most.
-const DEFAULT_DIALECT = 'cli' as const;
-
 const ONBOARDING_NUDGE =
   'AKA is active and monitoring your prompts (log-only by default — nothing is blocked ' +
   'or redacted yet). Run the aka-setup skill to choose your installation type and set ' +
@@ -103,7 +99,11 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
   // nothing is said about it.
   if (capture === undefined || input === null) return undefined;
 
-  const dialect = detectDialect(input) ?? DEFAULT_DIALECT;
+  // A payload whose dialect cannot be told is declined, as preToolUse and
+  // postToolUse decline one: a guess would choose the message channel and the
+  // session-id spelling for a payload that carries neither dialect's marker.
+  const dialect = detectDialect(input);
+  if (dialect === undefined) return undefined;
   const sessionId = readSessionId(dialect, input);
   const config = loadConfig(options.akaHome);
   // A symlinked store path redirects the corpus without failing anything; say

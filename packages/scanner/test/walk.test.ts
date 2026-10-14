@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { walkSourceFiles } from '../src/walk.ts';
+import { collectManifests } from '../src/manifests.ts';
+import { resolveProtectedRoots, walkSourceFiles } from '../src/walk.ts';
 
 let tmp: string;
 
@@ -365,4 +366,16 @@ describe('walkSourceFiles — protected paths', () => {
       expect(files).toEqual([]);
     },
   );
+});
+
+describe('collectManifests — protected paths', () => {
+  it('never lists a manifest under a protected path', () => {
+    write('.aka/package.json', '{}');
+    write('.claude/ide/package.json', '{}');
+    write('project/package.json', '{}');
+
+    const protectedRoots = resolveProtectedRoots(tmp, join(tmp, 'other'));
+    const found = collectManifests(tmp, undefined, undefined, protectedRoots);
+    expect(found.map((m) => m.path)).toEqual([join(tmp, 'project', 'package.json')]);
+  });
 });

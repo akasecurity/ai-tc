@@ -92,6 +92,9 @@ export interface WalkOptions {
   // (`protectedScanRoots`). Default to `homedir()` and `defaultDataDir()`.
   home?: string | undefined;
   akaHome?: string | undefined;
+  // The protected paths already resolved by `resolveProtectedRoots`; when
+  // given, `home` and `akaHome` are not consulted.
+  protectedRoots?: readonly string[] | undefined;
   maxFileSizeBytes?: number;
   // Programmatic excludes in gitignore syntax, anchored at rootDir — the host's
   // counterpart to on-disk .akaignore files (skip semantics, same layer stack).
@@ -264,6 +267,23 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
   yield* visit(rootDir, canonicalRoot, '', [], rootSkipLayers, false);
 }
 
+/**
+ * The paths a walk never reads, for the OS home and AKA's home (defaulting to
+ * `homedir()` and `defaultDataDir()`). Throws when either home cannot be
+ * resolved: the scan then fails visibly instead of reading AKA's own key files
+ * or reporting an unread tree as clean.
+ */
+export function resolveProtectedRoots(home?: string, akaHome?: string): readonly string[] {
+  try {
+    return protectedScanRoots(home ?? homedir(), akaHome ?? defaultDataDir());
+  } catch (cause) {
+    throw new Error(
+      'the home directory cannot be resolved, so the paths a scan must never read are unknown; nothing was scanned',
+      { cause },
+    );
+  }
+}
+
 // Lazily walk all source and secret-bearing files under rootDir. Each file is
 // read once and yielded; callers stream through it to bound peak memory.
 // Gitignored files are read too: local, untracked config is where secrets live.
@@ -272,13 +292,7 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
   const extensions = opts.extensions ?? SOURCE_EXTENSIONS;
   const maxBytes = opts.maxFileSizeBytes ?? DEFAULT_MAX_BYTES;
 
-  let protectedRoots: readonly string[];
-  try {
-    protectedRoots = protectedScanRoots(opts.home ?? homedir(), opts.akaHome ?? defaultDataDir());
-  } catch {
-    // No home to resolve the protected set against: read nothing.
-    return;
-  }
+  const protectedRoots = opts.protectedRoots ?? resolveProtectedRoots(opts.home, opts.akaHome);
 
   for (const file of walkTree(rootDir, {
     excludePatterns: opts.excludePatterns,

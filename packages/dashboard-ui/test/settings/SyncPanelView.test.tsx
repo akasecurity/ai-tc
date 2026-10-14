@@ -201,7 +201,9 @@ describe('SyncPanelView', () => {
   it('says nothing from an enrolled repository is sent or queued yet when the scope holds one', () => {
     const html = render({ state: { status: 'nothing-in-scope', enrolled: 2 } });
     expect(html).toContain('Nothing from an enrolled repository has been sent or queued yet.');
-    expect(html).toContain('Activity anywhere else on this machine stays on it.');
+    expect(html).toContain(
+      'Activity anywhere else on this machine stays on it, except from sessions signed in to a recognised work subscription.',
+    );
     expect(html).not.toContain('aka enroll');
     expect(html).not.toContain('Nothing recorded yet');
     expect(html).not.toContain('role="meter"');
@@ -227,7 +229,7 @@ describe('SyncPanelView', () => {
   it("says only an enrolled repository's activity is sent from now on", () => {
     const html = render({ state: { status: 'not-shared' }, scoped: true });
     expect(html).toContain(
-      'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.',
+      'Existing activity is not shared. Only activity an enrolled repository, or a recognised work-subscription session, records from now on is sent.',
     );
     expect(html).not.toContain('this machine records');
   });
@@ -245,7 +247,7 @@ describe('SyncPanelView', () => {
   it('says the header counts only what is enrolled on a personal device', () => {
     const html = render({ scoped: true });
     expect(html).toMatch(
-      /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)? from what is enrolled, and what it still owes\./,
+      /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)? from what is enrolled and from recognised work subscriptions, and what it still owes\./,
     );
   });
 
@@ -255,5 +257,46 @@ describe('SyncPanelView', () => {
       /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)?, and what it still owes\./,
     );
     expect(html).not.toContain('from what is enrolled');
+  });
+
+  // The panel says whether work subscriptions are on, from the scope record, and
+  // names the command that changes it: the dashboard has no control of its own
+  // for this.
+
+  it('says work subscriptions are on, and names the command that stops them', () => {
+    const html = render({ scoped: true, workSubscriptions: 'on' });
+    expect(html).toContain('data-slot="sync-work-subscriptions"');
+    expect(html).toContain(
+      'Work subscriptions are on: Claude Code sessions signed in to a work subscription of your organization under your AKA account’s email are sent from any folder.',
+    );
+    expect(html).toContain('aka unenroll --work-subscriptions</code>');
+  });
+
+  it('says they are off, and names the command that turns them back on', () => {
+    const html = render({ scoped: true, workSubscriptions: 'off' });
+    expect(html).toContain(
+      'Work subscriptions are off on this machine: only what is enrolled is sent.',
+    );
+    expect(html).toContain('aka enroll --work-subscriptions</code>');
+    expect(html).not.toContain('aka unenroll --work-subscriptions');
+  });
+
+  it('says only recognised work-subscription sessions are sent while nothing is enrolled and they are on', () => {
+    const html = render({
+      state: { status: 'nothing-in-scope', enrolled: 0 },
+      scoped: true,
+      workSubscriptions: 'on',
+    });
+    expect(html).toMatch(
+      /enrolled for (?:<!-- -->)?plane\.example(?:<!-- -->)?, so only sessions signed in to a recognised work subscription are sent to it\./,
+    );
+    expect(html).not.toContain('none of this machine’s activity is sent');
+  });
+
+  it.each<[string, Partial<SyncPanelViewProps>]>([
+    ['on a machine-wide attachment', { workSubscriptions: 'on' }],
+    ['when the host reports nothing about them', { scoped: true }],
+  ])('says nothing about work subscriptions %s', (_name, over) => {
+    expect(render(over)).not.toContain('sync-work-subscriptions');
   });
 });

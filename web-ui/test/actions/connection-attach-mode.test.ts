@@ -1046,3 +1046,11 @@ describe('the input', () => {
     expect(deployment.received).toEqual([]);
   });
 });
+
+describe('what a personal-device attach writes about work subscriptions', () => {
+  it('writes no work-subscriptions field: attaching turns nothing off', async () => {
+    await attachScoped();
+    expect(storedSettings().attachmentScope).toEqual(freshFor(deployment.origin));
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+});

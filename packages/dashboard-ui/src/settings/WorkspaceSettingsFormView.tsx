@@ -216,9 +216,10 @@ export const HISTORY_SYNC_STALE_NOTICE =
 
 // The same row on a machine attached as a personal device, picked when the host
 // reports `attachmentMode: 'scoped'`. Such a machine sends activity only from
-// the repositories enrolled on it (the grant's seed marks their captures
-// alone, and the drain reads with the same scope), so every string here names
-// them and none describes the whole machine's backlog. Same payload, same
+// the repositories enrolled on it and from the Claude Code sessions of a work
+// subscription it recognises (the grant's seed marks the enrolled repositories'
+// captures alone, and the drain reads with the same scope), so every string
+// here names them and none describes the whole machine's backlog. Same payload, same
 // masking rule, same two answers under the same labels: only the subject
 // narrows. The payload-version tripwire in packages/schema names the twins of
 // the three disclosure strings (the section description, the choices and the
@@ -230,7 +231,9 @@ export const HISTORY_SYNC_ROW_DESCRIPTION_SCOPED =
 export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'Whether activity the repositories enrolled on this device have not delivered to the ' +
   'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-  'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
+  'outside one, is not sent, except from Claude Code sessions signed in to a work ' +
+  'subscription of your organization that this device recognises. Two kinds qualify: some ' +
+  'of what an enrolled repository recorded ' +
   'here before you enrolled it, and anything a live send from one could not deliver because ' +
   'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
   'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
@@ -241,9 +244,11 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'masked only where that policy is redact or block, and under monitor or warn the value is ' +
   'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
   'or block, so on a default install nothing in that text is masked. Live sending from ' +
-  'enrolled repositories is part of being attached and this setting does not change it: ' +
+  'enrolled repositories and recognised work-subscription sessions is part of being attached ' +
+  'and this setting does not change it: ' +
   'declining means an undelivered item is dropped rather than kept and retried. With no ' +
-  'repository enrolled, no activity is sent. Sending happens in the background over later ' +
+  'repository enrolled and no work subscription recognised, no activity is sent. Sending ' +
+  'happens in the background over later ' +
   'sessions. Revoking stops what has not been sent; it cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
@@ -257,7 +262,7 @@ export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
     value: 'granted',
     label: 'Shared',
     description:
-      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent, except from Claude Code sessions signed in to a work subscription of your organization that this device recognises.',
   },
 ];
 
@@ -1336,8 +1341,10 @@ export const CONNECTION_FORWARDING_NOTICE =
 // claim more than is sent. Every clause is a sender a scoped machine still has
 // or a line it does not cross:
 //
-//   - the plugin forwards activity only from repositories you enroll (the
-//     forward paths decide by the enrolled scope before they send);
+//   - the plugin forwards activity only from repositories you enroll and from
+//     the Claude Code sessions of a work subscription the device recognises
+//     (the forward paths decide by that scope before they send), and the
+//     notice names the command that stops the second;
 //   - the policy pull, the device report and the check for device commands are
 //     made whenever a session starts anywhere on the machine, in a repository
 //     or not, a browser chat included, with no scope verdict, by design, so they
@@ -1353,22 +1360,27 @@ export const CONNECTION_FORWARDING_NOTICE =
 //     it.
 export const CONNECTION_FORWARDING_NOTICE_SCOPED =
   'While this machine is attached as a personal device, the plugin forwards activity only from ' +
-  'repositories you enroll with `aka enroll`; activity anywhere else stays on this machine. ' +
-  'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
-  "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
-  'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
-  'packs, policy counts, finding counts and dates for everything recorded on the machine, and, ' +
-  'when the machine is attached as a personal device, the fact that it is one. Where a scan is ' +
-  'available (the coding-agent plugins, not a browser chat), the same session start also ' +
-  'checks it for device commands. A scan you run from the Scan page sends the Data ' +
-  'Shares register only for an enrolled repository — destinations and call sites, never source ' +
-  'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
+  'repositories you enroll with `aka enroll`, and from Claude Code sessions signed in to a work ' +
+  'subscription of your organization under the same email as your AKA account, which send ' +
+  "everything they record from any folder, with that folder's project and branch names; activity " +
+  "anywhere else stays on this machine. The device checks that from Claude Code's own login file " +
+  'and sends no email, plan or account id; run `aka unenroll --work-subscriptions` to send only ' +
+  'from the repositories you enroll. Whenever a session starts anywhere on this machine, in a ' +
+  "repository or not (a browser chat included), the machine pulls that deployment's policy (at " +
+  'most every 15 minutes) and sends it a device report (at most hourly): a device identifier, ' +
+  'host name, versions, detection packs, policy counts, finding counts and dates for everything ' +
+  'recorded on the machine, and, when the machine is attached as a personal device, the fact that ' +
+  'it is one. Where a scan is available (the coding-agent plugins, not a browser chat), the same ' +
+  'session start also checks it for device commands. A scan you run from the Scan page sends the ' +
+  'Data Shares register only for an enrolled repository — destinations and call sites, never ' +
+  'source text. Re-attaching with a version of AKA older than this one would make the attachment ' +
   'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
   'received. Detach to stop sending.';
 
 // The mode line under an attached connection's name.
 export const CONNECTION_MODE_SCOPED =
-  'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`.';
+  'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`, ' +
+  'and from Claude Code sessions signed in to a work subscription of your organization.';
 export const CONNECTION_MODE_MACHINE =
   'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
 
@@ -1383,8 +1395,13 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
     value: 'scoped',
     label: 'Personal device',
     description:
-      'Activity is sent only from repositories you enroll with `aka enroll`; activity anywhere ' +
-      'else stays on this machine. Whenever a session starts anywhere on this machine, in a ' +
+      'Activity is sent only from repositories you enroll with `aka enroll`, and from Claude Code ' +
+      'sessions signed in to a work subscription of your organization (Claude Team or Enterprise) ' +
+      "under the same email as your AKA account, from any folder, with that folder's project and " +
+      'branch names; activity anywhere else stays on this machine. The device checks that from ' +
+      "Claude Code's own login file and sends no email, plan or account id. To send only from the " +
+      'repositories you enroll, run `aka unenroll --work-subscriptions` after attaching. Whenever ' +
+      'a session starts anywhere on this machine, in a ' +
       "repository or not (a browser chat included), the machine pulls your organization's " +
       'policy (at most every 15 minutes) and sends it a device report (at most hourly): a ' +
       'device identifier, host name, versions, detection packs, policy counts, finding counts ' +

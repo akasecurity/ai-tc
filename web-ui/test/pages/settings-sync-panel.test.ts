@@ -879,6 +879,24 @@ describe('the settings route — the sync panel on a personal device', () => {
     expect(sync.state).toEqual({ status: 'not-shared' });
     expect(sync).not.toHaveProperty('scoped');
   });
+
+  it('tells the panel work subscriptions are on when the scope record does not mention them', async () => {
+    attachScoped(scopeRecord([WORK]));
+    expect((await panel()).workSubscriptions).toBe('on');
+  });
+
+  it.each<[string, unknown]>([
+    ['off', 'off'],
+    ['a value this version does not know', 'paused'],
+  ])('tells the panel they are off for a stored %s', async (_name, value) => {
+    attachScoped({ ...scopeRecord([WORK]), workSubscriptions: value });
+    expect((await panel()).workSubscriptions).toBe('off');
+  });
+
+  it('says nothing about work subscriptions on a machine-wide attachment', async () => {
+    attach();
+    expect(await panel()).not.toHaveProperty('workSubscriptions');
+  });
 });
 
 // A scoped attachment also sends the rows stamped for a work account the device

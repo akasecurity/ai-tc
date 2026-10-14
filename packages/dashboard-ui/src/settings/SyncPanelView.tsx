@@ -131,12 +131,19 @@ export interface SyncPanelViewProps {
   localOnly?: readonly SyncLocalOnlyLine[] | undefined;
   /**
    * The machine is attached as a personal device, which sends activity only
-   * from the repositories enrolled on it, so the header and the line saying
-   * what is sent from now on name them. Set by the host from the credential's
-   * mode, and only for one: absent reads as machine-wide, the wording that
-   * says more is sent, never less.
+   * from the repositories enrolled on it and from recognised work
+   * subscriptions, so the header and the line saying what is sent from now on
+   * name them. Set by the host from the credential's mode, and only for one:
+   * absent reads as machine-wide, the wording that says more is sent, never less.
    */
   scoped?: boolean | undefined;
+  /**
+   * Whether this personal device recognises work subscriptions, from its scope
+   * record: `'off'` when the user turned them off (or the record holds a value
+   * this build does not know, which reads as off), `'on'` otherwise. Set by the
+   * host on a scoped attachment only; absent, the panel says nothing about them.
+   */
+  workSubscriptions?: 'on' | 'off' | undefined;
 }
 
 const OUTCOME_LINE: Record<SyncLastOutcome, string> = {
@@ -175,8 +182,10 @@ function KindRow({ row, locale }: { row: SyncKindRow; locale: string }) {
 
 /**
  * What this machine has sent to its deployment, and what it still owes: of all
- * its activity on a machine-wide attachment, and of only what the repositories
- * enrolled on it hold on a personal device (`scoped`), where the header says so.
+ * its activity on a machine-wide attachment, and on a personal device (`scoped`)
+ * of only what the repositories enrolled on it and the sessions of a recognised
+ * work subscription hold, where the header says so. On a personal device it also
+ * says whether recognised work subscriptions are sent, when the host reports it.
  *
  * Props-driven and bundler-agnostic like every view here: it fetches nothing and
  * decides nothing about which machine it is describing.
@@ -195,6 +204,7 @@ export function SyncPanelView({
   startError,
   localOnly,
   scoped,
+  workSubscriptions,
 }: SyncPanelViewProps) {
   // Wherever a pass could be asked for: the machine shares its history and its
   // key works. A scoped attachment with nothing in its scope is one of those, as
@@ -213,12 +223,13 @@ export function SyncPanelView({
         <CardHeading>
           <CardTitle>Sync</CardTitle>
           <CardDescription>
-            {/* The bars on a personal device count only what is enrolled there, so
-                the header does not claim the whole machine's history. */}
+            {/* The bars on a personal device count what is enrolled there and the
+                rows of a recognised work subscription, so the header does not
+                claim the whole machine's history. */}
             {scoped === true ? (
               <>
-                What this machine has sent to {deployment} from what is enrolled, and what it still
-                owes.
+                What this machine has sent to {deployment} from what is enrolled and from recognised
+                work subscriptions, and what it still owes.
               </>
             ) : (
               <>What this machine has sent to {deployment}, and what it still owes.</>
@@ -230,13 +241,38 @@ export function SyncPanelView({
         {state.status === 'consent-stale' && <Tag>Paused</Tag>}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {/* On a personal device, whether recognised work subscriptions are sent,
+            and the command that changes that: the dashboard offers no control
+            for it. */}
+        {scoped === true && workSubscriptions !== undefined && (
+          <p data-slot="sync-work-subscriptions" className="text-ui text-text-2">
+            {workSubscriptions === 'on' ? (
+              <>
+                Work subscriptions are on: Claude Code sessions signed in to a work subscription of
+                your organization under your AKA account’s email are sent from any folder. Run{' '}
+                <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">
+                  aka unenroll --work-subscriptions
+                </code>{' '}
+                to send only from what is enrolled.
+              </>
+            ) : (
+              <>
+                Work subscriptions are off on this machine: only what is enrolled is sent. Run{' '}
+                <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">
+                  aka enroll --work-subscriptions
+                </code>{' '}
+                to turn them back on.
+              </>
+            )}
+          </p>
+        )}
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
             {/* What is sent from now on is the attachment's own, and a personal
                 device's attachment sends activity only from its enrolled
-                repositories. */}
+                repositories and from recognised work-subscription sessions. */}
             {scoped === true
-              ? 'Existing activity is not shared. Only activity an enrolled repository records from now on is sent.'
+              ? 'Existing activity is not shared. Only activity an enrolled repository, or a recognised work-subscription session, records from now on is sent.'
               : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}
@@ -253,8 +289,19 @@ export function SyncPanelView({
         )}
         {state.status === 'nothing-in-scope' && state.enrolled === 0 && (
           <p className="text-ui text-text-2">
-            No repository on this machine is enrolled for {deployment}, so none of this machine’s
-            activity is sent to it. Run{' '}
+            {/* While recognised work subscriptions are sent, an empty enrolled list
+                does not mean nothing is sent. */}
+            {workSubscriptions === 'on' ? (
+              <>
+                No repository on this machine is enrolled for {deployment}, so only sessions signed
+                in to a recognised work subscription are sent to it. Run{' '}
+              </>
+            ) : (
+              <>
+                No repository on this machine is enrolled for {deployment}, so none of this
+                machine’s activity is sent to it. Run{' '}
+              </>
+            )}
             <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">aka enroll</code>{' '}
             inside a work repository to add one.
           </p>
@@ -262,7 +309,8 @@ export function SyncPanelView({
         {state.status === 'nothing-in-scope' && state.enrolled > 0 && (
           <p className="text-ui text-text-2">
             Nothing from an enrolled repository has been sent or queued yet. Activity anywhere else
-            on this machine stays on it.
+            on this machine stays on it, except from sessions signed in to a recognised work
+            subscription.
           </p>
         )}
 

@@ -211,6 +211,33 @@ describe('attach-mode copy', () => {
     // An older build re-attaching writes a machine-wide credential.
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/older than this one/i);
   });
+
+  it('names work subscriptions, how they are recognised and the opt-out wherever a personal device is described', () => {
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED]) {
+      expect(text).toContain(
+        'Claude Code sessions signed in to a work subscription of your organization',
+      );
+      expect(text).toContain("with that folder's project and branch names");
+      expect(text).toContain(
+        "checks that from Claude Code's own login file and sends no email, plan or account id",
+      );
+      expect(text).toContain('`aka unenroll --work-subscriptions`');
+    }
+    expect(scoped).toContain('(Claude Team or Enterprise)');
+    expect(CONNECTION_MODE_SCOPED).toContain(
+      'and from Claude Code sessions signed in to a work subscription of your organization',
+    );
+    // A machine-wide attachment sends everything already, and a managed machine
+    // can attach no other way, so neither is offered an opt-out.
+    for (const text of [
+      CONNECTION_FORWARDING_NOTICE,
+      CONNECTION_MODE_MACHINE,
+      ATTACH_MODE_MANAGED_NOTICE,
+    ]) {
+      expect(text).not.toContain('work subscription');
+    }
+  });
 });
 
 describe('the attach form', () => {

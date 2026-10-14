@@ -160,7 +160,9 @@ describe('history-sync copy on a personal device', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toBe(
       'Whether activity the repositories enrolled on this device have not delivered to the ' +
         'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-        'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
+        'outside one, is not sent, except from Claude Code sessions signed in to a work ' +
+        'subscription of your organization that this device recognises. Two kinds qualify: some ' +
+        'of what an enrolled repository recorded ' +
         'here before you enrolled it, and anything a live send from one could not deliver because ' +
         'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
         'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
@@ -171,9 +173,11 @@ describe('history-sync copy on a personal device', () => {
         'masked only where that policy is redact or block, and under monitor or warn the value is ' +
         'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
         'or block, so on a default install nothing in that text is masked. Live sending from ' +
-        'enrolled repositories is part of being attached and this setting does not change it: ' +
+        'enrolled repositories and recognised work-subscription sessions is part of being attached ' +
+        'and this setting does not change it: ' +
         'declining means an undelivered item is dropped rather than kept and retried. With no ' +
-        'repository enrolled, no activity is sent. Sending happens in the background over later ' +
+        'repository enrolled and no work subscription recognised, no activity is sent. Sending ' +
+        'happens in the background over later ' +
         'sessions. Revoking stops what has not been sent; it cannot recall what has.',
     );
   });
@@ -190,7 +194,7 @@ describe('history-sync copy on a personal device', () => {
         value: 'granted',
         label: 'Shared',
         description:
-          'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+          'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent, except from Claude Code sessions signed in to a work subscription of your organization that this device recognises.',
       },
     ]);
   });
@@ -250,10 +254,10 @@ describe('history-sync copy on a personal device', () => {
       expect(text).not.toContain('before it attached');
     }
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
-      'Activity in any other repository, or outside one, is not sent.',
+      'Activity in any other repository, or outside one, is not sent, except from Claude Code sessions signed in to a work subscription of your organization that this device recognises.',
     );
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
-      'With no repository enrolled, no activity is sent.',
+      'With no repository enrolled and no work subscription recognised, no activity is sent.',
     );
   });
 

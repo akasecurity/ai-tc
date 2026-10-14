@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { walkSourceFiles } from '../src/walk.ts';
+import { collectManifests } from '../src/manifests.ts';
+import { resolveProtectedRoots, walkSourceFiles } from '../src/walk.ts';
 
 let tmp: string;
 
@@ -96,6 +97,33 @@ describe('walkSourceFiles', () => {
 
     const files = [...walkSourceFiles({ rootDir: tmp, extensions: new Set(['.rb']) })];
     expect(files.map((f) => f.relativePath)).toEqual(['app.rb']);
+  });
+
+  it('reads dotenv files alongside source files', () => {
+    write('.env', 'A=1');
+    write('config/.env.local', 'B=2');
+    write('.env.example', 'C=3');
+    write('.envrc', 'D=4');
+    write('app.ts');
+
+    const files = [...walkSourceFiles({ rootDir: tmp })];
+    expect(files.map((f) => f.relativePath).sort()).toEqual([
+      '.env',
+      '.env.example',
+      '.envrc',
+      'app.ts',
+      'config/.env.local',
+    ]);
+    expect(files.find((f) => f.relativePath === '.env')?.content).toBe('A=1');
+  });
+
+  it('still reads dotenv files when the caller narrows the source extensions', () => {
+    write('.env', 'A=1');
+    write('app.ts');
+    write('app.rb');
+
+    const files = [...walkSourceFiles({ rootDir: tmp, extensions: new Set(['.rb']) })];
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['.env', 'app.rb']);
   });
 
   it('returns empty on empty directory', () => {
@@ -292,5 +320,62 @@ describe('walkSourceFiles — extension parsing edge cases', () => {
 
     const files = [...walkSourceFiles({ rootDir: tmp })];
     expect(files.map((f) => f.relativePath)).toEqual(['src/app.ts']);
+  });
+});
+
+describe('walkSourceFiles — protected paths', () => {
+  it('never reads the host credentials or AKA homes under the scanned tree', () => {
+    const home = tmp;
+    const akaHome = join(tmp, 'relocated-aka');
+    write('.claude/ide/session.ts', 'const token = 1;');
+    write('.claude/.credentials.json', '{}');
+    write('.claude/settings.ts', 'const ok = 1;');
+    write('.codex/auth.json', '{}');
+    write('.aka/data/leak.ts', 'const a = 1;');
+    write('.aka/.env', 'A=1');
+    write('relocated-aka/keys/vault.ts', 'const b = 1;');
+    write('project/.env', 'C=3');
+    write('project/app.ts', 'const c = 1;');
+
+    const files = [...walkSourceFiles({ rootDir: tmp, home, akaHome })];
+    expect(files.map((f) => f.relativePath).sort()).toEqual([
+      '.claude/settings.ts',
+      'project/.env',
+      'project/app.ts',
+    ]);
+  });
+
+  it('reads nothing when the root itself is protected', () => {
+    write('.aka/.env', 'A=1');
+    write('.aka/app.ts', 'const a = 1;');
+
+    const files = [
+      ...walkSourceFiles({ rootDir: join(tmp, '.aka'), home: tmp, akaHome: join(tmp, 'other') }),
+    ];
+    expect(files).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a protected directory reached through a symlinked root',
+    () => {
+      write('.aka/.env', 'A=1');
+      const link = join(tmp, 'alias');
+      symlinkSync(join(tmp, '.aka'), link);
+
+      const files = [...walkSourceFiles({ rootDir: link, home: tmp, akaHome: join(tmp, 'other') })];
+      expect(files).toEqual([]);
+    },
+  );
+});
+
+describe('collectManifests — protected paths', () => {
+  it('never lists a manifest under a protected path', () => {
+    write('.aka/package.json', '{}');
+    write('.claude/ide/package.json', '{}');
+    write('project/package.json', '{}');
+
+    const protectedRoots = resolveProtectedRoots(tmp, join(tmp, 'other'));
+    const found = collectManifests(tmp, undefined, undefined, protectedRoots);
+    expect(found.map((m) => m.path)).toEqual([join(tmp, 'project', 'package.json')]);
   });
 });

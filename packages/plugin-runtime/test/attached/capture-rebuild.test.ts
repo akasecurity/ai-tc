@@ -287,6 +287,20 @@ describe('rebuildCapture', () => {
       expect(rebuildCapture(row({ eventType: 'code_change' }))).toBeUndefined();
     });
 
+    it('refuses a whole-file snapshot of a dotenv file, whatever kind it is filed under', () => {
+      const snapshot = (filePath: string) =>
+        row({
+          attributes: JSON.stringify({
+            source_tool: 'claude-code',
+            file_path: filePath,
+            whole_file: true,
+          }),
+        });
+      expect(rebuildCapture(snapshot('/repo/.env'))).toBeUndefined();
+      expect(rebuildCapture(snapshot('/repo/.env.production'))).toBeUndefined();
+      expect(rebuildCapture(snapshot('/repo/src/app.ts'))?.content).toBe('the text of a prompt');
+    });
+
     it('refuses a row with no content or no hash', () => {
       expect(rebuildCapture(row({ content: null }))).toBeUndefined();
       expect(rebuildCapture(row({ contentHash: null }))).toBeUndefined();

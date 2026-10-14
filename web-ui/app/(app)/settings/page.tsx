@@ -1,5 +1,7 @@
 import { PageHead } from '@akasecurity/dashboard-ui';
 import {
+  codingScopeExtrasAt,
+  dataDir,
   managedConnectionHold,
   managedScopedRefusal,
   readControlPlaneAttachmentMode,
@@ -49,8 +51,13 @@ export default async function SettingsPage() {
   // different claim from silence.
   //
   // The panel is handed the mode the form is handed, so its bars count only what
-  // this attachment covers: on a scoped one, the enrolled repositories' rows.
-  const sync = readSyncPanel(settings, credentialState, renderedAt, attachmentMode);
+  // this attachment covers: on a scoped one, the enrolled repositories' rows and
+  // the rows stamped for a work account the device recognised. Those keys are
+  // derived in persistence, which reads the credential itself, so the key never
+  // reaches this page.
+  const extraEntries =
+    attachmentMode === 'scoped' ? codingScopeExtrasAt(settingsDir(), dataDir(), settings) : [];
+  const sync = readSyncPanel(settings, credentialState, renderedAt, attachmentMode, extraEntries);
   const locale = await renderLocale();
   return (
     // ONE width for the page: the heading, the form and the panel below it all

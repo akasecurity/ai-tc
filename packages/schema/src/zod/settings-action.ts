@@ -26,8 +26,8 @@ import { AttachmentMode, printable } from './control-plane.ts';
  * times and payload versions are stamped server-side, so a client cannot
  * backdate a grant or claim a version it never saw.
  *
- * `modelJudgeConsent`, `historySyncConsent` and `webChatCaptureConsent` are
- * REQUIRED, and that is a
+ * `modelJudgeConsent`, `historySyncConsent`, `webChatCaptureConsent` and
+ * `webChatAccountConsent` are REQUIRED, and that is a
  * security property rather than a strictness preference. `historySyncConsent`
  * is a three-state enum rather than a boolean for a related reason, set out on
  * HistorySyncConsentChoice — but it is required in exactly the same way. `modelJudgeConsent` was
@@ -99,6 +99,19 @@ export const WebChatCaptureConsentChoice = z
   .meta({ id: 'WebChatCaptureConsentChoice' });
 export type WebChatCaptureConsentChoice = z.infer<typeof WebChatCaptureConsentChoice>;
 
+/**
+ * The account grant answer — whether the browser extension's host may record
+ * which web chat accounts it sees (`webChatCapture.account`), so they can be
+ * listed for enrolling. Its own answer rather than a field of the capture
+ * grant's: it records something else (an account key and two times, nothing
+ * from a chat), under its own versioned consent. Three states and required, for
+ * the reasons WebChatCaptureConsentChoice gives.
+ */
+export const WebChatAccountConsentChoice = z
+  .enum(['granted', 'revoked', 'unchanged'])
+  .meta({ id: 'WebChatAccountConsentChoice' });
+export type WebChatAccountConsentChoice = z.infer<typeof WebChatAccountConsentChoice>;
+
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
   modelJudgeConsent: ModelJudgeConsentChoice,
@@ -106,6 +119,7 @@ export const SaveSettingsInput = z.object({
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
   webChatCaptureConsent: WebChatCaptureConsentChoice,
+  webChatAccountConsent: WebChatAccountConsentChoice,
   // Widened to `string` like its neighbours rather than typed as
   // `RedactFallback`, on this module's own layering rule: shape here, VALUE at
   // the call site, so the domain check receives the type it was written for.

@@ -31,7 +31,7 @@ vi.hoisted(() => {
   };
 });
 
-const { DRIFT_STATES, refresh, renderCaptureSites, WITHHELD_NOTES } =
+const { accountNote, DRIFT_STATES, refresh, renderCaptureSites, WITHHELD_NOTES } =
   await import('../src/popup/index.ts');
 
 // The fragment of popup.html this module actually touches.
@@ -188,6 +188,70 @@ describe('renderCaptureSites', () => {
     expect(rows.map((row) => row.textContent)).toEqual([
       'ChatGPT: not enforcing — composer and send button not found',
     ]);
+  });
+
+  it('names the account a site was last seen in, above its enforcement fault', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    renderCaptureSites(
+      response({
+        withheld: 'personal-device',
+        sites: [
+          { tool: 'chatgpt', state: 'idle', enforcement: 'watching' },
+          {
+            tool: 'claude-ai',
+            state: 'idle',
+            enforcement: 'unattached',
+            account: { identity, enrolled: false, recorded: false },
+          },
+        ],
+      }),
+    );
+    const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `Claude.ai: ${accountNote({ identity, enrolled: false, recorded: false })}`,
+      'Claude.ai: not enforcing — composer and send button not found',
+    ]);
+    // The account is information, the fault is an error: only one is styled
+    // as one.
+    expect(rows[0]?.className).toBe('row muted');
+    expect(rows[1]?.className).toBe('row tone-error');
+  });
+
+  it('shows no account row where web chats are not withheld', () => {
+    renderCaptureSites(
+      response({
+        sites: [
+          {
+            tool: 'claude-ai',
+            state: 'idle',
+            account: {
+              identity: 'claude:0a1b2c3d-0000-4000-8000-00000000000a',
+              enrolled: false,
+              recorded: true,
+            },
+          },
+        ],
+      }),
+    );
+    expect(document.getElementById('capture-sites')?.textContent).toBe('Claude.ai: idle');
+  });
+
+  it('words each account state so it says whether anything is recorded, and how to change it', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    const enroll = `aka enroll --account ${identity}`;
+    const unenrolled = accountNote({ identity, enrolled: false, recorded: false });
+    const off = accountNote({ identity, enrolled: true, recorded: false });
+    const recorded = accountNote({ identity, enrolled: true, recorded: true });
+    for (const note of [unenrolled, off, recorded]) expect(note.startsWith(identity)).toBe(true);
+    // Only the account that is not enrolled is sent to the command that
+    // enrolls it; an enrolled one is not told to enroll again.
+    expect(unenrolled).toContain(enroll);
+    expect(off).not.toContain(enroll);
+    expect(recorded).not.toContain(enroll);
+    // Three different sentences, and only one of them says it records.
+    expect(new Set([unenrolled, off, recorded]).size).toBe(3);
+    expect(recorded).toContain('recorded and sent');
+    expect(off).toContain('nothing is recorded');
   });
 
   it('words an unreadable attachment as its own reason', () => {

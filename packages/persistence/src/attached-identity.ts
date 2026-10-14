@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { lstatSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -34,9 +34,11 @@ import { clearSessionAccountState } from './session-accounts.ts';
 // Who attached this machine, kept beside the credential it belongs to:
 // <dataDir>/attached-identity.json, owner-only, written under its own lock.
 //
-// Digests only. Each is a sha256 over a fixed prefix and its value, so none of
-// them can equal a digest made for another purpose, the server's hash of the key
-// included. The email, the organization's name and the key never reach the file.
+// Digests only. The credential's is an HMAC-SHA256 keyed by the key, over a fixed
+// prefix, so it cannot equal the server's hash of the key; the others are sha256
+// over a fixed prefix and their value, so none of them can equal a digest made
+// for another purpose. The email, the organization's name and the key never reach
+// the file.
 //
 // The record counts only beside the credential it was written for
 // (attachedIdentityHolds): a record left beside another key, another endpoint or
@@ -77,9 +79,13 @@ export function attachedUserDigestOf(email: unknown): string | undefined {
   return normalized === undefined ? undefined : sha256Hex(`aka-attached-user:v1\n${normalized}`);
 }
 
-/** The digest of a credential's key: sha256 hex of a fixed prefix and the key. */
+/**
+ * The digest of a credential's key: an HMAC-SHA256, in hex, keyed by the key over
+ * a fixed prefix. It is deterministic and one way, and it cannot equal the
+ * server's hash of the key.
+ */
 export function credentialDigestOf(apiKey: string): string {
-  return sha256Hex(`aka-credential-binding:v1\n${apiKey}`);
+  return createHmac('sha256', apiKey).update('aka-credential-binding:v1\n').digest('hex');
 }
 
 /**

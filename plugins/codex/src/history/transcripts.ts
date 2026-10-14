@@ -22,10 +22,11 @@
 //   - "response_item" → ResponseItem (message / function_call / tool output / …)
 //   - "event_msg"     → EventMsg (token_count, exec_command_begin/end, patch_apply_begin/end, …)
 import type { Dirent } from 'node:fs';
-import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { readCodexHead } from '@akasecurity/plugin-sdk/account';
 import type { EventKind } from '@akasecurity/schema';
 
 // One scannable unit pulled from a transcript. `occurredAt` is the record's own
@@ -46,14 +47,14 @@ export interface ScannedMessage {
 }
 
 // Where Codex CLI writes its rollout files. Codex itself honors a CODEX_HOME
-// override, but this reader intentionally does not — matches
+// override; this reader does not, and lists ~/.codex/sessions only, like
 // plugins/claude-code/src/history/transcripts.ts's transcriptsDir(), which
-// likewise reads no env override for ~/.claude (n/no-process-env stays on for
-// this package; CODEX_HOME support can be added later behind its own
-// file-scoped opt-out if it turns out to be needed). `home` overrides the OS
-// home root; it is supplied only by tests/harnesses that need a throwaway
-// ~/.codex in isolation — no production call site passes it, so every real run
-// falls back to the OS home.
+// reads no env override for ~/.claude either (n/no-process-env stays on for
+// this package). The account check in @akasecurity/plugin-sdk/account
+// resolves CODEX_HOME for the login file alone. `home` overrides the OS home
+// root; it is supplied only by tests/harnesses that need a throwaway ~/.codex
+// in isolation — no production call site passes it, so every real run falls
+// back to the OS home.
 export function transcriptsDir(home?: string): string {
   return join(home ?? homedir(), '.codex', 'sessions');
 }
@@ -343,42 +344,14 @@ export function parseTranscriptUsage(
   return out;
 }
 
-// Cheap, best-effort peek at a rollout file's `session_meta.originator` — the
-// live SessionStart hook needs this without paying for a full-file parse (the
-// backfill/tail parsers above already extract it, but they're not meant to be
-// called on a still-growing, possibly-multi-MB file from the hot hook path).
-// Reads only the first ~4KB (session_meta is always the first line and is
-// small) and gives up silently on anything else — a missing/unreadable/
-// oversized-first-line file just means the interface fact is omitted, never a
-// thrown error on the SessionStart path.
-const SESSION_META_PEEK_BYTES = 4096;
-
+// The originator off a rollout's first line, for the live SessionStart hook,
+// without a full-file parse. The plugin-sdk head reader makes bounded reads up
+// to the first newline, so a large first line still reads; a missing,
+// unreadable, unfinished or oversized one just means the interface fact is
+// omitted, never a thrown error on the SessionStart path.
 export function peekSessionOriginator(transcriptPath: string): string | undefined {
-  let head: string;
-  try {
-    const fd = openSync(transcriptPath, 'r');
-    try {
-      const buf = Buffer.allocUnsafe(SESSION_META_PEEK_BYTES);
-      const bytesRead = readSync(fd, buf, 0, SESSION_META_PEEK_BYTES, 0);
-      head = buf.subarray(0, bytesRead).toString('utf8');
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return undefined;
-  }
-  const firstLine = head.split('\n')[0]?.trim();
-  if (!firstLine) return undefined;
-  let rec: unknown;
-  try {
-    rec = JSON.parse(firstLine);
-  } catch {
-    return undefined; // the line was cut off mid-JSON by the byte cap — give up
-  }
-  if (!isRecord(rec) || rec.type !== 'session_meta') return undefined;
-  const payload = rec.payload;
-  if (!isRecord(payload)) return undefined;
-  return optString(payload.originator);
+  const head = readCodexHead(transcriptPath);
+  return typeof head === 'object' ? head.originator : undefined;
 }
 
 // ───────────────────────────── tool-I/O path ─────────────────────────────

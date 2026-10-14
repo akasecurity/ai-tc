@@ -21,16 +21,22 @@ export {
   isLearned,
   isManual,
 } from './account-check.ts';
-export type { ClaudeAccountEnv } from './account-env.ts';
+export type { ClaudeAccountEnv, CodexAccountEnv } from './account-env.ts';
 export {
   CLAUDE_ACCOUNT_ENV_NAMES,
   CLAUDE_BASE_URL_ENV,
   CLAUDE_CREDENTIAL_ENV,
   CLAUDE_PROVIDER_FLAG_ENV,
+  CODEX_ACCOUNT_ENV_NAMES,
+  CODEX_CREDENTIAL_ENV,
+  codexEnvVetoed,
+  codexHomeDir,
   isNonDefaultBaseUrl,
   isPresent,
   isTruthyFlag,
   readClaudeAccountEnv,
+  readCodexAccountEnv,
+  resolveCodexHome,
 } from './account-env.ts';
 export type {
   AttributionCarry,
@@ -95,6 +101,42 @@ export {
   startClaudeSession,
   validateClaudeSession,
 } from './claude-validate.ts';
+export type { CodexHead } from './codex-head.ts';
+export { CODEX_HEAD_MAX_BYTES, CODEX_HEAD_READ_BYTES, readCodexHead } from './codex-head.ts';
+export type { CodexLogin, CodexLoginRead } from './codex-login.ts';
+export {
+  AUTH_CLAIMS,
+  chatgptPlanState,
+  CODEX_AUTH_MAX_BYTES,
+  CODEX_DROPPED_FIELDS,
+  CODEX_ID_TOKEN_MAX_CHARS,
+  CODEX_ID_TOKEN_PAYLOAD_MAX_BYTES,
+  CODEX_PRESENCE_FIELDS,
+  codexAuthFingerprint,
+  codexAuthPath,
+  COMPANY_CHATGPT_PLANS,
+  inspectCodexLogin,
+  PROFILE_CLAIMS,
+  readCodexLogin,
+} from './codex-login.ts';
+export type {
+  CodexAccountCheck,
+  CodexHeld,
+  CodexHookInput,
+  CodexHookResult,
+  CodexSessionInput,
+  CodexSessionSource,
+  CodexStartResult,
+  CodexThreadState,
+} from './codex-validate.ts';
+export {
+  codexHookAccount,
+  codexLoginStillHolds,
+  codexSessionAccount,
+  codexThreadState,
+  isCodexAccountMatch,
+  startCodexSession,
+} from './codex-validate.ts';
 export type {
   LoggedObservation,
   ObservationKind,

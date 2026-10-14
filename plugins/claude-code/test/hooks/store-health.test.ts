@@ -23,7 +23,6 @@ import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
-import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -35,6 +34,7 @@ import {
   storeUnavailableMessage,
   warnIfStoreRedirected,
 } from '../../src/hooks/store-health.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 function configFor(dataDir: string): PluginConfig {
   return {

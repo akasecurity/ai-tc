@@ -3,6 +3,7 @@
 import type { SightingKeyStore } from '@akasecurity/persistence';
 import {
   createSightingKeyStore,
+  isPreviousVersionAccepted,
   keysDir,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
@@ -20,7 +21,8 @@ export const SIGHTING_KEY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const SIGHTING_KEY_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * `fresh`    the stored key is younger than {@link SIGHTING_KEY_MAX_AGE_MS}; nothing was fetched.
+ * `fresh`    the stored key is younger than {@link SIGHTING_KEY_MAX_AGE_MS} and no previous
+ *            version in it has passed its `acceptedUntil`; nothing was fetched.
  * `fetched`  a new map was fetched and replaced the stored one.
  * `failed`   the fetch or the write failed; the stored key is unchanged.
  */
@@ -36,8 +38,10 @@ export interface RunSightingKeySyncDeps {
 }
 
 /**
- * Whether `stored` was issued by the endpoint with `fingerprint` and fetched
- * within the last day, by a clock that has not run backwards past it.
+ * Whether `stored` was issued by the endpoint with `fingerprint`, fetched
+ * within the last day by a clock that has not run backwards past it, and holds
+ * no previous version whose `acceptedUntil` has passed: a refetch then drops
+ * that version as soon as the deployment stops accepting it.
  */
 function isFresh(
   stored: StoredSightingKeys | undefined,
@@ -46,7 +50,10 @@ function isFresh(
 ): boolean {
   if (stored?.endpointFingerprint !== fingerprint) return false;
   const age = nowMs - stored.fetchedAtMs;
-  return age >= 0 && age < SIGHTING_KEY_MAX_AGE_MS;
+  if (age < 0 || age >= SIGHTING_KEY_MAX_AGE_MS) return false;
+  return (stored.previous ?? []).every(
+    (version) => version.acceptedUntil === undefined || isPreviousVersionAccepted(version, nowMs),
+  );
 }
 
 function readStored(store: SightingKeyStore): StoredSightingKeys | undefined {
@@ -58,7 +65,8 @@ function readStored(store: SightingKeyStore): StoredSightingKeys | undefined {
 }
 
 /**
- * Fetch the sighting key when none is stored or the stored one is a day old.
+ * Fetch the sighting key when none is stored, the stored one is a day old, or
+ * a previous version in it has passed its `acceptedUntil`.
  *
  * Returns null, and calls nothing, unless the machine is attached: both the
  * settings descriptor and a credential minted for its endpoint. Machine-wide

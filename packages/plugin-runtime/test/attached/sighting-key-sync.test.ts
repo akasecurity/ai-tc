@@ -153,6 +153,60 @@ describe('runSightingKeySync', () => {
     expect(getSightingKey).toHaveBeenCalledTimes(1);
   });
 
+  describe('a previous version past its overlap window', () => {
+    const youngWith = (previous: StoredSightingKeys['previous']): StoredSightingKeys => ({
+      ...STORED(NOW - 60_000),
+      keyVersion: 5,
+      key: material(5),
+      previous,
+    });
+    const at = (ms: number) => new Date(ms).toISOString();
+
+    it('refetches a young map once the soonest acceptedUntil has passed', async () => {
+      attach();
+      store().replace(
+        youngWith([
+          { keyVersion: 4, key: material(4), acceptedUntil: at(NOW + 3_600_000) },
+          { keyVersion: 3, key: material(3), acceptedUntil: at(NOW) },
+        ]),
+      );
+
+      await expect(run()).resolves.toBe('fetched');
+      expect(getSightingKey).toHaveBeenCalledTimes(1);
+      expect(store().read()?.keyVersion).toBe(FETCHED.keyVersion);
+    });
+
+    it('keeps a young map while every acceptedUntil is still ahead', async () => {
+      attach();
+      const stored = youngWith([{ keyVersion: 1, key: material(1), acceptedUntil: at(NOW + 1) }]);
+      store().replace(stored);
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+      expect(store().read()).toEqual(stored);
+    });
+
+    it('keeps a young map whose previous versions carry no acceptedUntil', async () => {
+      attach();
+      store().replace(youngWith([{ keyVersion: 1, key: material(1) }]));
+
+      await expect(run()).resolves.toBe('fresh');
+      expect(getSightingKey).not.toHaveBeenCalled();
+    });
+
+    it('stores the window each fetched previous version carries', async () => {
+      attach();
+      const fetched = {
+        ...FETCHED,
+        previous: [{ keyVersion: 3, key: material(3), acceptedUntil: at(NOW + 86_400_000) }],
+      };
+      getSightingKey.mockResolvedValue(fetched);
+
+      await expect(run()).resolves.toBe('fetched');
+      expect(store().read()?.previous).toEqual(fetched.previous);
+    });
+  });
+
   it('refetches a key stamped in the future rather than trusting it indefinitely', async () => {
     attach();
     store().replace(STORED(NOW + 60_000));

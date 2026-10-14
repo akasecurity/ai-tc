@@ -215,12 +215,38 @@ describe('keychain custody', () => {
   });
 });
 
+const NOW = Date.parse('2026-10-14T09:00:00.000Z');
+const LATER = '2026-10-21T09:00:00.000Z';
+
 describe('readSightingKeys', () => {
+  it('hands out a previous version only before the instant it stops being accepted', () => {
+    attachTo(ENDPOINT_A);
+    createSightingKeyStore('file', dir).replace(
+      stored({
+        keyVersion: 5,
+        previous: [
+          { keyVersion: 4, key: material(4), acceptedUntil: LATER },
+          { keyVersion: 3, key: material(3), acceptedUntil: new Date(NOW).toISOString() },
+          { keyVersion: 2, key: material(2), acceptedUntil: '2026-10-13T09:00:00.000Z' },
+          { keyVersion: 1, key: material(1) },
+        ],
+      }),
+    );
+
+    const versions = (now: number): number[] | undefined =>
+      readSightingKeys(base, { now: () => now })?.previous.map((p) => p.keyVersion);
+    expect(versions(NOW)).toEqual([4]);
+    expect(versions(NOW - 1)).toEqual([4, 3]);
+    expect(versions(Date.parse(LATER))).toEqual([]);
+  });
+
   it('hands out the current and previous versions as raw bytes', () => {
     attachTo(ENDPOINT_A);
-    createSightingKeyStore('file', dir).replace(stored());
+    createSightingKeyStore('file', dir).replace(
+      stored({ previous: [{ keyVersion: 1, key: material(3), acceptedUntil: LATER }] }),
+    );
 
-    const keys = readSightingKeys(base);
+    const keys = readSightingKeys(base, { now: () => NOW });
 
     expect(keys?.current.keyVersion).toBe(2);
     expect(keys?.current.key).toBeInstanceOf(Uint8Array);

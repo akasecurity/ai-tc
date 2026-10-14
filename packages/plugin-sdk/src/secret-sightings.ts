@@ -1,6 +1,6 @@
 import type { MatchResult, TokenizedSecretSpan } from '@akasecurity/detections';
-import type { ScanSighting, SightingKey } from '@akasecurity/persistence';
-import { sightingToken } from '@akasecurity/persistence';
+import type { ScanSighting, SightingKeys } from '@akasecurity/persistence';
+import { sightingTokens } from '@akasecurity/persistence';
 
 /** One file's secrets as sighting tokens, each computed once. */
 export interface SecretSightings {
@@ -11,11 +11,12 @@ export interface SecretSightings {
 }
 
 /**
- * The secret matches in one file reduced to sighting tokens under `key`. A
- * value that cannot be reduced to a token is left out; the scan goes on.
+ * The secret matches in one file reduced to sighting tokens under `keys`, with
+ * aliases under its previous versions. A value that cannot be reduced to a token
+ * is left out; the scan goes on.
  */
 export function secretSightingsOf(
-  key: SightingKey,
+  keys: SightingKeys,
   matches: readonly MatchResult[],
   file: string,
   scopeKey?: string,
@@ -23,20 +24,20 @@ export function secretSightingsOf(
   const found: SecretSightings = { sightings: [], spans: [] };
   for (const match of matches) {
     if (match.category !== 'secret') continue;
-    let token: string;
+    let tokens: { token: string; aliases?: string[] };
     try {
-      token = sightingToken(key, match.rawMatch);
+      tokens = sightingTokens(keys, match.rawMatch);
     } catch {
       continue;
     }
     found.sightings.push({
-      token,
+      ...tokens,
       ruleId: match.ruleId,
       ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
       file,
       ...(scopeKey === undefined ? {} : { scopeKey }),
     });
-    found.spans.push({ ...match.span, ruleId: match.ruleId, token });
+    found.spans.push({ ...match.span, ruleId: match.ruleId, ...tokens });
   }
   return found;
 }

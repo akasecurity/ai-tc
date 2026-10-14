@@ -40,6 +40,18 @@ export interface SightingKeys {
   previous: SightingKey[];
 }
 
+/**
+ * Whether a previous version is still accepted at `nowMs`: only before its
+ * `acceptedUntil`. A version without one is never used.
+ */
+export function isPreviousVersionAccepted(
+  version: { acceptedUntil?: string | undefined },
+  nowMs: number,
+): boolean {
+  if (version.acceptedUntil === undefined) return false;
+  return nowMs < Date.parse(version.acceptedUntil);
+}
+
 export interface SightingKeyStore {
   /** The stored map, or undefined when none is stored. Unreadable or corrupt custody throws. */
   read(): StoredSightingKeys | undefined;
@@ -157,12 +169,17 @@ export function createSightingKeyStore(
   return new FileSightingKeyStore(keysDirectory);
 }
 
-/** The stored map in the form a consumer uses: versions and raw key bytes. */
-export function sightingKeysOf(stored: StoredSightingKeys): SightingKeys {
+/**
+ * The stored map in the form a consumer uses: versions and raw key bytes, with
+ * only the previous versions still accepted at `nowMs`.
+ */
+export function sightingKeysOf(stored: StoredSightingKeys, nowMs: number): SightingKeys {
   const bytes = (key: string): Uint8Array => new Uint8Array(Buffer.from(key, 'base64url'));
   return {
     current: { keyVersion: stored.keyVersion, key: bytes(stored.key) },
-    previous: (stored.previous ?? []).map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),
+    previous: (stored.previous ?? [])
+      .filter((p) => isPreviousVersionAccepted(p, nowMs))
+      .map((p) => ({ keyVersion: p.keyVersion, key: bytes(p.key) })),
   };
 }
 
@@ -174,7 +191,7 @@ export function sightingKeysOf(stored: StoredSightingKeys): SightingKeys {
  */
 export function readSightingKeys(
   base: string = defaultDataDir(),
-  deps: { exec?: SecurityExec } = {},
+  deps: { exec?: SecurityExec; now?: () => number } = {},
 ): SightingKeys | undefined {
   try {
     const settings = readWorkspaceSettings(base);
@@ -187,7 +204,7 @@ export function readSightingKeys(
     ).read();
     if (stored === undefined) return undefined;
     if (stored.endpointFingerprint !== sightingKeyEndpointFingerprint(endpoint)) return undefined;
-    return sightingKeysOf(stored);
+    return sightingKeysOf(stored, (deps.now ?? Date.now)());
   } catch {
     return undefined;
   }

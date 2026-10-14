@@ -18,7 +18,7 @@ import type {
   CredentialSightingsSend,
   ManagedSettings,
   ScanSighting,
-  SightingKey,
+  SightingKeys,
 } from '@akasecurity/plugin-runtime';
 import {
   combineCredentialSightingsOutcomes,
@@ -145,7 +145,7 @@ async function loadLedger(
   const sightingMaterial =
     sightings === undefined
       ? ''
-      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${String(sightings.key.keyVersion)}`;
+      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${String(sightings.keys.current.keyVersion)}`;
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
@@ -461,10 +461,10 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
 }
 
 // A scan that shares credential sightings: the AKA home whose attachment it
-// sends through, the key it computes tokens with, and the transport seams.
+// sends through, the keys it computes tokens with, and the transport seams.
 interface SightingRun {
   base: string;
-  key: SightingKey;
+  keys: SightingKeys;
   endpointFingerprint: string;
   scopeFingerprint: string;
   send: CredentialSightingsSend | undefined;
@@ -710,7 +710,7 @@ async function scanDir(
     );
 
     if (sightingRun !== undefined) {
-      const found = secretSightingsOf(sightingRun.key, result.findings, file.path, scopeKey);
+      const found = secretSightingsOf(sightingRun.keys, result.findings, file.path, scopeKey);
       if (found.sightings.length > 0) sightingPaths.add(file.path);
       sightings.push(...found.sightings);
       if (fileEgress !== undefined) {
@@ -1053,7 +1053,7 @@ function planSightings(
     return {
       run: {
         base,
-        key: plan.key,
+        keys: plan.keys,
         endpointFingerprint: plan.endpointFingerprint,
         scopeFingerprint: plan.scopeFingerprint,
         send: opts.sendSightings,

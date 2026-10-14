@@ -262,6 +262,21 @@ describe('withLiteralCredentialRefs', () => {
     ]);
   });
 
+  it("carries a secret's previous-version tokens on its literal ref, and none when absent", () => {
+    const aliases = [TOKEN(7), TOKEN(8)];
+    const [hit] = withLiteralCredentialRefs(extractEgress(text), [
+      { ...spanOf('SECRET-B', TOKEN(2)), aliases },
+    ]);
+    expect(hit?.credentialRefs?.[0]).toEqual({
+      kind: 'literal',
+      token: TOKEN(2),
+      aliases,
+      ruleId: 'test-rule',
+    });
+    const [plain] = withLiteralCredentialRefs(extractEgress(text), [spanOf('SECRET-B', TOKEN(2))]);
+    expect(plain?.credentialRefs?.[0]).not.toHaveProperty('aliases');
+  });
+
   it('does not attach a secret that straddles the call boundary', () => {
     const start = text.indexOf('fetch') - 2;
     const [hit] = withLiteralCredentialRefs(extractEgress(text, { calls: true }), [

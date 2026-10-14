@@ -43,6 +43,7 @@ export type {
   ScanSighting,
   SendScanSightingsDeps,
   SightingKey,
+  SightingKeys,
   SightingScanProject,
   SightingSharePlan,
 } from './scan-sightings.ts';
@@ -51,5 +52,6 @@ export {
   planSightingShare,
   sendScanSightings,
   sightingToken,
+  sightingTokens,
 } from './scan-sightings.ts';
 export { StandaloneDataGateway } from './standalone-gateway.ts';

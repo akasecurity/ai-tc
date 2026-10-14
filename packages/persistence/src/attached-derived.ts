@@ -5,16 +5,18 @@
  * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
  * its drop tally, the posture self-report's last outcome, and the history
  * drain's progress. The seventh, the record of who attached the machine, is
- * written by the attach. None of them is the attachment; all of them describe
- * one. Each session's account state, a directory beside them
- * (session-accounts.ts), is cleared with them.
+ * written by the attach and kept current by the sync child and by the hooks that
+ * validate a work account, all through attached-identity.ts in this package.
+ * None of them is the attachment; all of them describe one. Each session's
+ * account state, a directory beside them (session-accounts.ts), is cleared with
+ * them.
  *
  * They live HERE rather than beside the code that writes them because clearing
  * them is a detach concern, and there are two detach surfaces: `aka detach` and
- * the dashboard's settings action. @akasecurity/plugin-runtime owns the writers
- * and re-exports these names, but it sits ABOVE both callers in the graph — the
- * dashboard cannot import it — so a shared list has to sit below, which is this
- * package.
+ * the dashboard's settings action. The attached runtime
+ * (@akasecurity/plugin-runtime) writes most of them and sits ABOVE both callers
+ * in the graph — the dashboard cannot import it — so a shared list has to sit
+ * below, which is this package.
  *
  * WHY A DETACH THAT STOPS AT THE CREDENTIAL IS NOT A DETACH. Two of these go on
  * acting after the attachment is gone:

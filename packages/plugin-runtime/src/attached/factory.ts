@@ -113,7 +113,7 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       mode === 'machine' ? [] : codingScopeExtras(config.dataDir, config.settings, credential),
     );
     // The gateway's own copy of the keys. `admit` adds to it, for this process
-    // only, the account a hook has just validated, and every verdict reads it.
+    // only, the account it is given, and every verdict reads it.
     const keys = new Set(resolved.keys);
     const attachment: ResolvedAttachmentScope = { mode: resolved.mode, keys };
     const account =
@@ -200,9 +200,9 @@ type HeldCredential = NonNullable<ReturnType<typeof readControlPlaneCredential>>
 
 /**
  * What a scoped attachment's identity record says for the credential in force:
- * the record, its binding hash, and what a hook validates against. Undefined when
- * no record holds for this credential: without one there is no attached user and
- * no scope tag, so no coding-agent key to stamp.
+ * the record, its binding hash, and the context the account scope exposes.
+ * Undefined when no record holds for this credential: without one there is no
+ * attached user and no scope tag, so no coding-agent key to stamp.
  */
 function boundAccountOf(
   config: PluginConfig,
@@ -235,8 +235,9 @@ function boundAccountOf(
 
 /**
  * The account scope of a scoped attachment, over `keys`, or undefined when no
- * identity record holds. It carries what a hook validates against, and writes a
- * learned account with this gateway's own credential, which no hook holds.
+ * identity record holds. It carries the record's context, and writes a learned
+ * account with this gateway's own credential, which callers of the scope do not
+ * hold.
  */
 function accountScopeFor(
   config: PluginConfig,
@@ -260,9 +261,8 @@ function accountScopeFor(
 }
 
 /**
- * The account context and binding hash a hook validates a session against, read
- * without opening a gateway, for a hook that runs before it opens one (session
- * start's observation, Stop's). The same credential and identity record the
+ * The account context and binding hash the account scope would carry, read
+ * without opening a gateway. The same credential and identity record the
  * factory reads; undefined unless this machine is attached scoped and the record
  * holds. Total.
  */

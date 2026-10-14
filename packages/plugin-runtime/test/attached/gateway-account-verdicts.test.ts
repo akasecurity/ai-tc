@@ -33,7 +33,7 @@ import { migratedStore } from '../helpers/store-templates.ts';
 // through the gateway the real factory builds from a real scoped credential and
 // identity record, over a real local store. Only the network client is replaced,
 // by a recorder for every route. Every row is stamped through `stampScopeKey`,
-// the call the hooks and the reconciler make.
+// the call a producer makes.
 
 const sent = vi.hoisted(() => ({
   captures: [] as IngestBatch[],
@@ -141,7 +141,7 @@ function agentKeyOf(scopeTag: string, account: string): string {
   return key;
 }
 
-/** One session as the hooks and the reconciler record it, every row stamped through `gateway`. */
+/** One session as a producer records it, every row stamped through `gateway`. */
 async function produce(
   gateway: DataGateway,
   session: string,
@@ -417,7 +417,7 @@ describe('learn and context, on the gateway the factory builds', () => {
           .workAccounts.map((entry) => entry.identity)
           .sort(),
       ).toEqual([WORK_ACCOUNT, UNSEEN_ACCOUNT].sort());
-      // The hook admits after its own validation; learning alone forwards nothing.
+      // Learning alone forwards nothing; only an admit does.
       expect(stampScopeKey(gateway, PERSONAL_REPO, UNSEEN_ACCOUNT)).toBe(PERSONAL_REPO);
     } finally {
       await gateway.close();

@@ -81,12 +81,11 @@ export interface SessionStartInput {
   // hung off it are not written, so nothing marks that the session happened.
   // Omitted, the root is recorded as it always has been.
   recordSession?: boolean | undefined;
-  // True when this session's root waits for the account its first reply ran
-  // under: the transcript reconciler writes it then, keyed by that account, and
-  // this session start writes none. The config scan is still recorded, under a
-  // local stub of the root. Honoured only by a gateway that stamps account keys,
-  // and only when the session's own repository is not in its scope: a root in an
-  // enrolled repository is written now, keyed by it.
+  // True to leave this session's root unwritten: this session start writes no
+  // root row. The config scan is still recorded, under a local stub of the
+  // root. Honoured only by a gateway that stamps account keys, and only when the
+  // session's own repository is not in its scope: a root in an enrolled
+  // repository is written now, keyed by it.
   rootAwaitsAccount?: boolean | undefined;
   // The key to stamp the root with when it is not the working directory's
   // repository key: a coding-agent key, for a session whose account is known at
@@ -95,10 +94,11 @@ export interface SessionStartInput {
   // keys the root as if it were absent. An honoured key is also the key the
   // session's inventory may be sent under.
   rootScopeKey?: StampedScopeKey | undefined;
-  // An account the adapter's hook has just validated, with the binding hash it
-  // validated against: admitted on this session start's own gateway before the
-  // root is keyed, under the same rules as any admission, so a root keyed by it
-  // is honoured even when the learned-account write timed out.
+  // An account key with the binding hash it was validated against: admitted on
+  // this session start's own gateway before the root is keyed, under the same
+  // rules as any admission (the hash must be the scope's, and work subscriptions
+  // must be on), so a root keyed by it is honoured. It writes nothing to the
+  // identity record.
   admitAccount?: { accountKey: string; bindingHash: string } | undefined;
 }
 
@@ -189,15 +189,15 @@ export async function handleSessionStart(
         harnessVersion: input.harnessVersion,
         harnessInterface: input.harnessInterface,
       });
-      // An account the hook has just validated joins this gateway's scope before
-      // the root is keyed, so a root keyed by it is honoured below.
+      // An offered account joins this gateway's scope before the root is keyed,
+      // so a root keyed by it is honoured below.
       if (input.admitAccount !== undefined) {
         const { accountKey, bindingHash } = input.admitAccount;
         accountScopeOf(gateway)?.admit(accountKey, bindingHash);
       }
       // How the root is keyed, and whether it is written now: decided once, from
-      // the gateway's account scope. A gateway without one keys and writes it as
-      // it always has.
+      // the gateway's account scope. A gateway without one keys the root with the
+      // repository key and writes it now.
       const root = rootPlan(input, accountScopeOf(gateway));
       const resolved = await (root.inventoryKey === undefined
         ? gateway.ensureInventory(ctx)
@@ -222,8 +222,8 @@ export async function handleSessionStart(
         // The config-inventory pass (skills + hooks), under the same once-per-
         // session claim. Guarded separately: a scanner bug must not take the
         // just-written session root down with it. Skipped with the session when it
-        // is not recorded; kept when only the root is left to the reconciler, and
-        // then recorded under the local stub the local store plants for it.
+        // is not recorded; kept when only the root is left unwritten, and then
+        // recorded under the local stub the local store plants for it.
         await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
       }
       // Best-effort store maintenance. Each pass is gated on ITS OWN member
@@ -411,35 +411,35 @@ function sessionRootKeyOf(input: SessionStartInput): string | undefined {
  * How a session start keys its root, and whether it writes it at all.
  *
  *   - no account scope (standalone, machine-wide, no identity record), or a tool
- *     whose root is never keyed: the repository key, written now, as before;
+ *     whose root is never keyed: the repository key, written now;
  *   - the repository key in scope: that key, written now (repository first);
- *   - `rootAwaitsAccount`: no root now; the reconciler writes it, keyed by the
- *     account its first reply ran under;
+ *   - `rootAwaitsAccount`: no root is written here; the config scan is still
+ *     recorded under a local stub;
  *   - `rootScopeKey` equal to what the scope stamps for its account here: that
  *     agent key, written now, and the inventory may be sent under it;
  *   - anything else: the repository key, written now.
  *
- * Total: a throw keys and writes the root as before.
+ * Total: a throw keys the root with the repository key and writes it now.
  */
 function rootPlan(
   input: SessionStartInput,
   account: AccountScope | undefined,
 ): { scopeKey: string | undefined; deferred: boolean; inventoryKey: string | undefined } {
   const repoKey = sessionRootKeyOf(input);
-  const asBefore = { scopeKey: repoKey, deferred: false, inventoryKey: undefined };
+  const repoRoot = { scopeKey: repoKey, deferred: false, inventoryKey: undefined };
   try {
-    if (account === undefined || !sessionToolIsKeyed(input.tool)) return asBefore;
-    if (repoKey !== undefined && account.inScope(repoKey)) return asBefore;
+    if (account === undefined || !sessionToolIsKeyed(input.tool)) return repoRoot;
+    if (repoKey !== undefined && account.inScope(repoKey)) return repoRoot;
     if (input.rootAwaitsAccount === true) {
       return { scopeKey: repoKey, deferred: true, inventoryKey: undefined };
     }
     const offered = input.rootScopeKey;
     const parsed = parseAgentKey(offered);
-    if (offered === undefined || parsed === undefined) return asBefore;
-    if (account.stamp(repoKey, parsed.accountKey) !== offered) return asBefore;
+    if (offered === undefined || parsed === undefined) return repoRoot;
+    if (account.stamp(repoKey, parsed.accountKey) !== offered) return repoRoot;
     return { scopeKey: offered, deferred: false, inventoryKey: offered };
   } catch {
-    return asBefore;
+    return repoRoot;
   }
 }
 

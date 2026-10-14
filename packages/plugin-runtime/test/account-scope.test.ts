@@ -13,9 +13,9 @@ import {
 
 // The capability a producer stamps a row's key through. A row in a repository
 // in scope keeps the repository key; a row anywhere else takes the agent key of
-// an account in scope; everything else keeps the repository key. `admit` lets a
-// hook that has just validated an account forward its own rows, under the
-// binding it validated against and never while work subscriptions are off.
+// an account in scope; everything else keeps the repository key. `admit` lets
+// rows stamped afterwards carry an account validated elsewhere, under the
+// binding it was validated against and never while work subscriptions are off.
 
 const TAG = '0123456789abcdef';
 const BINDING = 'fedcba9876543210';

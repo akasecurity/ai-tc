@@ -56,7 +56,7 @@ export function sessionAccountHash(accountKey: string): string {
 }
 
 /**
- * Append one observation as one O_APPEND write, so concurrent hooks never lose
+ * Append one observation as one O_APPEND write, so concurrent writers never lose
  * a line. False when the line is not a session-state shape, the log is at its
  * cap, or the write fails.
  */

@@ -95,14 +95,42 @@ function hexValue(code: number): number {
   return -1;
 }
 
-/** Decoded bytes, each with the source span of the characters that encode it. */
-interface ByteRun {
+/** A run that owns its arrays, which the dump parser pushes into. */
+interface OwnedRun {
   bytes: number[];
   starts: number[];
   ends: number[];
 }
 
-const emptyRun = (): ByteRun => ({ bytes: [], starts: [], ends: [] });
+/** Decoded bytes, each with the source span of the characters that encode it:
+ * owned arrays (dumps, which accumulate across lines) or the shared scratch
+ * typed buffers (the streaming base64 and hex decoders, which consume one run
+ * at a time). Only the first `count` bytes of the run are meaningful.
+ */
+type ByteRun = OwnedRun | { bytes: Uint8Array; starts: Int32Array; ends: Int32Array };
+
+// Reused decode buffers for the two streaming decoders (base64 and hex), so a
+// run costs no allocation until it is accepted. A run is decoded into these
+// and judged (see toSegment) before the next decode overwrites them, which
+// holds because every producer decodes and immediately accepts or refuses —
+// see addBase64Value and hexRunSegments; the dump parser below keeps its own
+// arrays because it accumulates across lines. Sized for the largest run the
+// search window can hold: a base64 run is three-quarters of its length in
+// bytes, a hex run one-half.
+const DECODE_BYTES = new Uint8Array(MAX_ENCODED_SEARCH_CHARS);
+const DECODE_STARTS = new Int32Array(MAX_ENCODED_SEARCH_CHARS);
+const DECODE_ENDS = new Int32Array(MAX_ENCODED_SEARCH_CHARS);
+const SCRATCH_RUN: ByteRun = { bytes: DECODE_BYTES, starts: DECODE_STARTS, ends: DECODE_ENDS };
+
+// ASCII bytes that decode to printable characters — the ASCII half of
+// isPrintableCodePoint as a table, so the acceptance pass below answers a
+// one-byte code point with a lookup instead of a call. Indexed only below
+// 0x80; multi-byte sequences still go through utf8At.
+const ASCII_PRINTABLE = new Uint8Array(0x80);
+for (let b = 0x20; b < 0x7f; b++) ASCII_PRINTABLE[b] = 1;
+ASCII_PRINTABLE[0x09] = 1;
+ASCII_PRINTABLE[0x0a] = 1;
+ASCII_PRINTABLE[0x0d] = 1;
 
 function isPrintableCodePoint(cp: number): boolean {
   if (cp === 0x09 || cp === 0x0a || cp === 0x0d) return true;
@@ -110,12 +138,19 @@ function isPrintableCodePoint(cp: number): boolean {
 }
 
 // The length of the UTF-8 sequence starting at `i` and its code point, or
-// undefined for an invalid, truncated or overlong sequence.
-function utf8At(bytes: readonly number[], i: number): { cp: number; len: number } | undefined {
+// undefined for an invalid, truncated or overlong sequence. `limit` is the
+// end of the valid bytes: a sequence crossing it is truncated, not garbage
+// read past the run (the byte buffer can be a shared scratch larger than the
+// run it currently holds).
+function utf8At(
+  bytes: Uint8Array | readonly number[],
+  i: number,
+  limit: number,
+): { cp: number; len: number } | undefined {
   const lead = bytes[i] ?? 0;
   if (lead < 0x80) return { cp: lead, len: 1 };
   const len = lead >= 0xf0 && lead < 0xf8 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 0;
-  if (len === 0 || i + len > bytes.length) return undefined;
+  if (len === 0 || i + len > limit) return undefined;
   let cp = lead & (0x7f >> len);
   for (let k = 1; k < len; k++) {
     const next = bytes[i + k] ?? 0;
@@ -127,50 +162,45 @@ function utf8At(bytes: readonly number[], i: number): { cp: number; len: number 
   return { cp, len };
 }
 
-// Decodes a byte run as UTF-8 into a segment, or undefined when it is too
-// short or not text. An invalid byte becomes U+FFFD and counts against the
-// printable ratio.
-//
-// A trailing run of non-printable units is TRIMMED when it is short relative
-// to the whole (at most max(8, an eighth of the run) units) and what precedes
-// it is long enough to scan: an encoded value glued onto a following word —
-// `base64 of the secret` with `success` typed right after it — decodes to the
-// value plus a few bytes of the word's bits, and without the trim the whole
-// segment failed the ratio and was dropped, secret and all. The same trim
-// keeps a wrong grid's replacement characters out of the value a rule
-// reports, so the finding's identity matches the plain secret's. Random data
-// and dumps of binary fail as before: their first non-printable unit arrives
-// within a few bytes of the start, the trim never applies, and the ratio
-// drops them.
-function toSegment(run: ByteRun): DecodedSegment | undefined {
-  const { bytes, starts, ends } = run;
-  if (bytes.length < MIN_DECODED_BYTES) return undefined;
-  let text = '';
-  const unitStarts: number[] = [];
-  const unitEnds: number[] = [];
+// Judges a decoded run and, when accepted, builds its segment. Two passes over
+// the bytes, and the split is the point: pass one computes the acceptance
+// decision — which depends only on the code points, their printable ratio and
+// where the first non-printable one sits, never on the source spans — without
+// allocating anything. Pass two builds the text and the per-unit span arrays
+// only for a run that was accepted. Adversarial text is dense in long runs of
+// base64/hex-alphabet characters that decode to garbage (a run of `0`s is both
+// a hex run and a base64 run, and the probe battery's own corpora are made of
+// them), and every scan() of a secret rule walks all of them: materializing
+// the text and span arrays for runs that were about to be refused dominated
+// that walk's cost, in allocations and the GC pressure they cause.
+function toSegment(run: ByteRun, count: number): DecodedSegment | undefined {
+  if (count < MIN_DECODED_BYTES) return undefined;
+  // Pass one: the decision. No text, no arrays, no strings. One-byte code
+  // points (every ASCII byte) answer from the table; only a lead byte of a
+  // multi-byte sequence pays the full utf8At call, so a run of ASCII garbage
+  // — the adversarial case, where every byte is a base64/hex-alphabet
+  // character — is judged at table-lookup speed.
   let codePoints = 0;
   let printable = 0;
   let firstNonPrintable = -1;
-  for (let i = 0; i < bytes.length;) {
-    const decoded = utf8At(bytes, i);
-    const cp = decoded?.cp ?? 0xfffd;
-    const len = decoded?.len ?? 1;
-    const isPrintable = decoded !== undefined && isPrintableCodePoint(cp);
-    if (!isPrintable && firstNonPrintable < 0) firstNonPrintable = codePoints;
-    codePoints++;
-    if (isPrintable) printable++;
-    const start = starts[i] ?? 0;
-    let end = 0;
-    for (let k = i; k < i + len; k++) end = Math.max(end, ends[k] ?? 0);
-    const char = String.fromCodePoint(cp);
-    // One entry per UTF-16 unit: two for a code point outside the BMP.
-    const units = cp > 0xffff ? 2 : 1;
-    for (let unit = 0; unit < units; unit++) {
-      unitStarts.push(start);
-      unitEnds.push(end);
+  for (let i = 0; i < count;) {
+    const byte = run.bytes[i] ?? 0;
+    if (byte < 0x80) {
+      if (ASCII_PRINTABLE[byte] === 1) printable++;
+      else if (firstNonPrintable < 0) firstNonPrintable = codePoints;
+      codePoints++;
+      i++;
+    } else {
+      const decoded = utf8At(run.bytes, i, count);
+      const len = decoded?.len ?? 1;
+      if (decoded === undefined || !isPrintableCodePoint(decoded.cp)) {
+        if (firstNonPrintable < 0) firstNonPrintable = codePoints;
+      } else {
+        printable++;
+      }
+      codePoints++;
+      i += len;
     }
-    text += char;
-    i += len;
   }
   let end = codePoints;
   if (firstNonPrintable >= 0) {
@@ -183,6 +213,38 @@ function toSegment(run: ByteRun): DecodedSegment | undefined {
     }
   }
   if (end < MIN_DECODED_BYTES) return undefined;
+  // Pass two, accepted runs only: the text and the span tables. A trailing run
+  // of non-printable units was TRIMMED above when it is short relative to the
+  // whole (at most max(8, an eighth of the run) units) and what precedes it is
+  // long enough to scan: an encoded value glued onto a following word —
+  // `base64 of the secret` with `success` typed right after it — decodes to the
+  // value plus a few bytes of the word's bits, and without the trim the whole
+  // segment failed the ratio and was dropped, secret and all. The same trim
+  // keeps a wrong grid's replacement characters out of the value a rule
+  // reports, so the finding's identity matches the plain secret's. Random data
+  // and dumps of binary fail as before: their first non-printable unit arrives
+  // within a few bytes of the start, the trim never applies, and the ratio
+  // drops them.
+  let text = '';
+  const unitStarts: number[] = [];
+  const unitEnds: number[] = [];
+  for (let i = 0; i < count;) {
+    const decoded = utf8At(run.bytes, i, count);
+    const cp = decoded?.cp ?? 0xfffd;
+    const len = decoded?.len ?? 1;
+    const start = run.starts[i] ?? 0;
+    let lastEnd = 0;
+    for (let k = i; k < i + len; k++) lastEnd = Math.max(lastEnd, run.ends[k] ?? 0);
+    const char = String.fromCodePoint(cp);
+    // One entry per UTF-16 unit: two for a code point outside the BMP.
+    const units = cp > 0xffff ? 2 : 1;
+    for (let unit = 0; unit < units; unit++) {
+      unitStarts.push(start);
+      unitEnds.push(lastEnd);
+    }
+    text += char;
+    i += len;
+  }
   if (end === codePoints)
     return { text, starts: Int32Array.from(unitStarts), ends: Int32Array.from(unitEnds) };
   return {
@@ -207,14 +269,14 @@ class Collector {
     return this.left <= 0;
   }
 
-  add(run: ByteRun): void {
+  add(run: ByteRun, count: number): void {
     if (this.left <= 0) {
       // The budget was spent exactly (no refusal raised the flag yet): what
       // follows is not scanned, and the report must say so.
       this.truncated = true;
       return;
     }
-    const segment = toSegment(run);
+    const segment = toSegment(run, count);
     if (segment === undefined) return;
     if (segment.text.length > this.left) {
       // Refuse whole rather than scan a truncated prefix: a sliced decode
@@ -253,11 +315,14 @@ class Collector {
 }
 
 // Decodes base64 characters at `positions` (source offsets, line breaks
-// already skipped), starting `skip` characters in.
-function decodeBase64At(text: string, positions: readonly number[], skip: number): ByteRun {
-  const run = emptyRun();
+// already skipped), starting `skip` characters in, into the shared scratch
+// run, and returns how many bytes it decoded. The scratch is safe to reuse
+// because the caller consumes the run (accepts it into a segment, or drops
+// it) before the next decode.
+function decodeBase64Into(text: string, positions: readonly number[], skip: number): number {
   let buffer = 0;
   let bits = 0;
+  let count = 0;
   for (let k = skip; k < positions.length; k++) {
     const position = positions[k] ?? 0;
     const value = BASE64_VALUES[text.charCodeAt(position)] ?? -1;
@@ -265,13 +330,14 @@ function decodeBase64At(text: string, positions: readonly number[], skip: number
     bits += 6;
     if (bits >= 8) {
       bits -= 8;
-      run.bytes.push((buffer >> bits) & 0xff);
+      DECODE_BYTES[count] = (buffer >> bits) & 0xff;
       // A byte is spread over the character before this one and this one.
-      run.starts.push(positions[k - 1] ?? position);
-      run.ends.push(position + 1);
+      DECODE_STARTS[count] = positions[k - 1] ?? position;
+      DECODE_ENDS[count] = position + 1;
+      count++;
     }
   }
-  return run;
+  return count;
 }
 
 // Every 4-character grid of one base64 value is decoded and offered: a value
@@ -285,7 +351,7 @@ function addBase64Value(text: string, positions: readonly number[], out: Collect
   if (positions.length < 11) return;
   const segments: DecodedSegment[] = [];
   for (let skip = 0; skip < 4; skip++) {
-    const segment = toSegment(decodeBase64At(text, positions, skip));
+    const segment = toSegment(SCRATCH_RUN, decodeBase64Into(text, positions, skip));
     if (segment !== undefined) segments.push(segment);
   }
   let reserve = 0;
@@ -318,9 +384,9 @@ function hexRunSegments(text: string, out: Collector): void {
   for (const match of text.matchAll(HEX_RUN)) {
     const run = match[0];
     const base = match.index;
-    const decoded = emptyRun();
     let high = -1;
     let highAt = 0;
+    let count = 0;
     for (let i = 0; i < run.length; i++) {
       const value = hexValue(run.charCodeAt(i));
       if (value < 0) continue;
@@ -328,13 +394,14 @@ function hexRunSegments(text: string, out: Collector): void {
         high = value;
         highAt = base + i;
       } else {
-        decoded.bytes.push((high << 4) | value);
-        decoded.starts.push(highAt);
-        decoded.ends.push(base + i + 1);
+        DECODE_BYTES[count] = (high << 4) | value;
+        DECODE_STARTS[count] = highAt;
+        DECODE_ENDS[count] = base + i + 1;
+        count++;
         high = -1;
       }
     }
-    out.add(decoded);
+    out.add(SCRATCH_RUN, count);
   }
 }
 
@@ -401,7 +468,7 @@ function parseTokenDumpLine(line: string, lineStart: number): ByteRun | undefine
   if ((width !== 2 && width !== 4) || tokens.some((t) => t.text.length !== width)) {
     return undefined;
   }
-  const run = emptyRun();
+  const run: OwnedRun = { bytes: [], starts: [], ends: [] };
   const byteAt = (at: number): void => {
     run.bytes.push((hexValue(line.charCodeAt(at)) << 4) | hexValue(line.charCodeAt(at + 1)));
     run.starts.push(lineStart + at);
@@ -420,10 +487,10 @@ function parseTokenDumpLine(line: string, lineStart: number): ByteRun | undefine
 
 function dumpSegments(text: string, out: Collector): void {
   if (!DUMP_GATE.test(text)) return;
-  let current = emptyRun();
+  let current: OwnedRun = { bytes: [], starts: [], ends: [] };
   const flush = (): void => {
-    if (current.bytes.length > 0) out.add(current);
-    current = emptyRun();
+    if (current.bytes.length > 0) out.add(current, current.bytes.length);
+    current = { bytes: [], starts: [], ends: [] };
   };
   let lineStart = 0;
   while (lineStart <= text.length) {
@@ -513,3 +580,17 @@ export function sourceSpanOf(
   }
   return { start: from, end: to };
 }
+
+// This decode path is OURS and is deliberately NOT pre-tiered at module load.
+//
+// Tiering it early would move V8's lazy-compilation charge (~25ms of CPU for one
+// 10KB probe of repeated `0`, the probe battery's own corpora) off the first big
+// scan, and that is why it looks tempting. It was tried and measured, and the
+// trade is the wrong way round: a warm-up that walks enough interpreted volume
+// to tier the path costs ~95ms of module-load time in this file, and module-load
+// time is paid by EVERY process that imports @akasecurity/detections — the hooks
+// import it on every call, whether or not any text holds an encoded run. Paying
+// a per-process ~95ms to save ~25ms on one scan of base64-dense text is a
+// regression on the path that runs most often. `packages/detections/test/
+// security/redos.test.ts` passes either way (275 cases), so the warm-up bought
+// nothing the gate needs.

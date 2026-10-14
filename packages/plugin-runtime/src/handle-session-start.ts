@@ -17,6 +17,7 @@ import {
   sessionRootScopeKey,
 } from '@akasecurity/plugin-sdk';
 import type {
+  AccountBasis,
   AuditEventInput,
   ConfigScanResult,
   InventoryContext,
@@ -32,7 +33,7 @@ import {
 
 import type { AccountScope, StampedScopeKey } from './account-scope.ts';
 import { accountScopeOf } from './account-scope.ts';
-import { forwardingLine } from './attached/forwarding-line.ts';
+import { forwardingLine, workSubscriptionOptOutOffered } from './attached/forwarding-line.ts';
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
@@ -87,6 +88,10 @@ export interface SessionStartInput {
   // session's own repository is not in its scope: a root in an enrolled
   // repository is written now, keyed by it.
   rootAwaitsAccount?: boolean | undefined;
+  // The basis the adapter's session-start login view reached, given only for a
+  // login that is a work subscription. It picks the forwarding line's work
+  // wording and the command that stops it.
+  accountBasis?: AccountBasis | undefined;
   // The key to stamp the root with when it is not the working directory's
   // repository key: a coding-agent key, for a session whose account is known at
   // session start. Honoured only when it is exactly the key the gateway's own
@@ -179,6 +184,7 @@ export async function handleSessionStart(
     };
     const gateway = resolveDataGateway(config, meta);
     let line: string | null = null;
+    let rootDeferred = false;
     let staleBinaryNotice: string | null = null;
     let warnEraNotice: string | null = null;
     try {
@@ -199,6 +205,7 @@ export async function handleSessionStart(
       // the gateway's account scope. A gateway without one keys the root with the
       // repository key and writes it now.
       const root = rootPlan(input, accountScopeOf(gateway));
+      rootDeferred = root.deferred && input.recordSession !== false;
       const resolved = await (root.inventoryKey === undefined
         ? gateway.ensureInventory(ctx)
         : gateway.ensureInventory(ctx, { scopeKey: root.inventoryKey }));
@@ -330,12 +337,20 @@ export async function handleSessionStart(
       // Where this session's activity goes, from the gateway this session start
       // wrote through, after the pass whatever it reached: the root, if the pass
       // wrote one, was decided by that gateway, and the line reads its verdict.
-      // A pass that faulted before the root leaves no verdict on a scoped
-      // attachment and prints no line: the history reconcile writes a missing
-      // root later and may forward the session's records under it, so neither
-      // answer would be known to be true. Never throws, and read before the store
-      // handle closes.
-      line = forwardingLine(gateway, input.sessionId);
+      // A root the pass left to the reconcile reads as pending. A pass that
+      // faulted before the root leaves no verdict on a scoped attachment and
+      // prints no line: the history reconcile writes a missing root later and may
+      // forward the session's records under it, so neither answer would be known
+      // to be true. The adapter's basis picks the work wording and its stop
+      // sentence. Never throws, and read before the store handle closes.
+      line = forwardingLine(gateway, input.sessionId, {
+        rootDeferred,
+        basis: input.accountBasis,
+        managed:
+          input.accountBasis !== undefined || rootDeferred
+            ? !workSubscriptionOptOutOffered(config.settingsDir)
+            : false,
+      });
       try {
         await gateway.close();
       } catch {

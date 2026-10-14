@@ -1,7 +1,33 @@
-import { describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import type { ForwardingScope } from '../../src/attached/forwarding-line.ts';
-import { forwardingLine } from '../../src/attached/forwarding-line.ts';
+import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { bundledDetections } from '@akasecurity/plugin-sdk';
+import {
+  agentKey,
+  defaultWorkspaceSettings,
+  MANAGED_SETTINGS_FILENAME,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
+import { createAccountScope } from '../../src/account-scope.ts';
+import { createForwardPolicy } from '../../src/attached/forward-policy.ts';
+import type { ForwardingScope, ForwardingSession } from '../../src/attached/forwarding-line.ts';
+import {
+  forwardingLine,
+  workSubscriptionOptOutOffered,
+} from '../../src/attached/forwarding-line.ts';
+import type { AttachedClient } from '../../src/attached/gateway.ts';
+import { AttachedDataGateway } from '../../src/attached/gateway.ts';
+import { handleSessionStart } from '../../src/handle-session-start.ts';
+import { setDefaultGatewayFactory } from '../../src/resolve.ts';
+import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // The line is read off whatever gateway the session start wrote through, so
 // each case hands it a gateway that answers `forwardingScope` one way. The
@@ -120,5 +146,372 @@ describe('forwardingLine fails open', () => {
     expect(forwardingLine(answering({ deploymentName: 'Acme', mode: 'machine' }), 's1')).toBe(
       'AKA: forwarding everything to Acme (machine-wide)',
     );
+  });
+});
+
+const OPT_OUT = '`aka unenroll --work-subscriptions` stops this on this device.';
+const MANUAL_STOP =
+  'Enrolled by hand; `aka unenroll --account` with its key stops this (`aka status` lists it).';
+const WORK_LINE = 'AKA: forwarding this session to Acme — signed in to a work subscription.';
+const PENDING_LINE =
+  'AKA: this session forwards to Acme once Claude confirms the work subscription, from its first reply.';
+const OTHER_FOLDERS =
+  'This session also sends its work in other folders, because it is signed in to a work subscription.';
+const OTHER_FOLDERS_MANUAL =
+  'This session also sends its work in other folders, because it is signed in to an account you enrolled by hand.';
+const ENDPOINT = 'https://plane.example.test';
+const SCOPE_TAG = randomUUID().replaceAll('-', '').slice(0, 16);
+
+/** A well-formed agent key for a fresh Claude organization. */
+function agentKeyForTest(): string {
+  const key = agentKey(SCOPE_TAG, `claude:${randomUUID()}`);
+  if (key === undefined) throw new Error('the test agent key did not form');
+  return key;
+}
+const AGENT = agentKeyForTest();
+
+type Basis = ForwardingSession['basis'];
+const accountScope = (basis: Basis, managed = false): ForwardingScope => ({
+  deploymentName: 'Acme',
+  mode: 'account',
+  rootKey: AGENT,
+  basis,
+  managed,
+});
+const pendingScope = (basis: Basis, managed = false): ForwardingScope => ({
+  deploymentName: 'Acme',
+  mode: 'account-pending',
+  basis,
+  managed,
+});
+const inWork = (work?: { basis: NonNullable<Basis>; managed: boolean }): ForwardingScope => ({
+  deploymentName: 'Acme',
+  mode: 'scoped',
+  rootKey: WORK_KEY,
+  rootForwards: true,
+  ...(work === undefined ? {} : { work }),
+});
+
+describe('forwardingLine — a work-subscription session', () => {
+  it.each(['validated', 'remembered'] as const)(
+    'a %s work session names the deployment and the command that stops it',
+    (basis) => {
+      expect(forwardingLine(answering(accountScope(basis)), 's1')).toBe(`${WORK_LINE} ${OPT_OUT}`);
+    },
+  );
+
+  it('a root left to the reconcile names the deployment and the command that stops it', () => {
+    expect(forwardingLine(answering(pendingScope(undefined)), 's1')).toBe(
+      `${PENDING_LINE} ${OPT_OUT}`,
+    );
+  });
+
+  it('a manual session names the command that stops it', () => {
+    for (const scope of [accountScope('manual'), pendingScope('manual')]) {
+      const line = forwardingLine(answering(scope), 's1');
+      expect(line).toContain(MANUAL_STOP);
+      expect(line).not.toContain('--work-subscriptions');
+    }
+  });
+
+  it('a work session in a repository is told about its other folders', () => {
+    expect(forwardingLine(answering(inWork({ basis: 'validated', managed: false })), 's1')).toBe(
+      `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS} ${OPT_OUT}`,
+    );
+    expect(forwardingLine(answering(inWork({ basis: 'manual', managed: false })), 's1')).toBe(
+      `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS_MANUAL} ${MANUAL_STOP}`,
+    );
+    expect(forwardingLine(answering(inWork()), 's1')).toBe(`AKA: forwarding to Acme (${WORK_KEY})`);
+  });
+
+  it('no command the device refuses is offered', () => {
+    expect(forwardingLine(answering(accountScope('validated', true)), 's1')).toBe(WORK_LINE);
+    expect(forwardingLine(answering(pendingScope(undefined, true)), 's1')).toBe(PENDING_LINE);
+    expect(forwardingLine(answering(inWork({ basis: 'validated', managed: true })), 's1')).toBe(
+      `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS}`,
+    );
+    expect(forwardingLine(answering(accountScope('manual', true)), 's1')).toBe(
+      `${WORK_LINE} ${MANUAL_STOP}`,
+    );
+  });
+
+  it('never prints an agent key, an account key or an org id', () => {
+    const org = AGENT.split(':').pop() ?? '';
+    const forwardedAgentRoot: ForwardingScope = {
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: AGENT,
+      rootForwards: true,
+    };
+    for (const scope of [accountScope('validated'), forwardedAgentRoot]) {
+      const line = forwardingLine(answering(scope), 's1');
+      expect(line).toBe(`${WORK_LINE} ${OPT_OUT}`);
+      for (const needle of ['agent:', 'claude:', org]) expect(line).not.toContain(needle);
+    }
+  });
+
+  it('a personal session and an opted-out one keep the local-only line', () => {
+    const local: ForwardingScope = {
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: 'github.com/me/personal',
+      rootForwards: false,
+    };
+    expect(forwardingLine(answering(local), 's1')).toBe(LOCAL_ONLY);
+    expect(
+      forwardingLine(answering({ deploymentName: 'Acme', mode: 'machine' }), 's1', {
+        rootDeferred: true,
+        basis: 'validated',
+        managed: false,
+      }),
+    ).toBe('AKA: forwarding everything to Acme (machine-wide)');
+  });
+
+  it('hands the gateway the session it is given', () => {
+    const asked: [string, ForwardingSession | undefined][] = [];
+    const gateway = {
+      forwardingScope: (rootId: string, session?: ForwardingSession): ForwardingScope => {
+        asked.push([rootId, session]);
+        return { deploymentName: 'Acme', mode: 'machine' };
+      },
+    };
+    const session: ForwardingSession = { rootDeferred: true, basis: 'remembered', managed: false };
+    forwardingLine(gateway, 's1', session);
+    forwardingLine(gateway, 's2');
+    expect(asked).toEqual([
+      ['s1', session],
+      ['s2', undefined],
+    ]);
+  });
+});
+
+// A client that accepts every write and sends nothing.
+const client: AttachedClient = {
+  ingestEvents: (batch) => Promise.resolve({ accepted: batch.events.length, duplicates: 0 }),
+  ingestInventory: () => Promise.resolve({}),
+  recordAuditEvent: () => Promise.resolve(),
+  recordAuditEvents: (events) => Promise.resolve({ accepted: events.length }),
+  reportStorePosture: () => Promise.resolve({}),
+  recordProjectEgress: () => Promise.resolve({}),
+};
+
+/**
+ * An attached gateway over `dataDir`. With `withAccount`, it also offers an
+ * account scope over the same keys, as the factory builds one for a scoped
+ * attachment whose identity record holds; the session start defers a root only
+ * on such a gateway.
+ */
+function attachedOver(
+  dataDir: string,
+  mode: 'scoped' | 'machine',
+  keys: readonly string[],
+  withAccount = false,
+): AttachedDataGateway {
+  const keySet = new Set(keys);
+  const account = createAccountScope({
+    keys: keySet,
+    scopeTag: SCOPE_TAG,
+    bindingHash: 'b'.repeat(16),
+    context: {
+      attachedUserDigest: 'a'.repeat(64),
+      workSubscriptionsOn: true,
+      learned: [],
+      manual: [],
+    },
+    learn: () => 'refused',
+  });
+  return new AttachedDataGateway({
+    local: new StandaloneDataGateway(dataDir, bundledDetections()),
+    client,
+    dataDir,
+    readCachedBundle: () => Promise.resolve(null),
+    forward: createForwardPolicy({ dir: dataDir }),
+    attachment: { mode, keys: keySet },
+    deploymentName: 'Acme',
+    ...(withAccount ? { account } : {}),
+  });
+}
+
+describe('AttachedDataGateway.forwardingScope — a work-subscription session', () => {
+  let tmp: string;
+  let dataDir: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'aka-forwarding-account-'));
+    dataDir = join(tmp, 'data');
+    migratedStore.seed(dataDir);
+  });
+  afterEach(() => {
+    removeTree(tmp);
+  });
+
+  const root = (id: string, scopeKey: string) => ({
+    id,
+    eventType: 'session' as const,
+    startedAt: new Date().toISOString(),
+    attributes: { scope_key: scopeKey },
+  });
+  const work: ForwardingSession = { rootDeferred: false, basis: 'validated', managed: false };
+
+  it('answers account for a root it forwards under an agent key, with the session’s basis', async () => {
+    const gateway = attachedOver(dataDir, 'scoped', [AGENT]);
+    try {
+      await gateway.recordAuditEvent(root('s1', AGENT));
+      expect(gateway.forwardingScope('s1', work)).toEqual(accountScope('validated'));
+      expect(gateway.forwardingScope('s1')).toEqual(accountScope(undefined));
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('answers account-pending for a root the session start left to the reconcile, and null when it did not', async () => {
+    const gateway = attachedOver(dataDir, 'scoped', [AGENT]);
+    try {
+      expect(gateway.forwardingScope('s2', { ...work, rootDeferred: true, managed: true })).toEqual(
+        pendingScope('validated', true),
+      );
+      expect(gateway.forwardingScope('s2', work)).toBeNull();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('keeps a root it holds local out of account, even under an agent key', async () => {
+    const gateway = attachedOver(dataDir, 'scoped', [WORK_KEY]);
+    try {
+      await gateway.recordAuditEvent(root('s5', AGENT));
+      expect(gateway.forwardingScope('s5', work)).toMatchObject({
+        mode: 'scoped',
+        rootKey: AGENT,
+        rootForwards: false,
+      });
+      expect(forwardingLine(gateway, 's5', work)).toBe(LOCAL_ONLY);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('adds work to a repository root only for a work login, and keeps machine mode', async () => {
+    const scoped = attachedOver(dataDir, 'scoped', [WORK_KEY]);
+    try {
+      await scoped.recordAuditEvent(root('s3', WORK_KEY));
+      expect(scoped.forwardingScope('s3', work)).toEqual(
+        inWork({ basis: 'validated', managed: false }),
+      );
+      expect(scoped.forwardingScope('s3', { ...work, basis: undefined })).toEqual(inWork());
+    } finally {
+      await scoped.close();
+    }
+    const machine = attachedOver(dataDir, 'machine', []);
+    try {
+      expect(machine.forwardingScope('s4', { ...work, rootDeferred: true })).toEqual({
+        deploymentName: 'Acme',
+        mode: 'machine',
+      });
+    } finally {
+      await machine.close();
+    }
+  });
+});
+
+describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
+  let tmp: string;
+  let home: string;
+  let restore: () => void;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'aka-forwarding-session-'));
+    home = join(tmp, 'home');
+    mkdirSync(join(tmp, 'scratch'), { recursive: true });
+    migratedStore.seed(join(home, 'data'));
+    // The session start defers a root only on a gateway that offers an account scope.
+    restore = setDefaultGatewayFactory((config) =>
+      attachedOver(config.dataDir, 'scoped', [WORK_KEY], true),
+    );
+  });
+  afterEach(() => {
+    restore();
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+    removeTree(tmp);
+  });
+
+  /** An administrator's file pinning this machine's deployment, the shape a fleet overlay ships. */
+  function manage(): void {
+    const file = join(tmp, MANAGED_SETTINGS_FILENAME);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        specVersion: 1,
+        organization: 'Example IT',
+        values: { controlPlane: { endpoint: ENDPOINT, label: 'Example' } },
+      }),
+    );
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
+  }
+
+  function config(): PluginConfig {
+    return {
+      settings: {
+        ...defaultWorkspaceSettings(),
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: new Date().toISOString() },
+      },
+      dataDir: join(home, 'data'),
+      dbPath: join(home, 'data', 'aka.db'),
+      settingsDir: join(home, 'settings'),
+      onboarded: true,
+      provider: { provider: 'anthropic' },
+    };
+  }
+
+  async function deferredLine(
+    accountBasis: NonNullable<Basis> = 'validated',
+    recordSession?: boolean,
+  ): Promise<string | null> {
+    const result = await handleSessionStart(
+      {
+        sessionId: randomUUID(),
+        cwd: join(tmp, 'scratch'),
+        tool: SOURCE_TOOL.ClaudeCode,
+        homeDir: home,
+        rootAwaitsAccount: true,
+        accountBasis,
+        recordSession,
+      },
+      config(),
+    );
+    return result.forwardingLine;
+  }
+
+  it('offers the opt-out on an unmanaged device, and not where an administrator manages the connection', () => {
+    expect(workSubscriptionOptOutOffered(join(home, 'settings'))).toBe(true);
+    manage();
+    expect(workSubscriptionOptOutOffered(join(home, 'settings'))).toBe(false);
+  });
+
+  it('offers the opt-out when the managed file cannot be read', () => {
+    const file = join(tmp, MANAGED_SETTINGS_FILENAME);
+    writeFileSync(file, 'this is not a settings file');
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
+    expect(workSubscriptionOptOutOffered(join(home, 'settings'))).toBe(true);
+  });
+
+  it('offers the opt-out when the settings directory cannot be resolved', () => {
+    expect(workSubscriptionOptOutOffered(undefined as unknown as string)).toBe(true);
+  });
+
+  it('prints the pending line with the opt-out for a root the session start left to the reconcile', async () => {
+    expect(await deferredLine()).toBe(`${PENDING_LINE} ${OPT_OUT}`);
+  });
+
+  it('drops the opt-out from that line where an administrator manages the connection', async () => {
+    manage();
+    expect(await deferredLine()).toBe(PENDING_LINE);
+  });
+
+  it('names the command that stops an account enrolled by hand, for a root left to the reconcile', async () => {
+    expect(await deferredLine('manual')).toBe(`${PENDING_LINE} ${MANUAL_STOP}`);
+  });
+
+  it('prints no line for a session the device does not record', async () => {
+    expect(await deferredLine('validated', false)).toBeNull();
   });
 });

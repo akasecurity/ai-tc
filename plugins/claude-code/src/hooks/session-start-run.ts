@@ -83,6 +83,7 @@ export async function runSessionStart(
     // under. The session start still writes it at once where its repository is
     // enrolled, and on a machine-wide attachment.
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,
+    accountBasis: account.basis,
   });
   // A symlinked store path redirects the corpus without failing anything; say
   // so once per session. Collected rather than written to stderr: on this hook

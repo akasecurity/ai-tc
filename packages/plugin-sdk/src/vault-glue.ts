@@ -2,8 +2,9 @@
 // pointers, and resolve pointers back for whoever is allowed to see them.
 //
 // This module opens no store. `tokenize.ts` builds the same glue over the
-// local SQLite vault; anything that brings its own `VaultCore` can use this
-// module without loading the store layer.
+// local SQLite vault; anything that brings its own `VaultCore` can import this
+// module as `@akasecurity/plugin-sdk/vault-glue` without loading the store
+// layer, whether or not its loader tree-shakes.
 //
 // Every public method follows two rules:
 //

@@ -168,14 +168,24 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
  * above say what a matcher must reach; these say it reaches nothing else.
  */
 function alternatives(event: string): { names: string[]; patterns: string[] } {
-  const source = manifest.hooks[event]?.[0]?.matcher ?? '';
-  const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1];
-  expect(body, `${event}'s matcher is one anchored alternation`).toBeDefined();
-  const parts = (body ?? '').split('|');
-  return {
-    names: parts.filter((part) => /^\w+$/.test(part)).sort(),
-    patterns: parts.filter((part) => !/^\w+$/.test(part)),
-  };
+  // An event may carry SEVERAL entries, each with its own hook command: on
+  // PreToolUse the scanning hook rides the anchored alternation and the
+  // credential-path gate rides a bare `Read|Grep`. The tools the event reaches
+  // are therefore the union over every entry, and reading only the first one
+  // reports the gate's tools as missing.
+  const names = new Set<string>();
+  const patterns = new Set<string>();
+  for (const entry of manifest.hooks[event] ?? []) {
+    const source = entry.matcher ?? '';
+    expect(source, `${event} has a matcher on every entry`).not.toBe('');
+    // Either the anchored alternation the scanning hook uses, or a bare list.
+    const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1] ?? source;
+    for (const part of body.split('|')) {
+      if (/^\w+$/.test(part)) names.add(part);
+      else patterns.add(part);
+    }
+  }
+  return { names: [...names].sort(), patterns: [...patterns].sort() };
 }
 
 describe('each matcher names only tools its hook acts on', () => {

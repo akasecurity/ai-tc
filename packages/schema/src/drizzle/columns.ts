@@ -155,6 +155,9 @@ export const COL = {
   // FindingContext JSON document.
   col: 'col',
   context: 'context',
+  // The name of the variable a detected secret is assigned to. A name only,
+  // never the value.
+  variableName: 'variable_name',
   resolvedAt: 'resolved_at',
   evidence: 'evidence',
   // Secret vault — the one reversible store. `occurrence_count` on secret_vault

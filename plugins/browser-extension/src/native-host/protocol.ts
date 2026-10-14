@@ -1,5 +1,10 @@
-import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+import type { BlockedDetectionRef, CaptureResult, WebCaptureState } from '@akasecurity/plugin-sdk';
+import type {
+  ActionTaken,
+  WebChatWithholding,
+  WebEnforcementState,
+  WebSourceTool,
+} from '@akasecurity/schema';
 import {
   EventKind,
   WebCaptureStatus,
@@ -11,7 +16,7 @@ import {
 // @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
 // status surface enumerates the same sites without a second copy of the list.
 const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
-export type { WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+export type { WebChatWithholding, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
 // Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
 // browser bundle — can still type its own state handling against the real
 // vocabulary. A type import erases, so this costs the bundle nothing.
@@ -52,6 +57,13 @@ export interface ExchangeRequest {
   sessionId: string;
   tool: WebSourceTool;
   exchange: WebExchange;
+  // The workspace the request's own URL named (ProviderAdapter.workspaceOf), raw.
+  // The host turns it into the account key with `webAccountKey`, which refuses
+  // anything that is not one of the site's workspace ids, so it is not checked
+  // here: a value that names no workspace makes no key, and the exchange is
+  // judged as one with no account. Absent from a route that names none, and from
+  // an extension older than the field.
+  workspace?: string;
 }
 
 // What one tab's interception is actually doing. Reported so a tap that
@@ -110,6 +122,12 @@ export interface CaptureResponse {
   text?: string | null;
   ruleIds: string[];
   blockedReferences?: BlockedDetectionRef[];
+  // Set when the prompt was REFUSED rather than judged: it is at or above the
+  // large-input threshold and its bounded scan timed out ('timeout') or found
+  // no worker to run it ('unavailable'). `action` is then 'block', `text` null
+  // and `ruleIds` empty — nothing was flagged, because nothing finished — so a
+  // reader must check this before treating the block as a detection.
+  scanIncomplete?: NonNullable<CaptureResult['scanIncomplete']>;
 }
 
 export interface ExchangeResponse {
@@ -118,8 +136,11 @@ export interface ExchangeResponse {
   ok: true;
   // Whether this host was permitted to record the exchange AND could key it.
   // False means nothing was written and nothing will be; `skipped` says which.
+  // 'out-of-scope': this machine does not record this chat: a personal device,
+  // where only an enrolled account's chats are recorded, or a credential it
+  // cannot read, where none are.
   accepted: boolean;
-  skipped?: 'no-consent' | 'unkeyable';
+  skipped?: 'no-consent' | 'out-of-scope' | 'unkeyable';
   // How many leaves this host SUBMITTED for this exchange — not a row count.
   // Both leaf ids are content-addressed, so a re-observed turn collapses onto
   // the rows already there (INSERT OR IGNORE for a tool call, an
@@ -138,8 +159,10 @@ export interface CaptureStatusResponse {
   type: 'capture_status';
   requestId: string;
   ok: true;
+  // False when nothing was stored. 'out-of-scope' still keeps the report in
+  // the host's memory for the popup, and nowhere else.
   accepted: boolean;
-  skipped?: 'no-consent';
+  skipped?: 'no-consent' | 'out-of-scope';
 }
 
 export interface CaptureStateResponse {
@@ -149,6 +172,12 @@ export interface CaptureStateResponse {
   // False when no valid web-chat capture consent is recorded: nothing is being
   // observed or stored, which is a different answer from "nothing was seen".
   consented: boolean;
+  // Why this machine records less from a web chat than `consented` says, or
+  // nothing. Absent when it records as usual, and from a host older than the
+  // field. Chats are still checked; each site's `state` is then unreported,
+  // and its `enforcement` is this host process's own report, so a site that
+  // is not being checked still shows.
+  withheld?: WebChatWithholding;
   sites: {
     tool: WebSourceTool;
     state: WebCaptureState;
@@ -159,6 +188,14 @@ export interface CaptureStateResponse {
     enforcement?: WebEnforcementState;
     // Absent when this site has never reported.
     observedAt?: string;
+    // The account this host process last saw the site's own requests name
+    // (`claude:<organization-id>`); whether it is enrolled on this machine's
+    // scoped attachment; and whether this machine records chats in it: capture
+    // is consented to, and the machine either records web chats or is a
+    // personal device with the account enrolled. Held in memory only, so the
+    // popup can show what to enroll without anything being stored. Absent when
+    // no request has named one, and from a host older than the field.
+    account?: { identity: string; enrolled: boolean; recorded: boolean };
   }[];
 }
 

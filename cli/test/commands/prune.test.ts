@@ -1,20 +1,47 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
+import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
+  controlPlaneCredentialPath,
   dataDir,
+  dbPath,
   openLocalDatabase,
   readWorkspaceSettings,
+  settingsDir,
+  writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import { BodyRetention, HISTORY_SYNC_PAYLOAD_VERSION, isAttached } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runPrune } from '../../src/commands/prune.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+
+// The credential reader's answer, re-labelled on request. Which credential
+// versions the reader accepts is not this suite's concern, so a scoped
+// attachment here is the real version-1 credential a case wrote, handed to the
+// command as a scoped one; `throws` stands in for a read that fails outright.
+// Every other case gets the real reader.
+const reader = vi.hoisted((): { mode: 'real' | 'scoped' | 'throws' } => ({ mode: 'real' }));
+vi.mock('@akasecurity/persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof Persistence>();
+  return {
+    ...actual,
+    readControlPlaneCredentialFile: (
+      ...args: Parameters<typeof actual.readControlPlaneCredentialFile>
+    ) => {
+      if (reader.mode === 'throws') throw new Error('credential read failed');
+      const read = actual.readControlPlaneCredentialFile(...args);
+      if (reader.mode !== 'scoped' || !read.usable) return read;
+      return { usable: true, credential: { ...read.credential, specVersion: 2, mode: 'scoped' } };
+    },
+  };
+});
 
 const DAY = 86_400_000;
 
@@ -214,6 +241,11 @@ describe('aka prune', () => {
     expect(atCeiling.output()).toContain(`Nothing to expire older than ${String(maxValue)} days`);
   });
 
+  // The one sentence the held-back count is spelled in, so no case keeps its
+  // own copy of it.
+  const kept = (n: number): string =>
+    `${String(n)} kept: not yet sent, and could still be owed to a deployment.`;
+
   describe('bodies a deployment could still claim', () => {
     const ENDPOINT = 'https://aka.example-org.internal';
     const DESCRIPTOR = { endpoint: ENDPOINT, attachedAt: '2026-08-01T00:00:00.000Z' };
@@ -222,7 +254,6 @@ describe('aka prune', () => {
       payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
       endpoint: ENDPOINT,
     };
-    const HELD = '1 kept: not yet sent, and could still be owed to a deployment.\n';
 
     // A prompt is on the sync lane; a body there with no `synced_at` is what
     // the held-back count reports.
@@ -262,7 +293,7 @@ describe('aka prune', () => {
         const io = recorder();
         runPrune(['--home', base, '--days', '30'], io, null);
         expect(io.output()).toContain('Nothing to expire older than 30 days.');
-        expect(io.output()).toContain(HELD);
+        expect(io.output()).toContain(kept(1));
         expect(io.output()).not.toContain('attached to');
       },
     );
@@ -275,6 +306,140 @@ describe('aka prune', () => {
       runPrune(['--home', base, '--days', '30'], io, null);
       expect(io.output()).toContain('Expired 1 bodies');
       expect(io.output()).not.toContain('kept:');
+    });
+  });
+
+  describe('on an attachment, by the credential mode', () => {
+    const ENDPOINT = 'https://plane.example.test';
+    const AT = '2026-08-01T00:00:00.000Z';
+    const WORK = 'github.com/acme/work';
+    const PERSONAL = 'github.com/someone/personal';
+    // Built from parts so nothing in this file reads as a real credential.
+    const API_KEY = ['test', 'only', 'credential'].join('-');
+
+    afterEach(() => {
+      reader.mode = 'real';
+    });
+
+    function attach(credential: 'v1' | 'malformed'): void {
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+          attachmentScope: {
+            endpoint: ENDPOINT,
+            entries: [{ kind: 'repo', identity: WORK, enrolledAt: AT }],
+          },
+        },
+        base,
+        null,
+      );
+      if (credential === 'v1') {
+        writeControlPlaneCredential(settingsDir(base), {
+          specVersion: 1,
+          endpoint: ENDPOINT,
+          apiKey: API_KEY,
+          mintedAt: AT,
+        });
+      } else {
+        writeFileSync(controlPlaneCredentialPath(settingsDir(base)), '{ not json');
+      }
+    }
+
+    // Three unsent sync-lane bodies past the horizon, written straight to the
+    // store so each carries exactly the key the case needs: one enrolled, one
+    // personal, one stamped with nothing.
+    function seedLane(): void {
+      openLocalDatabase(dataDir(base)).close();
+      const raw = new DatabaseSync(dbPath(base));
+      try {
+        const old = Date.now() - 60 * DAY;
+        const insert = raw.prepare(
+          `INSERT INTO audit_events (id, event_type, started_at, content, content_hash, attributes)
+           VALUES (?, 'prompt', ?, ?, ?, ?)`,
+        );
+        insert.run(
+          'enrolled',
+          old,
+          'w'.repeat(100),
+          'hash-enrolled',
+          JSON.stringify({ scope_key: WORK }),
+        );
+        insert.run(
+          'personal',
+          old,
+          'p'.repeat(100),
+          'hash-personal',
+          JSON.stringify({ scope_key: PERSONAL }),
+        );
+        insert.run('unstamped', old, 'u'.repeat(100), 'hash-unstamped', JSON.stringify({}));
+      } finally {
+        raw.close();
+      }
+    }
+
+    function bodyOf(id: string): string | null {
+      const raw = new DatabaseSync(dbPath(base));
+      try {
+        return (
+          raw.prepare('SELECT content FROM audit_events WHERE id = ?').get(id) as {
+            content: string | null;
+          }
+        ).content;
+      } finally {
+        raw.close();
+      }
+    }
+
+    it('expires an out-of-scope and an unstamped body, and keeps the enrolled one', () => {
+      reader.mode = 'scoped';
+      attach('v1');
+      seedLane();
+
+      const io = recorder();
+      runPrune(['--home', base, '--days', '30'], io, null);
+
+      expect(io.output()).toContain('Expired 2 bodies older than 30 days, freeing 200 B.');
+      expect(io.output()).toContain(kept(1));
+      expect(bodyOf('enrolled')).toBe('w'.repeat(100));
+      expect(bodyOf('personal')).toBeNull();
+      expect(bodyOf('unstamped')).toBeNull();
+    });
+
+    it('keeps all three on a machine attachment', () => {
+      attach('v1');
+      seedLane();
+
+      const io = recorder();
+      runPrune(['--home', base, '--days', '30'], io, null);
+
+      expect(io.output()).toContain('Nothing to expire older than 30 days.');
+      expect(io.output()).toContain(kept(3));
+      expect(bodyOf('personal')).toBe('p'.repeat(100));
+    });
+
+    it('keeps all three when the credential cannot be parsed', () => {
+      attach('malformed');
+      seedLane();
+
+      const io = recorder();
+      runPrune(['--home', base, '--days', '30'], io, null);
+
+      expect(io.output()).toContain('Nothing to expire older than 30 days.');
+      expect(io.output()).toContain(kept(3));
+    });
+
+    it('keeps all three, and does not crash, when reading the credential throws', () => {
+      reader.mode = 'throws';
+      attach('v1');
+      seedLane();
+
+      const io = recorder();
+      runPrune(['--home', base, '--days', '30'], io, null);
+
+      expect(io.output()).toContain('Nothing to expire older than 30 days.');
+      expect(io.output()).toContain(kept(3));
+      expect(bodyOf('enrolled')).toBe('w'.repeat(100));
     });
   });
 });

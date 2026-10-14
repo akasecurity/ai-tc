@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/cli",
-  "version": "0.9.15",
+  "version": "0.9.19",
   "description": "AI Traffic Control — local-first CLI to inspect and govern AI agent traffic on your machine",
   "license": "Apache-2.0",
   "repository": {
@@ -43,7 +43,7 @@
     "bundle:extension": "node scripts/bundle-extension.mjs"
   },
   "dependencies": {
-    "ink": "^7.1.1",
+    "ink": "^8.0.0",
     "next": "^15.5.27",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"

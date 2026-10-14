@@ -191,7 +191,7 @@ export function hostFloorNotice(hostVersion: string | undefined): string | null 
  *
  * Bump it at release time when the host has moved on.
  */
-export const MAX_TESTED_HOST = '2.1.260';
+export const MAX_TESTED_HOST = '2.1.294';
 
 /**
  * The "newer than tested" line, or null when the host is within range.

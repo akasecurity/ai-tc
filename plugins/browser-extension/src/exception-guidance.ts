@@ -89,3 +89,17 @@ export function redactExceptionRoute(
     help: EXCEPTION_HELP,
   };
 }
+
+/**
+ * The block banner for a message whose bounded scan did not finish: one at or
+ * above the large-input threshold that the native host could not scan in time,
+ * or found no worker to scan (`CaptureResponse.scanIncomplete`).
+ *
+ * No rule ran to completion, so there is nothing to name and no value an
+ * exception could approve — the approve route is deliberately absent, which
+ * also lets the banner hide on its own. What the user can do is send less at
+ * once, and the text is still in the composer to do it with.
+ */
+export function tooLargeToScanMessage(): string {
+  return 'This message is too large for AKA to scan within the time limit, so it was NOT sent. Your text is still in the composer — shorten it or send it in smaller parts.';
+}

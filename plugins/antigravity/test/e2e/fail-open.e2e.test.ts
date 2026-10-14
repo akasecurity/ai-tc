@@ -12,21 +12,31 @@
 // the payload that hook's own "carry on unchanged" is spelled as. Silence fails
 // loudly rather than passing quietly.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/antigravity
 const PLUGIN_ROOT = join(HERE, '..', '..');
-const script = (name: string): string => join(PLUGIN_ROOT, 'scripts', `${name}.js`);
+const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 
 /**
  * The four hooks that delegate to `runHookFailOpen`, each with the payload the
@@ -49,8 +59,13 @@ const HOOKS = [
  * Hostile stdin, one entry per way a payload can arrive broken.
  *
  * `oversized` exercises the READ direction — a payload far past the pipe buffer
- * that the hook must consume without stalling or truncating its own answer. It
- * is deliberately NOT a test of the write-direction flush hazard: what a hook
+ * that the hook must consume without stalling or truncating its own answer. On
+ * `pre-tool-use` its command is also far past the large-input threshold, so it
+ * is scanned in a worker under the hook's deadline: a run of one repeated
+ * character is cheap for every bundled rule, so it finishes well inside the
+ * budget and is allowed, while the refusal rows at the end of this file drive
+ * the worker-less case. It is deliberately NOT a test of the write-direction
+ * flush hazard: what a hook
  * emits here is `{"decision":"allow"}` or `{}`, twenty bytes at most, so no
  * amount of oversized stdin can push its stdout past the buffer. That property
  * belongs to `emit` and is driven directly in
@@ -85,8 +100,16 @@ interface HookRun {
 // decision channel and must stay exactly one JSON object, so a once-per-session
 // notice has nowhere else to go — leaving stderr uncaptured would make it
 // unassertable.
-function runHook(hookName: string, argv: readonly string[], home: string, input: string | Buffer) {
-  const result = spawnSync(process.execPath, [script(hookName), ...argv], {
+// `scriptsDir` is for a case that drives a modified COPY of the build (one with
+// the scan worker removed); every other case runs the build output itself.
+function runHook(
+  hookName: string,
+  argv: readonly string[],
+  home: string,
+  input: string | Buffer,
+  scriptsDir: string = SCRIPTS_DIR,
+) {
+  const result = spawnSync(process.execPath, [join(scriptsDir, `${hookName}.js`), ...argv], {
     env: { HOME: home, USERPROFILE: home },
     input,
     encoding: 'utf8',
@@ -286,5 +309,58 @@ describe('pre-tool-use enforcement — a redact this host cannot perform', () =>
     const decided = soleObject(run) as { decision: string; reason?: string };
     expect(decided.decision).toBe('deny');
     expect(decided.reason ?? '').toContain(RULE_ID);
+  });
+});
+
+// ─── The one deliberate refusal: a field too large to scan in time ──────────
+//
+// A field at or above the large-input threshold is scanned in a worker under a
+// deadline that ends inside the fail-open watchdog, and one whose scan does not
+// finish DENIES the call with a reason, rather than being allowed. Every fault
+// row above still prints an allow, oversized stdin included: none of them is a
+// field the hook finished reaching. This is the one payload the hook writes
+// because it could NOT decide, so it is pinned beside them.
+//
+// The worker is made unavailable by REMOVING it from a copy of the built
+// scripts — the state an install that never shipped it is in — so the refusal
+// is deterministic rather than a race against a slow scan. The same payload
+// against the intact build is the control: the field is benign, so a deny there
+// would mean the bound itself, not the missing worker, decided.
+describe('pre-tool-use — a field too large to scan in time is denied, not allowed', () => {
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+  const payload = JSON.stringify({
+    toolCall: { name: 'run_command', args: { CommandLine: `echo ${LARGE}` } },
+    stepIdx: 0,
+    conversationId: 'conv-too-large',
+    workspacePaths: ['/tmp'],
+  });
+
+  it('with no worker to scan it → an explicit deny naming the reason, exit 0', () => {
+    const run = withTempHome((dir) => {
+      const scriptsDir = join(dir, 'scripts');
+      cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });
+      rmSync(join(scriptsDir, 'scan-worker.js'));
+      // The copy is what the case rests on: with the worker still there the
+      // field would be scanned and the assertion below would read backwards.
+      expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+      const home = join(dir, 'home');
+      mkdirSync(home);
+      return runHook('pre-tool-use', [], home, payload, scriptsDir);
+    }, 'aka-agy-no-worker-');
+
+    expect(soleObject(run)).toEqual({
+      decision: 'deny',
+      reason: tooLargeToScanMessage('run_command call'),
+    });
+    // None of the field's text rides back on the refusal.
+    expect(run.stdout).not.toContain('lorem ipsum');
+  });
+
+  it('with the worker in place → scanned, and benign, so allowed', () => {
+    const run = withTempHome(
+      (home) => runHook('pre-tool-use', [], home, payload),
+      'aka-agy-with-worker-',
+    );
+    expect(soleObject(run)).toEqual({ decision: 'allow' });
   });
 });

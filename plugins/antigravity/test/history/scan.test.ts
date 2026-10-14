@@ -381,8 +381,8 @@ describe('scanHistory — onHit sink', () => {
 describe('scanHistory — backfilled captures carry no scope key', () => {
   // This host's transcript records name no working directory (source, type,
   // created_at, content… — see transcripts.ts), so a backfilled capture has
-  // nothing to key by. It stays keyless, which is what a scoped attachment is
-  // meant to keep local; that check is not part of this change.
+  // nothing to key by. It stays keyless, and a scoped attachment keeps a keyless
+  // capture local (the gateway's verdict).
   let dataDir: string;
   let root: string;
   beforeEach(() => {

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { ActionTaken } from './finding.ts';
 import { SourceTool } from './harness-map.ts';
@@ -118,6 +118,18 @@ export const EventMetadata = z
     // Closing either means moving the reason onto the finding row, which
     // already carries its own action.
     redactDegradedTo: ActionTaken.optional(),
+    // Set when this capture's field was REFUSED rather than scanned: a hook
+    // bounds the scan of a large field (see `LargeInputScanOptions` in
+    // @akasecurity/plugin-sdk), and a scan that did not finish blocks the
+    // field instead of letting it through unscanned.
+    //
+    //   - 'timeout': the bounded scan ran out of time.
+    //   - 'unavailable': no worker could run it.
+    //
+    // A refused row stores '' as its content and has no findings, which is
+    // exactly what a clean, empty capture looks like — this marker is the only
+    // thing that tells the two apart. Absent on every capture that was scanned.
+    scanIncomplete: z.enum(['timeout', 'unavailable']).optional(),
   })
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;

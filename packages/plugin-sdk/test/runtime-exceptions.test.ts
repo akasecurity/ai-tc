@@ -630,6 +630,48 @@ describe('blocked-detections ledger', () => {
     ]);
   });
 
+  it("capture with persist 'never': a block still records its ledger row, and no event", async () => {
+    // A web chat on a personal device is captured this way. The ledger row is
+    // what `aka exception` approves a blocked value from, so it has to survive
+    // the event being withheld; it carries the capture's own session id.
+    loadOrCreateFingerprintKey(dir);
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+
+    const result = await rt.capture(
+      {
+        kind: 'prompt',
+        sourceTool: 'chatgpt',
+        text: 'run with EX_SECRET_MARKER',
+        metadata: { sessionId: 'browser-sess' },
+      },
+      { persist: 'never' },
+    );
+    await rt.close();
+
+    expect(result.action).toBe('block');
+    expect(gw.records).toHaveLength(0);
+    expect(gw.blocked).toHaveLength(1);
+    expect(gw.blocked[0]?.sessionId).toBe('browser-sess');
+    expect(result.blockedReferences).toEqual([
+      {
+        reference: gw.blocked[0]?.reference,
+        ruleId: gw.blocked[0]?.ruleId,
+        maskedValue: gw.blocked[0]?.maskedValue,
+      },
+    ]);
+  });
+
   it('a failing ledger write never affects the decision', async () => {
     loadOrCreateFingerprintKey(dir);
     const b = bundle();

@@ -4,7 +4,8 @@
  * stdin:  { toolCall: { name, args }, stepIdx, conversationId, workspacePaths,
  *           transcriptPath, artifactDirectoryPath }
  * stdout (exit 0):
- *   {"decision":"deny","reason":"..."} → the tool call is blocked
+ *   {"decision":"deny","reason":"..."} → the tool call is blocked (also when
+ *                                        a field is too large to scan in time)
  *   {"decision":"allow"}               → the call runs unchanged
  *
  * There is no `updatedInput` equivalent, so a redact policy DENIES rather than
@@ -19,6 +20,7 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
   ALLOW,
@@ -80,7 +82,13 @@ async function main(): Promise<unknown> {
     return ALLOW;
   }
   const gateway = opened.gateway;
-  const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // A field at or above the large-input threshold is scanned under a deadline
+  // shared by every field of this call, and refused if that scan does not
+  // finish (see large-input.ts).
+  const runtime = createPluginRuntime(gateway, config.settings, {
+    dataDir: config.dataDir,
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+  });
 
   // A file write is durable content the agent authors, recorded as
   // 'code_change' with the default persist ('always' — the at-rest trail the
@@ -125,6 +133,9 @@ async function main(): Promise<unknown> {
         },
       );
       scanned.push({ spec, result });
+      // A refused field denies the whole call (decidePreToolUse), so scanning
+      // the rest would only spend the time the deadline is there to protect.
+      if (result.scanIncomplete !== undefined) break;
     }
   } finally {
     await runtime.close();

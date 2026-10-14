@@ -267,6 +267,20 @@
       "when": 1791295393880,
       "tag": "0037_finding_location",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1791903000798,
+      "tag": "0038_variable_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1791984997045,
+      "tag": "0039_variable_name_expiry_index",
+      "breakpoints": true
     }
   ]
 }

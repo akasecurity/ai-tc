@@ -44,6 +44,29 @@ import { quarantineRule } from './rule-quarantine.ts';
 export interface GuardedScanner {
   scan(text: string, context?: ScanContext): Promise<MatchResult[]>;
   /**
+   * Scan one field in a worker under a hard deadline, with the WHOLE ruleset —
+   * the verified rules too — and report the outcome rather than recover from
+   * it. For a caller that would rather refuse a field than let its scan run
+   * past a host timeout: a hook scanning a field too large to trust an
+   * in-process pass with.
+   *
+   * What it deliberately does NOT do is everything `scan` does after a failure.
+   * No attribution retry, which would spend a second budget; no quarantine,
+   * since nothing here can tell a slow rule from a large input; and no
+   * in-process fallback, which on this path is the very call that could not
+   * finish in time. A `timeout` or `unavailable` is the answer, and the caller
+   * decides what it means. Nor does it retire isolation for `scan`: the two
+   * paths share nothing but the ruleset.
+   *
+   * One worker serves every bounded scan of this scanner, built on first use,
+   * so a caller that never sends a large field never starts it.
+   */
+  scanBounded(
+    text: string,
+    context: ScanContext | undefined,
+    bound: BoundedScanRequest,
+  ): Promise<IsolatedScanOutcome>;
+  /**
    * True once isolation has been retired, which means every pulled/custom-pack
    * regex rule has been dropped for the rest of THIS scanner's life — the rest
    * of the process for a caller that builds one and exits, the rest of one unit
@@ -53,6 +76,20 @@ export interface GuardedScanner {
    */
   degraded(): boolean;
   close(): Promise<void>;
+}
+
+/** The limits on one {@link GuardedScanner.scanBounded} call. */
+export interface BoundedScanRequest {
+  /** The longest the scan may run once the worker has started. */
+  budgetMs: number;
+  /** The longest to wait for the worker to start, when this call has to start it. */
+  startBudgetMs: number;
+  /**
+   * What is left of the caller's own time, if it has a limit of its own. Both
+   * budgets above are clipped to it, so several bounded scans in a row cannot
+   * add up past it. Zero or less answers `timeout` without starting a thread.
+   */
+  remainingMs?: number | undefined;
 }
 
 export interface GuardedScanPartition {
@@ -93,6 +130,12 @@ export function createGuardedScanner(
   let isolated: IsolatedScanner | undefined =
     unverified.length > 0 ? createIsolatedScanner({ verified, unverified }, opts) : undefined;
   let retired = false;
+  // The bounded path's own worker, separate from `isolated` so that neither
+  // path's failures change what the other does. Built on first use; each call
+  // carries its own budgets through the job options.
+  let bounded: IsolatedScanner | undefined;
+  let boundedWarned = false;
+  let closed = false;
 
   function inProcess(text: string, context: ScanContext | undefined): MatchResult[] {
     return scan(text, verified, context);
@@ -206,11 +249,58 @@ export function createGuardedScanner(
     return inProcess(text, context);
   }
 
+  async function scanBounded(
+    text: string,
+    context: ScanContext | undefined,
+    bound: BoundedScanRequest,
+  ): Promise<IsolatedScanOutcome> {
+    const remainingMs = bound.remainingMs;
+    let outcome: IsolatedScanOutcome;
+    if (closed) {
+      outcome = { status: 'unavailable', reason: 'the scan worker is closed' };
+    } else if (remainingMs !== undefined && !(remainingMs > 0)) {
+      // NaN lands here too: a limit that cannot be read is treated as spent.
+      outcome = { status: 'timeout', culpritIndex: undefined, elapsedMs: 0 };
+    } else {
+      bounded ??= createIsolatedScanner({ verified, unverified }, opts);
+      const deadlineAt = remainingMs === undefined ? undefined : performance.now() + remainingMs;
+      try {
+        outcome = await bounded.scan(text, context, {
+          budgetMs: bound.budgetMs,
+          startBudgetMs: bound.startBudgetMs,
+          deadlineAt,
+        });
+      } catch (error) {
+        // Reported rather than thrown, like every other failure here: a throw
+        // would reach a fail-open catch and let the field through unscanned.
+        outcome = {
+          status: 'unavailable',
+          reason: error instanceof Error ? error.message : 'the scan worker failed unexpectedly',
+        };
+      }
+    }
+    if (outcome.status !== 'ok' && !boundedWarned) {
+      // Once per scanner: a hook can send many large fields, and one line says
+      // what the rest would.
+      boundedWarned = true;
+      process.stderr.write(
+        outcome.status === 'timeout'
+          ? `[aka] a large input could not be scanned within its time limit and was refused.\n`
+          : `[aka] a large input could not be scanned and was refused: ${outcome.reason}.\n`,
+      );
+    }
+    return outcome;
+  }
+
   return {
     scan: guardedScan,
+    scanBounded,
     degraded: () => retired,
     async close() {
-      await retire();
+      closed = true;
+      const live = bounded;
+      bounded = undefined;
+      await Promise.all([retire(), live?.close()]);
     },
   };
 }

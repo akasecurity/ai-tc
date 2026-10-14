@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type { OriginEnum } from '../../src/zod/detection.ts';
+import { DetectionDetail, type OriginEnum } from '../../src/zod/detection.ts';
 import type { DetectionRowInput, DetectionSummaryInput } from '../../src/zod/detection-build.ts';
 import {
   buildDetectionsList,
   rowToDetectionDetail,
   summaryToDetectionListItem,
 } from '../../src/zod/detection-build.ts';
-import type { Rule } from '../../src/zod/rule.ts';
+import { Rule } from '../../src/zod/rule.ts';
 
 function rule(id: string, matcher: Rule['matcher']): Rule {
   return { specVersion: 1, id, name: id, category: 'secret', severity: 'high', matcher };
@@ -110,9 +110,42 @@ describe('rowToDetectionDetail', () => {
     const [built] = rowToDetectionDetail(row([bare]), 0, null).rules;
 
     expect(built).toBeDefined();
-    for (const key of ['appliesTo', 'postValidators', 'requiresNearby', 'examples']) {
+    for (const key of ['appliesTo', 'postValidators', 'requiresNearby', 'examples', 'evidence']) {
       expect(built).not.toHaveProperty(key);
     }
+  });
+
+  // `evidence` says whether the matched text is itself sensitive. DetectionRule
+  // carries every field Rule declares but the pinned `specVersion`, so a Rule
+  // rebuilt from it loses nothing — including through the wire parse, which
+  // strips a key the schema does not name.
+  it('carries evidence through the detail and back into a Rule', () => {
+    const original: Rule = {
+      ...rule('pack/code', { type: 'regex', pattern: 'eval\\(', flags: 'g' }),
+      category: 'code_flaw',
+      examples: ['eval(x)'],
+      evidence: 'code',
+    };
+
+    const detail = DetectionDetail.parse(rowToDetectionDetail(row([original]), 0, null));
+    const [read] = detail.rules;
+
+    expect(read?.evidence).toBe('code');
+    expect(Rule.parse({ specVersion: 1, ...read })).toEqual(original);
+  });
+
+  it('omits an evidence value outside the enum, keeping the rule', () => {
+    const bad = {
+      ...rule('pack/bad-evidence', { type: 'regex', pattern: 'x', flags: 'g' }),
+      evidence: 'secret',
+      examples: ['x'],
+    };
+
+    const [built] = rowToDetectionDetail(row([bad as unknown as Rule]), 0, null).rules;
+
+    expect(built?.id).toBe('pack/bad-evidence');
+    expect(built).not.toHaveProperty('evidence');
+    expect(built?.examples).toEqual(['x']);
   });
 
   // The enrichment is per-field and best-effort, and this is what says so. The

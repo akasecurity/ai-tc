@@ -116,6 +116,7 @@ const FINDING_KEYS = [
   'maskedMatch',
   'actionTaken',
   'confidence',
+  'variableName',
 ];
 
 interface ScanFinding {
@@ -128,6 +129,7 @@ interface ScanFinding {
   maskedMatch: string;
   actionTaken: string;
   confidence: number;
+  variableName: string | null;
 }
 
 interface ScanPayload {
@@ -203,6 +205,23 @@ describe('renderEgressLine', () => {
     // literal: a regression that printed a different number would satisfy the
     // wildcard, and hand-copying the value here would go stale silently.
     expect(line).toContain(`capped at ${String(MAX_EGRESS_CALL_SITES_PER_PROJECT)} call sites`);
+  });
+});
+
+describe('renderForwardLine', () => {
+  it('says an unenrolled project stayed on this machine, and points at the enroll verb', () => {
+    // A scoped attachment declining to send is not a failure, but the person
+    // who ran the scan still has to be told nothing left. The pointer is true
+    // whichever reason kept the project local (not enrolled, no code-host
+    // remote, a nested repository not enrolled): the list shows what is sent,
+    // and the enroll verb is named with the remote it needs.
+    const line = renderForwardLine({ status: 'not-enrolled', endpoint: 'Acme Security' });
+    expect(line).toBe(
+      'Data shares: not forwarded to Acme Security — the project or a repository nested in it is not enrolled; ' +
+        'its scans stay on this machine (`aka enroll --list` shows what is sent; ' +
+        '`aka enroll` adds a repository with a code-host remote)',
+    );
+    expect(line).toContain('aka enroll --list');
   });
 });
 
@@ -386,6 +405,20 @@ describe('runScan', () => {
       // instead of accusing the projection.
       expect(gitRootAbove(root)).toBeUndefined();
       expect(payload.inventory).toBeNull();
+    });
+
+    it('names the variable a secret is assigned to, and null where there is none', async () => {
+      writeSecretFile();
+      writeFileSync(join(root, 'notes.txt'), `${LOW_TEXT}\n`);
+
+      const payload = await scanJson(root);
+      const assigned = payload.findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+      const bare = payload.findings.find((f) => f.file === join(root, 'notes.txt'));
+
+      expect(assigned?.variableName).toBe('key');
+      expect(bare).toBeDefined();
+      expect(bare?.variableName).toBeNull();
+      expectNoEchoOf(out, RAW);
     });
 
     it('emits the same five keys on a clean scan, with findings as an empty array', async () => {

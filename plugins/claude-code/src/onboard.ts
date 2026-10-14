@@ -4,7 +4,11 @@
  * collects the answers conversationally, then runs:
  *
  *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only> \
- *     --vault-consent <grant|revoke> --posture <json> --floor
+ *     --vault-consent <grant|revoke> --sighting-share-consent <grant|revoke> \
+ *     --posture <json> --floor
+ *
+ * `--sighting-share-ask` writes nothing: it prints whether the wizard should
+ * ask about sharing credential sightings, as a frame.
  *
  * Each flag is optional and additive: omit one and its current value (or the
  * default) is kept, so a later wizard step is one more flag with no rewrite.
@@ -21,17 +25,25 @@
  * `--recalibrate` forces an overwrite on the floor write. `--floor` and
  * `--posture` are mutually exclusive.
  */
-import { capWarnEraEnforcementOnce, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  capWarnEraEnforcementOnce,
+  openLocalDatabase,
+  readSightingSharing,
+} from '@akasecurity/persistence';
 import {
   applyCategoryPosture,
   applyOnboarding,
   loadConfig,
   severityFloorPosture,
+  shippedRegexMatchers,
 } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   HistoricalAccess,
   MODEL_JUDGE_PAYLOAD_VERSION,
+  shouldAskSightingShare,
+  SIGHTING_SHARE_CONSENT_VERSION,
+  sightingSharingLine,
   SimpleDetectionPolicy,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
@@ -39,6 +51,7 @@ import { parsePosture } from '@akasecurity/setup-wizard';
 
 import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
+import { frameJsonBlock } from './setup-frame-json.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
 // positionals are ignored — the wizard only ever passes the ones it knows.
@@ -67,6 +80,15 @@ function fail(message: string): never {
 }
 
 const flags = parseFlags(process.argv.slice(2));
+// Read-only: whether the wizard should ask about sharing credential sightings.
+// Prints the answer as a frame and writes nothing.
+if (process.argv.includes('--sighting-share-ask')) {
+  process.stdout.write(
+    frameJsonBlock({ askSightingShare: shouldAskSightingShare(readSightingSharing()) }),
+  );
+  process.exit(0);
+}
+
 const answers: Partial<WorkspaceSettings> = {};
 
 const rawPolicy = flags.get('policy');
@@ -117,6 +139,33 @@ if (vaultConsentAction === 'grant') {
   answers.vaultConsent = undefined;
 }
 
+// The credential-sightings sharing answer. `grant` stamps the acknowledgment
+// for the attached deployment here; `revoke` clears the stored grant.
+const rawSightingShare = flags.get('sighting-share-consent');
+let sightingShareAction: 'grant' | 'revoke' | undefined;
+if (rawSightingShare !== undefined) {
+  if (rawSightingShare === 'grant' || rawSightingShare === 'revoke') {
+    sightingShareAction = rawSightingShare;
+  } else {
+    fail(`invalid --sighting-share-consent "${rawSightingShare}" (expected grant or revoke)`);
+  }
+}
+if (sightingShareAction === 'grant') {
+  // A grant names the deployment it was given for, so there is none to record
+  // while standalone.
+  const { endpoint } = readSightingSharing();
+  if (endpoint === undefined) {
+    fail('cannot grant --sighting-share-consent: this machine is not attached to an organization');
+  }
+  answers.sightingShareConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    version: SIGHTING_SHARE_CONSENT_VERSION,
+    endpoint,
+  };
+} else if (sightingShareAction === 'revoke') {
+  answers.sightingShareConsent = undefined;
+}
+
 const rawPosture = flags.get('posture');
 const useFloor = process.argv.includes('--floor');
 const recalibrate = process.argv.includes('--recalibrate');
@@ -127,7 +176,9 @@ const recalibrate = process.argv.includes('--recalibrate');
 if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
 
 if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
-  fail('nothing to save — pass --policy, --historical, --vault-consent, --posture and/or --floor');
+  fail(
+    'nothing to save — pass --policy, --historical, --vault-consent, --sighting-share-consent, --posture and/or --floor',
+  );
 }
 
 // Recording the model-judge consent is not an onboarding-posture answer: it
@@ -160,13 +211,18 @@ if (Object.keys(answers).length > 0) {
         ),
       );
     }
+    // The state in force after the write, which also weighs the attachment and
+    // any managed settings.
+    if (sightingShareAction !== undefined) {
+      process.stdout.write(show(sightingSharingLine(readSightingSharing())));
+    }
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.
     if (wrotePosture) {
       try {
         const dataDir = loadConfig().dataDir;
-        const db = openLocalDatabase(dataDir);
+        const db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
         try {
           const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
           if (capped > 0) {
@@ -202,7 +258,9 @@ if (rawPosture !== undefined || useFloor) {
     // category rows; --floor is the fallback and only fills gaps (never
     // downgrades a calibrated posture) unless --recalibrate forces an overwrite.
     const mode = rawPosture !== undefined || recalibrate ? 'overwrite' : 'fill-gaps';
-    const db = openLocalDatabase(loadConfig().dataDir);
+    const db = openLocalDatabase(loadConfig().dataDir, {
+      shippedRegexMatchers: shippedRegexMatchers(),
+    });
     try {
       applyCategoryPosture(posture, db.policies, mode);
       // The applying confirmation — the "tuned" segment reports the

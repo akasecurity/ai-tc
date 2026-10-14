@@ -5,6 +5,10 @@ import pluginN from 'eslint-plugin-n';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import tseslint from 'typescript-eslint';
 
+import { commentNarrationPlugin } from './no-process-narration.js';
+
+export { commentNarrationPlugin, noProcessNarration } from './no-process-narration.js';
+
 // ai-tc is local-first: the OSS surface makes no network calls and talks to no
 // AKA service — all data lives in the local SQLite store under ~/.aka. Banning
 // the network primitives keeps that guarantee enforced by lint instead of by
@@ -148,12 +152,15 @@ export function noNetworkImports(opts = {}) {
 
 /**
  * The `no-restricted-syntax` rule value that bans *dynamic* access to the
- * network modules — `import('node:http')` and `require('axios')`, plus any npm-
- * client subpath (`import('axios/lib/adapters/http.js')`) — which the static
+ * network modules — `import('node:http')`, `require('axios')` and
+ * `process.getBuiltinModule('node:https')` (however the method is reached: off
+ * `process`, computed, optional or destructured), plus any npm-client subpath
+ * (`import('axios/lib/adapters/http.js')`) — which the static
  * `no-restricted-imports` rule cannot see. Intentionally NOT matched, since an
  * esquery selector cannot follow a binding and the ban targets accidents rather
- * than deliberate evasion: a non-literal specifier (`import(url)`, a template
- * literal), `require.resolve(...)`, and an aliased/indirected require
+ * than deliberate evasion: a non-literal specifier (`import(url)`,
+ * `getBuiltinModule(id)`, a template literal), `require.resolve(...)`, and an
+ * aliased/indirected require or loader
  * (`const req = createRequire(...); req('node:http')`). `allow` drops specific
  * specifiers, symmetric with `noNetworkImports`, so a file that opts out of a
  * static import can opt out of the dynamic form too.
@@ -194,6 +201,10 @@ function networkSyntaxSelectors(opts = {}) {
     },
     {
       selector: `CallExpression[callee.name='require'] > Literal[value=/^(${pattern})$/]`,
+      message: NO_NETWORK_MESSAGE,
+    },
+    {
+      selector: `CallExpression:matches([callee.name='getBuiltinModule'], [callee.property.name='getBuiltinModule'], [callee.property.value='getBuiltinModule']) > Literal[value=/^(${pattern})$/]`,
       message: NO_NETWORK_MESSAGE,
     },
   ];
@@ -316,6 +327,29 @@ export function drizzleWallRules(opts = {}) {
     ]),
   };
 }
+
+// Code comments carry the durable reason a reader needs, never the development
+// history that produced the code. Comment CONTENT is unreachable from an AST
+// selector, so this is a rule rather than a `no-restricted-syntax` entry.
+//
+// Spread per package (like `noDrizzleImports`) rather than folded into `base`:
+// the existing violations are a backlog, and a package adopts the rule in the
+// same change that clears its own.
+/**
+ * @param {{ conventionsFile?: string, allowPatterns?: string[], disableProbes?: string[] }} [opts]
+ * @returns {import('eslint').Linter.RulesRecord}
+ */
+export function commentNarrationRules(opts = {}) {
+  return { 'comment-narration/no-process-narration': ['error', opts] };
+}
+
+/** @type {import('typescript-eslint').ConfigArray} */
+export const noCommentNarration = [
+  {
+    plugins: { 'comment-narration': commentNarrationPlugin },
+    rules: commentNarrationRules(),
+  },
+];
 
 /** @type {import('typescript-eslint').ConfigArray} */
 export const noDrizzleImports = [{ rules: drizzleWallRules() }];
@@ -514,11 +548,16 @@ function ambientLocaleSelectors(opts = {}) {
  * That is exactly what a per-file opt-out has to do, which is why the only
  * supported way to write one is to call this with the group turned off:
  *
- *   { files: ['src/lib/useRenderClock.ts'],
- *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowAmbientClock: true }) } }
+ *   { files: ['test/helpers/loopback.ts'],
+ *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowNetwork: ['node:http'] }) } }
  *
  * The other groups come along by construction, so an opt-out for one ban
- * cannot become an opt-out for all five by omission.
+ * cannot become an opt-out for all five by omission. A WIDENING does not: it is
+ * an option too, so an entry that does not name it narrows that file back to
+ * the directive-scoped floor. In `dashboard-ui`/`ui-kit` `src/**` that is what
+ * `presentationalSyntaxBans` is for — its own doc has the exemption written
+ * through it — and in web-ui's `app/**` an entry has to pass
+ * `ambientLocaleEveryModule: true` itself.
  *
  * `allowNetwork` is the same idea for the network group, and takes module names
  * rather than a boolean: a file that legitimately binds a loopback socket needs
@@ -693,6 +732,20 @@ export const rootConfigFiles = [
     ...tseslint.configs.disableTypeChecked,
   },
 ];
+
+// The same switch for whole directories of tracked source that no tsconfig owns:
+// code a host loads by its own rules (a Claude Code mod imports a module the
+// host provides, which is not in the repo) and Node build scripts. They stay
+// behind the no-network ban, which is syntactic, and lose only the type-aware
+// rules that cannot resolve. Spread AFTER the block that turns `projectService`
+// on, and name the globs (root-anchored, e.g. `hooks/**`).
+/**
+ * @param {string[]} files
+ * @returns {import('eslint').Linter.Config[]}
+ */
+export function untypedSource(files) {
+  return [{ files, ...tseslint.configs.disableTypeChecked }];
+}
 
 // A standalone config that enforces ONLY the no-network guarantee — the four
 // bans above and nothing else. Point a second lint pass at it (see cli's

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../src/exception-guidance.ts';
 import type { BannerRequest } from '../src/interceptor.ts';
 import { createSubmitInterceptor } from '../src/interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from '../src/messaging.ts';
@@ -519,6 +520,29 @@ describe('the redact banners carry the exception route', () => {
       expect(h.banners[0]?.message).toContain(says);
       expect(h.banners[0]?.exception).toBeUndefined();
       expect(h.banners[0]?.message).not.toContain('aka exception approve');
+    },
+  );
+});
+
+// A prompt whose bounded scan did not finish arrives as a `block` with
+// `scanIncomplete` set and no rule ids. The block branch would otherwise render
+// "flagged ." and offer an approve command for a value nothing flagged.
+describe('a message too large to scan in time', () => {
+  it.each(['timeout', 'unavailable'] as const)(
+    'is not sent, and the banner says why without rule guidance (%s)',
+    async (scanIncomplete) => {
+      const h = harness([capture({ action: 'block', text: null, ruleIds: [], scanIncomplete })]);
+      const event = new Event('keydown', { cancelable: true });
+      h.interceptor.handleSubmit(event, h.composer);
+      await settle();
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(h.submitted()).toBe(0);
+      expect(h.sendSignals).toEqual([]);
+      // The text stays where the user typed it, so a shorter retry is theirs.
+      expect(h.composer.textContent).toBe('the composer text');
+      expect(h.setTextCalls).toEqual([]);
+      expect(h.banners).toEqual([{ tone: 'block', message: tooLargeToScanMessage() }]);
     },
   );
 });

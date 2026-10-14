@@ -1,7 +1,9 @@
 // PostToolUse tool_response shapes. Claude Code hands hooks the tool's native
 // result object, not a flat string — Read wraps the file under file.content,
 // Bash splits stdout/stderr, WebFetch carries the page under result, Grep
-// carries matching lines under content, and an MCP tool returns its content
+// carries matching lines under content, WebSearch carries link lists and
+// summary text under results, a subagent (Agent, formerly Task) returns its
+// final message as content blocks, and an MCP tool returns its content
 // blocks ([{ type: 'text', text }, …]) or a plain string. Redaction
 // must rewrite those fields *in place*: Claude Code validates a hook's
 // updatedToolOutput against the tool's own output shape and silently falls back
@@ -12,6 +14,7 @@
 // run main() on import and hang vitest collection).
 import type { PathSegment } from './paths.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
+import { SUBAGENT_TOOLS } from './subagent-tools.ts';
 
 export interface ScannableResponseField {
   /** Key path into the response object; [] means the response itself. */
@@ -27,8 +30,9 @@ export interface ScannableResponseField {
 // Which fields of each tool's structured response carry text the model will
 // see. Mirrors the PreToolUse input map in pre-tool-use-fields.ts
 // (scannableInputFields / STATIC_FIELDS); extend per-tool as the PostToolUse
-// matcher grows. The mcp__* family has no fixed shape and is handled by
-// mcpResponseFields below instead.
+// matcher grows. The tools whose text sits in arrays of varying length are
+// handled by the walks below instead: content blocks for mcp__* and the
+// subagent tools, and the results list for WebSearch.
 const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   Read: [['file', 'content']],
   Bash: [['stdout'], ['stderr']],
@@ -38,18 +42,24 @@ const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   // lines in the content mode and the per-file counts in the count mode; the
   // files_with_matches mode leaves it out and lists only `filenames`, which
   // is not scanned. A plain-string response would be scanned whole, like any
-  // tool's (see scannableResponseFields), but Grep has not been seen to send
+  // tool's (see collectResponseFields), but Grep has not been seen to send
   // one. Content-mode output is unbounded by the host (a broad pattern can
   // return megabytes), so it is held to the response bounds below.
   Grep: [['content']],
 };
 
+const WEB_SEARCH_TOOL = 'WebSearch';
+
 /**
- * The tools whose response fields come from the static table above. The
- * mcp__* family is handled dynamically and is not listed. Exported so the
- * manifest test can check the PostToolUse matcher selects every one of them.
+ * Every tool, by exact name, whose response this module reads. The mcp__*
+ * family is matched by prefix and is not listed. Exported so the manifest test
+ * can check the PostToolUse matcher selects every one of them.
  */
-export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = Object.keys(RESPONSE_TEXT_PATHS);
+export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = [
+  ...Object.keys(RESPONSE_TEXT_PATHS),
+  WEB_SEARCH_TOOL,
+  ...SUBAGENT_TOOLS,
+];
 
 // Bounds on what one response costs to scan, so an oversized result degrades
 // to partial coverage instead of outrunning the hook timeout (a timed-out hook
@@ -61,14 +71,18 @@ export const SCANNED_RESPONSE_TOOL_NAMES: readonly string[] = Object.keys(RESPON
 // detector's own window: each regex rule runs over at most the first 200,000
 // characters of the text it is given (MAX_REGEX_INPUT_LENGTH in the detections
 // package), so a longer string handed over whole is scanned only up to there.
-// A value that straddles a cut with no newline near it can be missed.
+// A value that straddles a cut with no newline near it can be missed. So can a
+// rule gated on a nearby label (requiresNearby): the label is looked for only
+// inside the chunk the value sits in, so a label on the far side of a cut does
+// not count and the value goes unreported even though it is whole in its own
+// chunk.
 //
 // Every chunk or block costs one sequential capture. The walk stops at
 // RESPONSE_MAX_CAPTURES captures or RESPONSE_MAX_TOTAL_CHARS characters,
 // whichever comes first, and the text past that point reaches the model
-// unscanned. Wall time is bounded separately, by the scan deadline in
-// scan-response.ts, since a capture's cost depends on the machine and the
-// store, not only on its size.
+// unscanned, and the hook counts that as a fail-open. Wall time is bounded
+// separately, by the scan deadline in scan-response.ts, since a capture's
+// cost depends on the machine and the store, not only on its size.
 export const RESPONSE_CHUNK_CHARS = 200_000;
 export const RESPONSE_MAX_CAPTURES = 2_000;
 export const RESPONSE_MAX_TOTAL_CHARS = 5_000_000;
@@ -98,57 +112,88 @@ export function chunkRanges(text: string, max: number): { start: number; end: nu
   return ranges;
 }
 
+/** The fields to scan, and whether the bounds left any text out of them. */
+export interface ResponseFields {
+  fields: ScannableResponseField[];
+  /**
+   * True when RESPONSE_MAX_TOTAL_CHARS or RESPONSE_MAX_CAPTURES cut some text
+   * out of `fields`, so part of the response reaches the model unscanned. The
+   * hook counts it as a fail-open, as it does a scan cut short by the deadline.
+   */
+  truncated: boolean;
+}
+
 /** Collects fields under the response bounds above. */
 class BoundedFields {
   readonly fields: ScannableResponseField[] = [];
+  truncated = false;
   private remaining = RESPONSE_MAX_TOTAL_CHARS;
 
   /** True once no further field can be added. */
-  get full(): boolean {
+  private full(): boolean {
     return this.fields.length >= RESPONSE_MAX_CAPTURES || this.remaining <= 0;
   }
 
-  /** Adds the string at `path`, chunked; returns false once the bounds are hit. */
-  add(path: PathSegment[], text: string): boolean {
+  /**
+   * Adds the string at `path`, chunked. Text the bounds leave out marks the
+   * collection truncated; callers keep offering every field, so a field
+   * skipped once the bounds are full is counted too.
+   */
+  add(path: PathSegment[], text: string): void {
+    if (this.full()) {
+      this.truncated = true;
+      return;
+    }
     if (text.length <= RESPONSE_CHUNK_CHARS && text.length <= this.remaining) {
-      if (this.full) return false;
       this.fields.push({ path, text });
       this.remaining -= text.length;
-      return true;
+      return;
     }
     const scanned = text.slice(0, Math.max(0, this.remaining));
+    if (scanned.length < text.length) this.truncated = true;
     for (const range of chunkRanges(scanned, RESPONSE_CHUNK_CHARS)) {
-      if (this.full) return false;
+      if (this.full()) {
+        this.truncated = true;
+        return;
+      }
       this.fields.push({ path, text: text.slice(range.start, range.end), range });
       this.remaining -= range.end - range.start;
     }
-    return !this.full;
+  }
+
+  result(): ResponseFields {
+    return { fields: this.fields, truncated: this.truncated };
   }
 }
 
+/** The value of an own array property, or undefined. */
+function ownArray(value: unknown, key: string): unknown[] | undefined {
+  if (typeof value !== 'object' || value === null || !Object.hasOwn(value, key)) return undefined;
+  const property = (value as Record<string, unknown>)[key];
+  return Array.isArray(property) ? property : undefined;
+}
+
 /**
- * The text blocks of an MCP tool result: either the bare content-block array
- * or an object wrapping it under `content`. Only `{ type: 'text', text }`
- * blocks are scanned; image, resource and other block types are left alone.
- * Each field addresses the block's `text` in place, so a rewrite keeps the
- * array, its length and every sibling block intact.
+ * The text blocks of an MCP or subagent tool result: either the bare
+ * content-block array or an object wrapping it under `content`. A subagent
+ * started in the background returns a launch acknowledgement with no
+ * `content`; its report reaches the session later, outside any tool result,
+ * and is not seen here. Only
+ * `{ type: 'text', text }` blocks are scanned; image, resource and other block
+ * types are left alone. Each field addresses the block's `text` in place, so a
+ * rewrite keeps the array, its length and every sibling block intact.
  */
-function mcpResponseFields(response: unknown): ScannableResponseField[] {
+function contentBlockFields(response: unknown): ResponseFields {
   let blocks: unknown[];
   let base: PathSegment[];
   if (Array.isArray(response)) {
     blocks = response;
     base = [];
-  } else if (
-    typeof response === 'object' &&
-    response !== null &&
-    Object.hasOwn(response, 'content') &&
-    Array.isArray((response as { content: unknown }).content)
-  ) {
-    blocks = (response as { content: unknown[] }).content;
-    base = ['content'];
   } else {
-    return [];
+    const wrapped = ownArray(response, 'content');
+    if (wrapped === undefined) return { fields: [], truncated: false };
+    blocks = wrapped;
+    base = ['content'];
   }
 
   const bounded = new BoundedFields();
@@ -158,26 +203,63 @@ function mcpResponseFields(response: unknown): ScannableResponseField[] {
     const path: PathSegment[] = [...base, index, 'text'];
     const text = stringAtPath(response, path);
     if (text === undefined || text === '') continue;
-    if (!bounded.add(path, text)) break;
+    bounded.add(path, text);
   }
-  return bounded.fields;
+  return bounded.result();
+}
+
+/**
+ * The text of a WebSearch result. `results` mixes link lists
+ * (`{ content: [{ title, url }, …] }`) with plain-string summary text; the
+ * summaries and each link's title and URL are scanned, since the model reads
+ * all three. The echoed `query` is not: it is the tool's own input, scanned
+ * before the search runs. Each field addresses its string in place, so a
+ * rewrite keeps the list and its entries intact.
+ */
+function webSearchResponseFields(response: unknown): ResponseFields {
+  const results = ownArray(response, 'results');
+  if (results === undefined) return { fields: [], truncated: false };
+
+  const bounded = new BoundedFields();
+  for (const [index, entry] of results.entries()) {
+    if (typeof entry === 'string') {
+      if (entry !== '') bounded.add(['results', index], entry);
+      continue;
+    }
+    const links = ownArray(entry, 'content');
+    if (links === undefined) continue;
+    for (const linkIndex of links.keys()) {
+      for (const key of ['title', 'url']) {
+        const path: PathSegment[] = ['results', index, 'content', linkIndex, key];
+        const text = stringAtPath(response, path);
+        if (text === undefined || text === '') continue;
+        bounded.add(path, text);
+      }
+    }
+  }
+  return bounded.result();
 }
 
 /**
  * The text fields of a tool response worth scanning, with the path needed to
- * write a redacted replacement back. Empty strings are skipped — nothing to
- * scan, and rewriting them would be a pointless output replacement.
+ * write a redacted replacement back, plus whether the response bounds cut any
+ * text out, which the hook needs to count a partial scan as a fail-open. Empty
+ * strings are skipped — nothing to scan, and rewriting them would be a
+ * pointless output replacement.
+ *
+ * The one entry point on purpose: a fields-only wrapper would let a caller
+ * drop `truncated` without noticing, and with it the fail-open count.
  */
-export function scannableResponseFields(
-  toolName: string,
-  response: unknown,
-): ScannableResponseField[] {
+export function collectResponseFields(toolName: string, response: unknown): ResponseFields {
   if (typeof response === 'string') {
     const bounded = new BoundedFields();
     if (response !== '') bounded.add([], response);
-    return bounded.fields;
+    return bounded.result();
   }
-  if (toolName.startsWith('mcp__')) return mcpResponseFields(response);
+  if (toolName.startsWith('mcp__') || SUBAGENT_TOOLS.has(toolName)) {
+    return contentBlockFields(response);
+  }
+  if (toolName === WEB_SEARCH_TOOL) return webSearchResponseFields(response);
   // hasOwn guard: a bare index would resolve Object.prototype members for
   // tool names like 'constructor' (non-nullish, so ?? does not catch them).
   const paths = Object.hasOwn(RESPONSE_TEXT_PATHS, toolName)
@@ -187,9 +269,9 @@ export function scannableResponseFields(
   for (const path of paths ?? []) {
     const text = stringAtPath(response, path);
     if (text === undefined || text === '') continue;
-    if (!bounded.add(path, text)) break;
+    bounded.add(path, text);
   }
-  return bounded.fields;
+  return bounded.result();
 }
 
 /**

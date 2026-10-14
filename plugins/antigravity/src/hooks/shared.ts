@@ -32,8 +32,9 @@ import type { EventMetadata } from '@akasecurity/schema';
 // The host kills a hook that outruns its `timeout` (SIGTERM) and aborts the
 // turn. Because a killed hook never prints, that reads as a deny too — so the
 // hook races its own watchdog and emits the fail-open payload first. Kept
-// comfortably under the 10s registered in hooks.json.
-const WATCHDOG_MS = 8_000;
+// comfortably under the 10s registered in hooks.json. Exported so the
+// large-input deadline (./large-input.ts) can be held inside it.
+export const WATCHDOG_MS = 8_000;
 
 // What the watchdog resolves the race with. A value no body can return, so a
 // body that resolves `undefined` (declining to decide) is never mistaken for
@@ -361,8 +362,8 @@ function workspaceRoots(input: Record<string, unknown>): string[] {
  *     key, even when every root would agree on one;
  *   - otherwise (no path, as on a `run_command`, or an empty path) the event is
  *     keyed only when every root resolves to the SAME key. Roots that disagree,
- *     or a mix of keyed and keyless roots, give no key. The contract is that a
- *     scoped attachment's forward check is meant to keep a keyless event local.
+ *     or a mix of keyed and keyless roots, give no key. A scoped attachment
+ *     keeps a keyless event local (the gateway's verdict).
  *     A single root is therefore that root's key, as a Claude Code hook keys a
  *     path-less event by its cwd.
  *

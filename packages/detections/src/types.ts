@@ -7,6 +7,9 @@ export interface MatchResult {
   span: Span;
   rawMatch: string;
   confidence: number;
+  // For a secret assigned on its line (`NAME=value`, `name: value`), the name
+  // it is assigned to. Never contains the value.
+  variableName?: string;
 }
 
 export interface ScanResult {

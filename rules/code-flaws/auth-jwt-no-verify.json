@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "(verify\\s*=\\s*false|verify_signature.*false|algorithms\\s*=\\s*\\[\\])",
+    "pattern": "(verify\\s*=\\s*false|verify_signature(?:(?!verify_signature).)*false|algorithms\\s*=\\s*\\[\\])",
     "flags": "gi"
   },
   "requiresNearby": {

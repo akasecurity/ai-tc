@@ -49,8 +49,8 @@ read by `aka scan` are stored under the same rule. The store is protected by
 **filesystem permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
-`control-plane-credential.json`, `exception.key`, `settings.json`, and
-`vault.key` — are written `0600`, so only
+`control-plane-credential.json`, `exception.key`, `settings.json`, `sighting.key`
+and `vault.key` — are written `0600`, so only
 your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.
@@ -71,6 +71,13 @@ what is vaulted — that separation is the whole of what encryption at rest buys
 here. The file appears only once vaulting is granted; without that consent there is
 no key and no recoverable copy, and with it a detection on any other policy is
 still never vaulted.
+
+`sighting.key` is written only on an attached machine. It holds the HMAC key
+versions the attached deployment issues to the machine, records which deployment
+issued them, and is not used for any other one. It follows the same custody
+setting as `vault.key`: under keychain custody it is an OS-keychain item rather
+than a file. `aka detach` and the dashboard's disconnect both remove it, file or
+keychain item.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots
@@ -125,7 +132,15 @@ failing with a bare `ENOENT`. A store path occupied by a regular file — or by 
 to one — is refused the same way rather than failing with a bare `EEXIST`. Plugin
 hooks stay fail-open throughout: they fall back to unonboarded defaults, as they do
 for any home they cannot read, and report the link on stderr without ever failing a
-tool call over it.
+tool call over it. The one deliberate exception is a single prompt, tool input or tool
+output field of 32,768 characters or more whose bounded scan does not finish in time
+(or finds no scan worker to run it): that field is blocked, or withheld from the model,
+rather than passed unscanned. The same holds for the Antigravity and GitHub Copilot
+tool-call hooks, which deny such a call, and for a prompt the browser extension's native
+host could not scan in time, which is not sent. Each deadline ends before the point at
+which the host itself would let the input through — 6 s for Claude Code and Codex prompts
+and tool inputs (7 s for tool output), 5.5 s for Antigravity, 15 s for Copilot, and 2 s
+from when the native host receives a prompt.
 
 ## Data in transit
 
@@ -161,9 +176,36 @@ as it does there: **under monitor or warn the matched value is drained as it
 was seen**, and no detection ships on redact or block, so on a default install that
 is what a backfill or a drain sends.
 
+An attached machine also sends things that are not activity, and no repository
+limits them. Whenever a session starts anywhere on this machine, in a repository
+or not (a browser chat included), the machine pulls the deployment's policy (at
+most every 15 minutes) and sends it a device report (at most hourly): a device
+identifier, host name, versions, detection packs, policy counts, finding counts
+and dates for everything recorded on the machine, and, when the machine is
+attached as a personal device, the fact that it is one. Where a scan is
+available (the coding-agent plugins, not a browser chat), the same session start
+also checks it for device commands. The finding count is the number of findings
+detected in captured prompts, responses, code changes and tool uses, from every
+session, with the dates of the first and latest one. A report can also go when a
+response finishes in a session that is already running, still at most hourly.
+The report carries no event content and names no repository. The deployment
+therefore learns when the tool is in use anywhere on this machine.
+
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
-forwarding. A machine that was never attached forwards none of this.
+forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
+activity described above — live events, the scan register, and the history
+backfill and drain — covers only activity in the repositories enrolled with
+`aka enroll` and, from the browser extension, the replies in a claude.ai account
+enrolled with `aka enroll --account`, with their tool calls and token usage (a
+prompt typed into a web chat is not recorded there at all); activity in any
+other repository stays on the machine. Under the
+`aka sync-history` grant, enrolling a repository also queues the captures still
+kept for it, including those it recorded between attaching and enrolling. The
+policy pull, the command check and the device report are the exception: they go
+on either kind of attachment, whatever is enrolled, and a scoped machine's
+report also says that it is attached as a personal device. A machine that was
+never attached forwards none of this.
 
 ## Supported versions
 

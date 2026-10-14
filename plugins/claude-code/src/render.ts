@@ -50,6 +50,7 @@ import type {
 import {
   CATEGORY_EXPRESSIBLE_IDS,
   DetectionCategory,
+  findingMatchLabel,
   policyDisplayName,
   toApiAction,
 } from '@akasecurity/schema';
@@ -491,7 +492,7 @@ export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]):
       f.category,
       f.ruleId,
       toApiAction(f.actionTaken),
-      f.maskedMatch,
+      findingMatchLabel(f),
     ]);
     lines.push(
       '',
@@ -541,7 +542,7 @@ export function renderFindings(
     f.category,
     f.ruleId,
     toApiAction(f.actionTaken),
-    f.maskedMatch,
+    findingMatchLabel(f),
   ]);
   const heading =
     severity !== undefined

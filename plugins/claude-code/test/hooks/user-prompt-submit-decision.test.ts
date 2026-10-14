@@ -22,6 +22,7 @@
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import type {
   PromptTokenizer,
   UserPromptSubmitOutput,
@@ -545,4 +546,37 @@ describe('the prompt rewrite honours each finding’s archetype', () => {
     });
     expect(seen?.size).toBe(1);
   });
+});
+
+// A field at or above the large-input threshold whose bounded scan did not
+// finish comes back as `block` with `scanIncomplete` set and NO findings. It
+// is refused, not passed: the reason says why, and names no rule because none
+// ran to completion.
+describe('decideUserPromptSubmit — a prompt whose bounded scan did not finish', () => {
+  const refused = (scanIncomplete: 'timeout' | 'unavailable'): CaptureResult => ({
+    action: 'block',
+    text: null,
+    findings: [],
+    scanIncomplete,
+  });
+
+  it.each(['timeout', 'unavailable'] as const)(
+    'blocks with the too-large reason (%s)',
+    async (scanIncomplete) => {
+      let tokenized = false;
+      const output = await decideUserPromptSubmit(PROMPT, refused(scanIncomplete), {
+        tokenizePrompt: () => {
+          tokenized = true;
+          return Promise.resolve({ text: REWRITTEN, pointers: [POINTER] });
+        },
+      });
+
+      expect(output).toEqual({ decision: 'block', reason: tooLargeToScanMessage('prompt') });
+      expect(blockReason(output)).toContain('too large');
+      // Nothing was found, so there is nothing to vault or to offer back.
+      expect(tokenized).toBe(false);
+      expect(blockReason(output)).not.toContain('flagged');
+      expectNoEchoOf(blockReason(output), SECRET);
+    },
+  );
 });

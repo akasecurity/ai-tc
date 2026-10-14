@@ -1,0 +1,71 @@
+{
+  "host": "Claude Code",
+  "hostVersion": "2.1.294",
+  "event": "PostToolUse",
+  "tool": "Agent",
+  "note": "One Agent (subagent) call recorded on hook stdin. The subagent final message arrives as text content blocks under content; prompt echoes the tool_input. tool_input and tool_response are unchanged; the session envelope (ids, transcript path, cwd) is left out.",
+  "calls": [
+    {
+      "tool_input": {
+        "description": "Reply pineapple",
+        "prompt": "Reply with the single word: pineapple. Use no tools.",
+        "subagent_type": "general-purpose",
+        "run_in_background": false
+      },
+      "tool_response": {
+        "status": "completed",
+        "prompt": "Reply with the single word: pineapple. Use no tools.",
+        "agentId": "a157028fae7287448",
+        "agentType": "general-purpose",
+        "harnessNoteCount": 0,
+        "harnessTailCount": 0,
+        "harnessSectionHash": "82a4822289732860",
+        "content": [
+          {
+            "type": "text",
+            "text": "pineapple"
+          }
+        ],
+        "resolvedModel": "claude-opus-5-5[1m]",
+        "totalDurationMs": 1771,
+        "totalTokens": 34157,
+        "totalToolUseCount": 0,
+        "usage": {
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 34149,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 6,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 34149
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 6,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 34149,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 34149,
+                "ephemeral_1h_input_tokens": 0
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard",
+          "fallback_credit": null
+        },
+        "canContinueAgent": true
+      }
+    }
+  ]
+}

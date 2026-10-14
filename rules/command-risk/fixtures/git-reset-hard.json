@@ -75,5 +75,89 @@
     "label": "same command with no capture kind (folder scan) is out of scope",
     "text": "git reset --hard HEAD~1",
     "shouldMatch": false
+  },
+  {
+    "label": "env assignment prefix",
+    "text": "GIT_DIR=/x git reset --hard HEAD~1",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "remote command over ssh",
+    "text": "ssh host \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "eval of a quoted command",
+    "text": "eval \"git reset --hard HEAD\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "rg -c counting the text is not a shell -c",
+    "text": "rg -c 'git reset --hard' docs/",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "fish -c wrapper",
+    "text": "fish -c \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "tcsh -c wrapper",
+    "text": "tcsh -c 'git reset --hard HEAD'",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "pwsh -c wrapper",
+    "text": "pwsh -c \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bash with valued short flag",
+    "text": "bash -o pipefail -c \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "bash with long flag",
+    "text": "bash --norc -c \"git reset --hard origin/main\"",
+    "shouldMatch": true,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed eval mention",
+    "text": "echo 'eval \"git reset --hard HEAD\"'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "echoed ssh mention",
+    "text": "echo 'ssh host \"git reset --hard origin/main\"'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "grep of an eval mention",
+    "text": "grep -n 'eval \"git reset --hard HEAD\"' script.sh",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "commit message naming an eval",
+    "text": "git commit -m 'warning: eval \"git reset --hard HEAD\" is dangerous'",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
+  },
+  {
+    "label": "wish is not a shell",
+    "text": "wish -c \"git reset --hard origin/main\"",
+    "shouldMatch": false,
+    "eventKind": "tool_use"
   }
 ]

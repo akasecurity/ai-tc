@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 // Default OpenAI-direct API host. OPENAI_BASE_URL pointing anywhere else means a
 // gateway/proxy is in front of the model (Azure OpenAI, LiteLLM, OpenRouter, a

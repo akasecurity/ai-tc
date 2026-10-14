@@ -10,6 +10,7 @@ import { keysDir } from '../src/local-layout.ts';
 import { DATA_DIR_MODE, DATA_FILE_MODE, DB_FILENAME, dbSidecars } from '../src/paths.ts';
 import { applyOnboarding, SETTINGS_FILENAME } from '../src/settings.ts';
 import { FileKeyProvider, VAULT_KEY_FILENAME } from '../src/vault/key-provider.ts';
+import { createSightingKeyStore, SIGHTING_KEY_FILENAME } from '../src/vault/sighting-keys.ts';
 import { capWarnEraEnforcementOnce } from '../src/warn-era-cap.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
@@ -91,6 +92,14 @@ async function exerciseStore(): Promise<void> {
     // rejection that fails some later one.
     const vault = new FileKeyProvider(keysDir(store.home));
     pending = [vault.loadOrCreate(), vault.rotate()];
+    const sightingKey = Buffer.alloc(32, 7).toString('base64url');
+    createSightingKeyStore('file', keysDir(store.home)).replace({
+      keyVersion: 1,
+      algorithm: 'hmac-sha256',
+      key: sightingKey,
+      fetchedAtMs: 0,
+      endpointFingerprint: '0'.repeat(64),
+    });
   } finally {
     process.umask(previous);
   }
@@ -164,6 +173,11 @@ const DOCUMENTED_EXCLUSIONS: readonly {
     coveredBy: 'test/local-layout.test.ts — the legacy-layout relocation',
   },
   {
+    pattern: /(?:^|\/)mod-policy\.json$/,
+    reason:
+      'the resolved policy and installed rule definitions the Claude Code mod reads; no captured content, so the note does not list it among the files that hold the corpus',
+  },
+  {
     pattern: /\.lock$/,
     reason:
       'a lock held for the length of one write (settings.json, or a vault rotation), not an artifact that outlives it',
@@ -195,6 +209,7 @@ const ENUMERATED = new Set<string>([
   ...dbSidecars(DB_FILENAME),
   EXCEPTION_KEY_FILENAME,
   SETTINGS_FILENAME,
+  SIGHTING_KEY_FILENAME,
   VAULT_KEY_FILENAME,
 ]);
 
@@ -209,6 +224,7 @@ describe('the ~/.aka surface', () => {
     expect(found).toContain(`data/${DB_FILENAME}`);
     expect(found).toContain(`settings/${SETTINGS_FILENAME}`);
     expect(found).toContain(`${basename(keysDir(store.home))}/${VAULT_KEY_FILENAME}`);
+    expect(found).toContain(`${basename(keysDir(store.home))}/${SIGHTING_KEY_FILENAME}`);
     expect(found).toContain(`data/${EXCEPTION_KEY_FILENAME}`);
   });
 

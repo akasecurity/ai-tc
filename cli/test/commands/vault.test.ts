@@ -70,7 +70,7 @@ afterEach(() => {
 
 // Seed one vaulted value through the real persistence SecretVault — the same
 // construction the command performs — and return its pointer.
-async function seedPointer(): Promise<string> {
+async function seedPointer(variableName?: string): Promise<string> {
   const dir = dataDir(home);
   const db = openLocalDatabase(dir);
   try {
@@ -85,6 +85,7 @@ async function seedPointer(): Promise<string> {
         ruleId: 'secrets/test-rule',
         category: 'secret',
         maskedMatch: 'vau…est',
+        ...(variableName === undefined ? {} : { variableName }),
       },
       () => loadOrCreateFingerprintKey(dir),
     );
@@ -134,6 +135,14 @@ describe('aka vault show', () => {
     expect(derefRows()).toEqual([
       { reason: 'explicit-reveal', outcome: 'revealed', target: 'human' },
     ]);
+  });
+
+  it('leads the descriptor line with the variable the value was assigned to', async () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    const pointer = await seedPointer(name);
+    const io = scriptedIo();
+    await runVault(['show', pointer, '--home', home], io);
+    expect(io.output()).toContain(`${name} · secret · seen 1×`);
   });
 
   it('refuses a forged pointer with the unavailable message and writes no audit row', async () => {

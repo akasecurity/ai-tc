@@ -131,6 +131,17 @@ function exception(overrides: Partial<DetectionException> = {}): DetectionExcept
 }
 
 describe('pure renderers', () => {
+  it('findings: shows the variable a secret was assigned to beside its masked match', () => {
+    const status = {
+      score: 72,
+      unreviewed: { critical: 1, high: 0, medium: 0, low: 0 },
+      openFindings: 1,
+    };
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    const out = strip(renderFindings([finding({ variableName: name })], status));
+    expect(out).toContain(`${name} = AKIA…MPLE`);
+  });
+
   it('findings: empty state vs populated table', () => {
     const status = {
       score: 72,

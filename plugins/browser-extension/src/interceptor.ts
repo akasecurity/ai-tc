@@ -13,7 +13,11 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
 
 import type { ExceptionRoute } from './exception-guidance.ts';
-import { blockGuidance, redactExceptionRoute } from './exception-guidance.ts';
+import {
+  blockGuidance,
+  redactExceptionRoute,
+  tooLargeToScanMessage,
+} from './exception-guidance.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import type { ProviderAdapter } from './providers/types.ts';
 
@@ -127,6 +131,14 @@ export function createSubmitInterceptor(opts: {
       return;
     }
 
+    // Checked before the block branch it is a case of: a prompt the host could
+    // not scan in time comes back as a block with no rule ids, and rule
+    // guidance would read "flagged ." with an approve command for a value
+    // nothing flagged. No route either, so the banner hides on its own.
+    if (response.scanIncomplete !== undefined) {
+      showBanner({ tone: 'block', message: tooLargeToScanMessage() });
+      return;
+    }
     if (response.action === 'block') {
       const guidance = blockGuidance({
         ruleIds: response.ruleIds.join(', '),

@@ -1,7 +1,13 @@
 'use client';
 
 import { WorkspaceSettingsFormView } from '@akasecurity/dashboard-ui';
-import type { CredentialState, ManagedContext, WorkspaceSettings } from '@akasecurity/schema';
+import type {
+  AttachmentMode,
+  CredentialState,
+  ManagedContext,
+  WebChatWithholding,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import { useState, useTransition } from 'react';
 
 import { attachToControlPlane, detachFromControlPlane, saveSettings } from './actions';
@@ -11,6 +17,9 @@ export function SettingsClient({
   managed,
   credentialState,
   connectionHeld,
+  attachmentMode,
+  machineOnly,
+  webChatWithheld,
 }: {
   settings: WorkspaceSettings;
   managed: ManagedContext;
@@ -20,6 +29,16 @@ export function SettingsClient({
   // Decided on the server (page.tsx) by the rule the attach and detach actions
   // refuse on, and forwarded verbatim.
   connectionHeld: boolean;
+  // The attachment's mode, read on the server (page.tsx) from the credential
+  // without the key, and forwarded verbatim. Absent reads as not reported, as
+  // the view's own prop does.
+  attachmentMode?: AttachmentMode | undefined;
+  // Decided on the server (page.tsx) by the rule the attach action refuses a
+  // scoped attach on, and forwarded verbatim. Absent reads as not held.
+  machineOnly?: boolean | undefined;
+  // Why the extension records less from a web chat here, read on the server
+  // (page.tsx) and forwarded verbatim. Absent when it records as usual.
+  webChatWithheld?: WebChatWithholding | undefined;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -53,14 +72,26 @@ export function SettingsClient({
       managed={managed}
       credentialState={credentialState}
       connectionHeld={connectionHeld}
+      attachmentMode={attachmentMode}
+      machineOnly={machineOnly}
+      webChatWithheld={webChatWithheld}
       busy={busy}
       error={error}
       saved={saved}
       onSave={(changes) => {
         run(() => saveSettings(changes));
       }}
-      onAttach={(endpoint, label, accessKey) => {
-        run(() => attachToControlPlane({ endpoint, label, accessKey }));
+      onAttach={(endpoint, label, accessKey, mode) => {
+        // The mode only when the form carries one: with none, the action decides
+        // from its own read of this machine.
+        run(() =>
+          attachToControlPlane({
+            endpoint,
+            label,
+            accessKey,
+            ...(mode === undefined ? {} : { mode }),
+          }),
+        );
       }}
       onDetach={() => {
         run(() => detachFromControlPlane());

@@ -123,6 +123,14 @@ describe('VaultInventoryView', () => {
     expect(html.split(BADGE).length - 1).toBe(1);
   });
 
+  it('names the variable a value was assigned to', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    const html = renderToStaticMarkup(
+      <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({ variableName: name })]} />,
+    );
+    expect(html).toContain(name);
+  });
+
   it('renders each sighting with its location and kind chip', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({})]} />,

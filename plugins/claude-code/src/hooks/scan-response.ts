@@ -8,7 +8,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
+import { tooLargeToolText, withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { RealizedRewrite } from '../protocol/notes.ts';
 import type { PathSegment } from './paths.ts';
 import type { FieldTokenizer } from './pre-tool-use-decision.ts';
@@ -49,6 +49,10 @@ export interface ResponseScanOutcome {
   // Fields left unscanned because the deadline passed. The caller counts a
   // non-zero value as a fail-open exit.
   unscannedFields: number;
+  // Names of the fields withheld because their bounded scan did not finish
+  // (`CaptureResult.scanIncomplete`). Unlike `unscannedFields`, these were
+  // reached and REFUSED: the model sees a placeholder, not the content.
+  tooLargeFields: string[];
 }
 
 export async function scanResponseFields(
@@ -68,6 +72,7 @@ export async function scanResponseFields(
     redactedReferences: [],
     realized: null,
     unscannedFields: 0,
+    tooLargeFields: [],
   };
   const realized: RealizedRewrite = { pointers: [], degraded: [] };
 
@@ -95,6 +100,14 @@ export async function scanResponseFields(
       break;
     }
     const result = await capture(field.text);
+    // Checked before the no-findings skip: a refused field has no findings
+    // because nothing finished, not because it is clean.
+    if (result.scanIncomplete !== undefined) {
+      const name = field.path.join('.');
+      rewrite(field, tooLargeToolText(toolName, name));
+      if (!outcome.tooLargeFields.includes(name)) outcome.tooLargeFields.push(name);
+      continue;
+    }
     if (result.findings.length === 0) continue;
 
     if (result.action === 'block') {
@@ -167,9 +180,10 @@ export function responseEmitPayload(
   outcome: ResponseScanOutcome,
   notes?: { note?: string | null | undefined; disclosure?: string | null | undefined },
 ): HookOutput | undefined {
-  const { withheldFindings, redactedFindings, warnedFindings } = outcome;
-  if (withheldFindings.length > 0 || redactedFindings.length > 0) {
-    const action = withheldFindings.length > 0 ? 'withheld' : 'redacted';
+  const { withheldFindings, redactedFindings, warnedFindings, tooLargeFields } = outcome;
+  if (withheldFindings.length > 0 || redactedFindings.length > 0 || tooLargeFields.length > 0) {
+    const action =
+      withheldFindings.length > 0 || tooLargeFields.length > 0 ? 'withheld' : 'redacted';
     const note = notes?.note ?? null;
     return {
       hookSpecificOutput: {
@@ -179,15 +193,21 @@ export function responseEmitPayload(
       },
       // The approve pointer stays OUT of the model-visible replacement text:
       // it is the user's audited escape hatch, not something to nudge an
-      // agent toward. Ref picked from the action the banner names.
+      // agent toward. Ref picked from the most severe FLAGGED action, not
+      // from the header: a too-large field makes the header `withheld`
+      // without ledgering anything, and beside a redact the redact's row is
+      // the only one an approve command can find.
       systemMessage: withheldBanner({
         toolName,
         action,
         withheldRuleIds: withheldFindings.length > 0 ? uniqueRuleIds(withheldFindings) : undefined,
         redactedRuleIds: redactedFindings.length > 0 ? uniqueRuleIds(redactedFindings) : undefined,
         warnedRuleIds: warnedFindings.length > 0 ? uniqueRuleIds(warnedFindings) : undefined,
+        tooLargeFields: tooLargeFields.length > 0 ? tooLargeFields.join(', ') : undefined,
         blockedRef:
-          action === 'withheld' ? outcome.blockedReferences[0] : outcome.redactedReferences[0],
+          withheldFindings.length > 0
+            ? outcome.blockedReferences[0]
+            : outcome.redactedReferences[0],
         vaultDisclosure: notes?.disclosure ?? undefined,
       }),
     };

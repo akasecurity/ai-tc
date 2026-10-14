@@ -12,9 +12,9 @@
 // reason WorkspaceSettings documents: an id registers the schema globally, and a
 // swagger setup would emit it as an OpenAPI component. Nothing about the vault
 // belongs on a public API surface.
-import { z } from 'zod';
+import * as z from 'zod';
 
-import { DetectionCategory } from './finding.ts';
+import { DetectionCategory, VariableName } from './finding.ts';
 
 // Bumped when the vault's stored shape changes in a way a reader must notice.
 export const VAULT_SPEC_VERSION = 1;
@@ -109,6 +109,9 @@ export const VaultEntry = z.object({
   // Partial-reveal preview for badges and listings. Never the raw value.
   maskedMatch: z.string(),
   provider: z.string().optional(),
+  // The variable the value was assigned to where it was detected; a name,
+  // never the value.
+  variableName: VariableName.optional(),
   ciphertext: z.string(),
   nonce: z.string(),
   authTag: z.string(),
@@ -134,6 +137,8 @@ export type VaultEntry = z.infer<typeof VaultEntry>;
 export const PointerDescriptor = z.object({
   category: DetectionCategory,
   provider: z.string().optional(),
+  // The variable the value was assigned to where it was detected.
+  variableName: VariableName.optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),
@@ -238,6 +243,7 @@ export const VaultInventoryEntry = z.object({
   pointerId: z.string(),
   category: DetectionCategory,
   provider: z.string().optional(),
+  variableName: VariableName.optional(),
   maskedMatch: z.string(),
   occurrences: z.number().int().nonnegative(),
   firstSeen: z.string(),

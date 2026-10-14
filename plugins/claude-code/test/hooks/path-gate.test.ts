@@ -76,6 +76,13 @@ const forwards = (stdin: string, shell?: string): boolean =>
 const fixturePaths = (JSON.parse(readFileSync(FIXTURES, 'utf8')) as { text: string }[]).map(
   (f) => f.text,
 );
+// The gate must be a SUPERSET of the rule it guards: a path the rule matches
+// but the capture drops never reaches any rule, so under a `command-risk:
+// block` policy the Read is allowed without a word. Every POSITIVE fixture of
+// command-risk/credential-file-access must therefore be captured.
+const rulePositiveFixtures = (
+  JSON.parse(readFileSync(FIXTURES, 'utf8')) as { text: string; shouldMatch: boolean }[]
+).filter((f) => f.shouldMatch);
 const corpusCalls = buildCorpus().calls.filter((c) => c.tool === 'Read' || c.tool === 'Grep');
 
 const VARIANTS = [
@@ -98,6 +105,19 @@ const ORDINARY = [
 describe('the path gate forwards everything the credential-path capture would take', () => {
   it('has at least one shell to run under', () => {
     expect(SHELLS.length).toBeGreaterThan(0);
+  });
+
+  it('captures every path the credential-file-access rule matches', () => {
+    // The control for the superset property: the rule is a superset of nothing
+    // — it is the thing being gated — so every fixture it matches must pass
+    // mayNameCredentialFile. A relative `.aws/config` used to slip through:
+    // the directory hint required a separator BEFORE `.aws`.
+    expect(rulePositiveFixtures.length).toBeGreaterThan(20);
+    const missed = rulePositiveFixtures.filter((f) => !mayNameCredentialFile(f.text));
+    expect(
+      missed.map((f) => f.text),
+      'rule matches the capture never takes',
+    ).toEqual([]);
   });
 
   it.each(SHELLS)('covers every rule fixture and variant as a Read path, under %s', (shell) => {

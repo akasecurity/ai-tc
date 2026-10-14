@@ -46,4 +46,16 @@ describe('ScrubbedValue', () => {
     expect(html).not.toContain(RAW);
     expect(html).not.toContain(DESCRIPTOR.maskedMatch);
   });
+
+  it('names the variable the value was assigned to, in every state that has a descriptor', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    const descriptor = { ...DESCRIPTOR, variableName: name };
+    for (const value of [RAW, null]) {
+      const html = renderToStaticMarkup(<ScrubbedValue value={value} descriptor={descriptor} />);
+      expect(html).toContain(name);
+      expect(html).toContain('data-slot="scrubbed-variable-name"');
+    }
+    const unnamed = renderToStaticMarkup(<ScrubbedValue value={null} descriptor={DESCRIPTOR} />);
+    expect(unnamed).not.toContain('scrubbed-variable-name');
+  });
 });

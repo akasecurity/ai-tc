@@ -60,7 +60,7 @@ export interface ModelEntry {
   displayName: string;
   familyId: string;
   familyName: string;
-  /** `null` is a curated "no flagged specialisation", not an unfilled field. */
+  /** A curated category tag; `null` is a curated "general-purpose", not an unfilled field. */
   capability: ModelCapability | null;
   /** `null` when the published context window has not been verified. */
   contextWindow: number | null;

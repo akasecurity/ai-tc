@@ -358,6 +358,21 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
   });
 });
 
+describe('ruleNames — the name of each rule that matched', () => {
+  it('names a pulled rule by the name it declares', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    const result = await rt.processText('ship PULLED_MARKER today');
+    expect(result.ruleNames).toEqual({ 'pulled/secret-marker': 'Pulled secret marker' });
+    await rt.close();
+  });
+
+  it('carries no names when nothing matched', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    expect((await rt.processText('nothing here')).ruleNames).toBeUndefined();
+    await rt.close();
+  });
+});
+
 // The collapse across a capture's findings used to index a hand-listed
 // worst-first array private to the runtime; it now asks the one schema ladder.
 // The orderings are the same fact, so the only thing worth pinning is that the
@@ -632,6 +647,33 @@ describe('capture', () => {
     );
     expect(gw.records).toHaveLength(1); // a hit → recorded
     await rt.close();
+  });
+
+  it("persist 'never' records nothing, found or not, and enforces as the default does", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const benign = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'never' },
+    );
+    const hit = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'never' },
+    );
+    expect(gw.records).toHaveLength(0);
+    // The control: the same text under the default is recorded, and is given
+    // the same decision, so 'never' changed the write and nothing else.
+    const recorded = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+    });
+    await rt.close();
+    expect(gw.records).toHaveLength(1);
+    expect(benign.findings).toHaveLength(0);
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(hit.action).toBe(recorded.action);
+    expect(hit.text).toBe(recorded.text);
   });
 });
 
@@ -1062,6 +1104,41 @@ describe('capture — at-rest finding_key', () => {
     });
     await rt.close();
     expect(gw.records[0]?.findings[0]?.findingKey).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('keys a padded secret like the clean one on the masked fallback (no dataDir)', async () => {
+    // Five visible characters: the clean value masks to '***', and a padded
+    // copy is six code units long, so a mask that counted the padding would
+    // reveal its first and last characters and key the finding differently.
+    const shortRule: Rule = {
+      specVersion: 1,
+      id: 'pulled/short-token',
+      name: 'Pulled short token',
+      category: 'secret',
+      severity: 'critical',
+      matcher: { type: 'keyword', keywords: ['QZXJV'], caseSensitive: true },
+      examples: ['QZXJV'],
+    };
+    const gw = fakeGateway(bundle([shortRule]));
+    const rt = createPluginRuntime(gw, settings()); // no dataDir → keyForLedger() is null
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'deploy with QZXJV now',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'deploy with QZ\u200BXJV now',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+
+    const clean = gw.records[0]?.findings.find((f) => f.ruleId === shortRule.id);
+    const padded = gw.records[1]?.findings.find((f) => f.ruleId === shortRule.id);
+    expect(clean?.findingKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(padded?.findingKey).toBe(clean?.findingKey);
   });
 
   it('gives two distinct secrets in the same file two distinct finding_keys', async () => {
@@ -1573,5 +1650,100 @@ describe('capture — where each finding sits', () => {
     const redacted = await excerptUnder('redact');
     expect(redacted).toContain('[REDACTED:CODE_FLAW]');
     expect(redacted).not.toContain('innerHTML =');
+  });
+});
+
+// captureDeferred is `capture` in two steps: the decision first, the write only
+// when the caller records it. A caller that declines the outcome writes nothing.
+describe('createPluginRuntime — captureDeferred', () => {
+  const INPUT = {
+    kind: 'prompt' as const,
+    sourceTool: 'claude-code' as const,
+    text: 'deploy with SECRET_MARKER now',
+  };
+
+  it('decides without writing, and writes the same record capture would on record()', async () => {
+    const eager = fakeGateway(bundle());
+    const eagerRt = createPluginRuntime(eager, settings());
+    const decided = await eagerRt.capture(INPUT);
+    await eagerRt.close();
+
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(INPUT);
+    expect(deferred.result).toEqual(decided);
+    expect(gw.records).toHaveLength(0);
+
+    await deferred.record();
+    await deferred.record();
+    await rt.close();
+
+    expect(gw.records).toHaveLength(1);
+    const [got] = gw.records;
+    const [want] = eager.records;
+    expect(got?.findings.map((f) => f.ruleId)).toEqual(want?.findings.map((f) => f.ruleId));
+    expect(got?.event.content).toBe(want?.event.content);
+  });
+
+  it('writes nothing when the caller never records', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.captureDeferred(INPUT);
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+
+  it("keeps persist: 'with-findings' on record(): a clean text writes nothing", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const deferred = await rt.captureDeferred(
+      { ...INPUT, text: 'nothing to see here' },
+      { persist: 'with-findings' },
+    );
+    await deferred.record();
+    await rt.close();
+    expect(gw.records).toHaveLength(0);
+  });
+});
+
+// enforcedIn answers "is anything enforced here" and touches nothing.
+describe('createPluginRuntime — enforcedIn', () => {
+  const blockSecrets: PolicyBundle['policies'] = [
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { category: 'secret' },
+      action: 'block',
+      enabled: true,
+    },
+  ];
+
+  it('lists the detections whose policy blocks or redacts, and writes nothing', async () => {
+    const gw = fakeGateway({ ...bundle(), policies: blockSecrets });
+    let consumed = 0;
+    gw.consumeException = () => {
+      consumed += 1;
+      return Promise.resolve(true);
+    };
+    let ledger = 0;
+    gw.recordBlockedDetection = () => {
+      ledger += 1;
+      return Promise.resolve();
+    };
+    const rt = createPluginRuntime(gw, settings());
+
+    const found = await rt.enforcedIn('SECRET_MARKER and PII_MARKER');
+    await rt.close();
+
+    expect(found.map((f) => f.ruleId)).toEqual(['test/secret-marker']);
+    expect(gw.records).toHaveLength(0);
+    expect(consumed).toBe(0);
+    expect(ledger).toBe(0);
+  });
+
+  it('finds nothing in text whose detections are only warned or logged', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.enforcedIn('contact PII_MARKER please')).toEqual([]);
+    await rt.close();
   });
 });

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   decodeEncodedSegments,
+  decodeEncodedWithCoverage,
   MAX_DECODED_CHARS,
   MAX_ENCODED_SEARCH_CHARS,
   sourceSpanOf,
@@ -312,16 +313,25 @@ describe('encoded secrets — bounds', () => {
   it('searches only the first MAX_ENCODED_SEARCH_CHARS characters', () => {
     const pad = '.'.repeat(MAX_ENCODED_SEARCH_CHARS);
     expect(scan(`${pad}\n${b64(ENV_FILE)}\n`, [CANARY_RULE])).toEqual([]);
+    // Coverage stopped: the report must be able to say so, not run silently.
+    const coverage = decodeEncodedWithCoverage(`${pad}\n${b64(ENV_FILE)}\n`);
+    expect(coverage.truncated).toBe(true);
+    expect(coverage.unscannedChars).toBeGreaterThan(0);
   });
 
-  it('holds the decoded total to a hard cap, truncating the segment that crosses it', () => {
-    const text = `${b64('x'.repeat(120))}\n${b64(ENV_FILE)}\n`;
+  it('refuses the segment that crosses the decoded budget instead of scanning a truncated prefix', () => {
+    const text = `${b64('x'.repeat(121))}\n${b64(ENV_FILE)}\n`;
     const uncapped = decodeEncodedSegments(text).reduce((n, s) => n + s.text.length, 0);
     expect(uncapped).toBeGreaterThan(150);
-    const segments = decodeEncodedSegments(text, { maxDecodedChars: 150 });
-    const decoded = segments.reduce((n, s) => n + s.text.length, 0);
-    expect(decoded).toBe(150);
-    for (const segment of segments) {
+    const coverage = decodeEncodedWithCoverage(text, { maxDecodedChars: 150 });
+    // The first value still fits; the value that would have been SLICED at
+    // the old bound is refused whole — a sliced prefix lets a rule match a
+    // partial value (`CANARY-7` for `CANARY-7Q2W…`) and redact only it, leaving
+    // the secret's encoded tail one base64 group away from the mask.
+    expect(coverage.segments.map((s) => s.text.length)).toEqual([121]);
+    expect(coverage.truncated).toBe(true);
+    expect(coverage.unscannedChars).toBeGreaterThan(0);
+    for (const segment of coverage.segments) {
       expect(segment.starts.length).toBe(segment.text.length);
       expect(segment.ends.length).toBe(segment.text.length);
     }
@@ -331,7 +341,25 @@ describe('encoded secrets — bounds', () => {
     expect(MAX_DECODED_CHARS).toBe(200_000);
   });
 
-  it('stays fast on adversarial runs at the search bound', () => {
+  it('decodes the worst shapes at the search bound within a pinned budget', () => {
+    // the assertion, the timeout only bounds the harness. // vitest's 20 s default on a busy machine; the per-shape bound below is // Six shapes × four runs of ~200,000-character decodes take well over
+    // Measured with the module memo bypassed (`limits` passed, warmed, minimum
+    // of three runs, 200,000-character inputs): uninstrumented, Node 26 on this
+    // machine, the worst shape is ~250 ms (single base64 run ~180, single hex
+    // run ~245, wrapped base64 ~230, hexdump ~45, hex tokens ~210). Under the
+    // suite's v8 coverage instrumentation the same shapes read ~4-5x higher
+    // (~1300 ms alone, more when several suites share a core), so the bound
+    // pins the instrumented worst at ~4x — a 5x regression of the real cost
+    // (the claim this test exists to catch) pushes the instrumented reading
+    // past 6 s and fails. Measured worst shapes: single base64 run and hex
+    // tokens.
+    //
+    // Production edge this protects: the MCP walk carries up to
+    // MCP_MAX_TOTAL_CHARS = 5,000,000 characters per tool input
+    // (plugins/claude-code/src/hooks/pre-tool-use-fields.ts) and the decode is
+    // charged per capture, so ~25 captures of 200,000 characters cost ~25x one
+    // decode — seconds against the hook's 10 s timeout, which fails OPEN
+    // unscanned when it fires.
     const shapes = [
       'A'.repeat(MAX_ENCODED_SEARCH_CHARS),
       'ab\n'.repeat(MAX_ENCODED_SEARCH_CHARS / 3),
@@ -341,9 +369,107 @@ describe('encoded secrets — bounds', () => {
       `${'41'.repeat(30)}\n`.repeat(MAX_ENCODED_SEARCH_CHARS / 61),
     ];
     for (const text of shapes) {
-      const started = performance.now();
-      scan(text, [CANARY_RULE]);
-      expect(performance.now() - started).toBeLessThan(1_000);
+      decodeEncodedSegments(text, {}); // warm
+      const times: number[] = [];
+      for (let run = 0; run < 3; run++) {
+        const started = performance.now();
+        decodeEncodedSegments(text, {}); // `{}` bypasses the module memo
+        times.push(performance.now() - started);
+      }
+      expect(Math.min(...times), `shape ${JSON.stringify(text.slice(0, 20))}`).toBeLessThan(5_000);
     }
+  }, 120_000);
+});
+
+describe('encoded secrets — truncated coverage', () => {
+  const envRule = loadRule(`${RULES_DIR}/secrets-infra`, 'env-key-value');
+  const keyRule: Rule = RuleSchema.parse({
+    specVersion: 1,
+    id: 'test/key',
+    name: 'key',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern: 'WIDGET_API_KEY=[A-Za-z0-9]+', flags: 'g' },
+  });
+
+  it('does not report a secret whose encoded span the search window cut', () => {
+    // The window slices the encoded run, so the decode stops mid-value: the
+    // rules matched `CANARY-7` of `CANARY-7Q2W9E4R1T6Y8U3I5O0P` and the
+    // redaction masked only that group, leaving the secret's tail one base64
+    // group away from the `[REDACTED]` marker. A segment the window could cut
+    // is refused whole instead.
+    const text = `${'.'.repeat(199_960)}\n${b64('export SERVICE_TOKEN=CANARY-7Q2W9E4R1T6Y8U3I5O0P')}`;
+    expect(scan(text, [envRule])).toEqual([]);
+    const coverage = decodeEncodedWithCoverage(text);
+    expect(coverage.truncated).toBe(true);
+    expect(coverage.unscannedChars).toBeGreaterThan(0);
+  });
+
+  it('reports a base64 secret followed by a glued word, with or without a line break', () => {
+    // The run's continuation used to absorb any following alphabet-only text,
+    // and when the concatenation failed the printable ratio the WHOLE segment
+    // was dropped — the same blob alone was found, with a trailing word it
+    // was neither reported nor redacted.
+    const blob = b64(`token=token=${SECRET}\n\n`);
+    for (const suffix of ['trailer', 'success', '\ntrailer\n', '\nsuccess']) {
+      const found = scan(`${blob}${suffix}`, [CANARY_RULE]).map((f) => f.rawMatch);
+      expect(found, suffix).toEqual([SECRET]);
+      const segments = decodeEncodedSegments(`${blob}${suffix}`);
+      expect(
+        segments.some((s) => s.text.includes(SECRET)),
+        suffix,
+      ).toBe(true);
+    }
+  });
+
+  it('keeps the finding identity free of replacement characters when a word is glued to the run', () => {
+    // The glued word's bits decoded into the value's tail as U+FFFD, so the
+    // fingerprint, the ledger and the masked preview keyed on a value that
+    // never matches the same secret seen in the clear.
+    const glueRule: Rule = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/glue',
+      name: 'glue',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: 'token=[A-Za-z0-9=-]+', flags: 'g' },
+    });
+    const value = `token=${SECRET}8U3I5O0P`;
+    const encodedText = b64(value) + 'success';
+    const [encoded] = scan(encodedText, [glueRule]);
+    const [plain] = scan(`${value} plain`, [glueRule]);
+    expect(encoded, 'the encoded spelling must still be found').toBeDefined();
+    expect(encoded?.rawMatch).not.toContain('\ufffd');
+    expect(encoded?.rawMatch).toBe(plain?.rawMatch);
+  });
+
+  it('a dump earlier in the payload must not hide a key later in it', () => {
+    // Four alignments of one large run used to charge the same budget once
+    // per offer, so the run exhausted it before the secret's segment was
+    // reached — and the drop was invisible. The run is now charged its longest
+    // view once, so the later key is found and coverage stays whole. (The dump
+    // is sized so the whole text stays inside the 200,000-character search
+    // window; past it, the window itself hides what follows — see the
+    // window-cut test above.)
+    const text =
+      b64('A'.repeat(74_002)) +
+      '\n' +
+      b64('export WIDGET_API_KEY=q8Zr2LmX0vT4bN7kY1sD5fH9jW3pC6aE\n');
+    expect(
+      scan(b64('export WIDGET_API_KEY=q8Zr2LmX0vT4bN7kY1sD5fH9jW3pC6aE\n'), [keyRule]),
+    ).toHaveLength(1);
+    expect(scan(text, [keyRule]).map((f) => f.rawMatch)).toEqual([
+      'WIDGET_API_KEY=q8Zr2LmX0vT4bN7kY1sD5fH9jW3pC6aE',
+    ]);
+    const coverage = decodeEncodedWithCoverage(text);
+    expect(coverage.truncated).toBe(false);
+    expect(coverage.unscannedChars).toBe(0);
+  });
+
+  it('exposes what the decode could not cover, beside the segments', () => {
+    const clean = decodeEncodedWithCoverage(b64(ENV_FILE));
+    expect(clean.truncated).toBe(false);
+    expect(clean.unscannedChars).toBe(0);
+    expect(clean.segments.length).toBeGreaterThan(0);
   });
 });

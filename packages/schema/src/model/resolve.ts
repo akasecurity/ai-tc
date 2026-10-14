@@ -41,7 +41,8 @@ const GATEWAY_VENDOR_SLASH_RE = /^[a-z0-9][\w.-]*\//iu;
 const BEDROCK_VERSION_RE = /-v\d+:\d+$/u;
 const BEDROCK_REVISION_RE = /:\d+$/u;
 const VERTEX_VERSION_RE = /@[\w-]+$/u;
-const DATED_SUFFIX_RE = /-\d{8}$/u;
+// A trailing snapshot date: `-20251001` (Anthropic) or `-2024-08-06` (OpenAI).
+const DATED_SUFFIX_RE = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
 
 /**
  * Strip the decorations a serving platform adds, in the order they nest.
@@ -120,9 +121,11 @@ export function buildModelIndex(entries: readonly ModelEntry[]): ModelIndex {
  *
  * Matching is attempted most-specific first: the raw string exactly as reported,
  * then with platform decorations stripped, then with a trailing dated suffix
- * removed. The dated form is tried LAST so a model whose canonical id carries a
- * date (Anthropic's `claude-haiku-4-5-20251001` is one) matches itself before
- * the shorter form is considered.
+ * removed — either the compact `-YYYYMMDD` form or the hyphenated
+ * `-YYYY-MM-DD` form. The dated form is tried LAST so a model whose canonical
+ * id or alias carries a date (Anthropic's `claude-haiku-4-5-20251001` is one,
+ * OpenAI's `gpt-4o-2024-05-13` another) matches itself before the shorter form
+ * is considered.
  *
  * `entry` is `null` when nothing matched, and `canonicalId` is then the raw
  * string unchanged. That is the honest answer for a model this catalog does not

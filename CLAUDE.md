@@ -67,6 +67,58 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+Each command in the Claude Code plugin's `hooks/hooks.json` runs a launcher
+(`src/hooks/launch.ts`) that enables Node's compile cache and then loads the hook from
+`<name>.body.js`. That path sits before every catch the hook has: when the body cannot be
+loaded, the launcher writes one fixed line to stderr (`aka: hook body failed to load;
+scanning skipped`), nothing to stdout, and exits 0. `plugins/claude-code/test/e2e/hook-launcher.e2e.test.ts`
+drives it.
+
+**One path fails CLOSED on purpose: a field too large to scan in time.** Every capture path
+that answers to a deadline builds its runtime with `largeInput`, so a field of
+`LARGE_INPUT_THRESHOLD_CHARS` (32,768) or more is scanned in a worker under a hard deadline,
+and every bounded scan in one hook process — or one native-host request — draws on one
+deadline. Each sits inside whatever would otherwise answer for that path first:
+
+- **Claude Code and Codex** (`plugins/{claude-code,codex}/src/hooks/large-input.ts`): 6 s
+  from process start for UserPromptSubmit and PreToolUse, PostToolUse's existing 7 s
+  field-loop deadline — inside the host's 10 s.
+- **Antigravity PreToolUse** (`plugins/antigravity/src/hooks/large-input.ts`): 5.5 s from
+  process start, inside `runHookFailOpen`'s 8 s WATCHDOG rather than the host's 10 s,
+  because the watchdog resolves an undecided body with `{"decision":"allow"}` — a refusal
+  still being decided when it fires is printed as an allow.
+- **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
+  start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
+  dialects.
+- **The browser extension's native host** (`captureLargeInput` in
+  `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
+  capture, with a 500 ms worker start budget drawn from it, because `background.ts`
+  answers a relay the host has not answered within `RELAY_TIMEOUT_MS` (3 s) with an error,
+  and the content script lets the original message through on an error.
+
+A field whose bounded scan times out or finds no worker comes back as a `block` with
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
+UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
+explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
+withholds the output, and the native host answers `action: 'block'` with
+`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
+exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
+interrupted (§5), so without the bound a large enough field keeps the hook busy past
+whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
+those passes the call through unscanned, except Antigravity's kill, which denies it with no
+reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
+nothing else in this section changes: a throw, bad stdin, an unopenable store and a
+PostToolUse field the loop deadline never reached all still pass (silently, or with
+Antigravity's explicit allow), and a native host that does not answer at all still lets the
+message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
+a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
+rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
+and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
+worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
+it through the built native host — so every bundle that runs this path also has to SHIP the
+worker, since a missing one refuses every large field.
+
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
 fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
@@ -218,7 +270,7 @@ The product is **standalone by default**: it runs on Node + the SQLite store und
 ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
 
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
-- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
+- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`/`process.getBuiltinModule()`) form.
 
 Ten files carry a genuine local-only opt-out:
 
@@ -317,21 +369,21 @@ both reach the registry — and `pnpm package:sea` does not run offline. A third
 somewhere other than the registry: on a `bin-v*` tag push, `release-binaries.yml`'s attestation
 step exchanges the runner's OIDC token for a short-lived signing certificate from Sigstore
 (Fulcio), logs the signed provenance to its transparency log (Rekor), and uploads it to GitHub's
-attestations API. A fourth is the pair of publish jobs behind it, which write the rendered
-Homebrew formula and Scoop manifest into `akasecurity/homebrew-tap` and `akasecurity/scoop-bucket`
-through GitHub's contents API with a per-repository token. All four are repository tooling, not
-product paths; nothing a user installs performs any of them, and the installers never contact
-Sigstore.
+attestations API. A fourth is the pair of publish jobs behind it, which write the rendered Homebrew
+formula and Scoop manifest into `akasecurity/homebrew-tap` and `akasecurity/scoop-bucket` through
+GitHub's contents API, each job with a one-hour token it first mints from a GitHub App and scopes to
+that one repository. All four are repository tooling, not product paths; nothing a user installs
+performs any of them, and the installers never contact Sigstore.
 
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                          |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                         |
-| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                        |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()` or `getBuiltinModule()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                                                  |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                                                |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -400,10 +452,10 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 
 Five properties are load-bearing and easy to break by accident:
 
-- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once. The one exception is the opt-in large-input bound (§1), and only on a path that answers to a deadline — a hook or the extension's native host: a field of `LARGE_INPUT_THRESHOLD_CHARS` or more is scanned in a worker whatever the ruleset, because that is the field whose in-process scan can outlast the host. A field below the threshold still pays nothing.
 - **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
-- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever. The large-input bound is the exception, and it is safe there for the reason it is not here: its start has its own budget (`LARGE_INPUT_START_BUDGET_MS`, or the native host's 500 ms) clipped to what is left of the caller's deadline, because that path quarantines nothing and names no culprit — a slow start costs one refused field, never a rule.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
 The first two are **counted, not timed** — a different claim from the fifth, which forbids an
@@ -459,7 +511,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 - **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
 - **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never CONCLUSIVELY timed here (no worker, the pre-flight's pass budget spent, or a wall breach the work clock refused to corroborate) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
 
-Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
+Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `vault-glue.ts`'s self-scan both pass the rules `mask.ts`'s `bundledMaskingRules()` returns — `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
 **The bound is around `scan()`, and the folder scan makes a SECOND unbounded pass that it does not cover.** `scanPathIntoStore` runs `extractFileEgress` — `@akasecurity/detections`' URL/IP and manifest-SDK extraction — on the CALLING thread, before the guarded scan and independent of it. Nothing there can be interrupted, and the exposure is the worse of the two callers': `aka scan` at least runs to a terminal a human can Ctrl-C, while the dashboard's Scan Server Action has no harness timeout at all. So the property extraction owes is not "no catastrophic regex" but the stronger **linear in file length**, since the walker hands it whole files up to `MAX_BYTES` (1 MB) and a merely POLYNOMIAL pass is already minutes at that size. Six had to be fixed to make that true, and only the first two were regexes. **The other four are the shape to recognise, because none of them needs crafted input and none of them looks like a ReDoS: work proportional to the FILE, done once per HIT, in a file whose hit count grows with its size.** A minified bundle puts every hit on one line, so redacting that line per hit is quadratic (118,798 ms of CPU for an ordinary 1 MB bundle carrying 25,641 URLs, against 60 ms memoized); mapping a hit's offset into the redacted line by re-redacting the prefix is quadratic the moment anything on the line is masked, which is to say on exactly the files this product is pointed at (15,333 ms for a 500 KB bundle carrying one token, against 15 ms); and a manifest's line number counted from offset zero, and its quoted key found by scanning from the section start, are each quadratic in its dependency count — an ordinary pretty-printed 1 MB `package.json` cost 1,459 ms and a single-line `pom.xml` 73,925 ms, against 42 ms and 30 ms now. Anything new on this path is linear or it is a denial of service; `packages/detections/test/security/egress-redos.test.ts` holds every pass at the 1 MB cap, and `packages/local-ops/test/performance/fs-scan-egress.test.ts` holds the pipeline that feeds them. Both charge CPU rather than wall time, for the reason the per-rule gate does, and both carry a control proving their input is still adversarial — a budget case fed a harmless string passes for ever.
 
@@ -737,9 +789,11 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass, and the shares-forward outcome state
                      machine — forwardProjectEgress is what a scan surface calls to
                      forward the register it just recorded (attached? opted out?
-                     switch on? credential? then send), with the transport injected by
-                     the caller, plus the one copy of the failure sentences both
-                     surfaces render; network ONLY via package-manager shell-outs — no fetch)
+                     switch on? credential? and, on a scoped attachment, is the project
+                     enrolled along with every repository nested in it? then send),
+                     with the transport injected by the caller, plus the one copy of
+                     the failure sentences both surfaces render; network ONLY via
+                     package-manager shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
                      Consumed by @akasecurity/detections' tabular suite as a
@@ -800,7 +854,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      is the one module inside it that sends; everything else
                      builds requests and parses answers.
                      TWO clients, split by whether the caller holds a credential.
-                     `createRemoteClient` speaks the ten routes an ATTACHED
+                     `createRemoteClient` speaks the eleven routes an ATTACHED
                      machine is scoped to and requires a key. `createAttachClient`
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
@@ -931,6 +985,22 @@ design-doc/section/ADR/PR citations, team-member names, or other internal narrat
 Keep prose factual and reader-facing; if you need to record rationale, put it in a commit
 message — not in shipped comments or strings.
 
+This is available to each package, and adopted per package: `comment-narration/no-process-narration`
+in `@akasecurity/eslint-config` walks the comment table and refuses plan and spec paths, LLD
+references, unit and task numbers, `§` section refs beside a plan cue, PR/issue and
+review-response numbers, commit SHAs and dated decisions. Nothing consumes it yet — an adopting
+package spreads it in its own `eslint.config.mjs` and passes `conventionsFile: 'CLAUDE.md'`, since
+the rule's message names `AGENTS.md` by default and this repo's conventions live here. It is spread per package (like `noDrizzleImports`) rather than
+folded into `base`, so a package adopts it in the change that clears its own backlog. Four
+probes are deliberately narrow, because a ban that cries wolf gets a disable directive: a SHA must
+carry a hex letter (a dated model-id suffix such as `-20241022` is not a SHA) and is skipped on a
+frozen-artifact banner, where the SHA is the identity of what is pinned; a date must sit next to a
+process cue (a fixture or retention date is not a decision); and a `§` must sit beside a plan cue,
+because the shorthand inside a repo is the bare section number — an exemption list of standard
+names left 40 false positives against 5 true ones over 1,812 files. Where a package has a
+standing reason, `allowPatterns` exempts a comment and `disableProbes` switches off one probe —
+both review-visible.
+
 ## Frontend UI components
 
 Shared, reusable UI **primitives** live in `packages/ui-kit` (`@akasecurity/ui-kit`). Shared,
@@ -1002,7 +1072,11 @@ assembled from a non-literal.
 ambient locale) because a later entry replaces the rule's options rather than
 merging them. A per-file opt-out is therefore written as `reactSyntaxBans({ … })`
 with one group switched off, never as a hand-listed subset — the other four come
-along by construction, so lifting one ban cannot silently lift five.
+along by construction, so lifting one ban cannot silently lift five. A widening is
+an option too, so it does NOT come along: in `dashboard-ui`/`ui-kit` `src/**` the
+per-file form is `presentationalSyntaxBans({ … })`, which keeps both widenings on,
+and in web-ui's `app/**` an entry has to pass `ambientLocaleEveryModule: true`
+itself (see the clock exemption below, and `web-ui/eslint.config.mjs`).
 
 ### A time label is a function of two instants, and a client component is given both
 
@@ -1644,33 +1718,84 @@ release channel** from the `cli-v*` npm publish:
   `Explain a bin-latest move that lost a race` names that case in the log with no retry loop —
   the repair is re-running this tag's whole workflow, which re-reads the tag from scratch and
   only ever moves forward, so a newer winner makes the re-run a no-op.
-- **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and
-  `publish-scoop-bucket`, push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and
-  `bucket/aka.json` to `akasecurity/scoop-bucket` through the contents API, with a fine-grained
-  PAT per repository (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`). Its value is read exactly once,
-  onto `GH_TOKEN` in the push step's `env:`; the job's gates read a boolean
-  (`${{ secrets.X != '' }}`) instead, because a job-level mapping of the value puts it in every
-  step's environment, the third-party artifact download included. Both targets are HARDCODED
-  rather than repository variables, so the READMEs can be held to the same spelling. Each job
-  holds `contents: read` here and no write scope. On the canonical repository an empty secret
-  FAILS the job with an `::error::` naming it — the Release and the `bin-latest` move have already
-  happened, so the red run is the signal to add the secret and re-run, which a content compare
-  makes a no-op. A fork skips. Each push only moves forward as well: the version already there is
-  read off its versioned download URL, which both formats carry, and a file serving a newer one is
-  left in place — so re-running an older release, or this job alone, cannot downgrade the tap or
-  the bucket. A non-empty existing file that names no such URL at all — hand-edited, or written by
-  something other than this renderer — has nothing in it to compare against, so the push
-  `::warning::`s and still writes rather than either silently keeping it or silently overwriting
-  it. And the write itself is wrapped: a PUT the contents API refuses (two releases racing the
-  same file, say) ends the step with an `::error::` naming the repair — re-run this job, which
-  re-reads the file and leaves a newer one alone — instead of the script's own success line. The
-  formula
+- **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and `publish-scoop-bucket`,
+  push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and `bucket/aka.json` to
+  `akasecurity/scoop-bucket` through the contents API, authenticating as a GitHub App rather than a
+  person: each job mints its own token with `actions/create-github-app-token` (pinned by commit
+  SHA), and the token is revoked when the job ends. The app is configured by one repository
+  VARIABLE, `AKA_RELEASE_APP_CLIENT_ID` (it names the app and grants nothing), and one secret,
+  `AKA_RELEASE_APP_PRIVATE_KEY`. The mint step is the only step handed the key, and the token it
+  returns is handed to the push step alone, as `GH_TOKEN` in its `env:`; the job's gates read a
+  boolean (`${{ vars.X != '' && secrets.Y != '' }}`) that tests only that the variable and the
+  secret are set, because a job-level mapping of the key would put it in every step's environment,
+  the artifact download included. The token's REACH is the mint step's inputs, and the guard pins
+  that whole mapping: `owner` AND `repositories` are both named, because given `owner` alone the
+  action scopes the token to EVERY repository the app is installed on; `permission-contents: write`
+  is named, because a token otherwise inherits all of the installation's permissions; and
+  `skip-token-revoke` stays unset. The mint step takes no `env:` and the job's own `env:` holds only
+  that boolean, because the action also reads its `permission-*` inputs from `INPUT_PERMISSION-*`
+  environment variables, which have no default; no `INPUT_` name appears anywhere in the file. Every
+  action in the two publish jobs is pinned by commit SHA, and the two mint steps carry one revision,
+  because every step in a job runs as the same user and an unpinned one runs before the key is
+  handed out. The key is looked for in every expression in the file rather than in the two publish
+  jobs, because the `release` job holds `id-token` and attestation write scopes and a step added
+  there reads the same secret by the same name. The workflow is read as a PARSED YAML document
+  (`yaml`, YAML 1.2 — a dev dependency of `@akasecurity/eslint-config`, in
+  `test/helpers/workflow-yaml.js`), so every check runs on decoded structure: jobs, then steps, then
+  each step's keys, `with:`, `env:` and `run:`. A key written quoted, in flow style, behind an
+  escape (`"\x24{{ … }}"` spells the dollar of an expression) or through an alias reads the same as
+  its plain spelling, and a line that only looks like a key inside another key's block scalar is not
+  one. The expressions are read from the DECODED strings, keys and values, since a `#` line inside a
+  `run: |` block is script text GitHub still substitutes and a YAML comment is not evaluated by
+  anything; string literals are respected, since a `}}` inside one does not end the expression; the
+  match is case-insensitive, `toJSON(` is refused outright because it serializes a whole context
+  without naming a key, and no job may carry a `secrets:` key at any depth, because a call to a
+  reusable workflow hands the key over with `secrets: inherit` without writing an expression. The
+  top level and each publish job are built from a fixed set of keys, as are a publish job's steps,
+  so a `shell:` template, a `defaults:` block, a `continue-on-error`, a `container:` or a
+  workflow-level `env:` is a failure in whatever spelling it is written rather than something no
+  case reads; a permission is `write` however its value is quoted; the download step's whole `with:`
+  mapping is pinned, because `repository`, `run-id` and `github-token` would make it fetch another
+  repository's run; and the fail-closed, notice and explanation scripts are RUN and their exit
+  status and output read, since a pattern cannot tell `exit 0 # exit 1` from `exit 1`. The reader
+  refuses what it cannot decode faithfully rather than guess: a parse error or warning, a duplicate
+  key, more than one document, a `%YAML` directive, a `%TAG` directive that names a handle other
+  than `!!`, a key that is not a string, an alias that points at a node it sits inside, a document
+  that decodes to 20,000 nodes or more (the alias-chain backstop, `MAX_NODES` in
+  `helpers/workflow-yaml.js`; the largest workflow here decodes to under 300, so raise it only if a
+  real workflow approaches it), and a `<<` merge key — GitHub's parser follows YAML 1.2, where that
+  is an ordinary key, so a reader that expanded it would report a mapping the runner may never
+  build. Anchors and aliases are decoded. The version a pinned
+  `uses:` names in its trailing `# v1.2.3` comment is a comment, which the reader keeps beside the
+  value it trails. These are an early catch for a mistake, not a control — whoever can change the
+  workflow can change its guard. The installation is the ceiling on all of this and nothing in this
+  tree can observe it: the app must be installed only on the tap and the bucket, with Contents (read
+  and write) as its only chosen repository permission, and Metadata: read is mandatory for every
+  app. CONTRIBUTING.md's setup steps are what establish that. Both targets are HARDCODED rather than
+  repository variables, so the READMEs can be held to the same spelling. Each job holds
+  `contents: read` here and no write scope. On the canonical repository an unconfigured app FAILS
+  the job with an `::error::` naming both halves — the Release and the `bin-latest` move have
+  already happened, so the red run is the signal to configure the app and re-run, which a content
+  compare makes a no-op. A mint that fails once the app is configured (not installed on the
+  repository, a wrong client id, a key rotated incorrectly) is explained by a step gated on that
+  step's own outcome, since the action's own error says nothing about what already shipped. A re-run
+  executes the workflow as it was at the tagged commit, so configuring the app and re-running
+  repairs a release whose tag already carries the app steps; one tagged before them is not repaired
+  that way. A fork with no app configured skips. Each push only moves forward as well: the version
+  already there is read off its versioned download URL, which both formats carry, and a file serving
+  a newer one is left in place — so re-running an older release, or this job alone, cannot downgrade
+  the tap or the bucket. A non-empty existing file that names no such URL at all — hand-edited, or
+  written by something other than this renderer — has nothing in it to compare against, so the push
+  `::warning::`s and still writes rather than either silently keeping it or silently overwriting it.
+  And the write itself is wrapped: a PUT the contents API refuses (two releases racing the same
+  file, say) ends the step with an `::error::` naming the repair — re-run this job, which re-reads
+  the file and leaves a newer one alone — instead of the script's own success line. The formula
   installs the whole archive directory into `libexec` and symlinks `bin/aka` (Node resolves
   `process.execPath` through the symlink, which is how `boot.cjs` still finds its sidecars);
   `brew install ./aka.rb` from the attached copy is refused by current Homebrew, so the attached
   `aka.rb` is an audit copy and the tap is the only Homebrew door. `scoop install <url>` of the
-  attached `aka.json` IS an install path. There is no darwin-x64 build, so the formula refuses
-  Intel macOS (`depends_on arch: :arm64`).
+  attached `aka.json` IS an install path. There is no darwin-x64 build, so the formula refuses Intel
+  macOS (`depends_on arch: :arm64`).
 - `cli-v*` (npm) and `bin-v*` (binary) are **independent** — a binary release needs no npm publish
   and vice versa, though they normally share one version line.
 - **Signing state, stated exactly.** The macOS binary is AD-HOC signed (`codesign --sign -`), which
@@ -2050,9 +2175,14 @@ itself. All three are product calls, not tuning.
 **A VIRTUAL generated column is only faster than the bag when an index stores its value.**
 The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
 columns — model, provider, the four token counts and the tier, cache-split and web-search
-members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
-once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
-fold equal to the per-call fold across every bag shape). Naming those columns against the
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)`, per
+long-context band and per set of billed columns, and priced once per group, which the cost
+model's linearity makes exact (activity.test.ts holds the SQL fold equal to the per-call fold
+across every bag shape). The band is in the key because one request's prompt selects it, never
+a sum; the billed columns are, because a summed group billing a column its model has no rate
+for prices to null as a whole, and without them one such call would null the priced calls
+beside it. That last part costs the all-time read ~9 ms at 50k calls (34 → 43 ms, fastest of
+the run), still under folding the bags in JS. Naming those columns against the
 TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
 VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
 `idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,
@@ -2125,9 +2255,19 @@ which has no body to follow — goes once its event is past the same horizon. It
 measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
 row — so this is the difference between a store that settles and one that grows at
 ~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:
-a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` is never expired while an
-attach or a history-sync grant could still claim it retroactively, which `canSweepSyncLane`
-is the single place that decides. **It deletes no row**, and `retention-surface.test.ts`
+a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` expires only when nothing
+could still make it owed. `canSweepSyncLane` is the yes-or-no (a standalone machine with no
+half attachment and no history-sync grant lets the lane age out like any other body), and
+`syncLaneRetentionFor` in plugin-runtime refines it through `syncLaneRetentionOf` once an
+attachment can be scoped. It is the one helper the background pass and `aka prune` both
+call, each handing it the settings it read, so the same settings and credential give the same answer. A
+machine attachment, half an attachment, and a history-sync grant with no scoped attachment
+hold every unsynced body, and so does every failure: an unreadable credential, a scope
+record that is absent, for another deployment or partly invalid, or a throw. A scoped
+attachment holds the bodies of its enrolled repositories and any body still marked owed (an
+earlier machine attachment's undelivered forward leaves that mark, and enrolling its
+repository later makes it reachable), and lets every other body age out, since nothing can
+forward those from a scoped machine. **It deletes no row**, and `retention-surface.test.ts`
 now runs it in the same pass as the other two so that membership is a live assertion
 rather than a claim. **It frees no disk by itself**: SQLite returns the pages to its
 freelist, so new captures reuse them and the file stops growing, but the file does not
@@ -2564,8 +2704,10 @@ opposite.
 
 **Outside `packages/persistence` the harness is deliberately NOT available, and the
 decision is not "nobody got round to it".** It lives under `test/`, and the package's
-`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
-`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+`exports` map is `"." -> "./src/index.ts"` plus `"./sqlite-free"` (the store-free modules the
+plugin-sdk runtime path needs: a subset of the root entry's bindings that never loads
+`database.ts`, both held by `packages/persistence/test/sqlite-free-entry.test.ts`) — which is exactly
+what makes `UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
 that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
 package would gain a supported route to the raw `DatabaseSync`, and
 `test-only-seam.test.js` would stay green throughout because the new callers are tests.
@@ -2652,8 +2794,10 @@ not reach for a `./testing` export instead.
   through, exported from `src/database.ts`, and the only test-only seam in shipped
   source. It is
   symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
-  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
-  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  is `"." -> "./src/index.ts"` plus `"./sqlite-free"` — a subset of the root entry's
+  bindings that never loads `database.ts`, both held by
+  `packages/persistence/test/sqlite-free-entry.test.ts` — so no other package can reach the
+  module that defines it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
   property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
   enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
   the **real** connection, so `close()` reaches it.

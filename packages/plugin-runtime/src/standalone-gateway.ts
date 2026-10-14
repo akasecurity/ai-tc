@@ -26,6 +26,7 @@ import {
   buildTokenReports,
   defaultCostModel,
   readFingerprintKey,
+  shippedRegexMatchers,
 } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
@@ -84,7 +85,7 @@ export class StandaloneDataGateway
     detections: InstalledPackInput[] = [],
     meta?: { recordedBy?: string },
   ) {
-    this.db = openLocalDatabase(dataDir);
+    this.db = openLocalDatabase(dataDir, { shippedRegexMatchers: shippedRegexMatchers() });
     this.dataDir = dataDir;
     this.db.installedPacks.recordInventory(detections, meta);
   }
@@ -207,6 +208,7 @@ export class StandaloneDataGateway
         ...(insp.line === undefined ? {} : { line: insp.line }),
         ...(insp.col === undefined ? {} : { col: insp.col }),
         ...(insp.context === undefined ? {} : { context: insp.context }),
+        ...(insp.variableName === undefined ? {} : { variableName: insp.variableName }),
       });
     }
   }
@@ -559,6 +561,10 @@ export class StandaloneDataGateway
 
   scanLedgerPaths(): Promise<string[]> {
     return Promise.resolve(this.db.scanLedger.allPaths());
+  }
+
+  scanLedgerPathKeys(): Promise<Map<string, string | undefined>> {
+    return Promise.resolve(this.db.scanLedger.pathKeys());
   }
 
   recordScanned(entries: ScanLedgerEntry[]): Promise<void> {

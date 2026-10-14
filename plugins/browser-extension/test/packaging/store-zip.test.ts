@@ -513,14 +513,18 @@ describe('storeArchiveRefusal', () => {
 
   // The live tree, which is what `pnpm package:zip` actually runs against. A
   // table of fixtures says the function decides correctly; this says the decision
-  // it reaches HERE is "go ahead", so the refusals cannot be passing their table
-  // while refusing every real build.
-  it('accepts the built tree package:zip is pointed at', () => {
+  // it reaches HERE is the right one for the live version: "go ahead" on a bare
+  // version, so the refusals cannot be passing their table while refusing every
+  // real build, and the not-bare refusal on a pre-release or build-metadata
+  // version, which the repo carries while a beta is cut on its release branch.
+  it('reaches the right decision for the built tree package:zip is pointed at', () => {
     const packageVersion = String(readJson(PACKAGE_ROOT, 'package.json').version);
     const built = readJson(DIST, 'manifest.json');
+    const refusal = storeArchiveRefusal(packageVersion, builtVersionFields(built));
 
     expect(isLegalChromeVersion(String(built.version))).toBe(true);
-    expect(storeArchiveRefusal(packageVersion, builtVersionFields(built))).toBeUndefined();
+    if (/[-+]/.test(packageVersion)) expect(refusal).toMatch(/not a bare version/);
+    else expect(refusal).toBeUndefined();
   });
 });
 
@@ -543,7 +547,7 @@ describe('package:zip acts on the refusal', () => {
   const stagePackage = (edit: {
     packageVersion?: string;
     builtVersion?: string;
-    builtVersionName?: string;
+    builtVersionName?: string | null;
   }): string => {
     const dir = mkdtempSync(join(outDir, 'pkg-'));
     mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -565,7 +569,8 @@ describe('package:zip acts on the refusal', () => {
     if (edit.builtVersion !== undefined || edit.builtVersionName !== undefined) {
       const built = readJson(dir, 'dist', 'manifest.json');
       if (edit.builtVersion !== undefined) built.version = edit.builtVersion;
-      if (edit.builtVersionName !== undefined) built.version_name = edit.builtVersionName;
+      if (edit.builtVersionName === null) delete built.version_name;
+      else if (edit.builtVersionName !== undefined) built.version_name = edit.builtVersionName;
       writeFileSync(join(dir, 'dist', 'manifest.json'), JSON.stringify(built, null, 2) + '\n');
     }
     return dir;
@@ -582,10 +587,16 @@ describe('package:zip acts on the refusal', () => {
     return existsSync(out) ? readdirSync(out) : [];
   };
 
-  // The positive control for the two refusals below, and the case that fails a
-  // script rewritten to refuse everything.
+  // The positive control for the three refusals below, and the case that fails a
+  // script rewritten to refuse everything. On a bare live version it packages the
+  // tree exactly as `pnpm build` left it; only on a pre-release, which package:zip
+  // must refuse, does it stage the bare version that release would carry.
   it('packages a bare, agreeing tree and names the archive from the package version', () => {
-    const dir = stagePackage({});
+    const liveVersion = String(readJson(PACKAGE_ROOT, 'package.json').version);
+    const bare = String(readJson(DIST, 'manifest.json').version);
+    const dir = /[-+]/.test(liveVersion)
+      ? stagePackage({ packageVersion: bare, builtVersion: bare, builtVersionName: null })
+      : stagePackage({});
     const packageVersion = String(readJson(dir, 'package.json').version);
 
     const run = runPackageZip(dir);

@@ -16,9 +16,16 @@
 // (`@akasecurity/detections` imports it), so the sha256 content-addressing lives in
 // `@akasecurity/persistence`; this module only provides the pure `canonicalIdentity`
 // join used to build the hash input.
-import { z } from 'zod';
+import * as z from 'zod';
 
-import { ActionTaken, DetectionCategory, FindingContext, Severity, Span } from './finding.ts';
+import {
+  ActionTaken,
+  DetectionCategory,
+  FindingContext,
+  Severity,
+  Span,
+  VariableName,
+} from './finding.ts';
 
 // ── Discriminators ─────────────────────────────────────────────────────────
 
@@ -347,6 +354,11 @@ export const CaptureAttributes = z
     // here too. The full statement is on EventMetadata.redactDegradedTo; it is
     // repeated rather than referenced because a store reader opens this file.
     redact_degraded_to: ActionTaken.optional(),
+    // Why a capture has no content and no findings: its field was refused
+    // because its bounded scan did not finish (see EventMetadata.scanIncomplete,
+    // whose value this is). Absent on every capture that was scanned, so a
+    // reader can tell a refused row from an empty clean one.
+    scan_incomplete: z.enum(['timeout', 'unavailable']).optional(),
     // The scope key this capture was stamped with: the canonical repository
     // (`host/owner/repo`) of the path the capture names (a relative path is read
     // against its working directory), else of its own working directory, or a
@@ -423,11 +435,14 @@ const findingLocationFields = {
   context: FindingContext.nullable().optional(),
 };
 
-// ToolCallInspection plus where the hit sits in the scanned target. The LOCAL
-// write input only: the wire keeps `ToolCallInspection`, and the attached
-// gateway projects each inspection onto it field by field, so the masked
-// excerpt never leaves the machine.
-export const ToolCallInspectionInput = ToolCallInspection.extend(findingLocationFields);
+// ToolCallInspection plus where the hit sits in the scanned target and the
+// variable the secret is assigned to. The LOCAL write input only: the wire keeps
+// `ToolCallInspection`, and the attached gateway projects each inspection onto
+// it field by field, so the masked excerpt and the name never leave the machine.
+export const ToolCallInspectionInput = ToolCallInspection.extend({
+  ...findingLocationFields,
+  variableName: VariableName.optional(),
+});
 export type ToolCallInspectionInput = z.infer<typeof ToolCallInspectionInput>;
 
 // The reconciler → gateway → persistence input for one `tool_call` leaf. Carries
@@ -555,6 +570,8 @@ export const InspectionFindingInput = z.object({
   // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
   firstDetectedAt: z.iso.datetime().optional(),
   ...findingLocationFields,
+  // The variable a detected secret is assigned to, e.g. `STRIPE_SECRET_KEY`.
+  variableName: VariableName.optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 
@@ -637,8 +654,9 @@ export const SessionTokenReport = z.object({
   totalTokens: z.number().int().nonnegative(),
   // Σ of the PRICED rollups only; null when no rollup had a known price.
   estimatedCostUsd: z.number().nullable(),
-  // True whenever any rollup has a null cost (unknown provider/model), so the
-  // total understates real spend — the UI renders `≥ $X` instead of a falsely
+  // True whenever any call priced to null (an unknown provider/model, or a call
+  // over a long-context threshold whose rate is unpublished), so the total
+  // understates real spend — the UI renders `≥ $X` instead of a falsely
   // precise figure rather than silently dropping the unpriced calls.
   costIsPartial: z.boolean(),
 });

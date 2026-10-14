@@ -6,7 +6,7 @@
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type {
   auditEvents,
@@ -21,9 +21,10 @@ import type {
 } from '../drizzle/local/sqlite.ts';
 import { isoToEpochMillis } from '../time.ts';
 import type { AttachmentMode } from './control-plane.ts';
-import { printable } from './control-plane.ts';
+import { PluginWhoami, printable } from './control-plane.ts';
 import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding, FindingLocation } from './finding.ts';
+import { MAX_VARIABLE_NAME_LENGTH } from './finding.ts';
 import type {
   AuditEventInput,
   CaptureAttributes,
@@ -35,6 +36,7 @@ import type {
 } from './meta.ts';
 import { type BuiltinPolicyId, RedactFallback } from './policy.ts';
 import type { Rule } from './rule.ts';
+import { SightingShareConsent } from './sighting-share.ts';
 import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
@@ -42,14 +44,14 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
 // redactFallback; v8 added bodyRetention and webChatCapture; v9 added
-// attachmentScope. Nothing reads it, and nothing re-stamps it — the
+// attachmentScope; v10 added sightingShareConsent. Nothing reads it, and nothing re-stamps it — the
 // `.default()` below only fills when the key is absent, and applyOnboarding's
 // merge preserves whatever an existing settings.json already carries. So an
 // already-onboarded machine keeps the version that first wrote its file,
 // however often this is bumped. Every field added so far has been
 // optional/defaulted (backward compatible), which is why no migration has been
 // needed. Re-stamp this on write before relying on it to gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 9;
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 10;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -274,22 +276,40 @@ export const AttachmentScopeEntry = z.object({
 export type AttachmentScopeEntry = z.infer<typeof AttachmentScopeEntry>;
 
 /**
- * The identities a SCOPED attachment forwards, and the deployment they were
- * enrolled for.
+ * The identities a SCOPED attachment forwards, the deployment they were
+ * enrolled for, and, optionally, the organization and account the record
+ * belongs to.
  *
  * Bound by VALUE, HistorySyncConsent's rule: the record names its endpoint, and
  * a record for any other endpoint does not count (isAttachmentScopeValid).
  * Enrolling a repository with one deployment is not enrolling it with another,
  * and that holds without any writer having to remember to clear the record.
  *
+ * `tenantName` and `userEmail` say WHO the record was built for: the
+ * organization and account a whoami answer names, held to the bounds whoami
+ * answers with (the same schemas, not copies). Every organization on a shared
+ * deployment has the same endpoint, so the endpoint alone cannot tell one
+ * tenant's record from another's. Both are optional: a record written without
+ * them carries neither. A well-formed binding takes NO part in the forwarding
+ * verdict: resolveScope and scopeVerdict never compare it with anything, so a
+ * record with no binding forwards its entries exactly as one with a binding
+ * does. The binding's values affect the verdict in one way only, set out below:
+ * a value that is not valid makes the record read as no scope at all.
+ * isAttachmentScopeBoundTo is what compares the binding with an organization
+ * and account.
+ *
  * NOT STRICT, so a field added to the envelope later is stripped by this reader
- * rather than failing it. NO `.meta({ id })`.
+ * rather than failing it. A binding field that is present must be valid,
+ * though: one that is not a printable string fails the envelope, the way a bad
+ * endpoint does, and the record reads as no scope at all. NO `.meta({ id })`.
  *
  * Stored as `WorkspaceSettings.attachmentScope`, but NOT typed there: see that
  * field's note. Read a stored value through parseAttachmentScope.
  */
 export const AttachmentScope = z.object({
   endpoint: z.string().min(1),
+  tenantName: PluginWhoami.shape.tenantName.optional(),
+  userEmail: PluginWhoami.shape.userEmail.optional(),
   entries: z.array(AttachmentScopeEntry),
 });
 export type AttachmentScope = z.infer<typeof AttachmentScope>;
@@ -302,10 +322,12 @@ const AttachmentScopeEnvelope = AttachmentScope.extend({ entries: z.array(z.unkn
  * A stored `attachmentScope`, validated where it is used.
  *
  * The envelope first: anything that is not an object with a non-empty string
- * `endpoint` and an array `entries` is no scope at all, `undefined`. Then each
- * entry on its own, keeping the valid ones, so an unknown `kind`, a control
- * character or a bad timestamp costs that entry and nothing else. Unknown keys
- * are stripped from both levels.
+ * `endpoint` and an array `entries`, or whose binding fields are present but not
+ * printable strings, is no scope at all, `undefined`. Then each entry on its
+ * own, keeping the valid ones, so an unknown `kind`, a control character or a
+ * bad timestamp costs that entry and nothing else. Unknown keys are stripped
+ * from both levels. The binding is kept when the record carries it, and no
+ * binding key is added when it does not.
  *
  * Never throws: a value that throws while it is read is no scope. Pure; no I/O.
  */
@@ -318,7 +340,13 @@ export function parseAttachmentScope(raw: unknown): AttachmentScope | undefined 
       const entry = AttachmentScopeEntry.safeParse(candidate);
       if (entry.success) entries.push(entry.data);
     }
-    return { endpoint: envelope.data.endpoint, entries };
+    const { endpoint, tenantName, userEmail } = envelope.data;
+    return {
+      endpoint,
+      ...(tenantName === undefined ? {} : { tenantName }),
+      ...(userEmail === undefined ? {} : { userEmail }),
+      entries,
+    };
   } catch {
     return undefined;
   }
@@ -345,6 +373,46 @@ export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefine
   return scopeForEndpoint(raw, endpoint) !== undefined;
 }
 
+/**
+ * Whether a stored scope belongs to the deployment `endpoint` and to the
+ * organization and account `who` names: it counts for `endpoint` (the rule
+ * isAttachmentScopeValid applies) and carries both binding fields, each
+ * non-empty and equal to `who`'s, byte for byte.
+ *
+ * Every organization on a shared deployment has the same endpoint, so a record
+ * that merely names the endpoint may be another tenant's, or another account's
+ * on the same machine. A record with no binding cannot be checked, so it answers
+ * false: it might be someone else's. An empty field on either side binds
+ * nothing and answers false too. A renamed organization reads as someone else,
+ * so a record bound to the old name answers false. So does any record that is
+ * unbound, mismatched, for another endpoint, or whose envelope fails to parse:
+ * only an exact match answers true. A record that parses but holds an invalid
+ * entry is read without that entry, and still answers true when its binding
+ * matches.
+ *
+ * Only the two binding fields of `who` are read, so a full whoami answer may be
+ * passed. NOT part of the forwarding verdict: scopeVerdict and resolveScope
+ * never compare a well-formed binding with anything, so a record that counts for
+ * the endpoint forwards its entries whatever this answers. Pure; no I/O; never
+ * throws.
+ */
+export function isAttachmentScopeBoundTo(
+  raw: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+): boolean {
+  try {
+    const scope = scopeForEndpoint(raw, endpoint);
+    if (scope === undefined) return false;
+    const { tenantName, userEmail } = scope;
+    if (tenantName === undefined || userEmail === undefined) return false;
+    if (tenantName === '' || userEmail === '') return false;
+    return tenantName === who.tenantName && userEmail === who.userEmail;
+  } catch {
+    return false;
+  }
+}
+
 // The behavior the user consented to when they allowed the browser extension to
 // write down what it observes on a web chat. A grant recorded against an older
 // version stops counting, so widening what is recorded re-asks rather than
@@ -355,7 +423,8 @@ export function isAttachmentScopeValid(raw: unknown, endpoint: string | undefine
 // and the reply's own text under the stored `responses` mode — in which a
 // detected value is masked only where the detection that flagged it resolves to
 // redact or stronger, exactly as on every other capture path. Account and quota
-// snapshots are NOT in it.
+// snapshots are NOT in it; the account data the extension records is covered by
+// its own grant (WEB_CHAT_ACCOUNT_CONSENT_VERSION).
 export const WEB_CHAT_CAPTURE_CONSENT_VERSION = 1;
 
 // A recorded consent to that, carrying the version it was given against. Same
@@ -380,18 +449,32 @@ export type WebChatCaptureConsent = z.infer<typeof WebChatCaptureConsent>;
 export const WebChatResponseCapture = z.enum(['with-findings', 'always', 'never']);
 export type WebChatResponseCapture = z.infer<typeof WebChatResponseCapture>;
 
-// What the browser extension may record from a web chat, and the grant that
-// authorizes it.
+// The account data the user consented to the browser extension recording, with
+// its own version so it re-asks on its own. Separate from
+// WEB_CHAT_CAPTURE_CONSENT_VERSION because it authorizes a separate thing: a
+// capture grant given for v1 stays valid when this one is added.
 //
-// `account` covers account, plan and quota snapshots. It defaults to false
-// because nothing collects them yet; it is stored here so the answer has one
-// home rather than arriving as a second block later.
+// v1 covers the detected-account record: for each web chat account a site's own
+// requests named, its key (`claude:<organization-id>`), the site, and when it was
+// first and last seen. No account name, email, plan, quota, conversation or text.
+// It is written only on this machine, and the key is never sent to a deployment.
+export const WEB_CHAT_ACCOUNT_CONSENT_VERSION = 1;
+
+// What the browser extension may record from a web chat, and the grants that
+// authorize it.
+//
+// `account` is the user's switch for account data, and `accountConsent` the
+// grant behind it; both must agree (isWebChatAccountGrantValid). It defaults to
+// false.
 export const WebChatCapture = z.object({
   responses: WebChatResponseCapture.default('with-findings'),
   account: z.boolean().default(false),
   // Absent until granted. Presence alone does not authorize anything — see
   // isWebChatCaptureConsentValid.
   consent: WebChatCaptureConsent.optional(),
+  // Absent until granted — see isWebChatAccountGrantValid. The same two fields as
+  // `consent`, carrying WEB_CHAT_ACCOUNT_CONSENT_VERSION.
+  accountConsent: WebChatCaptureConsent.optional(),
 });
 export type WebChatCapture = z.infer<typeof WebChatCapture>;
 
@@ -404,6 +487,28 @@ export type WebChatCapture = z.infer<typeof WebChatCapture>;
 export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | undefined): boolean {
   return consent?.version === WEB_CHAT_CAPTURE_CONSENT_VERSION;
 }
+
+// The one definition of "the user has agreed to account data being recorded
+// TODAY": the switch is on AND the grant was given at the current version. Either
+// alone authorizes nothing, so a switch left on beside a revoked or stale grant
+// records nothing. Independent of the capture grant: neither implies the other.
+// Pure logic over the schema, no I/O.
+export function isWebChatAccountGrantValid(webChat: WebChatCapture | undefined): boolean {
+  return (
+    webChat?.account === true &&
+    webChat.accountConsent?.version === WEB_CHAT_ACCOUNT_CONSENT_VERSION
+  );
+}
+
+// Why a machine records less from a web chat than its consent says, or nothing.
+// 'personal-device': it is attached with `aka attach --scoped`, where a web chat
+// is in scope only in an account enrolled with `aka enroll --account`
+// (isScopeKeyEnrolled), and a typed prompt never is. 'unreadable-attachment': it
+// holds a control-plane credential this build cannot read, so what it was
+// attached as is unknown, the answer is the one that records less, and nothing
+// is recorded.
+export const WebChatWithholding = z.enum(['personal-device', 'unreadable-attachment']);
+export type WebChatWithholding = z.infer<typeof WebChatWithholding>;
 
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
 // Versioned and default-filled so future config steps are additive: a
@@ -501,6 +606,15 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
+  // Records that the user agreed to share credential sightings with the
+  // deployment the grant names. Absent until granted; `aka detach` clears it.
+  // Whether sharing is actually on is resolveSightingSharing's answer, which
+  // also weighs the attachment mode, the endpoint and the managed settings.
+  //
+  // `.catch` reads a grant this schema cannot parse, such as one recorded
+  // before grants named a deployment, as no grant. Without it the whole file
+  // fails to parse and every setting falls back to its default.
+  sightingShareConsent: SightingShareConsent.optional().catch(undefined),
   // The identities a SCOPED attachment forwards and the deployment they were
   // enrolled for (see AttachmentScope). Absent until something is enrolled.
   //
@@ -640,6 +754,32 @@ export function scopeVerdict(
     return resolved.keys.has(key) ? 'forward' : 'local';
   } catch {
     return 'local';
+  }
+}
+
+/**
+ * Whether `key` is enrolled on this machine's scoped attachment: one of the
+ * entries the stored scope record holds for the endpoint in force. A record for
+ * another endpoint, or none, enrolls nothing; so does an empty or missing key.
+ *
+ * Says nothing about the mode: a machine-wide attachment forwards whatever is
+ * enrolled, and a caller deciding what to SEND asks scopeVerdict instead. This
+ * answers "did the user enroll it here", which is what the browser extension's
+ * host decides an account's chats by on a personal device. Pure; never throws.
+ */
+export function isScopeKeyEnrolled(
+  settings: Pick<WorkspaceSettings, 'controlPlane' | 'attachmentScope'>,
+  key: string | undefined,
+): boolean {
+  try {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: settings.attachmentScope,
+      endpoint: settings.controlPlane?.endpoint,
+    });
+    return scopeVerdict(resolved, key) === 'forward';
+  } catch {
+    return false;
   }
 }
 
@@ -831,10 +971,12 @@ export function toEventRow(event: IngestEvent): EventRow {
 // @akasecurity/plugin-sdk's createPluginRuntime capture().
 //
 // `location` is local-only for the same reason: the masked excerpt is stored on
-// this machine and never forwarded (see FindingLocation).
+// this machine and never forwarded (see FindingLocation). So is `variableName`,
+// the variable a detected secret is assigned to.
 export type DetectedFindingWithKey = DetectedFinding & {
   findingKey?: string | null;
   location?: FindingLocation;
+  variableName?: string;
 };
 
 // DetectedFinding (already masked + assigned id/eventId/actionTaken by the SDK)
@@ -961,6 +1103,10 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     line: input.line ?? null,
     col: input.col ?? null,
     context: input.context ? JSON.stringify(input.context) : null,
+    variableName:
+      input.variableName !== undefined && input.variableName.length <= MAX_VARIABLE_NAME_LENGTH
+        ? input.variableName
+        : null,
   };
 }
 
@@ -995,6 +1141,7 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     ...(metadata?.redactDegradedTo !== undefined
       ? { redact_degraded_to: metadata.redactDegradedTo }
       : {}),
+    ...(metadata?.scanIncomplete !== undefined ? { scan_incomplete: metadata.scanIncomplete } : {}),
     // `model`/`turnIndex` have no dedicated CaptureAttributes field (no writer
     // has ever populated either), but every legacy metadata key still rides
     // the bag rather than being silently dropped — CaptureAttributes'
@@ -1075,6 +1222,26 @@ export interface FindingView {
   occurredAt: string;
   sourceTool: string;
   kind: string;
+  // The variable the secret was assigned to, when it was detected in an
+  // assignment.
+  variableName?: string;
+}
+
+// A finding's match as the read surfaces print it: the masked value, prefixed
+// by the variable it was assigned to when there is one. With `maxWidth`, the
+// name is shortened (or dropped) to fit and the masked value is kept whole.
+export function findingMatchLabel(
+  view: Pick<FindingView, 'maskedMatch' | 'variableName'>,
+  maxWidth?: number,
+): string {
+  const { maskedMatch, variableName } = view;
+  if (variableName === undefined) return maskedMatch;
+  const separator = ' = ';
+  const room =
+    maxWidth === undefined ? variableName.length : maxWidth - separator.length - maskedMatch.length;
+  if (variableName.length <= room) return `${variableName}${separator}${maskedMatch}`;
+  if (room < 2) return maskedMatch;
+  return `${variableName.slice(0, room - 1)}…${separator}${maskedMatch}`;
 }
 
 export interface HealthSummary {

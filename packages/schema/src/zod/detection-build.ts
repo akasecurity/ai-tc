@@ -14,11 +14,20 @@ import type {
   ListDetectionsResponse,
   OriginEnum,
 } from './detection.ts';
-import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from './rule.ts';
+import {
+  AppliesTo,
+  Matcher,
+  PostValidatorRef,
+  RequiresNearby,
+  type Rule,
+  RuleEvidence,
+} from './rule.ts';
 
 /**
  * Spread-able single entry for an optional DetectionRule field: `{ key: value }`
- * when the stored value both exists and validates, `{}` otherwise.
+ * when the stored value both exists and validates, `{}` otherwise. `parse` runs
+ * only when the value exists, so a rule that does not set the field costs no
+ * validation.
  *
  * Returning the empty object rather than `{ key: undefined }` matters — the
  * DetectionDetail this builds is serialized to JSON on the enterprise HTTP path,
@@ -29,10 +38,12 @@ import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from 
  */
 function optional<K extends string, T>(
   key: K,
-  parsed: { success: boolean; data?: T },
   raw: unknown,
+  parse: (value: unknown) => { success: boolean; data?: T },
 ): Partial<Record<K, T>> {
-  if (raw === undefined || !parsed.success || parsed.data === undefined) return {};
+  if (raw === undefined) return {};
+  const parsed = parse(raw);
+  if (!parsed.success || parsed.data === undefined) return {};
   return { [key]: parsed.data } as Record<K, T>;
 }
 
@@ -165,10 +176,12 @@ export function rowToDetectionDetail(
         category: r.category,
         severity: r.severity,
         matcher: parsed.data,
-        // The rest of what decides whether this rule fires. Carried so a consumer
-        // re-running the rule (a preview, a tester) evaluates what the engine
-        // evaluates rather than a matcher stripped of its guards — half the
-        // bundled catalog carries at least one of these.
+        // `appliesTo`, `postValidators` and `requiresNearby` are the rest of what
+        // decides whether this rule fires. Carried so a consumer re-running the
+        // rule (a preview, a tester) evaluates what the engine evaluates rather
+        // than a matcher stripped of its guards — half the bundled catalog
+        // carries at least one of these. `examples` and `evidence` describe the
+        // rule and never gate a match.
         //
         // Enrichment is deliberately per-field and best-effort, NOT a whole-rule
         // `Rule.safeParse`. Two reasons: `Rule` is a strict object pinned to
@@ -178,18 +191,15 @@ export function rowToDetectionDetail(
         // test should stay exactly what it was, namely a renderable matcher. A
         // field that fails validation is omitted, which reads as "not set" and is
         // the same thing the consumer saw before this change.
-        ...optional('appliesTo', AppliesTo.safeParse(r.appliesTo), r.appliesTo),
-        ...optional(
-          'postValidators',
-          PostValidatorRef.array().safeParse(r.postValidators),
-          r.postValidators,
+        ...optional('appliesTo', r.appliesTo, (v) => AppliesTo.safeParse(v)),
+        ...optional('postValidators', r.postValidators, (v) =>
+          PostValidatorRef.array().safeParse(v),
         ),
-        ...optional('requiresNearby', RequiresNearby.safeParse(r.requiresNearby), r.requiresNearby),
-        ...optional(
-          'examples',
-          { success: isStringArray(r.examples), data: r.examples },
-          r.examples,
+        ...optional('requiresNearby', r.requiresNearby, (v) => RequiresNearby.safeParse(v)),
+        ...optional('examples', r.examples, (v) =>
+          isStringArray(v) ? { success: true, data: v } : { success: false },
         ),
+        ...optional('evidence', r.evidence, (v) => RuleEvidence.safeParse(v)),
       },
     ];
   });

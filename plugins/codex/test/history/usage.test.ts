@@ -14,6 +14,13 @@ import {
   standaloneGatewayFactory,
 } from '@akasecurity/plugin-runtime';
 import { type PluginConfig, resolveRepo } from '@akasecurity/plugin-sdk';
+import {
+  buildTokenReports,
+  type CostModel,
+  costOf,
+  type LlmCallAttributes,
+  tokenPrice,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
@@ -242,6 +249,137 @@ describe('reconcileHistory — backfill', () => {
   });
 });
 
+// A `last_token_usage` exactly as a Codex rollout records it. `input_tokens` is
+// the whole prompt: it includes `cached_input_tokens` and
+// `cache_write_input_tokens`, and `total_tokens` is `input_tokens +
+// output_tokens`.
+interface CodexTokenUsage {
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+}
+
+function rawTokenCount(timestamp: string, last: CodexTokenUsage): string {
+  return line({
+    timestamp,
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      info: { total_token_usage: last, last_token_usage: last, model_context_window: 258400 },
+      rate_limits: null,
+    },
+  });
+}
+
+const MOSTLY_CACHED: CodexTokenUsage = {
+  input_tokens: 100059,
+  cached_input_tokens: 99584,
+  cache_write_input_tokens: 0,
+  output_tokens: 225,
+  reasoning_output_tokens: 56,
+  total_tokens: 100284,
+};
+
+const WITH_CACHE_WRITE: CodexTokenUsage = {
+  input_tokens: 100,
+  cached_input_tokens: 40,
+  cache_write_input_tokens: 60,
+  output_tokens: 10,
+  reasoning_output_tokens: 5,
+  total_tokens: 110,
+};
+
+// Per 1M tokens: input, output, cache read.
+const PRICE = tokenPrice(1.25, 10, { cacheRead: 0.125 });
+const priceAll: CostModel = {
+  costFor: ({ usage }) => costOf(PRICE, usage),
+  normalizeModelId: (provider, model) => ({ provider, model }),
+};
+
+// What the call is billed: uncached input at the input rate, cached input at the
+// cache-read rate, output at the output rate.
+function billed(u: CodexTokenUsage): number {
+  const uncached = u.input_tokens - u.cached_input_tokens;
+  return (uncached * 1.25 + u.cached_input_tokens * 0.125 + u.output_tokens * 10) / 1_000_000;
+}
+
+describe('reconcileHistory — cached input', () => {
+  let dataDir: string;
+  let transcripts: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-usage-data-'));
+    transcripts = mkdtempSync(join(tmpdir(), 'aka-usage-tx-'));
+  });
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(transcripts, { recursive: true, force: true });
+  });
+
+  for (const [name, usage] of [
+    ['a mostly-cached turn', MOSTLY_CACHED],
+    ['a turn that also wrote to the cache', WITH_CACHE_WRITE],
+  ] as const) {
+    it(`stores cached input once, not inside input_tokens too (${name})`, async () => {
+      seed(
+        transcripts,
+        [sessionMeta, turnContext, rawTokenCount('2026-06-20T10:00:05.000Z', usage)].join('\n'),
+      );
+      await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+      const attrs = rows(dataDir).attrsByOrdinal[0] as LlmCallAttributes;
+      expect(attrs).toMatchObject({
+        input_tokens: usage.input_tokens - usage.cached_input_tokens,
+        cache_read_input_tokens: usage.cached_input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_output_tokens: usage.reasoning_output_tokens,
+      });
+
+      const [report] = buildTokenReports([{ sessionId: SESSION, attributes: attrs }], priceAll);
+      expect(report?.totalTokens).toBe(usage.total_tokens);
+      expect(report?.estimatedCostUsd).toBeCloseTo(billed(usage), 12);
+    });
+  }
+
+  it('leaves a mostly-cached prompt over the long-context line unpriced', async () => {
+    // 300K prompt, 95% cached. Only 15K is uncached, but the band is chosen by
+    // the whole prompt, and above 272K this synthetic price has no input rate.
+    const overLine: CodexTokenUsage = {
+      input_tokens: 300_000,
+      cached_input_tokens: 285_000,
+      cache_write_input_tokens: 0,
+      output_tokens: 500,
+      reasoning_output_tokens: 100,
+      total_tokens: 300_500,
+    };
+    const banded = tokenPrice(1.25, 10, {
+      cacheRead: 0.125,
+      longContext: { thresholdInputTokens: 272_000, input: null, output: null },
+    });
+    const priceBanded: CostModel = {
+      costFor: ({ usage }) => costOf(banded, usage),
+      normalizeModelId: (provider, model) => ({ provider, model }),
+    };
+    seed(
+      transcripts,
+      [sessionMeta, turnContext, rawTokenCount('2026-06-20T10:00:05.000Z', overLine)].join('\n'),
+    );
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    const attrs = rows(dataDir).attrsByOrdinal[0] as LlmCallAttributes;
+    expect(attrs).toMatchObject({ input_tokens: 15_000, cache_read_input_tokens: 285_000 });
+    const leaves = [{ sessionId: SESSION, attributes: attrs }];
+    expect(buildTokenReports(leaves, priceBanded)[0]?.estimatedCostUsd).toBeNull();
+    // Not vacuous: the same row prices under a flat rate.
+    expect(buildTokenReports(leaves, priceAll)[0]?.estimatedCostUsd).toBeCloseTo(
+      billed(overLine),
+      12,
+    );
+  });
+});
+
 describe('reconcileHistory — tool calls', () => {
   let dataDir: string;
   let transcripts: string;
@@ -360,7 +498,9 @@ describe('reconcileHistory — tool calls', () => {
 
   // The AWS key is ASSEMBLED at runtime so this source has no literal secret.
   const AWS_KEY = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
-  function secretTranscript(): string {
+  function secretTranscript(
+    command = ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+  ): string {
     return [
       sessionMeta,
       turnContext,
@@ -372,7 +512,7 @@ describe('reconcileHistory — tool calls', () => {
           type: 'exec_command_begin',
           call_id: 'call-sec',
           turn_id: 'turn-1',
-          command: ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+          command,
           cwd: '/Users/me/proj',
           parsed_cmd: [],
         },
@@ -384,7 +524,7 @@ describe('reconcileHistory — tool calls', () => {
           type: 'exec_command_end',
           call_id: 'call-sec',
           turn_id: 'turn-1',
-          command: ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+          command,
           cwd: '/Users/me/proj',
           parsed_cmd: [],
           stdout: '',
@@ -435,6 +575,39 @@ describe('reconcileHistory — tool calls', () => {
     expect(f?.maskedMatch).not.toContain(AWS_KEY);
     expect(f?.target).not.toContain(AWS_KEY);
     expect(f?.target).toContain('[REDACTED');
+  });
+
+  function variableNames(dir: string): (string | null)[] {
+    const db = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      return (
+        db.prepare(`SELECT variable_name AS name FROM inspection_findings`).all() as {
+          name: string | null;
+        }[]
+      ).map((r) => r.name);
+    } finally {
+      db.close();
+    }
+  }
+
+  it('records the variable a secret in a tool target is assigned to, never the value', async () => {
+    const name = ['AWS', 'ACCESS', 'KEY', 'ID'].join('_');
+    seed(
+      transcripts,
+      secretTranscript(['bash', '-lc', `export ${name}${String.fromCharCode(61)}${AWS_KEY}`]),
+    );
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    expect(variableNames(dataDir)).toContain(name);
+    for (const stored of variableNames(dataDir)) expect(stored ?? '').not.toContain(AWS_KEY);
+  });
+
+  it('records no variable name for a secret that is not assigned', async () => {
+    seed(transcripts, secretTranscript());
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    expect(variableNames(dataDir).length).toBeGreaterThan(0);
+    for (const stored of variableNames(dataDir)) expect(stored).toBeNull();
   });
 
   it('inspection findings are idempotent (content-addressed) across re-runs', async () => {

@@ -1,10 +1,11 @@
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToolText } from '../../src/exception-guidance.ts';
 import type { ResponseScanOutcome } from '../../src/hooks/scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
-import { RESPONSE_CHUNK_CHARS, scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import { collectResponseFields, RESPONSE_CHUNK_CHARS } from '../../src/hooks/tool-response.ts';
 
 function finding(ruleId: string): CaptureResult['findings'][number] {
   return {
@@ -39,6 +40,29 @@ describe('scanResponseFields', () => {
     expect(outcome.redactedFindings).toEqual([]);
     expect(outcome.warnedFindings).toEqual([]);
   });
+
+  // A field whose bounded large-input scan did not finish is `block` with
+  // `scanIncomplete` set and NO findings: the no-findings skip below would pass
+  // it to the model unscanned, so it is checked first and withheld.
+  it.each(['timeout', 'unavailable'] as const)(
+    'withholds a field whose bounded scan did not finish (%s), and only that field',
+    async (scanIncomplete) => {
+      const response = { stdout: 'a very large output', stderr: 'err text' };
+      const outcome = await scanResponseFields('Bash', response, bashFields(response), (text) =>
+        Promise.resolve(
+          text === 'a very large output' ? result({ action: 'block', scanIncomplete }) : result({}),
+        ),
+      );
+      const updated = outcome.updated as { stdout: string; stderr: string };
+      expect(updated.stdout).toBe(tooLargeToolText('Bash', 'stdout'));
+      expect(updated.stdout).toContain('too large');
+      expect(updated.stdout).not.toContain('a very large output');
+      expect(updated.stderr).toBe('err text');
+      expect(outcome.tooLargeFields).toEqual(['stdout']);
+      expect(outcome.withheldFindings).toEqual([]);
+      expect(outcome.unscannedFields).toBe(0);
+    },
+  );
 
   it('withholds only the blocked field and names it in the replacement', async () => {
     const response = { stdout: 'out text', stderr: 'AKIA secret' };
@@ -140,7 +164,7 @@ describe('scanResponseFields — chunked fields', () => {
   const response = { mode: 'content', numFiles: 3, filenames: [], content, numLines: 0 };
 
   it('splices each chunk rewrite back into one string and keeps the rest verbatim', async () => {
-    const fields = scannableResponseFields('Grep', response);
+    const fields = collectResponseFields('Grep', response).fields;
     expect(fields.length).toBeGreaterThan(2);
     const outcome = await scanResponseFields('Grep', response, fields, (text) => {
       if (text.includes('AKIA')) {
@@ -226,6 +250,7 @@ function outcome(partial: Partial<ResponseScanOutcome>): ResponseScanOutcome {
     redactedReferences: [],
     realized: null,
     unscannedFields: 0,
+    tooLargeFields: [],
     ...partial,
   };
 }
@@ -233,6 +258,25 @@ function outcome(partial: Partial<ResponseScanOutcome>): ResponseScanOutcome {
 describe('responseEmitPayload', () => {
   it('returns undefined when nothing was flagged (hook stays silent)', () => {
     expect(responseEmitPayload('Bash', outcome({}))).toBeUndefined();
+  });
+
+  it('withholds a too-large field through updatedToolOutput and says why', () => {
+    const updated = { stdout: tooLargeToolText('Bash', 'stdout'), stderr: 'err text' };
+    const payload = responseEmitPayload(
+      'Bash',
+      outcome({ updated, tooLargeFields: ['stdout'] }),
+    ) as {
+      hookSpecificOutput: { hookEventName: string; updatedToolOutput: unknown };
+      systemMessage: string;
+    };
+    expect(payload.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    expect(payload.hookSpecificOutput.updatedToolOutput).toBe(updated);
+    expect(payload.systemMessage).toContain('Bash output withheld');
+    expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+    // No rule ran to completion, so there is no flagged value and nothing an
+    // exception could approve.
+    expect(payload.systemMessage).not.toContain('aka exception approve');
+    expect(payload.systemMessage).not.toContain('flagged value');
   });
 
   it('emits a warn-only systemMessage without updatedToolOutput', () => {
@@ -284,6 +328,51 @@ describe('responseEmitPayload', () => {
     ) as { systemMessage: string };
     expect(payload.systemMessage).toContain('Bash output redacted');
     expect(payload.systemMessage).toContain('aka exception approve redref');
+  });
+
+  // A refused field and a REDACTED one in the same output, nothing withheld for
+  // a rule: the header says withheld (a field was), but the redacted spans are
+  // still the only ledgered value — so the approve line carries the REDACT ref,
+  // and the line about what never reached the model describes the spans rather
+  // than a flagged value nothing withheld.
+  it('too-large + redact, nothing withheld for a rule: keeps the redact ref on the approve line', () => {
+    const payload = responseEmitPayload(
+      'Bash',
+      outcome({
+        updated: { stdout: tooLargeToolText('Bash', 'stdout'), stderr: '[REDACTED]' },
+        redactedFindings: [finding('core-pii/email')],
+        redactedReferences: [
+          { reference: 'redref', ruleId: 'core-pii/email', maskedValue: 'j***' },
+        ],
+        tooLargeFields: ['stdout'],
+      }),
+    ) as { systemMessage: string };
+    expect(payload.systemMessage).toContain('Bash output withheld');
+    expect(payload.systemMessage).toContain('Redacted: core-pii/email');
+    expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+    expect(payload.systemMessage).toContain('(j***) intentionally: aka exception approve redref');
+    expect(payload.systemMessage).toContain('Redacted spans never reached the model.');
+    expect(payload.systemMessage).not.toContain('flagged value');
+  });
+
+  it('too-large + block + redact: the BLOCKED ref still wins the approve line', () => {
+    const payload = responseEmitPayload(
+      'Bash',
+      outcome({
+        withheldFindings: [finding('secrets/aws-access-key')],
+        redactedFindings: [finding('core-pii/email')],
+        redactedReferences: [
+          { reference: 'redref', ruleId: 'core-pii/email', maskedValue: 'j***' },
+        ],
+        blockedReferences: [
+          { reference: 'blkref', ruleId: 'secrets/aws-access-key', maskedValue: 'A***A' },
+        ],
+        tooLargeFields: ['stdout'],
+      }),
+    ) as { systemMessage: string };
+    expect(payload.systemMessage).toContain('aka exception approve blkref');
+    expect(payload.systemMessage).not.toContain('redref');
+    expect(payload.systemMessage).toContain('The flagged value never reached the model.');
   });
 
   it('warn findings alongside a rewrite land on the banner instead of vanishing', () => {

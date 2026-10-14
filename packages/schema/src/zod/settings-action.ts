@@ -11,9 +11,9 @@
 // Shape only. Whether a choice string names a real mode is still checked by the
 // domain schema at the call site; what this layer guarantees is that the check
 // receives the type it was written for.
-import { z } from 'zod';
+import * as z from 'zod';
 
-import { printable } from './control-plane.ts';
+import { AttachmentMode, printable } from './control-plane.ts';
 
 // Deliberately NOT `.strict()`, for the reason exception-action.ts gives: an
 // unknown key from a newer client must not refuse a save over a field this
@@ -26,8 +26,8 @@ import { printable } from './control-plane.ts';
  * times and payload versions are stamped server-side, so a client cannot
  * backdate a grant or claim a version it never saw.
  *
- * `modelJudgeConsent`, `historySyncConsent` and `webChatCaptureConsent` are
- * REQUIRED, and that is a
+ * `modelJudgeConsent`, `historySyncConsent`, `webChatCaptureConsent` and
+ * `webChatAccountConsent` are REQUIRED, and that is a
  * security property rather than a strictness preference. `historySyncConsent`
  * is a three-state enum rather than a boolean for a related reason, set out on
  * HistorySyncConsentChoice — but it is required in exactly the same way. `modelJudgeConsent` was
@@ -99,6 +99,19 @@ export const WebChatCaptureConsentChoice = z
   .meta({ id: 'WebChatCaptureConsentChoice' });
 export type WebChatCaptureConsentChoice = z.infer<typeof WebChatCaptureConsentChoice>;
 
+/**
+ * The account grant answer — whether the browser extension's host may record
+ * which web chat accounts it sees (`webChatCapture.account`), so they can be
+ * listed for enrolling. Its own answer rather than a field of the capture
+ * grant's: it records something else (an account key and two times, nothing
+ * from a chat), under its own versioned consent. Three states and required, for
+ * the reasons WebChatCaptureConsentChoice gives.
+ */
+export const WebChatAccountConsentChoice = z
+  .enum(['granted', 'revoked', 'unchanged'])
+  .meta({ id: 'WebChatAccountConsentChoice' });
+export type WebChatAccountConsentChoice = z.infer<typeof WebChatAccountConsentChoice>;
+
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
   modelJudgeConsent: ModelJudgeConsentChoice,
@@ -106,6 +119,7 @@ export const SaveSettingsInput = z.object({
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
   webChatCaptureConsent: WebChatCaptureConsentChoice,
+  webChatAccountConsent: WebChatAccountConsentChoice,
   // Widened to `string` like its neighbours rather than typed as
   // `RedactFallback`, on this module's own layering rule: shape here, VALUE at
   // the call site, so the domain check receives the type it was written for.
@@ -124,6 +138,16 @@ export const SaveSettingsInput = z.object({
   bodyRetention: z.object({ enabled: z.boolean(), retainDays: z.number() }),
 });
 export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
+
+/**
+ * `setSightingShareConsent` — the user's answer to sharing credential sightings
+ * with their organization. The bare answer: the grant record is stamped
+ * server-side.
+ */
+export const SetSightingShareConsentInput = z.object({
+  choice: z.enum(['granted', 'revoked']),
+});
+export type SetSightingShareConsentInput = z.infer<typeof SetSightingShareConsentInput>;
 
 /**
  * `attachToControlPlane` — register this machine against an organization's
@@ -161,5 +185,14 @@ export const AttachInput = z.object({
   // renders a longer one usefully.
   label: printable(200).optional(),
   accessKey: z.string(),
+  // How much of this machine the attachment is for: everything, or only the
+  // repositories its user enrolls. Optional, so an input without it still
+  // parses; what an absent mode means is for whatever reads it to decide, not
+  // this shape. This member validates the VALUE rather than leaving that to the
+  // call site, a deliberate exception to this module's shape-only rule: a shape
+  // rejection names the field, so a value that is not a mode is refused as a bad
+  // `mode` rather than stripped or passed on. The dashboard's attach action reads
+  // it as the mode to attach in.
+  mode: AttachmentMode.optional(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

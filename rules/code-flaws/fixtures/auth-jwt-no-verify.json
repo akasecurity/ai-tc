@@ -18,5 +18,20 @@
     "label": "verify flag unrelated to JWT",
     "text": "is_valid = verify_email(token)",
     "shouldMatch": false
+  },
+  {
+    "label": "verify_signature False beside another disabled check",
+    "text": "jwt.decode(token, options={\"verify_signature\": False, \"verify_exp\": False})",
+    "shouldMatch": true
+  },
+  {
+    "label": "a later verify_signature False on a line that also enables it",
+    "text": "a = {\"verify_signature\": True}; b = {\"verify_signature\": False}; jwt.decode(token, options=b)",
+    "shouldMatch": true
+  },
+  {
+    "label": "verify_signature and verify_aud both enabled",
+    "text": "opts = {\"verify_signature\": True, \"verify_aud\": True}; jwt.decode(token, options=opts)",
+    "shouldMatch": false
   }
 ]

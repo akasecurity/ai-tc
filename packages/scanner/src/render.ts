@@ -14,6 +14,8 @@ import type { MultiRepoScanSummary, WorktreeScanSummary } from './scan.ts';
 export interface RenderScanOptions {
   // e.g. 'Run /findings to review details.' — host command names differ.
   followUp?: string;
+  // A closing line the host supplies, rendered last on every shape.
+  footer?: string;
 }
 
 // Severity glyphs: heavier fill = more severe, matching the plugin read
@@ -73,10 +75,7 @@ function followUpSection(opts: RenderScanOptions): string[] {
   return opts.followUp !== undefined ? ['', `  ${opts.followUp}`] : [];
 }
 
-export function renderWorktreeSummary(
-  summary: WorktreeScanSummary,
-  opts: RenderScanOptions = {},
-): string {
+function worktreeBody(summary: WorktreeScanSummary, opts: RenderScanOptions = {}): string {
   const rootLabel = relative(process.cwd(), summary.rootDir) || '.';
   const meta = metaBlock([
     ['Root', rootLabel],
@@ -107,10 +106,7 @@ export function renderWorktreeSummary(
   ].join('\n');
 }
 
-export function renderMultiRepoSummary(
-  summary: MultiRepoScanSummary,
-  opts: RenderScanOptions = {},
-): string {
+function multiRepoBody(summary: MultiRepoScanSummary, opts: RenderScanOptions = {}): string {
   const meta = metaBlock([
     ['Repositories', String(summary.repos.length)],
     ['Scanned', `${String(summary.totalScanned)} files`],
@@ -144,4 +140,22 @@ export function renderMultiRepoSummary(
     repoSection,
     ...followUpSection(opts),
   ].join('\n');
+}
+
+function withFooter(body: string, opts: RenderScanOptions): string {
+  return opts.footer === undefined ? body : `${body}\n\n  ${opts.footer}`;
+}
+
+export function renderWorktreeSummary(
+  summary: WorktreeScanSummary,
+  opts: RenderScanOptions = {},
+): string {
+  return withFooter(worktreeBody(summary, opts), opts);
+}
+
+export function renderMultiRepoSummary(
+  summary: MultiRepoScanSummary,
+  opts: RenderScanOptions = {},
+): string {
+  return withFooter(multiRepoBody(summary, opts), opts);
 }

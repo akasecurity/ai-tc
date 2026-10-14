@@ -1,0 +1,16 @@
+{
+  "secrets-infra/ssh-private-key": "SSH private key",
+  "secrets-infra/db-connection-string": "Database credentials",
+  "secrets-infra/jwt-token": "JWT",
+  "secrets-infra/basic-auth-url": "URL with credentials",
+  "secrets-infra/basic-auth-header": "Basic auth header",
+  "secrets-infra/pgp-private-key": "PGP private key",
+  "secrets-infra/bearer-token": "Bearer token",
+  "secrets-infra/env-key-value": "Secret env variable",
+  "secrets-infra/password-field": "Password field",
+  "secrets-infra/docker-config-auth": "Docker auth",
+  "secrets-infra/kubeconfig-token": "Kubeconfig token",
+  "secrets-infra/api-key-header": "API key header",
+  "secrets-infra/generic-high-entropy-secret": "High-entropy secret",
+  "secrets-infra/secret-config-value": "Secret config value"
+}

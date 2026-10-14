@@ -24,5 +24,20 @@
     "text": "user_input = request.args['cmd']\nsubprocess.run(user_input, shell=True)",
     "shouldMatch": false,
     "filePath": "src/example.go"
+  },
+  {
+    "label": "shell=True after another subprocess attribute in the arguments",
+    "text": "subprocess.call(user_cmd, stdout=subprocess.PIPE, shell=True)",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line call with shell=True",
+    "text": "subprocess.run(\n    request.args[\"cmd\"],\n    shell=True,\n)",
+    "shouldMatch": true
+  },
+  {
+    "label": "two calls on one line, neither with shell=True",
+    "text": "subprocess.run(user_cmd, check=True); subprocess.run(args, text=True)",
+    "shouldMatch": false
   }
 ]

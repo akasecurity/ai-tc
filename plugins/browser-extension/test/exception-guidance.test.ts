@@ -7,7 +7,11 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { blockGuidance, redactExceptionRoute } from '../src/exception-guidance.ts';
+import {
+  blockGuidance,
+  redactExceptionRoute,
+  tooLargeToScanMessage,
+} from '../src/exception-guidance.ts';
 
 function ref(reference: string, maskedValue = 'A******E'): BlockedDetectionRef {
   return { reference, ruleId: 'secrets/aws-access-key', maskedValue };
@@ -78,5 +82,17 @@ describe('redactExceptionRoute', () => {
     // The first case above is the positive control: the same builder does
     // return a route when there is a row to name.
     expect(redactExceptionRoute(undefined)).toBeUndefined();
+  });
+});
+
+// A message whose bounded scan did not finish: nothing was flagged, so there is
+// no rule to name and no value an exception could approve.
+describe('tooLargeToScanMessage', () => {
+  it('says the message was too large to scan in time and was not sent', () => {
+    const message = tooLargeToScanMessage();
+    expect(message).toContain('too large for AKA to scan within the time limit');
+    expect(message).toContain('was NOT sent');
+    expect(message).not.toContain('aka exception');
+    expect(message).not.toContain('flagged');
   });
 });

@@ -89,7 +89,14 @@ export type HookOutput =
       systemMessage: string;
     }
   | { hookSpecificOutput: { hookEventName: 'MessageDisplay'; displayContent: string } }
-  | { hookSpecificOutput: { hookEventName: 'SessionStart'; additionalContext: string } };
+  | {
+      hookSpecificOutput: { hookEventName: 'SessionStart'; additionalContext: string };
+      // What the user sees at session start (the forwarding line, a stale-binary
+      // notice), beside the brief the model gets. Optional: the brief goes out
+      // alone when there is nothing to show, and a bare systemMessage when there
+      // is no brief.
+      systemMessage?: string;
+    };
 
 // Hook output protocol: write one JSON object to stdout and exit 0.
 // Writing nothing and exiting 0 means "no opinion" (allow).
@@ -140,9 +147,8 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
 // The scope key of the checkout this event happened in: the canonical
 // `host/owner/repo` of its origin (else first) remote. It is undefined for a
 // directory with no remote, a remote that is a local path, or no checkout at
-// all. A scoped attachment is meant to compare it against the repositories it
-// covers, and to keep an event with no key on this machine; that check is not
-// part of this change.
+// all. The attached gateway compares it against the repositories a scoped
+// attachment covers, and keeps an event with no key on this machine.
 //
 // WHICH DIRECTORY. An event that names an ABSOLUTE path (the `filePath` the
 // caller stamps as metadata.filePath: a Write, Edit, MultiEdit or NotebookEdit

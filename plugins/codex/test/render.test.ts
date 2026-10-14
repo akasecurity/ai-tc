@@ -38,6 +38,7 @@ import {
   renderApplied,
   renderCategoriesTuned,
   renderDetections,
+  renderFindings,
   renderFirstRun,
   renderHealth,
   renderPosture,
@@ -1068,5 +1069,19 @@ describe('read-surface footers name skills this host can actually invoke', () =>
     ].map((m) => m[0]);
     expect(named.length).toBeGreaterThan(0);
     for (const skill of named) expect(REGISTRY).toContain(skill);
+  });
+});
+
+describe('renderFindings — variable name', () => {
+  it('shows the variable a secret was assigned to beside its masked match', () => {
+    const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+    const status = {
+      score: 72,
+      unreviewed: { critical: 1, high: 0, medium: 0, low: 0 },
+      openFindings: 1,
+    };
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    const out = renderFindings([finding({ variableName: name })], status).replace(ansi, '');
+    expect(out).toContain(`${name} = AKIA…MPLE`);
   });
 });

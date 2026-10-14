@@ -174,12 +174,14 @@ describe('reading a file that should not be trusted', () => {
   });
 
   it('reports malformed for a specVersion this build does not know', () => {
-    // `specVersion` is a z.literal, so a future format is refused rather than
-    // half-read — the machine stays standalone until something understands it.
+    // The reader dispatches on `specVersion` — 1 is a machine-wide attachment, 2
+    // a scoped one — and refuses any other rather than half-reading it, so the
+    // machine stays standalone until something understands it. 3 is the first
+    // version no build has written.
     mkdirSync(store.settingsDir, { recursive: true });
     writeFileSync(
       controlPlaneCredentialPath(store.settingsDir),
-      JSON.stringify({ ...credential, specVersion: 2 }),
+      JSON.stringify({ ...credential, specVersion: 3 }),
       { mode: DATA_FILE_MODE },
     );
     expect(readControlPlaneCredentialState(store.settingsDir)).toEqual({

@@ -5,8 +5,13 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
-import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
-import { bundledDetections, contentHashOf } from '@akasecurity/plugin-sdk';
+import type { DataGateway, LargeInputScanOptions, PluginConfig } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  contentHashOf,
+  LARGE_INPUT_SCAN_BUDGET_MS,
+  LARGE_INPUT_THRESHOLD_CHARS,
+} from '@akasecurity/plugin-sdk';
 import type {
   BuiltinPolicyId,
   WebCaptureStatus,
@@ -19,7 +24,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import type { ConfigForTool } from '../../src/native-host/host.ts';
-import { handleRequest, readCaptureStatus } from '../../src/native-host/host.ts';
+import {
+  CAPTURE_SCAN_DEADLINE_MS,
+  CAPTURE_START_BUDGET_MS,
+  captureLargeInput,
+  handleRequest,
+  readCaptureStatus,
+} from '../../src/native-host/host.ts';
 import type { HostRequest, WebSourceTool } from '../../src/native-host/protocol.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -1399,5 +1410,99 @@ describe('capture_state', () => {
     if (response.type !== 'error') throw new Error('expected an error response');
     expect(response.message).toBe('malformed capture status payload');
     expectNoEchoOf(JSON.stringify(response), SECRET_EXAMPLE);
+  });
+});
+
+// The one capture this host answers without a verdict on its content: a prompt
+// at or above the large-input threshold whose bounded scan did not finish. It is
+// refused — `block`, nothing to send, no rules — and says so on
+// `scanIncomplete`, so the content script can tell it from a flagged block.
+describe('a prompt too large to scan in time', () => {
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(40)}end`;
+  // A bound with no time left refuses before any worker is started, so the
+  // refusal is the same on every runner.
+  const spent = (): LargeInputScanOptions => ({
+    thresholdChars: 64,
+    budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
+    startBudgetMs: CAPTURE_START_BUDGET_MS,
+    remainingMs: () => 0,
+  });
+
+  it('is refused as an explicit block carrying scanIncomplete, echoing nothing', async () => {
+    const response = await handleRequest(
+      {
+        type: 'capture',
+        requestId: 'big-1',
+        sessionId: 'browser-big',
+        tool: 'chatgpt',
+        kind: 'prompt',
+        text: LARGE,
+      },
+      config,
+      spent,
+    );
+    expect(response).toEqual({
+      type: 'capture',
+      requestId: 'big-1',
+      ok: true,
+      action: 'block',
+      text: null,
+      ruleIds: [],
+      scanIncomplete: 'timeout',
+    });
+    expect(JSON.stringify(response)).not.toContain('lorem ipsum');
+  });
+
+  it('leaves a prompt below the threshold to the ordinary scan', async () => {
+    const response = await handleRequest(
+      {
+        type: 'capture',
+        requestId: 'small-1',
+        sessionId: 'browser-small',
+        tool: 'chatgpt',
+        kind: 'prompt',
+        text: 'a short prompt',
+      },
+      config,
+      spent,
+    );
+    expect(response).toEqual({
+      type: 'capture',
+      requestId: 'small-1',
+      ok: true,
+      action: 'log',
+      ruleIds: [],
+    });
+  });
+});
+
+describe('captureLargeInput (the bound every capture is scanned under)', () => {
+  it('passes the SDK threshold and scan budget, with a start budget of its own', () => {
+    expect(captureLargeInput(0)).toMatchObject({
+      thresholdChars: LARGE_INPUT_THRESHOLD_CHARS,
+      budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
+      startBudgetMs: CAPTURE_START_BUDGET_MS,
+    });
+  });
+
+  it('counts the deadline from when the request was received', () => {
+    let clock = 1_250;
+    const bound = captureLargeInput(1_000, () => clock);
+    expect(bound.remainingMs?.()).toBe(CAPTURE_SCAN_DEADLINE_MS - 250);
+    clock = 1_000 + CAPTURE_SCAN_DEADLINE_MS + 10;
+    expect(bound.remainingMs?.()).toBe(-10);
+  });
+
+  // The refusal has to REACH the page: background.ts answers a request the
+  // host has not answered within RELAY_TIMEOUT_MS with an error, and the
+  // content script lets the original message through on an error. So the
+  // deadline must end well inside that relay window, leaving time for the
+  // store write and the reply. Read from the source so the two cannot drift.
+  it('ends well inside the background relay window', () => {
+    const background = readFileSync(new URL('../../src/background.ts', import.meta.url), 'utf8');
+    const relay = /const RELAY_TIMEOUT_MS = (\d+);/u.exec(background)?.[1];
+    expect(relay).toBeDefined();
+    expect(CAPTURE_SCAN_DEADLINE_MS).toBeLessThanOrEqual(Number(relay) - 1_000);
+    expect(CAPTURE_START_BUDGET_MS).toBeLessThan(CAPTURE_SCAN_DEADLINE_MS);
   });
 });

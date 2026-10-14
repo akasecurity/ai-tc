@@ -104,10 +104,10 @@ const COUNTED_TYPE_LIST = COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 /**
  * The delivery-state buckets, written ONCE.
  *
- * Two reads project them — the aggregate and the per-kind breakdown — and a
- * surface shows both together, so a bucket defined twice is two numbers that
- * disagree about the same rows in the same view. Composed rather than repeated
- * for that reason, not for brevity.
+ * Two reads project them — the aggregate and the per-kind breakdown — and two
+ * reads of one clause cannot disagree about the same rows, where a bucket
+ * defined twice could. Composed rather than repeated for that reason, not for
+ * brevity.
  */
 const PARTITION_BUCKETS = `
          SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
@@ -129,12 +129,13 @@ const PARTITION_BUCKETS = `
  * WHICH ROWS THESE READS ARE ABOUT, and the half that is not a type filter.
  *
  * A structural row is always somebody's to deliver: the live path owns it, and
- * the drain re-offers it. A CAPTURE is only ever outstanding when a live forward
- * marked it owed — a capture recorded while this machine was detached, or before
- * anyone consented, was offered to nobody and is owed to nobody. Counted on type
- * alone it would read as queued, and on a working machine that is most of the
- * capture rows in the store: a backlog figure made of rows nothing will ever
- * send.
+ * the drain re-offers one that started before the attach; one that started
+ * after it is the live path's alone. A CAPTURE is only ever outstanding when a
+ * live forward marked it owed — a capture recorded while this machine was
+ * detached, or before anyone consented, was offered to nobody and is owed to
+ * nobody. Counted on type alone it would read as queued, and on a working
+ * machine that is most of the capture rows in the store: a backlog figure made
+ * of rows nothing will ever send.
  *
  * So a capture enters these reads only once it is owed or already settled. The
  * buckets stay simple because this clause has already decided what "outstanding"
@@ -166,7 +167,8 @@ const SKIPPED = -1;
  * rollup's id list is the precedent). The comparison is the column's own BINARY
  * collation, byte for byte, which is the same match the in-memory verdict's
  * `Set` makes. A NULL key is never `IN` anything, and an empty array matches
- * nothing: a row with no key, or a scope with no entries, sends nothing.
+ * nothing: a row with no key, or a scope with no entries, sends nothing and
+ * counts nothing.
  */
 function inScope(column: string): string {
   return `${column} IN (SELECT value FROM json_each(:scopeKeys))`;
@@ -188,6 +190,81 @@ const ROOT_SCOPE_KEY = `(SELECT session_root.scope_key
     WHERE session_root.id = COALESCE(audit_events.root_session_id, audit_events.id))`;
 
 /**
+ * The scope clause of the SCOPED delivery-state partition: a row is counted
+ * only when it passes the reachability rule of that scope's drain. Appended to
+ * COUNTED_SCOPE, so it narrows the rows a read is about and never widens them.
+ *
+ * THE DRAIN'S REACHABILITY RULE, as a filter. A structural row needs its own
+ * key AND its session root's key enrolled, as scopedSessionsStmt and
+ * scopedRowsStmt require: /v1/audit-events stubs no root, so a leaf under a
+ * root this machine never sends is never sent. A capture needs its own key
+ * only, as scopedCaptureRowsStmt requires: /v1/events stubs a missing root.
+ * Counted any other way, a scoped machine's backlog would include rows its
+ * drain never offers, and would never empty.
+ *
+ * WHAT IT DOES NOT TAKE FROM THE DRAIN is the attach-time bound. Like the
+ * machine partition it takes no time bound, so an undelivered structural row
+ * that started after the attach is still counted, as queued, once its own key
+ * and its session root's key are enrolled, although the drain never offers it
+ * (`started_at < backlogBefore`) and nothing else re-offers it. The capture
+ * lane has no attach-time bound, so this holds for structural rows alone.
+ *
+ * Written ONCE for the aggregate and the per-kind read, so the two cannot
+ * disagree about which rows a scope counts: the per-kind rows sum to the
+ * aggregate.
+ */
+const COUNTED_IN_SCOPE = `
+         AND ${inScope('scope_key')}
+         AND (event_type IN (${CAPTURE_TYPE_LIST}) OR ${inScope(ROOT_SCOPE_KEY)})`;
+
+/**
+ * The DRAIN's totals over the structural rows: what is waiting inside the
+ * backlog, what was delivered, and what is terminal and why.
+ *
+ * One SELECT behind the machine statement and its scoped twin, written ONCE
+ * for the reason PARTITION_BUCKETS is: a bucket spelled twice is two numbers
+ * that can disagree about the same rows. It ends in its WHERE clause, so the
+ * scoped twin appends its own condition.
+ */
+const DRAIN_TOTALS = `SELECT
+         SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
+                  THEN 1 ELSE 0 END) AS skipped,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached
+       FROM audit_events
+       WHERE event_type IN (${TYPE_LIST})`;
+
+/**
+ * The capture lane's permanent skips, as a LIFETIME total like the drain's
+ * totals rather than a per-pass tally. A surface renders it beside `sent` and
+ * `pending`, both of which are lifetime figures, so a delta there would report
+ * a terminal loss once and then drop it on the next pass — while the rows
+ * stayed gone.
+ *
+ * EVERY sentinel capture, whatever the reason — deliberately NOT split the way
+ * the structural totals are. The split exists because a refusal is terminal
+ * only against the deployment that gave it, and the structural re-arm frees it
+ * on a change of deployment. The capture lane has no such escape: re-arming a
+ * capture would offer one deployment's undelivered prompts, with their text, to
+ * a deployment that never saw them, which is exactly what disownCapturesStmt
+ * exists to prevent. So on this lane both reasons mean the same thing — this
+ * row will not be sent — and splitting them would put refused captures in a
+ * bucket nothing reads and nothing frees.
+ *
+ * One SELECT behind the machine statement and its scoped twin, as DRAIN_TOTALS
+ * is.
+ */
+const CAPTURE_SKIPS = `SELECT COUNT(*) AS skipped
+         FROM audit_events
+        WHERE synced_at = ${String(SKIPPED)}
+          AND event_type IN (${CAPTURE_TYPE_LIST})`;
+
+/**
  * How many structural rows are delivered, waiting, or permanently skipped —
  * plus the capture lane's permanent skips.
  *
@@ -195,6 +272,12 @@ const ROOT_SCOPE_KEY = `(SELECT session_root.scope_key
  * other three are the STRUCTURAL drain's own view and several readers depend on
  * that. It is a lifetime count like they are, which is the point: a per-pass
  * tally rendered beside them would report a permanent loss once and then lose it.
+ *
+ * WHICH ROWS: every row on the machine, or, from `counts(before, scopeKeys)` on
+ * a scoped attachment, only the rows that pass that scope's drain's
+ * reachability rule (the rule COUNTED_IN_SCOPE states). Every figure is scoped
+ * alike, so a scoped machine's totals are one population: the rows that pass it.
+ * `pending` also takes `before`, so it is what the drain offers.
  */
 export interface HistorySyncCounts {
   pending: number;
@@ -212,8 +295,8 @@ export interface HistorySyncCounts {
    * the second and not the first.
    *
    * Structural only, and not by oversight: a refused CAPTURE is counted in
-   * `capturesSkipped` instead, because nothing frees that one either. See that
-   * statement for why re-arming a capture is the one thing the lane must not do.
+   * `capturesSkipped` instead, because nothing frees that one either. See
+   * CAPTURE_SKIPS for why re-arming a capture is the one thing the lane must not do.
    */
   refused: number;
   /**
@@ -235,12 +318,18 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * SCOPE: both lanes, and only the rows a lane will actually carry. Structural
- * rows are counted unconditionally — the live path owns every one of them and
- * the drain re-offers them. A capture is counted once it is owed or settled,
- * because a capture nothing marked owed was offered to nobody; counting it on
- * type alone would report most of a working machine's capture rows as a backlog
- * that nothing will ever send.
+ * SCOPE: both lanes. Structural rows are counted unconditionally — the live path
+ * owns every one of them, and the drain re-offers one that started before the
+ * attach; one that started after it is the live path's alone. A capture is
+ * counted once it is owed or settled, because a capture nothing marked owed was
+ * offered to nobody; counting it on type alone would report most of a working
+ * machine's capture rows as a backlog that nothing will ever send.
+ *
+ * On a SCOPED attachment, `partition(scopeKeys)` and `partitionByKind(scopeKeys)`
+ * narrow that to the rows that pass the scope's drain's reachability rule
+ * (COUNTED_IN_SCOPE, which also names the one kind of row it counts that the
+ * drain never offers): a structural row is then counted only under an enrolled
+ * session root, and a personal repository's rows are in no bucket at all.
  *
  * Kinds no lane carries are absent entirely — see COUNTED_EVENT_TYPES for which
  * and why. A read has nothing true to say about a row that cannot be sent.
@@ -274,7 +363,11 @@ export interface HistorySyncCounts {
  * leaves the first, which a single bucket could not express.
  *
  * A transient network failure is in NEITHER: it leaves the row NULL and reads
- * as queued, which is correct — it is still owed.
+ * as queued. That is correct for a capture, which the failed live send marks
+ * owed and the capture drain re-offers whenever it started, and for a
+ * structural row that started before the attach, which the structural drain
+ * re-offers. A structural row that started after the attach is the live path's
+ * alone, and stays queued because nothing re-offers it.
  *
  * `failed` cannot be ambiguous on a store that has been through the upgrade
  * adding these columns: that upgrade re-armed every sentinel row written before
@@ -447,6 +540,10 @@ export class SqliteHistorySyncRepository {
   private readonly scopedCaptureRowsStmt: StatementSync;
   private readonly scopedCaptureBacklogOwedStmt: StatementSync;
   private readonly markScopeCapturesOwedStmt: StatementSync;
+  private readonly scopedPartitionStmt: StatementSync;
+  private readonly scopedPartitionByKindStmt: StatementSync;
+  private readonly scopedCountsStmt: StatementSync;
+  private readonly scopedCaptureSkipCountStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.ensureRowStmt = db.prepare(`INSERT OR IGNORE INTO history_sync (id) VALUES (1)`);
@@ -576,9 +673,24 @@ export class SqliteHistorySyncRepository {
     // scope. A caller on a scoped attachment must read captures through this
     // statement and not the machine one: this filter, not either seed's, is what
     // keeps a personal capture out of a batch, whatever any build marked owed.
+    //
+    // INDEXED BY, and the reason is measured. The scope is the one condition here
+    // the machine read's index cannot seek, and with no statistics the planner
+    // keeps this read on that index anyway: it then fetches every owed, unsettled
+    // capture, in scope or not, reads its key from the attribute bag past the
+    // body, and sorts those that pass before the LIMIT applies. The drain asks
+    // this read twice a pass with a limit of one. idx_audit_scope_owed seeks the
+    // enrolled keys instead; SCOPE_OWED_INDEX_DDL in migrations.ts has both
+    // plans and the timings.
+    //
+    // THE WHERE AND THE INDEX MUST AGREE. The index is partial on the two terms
+    // `outbox_owed = 1` and `synced_at IS NULL`, and both are written here as they
+    // are there, which is what lets SQLite prove the index applies. Drop or reword
+    // either and the prepare below fails with `no query solution`, in this
+    // constructor, so every open of the store fails until the two agree again.
     this.scopedCaptureRowsStmt = db.prepare(
       `SELECT ${ROW_COLUMNS}
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_scope_owed
         WHERE synced_at IS NULL
           AND sync_claimed_at IS NULL
           AND outbox_owed = 1
@@ -678,6 +790,14 @@ export class SqliteHistorySyncRepository {
     this.partitionStmt = db.prepare(`SELECT${PARTITION_BUCKETS}
        FROM audit_events${COUNTED_SCOPE}`);
 
+    // The scoped twin: the same buckets over the rows that pass the scope's
+    // drain's reachability rule (COUNTED_IN_SCOPE, which takes no attach-time
+    // bound). The scope is a residual test on the rows the sync index already
+    // finds, never a reason to walk the table; the ledger's plan pins hold it to
+    // the machine statement's index.
+    this.scopedPartitionStmt = db.prepare(`SELECT${PARTITION_BUCKETS}
+       FROM audit_events${COUNTED_SCOPE}${COUNTED_IN_SCOPE}`);
+
     // The same partition, per kind.
     //
     // INDEXED BY, and not as belt-and-braces. Adding `GROUP BY event_type` is
@@ -696,41 +816,41 @@ export class SqliteHistorySyncRepository {
        GROUP BY event_type`,
     );
 
-    this.countsStmt = db.prepare(
-      `SELECT
-         SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
-         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
-         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
-                  THEN 1 ELSE 0 END) AS skipped,
-         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
-         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached
-       FROM audit_events
-       WHERE event_type IN (${TYPE_LIST})`,
+    // The scoped twin keeps the INDEXED BY for the same reason: without it this
+    // statement, too, planned onto `idx_audit_type_t` when it was written, and
+    // the ledger's plan pins refuse that index for it by name. The scope clause
+    // sits in the WHERE, so the GROUP BY still walks the index prefix, with no
+    // temp B-tree for the grouping.
+    this.scopedPartitionByKindStmt = db.prepare(
+      `SELECT event_type AS kind,${PARTITION_BUCKETS}
+       FROM audit_events INDEXED BY idx_audit_events_sync${COUNTED_SCOPE}${COUNTED_IN_SCOPE}
+       GROUP BY event_type`,
     );
 
-    // The capture lane's permanent skips, as a LIFETIME total like the three
-    // above rather than a per-pass tally. A surface renders it beside `sent` and
-    // `pending`, both of which are lifetime figures, so a delta there would
-    // report a terminal loss once and then drop it on the next pass — while the
-    // rows stayed gone.
-    this.captureSkipCountStmt = db.prepare(
-      // EVERY sentinel capture, whatever the reason — deliberately NOT split the
-      // way the structural totals are. The split exists because a refusal is
-      // terminal only against the deployment that gave it, and the structural
-      // re-arm frees it on a change of deployment. The capture lane has no such
-      // escape: re-arming a capture would offer one deployment's undelivered
-      // prompts, with their text, to a deployment that never saw them, which is
-      // exactly what disownCapturesStmt exists to prevent. So on this lane both
-      // reasons mean the same thing — this row will not be sent — and splitting
-      // them would put refused captures in a bucket nothing reads and nothing
-      // frees.
-      `SELECT COUNT(*) AS skipped
-         FROM audit_events
-        WHERE synced_at = ${String(SKIPPED)}
-          AND event_type IN (${CAPTURE_TYPE_LIST})`,
+    this.countsStmt = db.prepare(DRAIN_TOTALS);
+
+    // The scoped twin: the drain's totals over the structural rows this scope's
+    // drain sends, own key AND session root's key enrolled, the rule
+    // scopedSessionsStmt and scopedRowsStmt apply. So `pending` is what those
+    // two page out, and a row the scope never offers cannot hold a scoped
+    // backlog open for ever. Every bucket is scoped, not only `pending`: "X of
+    // Y sent" stays a ratio over one population, and once a repository is
+    // unenrolled its delivered rows leave `sent` with the rest of it.
+    this.scopedCountsStmt = db.prepare(
+      `${DRAIN_TOTALS}
+         AND ${inScope('scope_key')}
+         AND ${inScope(ROOT_SCOPE_KEY)}`,
+    );
+
+    // A lifetime total, and not split by reason: see CAPTURE_SKIPS.
+    this.captureSkipCountStmt = db.prepare(CAPTURE_SKIPS);
+
+    // The scoped twin, per capture and by its own key only, as
+    // scopedCaptureRowsStmt reads the lane: /v1/events stubs a missing root, so
+    // whether a capture counts never waits on its session's scope.
+    this.scopedCaptureSkipCountStmt = db.prepare(
+      `${CAPTURE_SKIPS}
+          AND ${inScope('scope_key')}`,
     );
 
     this.fingerprintStmt = db.prepare(
@@ -1145,7 +1265,30 @@ export class SqliteHistorySyncRepository {
    * in" — and a machine that has never attached has no boundary to pass, so
    * requiring one would force a caller to invent one and report the whole store
    * as queued.
+   *
+   * `scopeKeys` is a scoped attachment's filter: every bucket then counts only
+   * the rows that pass the drain's reachability rule for that scope
+   * (COUNTED_IN_SCOPE, which also names the one kind of row it counts that the
+   * drain never offers), so a personal repository's rows are in none of them.
+   * Omitted, this runs the machine statement, unchanged; an empty list counts
+   * nothing.
    */
+  partition(scopeKeys?: readonly string[]): HistorySyncPartition {
+    const row = getRow<Record<keyof HistorySyncPartition, number | null>>(
+      scopeKeys === undefined ? this.partitionStmt : this.scopedPartitionStmt,
+      scopeKeys === undefined ? {} : { scopeKeys: scopeKeysParam(scopeKeys) },
+    );
+    return {
+      queued: row?.queued ?? 0,
+      inProgress: row?.inProgress ?? 0,
+      synced: row?.synced ?? 0,
+      failed: row?.failed ?? 0,
+      refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
+      total: row?.total ?? 0,
+    };
+  }
+
   /**
    * The same partition, one row per kind that a lane carries.
    *
@@ -1155,11 +1298,14 @@ export class SqliteHistorySyncRepository {
    * rendering a fixed list of kinds must therefore treat a missing one as "no
    * rows", never as "zero sent"; the two look identical in a bar and mean
    * different things.
+   *
+   * `scopeKeys` scopes it with the clause `partition` uses, so the per-kind rows
+   * still sum to the scoped aggregate. An empty list returns no rows.
    */
-  partitionByKind(): HistorySyncKindPartition[] {
+  partitionByKind(scopeKeys?: readonly string[]): HistorySyncKindPartition[] {
     return allRows<Record<keyof HistorySyncPartition, number | null> & { kind: CountedEventType }>(
-      this.partitionByKindStmt,
-      {},
+      scopeKeys === undefined ? this.partitionByKindStmt : this.scopedPartitionByKindStmt,
+      scopeKeys === undefined ? {} : { scopeKeys: scopeKeysParam(scopeKeys) },
     ).map((row) => ({
       kind: row.kind,
       queued: row.queued ?? 0,
@@ -1172,29 +1318,34 @@ export class SqliteHistorySyncRepository {
     }));
   }
 
-  partition(): HistorySyncPartition {
-    const row = getRow<Record<keyof HistorySyncPartition, number | null>>(this.partitionStmt, {});
-    return {
-      queued: row?.queued ?? 0,
-      inProgress: row?.inProgress ?? 0,
-      synced: row?.synced ?? 0,
-      failed: row?.failed ?? 0,
-      refused: row?.refused ?? 0,
-      detached: row?.detached ?? 0,
-      total: row?.total ?? 0,
-    };
-  }
-
-  /** `pending` counts only what is inside the backlog; sent and skipped are totals. */
-  counts(before: number): HistorySyncCounts {
+  /**
+   * The drain's totals. `pending` counts only what is inside the backlog; sent
+   * and skipped are totals.
+   *
+   * `scopeKeys` is a scoped attachment's filter, and it scopes every figure,
+   * `capturesSkipped` included: a structural row is counted only when its own
+   * key and its session root's key are among them, a capture when its own key
+   * is. So `pending` is exactly what pendingSessions and pendingRows page out
+   * under the same keys and boundary. Omitted, this runs the machine
+   * statements, unchanged; an empty list counts nothing.
+   */
+  counts(before: number, scopeKeys?: readonly string[]): HistorySyncCounts {
     const row = getRow<{
       pending: number | null;
       sent: number | null;
       skipped: number | null;
       refused: number | null;
       detached: number | null;
-    }>(this.countsStmt, { before });
-    const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
+    }>(
+      scopeKeys === undefined ? this.countsStmt : this.scopedCountsStmt,
+      scopeKeys === undefined ? { before } : { before, scopeKeys: scopeKeysParam(scopeKeys) },
+    );
+    const captures =
+      scopeKeys === undefined
+        ? getRow<{ skipped: number | null }>(this.captureSkipCountStmt)
+        : getRow<{ skipped: number | null }>(this.scopedCaptureSkipCountStmt, {
+            scopeKeys: scopeKeysParam(scopeKeys),
+          });
     // SUM() over no rows is NULL, which is zero of each here.
     return {
       pending: row?.pending ?? 0,

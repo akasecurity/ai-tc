@@ -152,6 +152,9 @@ describe('recordCapture — audit/inspection trio', () => {
         // Why an enforced detection let the value through: a redact the capture
         // could not carry out, and what it became instead.
         redactDegradedTo: 'warn',
+        // A field whose bounded scan did not finish: the row says it was
+        // refused, not that it was clean.
+        scanIncomplete: 'unavailable',
       },
     });
     db.recordCapture(ev, []);
@@ -176,10 +179,36 @@ describe('recordCapture — audit/inspection trio', () => {
       exception_ids: ['22222222-2222-2222-2222-222222222222'],
       inspection_ms: 7,
       redact_degraded_to: 'warn',
+      scan_incomplete: 'unavailable',
     });
     // sessionId became the FK, never an attribute, under either casing.
     expect('sessionId' in attributes).toBe(false);
     expect('session_id' in attributes).toBe(false);
+    r.close();
+    db.close();
+  });
+
+  it('stores scan_incomplete only on a capture whose scan was refused', () => {
+    const db = store.open();
+
+    const refused = event({ kind: 'tool_use', contentHash: 'hash-refused', content: '' });
+    refused.metadata = { ...refused.metadata, scanIncomplete: 'timeout' };
+    db.recordCapture(refused, []);
+
+    const scanned = event({ kind: 'tool_use', contentHash: 'hash-scanned' });
+    db.recordCapture(scanned, []);
+
+    const r = raw();
+    const attributesOf = (id: string) =>
+      JSON.parse(
+        (
+          r.prepare('SELECT attributes FROM audit_events WHERE id = ?').get(id) as {
+            attributes: string;
+          }
+        ).attributes,
+      ) as Record<string, unknown>;
+    expect(attributesOf(captureId(null, 'hash-refused', null)).scan_incomplete).toBe('timeout');
+    expect('scan_incomplete' in attributesOf(captureId(null, 'hash-scanned', null))).toBe(false);
     r.close();
     db.close();
   });

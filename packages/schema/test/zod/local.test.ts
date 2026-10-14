@@ -10,12 +10,15 @@ import {
   canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
+  findingMatchLabel,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
+  isScopeKeyEnrolled,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseAttachmentScope,
@@ -26,6 +29,7 @@ import {
   toCaptureAttributes,
   toEventRow,
   toFindingRow,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
   WebChatCapture,
   webChatCaptureOf,
@@ -58,7 +62,7 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     // it. The version is a changelog marker that nothing reads, which is exactly
     // why a change to it needs a test that names the number. The next field that
     // bumps it changes this literal on purpose.
-    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(9);
+    expect(WORKSPACE_SETTINGS_SPEC_VERSION).toBe(10);
   });
 
   it('enables in-place Data Shares extraction by default', () => {
@@ -259,6 +263,7 @@ describe('row mappers (tenant-free local store)', () => {
       conversationId: 'conv_1',
       inspectionMs: 7,
       redactDegradedTo: 'warn',
+      scanIncomplete: 'timeout',
     };
     const event: IngestEvent = {
       id: EVENT,
@@ -280,6 +285,7 @@ describe('row mappers (tenant-free local store)', () => {
       'model',
       'redact_degraded_to',
       'repo',
+      'scan_incomplete',
       'source_tool',
       'tool_name',
       'trace_id',
@@ -410,28 +416,36 @@ describe('isHistorySyncConsentValid', () => {
 // FOOTNOTE_DISCLOSURE, keyed on TriageHit.shape) only after a field crossed to
 // the model API with the workspace fully green.
 //
-// The disclosure here has no single Zod shape to derive from — it is four pieces
-// of hand-written prose in three packages — so this pins the literal instead and
-// makes the failure message carry the checklist. Bumping the constant WILL fail
-// this test; the fix is to re-read every surface below, confirm each still
-// describes what the new payload sends, and then update the number here.
+// The disclosure here has no single Zod shape to derive from — it is
+// hand-written prose on the surfaces listed below, in code and in documents —
+// so this pins the literal instead and makes the failure message carry the
+// checklist. Bumping the constant WILL fail this test; the fix is to re-read
+// every surface below, confirm each still describes what the new payload
+// sends, and then update the number here.
 //
 //   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
-//   cli/src/commands/sync-history.ts  grant/revoke/describe output
+//   cli/src/commands/enroll.ts        earlierActivity — what enrolling a
+//                                     repository queues and sends under a grant
+//   cli/src/commands/sync-history.ts  grant/revoke/describe output and the
+//                                     help, each in its machine-wide and
+//                                     its personal-device wording
 //   packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
 //                                     HISTORY_SYNC_SECTION_DESCRIPTION,
 //                                     HISTORY_SYNC_CHOICES,
-//                                     HISTORY_SYNC_STALE_NOTICE
+//                                     HISTORY_SYNC_STALE_NOTICE, and each
+//                                     one's _SCOPED twin
 //   packages/plugin-runtime/src/attached/status.ts
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
 //   SECURITY.md                       the "Data in transit" section's
-//                                     sync-history paragraph — pinned by no
-//                                     other test; at-rest-docs.test.ts scopes
-//                                     to "## Data at rest" and
-//                                     privacy-claims.test.ts reads only the
-//                                     three READMEs
+//                                     sync-history paragraph, which no test
+//                                     pins (at-rest-docs.test.ts scopes to
+//                                     "## Data at rest"), and the enroll-
+//                                     queueing sentence in its scoped-
+//                                     attachment paragraph, which the
+//                                     claude-code plugin's privacy-claims
+//                                     test pins word for word
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,
@@ -563,6 +577,53 @@ describe('webChatCaptureOf', () => {
   it('returns the stored block untouched when there is one', () => {
     const block = { responses: 'never' as const, account: false };
     expect(webChatCaptureOf(WorkspaceSettings.parse({ webChatCapture: block }))).toEqual(block);
+  });
+});
+
+describe('isWebChatAccountGrantValid', () => {
+  const grantAt = (version: number) => ({ acknowledgedAt: ISO, version });
+  const block = (account: boolean, accountConsent?: { acknowledgedAt: string; version: number }) =>
+    WorkspaceSettings.parse({
+      webChatCapture: { account, ...(accountConsent === undefined ? {} : { accountConsent }) },
+    }).webChatCapture;
+
+  it('is true when the switch is on and the grant is at the current version', () => {
+    expect(isWebChatAccountGrantValid(block(true, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION)))).toBe(
+      true,
+    );
+  });
+
+  it('is false with no block, no grant, or the switch off', () => {
+    expect(isWebChatAccountGrantValid(undefined)).toBe(false);
+    expect(isWebChatAccountGrantValid(block(true))).toBe(false);
+    expect(
+      isWebChatAccountGrantValid(block(false, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION))),
+    ).toBe(false);
+  });
+
+  it('is false for a grant at another version', () => {
+    expect(
+      isWebChatAccountGrantValid(block(true, grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION + 1))),
+    ).toBe(false);
+  });
+
+  // Separate grants: the capture grant does not stand in for the account one,
+  // and adding the account one leaves a capture grant valid.
+  it('is independent of the capture grant', () => {
+    const capture = { acknowledgedAt: ISO, version: WEB_CHAT_CAPTURE_CONSENT_VERSION };
+    const onlyCapture = WorkspaceSettings.parse({
+      webChatCapture: { account: true, consent: capture },
+    }).webChatCapture;
+    expect(isWebChatAccountGrantValid(onlyCapture)).toBe(false);
+    const both = WorkspaceSettings.parse({
+      webChatCapture: {
+        account: true,
+        consent: capture,
+        accountConsent: grantAt(WEB_CHAT_ACCOUNT_CONSENT_VERSION),
+      },
+    }).webChatCapture;
+    expect(isWebChatAccountGrantValid(both)).toBe(true);
+    expect(isWebChatCaptureConsentValid(both?.consent)).toBe(true);
   });
 });
 
@@ -1329,4 +1390,62 @@ describe('syncLaneRetentionOf', () => {
       expect(syncLaneRetentionOf(settings, throwingKeys())).toEqual({ kind: 'hold-all' });
     },
   );
+});
+
+describe('isScopeKeyEnrolled', () => {
+  const ENDPOINT = 'https://cp.example';
+  const KEY = 'claude:0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b';
+  const settings = (entries: string[], endpoint = ENDPOINT) => ({
+    controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+    attachmentScope: {
+      endpoint,
+      entries: entries.map((identity) => ({ kind: 'account' as const, identity, enrolledAt: ISO })),
+    },
+  });
+
+  it('is true for a key the record enrolls for the endpoint in force', () => {
+    expect(isScopeKeyEnrolled(settings([KEY]), KEY)).toBe(true);
+  });
+
+  it('is false for a key not enrolled, or no key', () => {
+    expect(isScopeKeyEnrolled(settings(['github.com/acme/api']), KEY)).toBe(false);
+    expect(isScopeKeyEnrolled(settings([KEY]), undefined)).toBe(false);
+    expect(isScopeKeyEnrolled(settings([KEY]), '')).toBe(false);
+  });
+
+  // Bound by value: a record for another deployment enrolls nothing here.
+  it('is false for a record bound to another endpoint, or none at all', () => {
+    expect(isScopeKeyEnrolled(settings([KEY], 'https://other.example'), KEY)).toBe(false);
+    expect(isScopeKeyEnrolled({ controlPlane: undefined, attachmentScope: undefined }, KEY)).toBe(
+      false,
+    );
+  });
+});
+
+describe('findingMatchLabel', () => {
+  it('prefixes the masked match with the variable it was assigned to', () => {
+    const name = ['STRIPE', 'SECRET', 'KEY'].join('_');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: name })).toBe(
+      `${name} = s*****y`,
+    );
+  });
+
+  it('is the masked match alone when there is no variable name', () => {
+    expect(findingMatchLabel({ maskedMatch: 's*****y' })).toBe('s*****y');
+  });
+
+  it('fits a width by shortening the name and keeping the masked match whole', () => {
+    const name = ['GOOGLE', 'APPLICATION', 'CREDENTIALS'].join('_');
+    const label = findingMatchLabel({ maskedMatch: 's*****y', variableName: name }, 28);
+    expect(label).toHaveLength(28);
+    expect(label).toBe('GOOGLE_APPLICATIO… = s*****y');
+    expect(findingMatchLabel({ maskedMatch: 's*****y', variableName: 'KEY' }, 28)).toBe(
+      'KEY = s*****y',
+    );
+  });
+
+  it('drops the name when the masked match leaves no room for it', () => {
+    const masked = 's'.repeat(26);
+    expect(findingMatchLabel({ maskedMatch: masked, variableName: 'API_KEY' }, 28)).toBe(masked);
+  });
 });

@@ -10,20 +10,28 @@
  */
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  readHookFailOpens,
+} from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { tooLargeToolText, tooLargeToScanMessage } from '../../src/exception-guidance.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
@@ -403,6 +411,19 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
     return realpathSync(victim);
   }
 
+  // Where a hook's once-per-session warning lands. SessionStart puts it on its
+  // systemMessage, the one channel its host shows the user; every other hook
+  // writes it to stderr, because its stdout carries at most one decision object.
+  function warningChannel(hookName: string, result: { stdout: string; stderr: string }): string {
+    if (hookName !== 'session-start') return result.stderr;
+    try {
+      const message = (JSON.parse(result.stdout) as { systemMessage?: unknown }).systemMessage;
+      return typeof message === 'string' ? message : '';
+    } catch {
+      return '';
+    }
+  }
+
   for (const hook of HOOKS) {
     describe(hook.name, () => {
       it('valid input, symlinked ~/.aka → exit 0 AND the redirection is surfaced', (ctx) => {
@@ -422,10 +443,13 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           // …and the warning is really there. Without this the row would pass
           // just as happily against the silence this behaviour replaced, which
           // is the whole defect: exit 0 and no output IS the broken state here.
-          expect(result.stderr).toContain('is a symlink');
-          expect(result.stderr).toContain(victim);
+          const warning = warningChannel(hook.name, result);
+          expect(warning).toContain('is a symlink');
+          expect(warning).toContain(victim);
           // The mode the store inherits is the half a reader can act on.
-          expect(result.stderr).toContain('NOT owner-only');
+          expect(warning).toContain('NOT owner-only');
+          // Said once: SessionStart's warning moved off stderr, not beside it.
+          if (hook.name === 'session-start') expect(result.stderr).not.toContain('is a symlink');
 
           // The harm the warning is about, pinned so the row cannot go quiet
           // because the redirection stopped rather than because it is now said.
@@ -456,7 +480,7 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           expectNoActionKey(result.stdout);
           // Reported rather than swallowed: a link to nothing is exactly the
           // state where staying quiet reads as a healthy home.
-          expect(result.stderr).toContain('does not exist');
+          expect(warningChannel(hook.name, result)).toContain('does not exist');
         });
       }, 35_000);
     });
@@ -631,7 +655,72 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
       monitor: null,
     },
   },
+  {
+    // WebSearch results mix a link list with summary text; the secret sits in
+    // the summary and is rewritten at its index in the list.
+    name: 'post-tool-use',
+    label: 'post-tool-use (WebSearch results)',
+    payload: (home) => webSearchPostToolUsePayload(home),
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+  {
+    // A subagent's report arrives as text content blocks under `content`.
+    name: 'post-tool-use',
+    label: 'post-tool-use (Agent report)',
+    payload: (home) => agentPostToolUsePayload(home),
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
 ];
+
+const SEARCH_LINKS = {
+  tool_use_id: 'srvtoolu_e2e',
+  content: [{ title: 'Release notes', url: 'https://example.invalid/notes' }],
+};
+
+function webSearchPostToolUsePayload(home: string): string {
+  return JSON.stringify({
+    tool_name: 'WebSearch',
+    tool_input: { query: 'release notes' },
+    tool_response: {
+      query: 'release notes',
+      results: [SEARCH_LINKS, `The setup page lists TWILIO_KEY=${SECRET} as the example.`],
+      durationSeconds: 1.2,
+      searchCount: 1,
+    },
+    session_id: SESSION_ID,
+    cwd: projectDir(home),
+    hook_event_name: 'PostToolUse',
+  });
+}
+
+function agentPostToolUsePayload(home: string): string {
+  return JSON.stringify({
+    tool_name: 'Agent',
+    tool_input: { description: 'find config', prompt: 'report the config line' },
+    tool_response: {
+      status: 'completed',
+      prompt: 'report the config line',
+      agentType: 'general-purpose',
+      content: [{ type: 'text', text: `Found it: TWILIO_KEY=${SECRET}` }],
+      totalToolUseCount: 1,
+    },
+    session_id: SESSION_ID,
+    cwd: projectDir(home),
+    hook_event_name: 'PostToolUse',
+  });
+}
 
 const MCP_TOOL = 'mcp__reader__read_url';
 
@@ -649,6 +738,34 @@ function mcpPostToolUsePayload(home: string): string {
     hook_event_name: 'PostToolUse',
   });
 }
+
+// The prompt-redaction mod (hooks/mod.ts) rewrites a redact-policy value before
+// this hook sees the prompt. Under every enforcing policy the placeholder text
+// must pass untouched, so a prompt the mod already handled is never blocked a
+// second time for the value it removed.
+describe('user-prompt-submit lets a mod-redacted prompt through', () => {
+  for (const policy of ['redact', 'vault', 'block'] as const) {
+    it(`${policy} policy → exit 0, empty stdout`, () => {
+      withTempHome((home) => {
+        seedPolicy(home, policy);
+        const result = runHook(
+          'user-prompt-submit',
+          JSON.stringify({
+            prompt: 'deploy the service using [REDACTED:SECRET]',
+            session_id: SESSION_ID,
+            cwd: projectDir(home),
+            hook_event_name: 'UserPromptSubmit',
+          }),
+          { env: tempHomeEnv(home) },
+        );
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).not.toContain('"decision"');
+        expectNoEchoOf(result.stdout, SECRET);
+      });
+    });
+  }
+});
 
 const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
@@ -777,4 +894,305 @@ describe('post-tool-use rewrites newly covered tool output in its native shape',
       expectNoEchoOf(result.stdout, SECRET);
     });
   });
+
+  it('redacts a secret in WebSearch summary text and keeps the rest of the result', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = runHook('post-tool-use', webSearchPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: { results: unknown[] } };
+        systemMessage: string;
+      };
+      const updated = payload.hookSpecificOutput.updatedToolOutput;
+      expect(updated).toMatchObject({
+        query: 'release notes',
+        durationSeconds: 1.2,
+        searchCount: 1,
+      });
+      expect(updated.results).toHaveLength(2);
+      expect(updated.results[0]).toEqual(SEARCH_LINKS);
+      expect(updated.results[1]).toEqual(
+        expect.stringContaining('The setup page lists TWILIO_KEY='),
+      );
+      expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('redacts a secret carried in a WebSearch link URL', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const link = {
+        title: 'Build config',
+        url: `https://example.invalid/cfg?TWILIO_KEY=${SECRET}`,
+      };
+      const result = runHook(
+        'post-tool-use',
+        JSON.stringify({
+          tool_name: 'WebSearch',
+          tool_input: { query: 'build config' },
+          tool_response: {
+            query: 'build config',
+            results: [{ tool_use_id: 'srvtoolu_e2e', content: [link] }],
+            durationSeconds: 0.8,
+            searchCount: 1,
+          },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PostToolUse',
+        }),
+        { env: tempHomeEnv(home) },
+      );
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: {
+          updatedToolOutput: { results: { content: { title: string; url: string }[] }[] };
+        };
+      };
+      const rewritten = payload.hookSpecificOutput.updatedToolOutput.results[0]?.content[0];
+      expect(rewritten?.title).toBe('Build config');
+      expect(rewritten?.url).toEqual(
+        expect.stringContaining('https://example.invalid/cfg?TWILIO_KEY='),
+      );
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('redacts a secret in a subagent report without disturbing the result envelope', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = runHook('post-tool-use', agentPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: Record<string, unknown> };
+        systemMessage: string;
+      };
+      const updated = payload.hookSpecificOutput.updatedToolOutput;
+      expect(updated).toMatchObject({
+        status: 'completed',
+        prompt: 'report the config line',
+        agentType: 'general-purpose',
+        totalToolUseCount: 1,
+      });
+      const blocks = updated.content as { type: string; text: string }[];
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]?.type).toBe('text');
+      expect(blocks[0]?.text).toContain('Found it: TWILIO_KEY=');
+      expect(payload.systemMessage).toContain(ENFORCED_RULE_ID);
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+
+  it('withholds a blocked subagent report without telling the model to re-run it', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'block');
+      const result = runHook('post-tool-use', agentPostToolUsePayload(home), {
+        env: tempHomeEnv(home),
+      });
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        hookSpecificOutput: { updatedToolOutput: { content: { text: string }[] } };
+      };
+      const text = payload.hookSpecificOutput.updatedToolOutput.content[0]?.text ?? '';
+      expect(text).toContain('The subagent already ran');
+      expect(text).not.toContain('re-run this same tool call');
+      expectNoEchoOf(result.stdout, SECRET);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The one deliberate fail-closed path: a field too large to scan in time
+// ---------------------------------------------------------------------------
+
+// A field at or above the large-input threshold is scanned in a worker under a
+// deadline, and one whose scan does not finish is REFUSED rather than passed:
+// left unbounded it would run into the host's own timeout, and a killed hook
+// lets the call through unscanned. That refusal is the one payload a hook
+// writes because it could NOT decide, so it is pinned here beside the fault
+// rows above — which still exit 0 silently, oversized stdin included, because
+// none of them is a field the hook reached.
+//
+// The worker is made unavailable by REMOVING it from a copy of the built
+// scripts — the state an install that never shipped it is in — so the refusal
+// is deterministic rather than a race against a slow scan. The same payloads
+// against the intact build are the control: the field is benign, so a refusal
+// there would mean the bound itself, not the missing worker, decided.
+describe('a field too large to scan in time is refused, not passed', () => {
+  const BUILT_SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts');
+  const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+
+  function withoutWorker<T>(fn: (scriptsDir: string) => T): T {
+    return withTempHome((dir) => {
+      const scriptsDir = join(dir, 'scripts');
+      cpSync(BUILT_SCRIPTS, scriptsDir, { recursive: true });
+      rmSync(join(scriptsDir, 'scan-worker.js'));
+      // The copy is what the case rests on: with the worker still there the
+      // field would be scanned and every assertion below would read backwards.
+      expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+      return fn(scriptsDir);
+    }, 'aka-no-worker-');
+  }
+
+  const REFUSAL_ROWS: readonly {
+    name: string;
+    payload: (home: string) => string;
+    expectRefused: (stdout: string) => void;
+  }[] = [
+    {
+      name: 'user-prompt-submit',
+      payload: (home) =>
+        JSON.stringify({
+          prompt: LARGE,
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'UserPromptSubmit',
+        }),
+      expectRefused: (stdout) => {
+        expect(JSON.parse(stdout)).toEqual({
+          decision: 'block',
+          reason: tooLargeToScanMessage('prompt'),
+        });
+      },
+    },
+    {
+      name: 'pre-tool-use',
+      payload: (home) =>
+        JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: `echo ${LARGE}` },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PreToolUse',
+        }),
+      expectRefused: (stdout) => {
+        expect(JSON.parse(stdout)).toEqual({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: tooLargeToScanMessage('Bash call'),
+          },
+        });
+      },
+    },
+    {
+      name: 'post-tool-use',
+      payload: (home) =>
+        JSON.stringify({
+          tool_name: 'Bash',
+          tool_input: { command: 'cat big.log' },
+          tool_response: { stdout: LARGE, stderr: 'warning: short' },
+          session_id: SESSION_ID,
+          cwd: projectDir(home),
+          hook_event_name: 'PostToolUse',
+        }),
+      expectRefused: (stdout) => {
+        const payload = JSON.parse(stdout) as {
+          hookSpecificOutput: {
+            hookEventName: string;
+            updatedToolOutput: { stdout: string; stderr: string };
+          };
+          systemMessage: string;
+        };
+        expect(payload.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(payload.hookSpecificOutput.updatedToolOutput).toEqual({
+          stdout: tooLargeToolText('Bash', 'stdout'),
+          // The small field was scanned in-process and is clean: only the
+          // refused one is withheld.
+          stderr: 'warning: short',
+        });
+        expect(payload.systemMessage).toContain('Too large to scan in time: stdout');
+      },
+    },
+  ];
+
+  for (const row of REFUSAL_ROWS) {
+    describe(row.name, () => {
+      it('with no worker to scan it → the refusal shape, exit 0', () => {
+        withoutWorker((scriptsDir) => {
+          withTempHome((home) => {
+            const result = runHook(row.name, row.payload(home), {
+              env: tempHomeEnv(home),
+              scriptsDir,
+            });
+            expect(result.status).toBe(0);
+            row.expectRefused(result.stdout);
+            expectNoActionKey(result.stdout);
+            // None of the field's text rides back on the refusal.
+            expect(result.stdout).not.toContain('lorem ipsum');
+          });
+        });
+      });
+
+      it('with the worker in place → scanned, and benign, so silent', () => {
+        withTempHome((home) => {
+          const result = runHook(row.name, row.payload(home), { env: tempHomeEnv(home) });
+          expect(result.status).toBe(0);
+          // user-prompt-submit may still nudge an unonboarded machine; what it
+          // must not do is refuse.
+          expect(result.stdout).not.toContain('too large');
+          if (row.name !== 'user-prompt-submit') expect(result.stdout).toBe('');
+        });
+      });
+    });
+  }
+});
+
+describe('post-tool-use counts a response the bounds cut short as a fail-open', () => {
+  // RESPONSE_MAX_TOTAL_CHARS is 5,000,000. The secret sits on the last line,
+  // so it is past the cap in the longer stdout and inside it in the shorter.
+  // Filler lines keep every chunk cut on a newline.
+  //
+  // This is the integration check that the size bound counts a fail-open. The
+  // longer case's count is also what a scan-deadline cut would produce, so it
+  // cannot tell the two apart; the unit suite (test/hooks/tool-response.test.ts)
+  // pins the boundary itself, asserting collectResponseFields reports
+  // `truncated` for this same 5,000,050-character stdout and not for 4,999,000.
+  const line = `build step ${'q'.repeat(88)}\n`;
+  const stdoutOf = (length: number): string => {
+    const tail = `TWILIO_KEY=${SECRET}\n`;
+    const fill = line.repeat(Math.ceil(length / line.length)).slice(0, length - tail.length);
+    return fill + tail;
+  };
+  const run = (home: string, stdout: string) =>
+    runHook(
+      'post-tool-use',
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'make' },
+        tool_response: { stdout, stderr: '', interrupted: false, isImage: false },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostToolUse',
+      }),
+      { env: tempHomeEnv(home), timeoutMs: 60_000 },
+    );
+
+  it('a 5,000,050-character stdout leaves the secret unscanned and counts it', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const stdout = stdoutOf(5_000_050);
+      expect(stdout).toHaveLength(5_000_050);
+      const result = run(home, stdout);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(readHookFailOpens(join(home, '.aka', 'data'))).toMatchObject({ failOpens: 1 });
+    });
+  }, 120_000);
+
+  it('a 4,999,000-character stdout is scanned whole and counts nothing', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      const result = run(home, stdoutOf(4_999_000));
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('"updatedToolOutput"');
+      expectNoEchoOf(result.stdout, SECRET);
+      expect(readHookFailOpens(join(home, '.aka', 'data'))).toBeNull();
+    });
+  }, 120_000);
 });

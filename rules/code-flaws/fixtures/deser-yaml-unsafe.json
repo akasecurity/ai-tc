@@ -24,5 +24,25 @@
     "text": "config = yaml.load(user_input)",
     "shouldMatch": false,
     "filePath": "src/example.go"
+  },
+  {
+    "label": "multi-line call with no Loader",
+    "text": "data = yaml.load(\n    stream,\n)",
+    "shouldMatch": true
+  },
+  {
+    "label": "multi-line call with SafeLoader",
+    "text": "data = yaml.load(\n    stream,\n    Loader=yaml.SafeLoader,\n)",
+    "shouldMatch": false
+  },
+  {
+    "label": "outer call whose only SafeLoader belongs to a nested call",
+    "text": "config = yaml.load(yaml.load(f, Loader=SafeLoader))",
+    "shouldMatch": true
+  },
+  {
+    "label": "two safe calls on one line",
+    "text": "a = yaml.load(f, Loader=SafeLoader); b = yaml.load(g, Loader=yaml.SafeLoader)",
+    "shouldMatch": false
   }
 ]

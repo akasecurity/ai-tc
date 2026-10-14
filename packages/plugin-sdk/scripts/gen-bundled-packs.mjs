@@ -58,12 +58,17 @@ for (const dir of packDirs) {
   if (manifest.defaultPolicy !== undefined && !BUILTIN_POLICY_IDS.has(manifest.defaultPolicy)) {
     throw new Error(`${dir}/manifest.json: unknown defaultPolicy "${manifest.defaultPolicy}"`);
   }
+  const shortNamesPath = join(rulesDir, dir, 'short-names.json');
+  const shortNames = existsSync(shortNamesPath)
+    ? JSON.parse(readFileSync(shortNamesPath, 'utf8'))
+    : {};
   packs.push({
     packId: manifest.id,
     name: manifest.name,
     version: manifest.version,
     defaultPolicy: manifest.defaultPolicy,
     ruleIdents,
+    shortNames,
   });
 }
 
@@ -86,7 +91,7 @@ const packEntries = packs
       (p.defaultPolicy === undefined
         ? ''
         : `    defaultPolicy: ${JSON.stringify(p.defaultPolicy)},\n`) +
-      `    rawRules: [${p.ruleIdents.join(', ')}],\n  }`,
+      `    rawRules: [${p.ruleIdents.join(', ')}],\n    shortNames: ${JSON.stringify(p.shortNames)},\n  }`,
   )
   .join(',\n');
 
@@ -116,6 +121,8 @@ export interface BundledPack {
   // The built-in policy a first install assigns; absent leaves the pack unassigned.
   defaultPolicy?: BuiltinPolicyId;
   rawRules: unknown[];
+  // Rule id to the short label a surface shows in place of the rule's full name.
+  shortNames: Readonly<Record<string, string>>;
 }
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [

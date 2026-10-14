@@ -1,0 +1,98 @@
+// Keeps an attached machine's sighting key current. Runs in the detached sync
+// child, never on a hook path.
+import type { SightingKeyStore } from '@akasecurity/persistence';
+import {
+  createSightingKeyStore,
+  keysDir,
+  readControlPlaneCredentialFile,
+  readWorkspaceSettings,
+} from '@akasecurity/persistence';
+import { createRemoteClient } from '@akasecurity/remote';
+import type { StoredSightingKeys } from '@akasecurity/schema';
+import { isAttached } from '@akasecurity/schema';
+
+import { endpointFingerprint } from './history-sync.ts';
+import { withTimeout } from './with-timeout.ts';
+
+/** A stored key at least this old is fetched again. */
+export const SIGHTING_KEY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export const SIGHTING_KEY_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * `fresh`    the stored key is younger than {@link SIGHTING_KEY_MAX_AGE_MS}; nothing was fetched.
+ * `fetched`  a new map was fetched and replaced the stored one.
+ * `failed`   the fetch or the write failed; the stored key is unchanged.
+ */
+export type SightingKeySyncOutcome = 'fresh' | 'fetched' | 'failed';
+
+export interface RunSightingKeySyncDeps {
+  /** The ~/.aka root. */
+  base: string;
+  settingsDir: string;
+  now?: (() => number) | undefined;
+  /** Replaces the custody store `vaultKeyCustody` selects. */
+  store?: SightingKeyStore | undefined;
+}
+
+/**
+ * Whether `stored` was issued by the endpoint with `fingerprint` and fetched
+ * within the last day, by a clock that has not run backwards past it.
+ */
+function isFresh(
+  stored: StoredSightingKeys | undefined,
+  fingerprint: string,
+  nowMs: number,
+): boolean {
+  if (stored?.endpointFingerprint !== fingerprint) return false;
+  const age = nowMs - stored.fetchedAtMs;
+  return age >= 0 && age < SIGHTING_KEY_MAX_AGE_MS;
+}
+
+function readStored(store: SightingKeyStore): StoredSightingKeys | undefined {
+  try {
+    return store.read();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Fetch the sighting key when none is stored or the stored one is a day old.
+ *
+ * Returns null, and calls nothing, unless the machine is attached: both the
+ * settings descriptor and a credential minted for its endpoint. Machine-wide
+ * and scoped attachments both fetch. Never throws; a failure leaves the stored
+ * key as it was.
+ */
+export async function runSightingKeySync(
+  deps: RunSightingKeySyncDeps,
+): Promise<SightingKeySyncOutcome | null> {
+  try {
+    const settings = readWorkspaceSettings(deps.base);
+    const connection = isAttached(settings) ? settings.controlPlane : undefined;
+    const state =
+      connection === undefined
+        ? undefined
+        : readControlPlaneCredentialFile(deps.settingsDir, connection);
+    if (connection === undefined || !state?.usable) return null;
+
+    const nowMs = (deps.now ?? Date.now)();
+    const store =
+      deps.store ?? createSightingKeyStore(settings.vaultKeyCustody, keysDir(deps.base));
+    const fingerprint = endpointFingerprint(connection.endpoint);
+    if (isFresh(readStored(store), fingerprint, nowMs)) return 'fresh';
+
+    const { apiKey } = state.credential;
+    const client = createRemoteClient({
+      endpoint: connection.endpoint,
+      apiKey,
+      timeoutMs: SIGHTING_KEY_REQUEST_TIMEOUT_MS,
+    });
+    const response = await withTimeout(client.getSightingKey(), SIGHTING_KEY_REQUEST_TIMEOUT_MS);
+    store.replace({ ...response, fetchedAtMs: nowMs, endpointFingerprint: fingerprint });
+    return 'fetched';
+  } catch {
+    return 'failed';
+  }
+}

@@ -6,7 +6,7 @@
   "severity": "critical",
   "matcher": {
     "type": "regex",
-    "pattern": "subprocess\\.(run|Popen|call|check_output)\\s*\\([^)]*shell\\s*=\\s*True",
+    "pattern": "subprocess\\.(run|Popen|call|check_output)\\s*\\((?:(?!subprocess\\.(?:run|Popen|call|check_output)\\s*\\()[^)])*shell\\s*=\\s*True",
     "flags": "gi"
   },
   "requiresNearby": {

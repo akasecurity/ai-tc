@@ -34,6 +34,12 @@ describe('scannableInputFields — the tools that execute their text', () => {
     ]);
   });
 
+  it('marks the WebSearch query executable, since it is sent to the search provider', () => {
+    expect(scannableInputFields('WebSearch', { query: 'release notes', mode: 'standard' })).toEqual(
+      [{ path: ['query'], executable: true }],
+    );
+  });
+
   it('marks Write/Edit content stored, so redaction rewrites in place', () => {
     expect(scannableInputFields('Write', { content: 'x' })).toEqual([
       { path: ['content'], executable: false },

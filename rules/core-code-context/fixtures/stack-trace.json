@@ -18,5 +18,36 @@
     "label": "function call",
     "text": "at function call($arg)",
     "shouldMatch": false
+  },
+  {
+    "label": "indented frames in a multi-line trace keep their leading whitespace in the span",
+    "text": "Error: boom\n    at Server.request (/app/src/server.ts:120:25)\n    at Router.handle (/app/src/router.ts:8:3)",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 11,
+        "end": 61
+      },
+      {
+        "start": 61,
+        "end": 107
+      }
+    ]
+  },
+  {
+    "label": "frame indented from the start of the text",
+    "text": "        at com.example.Main.run(Main.java:7:1)",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 46
+      }
+    ]
+  },
+  {
+    "label": "whitespace and newline runs around a prose 'at'",
+    "text": "Error: boom\n\n\n        at the office meeting\t\t  \n   ",
+    "shouldMatch": false
   }
 ]

@@ -10,6 +10,7 @@ import {
   deriveSubkeys,
   encodeKeyVersion,
   formatPointer,
+  mintPointer,
   NONCE_BYTES,
   open,
   POINTER_ID_BYTES,
@@ -286,5 +287,41 @@ describe('formatPointer', () => {
     const token = formatPointer('secret', 1, pointerId, tag);
     expect(token.startsWith('[[aka:secret:')).toBe(true);
     expect(token.endsWith(']]')).toBe(true);
+  });
+});
+
+describe('mintPointer', () => {
+  function parts(token: string): { keyVersion: number; id: Buffer; tag: Buffer } {
+    const body = token.slice('[[aka:secret:'.length, -']]'.length);
+    const [version = '', id = '', tag = ''] = body.split('.');
+    return { keyVersion: decodeKeyVersion(version), id: base32Decode(id), tag: base32Decode(tag) };
+  }
+
+  it('emits a token the schema grammar accepts for every detection category', async () => {
+    const { DetectionCategory, POINTER_TOKEN_ANCHORED } = await import('@akasecurity/schema');
+    for (const category of DetectionCategory.options) {
+      for (const keyVersion of [1, 0xffff_ffff]) {
+        const token = mintPointer(master, keyVersion, category);
+        expect(POINTER_TOKEN_ANCHORED.test(token), `${category} @ ${String(keyVersion)}`).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it('tags the pointer with the sign subkey derived from the master, never the master', () => {
+    const { keyVersion, id, tag } = parts(mintPointer(master, 3, 'secret'));
+    expect(keyVersion).toBe(3);
+    expect(id).toHaveLength(POINTER_ID_BYTES);
+    expect(verifyPointerTag(keys.sign, 3, id, 'secret', tag)).toBe(true);
+    expect(verifyPointerTag(master, 3, id, 'secret', tag)).toBe(false);
+  });
+
+  it('mints a fresh pointer id on every call', () => {
+    expect(mintPointer(master, 1, 'secret')).not.toBe(mintPointer(master, 1, 'secret'));
+  });
+
+  it('refuses a key version the grammar cannot encode', () => {
+    expect(() => mintPointer(master, 0, 'secret')).toThrow(/key version out of range/);
   });
 });

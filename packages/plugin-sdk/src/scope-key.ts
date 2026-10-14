@@ -12,9 +12,9 @@ import { resolveRepoAttribution } from './repo.ts';
  * One scope key per working directory for a whole reconcile pass: the canonical
  * `host/owner/repo` of the repository the directory sits in (its origin remote,
  * else the first), or none. A directory in no repository, a repository with no
- * remote and a record that names no cwd all yield no key. A scoped attachment is
- * meant to keep a keyless row local; that check is not part of this memo or of
- * this change.
+ * remote and a record that names no cwd all yield no key. A scoped attachment
+ * keeps a keyless row local; the attached gateway's verdict does that, not this
+ * memo.
  *
  * Memoised for two reasons. Cost: a pass pays one `.git` walk per distinct
  * directory, not one per leaf. Consistency: an llm_call's WHOLE attribute bag is

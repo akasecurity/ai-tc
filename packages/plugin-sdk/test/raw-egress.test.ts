@@ -1,3 +1,4 @@
+import { maskMatch } from '@akasecurity/detections';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -138,11 +139,67 @@ describe('maskContextSlice', () => {
     expect(surviving).not.toBe(RAW);
     expect(wholeValueRejects(surviving, RAW)).toBe(false);
   });
+
+  // maskMatch passes a one-letter-local email through whole, so its safe preview
+  // is a fallback. That fallback must still reveal the domain, or the domain's
+  // runs lose their exemption and a URL on the same host, unspanned elsewhere in
+  // the window, refuses the whole slice.
+  it.each([
+    ['clean', 'x@example.com'],
+    ['padded', 'x\u200B@example.com'],
+  ])('accepts the domain of a %s one-letter-local email elsewhere in the slice', (_, email) => {
+    const slice = `mail ${email} or see https://example.com/docs`;
+    const at = slice.indexOf(email);
+
+    const masked = maskContextSlice(slice, 0, [
+      { rawMatch: email, span: { start: at, end: at + email.length } },
+    ]);
+
+    expect(masked).toBe('mail [REDACTED:SECRET] or see https://example.com/docs');
+    expect(refuses(masked, [email])).toBe(false);
+    // The local character is not part of the preview, so the value still rejects.
+    expect(refuses(`mail ${email}`, [email])).toBe(true);
+  });
 });
 
 describe('safeMaskedMatch', () => {
-  it('falls back to *** for a short-local-part email', () => {
-    expect(safeMaskedMatch('a@b.com')).toBe('***');
+  // maskMatch passes a one-letter-local email through whole, so the guard trips.
+  // The fallback hides the local character and keeps the domain: the domain is
+  // what `carriesRawRun` exempts, and '***' would exempt nothing.
+  it('hides the local character of a short-local-part email and keeps its domain', () => {
+    expect(safeMaskedMatch('a@b.com')).toBe('*@b.com');
+  });
+
+  it('hides the local character of a padded short-local-part email the same way', () => {
+    // maskMatch reads past the padding, so its preview of this value is the
+    // whole visible address; the padded raw differs from it only by the padding.
+    expect(safeMaskedMatch('a\u200B@b.com')).toBe('*@b.com');
+  });
+
+  // The email fallback is itself re-verified: a local part that is already '*'
+  // would make it equal the visible value.
+  it('falls back to *** when the email fallback would equal the value', () => {
+    expect(safeMaskedMatch('*@example.com')).toBe('***');
+  });
+
+  // A generic preview that equals its value has no domain to keep, and an '@'
+  // at an edge is not an email.
+  it('falls back to *** for a non-email preview that equals the value', () => {
+    expect(safeMaskedMatch('a******b')).toBe('***');
+    expect(safeMaskedMatch('@******b')).toBe('***');
+    expect(safeMaskedMatch('a******@')).toBe('***');
+  });
+
+  // The containment half: maskMatch's generic preview is eight characters, so a
+  // six- or seven-character value of the right shape sits inside it. Padding
+  // must not hide that, since the preview never carries the padding.
+  it('falls back to *** when the preview contains the visible value, padded or not', () => {
+    const visible = 'f*****';
+    expect(maskMatch(visible)).not.toBe(visible);
+    expect(maskMatch(visible)).toContain(visible);
+
+    expect(safeMaskedMatch(visible)).toBe('***');
+    expect(safeMaskedMatch('f\u200B*****')).toBe('***');
   });
 
   it('still masks an ordinary secret', () => {
@@ -256,6 +313,32 @@ describe('assertRawFree', () => {
 
     expect(refuses(short, [long, short])).toBe(true);
     expect(refuses(short, [short, long])).toBe(true);
+  });
+
+  // A value padded so densely that every window of it holds a padding character
+  // shares no window with text carrying it WITHOUT the padding, which is how a
+  // model quotes it back. The visible form is checked as well as the raw one.
+  it('refuses the visible form of a value padded inside every window', () => {
+    const padded = RAW.replace(/(.{7})/g, '$1\u200B');
+    expect(padded).not.toBe(RAW);
+    for (let i = 0; i + 8 <= padded.length; i += 1) {
+      expect(padded.slice(i, i + 8)).toContain('\u200B');
+    }
+
+    expect(refuses(`quoted back: ${RAW}`, [padded])).toBe(true);
+    expect(refuses(`near ${RAW.slice(3, 11)}`, [padded])).toBe(true);
+    // Padded past one window, but shorter than one once the padding is gone: the
+    // visible form is checked whole.
+    expect(refuses('short ab12cd', ['ab\u200B12\u200Bcd\u200B'])).toBe(true);
+    expect(wholeValueRejects(`quoted back: ${RAW}`, padded)).toBe(false); // control
+  });
+
+  // The visible form keeps the exemption its preview grants: the domain of a
+  // padded email is accepted, its local part quoted without padding is not.
+  it('applies the preview exemption to the visible form of a padded value', () => {
+    const email = 'deploy\u200B@example.com';
+    expect(refuses('see example.com/docs for the runbook', [email])).toBe(false);
+    expect(refuses('audit trail for deploy@exa', [email])).toBe(true);
   });
 
   // The floor itself, kept: below MIN_RAW_LEN a substring match is not

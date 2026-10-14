@@ -1,4 +1,5 @@
 import { captureWireId } from '@akasecurity/persistence';
+import { isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type { AuditEventRow } from '@akasecurity/schema';
 import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
@@ -69,6 +70,17 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   if (occurredAt === undefined) return undefined;
 
   const attributes = parseAttributes(row.attributes ?? null);
+  // A secret-bearing file's snapshot is local-only on every lane, whatever kind
+  // it was filed under. Refused here as well as on the live forward, so a row
+  // marked owed by any writer is still never sent.
+  if (
+    isSecretBearingFileSnapshot({
+      filePath: stringOrUndefined(attributes.file_path),
+      wholeFile: attributes.whole_file === true,
+    })
+  ) {
+    return undefined;
+  }
   // Required on the wire, and it identifies which harness produced the row, so
   // there is nothing safe to default it to. An unparseable value is a skip.
   const sourceTool = SourceTool.safeParse(attributes.source_tool);
@@ -155,6 +167,13 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
       'redactDegradedTo',
       keep(stringOrUndefined(attributes.redact_degraded_to), REDACT_DEGRADED_TO),
     ),
+    // Carried, for the same reason again: a refused row's content is '' and it
+    // has no findings, so without the marker the deployment reads a refusal as
+    // a clean empty capture. Parsed against the wire for the same reason too.
+    ...withField(
+      'scanIncomplete',
+      keep(stringOrUndefined(attributes.scan_incomplete), SCAN_INCOMPLETE),
+    ),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than
@@ -217,6 +236,7 @@ const TRACE_ID = EventMetadata.shape.traceId;
 // The ELEMENT schema, not the array's: what is filtered here is each id.
 const EXCEPTION_ID = EventMetadata.shape.exceptionIds.unwrap().element;
 const REDACT_DEGRADED_TO = EventMetadata.shape.redactDegradedTo.unwrap();
+const SCAN_INCOMPLETE = EventMetadata.shape.scanIncomplete.unwrap();
 
 function isoOrUndefined(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) return undefined;

@@ -188,11 +188,19 @@ export function parseTranscript(
 
 // The usage bag this parser surfaces, shaped to match the fields
 // `buildAttributes` in usage.ts already knows how to promote (input_tokens /
-// output_tokens / cache_read_input_tokens / …) — Antigravity's `cached_input_tokens`
-// is the closest analog to Claude's `cache_read_input_tokens` (Antigravity does not
-// distinguish cache creation from cache read), and `reasoning_output_tokens`
-// rides the bag as an extra field (already included in `output_tokens`
-// per Antigravity's own TokenUsage — kept here anyway so the raw fact isn't lost).
+// output_tokens / cache_read_input_tokens / …). This parser assumes the Codex
+// `token_count` shape described above, so the field semantics below are
+// Codex's. Codex's `input_tokens` is the whole prompt and INCLUDES
+// `cached_input_tokens` (its own TokenUsage derives
+// non-cached input as `input_tokens - cached_input_tokens`), while the stored
+// `input_tokens` is UNCACHED input billed at the full rate, with cache reads
+// billed separately. So the parser stores `input_tokens - cached_input_tokens`
+// as `input_tokens` and the cached count as `cache_read_input_tokens`;
+// copying the raw count would bill every cached token twice. Codex's
+// `cache_write_input_tokens` is also inside `input_tokens` and stays there,
+// billed at the input rate. `reasoning_output_tokens` rides the bag as an extra
+// field (already included in `output_tokens` per Codex's own TokenUsage — kept
+// here anyway so the raw fact isn't lost).
 export interface TranscriptUsage {
   input_tokens?: number;
   output_tokens?: number;
@@ -327,11 +335,13 @@ export function parseTranscriptUsage(
     const last = info.last_token_usage;
     if (!isRecord(last)) continue;
     const usage: TranscriptUsage = {};
-    if (typeof last.input_tokens === 'number') usage.input_tokens = last.input_tokens;
-    if (typeof last.output_tokens === 'number') usage.output_tokens = last.output_tokens;
-    if (typeof last.cached_input_tokens === 'number') {
-      usage.cache_read_input_tokens = last.cached_input_tokens;
+    const cached =
+      typeof last.cached_input_tokens === 'number' ? Math.max(0, last.cached_input_tokens) : 0;
+    if (typeof last.input_tokens === 'number') {
+      usage.input_tokens = Math.max(0, last.input_tokens - cached);
     }
+    if (typeof last.output_tokens === 'number') usage.output_tokens = last.output_tokens;
+    if (typeof last.cached_input_tokens === 'number') usage.cache_read_input_tokens = cached;
     if (typeof last.reasoning_output_tokens === 'number') {
       usage.reasoning_output_tokens = last.reasoning_output_tokens;
     }

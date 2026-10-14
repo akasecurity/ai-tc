@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   blockMessage,
   exceptionPointer,
+  tooLargeToScanMessage,
   withheldBanner,
   withheldToolText,
 } from '../src/exception-guidance.ts';
@@ -178,5 +179,16 @@ describe('withheldToolText', () => {
     const out = withheldToolText('Bash', 'secrets/aws-access-key', 'stderr');
     expect(out).toContain('Bash stderr withheld');
     expect(out).not.toContain('Bash output withheld');
+  });
+});
+
+// A field whose bounded scan did not finish: nothing was flagged, so there is
+// no rule to name and no value an exception could approve.
+describe('tooLargeToScanMessage', () => {
+  it('says the input was blocked because it was too large to scan in time', () => {
+    expect(tooLargeToScanMessage('bash call')).toBe(
+      'This bash call is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.',
+    );
+    expect(tooLargeToScanMessage('bash call')).not.toContain('aka exception');
   });
 });

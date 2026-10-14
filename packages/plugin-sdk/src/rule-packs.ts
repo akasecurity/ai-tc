@@ -28,9 +28,13 @@ export function registerRulePack(packId: string, rawRules: unknown[]): void {
   registerPack({ id: packId, rules });
 }
 
-/** Register every bundled pack with the detection engine. */
+/**
+ * Register every bundled pack with the detection engine. The rules are the ones
+ * `bundledDetections()` parsed, so a process that both registers the packs and
+ * records the inventory (every hook does) validates each bundled rule once.
+ */
 export function registerBundledPacks(): void {
-  for (const pack of BUNDLED_PACKS) registerRulePack(pack.packId, pack.rawRules);
+  for (const pack of bundledDetections()) registerPack({ id: pack.packId, rules: pack.rules });
 }
 
 // Memoized: the bundled JSON is inlined at build time, so the parsed inventory
@@ -56,6 +60,23 @@ export function bundledDetections(): InstalledPackInput[] {
     defaultPolicyId: pack.defaultPolicy,
   }));
   return cachedDetections;
+}
+
+/**
+ * The regex matchers of the packs this build ships, from the build-time
+ * BUNDLED_PACKS, which CI times. The one trust anchor for "the binary ships this
+ * pattern": handed to the store (`openLocalDatabase`'s `shippedRegexMatchers`)
+ * so the Claude Code mod's policy snapshot admits a regex without a cached
+ * verdict only if it is one of these, and never because a mutable table says so.
+ */
+export function shippedRegexMatchers(): { pattern: string; flags: string }[] {
+  return bundledDetections()
+    .flatMap((pack) => pack.rules)
+    .flatMap((rule) =>
+      rule.matcher.type === 'regex'
+        ? [{ pattern: rule.matcher.pattern, flags: rule.matcher.flags }]
+        : [],
+    );
 }
 
 // Distinct rule ids across a finding set, joined for a one-line summary in the

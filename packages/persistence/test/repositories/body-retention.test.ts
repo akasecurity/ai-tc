@@ -622,6 +622,77 @@ describe('body expiry — finding excerpts', () => {
     expect(findingOf('new').context).toBe(EXCERPT);
   });
 
+  it('clears the variable name with the excerpt', () => {
+    seed(raw, [
+      { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },
+      { id: 'new', kind: 'code_change', ageDays: 1, content: 'y'.repeat(100) },
+    ]);
+    withExcerpt('old', 60);
+    withExcerpt('new', 1);
+    const name = ['STRIPE', 'KEY'].join('_');
+    raw.prepare(`UPDATE inspection_findings SET variable_name = ?`).run(name);
+    const nameOf = (id: string) =>
+      (
+        raw
+          .prepare(`SELECT variable_name FROM inspection_findings WHERE id = ?`)
+          .get(`find-${id}`) as { variable_name: string | null }
+      ).variable_name;
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(nameOf('old')).toBeNull();
+    expect(nameOf('new')).toBe(name);
+  });
+
+  it('upgrades a store that applied 0038 without the name index, then expires a name-only finding', () => {
+    const index = 'idx_inspection_findings_variable_name';
+    const indexTag = '0039_variable_name_expiry_index';
+    raw.exec(`DROP INDEX ${index}`);
+    raw.prepare(`DELETE FROM migration_ledger WHERE tag = ?`).run(indexTag);
+    expect(() => new SqliteBodyRetentionRepository(raw)).not.toThrow();
+
+    const db = store.open();
+    const hasIndex = raw
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`)
+      .get(index);
+    expect(hasIndex).toBeDefined();
+    seed(raw, [{ id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) }]);
+    raw
+      .prepare(`UPDATE inspection_findings SET variable_name = ?, first_detected_at = ?`)
+      .run(['API', 'KEY'].join('_'), NOW - 60 * DAY);
+
+    db.bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    const row = raw
+      .prepare(`SELECT variable_name FROM inspection_findings WHERE id = ?`)
+      .get('find-old') as { variable_name: string | null };
+    expect(row.variable_name).toBeNull();
+  });
+
+  it('clears the variable name on a finding that never held an excerpt', () => {
+    seed(raw, [
+      { id: 'old', kind: 'code_change', ageDays: 60, content: 'x'.repeat(100) },
+      { id: 'new', kind: 'code_change', ageDays: 1, content: 'y'.repeat(100) },
+    ]);
+    const name = ['STRIPE', 'KEY'].join('_');
+    const named = raw.prepare(
+      `UPDATE inspection_findings SET variable_name = ?, first_detected_at = ? WHERE id = ?`,
+    );
+    named.run(name, NOW - 60 * DAY, 'find-old');
+    named.run(name, NOW - DAY, 'find-new');
+    const rowOf = (id: string) =>
+      raw
+        .prepare(`SELECT context, variable_name FROM inspection_findings WHERE id = ?`)
+        .get(`find-${id}`) as { context: string | null; variable_name: string | null };
+    expect(rowOf('old')).toEqual({ context: null, variable_name: name });
+
+    store.open().bodyRetention.expire({ cutoff: CUTOFF, sweepSyncLane: true, now: NOW });
+
+    expect(bodyOf(raw, 'old').content).toBeNull();
+    expect(rowOf('old').variable_name).toBeNull();
+    expect(rowOf('new').variable_name).toBe(name);
+  });
+
   it('clears the excerpt of a tool call past the horizon, which never had a body', () => {
     seed(raw, [
       { id: 'old-call', kind: 'tool_call', ageDays: 60, content: null },

@@ -36,6 +36,7 @@ import type {
 import {
   DEFAULT_VAULT_DEREFS_LIMIT,
   DEFAULT_VAULT_INVENTORY_LIMIT,
+  MAX_VARIABLE_NAME_LENGTH,
   MAX_VAULT_PAGE_LIMIT,
   POINTER_FORMAT_VERSION,
 } from '@akasecurity/schema';
@@ -86,6 +87,9 @@ export interface VaultRowInsert {
   ruleId: string;
   maskedMatch: string;
   provider?: string | undefined;
+  // The variable the value was assigned to. A repeat call only fills it in
+  // when the row has none — see `bumpStmt`.
+  variableName?: string | undefined;
   // base64
   ciphertext: string;
   nonce: string;
@@ -122,11 +126,12 @@ export interface VaultDerefInsert {
   pointerCount?: number | undefined;
 }
 
-// SQLite hands back `provider` as null and `user_authorized` as 0/1; the row
-// type above keeps the first optional and the second a boolean, so the read
-// boundary normalizes both.
-interface RawVaultRow extends Omit<VaultRow, 'provider' | 'userAuthorized'> {
+// SQLite hands back `provider` and `variable_name` as null and
+// `user_authorized` as 0/1; the row type above keeps the first two optional and
+// the last a boolean, so the read boundary normalizes them.
+interface RawVaultRow extends Omit<VaultRow, 'provider' | 'variableName' | 'userAuthorized'> {
   provider: string | null;
+  variableName: string | null;
   userAuthorized: number;
 }
 
@@ -175,7 +180,7 @@ const REUSED_PREDICATE = `(v.occurrence_count > 1
 // sealed columns — the keyed HMAC is correlation material and must not reach a
 // view layer, and the ciphertext must not leave the vault at all.
 const INVENTORY_COLUMNS = `v.pointer_id, v.category, v.rule_id, v.masked_match, v.provider,
-          v.occurrence_count, v.first_seen, v.last_seen`;
+          v.variable_name, v.occurrence_count, v.first_seen, v.last_seen`;
 
 interface RawInventoryRow {
   pointer_id: string;
@@ -183,6 +188,7 @@ interface RawInventoryRow {
   rule_id: string;
   masked_match: string;
   provider: string | null;
+  variable_name: string | null;
   occurrence_count: number;
   first_seen: number;
   last_seen: number;
@@ -217,6 +223,7 @@ const SELECT_COLUMNS = `
   rule_id AS ruleId,
   masked_match AS maskedMatch,
   provider,
+  variable_name AS variableName,
   ciphertext,
   nonce,
   auth_tag AS authTag,
@@ -226,9 +233,19 @@ const SELECT_COLUMNS = `
   last_seen AS lastSeen`;
 
 function toRow(raw: RawVaultRow): VaultRow {
-  const { provider, userAuthorized, ...rest } = raw;
-  const row = { ...rest, userAuthorized: userAuthorized !== 0 };
-  return provider === null ? row : { ...row, provider };
+  const { provider, variableName, userAuthorized, ...rest } = raw;
+  return {
+    ...rest,
+    userAuthorized: userAuthorized !== 0,
+    ...(provider === null ? {} : { provider }),
+    ...(variableName === null ? {} : { variableName }),
+  };
+}
+
+// A name past the detection cap is not stored: the column holds a name, and
+// nothing that long is one.
+function boundedName(name: string | undefined): string | undefined {
+  return name !== undefined && name.length <= MAX_VARIABLE_NAME_LENGTH ? name : undefined;
 }
 
 /**
@@ -252,17 +269,19 @@ export class SqliteSecretVaultRepository {
       `INSERT INTO secret_vault (
          pointer_id, value_fingerprint, value_identity_fingerprint,
          fingerprint_key_version, key_version, format_version, category, rule_id, masked_match, provider,
-         ciphertext, nonce, auth_tag,
+         variable_name, ciphertext, nonce, auth_tag,
          user_authorized, occurrence_count, first_seen, last_seen
        ) VALUES (
          :pointerId, :valueFingerprint, :valueIdentityFingerprint,
          :fingerprintKeyVersion, :keyVersion, :formatVersion, :category, :ruleId, :maskedMatch, :provider,
-         :ciphertext, :nonce, :authTag,
+         :variableName, :ciphertext, :nonce, :authTag,
          :userAuthorized, 1, :now, :now
        )`,
     );
-    // Deliberately touches only the counters and the provenance marker:
-    // pointer_id, category, key_version and the sealed bytes are fixed at mint.
+    // Deliberately touches only the counters, the provenance marker and the
+    // variable name: pointer_id, category, key_version and the sealed bytes are
+    // fixed at mint. The latest sighting that names the value sets the name; a
+    // sighting with no name keeps the stored one, matching inspection_findings.
     //
     // `max` is what makes the marker STICKY, and it is the invariant rather than
     // an optimization: one value is one row, so an automatic vaulting of a value
@@ -274,7 +293,8 @@ export class SqliteSecretVaultRepository {
     this.bumpStmt = db.prepare(
       `UPDATE secret_vault
        SET occurrence_count = occurrence_count + 1, last_seen = :now,
-           user_authorized = max(user_authorized, :userAuthorized)
+           user_authorized = max(user_authorized, :userAuthorized),
+           variable_name = COALESCE(:variableName, variable_name)
        WHERE value_fingerprint = :valueFingerprint`,
     );
     this.byPointerStmt = db.prepare(
@@ -343,6 +363,7 @@ export class SqliteSecretVaultRepository {
               ruleId: input.ruleId,
               maskedMatch: input.maskedMatch,
               provider: input.provider,
+              variableName: boundedName(input.variableName),
               ciphertext: input.ciphertext,
               nonce: input.nonce,
               authTag: input.authTag,
@@ -356,6 +377,7 @@ export class SqliteSecretVaultRepository {
         this.bumpStmt.run({
           valueFingerprint: input.valueFingerprint,
           userAuthorized: input.userAuthorized === true ? 1 : 0,
+          variableName: boundedName(input.variableName) ?? null,
           now,
         });
       },
@@ -542,6 +564,7 @@ export class SqliteSecretVaultRepository {
       pointerId: r.pointer_id,
       category: r.category as VaultInventoryEntry['category'],
       ...(r.provider === null ? {} : { provider: r.provider }),
+      ...(r.variable_name === null ? {} : { variableName: r.variable_name }),
       maskedMatch: r.masked_match,
       occurrences: r.occurrence_count,
       firstSeen: new Date(r.first_seen).toISOString(),

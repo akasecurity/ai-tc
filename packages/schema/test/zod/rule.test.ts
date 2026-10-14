@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { PostValidatorName, Rule, RuleFixture, RuleProbeVerdict } from '../../src/zod/rule.ts';
+import {
+  PostValidatorName,
+  RegexMatcher,
+  Rule,
+  RuleFixture,
+  RuleProbeVerdict,
+} from '../../src/zod/rule.ts';
 
 // What a rejection actually SAYS, joined for assertion. Every test below checks
 // the wording as well as the refusal: a rule author who gets `success: false`
@@ -246,6 +252,13 @@ describe('Rule rejects unrecognized keys at every level', () => {
     expect(inSpan.success).toBe(false);
   });
 
+  it('accepts a fixture expectedVariableName as a name or null', () => {
+    const base = { label: 'l', text: 't', shouldMatch: true };
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: 'API_KEY' }).success).toBe(true);
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: null }).success).toBe(true);
+    expect(RuleFixture.safeParse({ ...base, expectedVariableName: 1 }).success).toBe(false);
+  });
+
   it('accepts a fixture eventKind only when it is an EventKind', () => {
     const base = { label: 'l', text: 't', shouldMatch: true };
     for (const eventKind of ['prompt', 'response', 'code_change', 'tool_use']) {
@@ -397,6 +410,21 @@ describe('Rule validates captureGroup against the pattern group count', () => {
     expect(counted('(a)|(b)', 3)).toBe(false);
   });
 
+  it('reports only the invalid pattern when the group count cannot be taken', () => {
+    // An invalid pattern cannot be counted either, so the captureGroup check
+    // has no count to compare against and must add nothing of its own.
+    const parsed = RegexMatcher.safeParse({
+      type: 'regex',
+      pattern: '(',
+      flags: 'g',
+      captureGroup: 1,
+    });
+    expect(parsed.success).toBe(false);
+    expect(issuePaths(parsed)).toBe('pattern');
+    expect(reasons(parsed)).toBe('pattern/flags do not form a valid JavaScript regular expression');
+    expect(reasons(parsed)).not.toContain('out of range');
+  });
+
   it('holds captureGroup 0 to the whole-match empty-string rule', () => {
     // Group 0 IS the whole match, so `captureGroup: 0` means exactly what
     // omitting the field means — and used to sidestep the empty-string guard
@@ -439,5 +467,72 @@ describe('Rule.evidence', () => {
 
   it('refuses any other evidence', () => {
     expect(Rule.safeParse(validRule({ evidence: 'snippet' })).success).toBe(false);
+  });
+});
+
+// Each regex probe's answer is kept per pattern and flags for the life of the
+// process, so a rule parsed a second time reuses it. These pin that the reuse
+// happens, and that a reused answer is the right one: a repeated parse refuses
+// what the first refused, and no pattern/flags pair is mistaken for another
+// that spells the same text.
+describe('Rule regex probes answer the same on a repeated parse', () => {
+  const matcher = (m: Record<string, unknown>) => Rule.safeParse(validRule({ matcher: m }));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses an invalid, an empty-matching and an out-of-range rule every time', () => {
+    for (let pass = 0; pass < 2; pass++) {
+      expect(
+        matcher({ type: 'regex', pattern: '(', flags: 'g' }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(
+        matcher({ type: 'regex', pattern: '\\d*', flags: 'g' }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(
+        matcher({ type: 'regex', pattern: 'a(b)', flags: 'g', captureGroup: 2 }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(matcher({ type: 'regex', pattern: 'a(b)', flags: 'g', captureGroup: 1 }).success).toBe(
+        true,
+      );
+    }
+  });
+
+  it('builds each probe once and reuses it on a later parse', () => {
+    // Counts the RegExp objects built from one pattern no other case uses, so
+    // the count is this case's own. A second parse that rebuilt its probes
+    // would answer the same, which is why the count is what is asserted.
+    const marker = 'memo-probe-marker';
+    let built = 0;
+    vi.stubGlobal(
+      'RegExp',
+      new Proxy(RegExp, {
+        construct(target, args: [string | RegExp, string?]) {
+          if (String(args[0]).includes(marker)) built += 1;
+          return Reflect.construct<[string | RegExp, string?], RegExp>(target, args);
+        },
+      }),
+    );
+    const rule = { type: 'regex', pattern: `${marker}(\\w+)`, flags: 'g', captureGroup: 1 };
+
+    expect(matcher(rule).success).toBe(true);
+    const firstParse = built;
+    expect(firstParse).toBeGreaterThan(0);
+
+    expect(matcher(rule).success).toBe(true);
+    expect(built).toBe(firstParse);
+  });
+
+  it('keeps flags and pattern apart', () => {
+    // `x` is an invalid flag, so the first is refused; the second spells the
+    // same characters with the boundary moved and is a valid rule. A key that
+    // only concatenated the two would hand one the other's verdict.
+    expect(matcher({ type: 'regex', pattern: 'yz', flags: 'gx' }).success).toBe(false);
+    expect(matcher({ type: 'regex', pattern: 'xyz', flags: 'g' }).success).toBe(true);
+    expect(matcher({ type: 'regex', pattern: 'yz', flags: 'gx' }).success).toBe(false);
   });
 });

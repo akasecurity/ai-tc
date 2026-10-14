@@ -127,6 +127,30 @@ describe('rebuildCapture', () => {
     expect(rebuilt?.metadata?.conversationId).toBe('conv_9');
   });
 
+  // A refused capture is stored with '' as its content, so the marker is the
+  // only thing that tells the deployment it was refused rather than empty.
+  it('round-trips a refused capture with its scanIncomplete marker', () => {
+    const event = buildIngestEvent({
+      kind: 'tool_use',
+      sourceTool: 'claude-code',
+      content: '',
+      contentHash: HASH,
+      occurredAt: '2026-09-01T10:00:00.000Z',
+      metadata: { sessionId: SESSION, scanIncomplete: 'unavailable' },
+    });
+    const rebuilt = rebuildCapture(
+      row({
+        eventType: 'tool_use',
+        attributes: JSON.stringify(toCaptureAttributes(event)),
+        content: event.content,
+        contentHash: event.contentHash,
+      }),
+    );
+    expect(rebuilt?.content).toBe('');
+    expect(rebuilt?.metadata?.scanIncomplete).toBe('unavailable');
+    expect(rebuildCapture(row())?.metadata?.scanIncomplete).toBeUndefined();
+  });
+
   it('drops an empty message id rather than sending an empty string', () => {
     const empty = row({
       attributes: JSON.stringify({ source_tool: 'claude-code', message_id: '' }),
@@ -236,6 +260,13 @@ describe('rebuildCapture', () => {
       }
     });
 
+    it('drops a scanIncomplete marker the wire does not know, and keeps the capture', () => {
+      const event = withBag({ scan_incomplete: 'gave-up' });
+      expect(event?.content).toBe('the text of a prompt');
+      expect(event?.metadata?.scanIncomplete).toBeUndefined();
+      expect(withBag({ scan_incomplete: 'timeout' })?.metadata?.scanIncomplete).toBe('timeout');
+    });
+
     it('drops the field entirely when no exception id survives', () => {
       const event = withBag({ exception_ids: ['legacy-grant-7'] });
       expect(event?.content).toBe('the text of a prompt');
@@ -254,6 +285,20 @@ describe('rebuildCapture', () => {
     // well as in the ledger's SQL so the two must move together.
     it('refuses a code_change, which is a capture kind this lane excludes', () => {
       expect(rebuildCapture(row({ eventType: 'code_change' }))).toBeUndefined();
+    });
+
+    it('refuses a whole-file snapshot of a dotenv file, whatever kind it is filed under', () => {
+      const snapshot = (filePath: string) =>
+        row({
+          attributes: JSON.stringify({
+            source_tool: 'claude-code',
+            file_path: filePath,
+            whole_file: true,
+          }),
+        });
+      expect(rebuildCapture(snapshot('/repo/.env'))).toBeUndefined();
+      expect(rebuildCapture(snapshot('/repo/.env.production'))).toBeUndefined();
+      expect(rebuildCapture(snapshot('/repo/src/app.ts'))?.content).toBe('the text of a prompt');
     });
 
     it('refuses a row with no content or no hash', () => {

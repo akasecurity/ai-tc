@@ -61,6 +61,15 @@ export function blockMessage(input: BlockMessageInput): string {
   ].join('\n');
 }
 
+// The refusal for a field the hook could not scan in the time it has: a field
+// at or above the large-input threshold whose bounded scan timed out or found
+// no worker to run it (`CaptureResult.scanIncomplete`). It names no rule —
+// none ran to completion — and offers no exception, because there is no
+// flagged value for one to approve. What the user can do is send less at once.
+export function tooLargeToScanMessage(subject: string): string {
+  return `This ${subject} is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.`;
+}
+
 // One trailing sentence for the redact/warn systemMessage branches: redacted
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when
@@ -86,6 +95,10 @@ export interface WithheldBannerInput {
   // line of their own they would vanish: the warn-only systemMessage branch is
   // unreachable once any field was rewritten.
   warnedRuleIds?: string | undefined;
+  // Comma-joined field names withheld because their bounded scan did not
+  // finish. No rule flagged them, so they get their own line and, alone, no
+  // approve command: there is no value for an exception to name.
+  tooLargeFields?: string | undefined;
   blockedRef?: BlockedDetectionRef | undefined;
 }
 
@@ -106,15 +119,44 @@ export function withheldBanner(input: WithheldBannerInput): string {
   const approve = input.blockedRef
     ? `Allow this exact value (${input.blockedRef.maskedValue}) intentionally: aka exception approve ${input.blockedRef.reference}`
     : 'Allow intentionally: aka exception approve';
+  const flagged = Boolean(input.withheldRuleIds) || Boolean(input.redactedRuleIds);
   return [
     `${header} ${input.toolName} output ${input.action}`,
     ...(input.withheldRuleIds ? [`${SHADE.full} Withheld: ${input.withheldRuleIds}`] : []),
     ...(input.redactedRuleIds ? [`${SHADE.full} Redacted: ${input.redactedRuleIds}`] : []),
+    ...(input.tooLargeFields
+      ? [
+          `${SHADE.full} Too large to scan in time: ${input.tooLargeFields} — withheld, never reached the model.`,
+        ]
+      : []),
     ...(input.warnedRuleIds ? [`${SHADE.full} Also flagged (warn): ${input.warnedRuleIds}`] : []),
-    `${SHADE.full} ${subject} never reached the model.`,
-    `${SHADE.full} ${approve}`,
-    `${SHADE.full} More: aka exception --help`,
+    ...(flagged
+      ? [
+          `${SHADE.full} ${subject} never reached the model.`,
+          `${SHADE.full} ${approve}`,
+          `${SHADE.full} More: aka exception --help`,
+        ]
+      : []),
   ].join('\n');
+}
+
+// The model-visible replacement for output withheld because its bounded scan
+// did not finish. Same placeholder warning as `withheldToolText` below, for the
+// same reason: this text sits where real content was. Unlike a flagged field,
+// nothing here is known to be sensitive — it was simply never scanned — so a
+// smaller read of the same content is the way forward, and is scanned like any
+// other.
+export function tooLargeToolText(toolName: string, field?: string): string {
+  const part = field !== undefined && field !== '' ? field : 'output';
+  return (
+    `[AKA SECURITY] ${toolName} ${part} withheld — too large to scan within the time limit. ` +
+    'The content was not added to your context. ' +
+    'This notice is a placeholder, not the real content: the underlying file ' +
+    'or command output is unchanged, so never write this notice back to a ' +
+    'file or treat it as data. ' +
+    'Tell the user AKA withheld this output because it was too large to scan. ' +
+    'If the task needs it, read it in smaller parts (for example a narrower range of lines).'
+  );
 }
 
 // The model-visible replacement for a withheld field: states what happened,

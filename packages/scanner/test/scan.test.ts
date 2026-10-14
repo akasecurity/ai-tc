@@ -780,6 +780,47 @@ describe('scope key of each captured file', () => {
     expect(inputOf('personal-b.ts')?.scopeKey).toBe('github.com/me/personal');
   });
 
+  it("keys a nested clone's files by its own remote though the resolver once answered for that directory as an ordinary one", async () => {
+    // The resolver remembers each directory by its path string for the life of
+    // the process. Asked about `tools/mine` while it was an ordinary directory of
+    // the work checkout, it remembered the checkout's answer under that string.
+    // The directory then became a clone with another remote, and its files carry
+    // the clone's key, not what the resolver remembered.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    const mine = join(tmp, 'tools', 'mine');
+    mkdirSync(mine, { recursive: true });
+    expect(resolveRepoAttribution(mine).scopeKey).toBe('github.com/acme/work');
+    gitRepo(mine, origin('https://github.com/me/personal.git'));
+    write('tools/mine/mine-a.ts', 'const mineA = 1;');
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this directory with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(mine).scopeKey).toBe('github.com/acme/work');
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(inputOf('mine-a.ts')?.scopeKey).toBe('github.com/me/personal');
+  });
+
+  it("keys a scan root's files by its own remote though the resolver once answered for that directory as an ordinary one", async () => {
+    // The same, for the scan root: a package directory of the work checkout that
+    // the resolver answered for, and that is then cloned over with another remote.
+    gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
+    const pkg = join(tmp, 'packages', 'api');
+    mkdirSync(pkg, { recursive: true });
+    expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
+    gitRepo(pkg, origin('https://github.com/me/personal.git'));
+    write('packages/api/src/api-a.ts', 'const api = 1;');
+    // The precondition, checked as late as it can be: the resolver still answers
+    // for this scan root with the checkout's key though it now holds a clone.
+    // Without it the case would pass whenever the memory happened to be gone.
+    expect(resolveRepoAttribution(pkg).scopeKey).toBe('github.com/acme/work');
+
+    await scanWorktree(config, { rootDir: pkg, sourceTool: 'claude-code' });
+
+    expect(inputOf('api-a.ts')?.scopeKey).toBe('github.com/me/personal');
+  });
+
   it('reads each repository once per scan, however many of its files it captures', async () => {
     gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
     gitRepo(join(tmp, 'tools', 'mine'), origin('https://github.com/me/personal.git'));
@@ -795,22 +836,38 @@ describe('scope key of each captured file', () => {
     expect(reads()).toEqual([tmp, join(tmp, 'tools', 'mine')].sort());
   });
 
-  it('reads no repository on a re-run that skips every file unread', async () => {
+  it('reads each repository once on a re-run that skips every file unread, and rewrites no row', async () => {
+    // A skipped file is not read, but the key it has now is compared with the one
+    // its row recorded, so the repository around it is read once per scan,
+    // however many files are skipped. The key is the same, so no row is rewritten.
     gitRepo(tmp, origin(`${gitUser}github.com:acme/work.git`));
     write('src/work-a.ts', 'const work = 1;');
+    write('src/work-b.ts', 'const work = 2;');
     await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    // Each row names the repository's directory as well as its key.
+    expect(recordedEntries().map((e) => e.scopeRoot)).toEqual([tmp, tmp]);
     scanLedger.mockResolvedValue(
       new Map(
-        recordedEntries().map((e) => [e.path, { mtime: e.mtime, contentHash: e.contentHash }]),
+        recordedEntries().map((e) => [
+          e.path,
+          {
+            mtime: e.mtime,
+            contentHash: e.contentHash,
+            ...(e.scopeKey !== undefined ? { scopeKey: e.scopeKey } : {}),
+            ...(e.scopeRoot !== undefined ? { scopeRoot: e.scopeRoot } : {}),
+          },
+        ]),
       ),
     );
     capture.mockClear();
+    recordScanned.mockClear();
     vi.mocked(resolveRepoAttribution).mockClear();
 
     const summary = await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
 
-    expect(summary.skipped).toBe(1);
+    expect(summary.skipped).toBe(2);
     expect(capture).not.toHaveBeenCalled();
-    expect(resolveRepoAttribution).not.toHaveBeenCalled();
+    expect(reads()).toEqual([tmp]);
+    expect(recordedEntries()).toEqual([]);
   });
 });

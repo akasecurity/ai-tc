@@ -4,6 +4,7 @@ import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
+import { runSightingKeySync } from './sighting-key-sync.ts';
 import { writeSyncState } from './sync-state.ts';
 
 /**
@@ -63,6 +64,10 @@ export async function runAttachedSync(
   // route — so a 403 there is not proof of a 403 here, and declining to even
   // ask would be this device deciding on the deployment's behalf.
   if (policyOutcome === 'unauthorized') return;
+
+  // Fetches the sighting key only when none is stored or it is a day old.
+  // `runSightingKeySync` never throws.
+  await runSightingKeySync({ base, settingsDir: settingsDir(base) });
 
   // AFTER the policy pull, and in its own try. Ordered that way because the
   // scan the command triggers reads the policy the pull just cached, so a

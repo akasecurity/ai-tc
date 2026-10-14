@@ -6,7 +6,7 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "[\"'][^\\n]*?(select|insert|update|delete|drop|where)[^\\n]*?[\"']\\s*\\.",
+    "pattern": "[\"'](?=([^\"'\\n]*?(?:select|insert|update|delete|drop|where)))\\1(?:(?![\"'][^\"'\\n]*?(?:select|insert|update|delete|drop|where))[^\\n])*?[\"']\\s*\\.",
     "flags": "gi"
   },
   "appliesTo": {

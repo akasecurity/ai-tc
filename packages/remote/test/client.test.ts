@@ -2,8 +2,16 @@ import type { EgressIngestRequest, StorePostureSnapshot } from '@akasecurity/sch
 import { describe, expect, it } from 'vitest';
 
 import { createAttachClient, createRemoteClient } from '../src/client.ts';
-import { MAX_RESPONSE_BYTES, RemoteRequestError, RemoteTransportError, send } from '../src/http.ts';
+import {
+  MAX_RESPONSE_BYTES,
+  RemoteRequestError,
+  RemoteResponseInvalid,
+  RemoteRouteAbsent,
+  RemoteTransportError,
+  send,
+} from '../src/http.ts';
 import { useLoopbackServer } from './helpers/loopback.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
 
 const API_KEY = 'not-a-real-key-9d3f7b2c4e81';
 
@@ -56,6 +64,13 @@ const egressRequest: EgressIngestRequest = {
 };
 
 const json = (payload: unknown) => JSON.stringify(payload);
+
+const sightingKeyBody = {
+  keyVersion: 3,
+  algorithm: 'hmac-sha256',
+  key: Buffer.alloc(32, 7).toString('base64url'),
+  previous: [{ keyVersion: 2, key: Buffer.alloc(32, 5).toString('base64url') }],
+};
 
 /**
  * Fail rather than hang when a promise that should settle does not.
@@ -548,7 +563,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the ten, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the eleven, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -574,7 +589,9 @@ describe('routes', () => {
                 ? json({ ok: true })
                 : req.url === '/v1/plugin/commands'
                   ? json({ command: null })
-                  : json({ accepted: 1, duplicates: 0, ok: true }),
+                  : req.url === '/v1/sighting-key'
+                    ? json(sightingKeyBody)
+                    : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -600,6 +617,7 @@ describe('routes', () => {
     await client.recordProjectEgress(egressRequest);
     await client.pollCommand();
     await client.ackCommand('cmd_1', { outcome: 'reported', projectsScanned: 0 });
+    await client.getSightingKey();
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -612,6 +630,7 @@ describe('routes', () => {
       'POST /v1/shares',
       'GET /v1/plugin/commands',
       'POST /v1/plugin/commands/cmd_1/ack',
+      'GET /v1/sighting-key',
     ]);
   });
 
@@ -983,5 +1002,71 @@ describe('the credential-less attach client', () => {
     await expect(client.startGrant(request)).rejects.toMatchObject({
       name: 'RemoteResponseInvalid',
     });
+  });
+});
+
+describe('the sighting-key fetch', () => {
+  const server = useLoopbackServer();
+
+  it('issues exactly GET /v1/sighting-key with the credential, and parses the body', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(sightingKeyBody));
+    });
+
+    const keys = await client.getSightingKey();
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('GET /v1/sighting-key');
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(seen?.body).toBe('');
+    expect(keys).toEqual(sightingKeyBody);
+  });
+
+  it('rejects a malformed body without echoing the key it carried', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const shortKey = Buffer.alloc(31, 9).toString('base64url');
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ...sightingKeyBody, key: shortKey }));
+    });
+
+    const error = await client.getSightingKey().then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(error).toBeInstanceOf(RemoteResponseInvalid);
+    expect(error?.message).toContain('/v1/sighting-key');
+    expectNoEchoOf(error?.message, shortKey);
+    expectNoEchoOf(JSON.stringify(error), shortKey);
+  });
+
+  it('names a deployment that predates the route, rather than a generic 404', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.getSightingKey()).rejects.toBeInstanceOf(RemoteRouteAbsent);
+  });
+
+  it('carries only the status of any other refusal', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(json(sightingKeyBody));
+    });
+
+    const error = await client.getSightingKey().then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(error).toBeInstanceOf(RemoteRequestError);
+    expect(error?.message).toContain('403');
+    expectNoEchoOf(error?.message, sightingKeyBody.key);
   });
 });

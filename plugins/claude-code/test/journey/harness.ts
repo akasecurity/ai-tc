@@ -292,6 +292,16 @@ export class SetupJourney {
     return this.run('onboard.js', ['--vault-consent', action]);
   }
 
+  // Record or clear the credential-sightings sharing grant.
+  onboardSightingShareConsent(action: string): StepResult {
+    return this.run('onboard.js', ['--sighting-share-consent', action]);
+  }
+
+  // Whether the wizard should ask about sharing credential sightings.
+  sightingShareAsk(): StepResult {
+    return this.run('onboard.js', ['--sighting-share-ask']);
+  }
+
   // Out-of-band posture write, e.g. a pack the user hardened before running the
   // wizard — used to prove the confirm write never downgrades it.
   onboardPosture(posture: Record<string, string>): StepResult {

@@ -44,6 +44,7 @@ import {
   foldGroupStatus,
   isoToEpochMillis,
   matchesInstanceFilters,
+  MAX_VARIABLE_NAME_LENGTH,
   newLocationAccumulator,
   sortFindingTypes,
   toInstanceDetail,
@@ -61,6 +62,12 @@ import type {
   FindingTypesView,
 } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resolution-sql.ts';
+
+// Both write paths bound the name, but this read is not parsed through Zod, so
+// a row written around them must not surface an unbounded one.
+function storedName(name: string | null): { variableName?: string } {
+  return name !== null && name.length <= MAX_VARIABLE_NAME_LENGTH ? { variableName: name } : {};
+}
 
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
@@ -122,6 +129,7 @@ interface FindingGroupRowJoined {
   // Where the match sits in the scanned text (null before location capture).
   line: number | null;
   col: number | null;
+  variable_name: string | null;
 }
 
 // Per-row FindingStatus — a thin snake_case adapter over @akasecurity/schema's
@@ -167,6 +175,7 @@ function toFlatFindingRow(r: FindingGroupRowJoined): FlatFindingRow {
     ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
     ...(r.line === null ? {} : { line: r.line }),
     ...(r.col === null ? {} : { col: r.col }),
+    ...storedName(r.variable_name),
     eventId: r.event_id,
     ...(r.session_id === null ? {} : { sessionId: r.session_id }),
     status: deriveInstanceStatus(r),
@@ -333,7 +342,7 @@ const FINDING_ROW_COLUMNS_SQL = `f.id AS id, d.rule_id AS rule_id, d.category AS
               e.synced_at AS synced_at, e.sync_claimed_at AS sync_claimed_at,
               e.sync_failed_at AS sync_failed_at, e.sync_failure AS sync_failure,
               e.outbox_owed AS outbox_owed,
-              f.line AS line, f.col AS col`;
+              f.line AS line, f.col AS col, f.variable_name AS variable_name`;
 
 const DAY_MS = 86_400_000;
 
@@ -349,6 +358,7 @@ interface FindingRowJoined {
   occurred_at: number;
   source_tool: string;
   kind: string;
+  variable_name: string | null;
 }
 
 /**
@@ -413,7 +423,7 @@ export class SqliteFindingsRepository
         `SELECT f.id, f.audit_event_id AS event_id, d.rule_id, d.category, d.severity,
                 f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
                 e.source_tool AS source_tool,
-                e.event_type AS kind
+                e.event_type AS kind, f.variable_name
          FROM audit_events e
          CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
          CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -436,6 +446,7 @@ export class SqliteFindingsRepository
         occurredAt: epochMillisToIso(r.occurred_at),
         sourceTool: r.source_tool,
         kind: r.kind,
+        ...storedName(r.variable_name),
       })),
     );
   }

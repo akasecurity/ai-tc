@@ -234,6 +234,47 @@ Offer exactly two options:
 Neither answer is nudged; the honest trade is recoverability against holding a
 recoverable copy at all.
 
+## 1c. Ask about sharing credential sightings — attached machines only
+
+First check whether to ask at all. This reads the attachment and any managed
+settings and writes nothing:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-ask
+```
+
+Read `askSightingShare` from its AKA_FRAME_JSON region. When it is `false` —
+the machine is standalone, or its organization's managed settings already
+decide the answer — **skip this step entirely**: do not ask, do not mention
+it, and record nothing. Only when it is `true` does the user see the question.
+
+Before the options, state in your own words: this machine is attached to an
+organization, and the question is whether to report the credentials AKA's
+scans find here to that organization. Say what a sighting carries, exactly:
+A credential sighting carries only a hash or ciphertext of the value, never the value itself.
+Say that this answer covers credential sightings only: it changes nothing else
+an attached machine sends, which is described in the dashboard's Settings. The
+answer can be changed later on the dashboard's Settings page.
+
+Use **AskUserQuestion**, as always — never a printed option list.
+
+**Share credential sightings with your organization?** — "Report the credentials scans find on this machine to the organization it is attached to?"
+
+Offer exactly two options, with **Don't share** as the default:
+
+- **Don't share** _(default)_ — "credential sightings stay on this machine"
+- **Share with my organization** — "report the credentials scans find here, as hashes or ciphertext"
+
+Record the answer straight away and relay the AKA_SHOW line it prints:
+
+```bash
+# Share with my organization
+node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent grant
+
+# Don't share (also clears any earlier grant)
+node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent revoke
+```
+
 ## 2. Save the answer, then branch
 
 **First, record the vault answer from step 1b — on both branches.** A
@@ -946,5 +987,5 @@ not. On an MCP tool only the result's text blocks are scanned — images and
 embedded resources are not. Long output is scanned in pieces of up to 200,000
 characters, and one tool result is scanned up to a bound (5 million characters
 or 2,000 pieces, and about 7 seconds), past which the rest reaches the model
-unscanned rather than letting the hook time out. A scan cut short by the time
-limit counts as a fail-open in `aka status`.
+unscanned rather than letting the hook time out. A scan cut short by any of
+these bounds counts as a fail-open in `aka status`.

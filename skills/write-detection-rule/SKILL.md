@@ -210,6 +210,11 @@ Three optional fixture fields (schema: `RuleFixture` in `packages/schema/src/zod
 - `expectedSpans` — array of `{ start, end }` pinning exactly which characters the
   finding must cover. Add these whenever the rule redacts a value (via `captureGroup`),
   so the span provably covers the value itself, not just a label next to it.
+- `expectedVariableName` — the variable name every finding of the rule must record, or
+  `null` to assert none is recorded. A `secret` finding whose value is the right-hand side
+  of an assignment on its line (`export NAME="…"`, `name: …`, `"name": "…"`) records the
+  name; add these for a secret rule whose values are usually assigned, covering quoted,
+  exported and spaced forms.
 
 ## Writing a good rule
 

@@ -42,23 +42,46 @@ function normalizeSqliteSpecifier(outDir: string): void {
   }
 }
 
+// The scripts hooks.json runs, by name. Each one is built twice: `<name>.js` is
+// the launcher (src/hooks/launch.ts), which turns on Node's compile cache and
+// then loads `<name>.body.js`, the hook itself. The launcher has to come first
+// because an ES module is compiled before any of its code runs, so a hook
+// cannot enable the cache for its own bundle.
+const HOOK_ENTRIES: Record<string, string> = {
+  'session-start': 'src/hooks/session-start.ts',
+  'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
+  'pre-tool-use': 'src/hooks/pre-tool-use.ts',
+  'post-tool-use': 'src/hooks/post-tool-use.ts',
+  // Prohibited-model governance. pre-model-switch is refusable (it is the only
+  // point a model choice can be denied before it takes effect);
+  // post-model-switch only records, and exists for the switches the harness
+  // makes on its own, which pre-model-switch never sees.
+  'pre-model-switch': 'src/hooks/pre-model-switch.ts',
+  'post-model-switch': 'src/hooks/post-model-switch.ts',
+  // Display-side pointer rendering: rewrites assistant-text deltas on screen
+  // only (the transcript and the model keep the original)
+  'message-display': 'src/hooks/message-display.ts',
+  stop: 'src/hooks/stop.ts',
+};
+
 export default defineConfig({
   // Named entries keep the output flat in scripts/ — hooks.json paths depend on it
   entry: {
-    'session-start': 'src/hooks/session-start.ts',
-    'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
-    'pre-tool-use': 'src/hooks/pre-tool-use.ts',
-    'post-tool-use': 'src/hooks/post-tool-use.ts',
-    // Prohibited-model governance. pre-model-switch is refusable (it is the only
-    // point a model choice can be denied before it takes effect);
-    // post-model-switch only records, and exists for the switches the harness
-    // makes on its own, which pre-model-switch never sees.
-    'pre-model-switch': 'src/hooks/pre-model-switch.ts',
-    'post-model-switch': 'src/hooks/post-model-switch.ts',
-    // Display-side pointer rendering: rewrites assistant-text deltas on screen
-    // only (the transcript and the model keep the original)
-    'message-display': 'src/hooks/message-display.ts',
-    stop: 'src/hooks/stop.ts',
+    ...Object.fromEntries(
+      Object.entries(HOOK_ENTRIES).flatMap(([name, source]) => [
+        [name, 'src/hooks/launch.ts'],
+        [`${name}.body`, source],
+      ]),
+    ),
+    // The prompt.submit mod's helper (hooks/mod.ts runs it with $.process.run):
+    // the one place a vault pointer is minted for a mod-rewritten prompt, so the
+    // key stays out of the mod. Lands flat in scripts/ beside the hook scripts.
+    'mod-tokenize': 'src/mod/tokenize-entry.ts',
+    // The ui.render mod's helper: resolves vault pointers to what the screen
+    // shows, so the vault stays out of the mod.
+    'mod-reveal': 'src/mod/reveal-entry.ts',
+    // The tool.call mod's helper: the vault and the store, for a tool call.
+    'mod-tool-call': 'src/mod/tool-call-entry.ts',
     // The isolated scan's worker thread. hooks.json never names it — the plugin
     // SDK starts it by path from whichever hook is running, and every hook
     // script lands in this same directory. See src/scan-worker.ts.

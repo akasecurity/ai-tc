@@ -99,22 +99,22 @@ describe('handleCapture (standalone)', () => {
   });
 });
 
-describe('handleCapture capture options', () => {
-  function captureRowCount(): number {
-    const db = new DatabaseSync(join(dir, 'aka.db'));
-    // audit_events also holds structural rows (session, llm_call, …), so the
-    // count is constrained to the capture kinds the way this file's other
-    // store read is.
-    const row = db
-      .prepare(
-        `SELECT count(*) AS n FROM audit_events
-         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
-      )
-      .get() as { n: number };
-    db.close();
-    return row.n;
-  }
+function captureRowCount(): number {
+  const db = new DatabaseSync(join(dir, 'aka.db'));
+  // audit_events also holds structural rows (session, llm_call, …), so the
+  // count is constrained to the capture kinds the way this file's other
+  // store read is.
+  const row = db
+    .prepare(
+      `SELECT count(*) AS n FROM audit_events
+       WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+    )
+    .get() as { n: number };
+  db.close();
+  return row.n;
+}
 
+describe('handleCapture capture options', () => {
   it("forwards 'with-findings', so a clean capture persists no row", async () => {
     const clean = await handleCapture(
       { kind: 'response', sourceTool: 'claude-ai', text: 'nothing sensitive here' },
@@ -134,6 +134,32 @@ describe('handleCapture capture options', () => {
       { kind: 'response', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
       config(dir),
       { persist: 'with-findings' },
+    );
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(captureRowCount()).toBe(1);
+  });
+
+  it("forwards 'never', so a capture that found something persists no row", async () => {
+    const hit = await handleCapture(
+      { kind: 'prompt', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
+      config(dir),
+      { persist: 'never' },
+    );
+    // The precondition: this is a capture 'with-findings' would have recorded,
+    // so the absence below is 'never' and not a text that detected nothing.
+    expect(hit.findings.length).toBeGreaterThan(0);
+    // Without the pass-through the option is dropped, capture() takes its
+    // default 'always' path, and the prompt lands as a row.
+    expect(captureRowCount()).toBe(0);
+  });
+
+  it("persists the same capture when no option is passed, unlike 'never'", async () => {
+    // The positive control for the case above: the same text, kind and tool
+    // leave a row unless 'never' keeps it out, so that case does not pass for a
+    // handleCapture that persists nothing at all.
+    const hit = await handleCapture(
+      { kind: 'prompt', sourceTool: 'claude-ai', text: `key: ${AWS_EXAMPLE_KEY}` },
+      config(dir),
     );
     expect(hit.findings.length).toBeGreaterThan(0);
     expect(captureRowCount()).toBe(1);
@@ -217,5 +243,44 @@ describe('handleCapture forwards more of CaptureOptions than persist', () => {
     );
     expect(result.action).toBe('redact');
     expect(result.text).not.toContain(AWS_EXAMPLE_KEY);
+  });
+});
+
+// The large-input bound is a RUNTIME option rather than a capture option, so it
+// rides a parameter of its own. `remainingMs: () => 0` refuses an over-threshold
+// field without starting a worker, so the forward is observable here with no
+// worker in play at all.
+describe('handleCapture forwards the large-input bound to the runtime', () => {
+  const LARGE = 'lorem ipsum dolor sit amet '.repeat(10);
+  const bound = {
+    thresholdChars: 64,
+    budgetMs: 2_000,
+    startBudgetMs: 1_500,
+    remainingMs: () => 0,
+  };
+
+  it('refuses an over-threshold field the bound could not scan, and records it', async () => {
+    const result = await handleCapture(
+      { kind: 'response', sourceTool: 'claude-ai', text: LARGE },
+      config(dir),
+      { persist: 'with-findings' },
+      { largeInput: bound },
+    );
+    expect(result).toMatchObject({
+      action: 'block',
+      text: null,
+      findings: [],
+      scanIncomplete: 'timeout',
+    });
+    expect(captureRowCount()).toBe(1);
+  });
+
+  it('scans the same field in-process when the bound is not passed', async () => {
+    const result = await handleCapture(
+      { kind: 'response', sourceTool: 'claude-ai', text: LARGE },
+      config(dir),
+    );
+    expect(result.action).toBe('log');
+    expect(result).not.toHaveProperty('scanIncomplete');
   });
 });

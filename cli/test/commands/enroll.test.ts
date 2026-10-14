@@ -1486,7 +1486,9 @@ describe('aka enroll --list', () => {
     expect(await runEnroll(['--list'], deps(io))).toBe(0);
     const shown = io.output();
     expect(shown).toContain('Enrolled with Acme:\n');
-    expect(shown).toContain('2 enrolled — activity anywhere else stays on this machine');
+    expect(shown).toContain(
+      '2 enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription',
+    );
     expect(shown).toContain(`             ${WORK_REPO} (payments-api), enrolled 2026-10-07`);
     expect(shown).toContain(`             ${SECOND_REPO}, enrolled 2026-10-07`);
     expect(settingsWrite.calls).toBe(0);

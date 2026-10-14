@@ -308,10 +308,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       // still ends with what the record does not limit.
       ...(work === undefined
         ? []
-        : [
-            ...work.lines,
-            ...attachmentScopeLines(settings.attachmentScope, connection.endpoint, work.recognised),
-          ]),
+        : [...work, ...attachmentScopeLines(settings.attachmentScope, connection.endpoint)]),
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
@@ -348,10 +345,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * paths also add coding-agent keys to the key set (`codingScopeExtras`), which
  * never live in settings.json: one per work account the device recognised, and
  * one per account enrolled by hand for coding sessions. `aka status` lists the
- * recognised ones above this block. `recognised` is how many there are, and
- * only the headlines read it, so a block that enrolls nothing does not call
- * local the sessions a recognised work subscription forwards. An account
- * enrolled by hand is a stored entry, and is listed here like any other.
+ * recognised ones above this block. Whether recognition is on (the record's own
+ * `workSubscriptions` field, through `workSubscriptionsOn`) is what the
+ * headlines read, so while it is on a block that enrolls little or nothing does
+ * not call local the sessions a recognised work subscription forwards. An
+ * account enrolled by hand is a stored entry, and is listed here like any other.
  *
  * Each state that forwards no activity has its own line, because each has its own
  * cause: no list stored (an older settings writer dropped it, or an attach
@@ -377,25 +375,26 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  *
  * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
  */
-export function attachmentScopeLines(raw: unknown, endpoint: string, recognised = 0): string[] {
-  return [...scopeStateLines(raw, endpoint, recognised), NOT_LIMITED_LINE];
+export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
+  return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
 }
 
 /** What a scope that enrolls nothing still sends: nothing, or a recognised work subscription's sessions. */
-function nothingEnrolledSends(recognised: number): string {
-  return recognised > 0
+function nothingEnrolledSends(forwardsWork: boolean): string {
+  return forwardsWork
     ? 'only sessions signed in to a recognised work subscription are sent'
     : 'no activity is sent';
 }
 
 /** The lines for the record's state, before the line every block ends with. */
-function scopeStateLines(raw: unknown, endpoint: string, recognised: number): string[] {
+function scopeStateLines(raw: unknown, endpoint: string): string[] {
+  const forwardsWork = workSubscriptionsOn(raw);
   // No list at all and a list this build cannot read are told apart before
   // anything is parsed: parseAttachmentScope answers undefined for both, and
   // what to do about one is not what to do about the other.
   if (raw === undefined || raw === null) {
     return [
-      `  scope      no enrolled list is stored — ${nothingEnrolledSends(recognised)}`,
+      `  scope      no enrolled list is stored — ${nothingEnrolledSends(forwardsWork)}`,
       '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
       '             drops the list when it saves settings)',
     ];
@@ -410,7 +409,7 @@ function scopeStateLines(raw: unknown, endpoint: string, recognised: number): st
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
       `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
-      `             — ${nothingEnrolledSends(recognised)} here (run \`aka enroll\` to enroll for this one)`,
+      `             — ${nothingEnrolledSends(forwardsWork)} here (run \`aka enroll\` to enroll for this one)`,
     ];
   }
   const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;
@@ -427,9 +426,9 @@ function scopeStateLines(raw: unknown, endpoint: string, recognised: number): st
   }
   const lines =
     rows.length === 0
-      ? [`  scope      nothing enrolled yet — ${nothingEnrolledSends(recognised)}`, ENROLL_HINT]
+      ? [`  scope      nothing enrolled yet — ${nothingEnrolledSends(forwardsWork)}`, ENROLL_HINT]
       : [
-          recognised > 0
+          forwardsWork
             ? `  scope      ${count(rows.length)} enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription`
             : `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
           ...rows,
@@ -481,10 +480,9 @@ function named(value: string | undefined): boolean {
  * no field is on, and any stored value is off.
  *
  * A learned account is listed only while its agent key is among `extras`, the
- * keys the forward paths add to the scope, so the list is what is forwarded, and
- * `recognised` counts it for the scope block's headlines. Its key prints the way
- * `aka enroll --account` takes it. The agent key, the scope tag and the record's
- * digests never print.
+ * keys the forward paths add to the scope, so the list is what is forwarded. Its
+ * key prints the way `aka enroll --account` takes it. The agent key, the scope
+ * tag and the record's digests never print.
  *
  * Reads the identity record; never throws.
  */
@@ -494,7 +492,7 @@ function workSubscriptionLines(
   endpoint: string,
   credentialDigest: string,
   extras: readonly AttachmentScopeEntry[],
-): { lines: string[]; recognised: number } {
+): string[] {
   try {
     const record = readAttachedIdentity(dataDir);
     const bound =
@@ -513,7 +511,7 @@ function workSubscriptionLines(
         ? '  work       subscriptions on'
         : '  work       subscriptions off — turned off on this device',
     ];
-    if (bound === undefined || !on) return { lines, recognised: 0 };
+    if (bound === undefined || !on) return lines;
     const forwarded = new Set(extras.map((entry) => entry.identity));
     const learned = bound.workAccounts.filter((entry) => {
       const key = agentKey(bound.scopeTag, entry.identity);
@@ -531,9 +529,9 @@ function workSubscriptionLines(
         );
       }
     }
-    return { lines, recognised: learned.length };
+    return lines;
   } catch {
-    return { lines: [USER_LINES.unknown], recognised: 0 };
+    return [USER_LINES.unknown];
   }
 }
 

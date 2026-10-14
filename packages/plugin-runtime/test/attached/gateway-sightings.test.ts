@@ -56,6 +56,7 @@ function quietLocal(seen: Seen): AttachedDataGatewayDeps['local'] {
       seen.owed += 1;
     },
     getPolicyBundle: () => seen.bundle(),
+    close: () => Promise.resolve(),
   } as unknown as AttachedDataGatewayDeps['local'];
 }
 
@@ -302,4 +303,39 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(sent?.content).toBe(`x ${FAIL_CLOSED_MARKER} y`);
     expect(sent?.metadata?.sightings).toBeUndefined();
   });
+
+  it('delivers a value only an installed regex rule matches through the real worker scan', async () => {
+    const key = keyOf(7, 7);
+    storeKey(key);
+    const seen = emptySeen();
+    const installedValue = ['ACME', 'RGX', '5'.repeat(10)].join('');
+    seen.bundle = () =>
+      Promise.resolve(
+        bundleOf([
+          {
+            specVersion: 1,
+            id: 'acme/internal-regex',
+            name: 'Internal token by pattern',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'ACMERGX[0-9]{10}', flags: 'g' },
+          },
+        ]),
+      );
+    // Generous bounds, so the assertion is about the worker path and never
+    // about how quickly a worker starts on this machine.
+    const gateway = build(seen, {
+      encodeBudgetMs: 60_000,
+      scanBound: { budgetMs: 30_000, startBudgetMs: 30_000 },
+    });
+    try {
+      await gateway.recordCapture(capture(`x ${installedValue} y`));
+    } finally {
+      await gateway.close();
+    }
+    expect(seen.owed).toBe(0);
+    expect(seen.bodies[0]).not.toContain(installedValue);
+    expect(seen.bodies[0]).toContain(expectedToken(key, installedValue));
+    expect(seen.bodies[0]).toContain('acme/internal-regex');
+  }, 90_000);
 });

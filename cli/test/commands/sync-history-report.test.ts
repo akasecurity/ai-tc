@@ -87,7 +87,10 @@ const REPORTS: readonly (readonly [HistorySyncPassReport, string])[] = [
   ['unreachable', 'This pass could not reach the deployment. Nothing was sent; it stays queued.'],
   ['refused', 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.'],
   ['not-attached', 'This pass did nothing: there is no deployment to send to.'],
-  ['no-consent', 'This pass did nothing: sending existing activity is switched off.'],
+  [
+    'no-consent',
+    'This pass sent only what live sends left undelivered: sending existing activity is switched off.',
+  ],
   [
     'credential-unusable',
     'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.',

@@ -97,9 +97,7 @@ describe('history-sync copy on a personal device', () => {
   it('keeps the machine-wide wording exactly as it was', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toBe(
       'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
-        'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
-        'live send could not deliver because the deployment was unreachable or refused the ' +
-        'credential. Both are sent the same way: which sessions ran and when, in which project, repo ' +
+        'sent later: what was already recorded before it attached. It is sent as: which sessions ran and when, in which project, repo ' +
         'and branch, token usage and model per call, which tools were called with their inputs ' +
         'truncated and every detected secret already masked, what was detected in those inputs, and ' +
         'the prompts, assistant replies and tool results themselves — for which a captured one ' +
@@ -108,7 +106,7 @@ describe('history-sync copy on a personal device', () => {
         'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
         'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
         'text is masked. Live sending is part of being attached and this setting does not change ' +
-        'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
+        'it: anything a live send could not deliver is kept and sent later either way. Sending ' +
         'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
         'cannot recall what has.',
     );
@@ -117,13 +115,13 @@ describe('history-sync copy on a personal device', () => {
         value: 'revoked',
         label: 'Not shared',
         description:
-          'Anything not delivered live is dropped, as it was before this setting existed (default — never assumed).',
+          'Activity from before this machine attached is not sent (default — never assumed).',
       },
       {
         value: 'granted',
         label: 'Shared',
         description:
-          'Activity from before this machine attached, and anything undelivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+          'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
       },
     ]);
     expect(HISTORY_SYNC_STALE_NOTICE).toBe(
@@ -160,9 +158,8 @@ describe('history-sync copy on a personal device', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toBe(
       'Whether activity the repositories enrolled on this device have not delivered to the ' +
         'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-        'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
-        'here before you enrolled it, and anything a live send from one could not deliver because ' +
-        'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
+        'outside one, is not sent. What qualifies is some of what an enrolled repository recorded ' +
+        'here before you enrolled it, sent as: ' +
         'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
         'call, which tools were called with their inputs truncated and every detected secret ' +
         'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
@@ -172,7 +169,7 @@ describe('history-sync copy on a personal device', () => {
         'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
         'or block, so on a default install nothing in that text is masked. Live sending from ' +
         'enrolled repositories is part of being attached and this setting does not change it: ' +
-        'declining means an undelivered item is dropped rather than kept and retried. With no ' +
+        'anything a live send from one could not deliver is kept and sent later either way. With no ' +
         'repository enrolled, no activity is sent. Sending happens in the background over later ' +
         'sessions. Revoking stops what has not been sent; it cannot recall what has.',
     );
@@ -184,13 +181,13 @@ describe('history-sync copy on a personal device', () => {
         value: 'revoked',
         label: 'Not shared',
         description:
-          'Anything an enrolled repository does not deliver live is dropped rather than kept (default — never assumed).',
+          'What an enrolled repository recorded before you enrolled it is not sent (default — never assumed).',
       },
       {
         value: 'granted',
         label: 'Shared',
         description:
-          'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+          'Some of what the repositories enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
       },
     ]);
   });
@@ -267,7 +264,7 @@ describe('history-sync copy on a personal device', () => {
       'under monitor or warn',
       'No detection ships on redact or block',
       'part of being attached',
-      'dropped rather than kept',
+      'kept and sent later either way',
       'cannot recall what has',
     ]) {
       expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(claim);

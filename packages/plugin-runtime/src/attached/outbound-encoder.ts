@@ -15,7 +15,12 @@ import {
   SecretVault,
   sightingToken,
 } from '@akasecurity/persistence';
-import type { GuardedScanPartition, SecretSpan, SecretSpanScanner } from '@akasecurity/plugin-sdk';
+import type {
+  BoundedScanRequest,
+  GuardedScanPartition,
+  SecretSpan,
+  SecretSpanScanner,
+} from '@akasecurity/plugin-sdk';
 import {
   bundledDetections,
   contentHashOf,
@@ -286,11 +291,18 @@ export function storeVault(db: LocalDatabase, base: string): PointerFingerprinte
  */
 export function createStoreOutboundEncoder(
   base: string,
-  opts: { loadRules: () => Promise<readonly Rule[]>; db?: LocalDatabase | undefined },
+  opts: {
+    loadRules: () => Promise<readonly Rule[]>;
+    db?: LocalDatabase | undefined;
+    scanBound?: BoundedScanRequest | undefined;
+  },
 ): OutboundEncoder {
-  const { db } = opts;
+  const { db, scanBound } = opts;
   return createOutboundEncoder({
     loadRules: opts.loadRules,
+    ...(scanBound === undefined
+      ? {}
+      : { createScanner: (p: GuardedScanPartition) => createSecretSpanScanner(p, scanBound) }),
     readKeys: () => readSightingKeys(base),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };

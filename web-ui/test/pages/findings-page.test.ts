@@ -496,14 +496,16 @@ describe('findings page — the Deployment controls', () => {
     seedStraddlingFixture();
     attach();
     const props = await renderPage({ deployment: 'sent' });
-    expect(props.deployment).toEqual({ canRetry: false });
+    expect(props.deployment).toEqual({ canRetry: true });
     expect(props.filters.deployment).toEqual(['sent']);
     // Nothing seeded was delivered, so the filter narrows the panel to none.
     expect(props.instances?.items).toEqual([]);
   });
 
-  it('can retry with history sharing granted and a usable key', async () => {
+  // A queued capture is the live path's own debt, retried without history sharing.
+  it('can retry with a usable key, whether or not history sharing is granted', async () => {
     attach();
+    expect((await renderPage()).deployment).toEqual({ canRetry: true });
     grantHistorySharing();
     expect((await renderPage()).deployment).toEqual({ canRetry: true });
   });
@@ -516,8 +518,8 @@ describe('findings page — the Deployment controls', () => {
 
   it('hands every view the same deployment', async () => {
     attach();
-    expect((await renderView('flat', { view: 'flat' })).deployment).toEqual({ canRetry: false });
-    expect((await renderLocations()).deployment).toEqual({ canRetry: false });
+    expect((await renderView('flat', { view: 'flat' })).deployment).toEqual({ canRetry: true });
+    expect((await renderLocations()).deployment).toEqual({ canRetry: true });
   });
 });
 

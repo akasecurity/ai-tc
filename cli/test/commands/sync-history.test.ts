@@ -203,7 +203,7 @@ describe('aka sync-history', () => {
 
     expect(exits).toEqual([]);
     expect(io.output()).toContain(
-      'This pass did nothing: sending existing activity is switched off.',
+      'This pass sent only what live sends left undelivered: sending existing activity is switched off.',
     );
     expect(io.output()).not.toContain('there is no deployment to send to');
   });

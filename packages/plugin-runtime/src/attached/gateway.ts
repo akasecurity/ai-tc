@@ -18,6 +18,7 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
+import type { BoundedScanRequest } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventBatchAck,
@@ -179,6 +180,10 @@ export interface AttachedDataGatewayDeps {
    * gateway's own effective ruleset.
    */
   encoder?: OutboundEncoder;
+  /** How long the live path waits for an encode before holding the capture owed. */
+  encodeBudgetMs?: number;
+  /** The bound the default encoder's worker scan runs under. */
+  scanBound?: BoundedScanRequest;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -230,8 +235,8 @@ function bundledRulesFlat(): readonly Rule[] {
  * `Event.content` is raw prompt/tool text. What makes retaining it acceptable is
  * that the text is ALREADY at rest here — recordCapture writes it on every
  * machine, attached or not — so a queue changes how long delivery may be owed
- * rather than whether plaintext sits on disk, and the deferred send is behind
- * its own consent, whose copy says exactly that.
+ * rather than whether plaintext sits on disk. A capture the live path owes is
+ * delivered by the drain without the history grant, encoded as a live send is.
  *
  * There is still no SPOOL FILE: the queue is `synced_at` on the row that was
  * already written, so nothing is copied anywhere to enqueue it.
@@ -270,6 +275,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
       deps.encoder ??
       createStoreOutboundEncoder(dirname(deps.dataDir), {
         loadRules: async () => (await this.getPolicyBundle()).rules ?? [],
+        ...(deps.scanBound === undefined ? {} : { scanBound: deps.scanBound }),
       });
   }
 
@@ -536,7 +542,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    */
   private async encodeForWire(event: IngestEvent): Promise<IngestEvent | undefined> {
     try {
-      return await withTimeout(this.encoder.encodeEvent(event), DECISION_PATH_BUDGET_MS);
+      return await withTimeout(
+        this.encoder.encodeEvent(event),
+        this.deps.encodeBudgetMs ?? DECISION_PATH_BUDGET_MS,
+      );
     } catch {
       return undefined;
     }

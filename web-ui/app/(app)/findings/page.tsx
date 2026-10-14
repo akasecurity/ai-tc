@@ -4,7 +4,7 @@ import {
   readWorkspaceSettings,
   settingsDir,
 } from '@akasecurity/persistence';
-import { encodeLocationId, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
+import { encodeLocationId, isAttached } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { renderLocale } from '../../lib/render-locale';
@@ -48,9 +48,7 @@ function readDeploymentDisplay(): DeploymentDisplay | null {
   const connection = settings.controlPlane;
   if (!isAttached(settings) || connection === undefined) return null;
   return {
-    canRetry:
-      isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint) &&
-      readControlPlaneCredentialState(settingsDir(), connection).usable,
+    canRetry: readControlPlaneCredentialState(settingsDir(), connection).usable,
   };
 }
 

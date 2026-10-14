@@ -16,9 +16,10 @@
  * than a stub: recording `'github'` or `'openai'` here would be a fabricated
  * per-session fact that the cost attribution would then trust.
  *
- * The model ID is recorded separately, off the session's own event stream
- * (`session.shutdown.modelMetrics` and the per-turn records), so a usage row
- * still names the model even while the backend behind it stays unresolved.
+ * The model is not recorded for a Copilot session either: this resolver names
+ * no model, and nothing in this build reads the session's own event stream. A
+ * Copilot session therefore carries neither a resolved backend nor a model id
+ * today.
  *
  * THERE IS DELIBERATELY NO `copilotProviderFromModelId` HERE, and its absence
  * is the point rather than an omission. The three siblings each carry one — a
@@ -55,9 +56,10 @@ export interface ResolvedCopilotProvider {
  * The provider a Copilot session talks to: unresolved.
  *
  * Called once, from the hook that snapshots the provider onto the session root
- * (`plugins/copilot/src/hooks/session-start.ts`). Constant by design — see the
- * module comment. Kept as a function rather than a constant so the call site is
- * identical to the other three hosts' and so widening it later moves no caller.
+ * (`plugins/copilot/src/hooks/session-start-run.ts`). Constant by design — see
+ * the module comment. Kept as a function rather than a constant so the call
+ * site is identical to the other three hosts' and so widening it later moves no
+ * caller.
  */
 export function resolveCopilotProvider(): ResolvedCopilotProvider {
   return { provider: 'unknown' };

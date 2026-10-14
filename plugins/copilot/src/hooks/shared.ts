@@ -517,9 +517,9 @@ export const VSCODE_FILE_WRITERS: ReadonlySet<string> = new Set([
 /**
  * A `code_change` is durable content the agent authors, recorded with the
  * default persist. A command is text the host acts on, recorded at
- * `with-findings`: this hook sees every command, and `always` would copy that
- * whole stream into the store to trail the enforcement decisions that are the
- * point of the kind.
+ * `with-findings`: the tool hooks see every command, and `always` would copy
+ * that whole stream into the store to trail the enforcement decisions that are
+ * the point of the kind.
  *
  * Shared by preToolUse and postToolUse, so a call and its result resolve the
  * same kind and therefore the same `callScopeKey`.

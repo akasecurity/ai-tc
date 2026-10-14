@@ -34,7 +34,8 @@
 //    structured result is still scanned. The walk is held to the same depth,
 //    leaf-count and character bounds the Claude Code sibling holds an MCP
 //    tool's arguments to, and anything those bounds leave out is reported as
-//    `truncated` so the hook says part of the result went unscanned.
+//    `truncated` so the hook says part of the result went unscanned. Unlike
+//    that walk, which also scans object keys, this one reads values only.
 //
 // ─── WHY THERE IS NO WRITER ──────────────────────────────────────────────────
 //
@@ -131,8 +132,12 @@ function stringAt(response: unknown, path: readonly string[]): string | undefine
  * A leaf the bounds refuse — too deep, too long, past the leaf count or past
  * the character total — marks the collection truncated rather than vanishing,
  * because a structured result read only in part and reported as clean is the
- * failure this adapter is shaped against. Object keys are not scanned: the
- * text a result carries for the model is in its values.
+ * failure this adapter is shaped against.
+ *
+ * The bounds are the Claude Code sibling's MCP argument walk's, but the key
+ * handling is not: that walk also scans object keys (in `MCP_MAX_KEY_GROUPS`
+ * chunks), while this one scans string VALUES only. A key reaches the model
+ * unscanned, and is not counted as truncated either.
  */
 function leafFields(response: object): ResponseFields {
   const fields: ScannableResponseField[] = [];

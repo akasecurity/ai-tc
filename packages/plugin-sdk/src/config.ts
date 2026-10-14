@@ -60,7 +60,7 @@ export interface PluginConfig {
  * the session root — `resolveCodexProvider` from
  * plugins/codex/src/hooks/session-start.ts, `resolveAntigravityProvider` from
  * plugins/antigravity/src/hooks/pre-invocation.ts, `resolveCopilotProvider`
- * from plugins/copilot/src/hooks/session-start.ts. Every other hook loads
+ * from plugins/copilot/src/hooks/session-start-run.ts. Every other hook loads
  * config for its data dir / settings only and never reads `.provider`, so the
  * default is harmless there even though it's Claude-shaped.
  */

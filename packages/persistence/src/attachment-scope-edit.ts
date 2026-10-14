@@ -7,8 +7,8 @@
 // delete them for good. It would change retention too: a scoped attachment
 // holds every owed body while any stored entry fails validation
 // (syncLaneRetentionOf), and a rebuilt record would quietly stop doing so. So
-// these append to, or filter, the stored `entries` list and copy every other key
-// as found.
+// these append to, filter or mark the stored `entries` list, or set or clear the
+// work-subscription opt-out, and copy every other key as found.
 //
 // A record that names the deployment but that this build cannot read (a binding
 // field a newer build's bounds allow, say) is not replaced either: enrolling into
@@ -183,4 +183,76 @@ export function removeAttachmentScopeEntries(
   });
   const removed = [...asked].filter((identity) => matched.has(identity));
   return removed.length === 0 ? { next: raw, removed } : { next: withEntries(raw, kept), removed };
+}
+
+/**
+ * Turn work-subscription recognition off in the scope record for `endpoint`,
+ * editing the raw record: `workSubscriptions: 'off'` is set, and every other key
+ * and entry is copied as found. A record that names `endpoint` gets the field
+ * whether or not this build can read it. With no record that names `endpoint` —
+ * none, another deployment's, or a value that is not a record — the result is a
+ * new, unbound record holding no entries and the field. When the record already
+ * says `'off'`, `changed` is false and `next` is `raw` itself. Never mutates `raw`.
+ */
+export function turnWorkSubscriptionsOff(
+  raw: unknown,
+  endpoint: string,
+): { next: unknown; changed: boolean } {
+  if (!namesEndpoint(raw, endpoint)) {
+    return { next: { endpoint, entries: [], workSubscriptions: 'off' }, changed: true };
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.workSubscriptions === 'off') return { next: raw, changed: false };
+  return { next: { ...record, workSubscriptions: 'off' }, changed: true };
+}
+
+/**
+ * Turn work-subscription recognition back on: remove `workSubscriptions` from the
+ * stored record, whatever deployment it names, since any value present reads as
+ * off (workSubscriptionsOn); every other key and entry is copied as found. A
+ * stored value that is not a record, which also reads as off, is replaced with an
+ * empty, unbound record for `endpoint`. With no field to remove, or no record at
+ * all, `changed` is false and `next` is `raw` itself. Never mutates `raw`.
+ */
+export function turnWorkSubscriptionsOn(
+  raw: unknown,
+  endpoint: string,
+): { next: unknown; changed: boolean } {
+  if (raw === undefined) return { next: raw, changed: false };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { next: { endpoint, entries: [] }, changed: true };
+  }
+  if (!('workSubscriptions' in raw)) return { next: raw, changed: false };
+  const next: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  delete next.workSubscriptions;
+  return { next, changed: true };
+}
+
+/**
+ * Mark stored account entries as covering coding-agent sessions, in place: each
+ * stored `account` entry of the record for `endpoint` whose identity is one of
+ * `identities`, byte for byte, gains `codingAgents: true`, and every other key
+ * and entry is copied as found. An entry already marked, and a `repo` entry, are
+ * left as they are. `marked` lists each identity whose entry gained the marker,
+ * once, in the order asked; when it is empty, `next` is `raw` itself. Without a
+ * record that names `endpoint`, nothing is marked. Never mutates `raw`.
+ */
+export function markCodingAgentEntries(
+  raw: unknown,
+  endpoint: string,
+  identities: readonly string[],
+): { next: unknown; marked: readonly string[] } {
+  if (!namesEndpoint(raw, endpoint)) return { next: raw, marked: [] };
+  const asked = new Set(identities);
+  const hit = new Set<string>();
+  const entries = storedEntries(raw).map((entry) => {
+    const identity = storedIdentity(entry);
+    if (identity === undefined || !asked.has(identity)) return entry;
+    const stored = entry as Record<string, unknown>;
+    if (stored.kind !== 'account' || stored.codingAgents === true) return entry;
+    hit.add(identity);
+    return { ...stored, codingAgents: true };
+  });
+  const marked = [...asked].filter((identity) => hit.has(identity));
+  return marked.length === 0 ? { next: raw, marked } : { next: withEntries(raw, entries), marked };
 }

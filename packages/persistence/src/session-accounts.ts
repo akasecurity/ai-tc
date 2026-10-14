@@ -36,12 +36,15 @@ const SESSION_ACCOUNT_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /**
  * Remove each regular file directly in the directory whose last write is more
  * than thirty days before `nowMs`. A directory, a symbolic link or anything else
- * in it is left as it is, and so is a file that cannot be read or removed. No
- * directory is not an error. Never throws.
+ * in it is left as it is, and so is a file that cannot be read or removed. A
+ * symbolic link in the directory's own place is not followed, and nothing is
+ * removed through it. No directory is not an error. Never throws.
  */
 export function pruneSessionAccountState(dataDir: string, nowMs: number): void {
   let names: string[];
   try {
+    // lstat reports a link itself, never what it points at.
+    if (!lstatSync(sessionAccountsDir(dataDir)).isDirectory()) return;
     names = readdirSync(sessionAccountsDir(dataDir));
   } catch {
     return;

@@ -17,7 +17,8 @@
 // inventory then the root (idempotent) BEFORE the leaves — it never trusts
 // SessionStart. Provider is then read back off the ensured root,
 // never from live env (which would mislabel backfilled history under today's env).
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import { sessionAccountsDir } from '@akasecurity/persistence';
+import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
   createPolicyResolver,
@@ -30,6 +31,14 @@ import {
   sessionRootScopeKey,
   toolCallScopeKey,
 } from '@akasecurity/plugin-sdk';
+import type { AttributionResult } from '@akasecurity/plugin-sdk/account';
+import {
+  attributeRecords,
+  credentialOrgAt,
+  holdDecision,
+  NO_ATTRIBUTION_CARRY,
+  readObservations,
+} from '@akasecurity/plugin-sdk/account';
 import type {
   AuditEventInput,
   InventoryContext,
@@ -40,18 +49,26 @@ import type {
   ToolCallInput,
   ToolCallInspectionInput,
 } from '@akasecurity/schema';
-import { harnessFromTool, isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
+import {
+  harnessFromTool,
+  isAgentScopeKey,
+  isVaultConsentValid,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
 
 import { pluginBuild } from '../build-info.ts';
 import { platformRedactionScope } from '../remediation/redact.ts';
+import type { UsageOffset } from './tail.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import { scrubTranscriptTail } from './tail-scrub.ts';
 import {
+  accountTrace,
   type AssistantUsageRecord,
   iterateUsageAndToolCalls,
   parseTranscriptToolCalls,
   parseTranscriptUsage,
   type ToolCallRecord,
+  type UsageAccountTrace,
   type UsageRecord,
 } from './transcripts.ts';
 
@@ -109,6 +126,11 @@ export interface ReconcileSessionOptions {
   // directory shared across sessions is walked once and keyed identically
   // everywhere. When omitted, the call builds its own.
   scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
+  // The account key each assistant line ran under, by its uuid. Each row is
+  // stamped for that account through the gateway's account scope; without one
+  // (backfill, a gateway with no account scope) every row keeps its repository
+  // key.
+  accountOf?: ((uuid: string) => string | undefined) | undefined;
 }
 
 // Reconcile ONE session's usage records into `llm_call` leaves. `records` are the
@@ -152,6 +174,12 @@ export async function reconcileSession(
   // assistant record carries cwd/version/gitBranch/entrypoint) — never live env.
   const anchor = assistants[0];
   if (anchor === undefined) return { llmCalls: 0, skipped: 0, lastPromptId };
+  // Every row's key is stamped for the account its line ran under (accountOf).
+  const stamp = stamperFor(gateway, opts.accountOf);
+  // The root's key: the anchor's directory, stamped for the account the
+  // session's first reply ran under. It lands only on a root no one wrote yet;
+  // a root SessionStart wrote keeps its own key.
+  const rootKey = stamp(sessionRootScopeKey(anchor.cwd), anchor.uuid);
   // The transcript's OWN cwd resolves the session's repo — never the reconciler's
   // own cwd (a relative/empty path would resolve a git root from the reconciler's
   // process cwd and mis-attribute the session). When cwd is absent we skip project
@@ -162,7 +190,10 @@ export async function reconcileSession(
     harnessVersion: anchor.version,
     harnessInterface: anchor.entrypoint,
   });
-  const resolved = await gateway.ensureInventory(ctx);
+  // A root keyed by a session's agent key sends its inventory under that key.
+  const resolved = isAgentScopeKey(rootKey)
+    ? await gateway.ensureInventory(ctx, { scopeKey: rootKey })
+    : await gateway.ensureInventory(ctx);
 
   // Provider for a root the reconciler is creating: model-id heuristic, else
   // 'unknown' — never live env. If SessionStart already wrote the
@@ -173,7 +204,7 @@ export async function reconcileSession(
   // win: the root written just above heals it.
   const heuristicProvider = providerFromModelId(anchor.model);
   await gateway.recordAuditEvent(
-    buildSessionRoot(sessionId, ctx, resolved, anchor, heuristicProvider),
+    buildSessionRoot(sessionId, ctx, resolved, anchor, heuristicProvider, rootKey),
   );
 
   // Read the EFFECTIVE provider back off the ensured root: env-provider
@@ -201,7 +232,7 @@ export async function reconcileSession(
       parentId: sessionId,
       rootSessionId: sessionId,
       startedAt: rec.occurredAt,
-      attributes: buildAttributes(rec, provider, runKey, scopeKeyOf(rec.cwd)),
+      attributes: buildAttributes(rec, provider, runKey, stamp(scopeKeyOf(rec.cwd), rec.uuid)),
     };
   });
 
@@ -252,6 +283,7 @@ export async function reconcileSessionToolCalls(
   }
 
   const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
+  const stamp = stamperFor(gateway, opts.accountOf);
   const inputs: ToolCallInput[] = toolCalls.map((tc) => {
     const runKey =
       (tc.parentUuid !== undefined ? promptIdByUuid.get(tc.parentUuid) : undefined) ??
@@ -295,7 +327,8 @@ export async function reconcileSessionToolCalls(
     // the repository of what it names, as the hooks key a captured file or Grep
     // (the hooks read a search root only for Grep; a Glob or LS leaf follows the
     // same rule); any other call is keyed by the cwd of the record that issued it.
-    const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
+    // That key is stamped for the account the issuing line ran under.
+    const scopeKey = stamp(toolCallScopeKey(tc, scopeKeyOf), tc.uuid);
     if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {
       sessionId,
@@ -403,15 +436,21 @@ export async function reconcileHistory(
 // offset only advances after a successful read, and a re-read is a no-op via the
 // UPSERT-max / INSERT OR IGNORE writes — so a dropped pass is recovered next time.
 //
+// On a gateway with an account scope, each record is attributed to the account its
+// reply ran under, from the session's observation log; a pass with a record whose
+// closing observation is not written yet writes nothing, up to three passes and
+// fifteen minutes.
+//
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
 export async function reconcileSessionTail(
   config: PluginConfig,
   sessionId: string,
   transcriptPath: string,
+  now: () => number = Date.now,
 ): Promise<{ llmCalls: number; skipped: number; toolCalls: number }> {
   const checkpoint = readOffset(config.dataDir, sessionId);
-  const { chunk, nextOffset } = readTail(transcriptPath, checkpoint.offset);
+  const { chunk, nextOffset, from } = readTail(transcriptPath, checkpoint.offset);
   // Nothing new (or only a half-written final line) → don't even open the store.
   // Still re-persist the offset in case a rotation reset it (nextOffset may differ).
   if (chunk === '') {
@@ -445,19 +484,52 @@ export async function reconcileSessionTail(
   // (`llm_call` avoids this with UPSERT-take-MAX; tool_call intentionally has no
   // equivalent — see `insertToolCall`.) A future mid-turn trigger would widen this gap,
   // so keep the reconciler on turn boundaries. Covered by the tail-path test below.
-  const records = parseTranscriptUsage(chunk);
+  //
+  // The same parse records the account trace: the session's org lines and its
+  // assistant lines, in file order.
+  const trace = accountTrace(from, sessionId);
+  const records = parseTranscriptUsage(chunk, 0, trace);
   const toolCallRecords = parseTranscriptToolCalls(chunk);
 
   const gateway = reconcileGateway(config);
   // One scope-key memo for this tail pass, shared by both leaf kinds.
   const scopeKeyOf = scopeKeyMemo();
   try {
+    // The carried attribution state belongs to the offset it was written at: a
+    // tail that starts anywhere else (a rotation, a rewrite) is attributed afresh.
+    const attribution = attributeTail(
+      gateway,
+      config.dataDir,
+      sessionId,
+      transcriptPath,
+      trace,
+      from === checkpoint.offset ? checkpoint : undefined,
+    );
+    const waiting = pendingTimes(attribution, trace);
+    const hold =
+      waiting.length === 0
+        ? undefined
+        : holdDecision({ pendingTimes: waiting, pending: checkpoint.pending, now: now() });
+    if (hold?.hold === true) {
+      // A record's closing observation is not written yet: no row is written, the
+      // offsets stay where they are, and the next pass reads this tail again.
+      writeOffset(config.dataDir, sessionId, { ...checkpoint, pending: hold.pending });
+      return { llmCalls: 0, skipped: 0, toolCalls: 0 };
+    }
+    const accountOf =
+      attribution === undefined
+        ? undefined
+        : (uuid: string): string | undefined => {
+            const record = attribution.records.get(uuid);
+            return record?.status === 'account' ? record.key : undefined;
+          };
     const result = await reconcileSession(gateway, sessionId, records, {
       seedPromptId: checkpoint.lastPromptId,
       scopeKeyOf,
+      accountOf,
     });
     // Tool calls after the usage pass (which ensured the root); shares the same
-    // run_key carry-forward seed and scope-key memo as the llm_call leaves.
+    // run_key carry-forward seed, scope-key memo and attribution as the llm_call leaves.
     const toolCalls = await reconcileSessionToolCalls(
       gateway,
       sessionId,
@@ -466,14 +538,19 @@ export async function reconcileSessionTail(
       {
         seedPromptId: checkpoint.lastPromptId,
         scopeKeyOf,
+        accountOf,
       },
     );
     // Persist the advanced offset + the run_key carry-forward for the next tail pass.
     // Done AFTER the write so a failed pass leaves the offset at its prior value and
-    // the same tail is retried (idempotently) next time.
+    // the same tail is retried (idempotently) next time. The observation log's offset
+    // and the carried attribution state advance with it.
     writeOffset(config.dataDir, sessionId, {
       offset: nextOffset,
       lastPromptId: result.lastPromptId,
+      ...(attribution === undefined
+        ? {}
+        : { logOffset: attribution.logOffset, carried: attribution.carry }),
     });
     // The store now reflects this tail; scrub the transcript FILE itself so a raw
     // secret in the new lines (Claude Code logs a prompt even when a hook blocked
@@ -562,12 +639,15 @@ function groupBySession(records: Iterable<UsageRecord>): Map<string, UsageRecord
 // transcript's own fields (cwd/version/gitBranch on the anchor) + the resolved
 // inventory `ctx`. This is what makes a session reconstructed purely from history
 // (no SessionStart, e.g. a backfill) show a project/cwd/branch instead of blank.
+//
+// `scopeKey` is the root's key as reconcileSession stamped it.
 function buildSessionRoot(
   sessionId: string,
   ctx: InventoryContext,
   resolved: ResolvedInventory,
   anchor: AssistantUsageRecord,
   provider: string,
+  scopeKey: string | undefined,
 ): AuditEventInput {
   const attributes: Record<string, unknown> = {};
   const osVersion = ctx.host?.attributes.os_version;
@@ -587,12 +667,13 @@ function buildSessionRoot(
   const nwo = anchor.cwd !== undefined ? resolveRepoNwo(anchor.cwd) : undefined;
   if (nwo !== undefined) attributes.repo = nwo;
   if (anchor.gitBranch !== undefined) attributes.branches = [anchor.gitBranch];
-  // The session's scope key, from the transcript's own cwd (sessionRootScopeKey):
-  // the twin of the root key plugin-runtime's handleSessionStart stamps, and
-  // absent for a relative or empty cwd, a remoteless repository and a record that
-  // names no cwd. When SessionStart's root landed first it wins; the two agree
-  // whenever the session started in the directory its first record names.
-  const scopeKey = sessionRootScopeKey(anchor.cwd);
+  // The session's scope key: the repository key of the transcript's own cwd
+  // (sessionRootScopeKey), stamped for the account the session's first reply ran
+  // under, which makes it the session's agent key for a recognised work
+  // subscription whose repository is not enrolled. It lands only on a root no
+  // one wrote yet: when SessionStart's root landed first it wins. Absent for a
+  // relative or empty cwd, a remoteless repository and a record that names no
+  // cwd, when no account applies.
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {
@@ -666,4 +747,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // mis-report a non-Anthropic provider as having made cache writes it never did).
 function setNum(attrs: LlmCallAttributes, key: string, value: unknown): void {
   if (typeof value === 'number' && Number.isFinite(value)) attrs[key] = value;
+}
+
+// The account each assistant line of the tail ran under, from the session's
+// observation log, or undefined where this gateway stamps no account keys: every
+// row then keeps its repository key.
+function attributeTail(
+  gateway: DataGateway,
+  dataDir: string,
+  sessionId: string,
+  transcriptPath: string,
+  trace: UsageAccountTrace,
+  carry: Pick<UsageOffset, 'logOffset' | 'carried'> | undefined,
+): AttributionResult | undefined {
+  try {
+    const scope = accountScopeOf(gateway);
+    if (scope === undefined) return undefined;
+    const carried = carry?.carried ?? NO_ATTRIBUTION_CARRY;
+    const logOffset = carry?.logOffset ?? 0;
+    const orgAt = (pos: number | undefined): string | undefined =>
+      pos === undefined ? undefined : credentialOrgAt(transcriptPath, sessionId, pos);
+    return attributeRecords({
+      marks: trace.marks,
+      observations: readObservations(sessionAccountsDir(dataDir), sessionId, logOffset).entries,
+      logOffset,
+      carry: carried,
+      anchorOrg: orgAt(carried.anchorAt),
+      lastOrg: orgAt(carried.lastOrgAt),
+      bindingHash: scope.bindingHash,
+      inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+// The times of the tail's records still waiting for their closing observation.
+function pendingTimes(
+  attribution: AttributionResult | undefined,
+  trace: UsageAccountTrace,
+): number[] {
+  if (attribution === undefined) return [];
+  return trace.marks.flatMap((mark) =>
+    mark.kind === 'record' && attribution.records.get(mark.id)?.status === 'pending'
+      ? [mark.t]
+      : [],
+  );
+}
+
+// A row's key: `repoKey` stamped, through the gateway's account scope, for the
+// account the line `uuid` ran under. A gateway with no account scope, a line
+// with no account and a fault keep the repository key.
+function stamperFor(
+  gateway: DataGateway,
+  accountOf: ReconcileSessionOptions['accountOf'],
+): (repoKey: string | undefined, uuid: string | undefined) => string | undefined {
+  const scope = accountScopeOf(gateway);
+  return (repoKey, uuid) => {
+    try {
+      if (scope === undefined) return repoKey;
+      const accountKey = uuid === undefined ? undefined : accountOf?.(uuid);
+      return accountKey === undefined ? scope.stamp(repoKey) : scope.stamp(repoKey, accountKey);
+    } catch {
+      return repoKey;
+    }
+  };
 }

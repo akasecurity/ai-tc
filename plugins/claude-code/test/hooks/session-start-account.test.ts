@@ -11,7 +11,7 @@ import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type { SessionStartDeps } from '../../src/hooks/session-start-run.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
 import type { Device, Transcript } from '../helpers/account-fixture.ts';
-import { device, isAgentKeyFor, PERSONAL_KEY } from '../helpers/account-fixture.ts';
+import { device, isAgentKeyFor, PERSONAL_KEY, WORK_KEY } from '../helpers/account-fixture.ts';
 import type { Sent } from '../helpers/recording-client.ts';
 
 // The hooks open the gateway the plugin's factory builds; only its transport is
@@ -248,16 +248,63 @@ describe('recordSessionStartAccount', () => {
 });
 
 describe('the session root at session start', () => {
-  it.each([
-    ['a personal login', 'claude_pro'],
-    ['a work login', 'claude_team'],
-  ])('is written with its repository key for %s', async (_label, organizationType) => {
+  const rootOf = (t: Transcript) =>
+    dev.storedRows().find((row) => row.eventType === 'session' && row.id === t.sessionId);
+  const sentRoots = () => dev.sent.audit.filter((event) => event.eventType === 'session');
+
+  it("a personal session's root is written at session start with its repository key", async () => {
     dev.attach();
-    dev.login({ org: dev.workOrg, organizationType });
+    dev.login({ org: dev.workOrg, organizationType: 'claude_pro' });
     const t = dev.transcript(randomUUID());
     await runSessionStart(payload(t, 'startup'), deps());
-    expect(dev.storedRows().filter((row) => row.eventType === 'session')).toEqual([
-      expect.objectContaining({ id: t.sessionId, scopeKey: PERSONAL_KEY }),
-    ]);
+    expect(rootOf(t)).toMatchObject({ scopeKey: PERSONAL_KEY });
+  });
+
+  it.each([
+    ['a work login', 'claude_team'],
+    ['a login whose plan the config does not show', null],
+  ] as const)(
+    '%s leaves the root to the reconcile, as a local stub',
+    async (_label, organizationType) => {
+      dev.attach();
+      dev.login({ org: dev.workOrg, organizationType });
+      const t = dev.transcript(randomUUID());
+      await runSessionStart(payload(t, 'startup'), deps());
+      expect(rootOf(t)).toMatchObject({ scopeKey: null });
+      expect(sentRoots()).toEqual([]);
+    },
+  );
+
+  it('a login file that does not parse leaves the root to the reconcile', async () => {
+    dev.attach();
+    dev.unreadableLogin();
+    const t = dev.transcript(randomUUID());
+    await runSessionStart(payload(t, 'startup'), deps());
+    expect(rootOf(t)).toMatchObject({ scopeKey: null });
+  });
+
+  it('a work session rooted in an enrolled repository writes its root at session start with its repository key', async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    const t = dev.transcript(randomUUID());
+    await runSessionStart({ ...payload(t, 'startup'), cwd: dev.work }, deps());
+    expect(rootOf(t)).toMatchObject({ scopeKey: WORK_KEY });
+    expect(sentRoots()).toHaveLength(1);
+  });
+
+  it('a machine-wide attachment writes its root at session start', async () => {
+    dev.attach({ mode: 'machine' });
+    dev.login({ org: dev.workOrg });
+    const t = dev.transcript(randomUUID());
+    await runSessionStart(payload(t, 'startup'), deps());
+    expect(rootOf(t)).toMatchObject({ scopeKey: PERSONAL_KEY });
+  });
+
+  it('an opted-out session writes its root at session start', async () => {
+    dev.attach({ workSubscriptions: 'off' });
+    dev.login({ org: dev.workOrg });
+    const t = dev.transcript(randomUUID());
+    await runSessionStart(payload(t, 'startup'), deps());
+    expect(rootOf(t)).toMatchObject({ scopeKey: PERSONAL_KEY });
   });
 });

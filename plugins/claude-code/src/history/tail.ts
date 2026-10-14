@@ -16,6 +16,11 @@
 // The offset marker also carries `lastPromptId`, the run_key carry-forward across
 // tail boundaries: a tool-result-only tail whose parent prompt
 // was consumed in a prior pass still attributes its run_key from this seed.
+//
+// It also carries what account attribution needs across passes: where the next
+// pass resumes the session's observation log, the attribution state carried
+// past this tail, and how many passes have waited at this offset for a record's
+// closing observation.
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -29,6 +34,11 @@ import {
 import { join } from 'node:path';
 
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
+import type {
+  AttributionCarry,
+  AttributionView,
+  PendingHold,
+} from '@akasecurity/plugin-sdk/account';
 
 // Per-session reconcile checkpoint, persisted as JSON at
 // `<dataDir>/usage-offsets/<sessionId>`. `offset` is the byte position one past the
@@ -40,6 +50,14 @@ export interface UsageOffset {
   // `exactOptionalPropertyTypes` a present-but-undefined value needs the union.
   // `writeOffset` still omits the key entirely when it's undefined.
   lastPromptId?: string | undefined;
+  // Where the next pass resumes the session's observation log, and the
+  // attribution state carried past this tail. Read back only past offset 0: a
+  // pass from offset 0 reads the log from its start.
+  logOffset?: number | undefined;
+  carried?: AttributionCarry | undefined;
+  // How many passes have waited at this offset for a record's closing
+  // observation, and when the first of them did.
+  pending?: PendingHold | undefined;
 }
 
 // The directory holding per-session offset markers.
@@ -74,19 +92,25 @@ function offsetPath(dataDir: string, sessionId: string): string {
 // Read a session's persisted checkpoint. Fail-open: a missing/corrupt/unreadable
 // marker is treated as a fresh start (offset 0, no seed) so a bad marker can never
 // break reconcile — at worst it re-reads from the top, which the idempotent writes
-// absorb. A non-finite/negative stored offset is also normalized to 0.
+// absorb. A non-finite/negative stored offset is also normalized to 0. An account
+// field that does not read as its shape is dropped alone.
 export function readOffset(dataDir: string, sessionId: string): UsageOffset {
   try {
     const raw = readFileSync(offsetPath(dataDir, sessionId), 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) {
       const rec = parsed as Record<string, unknown>;
-      const offset =
-        typeof rec.offset === 'number' && Number.isFinite(rec.offset) && rec.offset >= 0
-          ? rec.offset
-          : 0;
+      const offset = isCount(rec.offset) ? rec.offset : 0;
       const lastPromptId = typeof rec.lastPromptId === 'string' ? rec.lastPromptId : undefined;
-      return lastPromptId !== undefined ? { offset, lastPromptId } : { offset };
+      const carried = offset > 0 ? carriedOf(rec.carried) : undefined;
+      const pending = pendingOf(rec.pending);
+      return {
+        offset,
+        ...(lastPromptId !== undefined ? { lastPromptId } : {}),
+        ...(offset > 0 && isCount(rec.logOffset) ? { logOffset: rec.logOffset } : {}),
+        ...(carried !== undefined ? { carried } : {}),
+        ...(pending !== undefined ? { pending } : {}),
+      };
     }
   } catch {
     // No marker yet, or unreadable/corrupt → start from the top.
@@ -95,20 +119,88 @@ export function readOffset(dataDir: string, sessionId: string): UsageOffset {
 }
 
 // Persist a session's checkpoint (best-effort; a write failure just means the next
-// pass re-reads from the prior offset — idempotent, never lost).
+// pass re-reads from the prior offset — idempotent, never lost). The payload is
+// rebuilt from the fields this module knows, each spelled out, so a field a
+// caller spreads in never reaches the file.
 export function writeOffset(dataDir: string, sessionId: string, value: UsageOffset): void {
   try {
     mkdirSync(offsetsDir(dataDir), { recursive: true, mode: DATA_DIR_MODE });
-    const payload: UsageOffset =
-      value.lastPromptId !== undefined
-        ? { offset: value.offset, lastPromptId: value.lastPromptId }
-        : { offset: value.offset };
+    const payload: UsageOffset = {
+      offset: value.offset,
+      ...(value.lastPromptId !== undefined ? { lastPromptId: value.lastPromptId } : {}),
+      ...(value.logOffset !== undefined ? { logOffset: value.logOffset } : {}),
+      ...(value.carried !== undefined ? { carried: carriedPayload(value.carried) } : {}),
+      ...(value.pending !== undefined
+        ? { pending: { passes: value.pending.passes, since: value.pending.since } }
+        : {}),
+    };
     writeFileSync(offsetPath(dataDir, sessionId), JSON.stringify(payload), {
       mode: DATA_FILE_MODE,
     });
   } catch {
     // Best-effort: an unwritable marker just re-reads the same tail next pass.
   }
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+// A carried attribution state as stored, or undefined when any of its fields
+// does not read as its shape: a carry this build cannot trust is dropped whole.
+function carriedOf(value: unknown): AttributionCarry | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const carried = value as Record<string, unknown>;
+  if (typeof carried.inherited !== 'boolean') return undefined;
+  const positions = ['anchorAt', 'changedAt', 'lastOrgAt', 'boundaryAt'] as const;
+  if (positions.some((name) => carried[name] !== undefined && !isCount(carried[name]))) {
+    return undefined;
+  }
+  const lastObs = carried.lastObs === undefined ? undefined : viewOf(carried.lastObs);
+  if (carried.lastObs !== undefined && lastObs === undefined) return undefined;
+  return {
+    inherited: carried.inherited,
+    ...(isCount(carried.anchorAt) ? { anchorAt: carried.anchorAt } : {}),
+    ...(isCount(carried.changedAt) ? { changedAt: carried.changedAt } : {}),
+    ...(isCount(carried.lastOrgAt) ? { lastOrgAt: carried.lastOrgAt } : {}),
+    ...(isCount(carried.boundaryAt) ? { boundaryAt: carried.boundaryAt } : {}),
+    ...(lastObs === undefined ? {} : { lastObs }),
+  };
+}
+
+function viewOf(value: unknown): AttributionView | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { t, k, h } = value as Record<string, unknown>;
+  if (!isCount(t) || (k !== 'w' && k !== 'n' && k !== 'v')) return undefined;
+  if (h !== undefined && typeof h !== 'string') return undefined;
+  return { t, k, ...(h === undefined ? {} : { h }) };
+}
+
+function carriedPayload(carried: AttributionCarry): AttributionCarry {
+  return {
+    inherited: carried.inherited,
+    ...(carried.anchorAt !== undefined ? { anchorAt: carried.anchorAt } : {}),
+    ...(carried.changedAt !== undefined ? { changedAt: carried.changedAt } : {}),
+    ...(carried.lastOrgAt !== undefined ? { lastOrgAt: carried.lastOrgAt } : {}),
+    ...(carried.boundaryAt !== undefined ? { boundaryAt: carried.boundaryAt } : {}),
+    ...(carried.lastObs !== undefined
+      ? {
+          lastObs: {
+            t: carried.lastObs.t,
+            k: carried.lastObs.k,
+            ...(carried.lastObs.h !== undefined ? { h: carried.lastObs.h } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function pendingOf(value: unknown): UsageOffset['pending'] {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const pending = value as Record<string, unknown>;
+  return isCount(pending.passes) && isCount(pending.since)
+    ? { passes: pending.passes, since: pending.since }
+    : undefined;
 }
 
 // Result of reading a transcript's new tail.
@@ -118,6 +210,8 @@ export interface TailRead {
   chunk: string;
   // The byte offset one past the last COMPLETE line — persist this as the next start.
   nextOffset: number;
+  // Where the chunk starts: the stored offset, or 0 when the file shrank below it.
+  from: number;
 }
 
 // Read the new tail of `transcriptPath` starting at `startOffset`, consuming up to
@@ -137,7 +231,7 @@ export function readTail(transcriptPath: string, startOffset: number): TailRead 
   try {
     fd = openSync(transcriptPath, 'r');
   } catch {
-    return { chunk: '', nextOffset: startOffset };
+    return { chunk: '', nextOffset: startOffset, from: startOffset };
   }
   try {
     const size = fstatSync(fd).size;
@@ -145,7 +239,7 @@ export function readTail(transcriptPath: string, startOffset: number): TailRead 
     // Truncated/rotated: the file is smaller than where we left off → re-read from 0.
     // Idempotent writes (UPSERT-max / INSERT OR IGNORE) make the re-read a no-op.
     const from = size < startOffset ? 0 : startOffset;
-    if (from >= size) return { chunk: '', nextOffset: from }; // nothing new
+    if (from >= size) return { chunk: '', nextOffset: from, from }; // nothing new
 
     // Read ONLY the appended bytes, looping because a positioned read may
     // return short. A zero-byte read before the expected end (file shrank
@@ -167,13 +261,13 @@ export function readTail(transcriptPath: string, startOffset: number): TailRead 
     // consume none.
     const slice = buf.subarray(0, filled);
     const lastNl = slice.lastIndexOf(0x0a);
-    if (lastNl === -1) return { chunk: '', nextOffset: from };
+    if (lastNl === -1) return { chunk: '', nextOffset: from, from };
 
     const consumedBytes = lastNl + 1; // include the newline
     const chunk = slice.subarray(0, consumedBytes).toString('utf8');
-    return { chunk, nextOffset: from + consumedBytes };
+    return { chunk, nextOffset: from + consumedBytes, from };
   } catch {
-    return { chunk: '', nextOffset: startOffset };
+    return { chunk: '', nextOffset: startOffset, from: startOffset };
   } finally {
     try {
       closeSync(fd);

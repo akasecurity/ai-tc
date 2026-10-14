@@ -11,6 +11,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
+import type { TranscriptMark } from '@akasecurity/plugin-sdk/account';
+import { credentialOrgOf } from '@akasecurity/plugin-sdk/account';
 import type { EventKind } from '@akasecurity/schema';
 
 // One scannable unit pulled from a transcript. `occurredAt` is the record's own
@@ -186,6 +188,40 @@ function isZeroUsage(usage: TranscriptUsage): boolean {
   return input + output + cacheRead + cacheCreate === 0;
 }
 
+// What the usage parse collects for account attribution when it is asked to:
+// the session's credential_org lines and every one of its assistant lines, in
+// file order. Both are collected ahead of the window bound and the collapse
+// below, so an org line older than the window still anchors the records inside
+// it, and every line of a collapsed message keeps its own mark.
+export interface UsageAccountTrace {
+  /** The byte offset, in the transcript, of the parsed text's first byte. */
+  readonly base: number;
+  /** The session whose lines are marked; another session's lines are not. */
+  readonly sessionId: string;
+  readonly marks: TranscriptMark[];
+}
+
+export function accountTrace(base: number, sessionId: string): UsageAccountTrace {
+  return { base, sessionId, marks: [] };
+}
+
+function traceAccount(
+  trace: UsageAccountTrace,
+  rec: Record<string, unknown>,
+  line: string,
+  pos: number,
+): void {
+  if (rec.type === 'attachment') {
+    const seen = credentialOrgOf(line, trace.sessionId);
+    if (seen !== undefined) trace.marks.push({ kind: 'org', org: seen.org, t: seen.t, pos });
+    return;
+  }
+  if (rec.type !== 'assistant' || rec.sessionId !== trace.sessionId) return;
+  const id = optString(rec.uuid);
+  const t = Date.parse(optString(rec.timestamp) ?? '');
+  if (id !== undefined && Number.isFinite(t)) trace.marks.push({ kind: 'record', id, t });
+}
+
 // Parse one transcript file's contents into usage-relevant records. Like
 // `parseTranscript`, malformed lines are skipped, never thrown. Yields ONE
 // `AssistantUsageRecord` per usage-bearing assistant *message* (collapsed by
@@ -197,9 +233,19 @@ function isZeroUsage(usage: TranscriptUsage): boolean {
 // it are dropped so the backfill is O(in-window records), not whole history — the
 // same window the secret-scan `parseTranscript` uses. A record with a missing /
 // unparseable timestamp (NaN) is KEPT (`NaN < sinceMs` is false), matching that path.
-export function parseTranscriptUsage(jsonl: string, sinceMs = 0): UsageRecord[] {
+//
+// With `trace`, the parse also fills it (see UsageAccountTrace); the records it
+// returns are the same either way.
+export function parseTranscriptUsage(
+  jsonl: string,
+  sinceMs = 0,
+  trace?: UsageAccountTrace,
+): UsageRecord[] {
   const out: UsageRecord[] = [];
+  let cursor = trace?.base ?? 0;
   for (const line of jsonl.split('\n')) {
+    const offset = cursor;
+    cursor += Buffer.byteLength(line) + 1;
     const trimmed = line.trim();
     if (trimmed === '') continue;
     let rec: unknown;
@@ -209,6 +255,9 @@ export function parseTranscriptUsage(jsonl: string, sinceMs = 0): UsageRecord[] 
       continue;
     }
     if (!isRecord(rec)) continue;
+
+    // Ahead of the window bound: see UsageAccountTrace.
+    if (trace !== undefined) traceAccount(trace, rec, trimmed, offset);
 
     // Window bound (shared with parseTranscript): drop records before `sinceMs`.
     if (sinceMs > 0 && Date.parse(optString(rec.timestamp) ?? '') < sinceMs) continue;

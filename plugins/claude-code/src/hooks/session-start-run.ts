@@ -52,7 +52,7 @@ export async function runSessionStart(
   // recorded before the session start claims the session: a resume of an id
   // already claimed, or one stopped inside the session start, keeps its
   // boundary.
-  recordSessionStartAccount({
+  const account = recordSessionStartAccount({
     config,
     sessionId,
     transcriptPath,
@@ -78,6 +78,11 @@ export async function runSessionStart(
     // absent when the host stamps nothing, which reads as unknown rather than
     // as a terminal session.
     harnessInterface: deps.harnessInterface,
+    // A session whose login is a work subscription, or cannot be told yet, leaves
+    // its root to the reconcile, which keys it by the account its first reply ran
+    // under. The session start still writes it at once where its repository is
+    // enrolled, and on a machine-wide attachment.
+    rootAwaitsAccount: account.basis !== undefined || account.undetermined,
   });
   // A symlinked store path redirects the corpus without failing anything; say
   // so once per session. Collected rather than written to stderr: on this hook

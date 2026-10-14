@@ -47,6 +47,8 @@ function must<T>(value: T | undefined): T {
   return value;
 }
 
+const ID_KEY = Buffer.alloc(32, 7);
+
 const noInstalledRules = (): Promise<readonly Rule[]> => Promise.resolve([]);
 
 function rawEncoderWith(
@@ -60,6 +62,7 @@ function rawEncoderWith(
     },
     loadRules: noInstalledRules,
     readSharing: () => true,
+    readIdKey: () => ID_KEY,
     ...overrides,
   });
 }
@@ -311,7 +314,7 @@ describe('outbound encoder: events', () => {
     expect(encoded.contentHash).not.toBe(contentHashOf(value));
     expect(encoded.contentHash).toBe(contentHashOf(encoded.content));
     expect(encoded.id).not.toBe(raw.id);
-    expect(encoded.id).toBe(encodedWireId('sess-1', contentHashOf(encoded.content), null));
+    expect(encoded.id).toBe(encodedWireId(ID_KEY, 'sess-1', raw.contentHash, null));
     expect(encoded.id).not.toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
     expect(JSON.stringify(encoded)).not.toContain(contentHashOf(value));
   });
@@ -323,7 +326,37 @@ describe('outbound encoder: events', () => {
     const first = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     const again = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     expect(again.id).toBe(first.id);
-    expect(first.id).toBe(encodedWireId('sess-2', contentHashOf(first.content), ''));
+    expect(first.id).toBe(encodedWireId(ID_KEY, 'sess-2', raw.contentHash, ''));
+  });
+
+  it('keeps captures that differ only in their secret apart, with sharing on or off', async () => {
+    const identity = { sessionId: 's', filePath: '' };
+    for (const sharing of [false, true]) {
+      const encoder = rawEncoderWith(keyOf(1, 1), { readSharing: () => sharing });
+      const a = must(await encoder.encodeEvent(event(`deploy with ${patShaped(11)}`), identity));
+      const b = must(await encoder.encodeEvent(event(`deploy with ${patShaped(29)}`), identity));
+      if (!sharing) expect(a.content).toBe(b.content);
+      expect(a.id).not.toBe(b.id);
+    }
+  });
+
+  it('keys the wire id, so another machine derives a different one for the same row', async () => {
+    const raw = event(`p ${patShaped(47)}`, { sessionId: 'sess-3' });
+    const here = must(await rawEncoderWith(keyOf(1, 1)).encodeEvent(raw));
+    const elsewhere = must(
+      await rawEncoderWith(keyOf(1, 1), { readIdKey: () => Buffer.alloc(32, 8) }).encodeEvent(raw),
+    );
+    expect(elsewhere.content).toBe(here.content);
+    expect(elsewhere.id).not.toBe(here.id);
+  });
+
+  it('holds an encoded event when the id key cannot be read', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 1), {
+      readIdKey: () => {
+        throw new Error('key unreadable');
+      },
+    });
+    await expect(encoder.encodeEvent(event(`p ${patShaped(53)}`))).resolves.toBeUndefined();
   });
 
   it('holds an event when the effective rules cannot be loaded', async () => {

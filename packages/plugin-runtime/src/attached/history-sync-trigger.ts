@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -54,6 +54,17 @@ export interface HistorySyncTriggerDeps {
   hasOwedLiveCaptures?: (dataDir: string, sinceMs: number) => boolean;
 }
 
+// Reads the throttle marker's age without writing it, so a machine with nothing
+// owed is not stamped as having run a pass.
+function markerIsFresh(dataDir: string): boolean {
+  try {
+    const age = Date.now() - statSync(join(dataDir, HISTORY_SYNC_MARKER_NAME)).mtimeMs;
+    return age < HISTORY_SYNC_THROTTLE_MS;
+  } catch {
+    return false;
+  }
+}
+
 function storeOwesLiveCaptures(dataDir: string, sinceMs: number): boolean {
   if (!existsSync(join(dataDir, DB_FILENAME))) return false;
   const db = openLocalDatabase(dataDir);
@@ -99,6 +110,9 @@ export function triggerHistorySync(config: PluginConfig, deps: HistorySyncTrigge
     if (!isHistorySyncConsentValid(config.settings.historySyncConsent, connection.endpoint)) {
       const sinceMs = Date.parse(connection.attachedAt);
       if (!Number.isFinite(sinceMs)) return;
+      // Inside the window the throttle below would refuse anyway, so the store
+      // is not opened.
+      if (markerIsFresh(config.dataDir)) return;
       const owes = deps.hasOwedLiveCaptures ?? storeOwesLiveCaptures;
       if (!owes(config.dataDir, sinceMs)) return;
     }

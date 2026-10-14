@@ -100,6 +100,7 @@ export {
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
+  keyedCaptureWireId,
   llmCallId,
   normalizeHost,
   promptId,

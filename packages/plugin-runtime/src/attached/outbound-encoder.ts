@@ -5,10 +5,11 @@ import type {
   SightingKeys,
 } from '@akasecurity/persistence';
 import {
-  captureWireId,
   createKeyProvider,
   dataDir as dataDirOf,
+  keyedCaptureWireId,
   keysDir,
+  loadOrCreateFingerprintKey,
   openLocalDatabase,
   readSightingKeys,
   readSightingSharing,
@@ -64,6 +65,11 @@ export interface OutboundEncoderDeps {
    * {@link FAIL_CLOSED_MARKER} with no token and no sightings.
    */
   readSharing: () => boolean;
+  /**
+   * A secret that never leaves this machine, keying the wire id of a capture
+   * whose content was encoded. A throw holds the capture.
+   */
+  readIdKey: () => Buffer;
 }
 
 /** The inputs a capture's wire id is derived from, beside its content hash. */
@@ -81,10 +87,11 @@ export interface OutboundEncoder {
   /** Undefined when the capture must be held rather than sent. */
   encodeContent(content: string): Promise<EncodedContent | undefined>;
   /**
-   * The event to send: encoded content, its sightings, and a content hash and
-   * wire id derived from the encoded content and `identity` (by default the
-   * event's own session and file path). `event` itself when nothing changes;
-   * undefined when the capture must be held rather than sent.
+   * The event to send: encoded content, its sightings, the hash of the encoded
+   * content, and a wire id keyed over the stored row's identity: `identity`
+   * (by default the event's own session and file path) and the event's own
+   * content hash. `event` itself when nothing changes; undefined when the
+   * capture must be held rather than sent.
    */
   encodeEvent(event: IngestEvent, identity?: CaptureIdentity): Promise<IngestEvent | undefined>;
   /** Releases the scan worker, if one was started. */
@@ -92,15 +99,18 @@ export interface OutboundEncoder {
 }
 
 /**
- * The wire id of a capture whose content was encoded. Its own namespace, so it
- * never equals the id of a capture sent unchanged whose text happens to match.
+ * The wire id of a capture whose content was encoded, from the stored row's
+ * identity: `contentHash` is the hash of the content as stored, not as sent.
+ * Two captures whose secrets encode alike, as every secret does while sharing
+ * is off, keep two ids, and a capture keeps its id however often it is sent.
  */
 export function encodedWireId(
+  idKey: Buffer,
   sessionId: string | null,
   contentHash: string,
   filePath: string | null,
 ): string {
-  return captureWireId(sessionId, `sighting:${contentHash}`, filePath);
+  return keyedCaptureWireId(idKey, sessionId, contentHash, filePath);
 }
 
 interface Replacement {
@@ -260,14 +270,20 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
       const { content, sightings } = encoded;
       const carried = event.metadata?.sightings !== undefined;
       if (content === event.content && sightings.length === 0 && !carried) return event;
-      // Encoded content carries its own hash, and the wire id is derived from
-      // that, so nothing sent is a function of the raw text.
+      let idKey: Buffer;
+      try {
+        idKey = deps.readIdKey();
+      } catch {
+        return undefined;
+      }
+      // The hash sent is of the encoded content; the id is keyed over the
+      // stored row's identity, so neither lets the receiver test a raw value.
       const contentHash = contentHashOf(content);
       const { sessionId, filePath } = identity ?? {
         sessionId: event.metadata?.sessionId ?? null,
         filePath: event.metadata?.filePath ?? null,
       };
-      const id = encodedWireId(sessionId, contentHash, filePath);
+      const id = encodedWireId(idKey, sessionId, event.contentHash, filePath);
       const rest = { ...event.metadata };
       delete rest.sightings;
       const metadata = sightings.length === 0 ? rest : { ...rest, sightings };
@@ -307,6 +323,7 @@ export function createStoreOutboundEncoder(
   },
 ): OutboundEncoder {
   const { db, scanBound } = opts;
+  let idKey: Buffer | undefined;
   return createOutboundEncoder({
     loadRules: opts.loadRules,
     ...(scanBound === undefined
@@ -314,6 +331,7 @@ export function createStoreOutboundEncoder(
       : { createScanner: (p: GuardedScanPartition) => createSecretSpanScanner(p, scanBound) }),
     readKeys: () => readSightingKeys(base),
     readSharing: opts.readSharing ?? (() => readSightingSharing(base).sharing),
+    readIdKey: () => (idKey ??= loadOrCreateFingerprintKey(dataDirOf(base)).material),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };
       const opened = openLocalDatabase(dataDirOf(base));

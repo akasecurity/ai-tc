@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SightingKey } from '@akasecurity/persistence';
-import { captureWireId, dataDir as dataDirOf } from '@akasecurity/persistence';
+import {
+  captureWireId,
+  dataDir as dataDirOf,
+  loadOrCreateFingerprintKey,
+} from '@akasecurity/persistence';
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
 import { contentHashOf } from '@akasecurity/plugin-sdk';
 import type { IngestBatch, IngestEvent, PolicyBundle, Rule } from '@akasecurity/schema';
@@ -211,7 +215,8 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies[0]).not.toContain(contentHashOf(value));
     expect(sent?.id).not.toBe(record.event.id);
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
-    expect(sent?.id).toBe(encodedWireId('sess-9', contentHashOf(sent?.content ?? ''), null));
+    const idKey = loadOrCreateFingerprintKey(dataDirOf(base)).material;
+    expect(sent?.id).toBe(encodedWireId(idKey, 'sess-9', record.event.contentHash, null));
   });
 
   it('tokenises a value only an installed secret rule matches', async () => {

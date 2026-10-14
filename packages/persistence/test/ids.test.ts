@@ -7,6 +7,7 @@ import {
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
+  keyedCaptureWireId,
   llmCallId,
   normalizeHost,
   promptId,
@@ -268,5 +269,30 @@ describe('captureWireId (the same identity as captureId, rendered as a guid)', (
     expect(captureWireId('sess_abc123', 'contenthash123', 'src/a.ts')).not.toBe(
       captureWireId('sess_abc123', 'contenthash123', 'src/b.ts'),
     );
+  });
+});
+
+describe('keyedCaptureWireId', () => {
+  const key = Buffer.alloc(32, 1);
+
+  it('is stable for one key and identity, and is a UUIDv8', () => {
+    const id = keyedCaptureWireId(key, 'sess_abc123', 'contenthash123', 'src/a.ts');
+    expect(keyedCaptureWireId(key, 'sess_abc123', 'contenthash123', 'src/a.ts')).toBe(id);
+    const flat = id.replaceAll('-', '');
+    expect(flat[12]).toBe('8');
+    expect(Number.parseInt(flat.charAt(16), 16) & 0b1100).toBe(0b1000);
+  });
+
+  it('differs from the unkeyed id, and between keys', () => {
+    const id = keyedCaptureWireId(key, 'sess_abc123', 'contenthash123');
+    expect(id).not.toBe(captureWireId('sess_abc123', 'contenthash123'));
+    expect(keyedCaptureWireId(Buffer.alloc(32, 2), 'sess_abc123', 'contenthash123')).not.toBe(id);
+  });
+
+  it('distinguishes every component captureId distinguishes', () => {
+    const id = keyedCaptureWireId(key, 'sess_abc123', 'contenthash123', 'src/a.ts');
+    expect(keyedCaptureWireId(key, null, 'contenthash123', 'src/a.ts')).not.toBe(id);
+    expect(keyedCaptureWireId(key, 'sess_abc123', 'contenthash456', 'src/a.ts')).not.toBe(id);
+    expect(keyedCaptureWireId(key, 'sess_abc123', 'contenthash123', 'src/b.ts')).not.toBe(id);
   });
 });

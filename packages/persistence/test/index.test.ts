@@ -122,6 +122,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'isSafeEndpoint',
   'isScopedAttachment',
   'keyStateOf',
+  'keyedCaptureWireId',
   'keysDir',
   'linkTarget',
   'llmCallId',

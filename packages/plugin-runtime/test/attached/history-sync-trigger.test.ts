@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -140,6 +140,22 @@ describe('triggerHistorySync — when it does fork', () => {
     });
     expect(spawned).toHaveLength(1);
     expect(asked).toEqual([Date.parse(ATTACHED_AT)]);
+  });
+
+  it('does not open the store without a grant while a pass ran inside the window', () => {
+    setup();
+    mkdirSync(dataDirOf(home), { recursive: true });
+    writeFileSync(join(dataDirOf(home), HISTORY_SYNC_MARKER_NAME), String(Date.now()));
+    let asked = 0;
+    triggerHistorySync(configFor(home), {
+      ...deps(),
+      hasOwedLiveCaptures: () => {
+        asked += 1;
+        return true;
+      },
+    });
+    expect(asked).toBe(0);
+    expect(spawned).toEqual([]);
   });
 
   it('reads the live debt from the store itself', () => {

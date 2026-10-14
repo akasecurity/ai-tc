@@ -2403,7 +2403,8 @@ describe('runHistorySync — secrets on the capture lane', () => {
     expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
     expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
-    expect(sent?.id).toBe(encodedWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
+    const idKey = loadOrCreateFingerprintKey(dataDirOf(home)).material;
+    expect(sent?.id).toBe(encodedWireId(idKey, 'cap-session', 'b'.repeat(64), null));
     expect(resent?.id).toBe(sent?.id);
   });
 

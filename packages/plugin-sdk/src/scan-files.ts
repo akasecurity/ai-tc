@@ -25,6 +25,25 @@ export const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.rs',
 ]);
 
+// Document, image and log extensions that end a name such as `README.env.md`,
+// which is about a dotenv file rather than one.
+const NON_ENV_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.md',
+  '.markdown',
+  '.txt',
+  '.rst',
+  '.adoc',
+  '.html',
+  '.htm',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.log',
+]);
+
 export type ScanFileKind = 'source' | 'secret-bearing' | 'other';
 
 /**
@@ -44,6 +63,7 @@ export function scanFileKind(
   const base = basename(name);
   if (sourceExtensions.has(extname(base))) return 'source';
   const lower = base.toLowerCase();
+  if (NON_ENV_EXTENSIONS.has(extname(lower))) return 'other';
   if (lower === '.envrc' || lower.endsWith('.env') || lower.includes('.env.')) {
     return 'secret-bearing';
   }

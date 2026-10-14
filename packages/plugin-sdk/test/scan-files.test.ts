@@ -43,6 +43,11 @@ describe('scanFileKind', () => {
     ['App.ENV.Production', 'secret-bearing'],
     ['app.env.production.ts', 'source'],
     ['app.environment.local', 'other'],
+    ['README.env.md', 'other'],
+    ['notes.env.txt', 'other'],
+    ['diagram.env.png', 'other'],
+    ['.env.production.local', 'secret-bearing'],
+    ['app.env.staging', 'secret-bearing'],
     ['env.example', 'other'],
     ['env', 'other'],
   ])('classifies %s as %s', (name, kind) => {

@@ -45,6 +45,23 @@ test('the model receives the vault pointer and a note explaining pointers', asyn
   expect(asked).toHaveLength(1);
 });
 
+test('an answer that carries findings still rewrites the prompt', async ($, on) => {
+  redactSecrets(on, 105);
+  const seen = model(on);
+  helper(on, (request) =>
+    JSON.stringify({
+      v: 1,
+      text: request.stdin.text.replace(SECRET, POINTER),
+      note: NOTE,
+      findings: [{ v: 1, id: 'abc', ruleId: 'secrets/x', action: 'vaulted' }],
+    }),
+  );
+
+  await $.prompt.submit({ text: `deploy with ${SECRET} please` });
+
+  expect(seen).toEqual([`deploy with ${POINTER} please`]);
+});
+
 test('the helper is run with node on its script, a short timeout and the prompt on stdin', async ($, on) => {
   redactSecrets(on, 101);
   model(on);

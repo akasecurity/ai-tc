@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { DetectionCategory } from '../../src/zod/finding.ts';
+import {
+  DetectionCategory,
+  MAX_VARIABLE_NAME_LENGTH,
+  VariableName,
+} from '../../src/zod/finding.ts';
 import {
   BATCHED_DEREF_REASONS,
   DEFAULT_VAULT_DEREFS_LIMIT,
@@ -481,5 +485,12 @@ describe('vault key custody', () => {
   it('still rejects values that are not strings at all', () => {
     expect(VaultKeyCustody.safeParse(7).success).toBe(false);
     expect(VaultKeyCustody.safeParse(undefined).success).toBe(false);
+  });
+});
+
+describe('VariableName', () => {
+  it('accepts a name up to the detection cap and rejects a longer one', () => {
+    expect(VariableName.safeParse('K'.repeat(MAX_VARIABLE_NAME_LENGTH)).success).toBe(true);
+    expect(VariableName.safeParse('K'.repeat(MAX_VARIABLE_NAME_LENGTH + 1)).success).toBe(false);
   });
 });

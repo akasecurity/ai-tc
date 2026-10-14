@@ -46,6 +46,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { actionFromCapture, pointersByFinding, recordModFindings } from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
 import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
@@ -151,20 +152,53 @@ async function main(): Promise<void> {
   // Consent is resolved HERE rather than inside the decision: an absent
   // tokenizer is what makes "no consent → the vault is never touched" a
   // structural property instead of a flag the decision could forget to read.
+  let vaultedWith: ReadonlyMap<string, string> = new Map();
   const decision = await decideUserPromptSubmit(prompt, result, {
     tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
-      ? (text, findings, reversible) =>
-          createVaultGlue().tokenizeText(text, {
+      ? async (text, findings, reversible) => {
+          const tokenized = await createVaultGlue().tokenizeText(text, {
             findings,
             // Per-finding custody, exactly as the tool-call paths pass it.
             // Omitting it means "keep all", which would vault a value whose
             // detection chose one-way Redact.
             reversible,
             sighting: { location: 'prompt', kind: 'prompt' },
-          })
+          });
+          try {
+            vaultedWith = pointersByFinding(findings, reversible, tokenized.pointers);
+          } catch {
+            // A record of the pointers never changes the rewrite.
+          }
+          return tokenized;
+        }
       : undefined,
     writeClipboard,
   });
+  // The widgets' record of what was found, unless the mod's helper already wrote
+  // it. Nothing here may reach the decision, so a fault in any of it is dropped.
+  if (!handedOff && sessionId !== undefined) {
+    try {
+      // All or nothing: the block reason carries one rewrite of the whole prompt,
+      // so one pointer in it shows the user was handed every pointer minted.
+      const first = vaultedWith.values().next();
+      const vaulted =
+        first.done !== true &&
+        decision !== null &&
+        'reason' in decision &&
+        decision.reason.includes(first.value);
+      recordModFindings(config.dataDir, sessionId, {
+        sessionId,
+        kind: 'prompt',
+        text: prompt,
+        result,
+        where: 'prompt',
+        action: actionFromCapture(result.action, vaulted),
+        pointers: vaultedWith,
+      });
+    } catch {
+      // A record the widgets cannot show is not a reason to change the verdict.
+    }
+  }
   if (decision !== null) {
     await emit(decision);
     return;

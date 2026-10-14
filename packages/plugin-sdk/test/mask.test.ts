@@ -88,3 +88,32 @@ describe('scanText — where each finding sits', () => {
     for (const finding of findings) expect(finding).not.toHaveProperty('location');
   });
 });
+
+describe('scanText — the variable a secret is assigned to', () => {
+  const NAME = ['AWS', 'ACCESS', 'KEY', 'ID'].join('_');
+  const EQ = String.fromCharCode(61);
+
+  it('records the variable name on a located finding, never the value', () => {
+    const { findings } = scanText(['export ', NAME, EQ, AWS_KEY].join(''), undefined, {
+      locate: true,
+    });
+    const finding = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(finding?.variableName).toBe(NAME);
+    expect(finding?.variableName).not.toContain(AWS_KEY);
+  });
+
+  it('records no name for a secret that is not assigned', () => {
+    const { findings } = scanText(`aws configure set aws_access_key_id ${AWS_KEY}`, undefined, {
+      locate: true,
+    });
+    const finding = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(finding).toBeDefined();
+    expect(finding).not.toHaveProperty('variableName');
+  });
+
+  it('computes no name unless the findings are located for storage', () => {
+    const { findings } = scanText(['export ', NAME, EQ, AWS_KEY].join(''));
+    expect(findings.length).toBeGreaterThan(0);
+    for (const finding of findings) expect(finding).not.toHaveProperty('variableName');
+  });
+});

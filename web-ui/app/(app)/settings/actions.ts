@@ -8,6 +8,7 @@ import {
   type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearSightingKeys,
   controlPlaneCredentialPath,
   type CredentialFileRead,
   dataDir,
@@ -26,6 +27,7 @@ import {
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   readForwardHealth,
+  readSightingSharing,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
@@ -56,12 +58,15 @@ import {
   isAttachmentScopeBoundTo,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
+  isSightingShareConsentValid,
   isVaultConsentValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
   RedactFallback,
   SaveSettingsInput,
+  SetSightingShareConsentInput,
+  SIGHTING_SHARE_CONSENT_VERSION,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
@@ -309,6 +314,51 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         settings,
       );
     });
+  }
+  revalidatePath('/settings');
+  return { ok: true };
+}
+
+const SIGHTING_SHARE_STANDALONE_ERROR =
+  'This machine is not attached to an organization, so there is nothing to share with yet.';
+
+/**
+ * Grant or revoke sharing credential sightings with the organization. Refused
+ * while the organization's managed settings decide the answer, and a grant is
+ * refused while standalone: it names the deployment it was given for. A
+ * still-valid grant is kept as-is so its acknowledgedAt survives a repeated
+ * grant.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function setSightingShareConsent(input: unknown): Promise<SaveSettingsResult> {
+  const parsed = parseActionInput(SetSightingShareConsentInput, input);
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  const { choice } = parsed.data;
+  const state = readSightingSharing();
+  if (state.locked) {
+    return { ok: false, error: managedRefusal(['sightingShareConsent']) };
+  }
+  const { endpoint } = state;
+  if (choice === 'granted' && endpoint === undefined) {
+    return { ok: false, error: SIGHTING_SHARE_STANDALONE_ERROR };
+  }
+  try {
+    applyOnboarding((current) => ({
+      sightingShareConsent:
+        choice === 'revoked' || endpoint === undefined
+          ? undefined
+          : isSightingShareConsentValid(current.sightingShareConsent, endpoint)
+            ? current.sightingShareConsent
+            : {
+                acknowledgedAt: new Date().toISOString(),
+                version: SIGHTING_SHARE_CONSENT_VERSION,
+                endpoint,
+              },
+    }));
+  } catch (error) {
+    if (error instanceof ManagedFieldError)
+      return { ok: false, error: managedRefusal(error.fields) };
+    return { ok: false, error: SETTINGS_WRITE_ERROR };
   }
   revalidatePath('/settings');
   return { ok: true };
@@ -833,7 +883,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   closeHistoryWindow(readWorkspaceSettings().controlPlane?.attachedAt);
 
   try {
-    // The history grant goes with the attachment it named, spelled rather than
+    // The history and sighting-share grants go with the attachment they named, spelled rather than
     // omitted: this writer MERGES, so leaving the key out preserves a grant for
     // the deployment the machine is leaving — and a re-attach to that same
     // deployment would pick it straight back up without asking. The scope record
@@ -843,6 +893,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
       runMode: 'standalone',
       controlPlane: undefined,
       historySyncConsent: undefined,
+      sightingShareConsent: undefined,
       attachmentScope: undefined,
     });
   } catch (error) {
@@ -889,6 +940,8 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // detached by the two writes above, and a leftover cache is not worth
   // reporting a completed detach as a failure.
   clearAttachmentDerivedState(dataDir());
+  // The sighting key lives in the keys dir or the keychain, not the data dir.
+  clearSightingKeys();
   // Best-effort, macOS only, same as `aka detach`: without this, a machine
   // attached from the CLI and detached from here keeps a LaunchAgent that
   // re-invokes `aka sync-history --run` every 30 minutes, across reboots,

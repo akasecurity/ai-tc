@@ -6,6 +6,7 @@ import {
   applyOnboarding,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearSightingKeys,
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   decideAttachMode,
@@ -21,6 +22,7 @@ import {
   readEffectiveSettings,
   readLocalHistoryPreview,
   readManagedSettings,
+  readSightingSharing,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
@@ -59,6 +61,7 @@ import {
   isAttachmentScopeBoundTo,
   originOnly,
   parseAttachmentScope,
+  sightingSharingLine,
   unsafeEndpointReason,
 } from '@akasecurity/schema';
 
@@ -1661,8 +1664,8 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     readEffectiveSettings(base, deps.managedSettings).settings.controlPlane?.attachedAt,
   );
   try {
-    // The history grant and the enrolled list go with the attachment they
-    // named. `undefined` on an optional key is how this writer records a
+    // The history and sighting-share grants and the enrolled list go with the
+    // attachment they named. `undefined` on an optional key is how this writer records a
     // REVOCATION, so each key leaves settings.json rather than lingering for a
     // deployment this machine no longer talks to. A list left behind would be
     // kept by a later scoped attach as the same account, reviving enrollments
@@ -1672,6 +1675,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
         runMode: 'standalone',
         controlPlane: undefined,
         historySyncConsent: undefined,
+        sightingShareConsent: undefined,
         attachmentScope: undefined,
       },
       base,
@@ -1688,6 +1692,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
+  clearSightingKeys(base);
   // Best-effort, alongside every other piece of attachment-derived state. The
   // SAME base this command resolved above — the LaunchAgent's label is keyed
   // on it, so passing anything else targets a different machine's job.
@@ -1784,6 +1789,7 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
+  io.out(`${sightingSharingLine(readSightingSharing(base, deps.managedSettings))}\n`);
   // The host's own version, and which of AKA's protections it is too old for.
   // This is one of the two surfaces carrying that detail: someone reading it has
   // come looking, which is why it names protections where the in-session notice

@@ -358,6 +358,21 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
   });
 });
 
+describe('ruleNames — the name of each rule that matched', () => {
+  it('names a pulled rule by the name it declares', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    const result = await rt.processText('ship PULLED_MARKER today');
+    expect(result.ruleNames).toEqual({ 'pulled/secret-marker': 'Pulled secret marker' });
+    await rt.close();
+  });
+
+  it('carries no names when nothing matched', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    expect((await rt.processText('nothing here')).ruleNames).toBeUndefined();
+    await rt.close();
+  });
+});
+
 // The collapse across a capture's findings used to index a hand-listed
 // worst-first array private to the runtime; it now asks the one schema ladder.
 // The orderings are the same fact, so the only thing worth pinning is that the

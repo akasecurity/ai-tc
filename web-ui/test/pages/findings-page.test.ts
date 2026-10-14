@@ -566,3 +566,58 @@ describe('findings page — the summary strip', () => {
     });
   });
 });
+
+describe('findings page — the variable a secret is assigned to', () => {
+  const NAME = ['STRIPE', 'SECRET', 'KEY'].join('_');
+
+  function seedNamed(): string {
+    const db = openLocalDatabase(dir);
+    const eventId = randomUUID();
+    const findingId = randomUUID();
+    try {
+      db.recordCapture(
+        {
+          id: eventId,
+          sourceTool: 'claude-code',
+          kind: 'code_change',
+          occurredAt: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+          contentHash: randomUUID(),
+          content: 'x',
+          metadata: { repo: 'acme/api', filePath: '.env' },
+        },
+        [
+          {
+            id: findingId,
+            eventId,
+            ruleId: CRITICAL_RULE,
+            category: 'secret',
+            severity: 'critical',
+            span: { start: 0, end: 1 },
+            maskedMatch: 'masked',
+            actionTaken: 'block',
+            confidence: 0.9,
+            variableName: NAME,
+          },
+        ],
+      );
+    } finally {
+      db.close();
+      dropMemoisedDb();
+    }
+    return findingId;
+  }
+
+  it('hands the selected type’s findings their variable name', async () => {
+    const id = seedNamed();
+    const props = await renderPage();
+    const listed = props.instances?.items.find((i) => i.id === id);
+    expect(listed?.match.variableName).toBe(NAME);
+    expect(listed?.match.maskedValue).toBe('masked');
+  });
+
+  it('hands the drawer a deep-linked finding’s variable name', async () => {
+    const id = seedNamed();
+    const props = await renderPage({ finding: id });
+    expect(props.deepLinkedInstance?.match.variableName).toBe(NAME);
+  });
+});

@@ -248,6 +248,7 @@ export {
   readWorkspaceSettings,
   SETTINGS_FILENAME,
 } from './settings.ts';
+export { readSightingSharing } from './sighting-sharing.ts';
 export type { StoreSkew } from './store-skew.ts';
 export { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
 export type { SymlinkedStorePath } from './store-symlinks.ts';
@@ -270,6 +271,14 @@ export {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
+export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
+export {
+  clearSightingKeys,
+  createSightingKeyStore,
+  readSightingKeys,
+  SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
+} from './vault/sighting-keys.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,

@@ -13,6 +13,7 @@ import type {
   PolicyBundle as PolicyBundleT,
   RecordAuditEventRequest as AuditEventSubmission,
   ResolvedInventory as ResolvedInventoryT,
+  SightingKeyResponse as SightingKeyResponseT,
   StorePostureSnapshot,
 } from '@akasecurity/schema';
 import {
@@ -29,6 +30,7 @@ import {
   RecordAuditEventBatch,
   RecordAuditEventRequest,
   ResolvedInventory,
+  SightingKeyResponse,
 } from '@akasecurity/schema';
 import type { z } from 'zod';
 
@@ -42,16 +44,19 @@ import {
   send,
 } from './http.ts';
 
-// The ten routes an attached machine may call, and nothing else.
+// The eleven routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: seven writes and three self-scoped reads. There is
+// credential to: seven writes and four self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
 // stronger guarantee than a server that refuses it.
 //
-// The last two are the device-command channel, and they stay inside that rule
+// The sighting key is one of those reads: it returns key material for this
+// machine's own use and takes no argument.
+//
+// The poll and ack are the device-command channel, and they stay inside that rule
 // rather than bending it. The poll is SELF-SCOPED — it asks what this machine
 // has been told to do and can express no other question — and the ack reports
 // only on a command id the poll itself returned. Neither can name another
@@ -72,6 +77,7 @@ const ROUTES = {
   whoami: '/v1/plugin/whoami',
   shares: '/v1/shares',
   commands: '/v1/plugin/commands',
+  sightingKey: '/v1/sighting-key',
 } as const;
 
 /**
@@ -156,6 +162,12 @@ export interface RemoteClient {
   pollCommand(): Promise<DeviceCommandT | null>;
   /** POST /v1/plugin/commands/:id/ack — what this machine did about one. */
   ackCommand(id: string, body: DeviceCommandAckBodyT): Promise<void>;
+  /**
+   * GET /v1/sighting-key — the current HMAC key version and any still-accepted
+   * previous versions. A 404 raises `RemoteRouteAbsent`. Neither a refusal nor
+   * a parse failure carries any part of the body.
+   */
+  getSightingKey(): Promise<SightingKeyResponseT>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -418,6 +430,12 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         body: JSON.stringify(validated.data),
       });
       okBody(response);
+    },
+
+    async getSightingKey() {
+      const response = await send({ ...common, method: 'GET', url: url(ROUTES.sightingKey) });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.sightingKey);
+      return parsed(SightingKeyResponse, okBody(response), ROUTES.sightingKey);
     },
   };
 }

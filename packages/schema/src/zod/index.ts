@@ -46,4 +46,5 @@ export * from './sighting-share.ts';
 export * from './triage.ts';
 export * from './updates.ts';
 export * from './vault.ts';
+export * from './web-account.ts';
 export * from './web-capture.ts';

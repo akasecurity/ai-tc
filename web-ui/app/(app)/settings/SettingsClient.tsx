@@ -36,7 +36,7 @@ export function SettingsClient({
   // Decided on the server (page.tsx) by the rule the attach action refuses a
   // scoped attach on, and forwarded verbatim. Absent reads as not held.
   machineOnly?: boolean | undefined;
-  // Why the extension records nothing from a web chat here, read on the server
+  // Why the extension records less from a web chat here, read on the server
   // (page.tsx) and forwarded verbatim. Absent when it records as usual.
   webChatWithheld?: WebChatWithholding | undefined;
 }) {

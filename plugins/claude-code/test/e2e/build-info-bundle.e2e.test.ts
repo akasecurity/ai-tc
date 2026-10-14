@@ -38,8 +38,9 @@ function emittedCarriers(): string[] {
 describe('the emitted scripts resolve the manifest from where they actually sit', () => {
   it('the session hook carries the manifest URL (the positive control)', () => {
     // Without this, a renamed or re-shaped emit empties the carrier set and
-    // the resolution case below passes over nothing.
-    expect(emittedCarriers()).toContain('session-start.js');
+    // the resolution case below passes over nothing. The hook's code is in
+    // its body; `session-start.js` is the launcher that loads it.
+    expect(emittedCarriers()).toContain('session-start.body.js');
   });
 
   it('every emitted carrier resolves the URL to the real manifest', () => {

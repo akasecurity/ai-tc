@@ -21,7 +21,9 @@ This scans all source files (`.ts`, `.js`, `.py`, `.java`, `.rb`, `.cs`, `.go`,
 `.rs`, `.php`, and more) under the current project directory for insecure code
 patterns — SQL injection, command injection, XSS, insecure deserialization, weak
 cryptography, hardcoded credentials, dev-mode configuration leaks, and other
-OWASP Top 10 issues.
+OWASP Top 10 issues. It also reads `.env` and `.env.*` files for secrets; on an
+attached machine their contents stay local and are never sent to the control
+plane.
 
 Results are recorded to the local store (`~/.aka/data/aka.db`) and are visible
 via the aka-findings skill. Re-running this scan is safe — files whose content

@@ -16,7 +16,7 @@ import { isParseableBinaryVersion } from '@akasecurity/persistence';
 import { BASELINE_HOOK_EVENTS, HOST_FLOORS } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
+import { scannableInputFields, SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
 import { SUBAGENT_TOOLS } from '../../src/hooks/subagent-tools.ts';
 import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
@@ -158,6 +158,44 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
     expect(matcher.test('Edit')).toBe(false);
     expect(matcher.test('mcp_server_tool')).toBe(false);
     for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
+  });
+});
+
+/**
+ * The alternatives a matcher spells, split into exact tool names and patterns.
+ * Every hook call is a node process, so a name the hook cannot act on is a
+ * process started for nothing on each call of that tool. The coverage cases
+ * above say what a matcher must reach; these say it reaches nothing else.
+ */
+function alternatives(event: string): { names: string[]; patterns: string[] } {
+  const source = manifest.hooks[event]?.[0]?.matcher ?? '';
+  const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1];
+  expect(body, `${event}'s matcher is one anchored alternation`).toBeDefined();
+  const parts = (body ?? '').split('|');
+  return {
+    names: parts.filter((part) => /^\w+$/.test(part)).sort(),
+    patterns: parts.filter((part) => !/^\w+$/.test(part)),
+  };
+}
+
+describe('each matcher names only tools its hook acts on', () => {
+  it('PreToolUse: the field table, the spawn tools, MultiEdit and the mcp__ family', () => {
+    const { names, patterns } = alternatives('PreToolUse');
+    expect(names).toEqual(
+      [...new Set([...SCANNED_TOOL_NAMES, ...SUBAGENT_TOOLS, 'MultiEdit'])].sort(),
+    );
+    expect(patterns).toEqual(['mcp__.*']);
+    // MultiEdit is in no table, so its place in the matcher rests on the
+    // dynamic handler actually reading it.
+    expect(
+      scannableInputFields('MultiEdit', { edits: [{ new_string: 'x' }] }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('PostToolUse: the response table and the mcp__ family', () => {
+    const { names, patterns } = alternatives('PostToolUse');
+    expect(names).toEqual([...new Set([...SCANNED_RESPONSE_TOOL_NAMES, ...SUBAGENT_TOOLS])].sort());
+    expect(patterns).toEqual(['mcp__.*']);
   });
 });
 

@@ -10,7 +10,7 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { decidePreToolUse, SCANNABLE_FIELDS } from '../../src/hooks/pre-tool-use-decision.ts';
-import { scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import { collectResponseFields } from '../../src/hooks/tool-response.ts';
 
 interface RecordedPayload {
   hook_event_name: string;
@@ -83,7 +83,7 @@ describe('recorded apply_patch PostToolUse payload', () => {
   });
 
   it('scans the result string whole', () => {
-    expect(scannableResponseFields(post.tool_name, post.tool_response)).toEqual([
+    expect(collectResponseFields(post.tool_name, post.tool_response).fields).toEqual([
       { path: [], text: post.tool_response },
     ]);
   });

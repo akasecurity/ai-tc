@@ -1,6 +1,6 @@
 // Detections API contracts — v1 (control-plane only, no registry fan-out in this file)
 // All shapes defined here are contracts-first; service and route code consume them.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory, Severity } from './finding.ts';
 import { Namespace, PackId, PublisherKind, SemVer } from './registry.ts';

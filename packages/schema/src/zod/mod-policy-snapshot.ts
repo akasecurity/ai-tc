@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { ActionTaken } from './finding.ts';
 import { Rule } from './rule.ts';

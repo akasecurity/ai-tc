@@ -1,7 +1,7 @@
 // Pack-coordinate primitives. A detection-rule pack is addressed as
 // `namespace/packId@version`, and `PublisherKind` records what kind of
 // publisher a pack ships under (used by the detections library UI).
-import { z } from 'zod';
+import * as z from 'zod';
 
 // Publisher handle, e.g. 'aka'. Kebab-case, globally unique.
 export const Namespace = z.string().regex(/^[a-z][a-z0-9-]*$/);

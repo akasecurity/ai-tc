@@ -388,6 +388,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -513,6 +514,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -560,6 +562,7 @@ describe('write failures are reported, never thrown', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -670,6 +673,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -686,6 +690,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -703,6 +708,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });

@@ -51,6 +51,14 @@ export interface RunHookOptions {
 // eslint-disable-next-line n/no-process-env -- test harness needs host PATH to spawn the real scripts
 const HOST_ENV = process.env;
 
+/**
+ * The host's PATH, for a harness that builds a child environment by hand (the
+ * hook benchmark) and still needs the children a hook starts to be found.
+ */
+export function hostPath(): string | undefined {
+  return HOST_ENV.PATH;
+}
+
 // Spawns the built scripts/<name>.js exactly as Claude Code invokes it: raw
 // stdin in, exit code + stdout/stderr out. `scripts/` is gitignored and only
 // produced by `pnpm run build` — fail with a clear message rather than a

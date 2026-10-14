@@ -28,7 +28,7 @@
 // an unrecognised value to 'claudecode', while `toApiProvider` falls back to
 // 'api'. One uninstrumented tool's events therefore read as Claude Code on the
 // Activity surfaces and as API on the findings surfaces.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { FindingProvider } from './finding.ts';
 

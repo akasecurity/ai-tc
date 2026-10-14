@@ -55,19 +55,34 @@
     "label": "prose between the markers: the span stays on the header",
     "text": "-----BEGIN PRIVATE KEY-----\nThe rest of this note is unrelated text.\n-----END PRIVATE KEY-----",
     "shouldMatch": true,
-    "expectedSpans": [{ "start": 0, "end": 27 }]
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 27
+      }
+    ]
   },
   {
     "label": "END marker with a different qualifier does not close the block: the body is covered as an END-less key",
     "text": "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END EC PRIVATE KEY-----",
     "shouldMatch": true,
-    "expectedSpans": [{ "start": 0, "end": 76 }]
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 76
+      }
+    ]
   },
   {
     "label": "legacy encrypted PEM headers stay inside the span",
     "text": "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
     "shouldMatch": true,
-    "expectedSpans": [{ "start": 0, "end": 157 }]
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 157
+      }
+    ]
   },
   {
     "label": "head -3 of a key file: no END line, the body lines are still covered",
@@ -132,6 +147,39 @@
       {
         "start": 0,
         "end": 95
+      }
+    ]
+  },
+  {
+    "label": "letters-and-spaces prose between the markers: spaces inside a body line end the tail",
+    "text": "-----BEGIN PRIVATE KEY-----\nthe rest of this note is unrelated text\n-----END PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 27
+      }
+    ]
+  },
+  {
+    "label": "indented key in a YAML block scalar keeps its full span",
+    "text": "key: |\n  -----BEGIN PRIVATE KEY-----\n  MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx\n  AAAA==\n  -----END PRIVATE KEY-----\n",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 9,
+        "end": 140
+      }
+    ]
+  },
+  {
+    "label": "key with newlines collapsed to spaces keeps its full span",
+    "text": "-----BEGIN PRIVATE KEY----- MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx MIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAu1SU1LfVLPHCozMx AAAA== -----END PRIVATE KEY-----",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 0,
+        "end": 190
       }
     ]
   }

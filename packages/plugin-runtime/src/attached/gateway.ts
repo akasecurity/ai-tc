@@ -16,7 +16,7 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventBatchAck,
   AuditEventInput,
@@ -518,6 +518,15 @@ export class AttachedDataGateway
     }
   }
 
+  /** TOTAL, like `verdictFor`: a record it cannot read stays local. */
+  private staysLocal(record: CaptureRecord): boolean {
+    try {
+      return isSecretBearingFileSnapshot(record.event.metadata);
+    } catch {
+      return true;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Writes: local first, then forward.
   // ---------------------------------------------------------------------
@@ -527,6 +536,10 @@ export class AttachedDataGateway
     // it writes are what the device's own /health, /audit and exception flows
     // read, and what the posture channel measures.
     await this.deps.local.recordCapture(record);
+    // A whole-file snapshot of a secret-bearing file stays on this machine on
+    // every attachment. It returns before the owed branch, so it is never
+    // marked owed either.
+    if (this.staysLocal(record)) return;
     // THE SCOPE VERDICT, after the local write and before anything that could
     // stamp the row. A refused capture returns HERE, which keeps it out of the
     // owed branch below. That branch marks every non-delivery owed, and an owed

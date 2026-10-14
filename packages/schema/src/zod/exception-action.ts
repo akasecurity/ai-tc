@@ -11,7 +11,7 @@
 // reason is blank — those are domain checks the caller still makes, against
 // state these schemas cannot see. What this layer guarantees is that each of
 // those checks receives the type it was written for.
-import { z } from 'zod';
+import * as z from 'zod';
 
 // Deliberately NOT `.strict()`. Rejecting an unknown key would refuse a payload
 // from a newer client over a field this action does not read, and stripping one

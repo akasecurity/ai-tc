@@ -160,6 +160,14 @@ export interface ProviderAdapter {
   // turns, while the same field recovered in parseStream survives them.
   parseRequest(body: string, exchange: MatchedExchange): ParsedRequest;
 
+  // The workspace this request's own URL names, or undefined when the route
+  // names none. Read off the matched URL alone, so each exchange is judged by the
+  // request that produced it, and not by a signal another tab can change. Raw:
+  // the native host turns it into the account key and refuses anything that is
+  // not one of the site's workspace ids. Optional: a site whose routes name no
+  // workspace leaves it out, and its exchanges carry no account.
+  workspaceOf?(exchange: MatchedExchange): string | undefined;
+
   // A fresh assembler per exchange. Streams arrive in pieces that do not
   // respect event boundaries, so framing is the assembler's business rather
   // than the bridge's.

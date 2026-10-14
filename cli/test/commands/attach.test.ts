@@ -1,24 +1,45 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   controlPlaneCredentialPath,
+  createSightingKeyStore,
   dataDir as dataDirOf,
+  keysDir as keysDirOf,
   openLocalDatabase,
   readEffectiveSettings,
   readWorkspaceSettings,
   settingsDir as settingsDirOf,
+  SIGHTING_KEY_FILENAME,
 } from '@akasecurity/persistence';
 import type { ManagedSettings } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION, isHistorySyncConsentValid } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { parseAttachArgs, runAttach, runDetach, runStatus } from '../../src/commands/attach.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+
+// Passes through to the real removal; a case under keychain custody swaps in a
+// fake `security` so nothing reaches the developer's own keychain.
+const sightingClears = vi.hoisted(() => ({
+  calls: [] as string[],
+  exec: undefined as ((args: string[], stdin?: string) => string) | undefined,
+}));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    clearSightingKeys: (base?: string) => {
+      sightingClears.calls.push(base ?? '');
+      actual.clearSightingKeys(base, sightingClears.exec ? { exec: sightingClears.exec } : {});
+    },
+  };
+});
 
 /**
  * Scripted Prompter with stdout and stderr kept APART.
@@ -109,6 +130,8 @@ const deps = (io: ReturnType<typeof scriptedPrompter>) => ({
 });
 
 beforeEach(() => {
+  sightingClears.calls = [];
+  sightingClears.exec = undefined;
   base = mkdtempSync(join(tmpdir(), 'aka-attach-'));
   exits = [];
 });
@@ -378,6 +401,45 @@ describe('detach', () => {
     expect(() => readFileSync(join(dataDir, 'policy-cache.json'), 'utf8')).toThrow();
     expect(() => readFileSync(join(dataDir, 'attached-sync-state.json'), 'utf8')).toThrow();
     expect(out.output()).toContain('Detached');
+  });
+
+  it('removes the stored sighting key under file custody', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
+    createSightingKeyStore('file', keysDirOf(base)).replace({
+      keyVersion: 1,
+      algorithm: 'hmac-sha256',
+      key: Buffer.alloc(32, 7).toString('base64url'),
+      fetchedAtMs: 0,
+      endpointFingerprint: '0'.repeat(64),
+    });
+    const file = join(keysDirOf(base), SIGHTING_KEY_FILENAME);
+    expect(existsSync(file)).toBe(true);
+
+    runDetach([], deps(scriptedPrompter({ interactive: true })));
+
+    expect(existsSync(file)).toBe(false);
+    expect(sightingClears.calls).toContain(base);
+  });
+
+  it('removes the stored sighting key under keychain custody', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--machine', '--no-sync-history'], deps(io));
+    applyOnboarding({ vaultKeyCustody: 'keychain' }, base, null);
+    const items = new Set(['-s aka-sighting-key -a keys']);
+    const seen: string[] = [];
+    sightingClears.exec = (args) => {
+      seen.push(args[0] ?? '');
+      if (args[0] === 'delete-generic-password' && items.delete(args.slice(1).join(' '))) {
+        return '';
+      }
+      throw Object.assign(new Error('item not found'), { status: 44 });
+    };
+
+    runDetach([], deps(scriptedPrompter({ interactive: true })));
+
+    expect(seen).toEqual(['delete-generic-password']);
+    expect(items.size).toBe(0);
   });
 
   it('says so plainly when there was nothing to detach', () => {

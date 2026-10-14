@@ -164,6 +164,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'isCurrentKeyVersion',
   'isModelProhibited',
   'isProtectedScanPath',
+  'isSecretBearingFileSnapshot',
   'isVendoredPath',
   'loadConfig',
   'loadOrCreateFingerprintKey',

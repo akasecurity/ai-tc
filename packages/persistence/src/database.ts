@@ -828,6 +828,7 @@ export function openLocalDatabase(
           actionTaken: finding.actionTaken,
           confidence: finding.confidence,
           findingKey: finding.findingKey ?? undefined,
+          ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
           ...(finding.location === undefined
             ? {}
             : {

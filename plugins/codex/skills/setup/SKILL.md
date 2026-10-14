@@ -175,6 +175,48 @@ broadens nothing about what AKA may access. Those granular scope and revocation 
 stay inspectable on request and in the dashboard, under **Settings → Historical access**,
 whose own copy repeats the model-API disclosure.
 
+## 1b. Ask about sharing credential sightings — attached machines only
+
+First check whether to ask at all. This reads the attachment and any managed
+settings and writes nothing:
+
+```bash
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-ask
+```
+
+Read `askSightingShare` from its AKA_FRAME_JSON region. When it is `false` —
+the machine is standalone, or its organization's managed settings already
+decide the answer — **skip this step entirely**: do not ask, do not mention
+it, and record nothing. Only when it is `true` does the user see the question.
+
+Before the options, state in your own words: this machine is attached to an
+organization, and the question is whether to report the credentials AKA's
+scans find here to that organization. Say what a sighting carries, exactly:
+A credential sighting carries only a hash or ciphertext of the value, never the value itself.
+Say that this answer covers credential sightings only: it changes nothing else
+an attached machine sends, which is described in the dashboard's Settings. The
+answer can be changed later on the dashboard's Settings page.
+
+Ask it per the execution contract's decision rules: a conversational turn with
+numbered options, waiting for the user's reply.
+
+**Share credential sightings with your organization?** — "Report the credentials scans find on this machine to the organization it is attached to?"
+
+Offer exactly two options, with **Don't share** as the default:
+
+1. **Don't share** _(default)_ — "credential sightings stay on this machine"
+2. **Share with my organization** — "report the credentials scans find here, as hashes or ciphertext"
+
+Record the answer straight away and relay the AKA_SHOW line it prints:
+
+```bash
+# Share with my organization
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent grant
+
+# Don't share (also clears any earlier grant)
+node "${PLUGIN_ROOT}/scripts/onboard.js" --sighting-share-consent revoke
+```
+
 ## 2. Save the answer, then branch
 
 Branch on the answer from step 1. On the **Yes, take a look** path the onboarding
@@ -822,7 +864,8 @@ later re-scan checks against. Shell commands and tool output are recorded only
 when something is detected. Old bodies are cleared only if local body expiry is
 turned on in the workspace settings. A very large tool result is scanned up to
 a bound (5 million characters or 2,000 pieces, and about 7 seconds), past which
-the rest reaches the model unscanned.
+the rest reaches the model unscanned. A scan cut short by any of these bounds
+counts as a fail-open in `aka status`.
 
 On a Codex release that fires these hooks for `Bash` alone, file-write
 **content is not scanned at all** — not live, and not after the fact either.
@@ -864,3 +907,26 @@ never to fabricate or alter one, and where the human can resolve it
 gap used to cause — a Codex session encountering a pointer with no idea what
 it was looking at — without claiming this plugin can mint or resolve one
 itself; it still cannot.
+
+**The line saying where a session's activity goes appears late, and not at
+all under `codex exec`.** On a machine attached to the organization's control
+plane, SessionStart says where this session's activity goes:
+`AKA: forwarding everything to <deployment> (machine-wide)`,
+`AKA: forwarding to <deployment> (<repository>)` when the session starts in an
+enrolled repository, or
+`AKA: local-only (not enrolled); work in an enrolled repository is still forwarded`
+on a personal device outside one. Codex shows it as a hook line once the first
+turn starts rather than when the session opens, and `codex exec` shows nothing.
+The session start's other notices take the same route: that a newer AKA is
+installed than the one this session started with, that a store left on the
+retired "warn only" handling was kept at warn, and that a store path is a
+symlink. The line is decided by the session's root, recorded where the session
+started, which is why the local-only form says what it does: a file written into
+an enrolled repository from a local-only session is still sent, because each
+capture is decided by the repository it lands in. A resumed session shows no
+line, and neither does a session whose start stopped before it recorded the
+session, so no line never means nothing is forwarded; `aka status` gives the
+attachment, its mode and the enrolled repositories at any time. The line names
+the deployment, by its label or by its address with no credential, and Codex
+keeps hook output in the session's context and transcript: the model sees that
+name, and a transcript you share carries it.

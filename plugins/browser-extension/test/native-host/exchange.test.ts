@@ -481,6 +481,24 @@ describe('toToolCallInputs', () => {
     expect(inspections[0]?.confidence).toBeTypeOf('number');
   });
 
+  it('carries the variable a secret is assigned to, never the value', () => {
+    const scanner: TargetScanner = (text) => scanText(text, undefined, { locate: true });
+    const name = ['TWILIO', 'API', 'KEY'].join('_');
+    const exchange = baseExchange({
+      toolCalls: [
+        {
+          toolUseId: 't1',
+          toolName: 'x',
+          target: `export ${name}${String.fromCharCode(61)}${SECRET_EXAMPLE}`,
+        },
+      ],
+    });
+    const [input] = toToolCallInputs(exchange, SESSION, scanner);
+    const inspection = input?.inspections.find((i) => i.ruleId === RULE_ID);
+    expect(inspection?.variableName).toBe(name);
+    expectNoEchoOf(inspection?.variableName ?? '', SECRET_EXAMPLE);
+  });
+
   it('leaves inspections empty for a tool call with no target, and never calls the scanner', () => {
     const exchange = baseExchange({ toolCalls: [{ toolUseId: 't1', toolName: 'x' }] });
     const throwingScanner: TargetScanner = () => {
@@ -500,5 +518,34 @@ describe('toToolCallInputs', () => {
     } as unknown as WebExchange;
     expect(() => toToolCallInputs(exchange, SESSION, noopScanner)).not.toThrow();
     expect(toToolCallInputs(exchange, SESSION, noopScanner)).toEqual([]);
+  });
+});
+
+describe('the account a leaf is recorded under', () => {
+  const ACCOUNT = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+  const withTool = (): WebExchange =>
+    WebExchange.parse({
+      messageId: 'msg_scoped',
+      startedAt: ISO,
+      usageSource: 'none',
+      toolCalls: [{ toolUseId: 'tu_scoped', toolName: 'web_search', target: 'q' }],
+    });
+
+  it('stamps the account key on the llm_call leaf and on every tool_call leaf', () => {
+    expect(toLlmCallInput(withTool(), SESSION, 'claude-ai', ACCOUNT)?.attributes.scope_key).toBe(
+      ACCOUNT,
+    );
+    const tools = toToolCallInputs(withTool(), SESSION, noopScanner, ACCOUNT);
+    expect(tools).toHaveLength(1);
+    for (const input of tools) expect(input.attributes.scope_key).toBe(ACCOUNT);
+  });
+
+  it('writes no scope_key at all when there is no account', () => {
+    expect(
+      'scope_key' in (toLlmCallInput(withTool(), SESSION, 'claude-ai')?.attributes ?? {}),
+    ).toBe(false);
+    const tools = toToolCallInputs(withTool(), SESSION, noopScanner);
+    expect(tools).toHaveLength(1);
+    for (const input of tools) expect('scope_key' in input.attributes).toBe(false);
   });
 });

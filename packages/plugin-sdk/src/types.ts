@@ -59,6 +59,9 @@ export interface CaptureResult {
   // The (possibly redacted) text to pass through, or null if blocked
   text: string | null;
   findings: MatchResult[];
+  // The display name of each rule in `findings`, by rule id, as the rule that
+  // matched declares it (custom and pulled rules included).
+  ruleNames?: Record<string, string>;
   // For a 'redact' decision: exactly the findings whose spans the rewritten
   // `text` replaced (warn/log findings in the same field are not in it). A
   // caller substituting its own rewrite — a reversible one — must cover these
@@ -89,9 +92,10 @@ export interface CaptureResult {
   // scanner can diff them against a path's previously-open at-rest keys to
   // auto-resolve findings that no longer reproduce (see packages/scanner's
   // re-scan resolver). Absent for in-flight (prompt/response) captures, which
-  // carry no finding_key. Left unset (not []) when capture() takes the
-  // 'with-findings' early-return (findings.length === 0) — callers that need
-  // "no findings produced" should treat an absent value as an empty list.
+  // carry no finding_key. Left unset (not []) when capture() takes an early
+  // return: persist 'never', whatever the capture found, and persist
+  // 'with-findings' when it found nothing (findings.length === 0) — callers that
+  // need "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
   // What a redact this capture could NOT carry out resolved to instead: the
   // configured `redactFallback`, because the caller declared the field

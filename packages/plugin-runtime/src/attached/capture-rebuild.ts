@@ -1,4 +1,5 @@
 import { captureWireId } from '@akasecurity/persistence';
+import { isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type { AuditEventRow } from '@akasecurity/schema';
 import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
@@ -69,6 +70,17 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   if (occurredAt === undefined) return undefined;
 
   const attributes = parseAttributes(row.attributes ?? null);
+  // A secret-bearing file's snapshot is local-only on every lane, whatever kind
+  // it was filed under. Refused here as well as on the live forward, so a row
+  // marked owed by any writer is still never sent.
+  if (
+    isSecretBearingFileSnapshot({
+      filePath: stringOrUndefined(attributes.file_path),
+      wholeFile: attributes.whole_file === true,
+    })
+  ) {
+    return undefined;
+  }
   // Required on the wire, and it identifies which harness produced the row, so
   // there is nothing safe to default it to. An unparseable value is a skip.
   const sourceTool = SourceTool.safeParse(attributes.source_tool);

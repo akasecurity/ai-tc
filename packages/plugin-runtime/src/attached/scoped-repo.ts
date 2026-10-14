@@ -1,4 +1,5 @@
 import type { IngestEvent } from '@akasecurity/schema';
+import { isWebAccountKey } from '@akasecurity/schema';
 
 /**
  * A capture as a SCOPED attachment sends it: a copy whose `metadata.repo` is the
@@ -27,12 +28,19 @@ import type { IngestEvent } from '@akasecurity/schema';
  * already equals the key's segment the copy serializes byte for byte like the
  * original. A key with no segment to name, which `canonicalRepoUrl` never
  * returns, sends no slug rather than the producer's.
+ *
+ * A web chat ACCOUNT key (`claude:<organization-id>`) names no repository, so it
+ * sends no slug either. The key itself is local-only, and its last segment is
+ * the whole key, so taking it as the slug would send the account's id under
+ * another name.
  */
 export function withScopedRepo(event: IngestEvent, scopeKey: string): IngestEvent {
-  const repo = scopeKey
-    .split('/')
-    .filter((segment) => segment !== '')
-    .pop();
+  const repo = isWebAccountKey(scopeKey)
+    ? undefined
+    : scopeKey
+        .split('/')
+        .filter((segment) => segment !== '')
+        .pop();
   if (repo !== undefined) return { ...event, metadata: { ...event.metadata, repo } };
   if (event.metadata?.repo === undefined) return event;
   const metadata = { ...event.metadata };

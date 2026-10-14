@@ -43,10 +43,12 @@ unavailable. The vault does not distinguish these cases — a token nobody can
 vouch for resolves to nothing.`;
 
 // One-line badge data for the revealed value, e.g.
-// "secret/aws · seen 3× · first 2026-07-27".
+// "secret/aws · seen 3× · first 2026-07-27", led by the variable the value was
+// assigned to when one was recorded.
 function descriptorLine(d: PointerDescriptor): string {
   const kind = d.provider === undefined ? d.category : `${d.category}/${d.provider}`;
-  return `${kind} · seen ${String(d.occurrences)}× · first ${d.firstSeen.slice(0, 10)}`;
+  const line = `${kind} · seen ${String(d.occurrences)}× · first ${d.firstSeen.slice(0, 10)}`;
+  return d.variableName === undefined ? line : `${d.variableName} · ${line}`;
 }
 
 async function runShow(argv: string[], io: Prompter): Promise<void> {

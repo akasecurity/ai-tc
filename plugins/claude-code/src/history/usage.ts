@@ -282,6 +282,7 @@ export async function reconcileSessionToolCalls(
         line: f.location.line,
         col: f.location.col,
         context: f.location.context,
+        ...(f.variableName === undefined ? {} : { variableName: f.variableName }),
       }));
     }
     if (tc.isError !== undefined) attributes.is_error = tc.isError;

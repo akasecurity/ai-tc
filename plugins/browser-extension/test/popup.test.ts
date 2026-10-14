@@ -31,7 +31,8 @@ vi.hoisted(() => {
   };
 });
 
-const { DRIFT_STATES, refresh, renderCaptureSites } = await import('../src/popup/index.ts');
+const { accountNote, DRIFT_STATES, refresh, renderCaptureSites, WITHHELD_NOTES } =
+  await import('../src/popup/index.ts');
 
 // The fragment of popup.html this module actually touches.
 const FRAGMENT = `
@@ -42,6 +43,7 @@ const FRAGMENT = `
   </div>
   <div id="capture-section" hidden>
     <div id="capture-not-enabled" class="row muted" hidden>network capture not enabled</div>
+    <div id="capture-withheld" class="row muted" hidden></div>
     <div id="capture-sites"></div>
   </div>
   <button id="open-dashboard"></button>
@@ -157,6 +159,121 @@ describe('renderCaptureSites', () => {
     const sitesEl = document.getElementById('capture-sites');
     expect(notEnabled?.hidden).toBe(false);
     expect(sitesEl?.children).toHaveLength(0);
+  });
+
+  it('renders the personal-device line, and no network state rows, on a personal device', () => {
+    // Consented and with sites to show, so the line is what hides the rows,
+    // not a missing consent or an empty list.
+    renderCaptureSites(response({ withheld: 'personal-device' }));
+    const line = document.getElementById('capture-withheld');
+    expect(line?.hidden).toBe(false);
+    expect(line?.textContent).toBe(WITHHELD_NOTES['personal-device']);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(0);
+  });
+
+  it('still names a site that is not being checked on a personal device', () => {
+    // The line says chats are checked; a site whose watcher came apart must
+    // say otherwise right beneath it.
+    renderCaptureSites(
+      response({
+        withheld: 'personal-device',
+        sites: [
+          { tool: 'chatgpt', state: 'idle', enforcement: 'unattached' },
+          { tool: 'claude-ai', state: 'idle', enforcement: 'watching' },
+        ],
+      }),
+    );
+    const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'ChatGPT: not enforcing — composer and send button not found',
+    ]);
+  });
+
+  it('names the account a site was last seen in, above its enforcement fault', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    renderCaptureSites(
+      response({
+        withheld: 'personal-device',
+        sites: [
+          { tool: 'chatgpt', state: 'idle', enforcement: 'watching' },
+          {
+            tool: 'claude-ai',
+            state: 'idle',
+            enforcement: 'unattached',
+            account: { identity, enrolled: false, recorded: false },
+          },
+        ],
+      }),
+    );
+    const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `Claude.ai: ${accountNote({ identity, enrolled: false, recorded: false })}`,
+      'Claude.ai: not enforcing — composer and send button not found',
+    ]);
+    // The account is information, the fault is an error: only one is styled
+    // as one.
+    expect(rows[0]?.className).toBe('row muted');
+    expect(rows[1]?.className).toBe('row tone-error');
+  });
+
+  it('shows no account row where web chats are not withheld', () => {
+    renderCaptureSites(
+      response({
+        sites: [
+          {
+            tool: 'claude-ai',
+            state: 'idle',
+            account: {
+              identity: 'claude:0a1b2c3d-0000-4000-8000-00000000000a',
+              enrolled: false,
+              recorded: true,
+            },
+          },
+        ],
+      }),
+    );
+    expect(document.getElementById('capture-sites')?.textContent).toBe('Claude.ai: idle');
+  });
+
+  it('words each account state so it says whether anything is recorded, and how to change it', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    const enroll = `aka enroll --account ${identity}`;
+    const unenrolled = accountNote({ identity, enrolled: false, recorded: false });
+    const off = accountNote({ identity, enrolled: true, recorded: false });
+    const recorded = accountNote({ identity, enrolled: true, recorded: true });
+    for (const note of [unenrolled, off, recorded]) expect(note.startsWith(identity)).toBe(true);
+    // Only the account that is not enrolled is sent to the command that
+    // enrolls it; an enrolled one is not told to enroll again.
+    expect(unenrolled).toContain(enroll);
+    expect(off).not.toContain(enroll);
+    expect(recorded).not.toContain(enroll);
+    // Three different sentences, and only one of them says it records.
+    expect(new Set([unenrolled, off, recorded]).size).toBe(3);
+    expect(recorded).toContain('recorded and sent');
+    expect(off).toContain('nothing is recorded');
+  });
+
+  it('words an unreadable attachment as its own reason', () => {
+    renderCaptureSites(response({ withheld: 'unreadable-attachment' }));
+    expect(document.getElementById('capture-withheld')?.textContent).toBe(
+      WITHHELD_NOTES['unreadable-attachment'],
+    );
+  });
+
+  it('says withheld rather than not enabled when both are true', () => {
+    renderCaptureSites(response({ withheld: 'personal-device', consented: false }));
+    expect(document.getElementById('capture-withheld')?.hidden).toBe(false);
+    expect(document.getElementById('capture-not-enabled')?.hidden).toBe(true);
+  });
+
+  it('hides the line again once the machine records', () => {
+    // The popup re-renders into the same document, so a line left showing from
+    // an earlier reply would outlive a detach.
+    renderCaptureSites(response({ withheld: 'personal-device' }));
+    renderCaptureSites(response());
+    expect(document.getElementById('capture-withheld')?.hidden).toBe(true);
+    expect(document.getElementById('capture-sites')?.children).toHaveLength(2);
   });
 
   it('unhides the capture section', () => {

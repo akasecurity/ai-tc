@@ -160,3 +160,52 @@ describe('mod-reveal helper', () => {
     }, 'aka-mod-reveal-bad-');
   });
 });
+
+function revealPane(home: string, items: unknown) {
+  return runHook('mod-reveal', JSON.stringify({ v: 1, pane: true, items }), { env: env(home) });
+}
+
+describe('mod-reveal helper, a press of Show in the findings pane', () => {
+  for (const mode of ['masked', 'off', undefined] as const) {
+    it(`reveals the value under valid consent with vaultInlineReveal ${mode ?? 'unset'}`, () => {
+      withTempHome((home) => {
+        const token = setup(home, mode);
+        const answer = JSON.parse(revealPane(home, [{ token, reveal: true }]).stdout) as Answer;
+
+        expect(answer.mode).toBe('full');
+        expect(answer.items[0]?.revealed).toBe(`${SECRET} [scrubbed:secret]`);
+      }, 'aka-mod-reveal-pane-');
+    });
+  }
+
+  it('leaves the inline reveal under masked as it was', () => {
+    withTempHome((home) => {
+      const token = setup(home, 'masked');
+      const run = reveal(home, [{ token, reveal: true }]);
+
+      expect((JSON.parse(run.stdout) as Answer).mode).toBe('masked');
+      expect(run.stdout).not.toContain(SECRET);
+    }, 'aka-mod-reveal-pane-inline-');
+  });
+
+  it('answers off and reveals nothing without valid consent', () => {
+    withTempHome((home) => {
+      setup(home, 'full', false);
+      const token = `[[aka:secret:AB.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
+      const answer = JSON.parse(revealPane(home, [{ token, reveal: true }]).stdout) as Answer;
+
+      expect(answer).toEqual({ v: 1, mode: 'off', items: [] });
+    }, 'aka-mod-reveal-pane-noconsent-');
+  });
+
+  it('answers the consent alone for a request with no items', () => {
+    withTempHome((home) => {
+      setup(home, 'masked');
+      expect(JSON.parse(revealPane(home, []).stdout)).toEqual({ v: 1, mode: 'full', items: [] });
+    }, 'aka-mod-reveal-pane-probe-');
+    withTempHome((home) => {
+      setup(home, 'masked', false);
+      expect(JSON.parse(revealPane(home, []).stdout)).toEqual({ v: 1, mode: 'off', items: [] });
+    }, 'aka-mod-reveal-pane-probe-off-');
+  });
+});

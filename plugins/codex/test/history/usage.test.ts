@@ -498,7 +498,9 @@ describe('reconcileHistory — tool calls', () => {
 
   // The AWS key is ASSEMBLED at runtime so this source has no literal secret.
   const AWS_KEY = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
-  function secretTranscript(): string {
+  function secretTranscript(
+    command = ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+  ): string {
     return [
       sessionMeta,
       turnContext,
@@ -510,7 +512,7 @@ describe('reconcileHistory — tool calls', () => {
           type: 'exec_command_begin',
           call_id: 'call-sec',
           turn_id: 'turn-1',
-          command: ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+          command,
           cwd: '/Users/me/proj',
           parsed_cmd: [],
         },
@@ -522,7 +524,7 @@ describe('reconcileHistory — tool calls', () => {
           type: 'exec_command_end',
           call_id: 'call-sec',
           turn_id: 'turn-1',
-          command: ['aws', 'configure', 'set', 'aws_access_key_id', AWS_KEY],
+          command,
           cwd: '/Users/me/proj',
           parsed_cmd: [],
           stdout: '',
@@ -573,6 +575,39 @@ describe('reconcileHistory — tool calls', () => {
     expect(f?.maskedMatch).not.toContain(AWS_KEY);
     expect(f?.target).not.toContain(AWS_KEY);
     expect(f?.target).toContain('[REDACTED');
+  });
+
+  function variableNames(dir: string): (string | null)[] {
+    const db = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      return (
+        db.prepare(`SELECT variable_name AS name FROM inspection_findings`).all() as {
+          name: string | null;
+        }[]
+      ).map((r) => r.name);
+    } finally {
+      db.close();
+    }
+  }
+
+  it('records the variable a secret in a tool target is assigned to, never the value', async () => {
+    const name = ['AWS', 'ACCESS', 'KEY', 'ID'].join('_');
+    seed(
+      transcripts,
+      secretTranscript(['bash', '-lc', `export ${name}${String.fromCharCode(61)}${AWS_KEY}`]),
+    );
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    expect(variableNames(dataDir)).toContain(name);
+    for (const stored of variableNames(dataDir)) expect(stored ?? '').not.toContain(AWS_KEY);
+  });
+
+  it('records no variable name for a secret that is not assigned', async () => {
+    seed(transcripts, secretTranscript());
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+
+    expect(variableNames(dataDir).length).toBeGreaterThan(0);
+    for (const stored of variableNames(dataDir)) expect(stored).toBeNull();
   });
 
   it('inspection findings are idempotent (content-addressed) across re-runs', async () => {

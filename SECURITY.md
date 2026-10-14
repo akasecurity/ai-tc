@@ -49,8 +49,8 @@ read by `aka scan` are stored under the same rule. The store is protected by
 **filesystem permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
-`control-plane-credential.json`, `exception.key`, `settings.json`, and
-`vault.key` — are written `0600`, so only
+`control-plane-credential.json`, `exception.key`, `settings.json`, `sighting.key`
+and `vault.key` — are written `0600`, so only
 your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.
@@ -71,6 +71,13 @@ what is vaulted — that separation is the whole of what encryption at rest buys
 here. The file appears only once vaulting is granted; without that consent there is
 no key and no recoverable copy, and with it a detection on any other policy is
 still never vaulted.
+
+`sighting.key` is written only on an attached machine. It holds the HMAC key
+versions the attached deployment issues to the machine, records which deployment
+issued them, and is not used for any other one. It follows the same custody
+setting as `vault.key`: under keychain custody it is an OS-keychain item rather
+than a file. `aka detach` and the dashboard's disconnect both remove it, file or
+keychain item.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots
@@ -189,7 +196,10 @@ disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`; activity in any other repository stays on the machine. Under the
+`aka enroll` and, from the browser extension, the replies in a claude.ai account
+enrolled with `aka enroll --account`, with their tool calls and token usage (a
+prompt typed into a web chat is not recorded there at all); activity in any
+other repository stays on the machine. Under the
 `aka sync-history` grant, enrolling a repository also queues the captures still
 kept for it, including those it recorded between attaching and enrolling. The
 policy pull, the command check and the device report are the exception: they go

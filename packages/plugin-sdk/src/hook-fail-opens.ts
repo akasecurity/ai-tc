@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
 
 /**
- * Where a hook's fail-open exits are counted, for `aka status` to render.
+ * Where a hook's fail-opens are counted, for `aka status` to render.
  *
  * Failing open is the ABSENCE of output: a hook that throws writes nothing,
  * exits 0, and the host reads that as "no opinion". That is the right contract
@@ -13,14 +13,22 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persiste
  * every other file beside this one describes a control plane that is simply
  * not being written to. This tally is the trace.
  *
- * It is a trace of a throw that ESCAPES a hook's main() — one the code did not
- * anticipate — and of nothing softer. The fail-opens main() absorbs on its own
- * are not counted: stdin that never arrives or does not parse, a store or
- * runtime fault the hook's own handling already turns into a quiet allow. And
- * the environmental faults that do throw out of main(), a data home that is
- * not a directory or not writable, are the same ones that leave this file
- * unwritable. So a count here is a floor on unexpected throws, not a measure of
- * how often a machine scanned nothing.
+ * It counts two things. The first is a throw that ESCAPES a hook's main() —
+ * one the code did not anticipate. The second is a PARTIAL SCAN: a response
+ * hook that acted on what it did scan but let the rest of the content through
+ * unscanned, because the response-scan deadline cut the scan short or the
+ * response size bound cut text out of the fields before the scan began. Both
+ * are content the host received with no verdict on it, which is what "failed
+ * open" means to the person reading `aka status`; a partial scan is just the
+ * case where some of the content did get one.
+ *
+ * Nothing softer is counted. The fail-opens main() absorbs on its own are not:
+ * stdin that never arrives or does not parse, a store or runtime fault the
+ * hook's own handling already turns into a quiet allow. And the environmental
+ * faults that do throw out of main(), a data home that is not a directory or
+ * not writable, are the same ones that leave this file unwritable. So a count
+ * here is a floor on unexpected throws and partial scans, not a measure of how
+ * often a machine scanned nothing.
  *
  * In the DATA dir beside the forward tallies, and deliberately NOT in the
  * attachment's derived-file list: a hook that fails open on a standalone
@@ -36,7 +44,12 @@ export const HOOK_FAIL_OPENS_FILENAME = 'hook-fail-opens.json';
  * of that reaches a rendered status line is never to write it down.
  */
 export interface HookFailOpens {
-  /** Fail-open exits recorded on this machine. */
+  /**
+   * Fail-opens recorded on this machine: throws that escaped a hook's main(),
+   * plus partial scans that let content through unscanned (the response-scan
+   * deadline cut and the response size bound). Not only exits — a partial scan
+   * is counted on the success path, by a hook that goes on to emit its result.
+   */
   failOpens: number;
   /** When the most recent one happened, epoch millis on the local clock. */
   lastAtMs: number;
@@ -47,7 +60,7 @@ export function hookFailOpensPath(dataDir: string): string {
 }
 
 /**
- * Count one fail-open exit.
+ * Count one fail-open: an escaped throw or a partial scan.
  *
  * READ-MODIFY-WRITE with no lock, and that is a known imprecision rather than
  * an oversight: two hooks can fail open at once and lose an increment, exactly
@@ -57,7 +70,9 @@ export function hookFailOpensPath(dataDir: string): string {
  *
  * NEVER THROWS. It is called from inside a fail-open catch, where a throw would
  * escape as an uncaught exception and turn a silent allow into a non-zero exit
- * — the one outcome that catch exists to prevent.
+ * — the one outcome that catch exists to prevent. The partial-scan call sits on
+ * the success path instead, where a throw would cost the hook the verdict it
+ * did reach on the content it scanned.
  *
  * SYNCHRONOUS, and nothing can interrupt it: each call is a short run of
  * blocking filesystem work, and it creates the data dir when a machine has none

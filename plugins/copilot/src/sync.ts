@@ -30,7 +30,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 
 try {
   await runAttachedSync(undefined, {
-    scan: commandScanFor(loadConfig(), scanWorktree, SOURCE_TOOL.Copilot),
+    scan: commandScanFor(() => loadConfig(), scanWorktree, SOURCE_TOOL.Copilot),
   });
 } catch {
   // Nothing to report to — this process is detached with stdio ignored.

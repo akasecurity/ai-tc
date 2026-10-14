@@ -297,9 +297,14 @@ describe('mintPointer', () => {
     return { keyVersion: decodeKeyVersion(version), id: base32Decode(id), tag: base32Decode(tag) };
   }
 
-  it('emits a token the schema grammar accepts', async () => {
-    const { POINTER_TOKEN_ANCHORED } = await import('@akasecurity/schema');
-    expect(POINTER_TOKEN_ANCHORED.test(mintPointer(master, 0xffff_ffff, 'secret'))).toBe(true);
+  it('emits a token the schema grammar accepts for every detection category', async () => {
+    const { DetectionCategory, POINTER_TOKEN_ANCHORED } = await import('@akasecurity/schema');
+    for (const category of DetectionCategory.options) {
+      for (const keyVersion of [1, 0xffff_ffff]) {
+        const token = mintPointer(master, keyVersion, category);
+        expect(POINTER_TOKEN_ANCHORED.test(token), `${category} @ ${keyVersion}`).toBe(true);
+      }
+    }
   });
 
   it('tags the pointer with the sign subkey derived from the master, never the master', () => {

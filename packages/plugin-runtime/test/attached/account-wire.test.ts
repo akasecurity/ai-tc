@@ -19,28 +19,27 @@ import {
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { buildModelRefusalEvent } from '@akasecurity/plugin-sdk';
 import type { InventoryContext } from '@akasecurity/schema';
-import {
-  AccountCheckReason,
-  agentKey,
-  HISTORY_SYNC_PAYLOAD_VERSION,
-  SOURCE_TOOL,
-} from '@akasecurity/schema';
+import { agentKey, HISTORY_SYNC_PAYLOAD_VERSION, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { useLoopbackServer } from '../../../remote/test/helpers/loopback.ts';
-import { stampScopeKey } from '../../src/account-scope.ts';
+import type { AccountScope } from '../../src/account-scope.ts';
+import { accountScopeOf, stampScopeKey } from '../../src/account-scope.ts';
 import { resolveGatewayForConfig } from '../../src/attached/factory.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
-// No account material reaches the wire. Every producer a coding-agent session
-// has writes a row stamped with a work account's agent key through the real
+// No account key reaches the wire. Every producer a coding-agent session has
+// writes a row stamped with a work account's agent key through the real
 // gateway, and then the current drain sends the backlog stamped the same way,
 // both through the real network client to a loopback server that records each
 // request whole: method, path, headers and body. None of them may carry the
-// account's id, an account or agent key, the attached user's address, a digest,
-// the scope tag, a plan, or a reason code.
+// account's id or key, the agent key stamped from it, the scope tag inside that
+// key, or what the gateway holds of the identity record while the producers run:
+// the attached user's digest, the binding hash and the learned account's label.
+// The attached user's address is not in that list: the record keeps only its
+// digest, so no producer is handed the address.
 //
 // The server answers by the body's shape, never by the path: a batch of events
 // gets an acknowledgement of all of them, anything else an empty object. The
@@ -57,7 +56,6 @@ const WORK_REPO = 'github.com/acme/payments-api';
 const PERSONAL_REPO = 'github.com/someone/side-project';
 const ORG = randomUUID();
 const ACCOUNT = `claude:${ORG}`;
-const PLANS = ['claude_team', 'claude_enterprise'];
 
 const CONTEXT: InventoryContext = {
   harness: { objectType: 'harness', identityKey: SOURCE_TOOL.ClaudeCode, attributes: {} },
@@ -151,10 +149,18 @@ function config(): PluginConfig {
   };
 }
 
-/** Every live producer of a coding-agent session in a personal folder, signed in to ACCOUNT. */
-async function produceLive(expectedKey: string): Promise<void> {
+/** What the gateway holds of the identity record while the producers run. */
+type Held = Pick<AccountScope, 'bindingHash' | 'context'>;
+
+/**
+ * Every live producer of a coding-agent session in a personal folder, signed in
+ * to ACCOUNT. Returns what the gateway held of the identity record meanwhile.
+ */
+async function produceLive(expectedKey: string): Promise<Held> {
   const gateway = resolveGatewayForConfig(config());
   try {
+    const scope = accountScopeOf(gateway);
+    if (scope === undefined) throw new Error('the gateway offers no account scope');
     const key = stampScopeKey(gateway, PERSONAL_REPO, ACCOUNT);
     // Every producer below is agent-keyed, or this suite would prove nothing.
     expect(key).toBe(expectedKey);
@@ -211,6 +217,7 @@ async function produceLive(expectedKey: string): Promise<void> {
         scopeKey: key,
       }),
     );
+    return { bindingHash: scope.bindingHash, context: scope.context };
   } finally {
     await gateway.close();
   }
@@ -273,41 +280,46 @@ function receivedValues(): string[] {
 }
 
 /**
- * Nothing of the account in any part of any request: its id, an account or
- * agent key, the attached user's address, the record's digests and tag, a plan;
- * and no reason code as a value in any body.
+ * Nothing the gateway holds of the account in any part of any request: its id
+ * and key, the agent key and the scope tag inside it, the attached user's
+ * digest, the binding hash and the learned account's label. A failure names
+ * every value found, not only the first.
  */
-function expectNoAccountMaterial(record: ReturnType<typeof attach>): void {
+function expectNoAccountMaterial(record: ReturnType<typeof attach>, held: Held): void {
+  // The held values are the record's own, so the list is what the producers could reach.
+  const labelsOf = (entries: readonly { label?: string | undefined }[]): string[] =>
+    entries.flatMap((entry) => (entry.label === undefined ? [] : [entry.label]));
+  const labels = labelsOf(held.context.learned);
+  expect(held.context.attachedUserDigest).toBe(record.attachedUserDigest);
+  expect(labels).toEqual(labelsOf(record.workAccounts));
+  expect(labels).not.toEqual([]);
+
   const everything = server.received
     .map((request) =>
       [request.method, request.url, JSON.stringify(request.headers), request.body].join('\n'),
     )
     .join('\n');
-  for (const forbidden of [
+  const forbidden = [
     ORG,
     'claude:',
-    'chatgpt:',
     'agent:',
-    ADDRESS,
-    record.attachedUserDigest,
-    record.credentialDigest,
     record.scopeTag,
-    ...PLANS,
-  ]) {
-    expect(everything).not.toContain(forbidden);
-  }
-  const reasons = new Set<string>(AccountCheckReason.options);
-  expect(receivedValues().filter((value) => reasons.has(value))).toEqual([]);
+    held.context.attachedUserDigest,
+    held.bindingHash,
+    ...labels,
+  ];
+  for (const value of forbidden) expect(value).not.toBe('');
+  expect(forbidden.filter((value) => everything.includes(value))).toEqual([]);
 }
 
 describe('the wire carries no account material', () => {
-  it('no account material reaches the wire from any producer or the current drain', async () => {
+  it('no account key, scope tag or record fact the gateway holds reaches the wire from any producer or the current drain', async () => {
     const record = attach();
     const agentScoped = agentKey(record.scopeTag, ACCOUNT);
     if (agentScoped === undefined) throw new Error('no agent key was built');
     seedBacklog(agentScoped);
 
-    await produceLive(agentScoped);
+    const held = await produceLive(agentScoped);
     let clock = Date.parse('2026-10-02T00:00:00.000Z');
     const drained = await runHistorySync({
       base: home,
@@ -340,6 +352,6 @@ describe('the wire carries no account material', () => {
       expect(values.has(reached)).toBe(true);
     }
 
-    expectNoAccountMaterial(record);
+    expectNoAccountMaterial(record, held);
   });
 });

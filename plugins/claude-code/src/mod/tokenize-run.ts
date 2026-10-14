@@ -31,6 +31,7 @@
 import { redact } from '@akasecurity/detections';
 import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
+import type { ModFinding, ModFindingWhere } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import {
@@ -43,10 +44,19 @@ import {
 import { openGateway } from '../hooks/store-health.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote } from '../protocol/notes.ts';
+import { pointersByFinding, recordModFindings } from './findings-log.ts';
 import { recordModHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
 
 type Finding = CaptureResult['findings'][number];
+
+// Where a conversation row's finding sits, from the door the mod found it at.
+function whereOfRow(door: string, agentId: string | undefined): ModFindingWhere {
+  if (agentId !== undefined) return 'subagent';
+  if (door === 'tool-result') return 'tool-output';
+  if (door === 'attachment') return 'attachment';
+  return 'memory';
+}
 
 // `[[aka:<category>:...]]` -> the category segment. Callers pass only tokens the
 // vault minted, so a token that does not split is not one worth reporting.
@@ -82,7 +92,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
   // killing this process all leave the store untouched, so the command hook,
   // which then decides the raw prompt itself, is the only one to record it.
   const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
-  let answer: { text: string; note: string | null } | null;
+  let answer: { text: string; note: string | null; findings: ModFinding[] } | null;
   try {
     const deferred = await runtime.captureDeferred(
       {
@@ -104,6 +114,7 @@ async function tokenize(stdin: string): Promise<HelperRun> {
     } else {
       let rewritten: string;
       let note: string | null = null;
+      let pointers: ReadonlyMap<string, string> = new Map();
       if (isVaultConsentValid(config.settings.vaultConsent)) {
         const tokenized = await createVaultGlue().tokenizeText(text, {
           findings: enforced,
@@ -113,6 +124,11 @@ async function tokenize(stdin: string): Promise<HelperRun> {
             : { location: 'prompt', kind: 'prompt' },
         });
         rewritten = tokenized.text;
+        pointers = pointersByFinding(
+          enforced,
+          new Set(result.reversibleFindings ?? []),
+          tokenized.pointers,
+        );
         note = isRow
           ? null
           : eventNote({
@@ -141,15 +157,35 @@ async function tokenize(stdin: string): Promise<HelperRun> {
         // the note that tells the hook they exist. Both only for a rewrite that
         // is about to be returned.
         await deferred.record();
+        const records =
+          sessionId === undefined
+            ? []
+            : recordModFindings(config.dataDir, sessionId, {
+                sessionId,
+                kind: isRow ? 'response' : 'prompt',
+                text,
+                result,
+                where: isRow
+                  ? whereOfRow(
+                      rowDoor ?? '',
+                      getString(rowInput as Record<string, unknown>, 'agentId'),
+                    )
+                  : 'prompt',
+                action: pointers.size > 0 ? 'vaulted' : 'redacted',
+                pointers,
+              });
         if (!isRow) recordModHandoff(config.dataDir, rewritten);
-        answer = { text: rewritten, note };
+        answer = { text: rewritten, note, findings: records };
       }
     }
   } finally {
     await runtime.close();
   }
   if (answer === null) return { code: 1, stdout: '' };
-  return { code: 0, stdout: `${JSON.stringify({ v: 1, text: answer.text, note: answer.note })}\n` };
+  return {
+    code: 0,
+    stdout: `${JSON.stringify({ v: 1, text: answer.text, note: answer.note, findings: answer.findings })}\n`,
+  };
 }
 
 /** The rewrite for one request on stdin. Never throws: a fault is exit 1 and silence. */

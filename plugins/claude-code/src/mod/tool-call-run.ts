@@ -10,7 +10,8 @@
  * what that pipeline decided.
  *
  * stdin:  {"v":1,"tool":"Bash","input":{...},"sessionId":"...","cwd":"..."}
- * stdout: {"v":1,"deny":string|null,"input":{...}|null,"context":string|null,"message":string|null}
+ * stdout: {"v":1,"deny":string|null,"input":{...}|null,"context":string|null,"message":string|null,"findings":[...]}
+ *   `message` is null when it says no more than `findings`, which the mod shows.
  * Exit 1 with nothing on stdout means "no decision": the mod passes the call on
  * unchanged and the PreToolUse command hook decides it as it always did.
  *
@@ -23,12 +24,16 @@
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import type { ScannedField } from '../hooks/pre-tool-use-decision.ts';
+import { inputEventKind } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
 import type { HookOutput } from '../hooks/shared.ts';
 import { countFailOpen, getString, parseJson } from '../hooks/shared.ts';
+import type { PointersByText } from './findings-log.ts';
+import { recordModFindings, toolFieldAction } from './findings-log.ts';
 import { authorizeValues, recordToolHandoff } from './handoff.ts';
 import type { HelperRun } from './helper-run.ts';
-import { answerFromOutputs } from './tool-call-answer.ts';
+import { answerFromOutputs, messageForUser } from './tool-call-answer.ts';
 
 async function toolCall(stdin: string): Promise<HelperRun> {
   const input = parseJson(stdin);
@@ -51,6 +56,9 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   // exception covers, a fallback that only warns), and the hook, which cannot see
   // the grants now spent, takes them from the note rather than judging them again.
   const letThroughValues: string[] = [];
+  let scanned: readonly ScannedField[] = [];
+  let vaultedPointers: PointersByText = new Map();
+  const sessionId = getString(input, 'sessionId');
   const run = await runPreToolUse(
     {
       tool_name: tool,
@@ -64,8 +72,10 @@ async function toolCall(stdin: string): Promise<HelperRun> {
     },
     {
       mode: 'mod',
-      onScanned: (scanned) => {
-        for (const { result } of scanned) {
+      onScanned: (fields, vaulted) => {
+        scanned = fields;
+        vaultedPointers = vaulted;
+        for (const { result } of fields) {
           for (const finding of result.findings) letThroughValues.push(finding.rawMatch);
         }
       },
@@ -75,8 +85,25 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   if (run !== 'finished') return { code: 1, stdout: '' };
 
   const answer = answerFromOutputs(outputs);
+  const { dataDir } = loadConfig();
+  if (sessionId !== undefined) {
+    for (const { text, result } of scanned) {
+      const pointers = vaultedPointers.get(text);
+      answer.findings.push(
+        ...recordModFindings(dataDir, sessionId, {
+          sessionId,
+          kind: inputEventKind(tool),
+          text,
+          result,
+          where: 'tool-input',
+          action: toolFieldAction(result, pointers),
+          pointers,
+        }),
+      );
+    }
+  }
+  answer.message = messageForUser(answer.message, answer.findings.length > 0);
   if (answer.deny === null) {
-    const { dataDir } = loadConfig();
     recordToolHandoff(
       dataDir,
       tool,

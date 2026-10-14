@@ -4,8 +4,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type * as Persistence from '@akasecurity/persistence';
+import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { recordSessionModel } from '@akasecurity/plugin-sdk';
+import { bundledDetections, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX } from '@akasecurity/schema';
 import { ESLint, Linter } from 'eslint';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +23,7 @@ import { runPreModelSwitch } from '../../src/hooks/model-switch-run.ts';
 import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type * as Shared from '../../src/hooks/shared.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
+import { runModTokenize } from '../../src/mod/tokenize-run.ts';
 import type { Device, Transcript } from '../helpers/account-fixture.ts';
 import {
   device,
@@ -70,16 +72,20 @@ vi.mock('@akasecurity/persistence', async (importOriginal) => {
 
 // The one UserPromptSubmit case drives the entry itself: stdin is the payload
 // this holds, and what the entry would print is dropped. Every other case calls
-// an importable run.
+// an importable run. The fail-open count is a spy so a case can see a fault the
+// hook swallowed.
 const stdin = vi.hoisted(() => ({ value: '' }));
+const failOpen = vi.hoisted(() => ({ count: vi.fn() }));
 vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof Shared>()),
   readStdin: () => Promise.resolve(stdin.value),
   emit: () => Promise.resolve(),
+  countFailOpen: failOpen.count,
 }));
 
 let dev: Device;
 beforeEach(() => {
+  failOpen.count.mockClear();
   dev = device(sent);
 });
 afterEach(() => {
@@ -143,6 +149,33 @@ const refusalKeys = (): (string | null)[] =>
     .storedRows()
     .filter((row) => row.eventType === 'model_refusal')
     .map((row) => row.scopeKey);
+
+const SECRET_RULE_ID = 'secrets/twilio-key';
+
+/**
+ * A prompt holding a bundled rule's own example value, with that rule's pack set
+ * to redact in the local store, so the tokenize helper answers with a rewrite and
+ * records the prompt.
+ */
+function redactablePrompt(): string {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === SECRET_RULE_ID));
+  const example = pack?.rules.find((r) => r.id === SECRET_RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(`bundled rule ${SECRET_RULE_ID} is missing or has no example`);
+  }
+  const db = openLocalDatabase(dev.dataDir);
+  try {
+    db.installedPacks.recordInventory(bundledDetections());
+    db.installedPacks.setPolicy(pack.namespace, pack.packId, 'redact');
+  } finally {
+    db.close();
+  }
+  return `please deploy using this key: ${example} and then tell me when it is done`;
+}
+
+/** How many login views of a work account the session's log holds. */
+const workViews = (sessionId: string): number =>
+  dev.sessionState(sessionId).log.match(/"k":"w"/g)?.length ?? 0;
 
 function gatewayFor(): NonNullable<ReturnType<typeof openGatewayOrNull>> {
   const gateway = openGatewayOrNull(dev.config());
@@ -223,6 +256,26 @@ describe('a scoped attachment with no work-subscription setting, signed in to a 
     const prompts = dev.storedRows().filter((row) => row.eventType === 'prompt');
     expect(prompts.map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
     expect(forwarded()).toBe(0);
+  });
+
+  it('the tokenize mod helper gets no session account: its recorded prompt keeps the repository key, nothing is sent, and the login view is recorded', async () => {
+    const t = startedSession(dev.workOrg);
+    // A hook that reads the transcript has learned the org, so the account is in
+    // scope for the helper's gateway and only the missing transcript keeps it out.
+    await write(t, dev.personal);
+    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+    const sentBefore = forwarded();
+    const viewsBefore = workViews(t.sessionId);
+    failOpen.count.mockClear();
+    const run = await runModTokenize(
+      JSON.stringify({ v: 1, text: redactablePrompt(), sessionId: t.sessionId, cwd: dev.personal }),
+    );
+    expect(run.code).toBe(0);
+    const prompts = dev.storedRows().filter((row) => row.eventType === 'prompt');
+    expect(prompts.map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    expect(forwarded()).toBe(sentBefore);
+    expect(failOpen.count).not.toHaveBeenCalled();
+    expect(workViews(t.sessionId)).toBe(viewsBefore + 1);
   });
 
   it('refuses a prohibited model in a work session in a personal folder, with the row keyed to the session', async () => {

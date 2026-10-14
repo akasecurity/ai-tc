@@ -93,6 +93,11 @@ describe('the ./sqlite-free entry', () => {
     }
   });
 
+  it('serves pointer minting as one call that derives its own sign subkey', () => {
+    const minting = Object.keys(entry).filter((name) => /pointer|subkey/i.test(name));
+    expect(minting).toEqual(['mintPointer']);
+  });
+
   it('loads no module that imports node:sqlite', () => {
     const { modules, builtins } = closure();
     // The positive control: the walk really followed the entry's re-exports,

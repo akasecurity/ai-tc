@@ -14,7 +14,12 @@ import {
   readForwardHealth,
   readHistorySyncState,
 } from '@akasecurity/persistence';
-import type { AttachmentMode, CredentialState, WorkspaceSettings } from '@akasecurity/schema';
+import type {
+  AttachmentMode,
+  AttachmentScopeEntry,
+  CredentialState,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import {
   isAttached,
   isHistorySyncConsentStale,
@@ -171,7 +176,11 @@ function toRow(p: HistorySyncKindPartition): SyncKindRow | null {
  * the drain filter by one list. Every bucket is filtered, sent rows included: a
  * repository that is unenrolled leaves the bars at the next render, and what it
  * already sent leaves with it. A machine-wide attachment resolves to no filter
- * and runs the read it always ran.
+ * and runs the read it always ran. The scope also holds the coding-agent keys the
+ * drain adds beside the stored entries (`codingScopeExtras`), handed in by the
+ * page: a row stamped for a work account the device recognised is counted where
+ * the drain would send it. The empty state still counts the stored identities
+ * alone, since a recognised work account is not something the user enrolled.
  *
  * A KNOWN LIMIT of those bars: the session, model-call and tool-call rows a
  * repository recorded after the machine attached but before it was enrolled stay
@@ -195,6 +204,14 @@ export function readSyncPanel(
    * credential read of its own and the page reads the mode once.
    */
   attachmentMode: AttachmentMode | undefined,
+  /**
+   * The coding-agent keys the forward paths add to a scoped attachment's scope,
+   * as the page derived them (`codingScopeExtrasAt`), and empty on any other
+   * attachment. Passed in, like the mode, so this module makes no credential
+   * read of its own. Required, so a caller cannot count without them by leaving
+   * an argument out.
+   */
+  extraEntries: readonly AttachmentScopeEntry[],
 ): SyncPanelData | null {
   const connection = settings.controlPlane;
   if (!isAttached(settings) || connection === undefined) return null;
@@ -225,7 +242,14 @@ export function readSyncPanel(
 
   return {
     ...base,
-    state: panelState(settings, credentialState, attachmentMode, connection.endpoint, ledger),
+    state: panelState(
+      settings,
+      credentialState,
+      attachmentMode,
+      connection.endpoint,
+      ledger,
+      extraEntries,
+    ),
   };
 }
 
@@ -235,6 +259,7 @@ function panelState(
   attachmentMode: AttachmentMode | undefined,
   endpoint: string,
   ledger: ReturnType<typeof db>['historySync'],
+  extraEntries: readonly AttachmentScopeEntry[],
 ): SyncPanelState {
   // BEFORE the consent branches. A machine whose key will not authenticate
   // sends nothing whatever it was granted, and "not shared" read against that
@@ -263,11 +288,13 @@ function panelState(
   }
 
   // The drain's filter, resolved the way the drain resolves it, on every render
-  // and never kept: an enroll or an unenroll shows at the next one. Undefined on
-  // a machine-wide attachment, which runs the ledger's machine read; on a scoped
-  // one the enrolled keys, possibly none, and an empty list counts nothing.
+  // and never kept: an enroll, an unenroll or an opt-out shows at the next one.
+  // Undefined on a machine-wide attachment, which runs the ledger's machine read;
+  // on a scoped one the enrolled keys and the coding-agent keys, possibly none,
+  // and an empty list counts nothing.
+  const stored = resolveScope({ mode: attachmentMode, scope: settings.attachmentScope, endpoint });
   const scopeKeys = scopeFilterOf(
-    resolveScope({ mode: attachmentMode, scope: settings.attachmentScope, endpoint }),
+    resolveScope({ mode: attachmentMode, scope: settings.attachmentScope, endpoint }, extraEntries),
   );
   const kinds = ledger
     .partitionByKind(scopeKeys)
@@ -277,11 +304,11 @@ function panelState(
   if (kinds.length > 0) return { status: 'ready', kinds };
   // Nothing counted means nothing recorded only when nothing was filtered out. A
   // scoped attachment's store can be full of activity its scope does not cover,
-  // so it gets its own state, carrying how many identities the scope enrolls, as
-  // this build resolves it: a list it cannot read resolves to 0.
+  // so it gets its own state, carrying how many identities the stored scope
+  // enrolls, as this build resolves it: a list it cannot read resolves to 0.
   return scopeKeys === undefined
     ? { status: 'nothing-recorded' }
-    : { status: 'nothing-in-scope', enrolled: scopeKeys.length };
+    : { status: 'nothing-in-scope', enrolled: scopeFilterOf(stored)?.length ?? 0 };
 }
 
 function isRow(row: SyncKindRow | null): row is SyncKindRow {

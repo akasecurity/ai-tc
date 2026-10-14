@@ -34,6 +34,7 @@ import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/p
 import type { ModFinding, ModFindingWhere } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { resolveHookAccount, stampFor } from '../hooks/account-stamp.ts';
 import {
   baseMetadata,
   captureScopeKey,
@@ -41,6 +42,7 @@ import {
   getString,
   parseJson,
 } from '../hooks/shared.ts';
+import { captureDeferredStamped } from '../hooks/stamped-capture.ts';
 import { openGateway } from '../hooks/store-health.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote } from '../protocol/notes.ts';
@@ -92,16 +94,26 @@ async function tokenize(stdin: string): Promise<HelperRun> {
   // killing this process all leave the store untouched, so the command hook,
   // which then decides the raw prompt itself, is the only one to record it.
   const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
+  // The mod hands this helper no transcript path, so the session's org cannot be
+  // read here: the capture keeps its repository key, and the login view is still
+  // recorded for the session.
+  const account = resolveHookAccount(opened.gateway, {
+    dataDir: config.dataDir,
+    sessionId,
+    transcriptPath: undefined,
+    cwd: getString(input, 'cwd'),
+  });
   let answer: { text: string; note: string | null; findings: ModFinding[] } | null;
   try {
-    const deferred = await runtime.captureDeferred(
+    const deferred = await captureDeferredStamped(
+      runtime,
       {
         kind: isRow ? 'response' : 'prompt',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         text,
         metadata: baseMetadata(hookInput),
-        scopeKey: captureScopeKey(hookInput),
       },
+      stampFor(opened.gateway, account, captureScopeKey(hookInput)),
       isRow ? { persist: 'with-findings' } : undefined,
     );
     const { result } = deferred;

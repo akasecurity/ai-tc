@@ -80,7 +80,7 @@ const EXPECTED_SESSION_PASS_FILES = [
   'packages/plugin-runtime/src/handle-session-start.ts',
   'plugins/antigravity/src/hooks/pre-invocation.ts',
   'plugins/browser-extension/src/native-host/host.ts',
-  'plugins/claude-code/src/hooks/session-start.ts',
+  'plugins/claude-code/src/hooks/session-start-run.ts',
   'plugins/codex/src/hooks/session-start.ts',
 ];
 
@@ -144,7 +144,7 @@ describe('posture build identity reaches every inventory-pass caller', () => {
     'the Claude Code plugin names its install root on both of its posture paths',
     () => {
       expect(read('plugins/claude-code/src/build-info.ts')).toContain('installRoot: INSTALL_ROOT');
-      expect(read('plugins/claude-code/src/hooks/session-start.ts')).toContain(
+      expect(read('plugins/claude-code/src/hooks/session-start-run.ts')).toContain(
         'installRoot: INSTALL_ROOT',
       );
     },

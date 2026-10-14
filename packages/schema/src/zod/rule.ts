@@ -1,5 +1,5 @@
 // Rule file format specVersion 1 — versioned so the format can evolve without breaking community packs
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { BuiltinPolicyId } from './builtin-policy-id.ts';
 import { EventKind } from './event.ts';

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory, Severity } from './finding.ts';
 import { CategoryPolicyId } from './policy.ts';

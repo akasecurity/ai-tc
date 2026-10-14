@@ -6,7 +6,7 @@
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type {
   auditEvents,

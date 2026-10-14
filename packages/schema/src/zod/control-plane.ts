@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { EgressReconcile } from './egress-extraction.ts';
 import type { ActionTaken } from './finding.ts';

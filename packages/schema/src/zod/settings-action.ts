@@ -11,7 +11,7 @@
 // Shape only. Whether a choice string names a real mode is still checked by the
 // domain schema at the call site; what this layer guarantees is that the check
 // receives the type it was written for.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { AttachmentMode, printable } from './control-plane.ts';
 

@@ -515,6 +515,24 @@ export const VSCODE_FILE_WRITERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A `code_change` is durable content the agent authors, recorded with the
+ * default persist. A command is text the host acts on, recorded at
+ * `with-findings`: this hook sees every command, and `always` would copy that
+ * whole stream into the store to trail the enforcement decisions that are the
+ * point of the kind.
+ *
+ * Shared by preToolUse and postToolUse, so a call and its result resolve the
+ * same kind and therefore the same `callScopeKey`.
+ */
+export function callKind(dialect: Dialect, toolName: string): 'code_change' | 'tool_use' {
+  const writers =
+    dialect === 'cli'
+      ? ['apply_patch']
+      : ['create_file', 'replace_string_in_file', 'insert_edit_into_file', 'apply_patch'];
+  return writers.includes(toolName) ? 'code_change' : 'tool_use';
+}
+
+/**
  * The scope key of one tool call's captures. It rides beside the metadata
  * (`CaptureInput.scopeKey`), never inside it. `kind` is what the hook decided the
  * call records as.

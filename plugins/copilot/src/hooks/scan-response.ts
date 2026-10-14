@@ -33,10 +33,10 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { exceptionPointer } from '../exception-guidance.ts';
+import { exceptionPointer, unscannedTooLargeMessage } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookOutput } from './shared.ts';
-import type { ScannableResponseField } from './tool-response.ts';
+import type { ResponseFields } from './tool-response.ts';
 
 /**
  * What one tool result's scan found.
@@ -64,6 +64,18 @@ export interface ResponseScanOutcome {
    */
   scannedPaths: string[][];
   toolName: string;
+  /**
+   * How many fields' scans FINISHED. Kept beside `unscanned` so the message can
+   * tell a result nothing was checked in from one that was checked only in part.
+   */
+  completedScans: number;
+  /**
+   * True when some of the result was NOT scanned: a field whose bounded scan
+   * did not finish (`CaptureResult.scanIncomplete`), or text the reader's walk
+   * bounds left out (`ResponseFields.truncated`). Such a result has no findings
+   * from the part nobody checked, and must never read as clean.
+   */
+  unscanned: boolean;
 }
 
 /**
@@ -74,7 +86,7 @@ export interface ResponseScanOutcome {
  */
 export async function scanResponseFields(
   toolName: string,
-  fields: readonly ScannableResponseField[],
+  collected: ResponseFields,
   capture: (text: string) => Promise<CaptureResult>,
 ): Promise<ResponseScanOutcome> {
   const outcome: ResponseScanOutcome = {
@@ -84,11 +96,22 @@ export async function scanResponseFields(
     references: [],
     scannedPaths: [],
     toolName,
+    completedScans: 0,
+    unscanned: collected.truncated,
   };
 
-  for (const field of fields) {
+  for (const field of collected.fields) {
     outcome.scannedPaths.push([...field.path]);
     const result = await capture(field.text);
+    // Read FIRST. A field too large to scan within the hook's deadline comes
+    // back as `block` with NO findings, which the check below would skip as
+    // clean. Nothing is refused here — the output has already reached the
+    // model — but the field is reported as unscanned rather than as clean.
+    if (result.scanIncomplete !== undefined) {
+      outcome.unscanned = true;
+      continue;
+    }
+    outcome.completedScans += 1;
     if (result.findings.length === 0) continue;
 
     if (result.action === 'block') {
@@ -129,6 +152,9 @@ export interface ResponseDecision {
  * only thing this can return on stdout is VS Code's bare `systemMessage`, which
  * carries no verdict at all.
  *
+ * A result some of which was NOT scanned (`outcome.unscanned`) is reported as
+ * such, after any findings from the part that was, and never as clean.
+ *
  * The sentence is built from what was RESOLVED, so a `warn` (the shipped
  * `redactFallback`, and therefore the common case) reads as the policy working
  * while a `block` or `redact` reads as a policy this surface could not carry
@@ -155,6 +181,20 @@ export function responseDecision(dialect: Dialect, outcome: ResponseScanOutcome)
       `AKA flagged sensitive content in the ${outcome.toolName} result ` +
       `(${uniqueRuleIds(outcome.warnedFindings)}) — the output reached the model ` +
       `unchanged.${pointer}`;
+  }
+  if (outcome.unscanned) {
+    // Scoped to the part that went unchecked whenever any field did finish, so
+    // the sentence never claims "nothing in it was checked" beside findings
+    // from the part that was.
+    const subject =
+      outcome.completedScans > 0
+        ? `part of the ${outcome.toolName} result`
+        : `${outcome.toolName} result`;
+    const unscanned = unscannedTooLargeMessage(
+      subject,
+      'the output already reached the model unchanged',
+    );
+    message = message === undefined ? unscanned : `${message} ${unscanned}`;
   }
   if (message === undefined) return { output: null };
 

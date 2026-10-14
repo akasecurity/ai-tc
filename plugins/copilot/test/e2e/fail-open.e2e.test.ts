@@ -799,3 +799,87 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
   },
   120_000,
 );
+
+// ─── A tool result too large to scan in time: reported, not withheld ────────
+//
+// The same bound and the same two halves as the prompt rows above. The tool has
+// already run and its output already reached the model, so a scan that does not
+// finish is reported as unscanned — never as clean, and never as a withhold.
+describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode')))(
+  'post-tool-use [%s] — a result too large to scan in time',
+  (kind) => {
+    const isCli = kind === 'cli';
+    const event = isCli ? 'postToolUse' : 'PostToolUse';
+    const tool = isCli ? 'bash' : 'run_in_terminal';
+    const filler = 'lorem ipsum dolor sit amet '.repeat(
+      Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+    );
+    const payload = JSON.stringify(
+      capturePayload('post-tool-use.js', event, `TWILIO=${FIXTURE.example} ${filler}`),
+    );
+
+    function notice(run: HookRun): string {
+      if (isCli) {
+        noObject(run);
+        return run.stderr;
+      }
+      return String((soleObject(run) as Record<string, unknown>).systemMessage);
+    }
+
+    it('with no worker to scan it → says it was not scanned, exit 0, no verdict', () => {
+      const run = withTempHome((dir) => {
+        const scriptsDir = join(dir, 'scripts');
+        cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });
+        rmSync(join(scriptsDir, 'scan-worker.js'));
+        expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+        const home = join(dir, 'home');
+        mkdirSync(home);
+        seedPolicy(home, 'block');
+        return runScript('post-tool-use.js', event, home, payload, scriptsDir);
+      }, `aka-copilot-result-no-worker-${kind}-`);
+
+      expect(run.status, run.stderr).toBe(0);
+      const text = notice(run);
+      expect(text).toContain(
+        unscannedTooLargeMessage(
+          `${tool} result`,
+          'the output already reached the model unchanged',
+        ),
+      );
+      expect(run.stdout).not.toContain('modifiedResult');
+      expect(run.stdout).not.toContain('"decision"');
+      expectNoEchoOf(run.stdout, FIXTURE.example);
+      expectNoEchoOf(run.stderr, FIXTURE.example);
+    });
+
+    it('with the worker in place → scanned, so the secret is found and named', () => {
+      const run = withTempHome((home) => {
+        seedPolicy(home, 'warn');
+        return runScript('post-tool-use.js', event, home, payload);
+      }, `aka-copilot-result-with-worker-${kind}-`);
+      const text = notice(run);
+      expect(text).toContain(RULE_ID);
+      expect(text).not.toContain('could not scan');
+    });
+  },
+  120_000,
+);
+
+describe('post-tool-use [vscode] — an object-shaped result is walked, not dropped', () => {
+  it('names the rule for a secret in a nested string leaf, echoing none of it', () => {
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'warn');
+      const payload = {
+        ...capturePayload('post-tool-use.js', 'PostToolUse', ''),
+        tool_response: { content: [{ type: 'text', text: `TWILIO=${FIXTURE.example}` }] },
+      };
+      return runScript('post-tool-use.js', 'PostToolUse', home, JSON.stringify(payload));
+    }, 'aka-copilot-result-object-');
+    expect(run.status, run.stderr).toBe(0);
+    const text = String((soleObject(run) as Record<string, unknown>).systemMessage);
+    expect(text).toContain(RULE_ID);
+    expect(text).toContain('reached the model');
+    expectNoEchoOf(run.stdout, FIXTURE.example);
+    expectNoEchoOf(run.stderr, FIXTURE.example);
+  });
+});

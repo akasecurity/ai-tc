@@ -7,6 +7,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
 import { responseDecision, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -52,9 +53,10 @@ const VSCODE_FIELD: ScannableResponseField = { path: [], text: `output containin
 function outcomeOf(
   fields: readonly ScannableResponseField[],
   results: CaptureResult[],
+  truncated = false,
 ): ReturnType<typeof scanResponseFields> {
   let i = 0;
-  return scanResponseFields('bash', fields, () => {
+  return scanResponseFields('bash', { fields: [...fields], truncated }, () => {
     const next = results[i];
     i += 1;
     if (next === undefined) throw new Error('capture called more times than results supplied');
@@ -110,6 +112,58 @@ describe('scanResponseFields', () => {
       // The positive control — the field really was scanned.
       expect(outcome.scannedPaths).toHaveLength(1);
     }
+  });
+});
+
+/** What the runtime returns for a field whose bounded scan did not finish. */
+function refused(): CaptureResult {
+  return { action: 'block', findings: [], text: null, scanIncomplete: 'timeout' };
+}
+
+const DELIVERED = 'the output already reached the model unchanged';
+
+describe('a result that was not wholly scanned', () => {
+  // A refused field is a `block` with NO findings: a loop that skipped
+  // finding-less fields first would read it as clean and say nothing.
+  it('reads a refused field as unscanned, not as clean or as a block', async () => {
+    const outcome = await outcomeOf([CLI_FIELD], [refused()]);
+    expect(outcome.unscanned).toBe(true);
+    expect(outcome.completedScans).toBe(0);
+    expect(outcome.blockedFindings).toEqual([]);
+
+    const cli = responseDecision('cli', outcome);
+    expect(cli.output).toBeNull();
+    expect(cli.notice).toBe(unscannedTooLargeMessage('bash result', DELIVERED));
+    const vscode = responseDecision('vscode', outcome);
+    expect(vscode.output).toEqual({
+      systemMessage: unscannedTooLargeMessage('bash result', DELIVERED),
+    });
+  });
+
+  it('reports text the reader left out, even when no field was captured', async () => {
+    const outcome = await outcomeOf([], [], true);
+    expect(responseDecision('cli', outcome).notice).toBe(
+      unscannedTooLargeMessage('bash result', DELIVERED),
+    );
+  });
+
+  it('names only the unchecked part when another field finished with a finding', async () => {
+    const outcome = await outcomeOf(
+      [CLI_FIELD, CLI_FIELD],
+      [result('warn', ['r.warn']), refused()],
+    );
+    const notice = String(responseDecision('cli', outcome).notice);
+    // Positive control: the finding from the part that was scanned is named.
+    expect(notice).toContain('r.warn');
+    expect(notice).toContain(unscannedTooLargeMessage('part of the bash result', DELIVERED));
+    expect(notice).not.toContain('this bash result');
+  });
+
+  it('stays silent for a clean result that was wholly scanned (the control)', async () => {
+    const outcome = await outcomeOf([CLI_FIELD], [result('log', [])]);
+    expect(outcome.unscanned).toBe(false);
+    expect(outcome.completedScans).toBe(1);
+    expect(responseDecision('cli', outcome)).toEqual({ output: null });
   });
 });
 

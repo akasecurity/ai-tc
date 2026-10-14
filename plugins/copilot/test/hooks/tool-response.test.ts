@@ -7,7 +7,14 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { responseKey, scannableResponseFields } from '../../src/hooks/tool-response.ts';
+import {
+  responseKey,
+  RESULT_WALK_MAX_DEPTH,
+  RESULT_WALK_MAX_LEAF_CHARS,
+  RESULT_WALK_MAX_LEAVES,
+  RESULT_WALK_MAX_TOTAL_CHARS,
+  scannableResponseFields,
+} from '../../src/hooks/tool-response.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
@@ -29,19 +36,25 @@ describe('responseKey', () => {
   });
 });
 
+const NOTHING = { fields: [], truncated: false };
+
 describe('scannableResponseFields', () => {
   it('reads the model-visible text out of the recorded CLI envelope', () => {
     const payload = fixture('cli', 'postToolUse.json');
     const fields = scannableResponseFields('cli', payload[responseKey('cli')]);
-    expect(fields).toEqual([
-      { path: ['textResultForLlm'], text: '\n<shellId: 0 completed with exit code 1>' },
-    ]);
+    expect(fields).toEqual({
+      fields: [{ path: ['textResultForLlm'], text: '\n<shellId: 0 completed with exit code 1>' }],
+      truncated: false,
+    });
   });
 
   it('reads the whole string out of the provisional VS Code envelope', () => {
     const payload = fixture('vscode-provisional', 'PostToolUse.json');
     const fields = scannableResponseFields('vscode', payload[responseKey('vscode')]);
-    expect(fields).toEqual([{ path: [], text: '\n<shellId: 0 completed with exit code 1>' }]);
+    expect(fields).toEqual({
+      fields: [{ path: [], text: '\n<shellId: 0 completed with exit code 1>' }],
+      truncated: false,
+    });
   });
 
   // THE TRAP. `resultType` reports whether the INVOCATION succeeded, not
@@ -81,38 +94,126 @@ describe('scannableResponseFields', () => {
     // happened. Asserted rather than left to review, so adding one is a
     // deliberate act that comes with a recording.
     const module: Record<string, unknown> = await import('../../src/hooks/tool-response.ts');
-    expect(Object.keys(module).sort()).toEqual(['responseKey', 'scannableResponseFields']);
+    expect(Object.keys(module).sort()).toEqual([
+      'RESULT_WALK_MAX_DEPTH',
+      'RESULT_WALK_MAX_LEAF_CHARS',
+      'RESULT_WALK_MAX_LEAVES',
+      'RESULT_WALK_MAX_TOTAL_CHARS',
+      'responseKey',
+      'scannableResponseFields',
+    ]);
   });
 
   it('handles a bare string result whatever the dialect says', () => {
     // A host that simplified its envelope must not make this scan nothing and
     // report success — the failure mode the whole adapter is shaped against.
-    expect(scannableResponseFields('cli', 'plain text')).toEqual([
+    expect(scannableResponseFields('cli', 'plain text').fields).toEqual([
       { path: [], text: 'plain text' },
     ]);
   });
 
   it('skips an empty result, which has nothing in it to find', () => {
-    expect(scannableResponseFields('cli', '')).toEqual([]);
-    expect(scannableResponseFields('cli', { textResultForLlm: '' })).toEqual([]);
-    expect(scannableResponseFields('vscode', '')).toEqual([]);
+    expect(scannableResponseFields('cli', '')).toEqual(NOTHING);
+    expect(scannableResponseFields('cli', { textResultForLlm: '' })).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', '')).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', { a: '', b: [''] })).toEqual(NOTHING);
   });
 
   it('skips a result whose text field is absent or not a string', () => {
-    expect(scannableResponseFields('cli', { resultType: 'success' })).toEqual([]);
-    expect(scannableResponseFields('cli', { textResultForLlm: 42 })).toEqual([]);
-    expect(scannableResponseFields('cli', null)).toEqual([]);
-    expect(scannableResponseFields('cli', undefined)).toEqual([]);
+    expect(scannableResponseFields('cli', { resultType: 'success' })).toEqual(NOTHING);
+    expect(scannableResponseFields('cli', { textResultForLlm: 42 })).toEqual(NOTHING);
+    expect(scannableResponseFields('cli', null)).toEqual(NOTHING);
+    expect(scannableResponseFields('cli', undefined)).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', null)).toEqual(NOTHING);
+    expect(scannableResponseFields('vscode', 42)).toEqual(NOTHING);
   });
 
-  // The two envelopes must not resolve against each other: a CLI envelope read
-  // as VS Code returns the whole object rather than its text, and a VS Code
-  // string read as CLI would find no `textResultForLlm` at all. Both are the
-  // silent-wrong-answer shape the separate tables exist to prevent.
-  it('does not resolve one dialect’s envelope through the other’s table', () => {
-    const cliResult = fixture('cli', 'postToolUse.json')[responseKey('cli')];
-    // Read as VS Code the object is not a string, and its empty path yields no
-    // string either — so nothing is scanned rather than the wrong thing.
-    expect(scannableResponseFields('vscode', cliResult)).toEqual([]);
+  // The CLI's table must not reach into an object the way VS Code's walk does:
+  // a CLI result whose text is not under `textResultForLlm` is a changed
+  // envelope, and scanning its other keys would hide that.
+  it('does not walk a CLI envelope the way it walks a VS Code object', () => {
+    expect(scannableResponseFields('cli', { output: 'text the CLI never puts here' })).toEqual(
+      NOTHING,
+    );
+    // The control: the same object under VS Code IS walked.
+    expect(
+      scannableResponseFields('vscode', { output: 'text the CLI never puts here' }).fields,
+    ).toEqual([{ path: ['output'], text: 'text the CLI never puts here' }]);
+  });
+});
+
+describe('an object-shaped VS Code result', () => {
+  it('scans every non-empty string leaf, with its path', () => {
+    const response = {
+      content: [
+        { type: 'text', text: 'first block' },
+        { type: 'image', data: '' },
+      ],
+      meta: { note: 'a note', count: 3, ok: true, none: null },
+    };
+    expect(scannableResponseFields('vscode', response)).toEqual({
+      fields: [
+        { path: ['content', '0', 'type'], text: 'text' },
+        { path: ['content', '0', 'text'], text: 'first block' },
+        { path: ['content', '1', 'type'], text: 'image' },
+        { path: ['meta', 'note'], text: 'a note' },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('walks a bare array result too', () => {
+    expect(scannableResponseFields('vscode', ['a', ['b']]).fields).toEqual([
+      { path: ['0'], text: 'a' },
+      { path: ['1', '0'], text: 'b' },
+    ]);
+  });
+
+  function nested(depth: number, leaf: unknown): unknown {
+    let node = leaf;
+    for (let i = 0; i < depth; i += 1) node = { k: node };
+    return node;
+  }
+
+  it('reads a leaf at the depth bound and marks one deeper truncated', () => {
+    expect(scannableResponseFields('vscode', nested(RESULT_WALK_MAX_DEPTH, 'deep'))).toEqual({
+      fields: [{ path: Array.from({ length: RESULT_WALK_MAX_DEPTH }, () => 'k'), text: 'deep' }],
+      truncated: false,
+    });
+    expect(scannableResponseFields('vscode', nested(RESULT_WALK_MAX_DEPTH + 1, 'deep'))).toEqual({
+      fields: [],
+      truncated: true,
+    });
+    // An empty container at the bound holds nothing that went unscanned.
+    expect(scannableResponseFields('vscode', nested(RESULT_WALK_MAX_DEPTH, {}))).toEqual(NOTHING);
+  });
+
+  it('stops at the leaf-count bound and says it did', () => {
+    const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
+    expect(scannableResponseFields('vscode', at)).toMatchObject({ truncated: false });
+    const past = scannableResponseFields('vscode', [...at, 'one more']);
+    expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
+    expect(past.truncated).toBe(true);
+  });
+
+  it('marks a leaf over the per-leaf cap truncated rather than dropping it silently', () => {
+    const long = 'x'.repeat(RESULT_WALK_MAX_LEAF_CHARS + 1);
+    expect(scannableResponseFields('vscode', { long, short: 'kept' })).toEqual({
+      fields: [{ path: ['short'], text: 'kept' }],
+      truncated: true,
+    });
+    // The control: at the cap exactly it is read.
+    const atCap = 'x'.repeat(RESULT_WALK_MAX_LEAF_CHARS);
+    expect(scannableResponseFields('vscode', { atCap })).toMatchObject({ truncated: false });
+  });
+
+  it('stops at the character total and says it did', () => {
+    const leaf = 'y'.repeat(RESULT_WALK_MAX_LEAF_CHARS);
+    const fit = RESULT_WALK_MAX_TOTAL_CHARS / RESULT_WALK_MAX_LEAF_CHARS;
+    const at = Array.from({ length: fit }, () => leaf);
+    expect(scannableResponseFields('vscode', at)).toMatchObject({ truncated: false });
+    const past = scannableResponseFields('vscode', [...at, 'z']);
+    expect(past.fields).toHaveLength(fit);
+    expect(past.truncated).toBe(true);
   });
 });

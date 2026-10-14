@@ -38,7 +38,6 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import type { Dialect } from './dialect.ts';
 import { detectDialect, readSessionId, readToolCall } from './dialect.ts';
 import { readEventName } from './event-name.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
@@ -51,6 +50,7 @@ import {
 import type { HookOutput } from './shared.ts';
 import {
   baseMetadata,
+  callKind,
   callScopeKey,
   parseJson,
   readStdin,
@@ -73,21 +73,6 @@ import {
  * answer for the wrong reason, and would hide the misconfiguration.
  */
 const OWN_EVENTS: ReadonlySet<string> = new Set(['preToolUse', 'PreToolUse']);
-
-/**
- * A `code_change` is durable content the agent authors, recorded with the
- * default persist. A command is text the host acts on, recorded at
- * `with-findings`: this hook sees every command, and `always` would copy that
- * whole stream into the store to trail the enforcement decisions that are the
- * point of the kind.
- */
-function kindFor(dialect: Dialect, toolName: string): 'code_change' | 'tool_use' {
-  const writers =
-    dialect === 'cli'
-      ? ['apply_patch']
-      : ['create_file', 'replace_string_in_file', 'insert_edit_into_file', 'apply_patch'];
-  return writers.includes(toolName) ? 'code_change' : 'tool_use';
-}
 
 async function main(): Promise<HookOutput | undefined> {
   const event = readEventName();
@@ -145,7 +130,7 @@ async function main(): Promise<HookOutput | undefined> {
     dataDir: config.dataDir,
     largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
   });
-  const kind = kindFor(dialect, call.name);
+  const kind = callKind(dialect, call.name);
   const metadata = baseMetadata(dialect, input) ?? {};
   metadata.toolName = call.name;
   // A VS Code single-file write by its own target, a patch or any other

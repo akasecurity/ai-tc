@@ -1,4 +1,5 @@
 import {
+  codingScopeExtras,
   dataDir,
   defaultDataDir,
   openLocalDatabase,
@@ -45,6 +46,12 @@ const DAY_MS = 86_400_000;
  * an attachment records it and no settings writer can remove it.
  * `syncLaneRetentionOf` owns the answer; this only gathers its two inputs.
  *
+ * A scoped attachment's scope holds the coding-agent keys the history drain
+ * sends beside the stored entries (`codingScopeExtras`), so an unsent body
+ * stamped for a recognised work account is held while the drain could still
+ * send it, and ages out once work subscriptions are off or the identity record
+ * belongs to another credential. A machine attachment reads no record.
+ *
  * ONE HELPER, asked by both the background pass and `aka prune`. It decides
  * which bodies are destroyed, so the two callers share this function rather
  * than each keeping a copy that could drift: given the same settings they give
@@ -65,13 +72,13 @@ export function syncLaneRetentionFor(settings: WorkspaceSettings, base: string):
     }
     const read = readControlPlaneCredentialFile(settingsDir(base), connection);
     if (!read.usable) return syncLaneRetentionOf(settings, undefined);
+    const mode = attachmentModeOf(read.credential);
     return syncLaneRetentionOf(
       settings,
-      resolveScope({
-        mode: attachmentModeOf(read.credential),
-        scope: settings.attachmentScope,
-        endpoint: connection.endpoint,
-      }),
+      resolveScope(
+        { mode, scope: settings.attachmentScope, endpoint: connection.endpoint },
+        mode === 'machine' ? [] : codingScopeExtras(dataDir(base), settings, read.credential),
+      ),
     );
   } catch {
     return { kind: 'hold-all' };

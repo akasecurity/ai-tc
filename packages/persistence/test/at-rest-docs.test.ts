@@ -10,6 +10,7 @@ import { dataDir, defaultDataDir, keysDir, settingsDir } from '../src/local-layo
 import { DATA_DIR_MODE, DATA_FILE_MODE, DB_FILENAME, dbSidecars } from '../src/paths.ts';
 import { SETTINGS_FILENAME } from '../src/settings.ts';
 import { VAULT_KEY_FILENAME } from '../src/vault/key-provider.ts';
+import { SIGHTING_KEY_FILENAME } from '../src/vault/sighting-keys.ts';
 
 /**
  * SECURITY.md's "Data at rest" note is the answer a user gets when they ask what
@@ -72,6 +73,7 @@ const STORE_FILES = [
   DB_FILENAME,
   EXCEPTION_KEY_FILENAME,
   SETTINGS_FILENAME,
+  SIGHTING_KEY_FILENAME,
   VAULT_KEY_FILENAME,
 ] as const;
 

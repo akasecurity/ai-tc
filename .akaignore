@@ -1,5 +1,82 @@
-# Detection-rule fixtures under /rules are deliberately full of the exact
-# patterns each rule targets — scanning them would flood real findings with
-# self-inflicted noise. Hard-skip, not gitignore-mark: these are tracked,
-# intentional examples, not local scratch.
-rules/
+# Paths a scan of this repository skips. The tree deliberately carries
+# thousands of secret-shaped and PII-shaped values as test data, and scanning
+# them buries any real finding under self-inflicted noise.
+#
+# Who reads this file: the folder scans (`aka scan`, the dashboard's Scan page,
+# `/aka:scan`) and the worktree scan the plugins' background sync runs. The
+# per-prompt hooks do not — prompts, tool input, tool output and history
+# backfill are scanned whatever this file says. Patterns are relative to this
+# directory, and a scan aimed at a subdirectory does not read this file at all,
+# so scan from the repository root.
+#
+# Matches are HARD-SKIPPED: the file is never read, so it yields no event and
+# no finding. Every entry is anchored to the location it describes, so a
+# directory of the same name somewhere else is still scanned.
+#
+# test/helpers/repo-akaignore.ts holds the guard both walkers that read this
+# file run (packages/local-ops and packages/scanner): the set of tracked and
+# planted files it skips must be exactly the set that guard names, and every
+# entry here must change what is skipped.
+
+# Detection-rule definitions and fixtures: each rule carries the exact patterns
+# it targets in its `examples` and fixtures. GitHub secret scanning excludes
+# the secret packs and every pack's fixtures under it
+# (.github/secret_scanning.yml); this also skips the remaining rule
+# definitions, which carry the same kind of examples.
+/rules/
+
+# Fixture data that lives under a package's `src/`: egress-extraction and
+# posture samples, and the persistence sample datasets and corpus generator.
+# Only test and bench files import them; no shipped module does.
+/packages/detections/src/egress/fixtures/
+/packages/detections/src/posture/fixtures/
+/packages/persistence/src/test-fixtures/
+
+# Test code and the fixtures it builds: the shared repo-root test tree, each
+# package's and tool's test tree, and tests kept beside their source. Most of
+# this tree's findings are values written inline in test code, which takes them
+# from a rule's own `examples` rather than inventing secret-shaped literals.
+# What that leaves uncovered: a real key committed into one of these files is
+# not reported by a folder scan. The write that introduced it is still scanned
+# by the agent hooks, and GitHub secret scanning covers these paths.
+/test/
+/cli/test/
+/web-ui/test/
+/packages/*/test/
+/tools/*/test/
+/packages/*/src/**/*.test.ts
+# The plugins' test code is skipped too, but not their fixture trees: those
+# hold recordings of real sessions (payloads captured from a live Copilot CLI,
+# Codex and Claude Code), which can carry real credentials, and the browser
+# extension's tree is where raw web-chat captures (`*.har`, `*.raw.json`) are
+# recorded before .gitignore keeps them out of git. A walker never enters a
+# skipped directory, so the contents of each plugin's `test/` are skipped
+# rather than the directory itself. The one constructed tree among the
+# fixtures is the Copilot VS Code specimens, built from the published contract
+# rather than recorded.
+/plugins/*/test/*
+!/plugins/*/test/fixtures/
+/plugins/copilot/test/fixtures/vscode-provisional/
+
+# Benchmark suites and the corpora they generate.
+/packages/*/bench/
+
+# Gitignored build output. Each of these bundles inlines the detection packs,
+# every rule's examples included.
+/plugins/claude-code/scripts/
+/plugins/codex/scripts/
+/plugins/antigravity/scripts/
+/plugins/copilot/scripts/
+/plugins/claude-code/hooks/engine.js
+/plugins/browser-extension/native-host/
+# The CLI's packed copies of the same bundles, left behind by its `prepack`
+# and by the standalone-binary staging.
+/cli/native-host/
+/cli/extension/
+/cli/web-ui/
+/cli/sea-dist/
+/cli/dist-sea/
+
+# TypeScript incremental build state: generated, and its content hashes read
+# as high-entropy strings.
+*.tsbuildinfo

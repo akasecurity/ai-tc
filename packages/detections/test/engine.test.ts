@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../src/engine.ts';
 import type { MatchResult } from '../src/types.ts';
+import { withVariableNames } from '../src/variable-name.ts';
 import { expectFixtureBar, MIN_FIXTURES_PER_POLARITY } from './helpers/fixture-bar.ts';
 import {
   bundledPackDirs,
@@ -83,7 +84,7 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
           fixture.filePath || fixture.eventKind
             ? { filePath: fixture.filePath, eventKind: fixture.eventKind }
             : undefined;
-        const findings = scan(fixture.text, ruleset, context);
+        const findings = withVariableNames(scan(fixture.text, ruleset, context), fixture.text);
         // For gated rules other rules in the set may also match the fixture
         // text, so assert specifically on THIS rule's findings.
         const own = gated ? findings.filter((f) => f.ruleId === rule.id) : findings;
@@ -97,6 +98,11 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
         // are locked in, not just match/no-match.
         if (fixture.expectedSpans) {
           expect(own.map((f) => f.span)).toEqual(fixture.expectedSpans);
+        }
+        if (fixture.expectedVariableName !== undefined) {
+          expect(own.map((f) => f.variableName ?? null)).toEqual(
+            own.map(() => fixture.expectedVariableName),
+          );
         }
       });
     }
@@ -504,7 +510,13 @@ describe('rules tree hygiene', () => {
       expect(existsSync(manifestPath), `rules/${packDir} has no manifest.json`).toBe(true);
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { rules: string[] };
       const onDisk = readdirSync(resolve(RULES_DIR, packDir), { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith('.json') && e.name !== 'manifest.json')
+        .filter(
+          (e) =>
+            e.isFile() &&
+            e.name.endsWith('.json') &&
+            e.name !== 'manifest.json' &&
+            e.name !== 'short-names.json',
+        )
         .map((e) => e.name.replace(/\.json$/, ''))
         .sort();
       expect(onDisk, `rules/${packDir}: manifest.rules and *.json files must agree`).toEqual(

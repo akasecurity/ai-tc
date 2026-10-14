@@ -1014,3 +1014,56 @@ describe("StandaloneDataGateway — a tool call's finding location", () => {
     }
   });
 });
+
+describe("StandaloneDataGateway — a tool call finding's variable name", () => {
+  async function recordNamed(variableName: string | undefined): Promise<string | null> {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordAuditEvent({
+      id: 'sess-name',
+      eventType: 'session',
+      startedAt: new Date().toISOString(),
+    });
+    await gw.recordToolCalls([
+      {
+        sessionId: 'sess-name',
+        toolUseId: 'tool-name',
+        parentId: 'sess-name',
+        rootSessionId: 'sess-name',
+        startedAt: new Date().toISOString(),
+        attributes: { tool_name: 'Bash', tool_use_id: 'tool-name' },
+        inspections: [
+          {
+            ruleId: 'secrets/aws-access-key',
+            ruleName: 'AWS access key',
+            ruleVersion: '1',
+            category: 'secret',
+            severity: 'critical',
+            span: { start: 18, end: 38 },
+            maskedMatch: 'AKIA****************',
+            actionTaken: 'log',
+            confidence: 0.9,
+            ...(variableName === undefined ? {} : { variableName }),
+          },
+        ],
+      },
+    ]);
+    await gw.close();
+    const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT variable_name FROM inspection_findings`).get() as {
+        variable_name: string | null;
+      };
+      return row.variable_name;
+    } finally {
+      raw.close();
+    }
+  }
+
+  it('stores the variable name the reconciler derived', async () => {
+    expect(await recordNamed('AWS_ACCESS_KEY_ID')).toBe('AWS_ACCESS_KEY_ID');
+  });
+
+  it('stores no name for a finding that carries none', async () => {
+    expect(await recordNamed(undefined)).toBeNull();
+  });
+});

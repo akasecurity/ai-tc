@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
-import { getLoadedRules, maskMatch, redact } from '@akasecurity/detections';
+import { getLoadedRules, maskMatch, redact, withVariableNames } from '@akasecurity/detections';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -289,6 +289,7 @@ export function createPluginRuntime(
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
   let evidenceOf = evidenceLookup(rules);
+  let nameOf = new Map<string, string>();
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
   // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
   // is known (see ensureInitialized).
@@ -373,6 +374,7 @@ export function createPluginRuntime(
     }
     rules = [...verified, ...unverified];
     evidenceOf = evidenceLookup(rules);
+    nameOf = new Map(rules.map((rule) => [rule.id, rule.name]));
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     // Raise-only, over the one enforcement ladder: an organization can tighten
@@ -478,6 +480,15 @@ export function createPluginRuntime(
       rewritable,
       ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
     });
+  }
+
+  function ruleNamesOf(findings: readonly MatchResult[]): Record<string, string> | undefined {
+    const names: Record<string, string> = {};
+    for (const { ruleId } of findings) {
+      const name = nameOf.get(ruleId);
+      if (name !== undefined && name !== '') names[ruleId] = name;
+    }
+    return Object.keys(names).length === 0 ? undefined : names;
   }
 
   function decide(
@@ -708,12 +719,14 @@ export function createPluginRuntime(
   }
 
   // The shared scan → exception match → decide → ledger pipeline behind both
-  // processText and capture.
+  // processText and capture. `variableNames` is set only where the findings
+  // are recorded, so a decision-only caller never pays for name extraction.
   async function evaluate(
     text: string,
     context: ScanContext | undefined,
     ctx: ExceptionEvalContext,
     rewritable = true,
+    variableNames = false,
   ): Promise<{ decision: CaptureResult; excepted: Set<MatchResult>; exceptionIds: string[] }> {
     try {
       await ensureInitialized();
@@ -753,10 +766,13 @@ export function createPluginRuntime(
       } else {
         matched = await scanner.scan(shielded.text, context);
       }
-      const findings = dropShieldedFindings(matched, shielded.spans);
+      const unshielded = dropShieldedFindings(matched, shielded.spans);
+      const findings = variableNames ? withVariableNames(unshielded, shielded.text) : unshielded;
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted, rewritable);
+      const ruleNames = ruleNamesOf(findings);
+      if (ruleNames !== undefined) decision.ruleNames = ruleNames;
       const blockedReferences = await recordBlockedDetections(
         decision,
         excepted,
@@ -829,6 +845,7 @@ export function createPluginRuntime(
         preAuthorizedGrantIds: opts.preAuthorizedGrantIds,
       },
       opts.rewritable,
+      true,
     );
     return { decision, excepted, exceptionIds, timingStartedAt };
   }
@@ -991,6 +1008,7 @@ export function createPluginRuntime(
           actionTaken: actionForFinding(match, excepted, opts.rewritable),
           confidence: match.confidence,
           ...(findingKey ? { findingKey } : {}),
+          ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
           location: locate(match),
         };
       });

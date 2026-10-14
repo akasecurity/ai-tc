@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 109 rules.
+// 8 packs / 111 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -42,6 +42,7 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
@@ -99,6 +100,7 @@ import secretsInfraJwtToken from '../../../rules/secrets-infra/jwt-token.json';
 import secretsInfraKubeconfigToken from '../../../rules/secrets-infra/kubeconfig-token.json';
 import secretsInfraPasswordField from '../../../rules/secrets-infra/password-field.json';
 import secretsInfraPgpPrivateKey from '../../../rules/secrets-infra/pgp-private-key.json';
+import secretsInfraSecretConfigValue from '../../../rules/secrets-infra/secret-config-value.json';
 import secretsInfraSshPrivateKey from '../../../rules/secrets-infra/ssh-private-key.json';
 import secretsAnthropicApiKey from '../../../rules/secrets/anthropic-api-key.json';
 import secretsAwsAccessKey from '../../../rules/secrets/aws-access-key.json';
@@ -205,7 +207,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.1.0',
+    version: '0.2.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -214,6 +216,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskGitResetHard,
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
+      commandRiskCredentialFileAccess,
     ],
     shortNames: {
       'command-risk/pkill-broad': 'Broad pkill',
@@ -222,6 +225,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'command-risk/git-reset-hard': 'Git reset --hard',
       'command-risk/curl-pipe-shell': 'Curl piped to shell',
       'command-risk/credential-file-read': 'Credential file read',
+      'command-risk/credential-file-access': 'Credential file read',
     },
   },
   {
@@ -395,7 +399,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.1.3',
+    version: '0.2.0',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,
@@ -406,6 +410,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       secretsInfraBearerToken,
       secretsInfraEnvKeyValue,
       secretsInfraPasswordField,
+      secretsInfraSecretConfigValue,
       secretsInfraDockerConfigAuth,
       secretsInfraKubeconfigToken,
       secretsInfraApiKeyHeader,
@@ -425,6 +430,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       'secrets-infra/kubeconfig-token': 'Kubeconfig token',
       'secrets-infra/api-key-header': 'API key header',
       'secrets-infra/generic-high-entropy-secret': 'High-entropy secret',
+      'secrets-infra/secret-config-value': 'Secret config value',
     },
   },
 ];

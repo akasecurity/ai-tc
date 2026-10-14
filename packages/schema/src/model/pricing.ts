@@ -11,7 +11,7 @@
 //      Claude 3.5 Sonnet v2 at $6/$30 against Anthropic's own $3/$15, exactly
 //      2x — so a reseller entry stays unpriced until someone reads that
 //      platform's own price page.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { CostUsage } from '../token/cost-usage.ts';
 

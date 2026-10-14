@@ -4,7 +4,7 @@
 // the fingerprint pins the grant to the value the user approved, ignoring only
 // invisible padding characters (see stripInvisiblePadding). A
 // value-free, rule-wide suppression is a policy change, not an exception.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory } from './finding.ts';
 

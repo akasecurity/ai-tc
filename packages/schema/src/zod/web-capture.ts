@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { WebSourceTool } from './harness-map.ts';
 import { CaptureStatusAttributes } from './meta.ts';

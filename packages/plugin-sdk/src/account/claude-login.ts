@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,6 @@ import {
 export const CLAUDE_CONFIG_MAX_BYTES = 4 * 1024 * 1024;
 
 const SETTINGS_READ_CHUNK_BYTES = 64 * 1024;
-const NO_FOLLOW = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const COMPANY_CLAUDE_PLANS: ReadonlySet<string> = new Set(['claude_team', 'claude_enterprise']);
@@ -122,14 +121,14 @@ function readWithinCap(fd: number): string | undefined {
   return undefined;
 }
 
-// The layer is opened without following a link and read through that one
-// descriptor, so a link in a checked-out repository, a path swapped after the
-// check and a file that reports a size of 0 cannot carry more than the cap
-// into the parser.
+// The layer is checked and read through one descriptor: it must be a regular
+// file, and at most the cap plus one byte is read from it. A link, a path
+// swapped after the open and a file that reports a size of 0 therefore cannot
+// carry more than the cap into the parser.
 function settingsLayerVetoes(path: string): boolean {
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | NO_FOLLOW);
+    fd = openSync(path, 'r');
   } catch (error) {
     return !isNotFound(error);
   }
@@ -164,8 +163,8 @@ function settingsLayerVetoes(path: string): boolean {
 
 /**
  * True when any settings layer sets an API key helper or an env block that
- * bills elsewhere. A layer that exists but cannot be read or parsed, is larger
- * than the cap, or is a symbolic link counts.
+ * bills elsewhere. A layer that exists but cannot be read or parsed, or is
+ * larger than the cap, counts.
  */
 export function claudeSettingsVeto(paths: readonly string[]): boolean {
   return paths.some(settingsLayerVetoes);

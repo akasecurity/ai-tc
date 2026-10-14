@@ -2,6 +2,7 @@ import type * as Fs from 'node:fs';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { TestContext } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CLAUDE_CONFIG_MAX_BYTES, claudeSettingsVeto } from '../../src/account/claude-login.ts';
@@ -53,6 +54,14 @@ afterEach(() => {
   machine.dispose();
 });
 
+const link = (ctx: TestContext, target: string, path: string): void => {
+  try {
+    symlinkSync(target, path);
+  } catch {
+    ctx.skip('symbolic links cannot be created here');
+  }
+};
+
 const sized = (bytes: number): string => {
   const head = '{"pad":"';
   const tail = '"}';
@@ -86,11 +95,29 @@ describe('a settings layer read for a veto', () => {
     expect(claudeSettingsVeto([layer])).toBe(true);
   });
 
-  it.runIf(process.platform !== 'win32')('vetoes a layer that is a symbolic link', () => {
+  it('reads a layer that is a symbolic link to an ordinary file', (ctx) => {
     const target = join(machine.root, 'layers', 'target.json');
     writeFileSync(target, '{"theme":"dark"}');
-    symlinkSync(target, layer);
+    link(ctx, target, layer);
+    expect(claudeSettingsVeto([layer])).toBe(false);
+    writeFileSync(target, '{"apiKeyHelper":"/usr/local/bin/key-helper"}');
     expect(claudeSettingsVeto([layer])).toBe(true);
-    expect(claudeSettingsVeto([target])).toBe(false);
+  });
+
+  it('vetoes a layer that is a link to a file over the cap', (ctx) => {
+    const target = join(machine.root, 'layers', 'target.json');
+    writeFileSync(target, sized(CLAUDE_CONFIG_MAX_BYTES + 1));
+    link(ctx, target, layer);
+    expect(claudeSettingsVeto([layer])).toBe(true);
+  });
+
+  it('leaves a link to a directory, and a link to a device, alone', (ctx) => {
+    const directory = join(machine.root, 'layers', 'directory');
+    mkdirSync(directory);
+    link(ctx, directory, layer);
+    expect(claudeSettingsVeto([layer])).toBe(false);
+    const device = join(machine.root, 'layers', 'device.json');
+    link(ctx, '/dev/zero', device);
+    expect(claudeSettingsVeto([device])).toBe(false);
   });
 });

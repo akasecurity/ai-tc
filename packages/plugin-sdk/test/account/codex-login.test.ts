@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type * as Fs from 'node:fs';
 import {
   chmodSync,
+  constants,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -22,16 +23,27 @@ import {
 import { readCodexHead } from '../../src/account/codex-head.ts';
 import type { CodexLogin } from '../../src/account/codex-login.ts';
 import {
+  AUTH_CLAIMS,
   CODEX_AUTH_MAX_BYTES,
   CODEX_DROPPED_FIELDS,
   CODEX_PRESENCE_FIELDS,
   codexAuthFingerprint,
   COMPANY_CHATGPT_PLANS,
   inspectCodexLogin,
+  PROFILE_CLAIMS,
   readCodexLogin,
 } from '../../src/account/codex-login.ts';
 import type { CodexMachine } from '../helpers/fake-jwt.ts';
-import { codexClaims, codexMachine, fakeJwt, standardAlphabetJwt } from '../helpers/fake-jwt.ts';
+import {
+  codexClaims,
+  codexMachine,
+  fakeJwt,
+  FIXTURE_AUTH_CLAIMS,
+  FIXTURE_DROPPED_FIELDS,
+  FIXTURE_PRESENCE_FIELDS,
+  FIXTURE_PROFILE_CLAIMS,
+  standardAlphabetJwt,
+} from '../helpers/fake-jwt.ts';
 import { fixtureEmail, otherHost } from '../helpers/transcript-builder.ts';
 
 const opened = vi.hoisted(() => ({ paths: [] as string[] }));
@@ -182,7 +194,7 @@ describe('inspectCodexLogin', () => {
   it('refuses an absent mode beside an API key or another login kind, following Codex order', () => {
     machine.writeAuth({ authMode: null, apiKey: randomUUID() });
     expect(inspect()).toEqual({ status: 'mode' });
-    for (const field of CODEX_PRESENCE_FIELDS.slice(1)) {
+    for (const field of FIXTURE_PRESENCE_FIELDS.slice(1)) {
       machine.writeAuth({ authMode: null, extra: { [field]: { id: randomUUID() } } });
       expect(inspect(), field).toEqual({ status: 'mode' });
     }
@@ -268,7 +280,7 @@ describe('inspectCodexLogin', () => {
     },
   );
 
-  it('on win32 skips the owner and mode checks, and still refuses a symlink', () => {
+  it('on win32 skips the owner and mode checks', () => {
     const written = machine.writeAuth();
     const onWindows = () => inspectCodexLogin(machine.codexHome, digest(), 'win32');
     chmodSync(written.path, 0o666);
@@ -278,13 +290,23 @@ describe('inspectCodexLogin', () => {
       const self = process.getuid?.() ?? 0;
       vi.spyOn(process as { getuid: () => number }, 'getuid').mockReturnValue(self + 1);
       expect(onWindows().status).toBe('ok');
-      vi.restoreAllMocks();
-      const target = join(machine.root, 'elsewhere.json');
-      writeFileSync(target, readFileSync(written.path), { mode: 0o600 });
-      rmSync(written.path);
-      symlinkSync(target, written.path);
-      expect(onWindows()).toEqual({ status: 'malformed' });
     }
+  });
+
+  it('on win32 refuses a symlink by its own lstat check, without a no-follow open', (ctx) => {
+    const written = machine.writeAuth();
+    const target = join(machine.root, 'elsewhere.json');
+    writeFileSync(target, readFileSync(written.path), { mode: 0o600 });
+    const onWindows = () =>
+      inspectCodexLogin(machine.codexHome, digest(), 'win32', constants.O_RDONLY);
+    expect(onWindows().status).toBe('ok');
+    rmSync(written.path);
+    try {
+      symlinkSync(target, written.path);
+    } catch {
+      ctx.skip('this host cannot create a symlink');
+    }
+    expect(onWindows()).toEqual({ status: 'malformed' });
   });
 });
 
@@ -337,6 +359,15 @@ describe('the login file fingerprint', () => {
   });
 });
 
+describe('the login file field and claim names', () => {
+  it("are the ones the fixture writes, spelled out apart from the reader's own constants", () => {
+    expect([...CODEX_DROPPED_FIELDS].sort()).toEqual([...FIXTURE_DROPPED_FIELDS].sort());
+    expect([...CODEX_PRESENCE_FIELDS].sort()).toEqual([...FIXTURE_PRESENCE_FIELDS].sort());
+    expect(AUTH_CLAIMS).toBe(FIXTURE_AUTH_CLAIMS);
+    expect(PROFILE_CLAIMS).toBe(FIXTURE_PROFILE_CLAIMS);
+  });
+});
+
 describe('no token is kept', () => {
   it('a fake access token is never retained', () => {
     const written = machine.writeAuth();
@@ -354,7 +385,7 @@ describe('no token is kept', () => {
   it('a malformed file returns undefined with nothing thrown or logged', () => {
     mkdirSync(machine.codexHome, { recursive: true });
     const hidden = ['fixture', randomUUID()].join('-');
-    const torn = JSON.stringify({ tokens: { [CODEX_DROPPED_FIELDS[1]]: hidden } }).slice(0, -2);
+    const torn = JSON.stringify({ tokens: { [FIXTURE_DROPPED_FIELDS[1]]: hidden } }).slice(0, -2);
     writeFileSync(join(machine.codexHome, 'auth.json'), torn, { mode: 0o600 });
     const spies = [
       vi.spyOn(console, 'error'),

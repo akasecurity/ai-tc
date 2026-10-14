@@ -441,3 +441,40 @@ describe('Rule.evidence', () => {
     expect(Rule.safeParse(validRule({ evidence: 'snippet' })).success).toBe(false);
   });
 });
+
+// Each regex probe's answer is kept per pattern and flags for the life of the
+// process, so a rule parsed a second time reuses it. These pin that a reused
+// answer is the right one: a repeated parse refuses what the first refused, and
+// no pattern/flags pair is mistaken for another that spells the same text.
+describe('Rule regex probes answer the same on a repeated parse', () => {
+  const matcher = (m: Record<string, unknown>) => Rule.safeParse(validRule({ matcher: m }));
+
+  it('refuses an invalid, an empty-matching and an out-of-range rule every time', () => {
+    for (let pass = 0; pass < 2; pass++) {
+      expect(
+        matcher({ type: 'regex', pattern: '(', flags: 'g' }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(
+        matcher({ type: 'regex', pattern: '\\d*', flags: 'g' }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(
+        matcher({ type: 'regex', pattern: 'a(b)', flags: 'g', captureGroup: 2 }).success,
+        `pass ${String(pass)}`,
+      ).toBe(false);
+      expect(matcher({ type: 'regex', pattern: 'a(b)', flags: 'g', captureGroup: 1 }).success).toBe(
+        true,
+      );
+    }
+  });
+
+  it('keeps flags and pattern apart', () => {
+    // `x` is an invalid flag, so the first is refused; the second spells the
+    // same characters with the boundary moved and is a valid rule. A key that
+    // only concatenated the two would hand one the other's verdict.
+    expect(matcher({ type: 'regex', pattern: 'yz', flags: 'gx' }).success).toBe(false);
+    expect(matcher({ type: 'regex', pattern: 'xyz', flags: 'g' }).success).toBe(true);
+    expect(matcher({ type: 'regex', pattern: 'yz', flags: 'gx' }).success).toBe(false);
+  });
+});

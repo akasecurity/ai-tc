@@ -49,6 +49,13 @@ never observed, and VS Code blocks through exit 2, which no path in this plugin
 takes. A tool result is also too late by construction — the tool has already
 run, and what is at stake is only whether its output reaches the model.
 
+**A prompt or tool result too large to scan in time is reported, not
+refused.** A field of 32,768 characters or more is scanned in a separate thread
+under a deadline. If that scan does not finish — or there is no thread to run it
+in — AKA says the text was too large to scan and that it went to the model
+unchanged. It is never treated as clean, and never stopped: neither event has a
+channel to stop it with.
+
 **There is still no history backfill.** Nothing reads the sessions that
 happened before AKA was installed, or any session's own transcript on disk.
 `aka scan` and the dashboard cover the working tree after the fact.
@@ -96,8 +103,9 @@ it has no local store of its own.
 **Nothing in the session says where its activity goes.** On a machine attached
 to the organization's control plane, the Claude Code and Codex plugins print one
 line at session start: forwarding everything, forwarding for the enrolled
-repository the session is in, or local-only. This adapter wires no
-session-start event, so no such line is printed on any surface here. `aka
+repository the session is in, or local-only. This adapter's session-start hook
+opens the session root and writes nothing to either channel, so no such line is
+printed on any surface here. `aka
 status` shows whether this machine is attached, whether it sends everything or
 only enrolled repositories, and which repositories are enrolled.
 

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import { unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
 import {
   promptDecision,
   promptPersist,
@@ -114,6 +115,23 @@ describe('promptDecision', () => {
       });
     }
   });
+
+  // A refused scan arrives as `block` with NO findings — the shape every check
+  // below reads as clean. It is read first, on both events, and reported as
+  // unscanned on the dialect's own channel rather than as clean or as blocked.
+  it.each(['timeout', 'unavailable'] as const)(
+    'reports a %s refusal as unscanned on both events, never as clean',
+    (scanIncomplete) => {
+      const message = unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged');
+      const refused = { action: 'block' as const, findings: [], scanIncomplete };
+      for (const event of ['submitted', 'transformed'] as const) {
+        expect(promptDecision(event, 'cli', refused)).toEqual({ output: null, notice: message });
+        expect(promptDecision(event, 'vscode', refused)).toEqual({
+          output: { systemMessage: message },
+        });
+      }
+    },
+  );
 
   it('says nothing for the transformed event even with findings', () => {
     // The submitted event owns the user-facing message, and the user's own

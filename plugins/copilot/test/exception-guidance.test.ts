@@ -9,6 +9,7 @@ import {
   blockMessage,
   exceptionPointer,
   tooLargeToScanMessage,
+  unscannedTooLargeMessage,
   withheldBanner,
   withheldToolText,
 } from '../src/exception-guidance.ts';
@@ -190,5 +191,20 @@ describe('tooLargeToScanMessage', () => {
       'This bash call is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.',
     );
     expect(tooLargeToScanMessage('bash call')).not.toContain('aka exception');
+  });
+});
+
+// The capture-only counterpart: the field went through, so the sentence must
+// say it was not checked without claiming a block it could not carry out.
+describe('unscannedTooLargeMessage', () => {
+  it('says the content was not checked and where it went, and claims no block', () => {
+    const message = unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged');
+    expect(message).toBe(
+      'AKA could not scan this prompt within the time limit because it is too large, so ' +
+        'nothing in it was checked and it was sent to the model unchanged. Shorten it or ' +
+        'send it in smaller parts to have it scanned.',
+    );
+    expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
+    expect(message).not.toContain('aka exception');
   });
 });

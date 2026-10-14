@@ -16,8 +16,9 @@
  * A real `node:sqlite` store in a real temp dir, per CLAUDE.md's Testing
  * section: nothing here is mocked, because what is being checked is SQLite's
  * own semantics around a content-addressed root written after its children.
- * The root is opened through the hook's own handler (`runSessionStart`), fed
- * the recorded payload, so what is ordered is what the hook really does.
+ * Both captures go through the hooks' own handlers (`runUserPromptSubmit`,
+ * then `runSessionStart`), each fed its recorded payload, so what is ordered is
+ * what the two hooks really do.
  */
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,19 +26,19 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import {
-  createPluginRuntime,
+  bundledDetections,
   loadConfig,
   type PluginConfig,
   resolveCopilotProvider,
 } from '@akasecurity/plugin-sdk';
-import { HARNESS, SOURCE_TOOL } from '@akasecurity/schema';
+import { HARNESS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { readSessionStartFacts } from '../../src/hooks/session-start-payload.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
+import { runUserPromptSubmit } from '../../src/hooks/user-prompt-submit-run.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures', 'cli');
@@ -65,22 +66,13 @@ function config(): PluginConfig {
   return loadConfig(akaHome, resolveCopilotProvider);
 }
 
-/** Write one prompt capture the way the userPromptSubmitted hook will. */
+/**
+ * Run the userPromptSubmitted handler on the recorded CLI payload, re-pointed
+ * at `cwd`, with `text` as the prompt.
+ */
 async function capturePrompt(sessionId: string, text: string): Promise<void> {
-  const cfg = config();
-  const runtime = createPluginRuntime(resolveDataGateway(cfg), cfg.settings, {
-    dataDir: cfg.dataDir,
-  });
-  try {
-    await runtime.capture({
-      kind: 'prompt',
-      sourceTool: SOURCE_TOOL.Copilot,
-      text,
-      metadata: { sessionId },
-    });
-  } finally {
-    await runtime.close();
-  }
+  const payload = { ...fixture('userPromptSubmitted.json'), sessionId, cwd, prompt: text };
+  await runUserPromptSubmit('userPromptSubmitted', JSON.stringify(payload), { akaHome });
 }
 
 /** Run the sessionStart handler on the recorded CLI payload, re-pointed at `cwd`. */
@@ -91,6 +83,17 @@ async function openSession(sessionId: string): Promise<void> {
     homeDir: home,
   });
   expect(output).toBeUndefined();
+}
+
+const RULE_ID = 'secrets/twilio-key';
+
+/** A rule's own example, so no credential-shaped literal is written here. */
+function exampleOf(ruleId: string): string {
+  const example = bundledDetections()
+    .flatMap((pack) => pack.rules)
+    .find((rule) => rule.id === ruleId)?.examples?.[0];
+  if (example === undefined) throw new Error(`bundled rule ${ruleId} has no example`);
+  return example;
 }
 
 function rows(sql: string): Record<string, unknown>[] {
@@ -166,6 +169,21 @@ describe('sessionStart arriving after the session’s first prompt', () => {
     expect(attrs.harness_interface).toBe('cli');
     // Unresolved, and recorded as unresolved rather than as a guessed backend.
     expect(attrs.provider).toBe('unknown');
+  });
+
+  // The finding a pre-root prompt carries is attributed to the root opened
+  // after it, not orphaned under a session nobody opened.
+  it('attributes a finding in the first prompt to the session opened after it', async () => {
+    const sessionId = defined(readSessionStartFacts(fixture('sessionStart.json')).sessionId);
+    await capturePrompt(sessionId, `deploy ${exampleOf(RULE_ID)}`);
+    await openSession(sessionId);
+
+    const found = rows(
+      `SELECT d.rule_id, e.root_session_id FROM inspection_findings f
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         JOIN audit_events e ON e.id = f.audit_event_id`,
+    );
+    expect(found).toEqual([{ rule_id: RULE_ID, root_session_id: sessionId }]);
   });
 
   // The once-per-session claim has to survive a host that fires sessionStart

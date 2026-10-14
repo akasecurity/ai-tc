@@ -1,7 +1,7 @@
 /**
- * The Copilot capture site stamps the scope key of the checkout its payload
- * names, driven through the REAL built pre-tool-use hook against a throwaway
- * store. The entry runs main() on import, so the row it writes is the only
+ * The Copilot capture sites stamp the scope key of the checkout their payload
+ * names, driven through the REAL built pre-tool-use and user-prompt-submit
+ * hooks against a throwaway store. The entry runs main() on import, so the row it writes is the only
  * place a missing `scopeKey` shows.
  *
  * Copilot is stricter than the other hosts about WHERE the key of a capture
@@ -32,6 +32,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/copilot
 const PLUGIN_ROOT = join(HERE, '..', '..');
 const SCRIPT = join(PLUGIN_ROOT, 'scripts', 'pre-tool-use.js');
+const PROMPT_SCRIPT = join(PLUGIN_ROOT, 'scripts', 'user-prompt-submit.js');
 const MANIFEST = join(PLUGIN_ROOT, 'plugin.json');
 
 // The userinfo in an scp-style remote (`<user>@<host>:path`) reads as an email
@@ -83,8 +84,9 @@ function runHook(
   home: string,
   payload: unknown,
   processCwd: string,
+  script: string = SCRIPT,
 ): { status: number; stderr: string } {
-  const result = spawnSync(process.execPath, [SCRIPT, event, MANIFEST], {
+  const result = spawnSync(process.execPath, [script, event, MANIFEST], {
     cwd: processCwd,
     env: { HOME: home, USERPROFILE: home },
     input: JSON.stringify(payload),
@@ -275,5 +277,72 @@ describe('a VS Code single-file write is keyed by the file it writes, or not at 
       expect(run.status, run.stderr).toBe(0);
       expectEveryCapture(home, { kind: 'code_change', scopeKey: null, repo: 'work-repo' });
     }, 'aka-copilot-scope-key-write-failclosed-');
+  });
+});
+
+// A prompt names no file, so it is keyed like any other call that names none:
+// by the cwd the payload carries, and never by the hook process's own.
+function cliPrompt(cwd: string | undefined): Record<string, unknown> {
+  return {
+    sessionId: SESSION_ID,
+    timestamp: 1788547858031,
+    ...(cwd === undefined ? {} : { cwd }),
+    prompt: 'run the shell command: false',
+  };
+}
+
+function vscodePrompt(cwd: string): Record<string, unknown> {
+  return {
+    hook_event_name: 'UserPromptSubmit',
+    session_id: SESSION_ID,
+    cwd,
+    prompt: 'run the shell command: false',
+  };
+}
+
+describe('user-prompt-submit stamps the scope key of the cwd its payload names', () => {
+  // A submitted prompt is recorded clean or not, so no policy is seeded: the
+  // row itself is the positive control `expectEveryCapture` counts.
+  it('CLI dialect: the prompt row carries the canonical repo key', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'userPromptSubmitted',
+        home,
+        cliPrompt(checkout(home)),
+        home,
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-cli-');
+  });
+
+  it('VS Code dialect with a declared cwd: keyed the same way', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'UserPromptSubmit',
+        home,
+        vscodePrompt(checkout(home)),
+        home,
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-vscode-');
+  });
+
+  it('no payload cwd: no key, though the hook runs inside a keyed checkout', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'userPromptSubmitted',
+        home,
+        cliPrompt(undefined),
+        checkout(home),
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      // The slug took the CLI's process-cwd fallback; the key did not.
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: null, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-nocwd-');
   });
 });

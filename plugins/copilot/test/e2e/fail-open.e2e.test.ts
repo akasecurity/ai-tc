@@ -28,7 +28,8 @@ import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plu
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { tooLargeToScanMessage } from '../../src/exception-guidance.ts';
+import { tooLargeToScanMessage, unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -451,17 +452,19 @@ const CAPTURE_HOOKS = [
   { script: 'post-tool-use.js', cli: 'postToolUse', vscode: 'PostToolUse' },
 ] as const;
 
-function runScript(script: string, event: string, home: string, input: string | Buffer): HookRun {
-  const result = spawnSync(
-    process.execPath,
-    [join(PLUGIN_ROOT, 'scripts', script), event, MANIFEST],
-    {
-      env: { HOME: home, USERPROFILE: home },
-      input,
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    },
-  );
+function runScript(
+  script: string,
+  event: string,
+  home: string,
+  input: string | Buffer,
+  scriptsDir: string = SCRIPTS_DIR,
+): HookRun {
+  const result = spawnSync(process.execPath, [join(scriptsDir, script), event, MANIFEST], {
+    env: { HOME: home, USERPROFILE: home },
+    input,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
   const { error, status, stdout, stderr } = result as unknown as {
     error?: Error;
     status: number | null;
@@ -646,6 +649,9 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       const text = notice(run);
       expect(text).toContain(RULE_ID);
       expect(text).toContain('unchanged');
+      // Named by rule, never by value — on both channels, after the control above.
+      expectNoEchoOf(run.stdout, FIXTURE.example);
+      expectNoEchoOf(run.stderr, FIXTURE.example);
       // No verdict, ever: there is no prompt-stop channel on either host that
       // this repository has confirmed, and exit 2 is VS Code's block channel.
       expect(run.status).not.toBe(2);
@@ -723,6 +729,72 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       }, `aka-copilot-nudge-${kind}-`);
       expect(run.status, run.stderr).toBe(0);
       expect(notice(run)).toContain('AKA is active');
+    });
+  },
+  120_000,
+);
+
+// ─── A prompt too large to scan in time: reported, not refused ──────────────
+//
+// The prompt hook is built with the same large-input bound as preToolUse, but
+// it has no channel to stop a prompt, so a scan that does not finish is not a
+// refusal here. What it must not be is SILENCE: a refused scan has no findings,
+// which reads exactly like a clean prompt. The worker is removed from a copy of
+// the build, as for the preToolUse rows, and the intact build is the control —
+// there the same prompt is scanned, and its secret is found.
+describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode')))(
+  'user-prompt-submit [%s] — a prompt too large to scan in time',
+  (kind) => {
+    const isCli = kind === 'cli';
+    const event = isCli ? 'userPromptSubmitted' : 'UserPromptSubmit';
+    const filler = 'lorem ipsum dolor sit amet '.repeat(
+      Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+    );
+    const payload = JSON.stringify(
+      capturePayload('user-prompt-submit.js', event, `deploy ${FIXTURE.example} ${filler}`),
+    );
+
+    /** The message on this dialect's own channel; the other one stays empty of it. */
+    function notice(run: HookRun): string {
+      if (isCli) {
+        noObject(run);
+        return run.stderr;
+      }
+      return String((soleObject(run) as Record<string, unknown>).systemMessage);
+    }
+
+    it('with no worker to scan it → says it was not scanned, exit 0, no verdict', () => {
+      const run = withTempHome((dir) => {
+        const scriptsDir = join(dir, 'scripts');
+        cpSync(SCRIPTS_DIR, scriptsDir, { recursive: true });
+        rmSync(join(scriptsDir, 'scan-worker.js'));
+        expect(existsSync(join(scriptsDir, 'scan-worker.js'))).toBe(false);
+        const home = join(dir, 'home');
+        mkdirSync(home);
+        seedPolicy(home, 'block');
+        markOnboarded(home);
+        return runScript('user-prompt-submit.js', event, home, payload, scriptsDir);
+      }, `aka-copilot-prompt-no-worker-${kind}-`);
+
+      const text = notice(run);
+      expect(text).toContain(
+        unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'),
+      );
+      expect(run.stdout).not.toContain('permissionDecision');
+      expect(run.stdout).not.toContain('"decision"');
+      expectNoEchoOf(run.stdout, FIXTURE.example);
+      expectNoEchoOf(run.stderr, FIXTURE.example);
+    });
+
+    it('with the worker in place → scanned, so the secret is found and named', () => {
+      const run = withTempHome((home) => {
+        seedPolicy(home, 'warn');
+        markOnboarded(home);
+        return runScript('user-prompt-submit.js', event, home, payload);
+      }, `aka-copilot-prompt-with-worker-${kind}-`);
+      const text = notice(run);
+      expect(text).toContain(RULE_ID);
+      expect(text).not.toContain('could not scan');
     });
   },
   120_000,

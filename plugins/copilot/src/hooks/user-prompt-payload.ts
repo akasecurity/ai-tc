@@ -1,8 +1,7 @@
 // The pure half of the prompt hook: which text an event carries, how durably
-// it is recorded, and what the hook says about a scan of it. Split out of the
-// entry script so it can be unit-tested WITHOUT importing the entry (whose
-// top-level `runHookFailOpen(main)` reads stdin and would block collection
-// forever). Same split as ./pre-tool-use-decision.ts.
+// it is recorded, and what the hook says about a scan of it. Kept apart from
+// the handler (./user-prompt-submit-run.ts) so it unit-tests with no store at
+// all. Same split as ./pre-tool-use-decision.ts.
 //
 // ONE READER COVERS TWO CLI EVENTS, and they must not be conflated:
 //
@@ -26,7 +25,7 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { exceptionPointer } from '../exception-guidance.ts';
+import { exceptionPointer, unscannedTooLargeMessage } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
 import type { HookOutput } from './shared.ts';
@@ -120,9 +119,17 @@ export interface PromptDecision {
  * says block has to be able to tell that it did not take effect here.
  * `skills/setup/SKILL.md`'s Known limitations carries the same fact.
  *
- * The transformed event never speaks: the submitted one owns the message, and
- * the user's own words are inside both, so a second copy for the same secret is
- * noise.
+ * The transformed event never speaks about a finding: the submitted one owns
+ * the message, and the user's own words are inside both, so a second copy for
+ * the same secret is noise.
+ *
+ * A REFUSED scan (`scanIncomplete`) is read FIRST, on both events. A field too
+ * large to scan within the hook's deadline comes back with `action: 'block'`
+ * and NO findings — which every check below would read as clean and say
+ * nothing about. It is not refused here either: neither host has a prompt-stop
+ * channel, so the prompt went out, and the sentence says it went out without
+ * being checked. The transformed event speaks here too, because its text is the
+ * larger of the two and can be the only one that did not finish.
  *
  * IT TAKES THE DIALECT ONLY TO CHOOSE THE CHANNEL, never to change the words.
  * On VS Code `systemMessage` is a documented top-level key; the Copilot CLI's
@@ -134,8 +141,15 @@ export function promptDecision(
   dialect: Dialect,
   result: Pick<CaptureResult, 'action' | 'findings'> & {
     blockedReferences?: readonly BlockedDetectionRef[] | undefined;
+    scanIncomplete?: CaptureResult['scanIncomplete'];
   },
 ): PromptDecision {
+  if (result.scanIncomplete !== undefined) {
+    return onChannel(
+      dialect,
+      unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'),
+    );
+  }
   if (event === 'transformed') return { output: null };
   if (result.findings.length === 0) return { output: null };
 
@@ -152,7 +166,11 @@ export function promptDecision(
     message = `AKA flagged sensitive content in this prompt (${ruleIds}) — sent unchanged.${pointer}`;
   }
   if (message === undefined) return { output: null };
+  return onChannel(dialect, message);
+}
 
+/** A message on the channel the dialect has for one: stderr on the CLI, stdout under VS Code. */
+function onChannel(dialect: Dialect, message: string): PromptDecision {
   return dialect === 'cli'
     ? { output: null, notice: message }
     : { output: { systemMessage: message } };

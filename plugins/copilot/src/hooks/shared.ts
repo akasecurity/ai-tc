@@ -370,6 +370,13 @@ export interface HookHandlerOptions {
   akaHome?: string | undefined;
   /** The home directory host config is read under. Defaults to the OS home. */
   homeDir?: string | undefined;
+  /**
+   * Where a bounded scan's worker script lives. Defaults to the one beside the
+   * running script. A location with no worker in it is an install that never
+   * shipped one, which is how a caller drives the large-input refusal without
+   * racing a slow scan.
+   */
+  scanWorkerUrl?: URL | undefined;
 }
 
 /**
@@ -380,6 +387,12 @@ export interface HookHandlerOptions {
  * A handler reads neither the event token nor stdin itself and never exits,
  * so a test drives it in-process against a temp home. The entry script is
  * `runHookEntry(handler)` and nothing else.
+ *
+ * Those two are the only process inputs lifted into parameters. A handler may
+ * still read the rest of argv: `runSessionStart` takes the plugin manifest path
+ * from argv[3] (`harnessVersionFromArgv`), and in-process that slot holds
+ * whatever the test runner was started with — so a handler test should not
+ * assert on anything derived from it.
  */
 export type HookHandler = (
   event: string | undefined,

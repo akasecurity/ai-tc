@@ -71,6 +71,21 @@ export function tooLargeToScanMessage(subject: string): string {
   return `This ${subject} is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.`;
 }
 
+// The same fact for a surface that CANNOT refuse: a capture-only event (a
+// prompt, a tool result) whose bounded scan did not finish. The field went
+// through anyway, so this must never say it was blocked — and it must never
+// read as clean either, because nothing in it was checked. `delivered` is the
+// clause saying where the content went, e.g. 'it was sent to the model
+// unchanged' or 'the output reached the model unchanged'. Like the refusal
+// above it names no rule and offers no exception.
+export function unscannedTooLargeMessage(subject: string, delivered: string): string {
+  return (
+    `AKA could not scan this ${subject} within the time limit because it is too large, ` +
+    `so nothing in it was checked and ${delivered}. ` +
+    'Shorten it or send it in smaller parts to have it scanned.'
+  );
+}
+
 // One trailing sentence for the redact/warn systemMessage branches: redacted
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when

@@ -88,7 +88,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     argHint:
       '[path | --repo <url> | --account <key> [--yes] | --work-subscriptions | --list | --list-detected]',
     summary:
-      'Choose which repositories and web chat accounts a scoped attachment sends; --list shows them',
+      'Choose which repositories and Claude accounts (Claude Code sessions and claude.ai chats) a scoped attachment sends; --list shows them',
     // In `args`, not `flags`, like `sync-history`'s switches: the help prints a
     // command's own flags on the one line under it.
     args: ['--repo', '--account', '--yes', '--work-subscriptions', '--list', '--list-detected'],
@@ -96,7 +96,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: 'unenroll',
     argHint: '[path | --repo <url> | --account <key> | --work-subscriptions]',
-    summary: 'Stop sending a repository or a web chat account from a scoped attachment',
+    summary: 'Stop sending a repository or a Claude account from a scoped attachment',
     args: ['--repo', '--account', '--work-subscriptions'],
   },
   {

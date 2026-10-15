@@ -12,7 +12,10 @@ import { readHookFailOpens } from '@akasecurity/plugin-sdk';
 import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
 import {
   accountContextFor,
+  chatgptKey,
   claudeLoginCheck,
+  codexEnvVetoed,
+  inspectCodexLogin,
   isAccountMatch,
 } from '@akasecurity/plugin-sdk/account';
 import type {
@@ -94,6 +97,8 @@ export interface RenderAttachedStatusDeps {
   claudePaths?: ClaudeLoginPaths | undefined;
   /** The project whose Claude Code settings layers can veto the login. Defaults to the working directory. */
   cwd?: string | undefined;
+  /** Codex's home directory, whose login file the Codex line describes. Absent, no Codex login is read. */
+  codexHome?: string | undefined;
 }
 
 /**
@@ -356,6 +361,127 @@ function claudeCodeLoginLine(view: ClaudeCodeLoginView): string {
   return `Claude Code — ${CLAUDE_CODE_LOGIN_LINES[view.state](key)}`;
 }
 
+/** What the Codex login signed in now is, as `aka status` and `aka enroll --list-detected` show it. */
+export type CodexLoginState =
+  | 'manual'
+  | 'remembered'
+  | 'would-validate'
+  | 'off'
+  | 'cap-reached'
+  | 'email'
+  | 'plan'
+  | 'plan-unconfirmed'
+  | 'veto'
+  | 'attached-user-unknown'
+  | 'absent'
+  | 'unreadable';
+
+export interface CodexLoginView {
+  /** The login's workspace key, for the user's own terminal; undefined when no login is named. */
+  readonly key: string | undefined;
+  readonly planState: AccountPlanState | undefined;
+  readonly state: CodexLoginState;
+}
+
+export interface CodexLoginViewInput {
+  /** The identity record, only when it holds for this endpoint and credential. */
+  readonly identity: AttachedIdentity | undefined;
+  /** The stored `attachmentScope`, raw. */
+  readonly scope: unknown;
+  readonly endpoint: string;
+  /** Codex's home directory; without one no login file is read. */
+  readonly codexHome: string | undefined;
+}
+
+/**
+ * The Codex login signed in now, checked the way a new thread would be, without a
+ * thread: the same login reader, the address compared by digest, the plan read as
+ * a state. An account enrolled by hand counts first. The opt-out is checked last,
+ * so a personal plan reads as one whether or not the user opted out, and `off`
+ * names only a login that would otherwise count. The key and the plan state are
+ * given before the device knows who attached it, so `aka enroll` can ask about a
+ * personal plan before the first sync. Persists nothing. Never throws.
+ */
+export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
+  const unnamed = (state: CodexLoginState): CodexLoginView => ({
+    key: undefined,
+    planState: undefined,
+    state,
+  });
+  try {
+    if (codexEnvVetoed()) return unnamed('veto');
+    if (input.codexHome === undefined) return unnamed('absent');
+    const read = inspectCodexLogin(input.codexHome, input.identity?.attachedUserDigest);
+    if (read.status === 'absent') return unnamed('absent');
+    if (read.status !== 'ok') return unnamed('unreadable');
+    const { login } = read;
+    const key = chatgptKey(login.accountId);
+    const named = (state: CodexLoginState): CodexLoginView => ({
+      key,
+      planState: login.planState,
+      state,
+    });
+    if (input.identity === undefined) return named('attached-user-unknown');
+    if (manualCodingKeys(input.scope, input.endpoint).has(key)) return named('manual');
+    if (!login.emailMatchesAttached) return named('email');
+    if (login.planState === 'other') return named('plan');
+    const learned = input.identity.workAccounts.map((entry) => entry.identity);
+    const on = workSubscriptionsOn(input.scope);
+    if (learned.includes(key)) return named(on ? 'remembered' : 'off');
+    if (login.planState === 'absent') return named('plan-unconfirmed');
+    if (!on) return named('off');
+    if (learned.length >= ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX) return named('cap-reached');
+    return named('would-validate');
+  } catch {
+    return unnamed('unreadable');
+  }
+}
+
+/** The account keys enrolled by hand for coding-agent sessions on this deployment. */
+function manualCodingKeys(scope: unknown, endpoint: string): Set<string> {
+  const record = parseAttachmentScope(scope);
+  if (record === undefined || !isAttachmentScopeValid(scope, endpoint)) return new Set();
+  return new Set(
+    record.entries
+      .filter((entry) => entry.kind === 'account' && entry.codingAgents === true)
+      .map((entry) => entry.identity),
+  );
+}
+
+const CODEX_FORWARDS =
+  'a work subscription for the attached user — its new threads forward from any folder';
+
+/**
+ * The this-login reason for each Codex state, given the key as it prints. An
+ * exhaustive Record, so a state added later fails typecheck here.
+ */
+const CODEX_LOGIN_LINES: Record<CodexLoginState, (key: string) => string> = {
+  manual: () => 'an account you enrolled by hand — its new threads forward from any folder',
+  remembered: () => CODEX_FORWARDS,
+  'would-validate': () => CODEX_FORWARDS,
+  off: () =>
+    'a work subscription for the attached user — not sent, because work subscriptions are off on this device',
+  'cap-reached': () =>
+    `a work subscription, but this device already recognises ${String(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX)} — threads follow the repository rule`,
+  email: () => 'signed in with a different email than the AKA user who attached this device',
+  plan: () => 'not a ChatGPT workspace plan — threads follow the repository rule',
+  'plan-unconfirmed': (key) =>
+    `plan not shown in Codex's login — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  veto: () => 'an API key or another provider is in use',
+  'attached-user-unknown': () => 'not checked until this machine syncs',
+  absent: () => 'login file not found',
+  unreadable: () => 'not a ChatGPT login this device can read',
+};
+
+/** The Codex this-login line. The key prints on the user's own terminal, as the Claude Code line prints its key. */
+function codexLoginLine(view: CodexLoginView): string {
+  const key =
+    view.key === undefined
+      ? 'chatgpt:<workspace-id>'
+      : printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return `Codex — ${CODEX_LOGIN_LINES[view.state](key)}`;
+}
+
 /**
  * The this-login block: one line per coding agent under one label, or the
  * collapsed line off a terminal, and nothing when no login was read.
@@ -496,6 +622,18 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
             endpoint: connection.endpoint,
             cwd: deps.cwd ?? process.cwd(),
             paths: deps.claudePaths,
+          }),
+        ),
+      );
+    }
+    if (work !== undefined && deps.codexHome !== undefined) {
+      loginLines.push(
+        codexLoginLine(
+          codexLoginView({
+            identity: heldIdentity,
+            scope: settings.attachmentScope,
+            endpoint: connection.endpoint,
+            codexHome: deps.codexHome,
           }),
         ),
       );

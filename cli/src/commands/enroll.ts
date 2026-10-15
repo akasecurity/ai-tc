@@ -26,15 +26,22 @@ import {
   turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
-import type { ClaudeCodeLoginState, ClaudeCodeLoginView } from '@akasecurity/plugin-runtime';
+import type {
+  ClaudeCodeLoginState,
+  ClaudeCodeLoginView,
+  CodexLoginState,
+  CodexLoginView,
+} from '@akasecurity/plugin-runtime';
 import {
   attachmentScopeLines,
   claudeCodeLoginView,
+  codexLoginView,
   deploymentNameForTerminal,
   printableForTerminal,
 } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import { codexHomeDir } from '@akasecurity/plugin-sdk/account';
 import type {
   AttachedIdentity,
   ControlPlaneConnection,
@@ -95,7 +102,7 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // command that attaches.
 const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --repo <clone-url | host/owner/repo>
-       aka enroll --account <claude:organization-id> [--yes]
+       aka enroll --account <claude:organization-id | chatgpt:workspace-id> [--yes]
        aka enroll --work-subscriptions
        aka enroll --list
        aka enroll --list-detected
@@ -109,22 +116,24 @@ finding counts and dates are for everything recorded on the machine.
 
   [path]                Enroll the repository this directory is in (default: .).
   --repo <repo>         Enroll by clone URL, or by key, as in github.com/acme/payments-api.
-  --account <key>       Enroll a Claude account by its key, as --list-detected shows it,
-                        for its Claude Code sessions and its claude.ai chats: the
-                        fallback for a work subscription this device does not recognise.
+  --account <key>       Enroll a Claude account or a ChatGPT workspace by its key, as
+                        --list-detected shows it. A Claude account covers its Claude Code
+                        sessions and its claude.ai chats, a ChatGPT workspace its new
+                        Codex threads: the fallback for a work subscription this device
+                        does not recognise.
   --yes                 With --account, enroll the login signed in now without asking,
                         even on a personal plan.
   --work-subscriptions  Recognise work subscriptions on this device again.
   --list                Show what is enrolled.
   --list-detected       Show the web chat accounts the browser extension has seen here,
-                        and the Claude Code login signed in now.
+                        and the Claude Code and Codex logins signed in now.
   --home <dir>          Use an alternate AKA home instead of ~/.aka.
 
 Enrolling changes this machine's settings and contacts nothing.`;
 
 const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --repo <clone-url | host/owner/repo>
-       aka unenroll --account <claude:organization-id>
+       aka unenroll --account <claude:organization-id | chatgpt:workspace-id>
        aka unenroll --work-subscriptions
 
 Stops sending a repository or a web chat account from a scoped attachment:
@@ -162,6 +171,8 @@ export interface EnrollDeps {
    * the real home and the system managed-settings file.
    */
   claudePaths: ClaudeLoginPaths | undefined;
+  /** Codex's home directory. Leaving it out reads the one Codex itself resolves. */
+  codexHome?: string | undefined;
 }
 
 type Verb = 'enroll' | 'unenroll';
@@ -206,7 +217,8 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
   if (ready.args.listDetected) {
     io.out(
       detectedAccountLines(base, ready.settings, name) +
-        claudeCodeDetectedLines(claudeCodeLoginNow(ready), io.isInteractive),
+        claudeCodeDetectedLines(claudeCodeLoginNow(ready), io.isInteractive) +
+        codexDetectedLines(codexLoginNow(ready), io.isInteractive),
     );
     return 0;
   }
@@ -227,16 +239,16 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
   // the account as well as its web chats.
   const entry: AttachmentScopeEntry =
     built.kind === 'account' ? { ...built, codingAgents: true } : built;
-  const loginNow = entry.kind === 'account' ? claudeCodeLoginNow(ready) : undefined;
-  // An account the list already holds for Claude Code sessions is not written
+  const provider =
+    entry.kind === 'account' ? parseWebAccountKey(entry.identity)?.provider : undefined;
+  const loginNow = provider === WEB_ACCOUNT_PROVIDER.Claude ? claudeCodeLoginNow(ready) : undefined;
+  const codexNow = provider === WEB_ACCOUNT_PROVIDER.ChatGpt ? codexLoginNow(ready) : undefined;
+  // An account the list already holds for coding-agent sessions is not written
   // again, so there is nothing to confirm.
   const alreadyHeld = entry.kind === 'account' && holdsCodingAccount(ready, entry.identity);
-  if (
-    loginNow !== undefined &&
-    !alreadyHeld &&
-    !(await personalPlanGuard(ready, entry.identity, loginNow))
-  ) {
-    return fail(1);
+  if (!alreadyHeld) {
+    const notice = personalPlanNotice(ready, entry.identity, loginNow, codexNow);
+    if (notice !== undefined && !(await personalPlanGuard(ready, notice))) return fail(1);
   }
   // Echoed BEFORE the write, through the strip `aka status` uses, so what is
   // about to be enrolled is on screen whatever happens next.
@@ -263,7 +275,7 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     io.out(`Already enrolled with ${name}; nothing changed.\n`);
     return 0;
   }
-  if (marking.inPlace) {
+  if (marking.inPlace && codexNow === undefined) {
     // Its chats, and the captures they had recorded, were enrolled when it was
     // first enrolled; only the coding-agent sessions are added.
     io.out(
@@ -273,10 +285,12 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     return 0;
   }
   io.out(
-    identity.kind === 'account'
-      ? accountEnrolledLines(edit.committed, name) +
+    codexNow !== undefined
+      ? chatgptEnrolledLines(name) + (codexNow.key === entry.identity ? '' : CODEX_NEVER_SEEN)
+      : identity.kind === 'account'
+        ? accountEnrolledLines(edit.committed, name) +
           codingAgentLines(ready, entry.identity, loginNow)
-      : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
+        : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
   );
   const record = parseAttachmentScope(edit.committed.attachmentScope);
   if (record !== undefined && (!named(record.tenantName) || !named(record.userEmail))) {
@@ -285,11 +299,14 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
         'next `aka attach` starts it empty and what is enrolled would be enrolled again.\n',
     );
   }
-  io.out(
-    identity.kind === 'account'
-      ? earlierAccountActivity(base, edit.committed, edit.changed)
-      : earlierActivity(base, edit.committed, edit.changed),
-  );
+  // A ChatGPT workspace has no earlier captures to queue: its web chat carries no key.
+  if (codexNow === undefined) {
+    io.out(
+      identity.kind === 'account'
+        ? earlierAccountActivity(base, edit.committed, edit.changed)
+        : earlierActivity(base, edit.committed, edit.changed),
+    );
+  }
   return 0;
 }
 
@@ -378,6 +395,8 @@ interface Prepared {
   cwd: () => string;
   /** Where Claude Code keeps its login and settings files. */
   claudePaths: ClaudeLoginPaths;
+  /** Codex's home directory, resolved once; undefined when the environment names none that is usable. */
+  codexHome: string | undefined;
 }
 
 /**
@@ -417,6 +436,7 @@ function preflight(
     name: deploymentNameForTerminal(connection),
     cwd: deps.cwd ?? (() => process.cwd()),
     claudePaths: deps.claudePaths ?? {},
+    codexHome: deps.codexHome ?? codexHomeDir(),
   };
 }
 
@@ -567,6 +587,16 @@ function claudeCodeLoginNow(ready: Prepared): ClaudeCodeLoginView {
   });
 }
 
+/** The Codex login signed in now, through the view `aka status` prints. Writes nothing. */
+function codexLoginNow(ready: Prepared): CodexLoginView {
+  return codexLoginView({
+    identity: heldIdentityOf(ready),
+    scope: ready.settings.attachmentScope,
+    endpoint: ready.connection.endpoint,
+    codexHome: ready.codexHome,
+  });
+}
+
 /** A login's plan, in a few words, for the user's own terminal. */
 const PLAN_HINT: Record<AccountPlanState, string> = {
   company: 'Team or Enterprise plan',
@@ -639,19 +669,112 @@ function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean
     : `${heading}  ${key}  ${DETECTED_STATE_WORD[view.state]}\n`;
 }
 
+/** Each Codex state as `--list-detected` says it on a terminal. */
+const CODEX_STATE_TEXT: Record<CodexLoginState, string> = {
+  manual: 'enrolled',
+  remembered: 'validated automatically',
+  'would-validate': 'would validate',
+  off: 'would validate, but work subscriptions are off on this device',
+  'cap-reached': 'would validate, but this device already recognises the most it keeps',
+  email: 'a different email than the AKA user who attached this device',
+  plan: 'not a workspace plan',
+  'plan-unconfirmed': 'plan not shown — enroll it by hand if this is a work subscription',
+  veto: 'an API key or another provider is in use',
+  'attached-user-unknown': 'not checked until this machine syncs',
+  absent: 'no login file',
+  unreadable: 'not a ChatGPT login this device can read',
+};
+
 /**
- * Whether to go on enrolling `key` when it is the organization of the Claude Code
- * login signed in now and that login is on a personal plan: asks on a terminal,
- * refuses without one unless `--yes` was given. Says nothing about the plan off a
- * terminal, where a coding agent's own output is recorded.
+ * Each Codex state off a terminal, where no reason is printed: a coding agent's
+ * own terminal output is recorded, and a reason can say that a login is personal.
  */
-async function personalPlanGuard(
+const CODEX_STATE_WORD: Record<
+  CodexLoginState,
+  'enrolled' | 'validated' | 'would-validate' | 'off' | 'not-recognised'
+> = {
+  manual: 'enrolled',
+  remembered: 'validated',
+  'would-validate': 'would-validate',
+  off: 'off',
+  'cap-reached': 'not-recognised',
+  email: 'not-recognised',
+  plan: 'not-recognised',
+  'plan-unconfirmed': 'not-recognised',
+  veto: 'not-recognised',
+  'attached-user-unknown': 'not-recognised',
+  absent: 'not-recognised',
+  unreadable: 'not-recognised',
+};
+
+/** A Codex login's plan, in a few words, for the user's own terminal. */
+const CODEX_PLAN_HINT: Record<AccountPlanState, string> = {
+  company: 'workspace plan',
+  absent: 'plan not shown',
+  other: 'not a workspace plan',
+};
+
+/**
+ * The `--list-detected` section for the Codex login signed in now: the key and,
+ * on a terminal, its plan hint and state, or off one only whether it counts.
+ * Never an email, a plan string or a token.
+ */
+function codexDetectedLines(view: CodexLoginView, interactive: boolean): string {
+  const heading = 'Codex — signed in now:\n';
+  if (view.key === undefined) {
+    if (view.state === 'absent') return `${heading}  ${NO_LOGIN}\n`;
+    return `${heading}  none${interactive ? ` (${CODEX_STATE_TEXT[view.state]})` : ''}\n`;
+  }
+  const key = printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return interactive
+    ? `${heading}  ${key}  ${CODEX_PLAN_HINT[view.planState ?? 'absent']}  ${CODEX_STATE_TEXT[view.state]}\n`
+    : `${heading}  ${key}  ${CODEX_STATE_WORD[view.state]}\n`;
+}
+
+/** Whether enrolling `key` would enroll the Claude Code login signed in now, which is on a personal plan. */
+function claudeKeyIsPersonalLogin(key: string, login: ClaudeCodeLoginView): boolean {
+  return login.key === key && login.planState === 'other';
+}
+
+/** Whether enrolling `key` would enroll the Codex login signed in now, on a plan that is not a workspace plan. */
+function codexKeyIsPersonalLogin(key: string, login: CodexLoginView): boolean {
+  return login.key === key && login.planState === 'other';
+}
+
+/**
+ * What to say before enrolling `key` when it is the account of the login signed
+ * in now and that login is on a personal plan, or undefined when it is not.
+ */
+function personalPlanNotice(
   ready: Prepared,
   key: string,
-  login: ClaudeCodeLoginView,
-): Promise<boolean> {
-  if (login.key !== key || login.planState !== 'other' || ready.args.yes) return true;
-  const { io, name } = ready;
+  claude: ClaudeCodeLoginView | undefined,
+  codex: CodexLoginView | undefined,
+): string | undefined {
+  const { name } = ready;
+  if (claude !== undefined && claudeKeyIsPersonalLogin(key, claude)) {
+    return (
+      'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
+      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder.\n`
+    );
+  }
+  if (codex !== undefined && codexKeyIsPersonalLogin(key, codex)) {
+    return (
+      'The Codex login signed in now is on a plan that is not a ChatGPT workspace plan.\n' +
+      `Enrolling its workspace sends every new Codex thread signed in to it to ${name}, from any folder.\n`
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Whether to go on enrolling after `notice`: asks on a terminal, refuses without
+ * one unless `--yes` was given. Says nothing about the plan off a terminal, where
+ * a coding agent's own output is recorded.
+ */
+async function personalPlanGuard(ready: Prepared, notice: string): Promise<boolean> {
+  if (ready.args.yes) return true;
+  const { io } = ready;
   if (!io.isInteractive) {
     io.err(
       'aka enroll: that account needs confirming before it is enrolled.\n' +
@@ -659,10 +782,7 @@ async function personalPlanGuard(
     );
     return false;
   }
-  io.out(
-    'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
-      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder.\n`,
-  );
+  io.out(notice);
   const answer = (await io.ask('Enroll it anyway? [y/N]: ')).trim().toLowerCase();
   if (answer === 'y' || answer === 'yes') return true;
   io.out('Nothing was enrolled.\n');
@@ -692,6 +812,20 @@ function codingAgentLines(
       : 'This machine has not seen Claude Code signed in to that organization; its sessions are sent once one is.\n')
   );
 }
+
+/** What a ChatGPT workspace entry written by `aka enroll --account` forwards, from when, and what it misses. */
+function chatgptEnrolledLines(name: string): string {
+  return (
+    'Enrolled. Everything new Codex threads started while signed in to it record is sent to\n' +
+    `${name}, from any folder, with its folder, project and branch names, from the next new thread\n` +
+    'on; nothing recorded before now is sent. A resumed thread, and a login Codex keeps outside\n' +
+    'its login file (in the system keychain, for one), are not sent.\n'
+  );
+}
+
+const CODEX_NEVER_SEEN =
+  'Note: this device has not seen Codex signed in to that workspace. It is sent from the first\n' +
+  'new thread that is.\n';
 
 /**
  * The refusal for a `--work-subscriptions` change where an administrator manages
@@ -1010,8 +1144,9 @@ function accountIdentity(verb: Verb, input: string): Identity {
     return {
       kind: 'refused',
       line:
-        `aka ${verb}: ${shownInput} is not a web chat account key. A claude.ai account is keyed\n` +
-        '`claude:<organization id>`; `aka enroll --list-detected` lists the ones seen here.',
+        `aka ${verb}: ${shownInput} is not a web chat account key.\n` +
+        'An account key is `claude:<organization-id>` or `chatgpt:<workspace-id>`, as\n' +
+        '`aka enroll --list-detected` shows them.',
     };
   }
   const provider = parseWebAccountKey(key)?.provider;

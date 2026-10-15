@@ -119,26 +119,52 @@ describe('scannableResponseFields', () => {
     expect(scannableResponseFields('vscode', { a: '', b: [''] })).toEqual(NOTHING);
   });
 
-  it('skips a result whose text field is absent or not a string', () => {
-    expect(scannableResponseFields('cli', { resultType: 'success' })).toEqual(NOTHING);
+  it('skips a result that carries no text anywhere', () => {
     expect(scannableResponseFields('cli', { textResultForLlm: 42 })).toEqual(NOTHING);
+    expect(scannableResponseFields('cli', { resultType: 7, ok: true })).toEqual(NOTHING);
     expect(scannableResponseFields('cli', null)).toEqual(NOTHING);
     expect(scannableResponseFields('cli', undefined)).toEqual(NOTHING);
     expect(scannableResponseFields('vscode', null)).toEqual(NOTHING);
     expect(scannableResponseFields('vscode', 42)).toEqual(NOTHING);
   });
 
-  // The CLI's table must not reach into an object the way VS Code's walk does:
-  // a CLI result whose text is not under `textResultForLlm` is a changed
-  // envelope, and scanning its other keys would hide that.
-  it('does not walk a CLI envelope the way it walks a VS Code object', () => {
-    expect(scannableResponseFields('cli', { output: 'text the CLI never puts here' })).toEqual(
-      NOTHING,
-    );
-    // The control: the same object under VS Code IS walked.
+  // A CLI result that does not carry the recorded text field is a changed
+  // envelope or a structured result. Either way it reaches the model, so its
+  // string leaves are walked rather than skipped in silence.
+  it('walks a CLI result that does not carry textResultForLlm', () => {
+    expect(scannableResponseFields('cli', { output: 'text under another key' })).toEqual({
+      fields: [{ path: ['output'], text: 'text under another key' }],
+      truncated: false,
+    });
     expect(
-      scannableResponseFields('vscode', { output: 'text the CLI never puts here' }).fields,
-    ).toEqual([{ path: ['output'], text: 'text the CLI never puts here' }]);
+      scannableResponseFields('cli', { textResultForLlm: { nested: 'moved one level down' } }),
+    ).toEqual({
+      fields: [{ path: ['textResultForLlm', 'nested'], text: 'moved one level down' }],
+      truncated: false,
+    });
+    expect(scannableResponseFields('cli', ['a', { b: 'c' }]).fields).toEqual([
+      { path: ['0'], text: 'a' },
+      { path: ['1', 'b'], text: 'c' },
+    ]);
+  });
+
+  it('reads only textResultForLlm when the CLI result carries it as a string', () => {
+    // The recorded envelope: `resultType` beside the text is not scanned.
+    expect(
+      scannableResponseFields('cli', { resultType: 'success', textResultForLlm: 'the text' }),
+    ).toEqual({ fields: [{ path: ['textResultForLlm'], text: 'the text' }], truncated: false });
+    // The control: without the text field, the same sibling IS read.
+    expect(scannableResponseFields('cli', { resultType: 'success' }).fields).toEqual([
+      { path: ['resultType'], text: 'success' },
+    ]);
+  });
+
+  it('holds a walked CLI result to the walk bounds and says when it cut', () => {
+    const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
+    expect(scannableResponseFields('cli', { items: at })).toMatchObject({ truncated: false });
+    const past = scannableResponseFields('cli', { items: [...at, 'one more'] });
+    expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
+    expect(past.truncated).toBe(true);
   });
 });
 
@@ -224,6 +250,29 @@ describe('an object-shaped VS Code result', () => {
     const past = scannableResponseFields('vscode', [...at, 'one more']);
     expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
     expect(past.truncated).toBe(true);
+  });
+
+  // The leaf count bounds the TRAVERSAL, not only what is collected: once it is
+  // reached, nothing further down is entered. A getter counts every read of
+  // the node past the bound, which only entering that node makes.
+  it('stops walking once the leaf count is reached', () => {
+    const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
+    let reads = 0;
+    const counted = {
+      get probe(): string {
+        reads += 1;
+        return 'past the bound';
+      },
+    };
+    const past = scannableResponseFields('vscode', [...at, counted]);
+    expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
+    expect(past.truncated).toBe(true);
+    expect(reads).toBe(0);
+    // The control: below the bound the same node is entered and read.
+    expect(scannableResponseFields('vscode', [counted]).fields).toEqual([
+      { path: ['0', 'probe'], text: 'past the bound' },
+    ]);
+    expect(reads).toBe(1);
   });
 
   it('marks a leaf over the per-leaf cap truncated rather than dropping it silently', () => {

@@ -26,16 +26,22 @@
 //
 //  - Copilot CLI (and cloud): `toolResult` is an OBJECT — `{ resultType,
 //    textResultForLlm }` in the one recording. The model-visible text is
-//    `textResultForLlm`.
+//    `textResultForLlm`, and when that key holds a string it is the only thing
+//    read. An object or array that does NOT carry it — a changed envelope, or
+//    a tool whose result is structured — is walked like a structured VS Code
+//    result below rather than skipped, so a result the recording did not
+//    anticipate is still scanned instead of passing through in silence.
 //  - VS Code agent mode: `tool_response` is documented as a STRING, so the
 //    whole value is the text. When it arrives as an OBJECT or ARRAY instead —
 //    a tool whose result is structured — its string leaves are collected by a
 //    bounded walk (`leafFields`) rather than dropped, so a secret in a
-//    structured result is still scanned. The walk is held to the same depth,
-//    leaf-count and character bounds the Claude Code sibling holds an MCP
-//    tool's arguments to, and anything those bounds leave out is reported as
-//    `truncated` so the hook says part of the result went unscanned. Unlike
-//    that walk, which also scans object keys, this one reads values only.
+//    structured result is still scanned.
+//
+// The walk is held to the same depth, leaf-count and character bounds the
+// Claude Code sibling holds an MCP tool's arguments to, and anything those
+// bounds leave out is reported as `truncated` so the hook says part of the
+// result went unscanned. Unlike that walk, which also scans object keys, this
+// one reads values only.
 //
 // ─── WHY THERE IS NO WRITER ──────────────────────────────────────────────────
 //
@@ -75,7 +81,7 @@ export interface ResponseFields {
 }
 
 /**
- * Bounds on the walk over an object-shaped VS Code result: how deep it goes,
+ * Bounds on the walk over an object-shaped result: how deep it goes,
  * how many string leaves it collects, how long one leaf may be, and how many
  * characters all of them add up to. Each collected leaf is one sequential
  * capture, so these bound the work one result can cost the hook. The values
@@ -99,7 +105,8 @@ export const RESULT_WALK_MAX_TOTAL_CHARS = 5_000_000;
  * The CLI's is RECORDED (`postToolUse.json`). VS Code's is doc-derived: the
  * response arrives as a bare string, so the empty path — "the value itself" —
  * is the whole of its table and a per-tool map would have nothing to hold. An
- * object-shaped VS Code result is read by `leafFields` instead of this table.
+ * object-shaped result this table does not resolve — every VS Code one, and a
+ * CLI one whose `textResultForLlm` is not a string — is read by `leafFields`.
  *
  * Two tables, never merged, for the reason `pre-tool-use-decision.ts` gives
  * about its own pair: a merged one would let one host's envelope resolve
@@ -145,11 +152,14 @@ function leafFields(response: object): ResponseFields {
   let remaining = RESULT_WALK_MAX_TOTAL_CHARS;
 
   const walk = (node: unknown, path: string[], depth: number): void => {
-    // The same depth test as the sibling's walk (`depth > MCP_MAX_DEPTH`): a
-    // string leaf at depth RESULT_WALK_MAX_DEPTH is read, one below it is not.
-    // Only a node that could have carried text marks the result truncated — an
-    // empty container or a number past the bound left nothing unscanned.
-    if (depth > RESULT_WALK_MAX_DEPTH) {
+    // Past the depth bound, or once the leaf count is reached, nothing below
+    // this node is read — so the walk stops HERE rather than visiting every
+    // remaining node to refuse each leaf one at a time. The depth test is the
+    // sibling walk's (`depth > MCP_MAX_DEPTH`): a string leaf at depth
+    // RESULT_WALK_MAX_DEPTH is read, one below it is not. Only a node that
+    // could have carried text marks the result truncated — an empty container
+    // or a number left nothing unscanned.
+    if (depth > RESULT_WALK_MAX_DEPTH || fields.length >= RESULT_WALK_MAX_LEAVES) {
       if (
         (typeof node === 'string' && node !== '') ||
         (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
@@ -160,11 +170,7 @@ function leafFields(response: object): ResponseFields {
     }
     if (typeof node === 'string') {
       if (node === '') return;
-      if (
-        fields.length >= RESULT_WALK_MAX_LEAVES ||
-        node.length > RESULT_WALK_MAX_LEAF_CHARS ||
-        node.length > remaining
-      ) {
+      if (node.length > RESULT_WALK_MAX_LEAF_CHARS || node.length > remaining) {
         truncated = true;
         return;
       }
@@ -197,15 +203,22 @@ export function scannableResponseFields(dialect: Dialect, response: unknown): Re
   if (typeof response === 'string') {
     return { fields: response === '' ? [] : [{ path: [], text: response }], truncated: false };
   }
-  if (dialect === 'vscode') {
-    return typeof response === 'object' && response !== null
-      ? leafFields(response)
-      : { fields: [], truncated: false };
+  if (dialect === 'cli') {
+    // The recorded envelope: its text field, when it holds a string, is the
+    // model-visible result and the only thing read.
+    const fields: ScannableResponseField[] = [];
+    let found = false;
+    for (const path of RESULT_ENVELOPE[dialect].paths) {
+      const text = stringAt(response, path);
+      if (text === undefined) continue;
+      found = true;
+      if (text !== '') fields.push({ path: [...path], text });
+    }
+    if (found) return { fields, truncated: false };
   }
-  const fields: ScannableResponseField[] = [];
-  for (const path of RESULT_ENVELOPE[dialect].paths) {
-    const text = stringAt(response, path);
-    if (text !== undefined && text !== '') fields.push({ path: [...path], text });
-  }
-  return { fields, truncated: false };
+  // A VS Code object, or a CLI object without the recorded text field: every
+  // string leaf, under the walk bounds.
+  return typeof response === 'object' && response !== null
+    ? leafFields(response)
+    : { fields: [], truncated: false };
 }

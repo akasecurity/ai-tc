@@ -384,6 +384,48 @@ describe('runPostToolUse on an object-shaped VS Code result', () => {
   });
 });
 
+// A CLI result without the recorded `textResultForLlm` string is a changed
+// envelope or a structured result. It still reaches the model, so it is walked
+// like a structured VS Code result rather than passed through unscanned.
+describe('runPostToolUse on a CLI result without textResultForLlm', () => {
+  function cliPayload(result: unknown): string {
+    return JSON.stringify({ ...fixture('cli', 'postToolUse.json'), cwd, toolResult: result });
+  }
+
+  it('scans a secret in a structured result and records the finding', async () => {
+    seedPolicy('warn');
+    const output = await runPostToolUse(
+      'postToolUse',
+      cliPayload({ resultType: 'success', content: [{ text: `TWILIO=${FIXTURE.example}` }] }),
+      { akaHome },
+    );
+    // The CLI has no message field on this event: the notice is on stderr.
+    expect(output).toBeUndefined();
+    const text = akaStderr();
+    expect(text).toContain(RULE_ID);
+    expect(findingRows().map((r) => r.rule_id)).toEqual([RULE_ID]);
+    expect(responseRows()).toHaveLength(1);
+    expectNoEchoOf(text, FIXTURE.example);
+  });
+
+  it('says part of it went unscanned when the walk bounds cut a leaf out', async () => {
+    seedPolicy('warn');
+    let deep: unknown = `TWILIO=${FIXTURE.example}`;
+    for (let i = 0; i < 10; i += 1) deep = { k: deep };
+    const output = await runPostToolUse(
+      'postToolUse',
+      cliPayload({ shallow: 'nothing here', deep }),
+      { akaHome },
+    );
+    expect(output).toBeUndefined();
+    const text = akaStderr().trimEnd();
+    // Positive control: the walk-limits sentence, which is not the timeout one.
+    expect(text).toBe(unscannedPastWalkLimitsMessage('bash result', DELIVERED));
+    expect(findingRows()).toEqual([]);
+    expectNoEchoOf(text, FIXTURE.example);
+  });
+});
+
 describe('runPostToolUse declines without opening the store', () => {
   const cli = (result: unknown): string =>
     JSON.stringify({
@@ -401,7 +443,7 @@ describe('runPostToolUse declines without opening the store', () => {
   it.each([
     ['a foreign event token', 'preToolUse', cli({ textResultForLlm: 'hello' })],
     ['an empty CLI result', 'postToolUse', cli({ textResultForLlm: '' })],
-    ['a CLI result with no text field', 'postToolUse', cli({ resultType: 'success' })],
+    ['a CLI result with no string anywhere', 'postToolUse', cli({ textResultForLlm: 42 })],
     ['an empty VS Code result', 'PostToolUse', vscode('')],
     ['a VS Code object with no string leaf', 'PostToolUse', vscode({ n: 1, a: [], o: {} })],
     ['empty stdin', 'postToolUse', ''],

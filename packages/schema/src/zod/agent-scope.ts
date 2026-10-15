@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { ResolvedAttachmentScope } from './local.ts';
 import { scopeVerdict } from './local.ts';

@@ -251,8 +251,7 @@ export const FINDING_DELIVERY_STATES = Object.keys(FINDING_DELIVERY_META) as Fin
  */
 export interface DeploymentDisplay {
   /**
-   * History sharing is granted for this deployment and this machine's key is
-   * usable, so a queued finding will be retried.
+   * This machine's key is usable, so a queued finding will be retried.
    */
   canRetry: boolean;
 }
@@ -275,7 +274,7 @@ export function deliveryDetail(
     case 'queued':
       return deployment.canRetry
         ? 'Waiting to be retried.'
-        : 'Waiting to be retried. It won’t be retried until history sharing and this machine’s key are working — Settings → Sync.';
+        : 'Waiting to be retried. It won’t be retried until this machine’s key is working — Settings → Sync.';
     case 'not_sent': {
       const reason =
         delivery.reason !== undefined && Object.hasOwn(SYNC_FAILURE_SENTENCE, delivery.reason)

@@ -249,7 +249,7 @@ describe('aka status — work subscriptions on a personal device', () => {
   it('points at aka enroll --account for a work subscription this device does not recognise', () => {
     attachScoped();
     expect(lines(render())).toContain(
-      '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account` for a work subscription this device does not recognise)',
+      '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account <key>` for a work subscription this device does not recognise)',
     );
   });
 });

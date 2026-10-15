@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { SourceTool } from './harness-map.ts';
 import { SOURCE_TOOL, WebSourceTool } from './harness-map.ts';

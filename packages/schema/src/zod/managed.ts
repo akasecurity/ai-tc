@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { BodyRetention } from './local.ts';
 import { RedactFallback } from './policy.ts';

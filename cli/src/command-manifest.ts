@@ -85,18 +85,19 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
   {
     name: 'enroll',
-    argHint: '[path | --repo <url> | --account <key> | --list | --list-detected]',
+    argHint:
+      '[path | --repo <url> | --account <key> [--yes] | --work-subscriptions | --list | --list-detected]',
     summary:
       'Choose which repositories and web chat accounts a scoped attachment sends; --list shows them',
     // In `args`, not `flags`, like `sync-history`'s switches: the help prints a
     // command's own flags on the one line under it.
-    args: ['--repo', '--account', '--list', '--list-detected'],
+    args: ['--repo', '--account', '--yes', '--work-subscriptions', '--list', '--list-detected'],
   },
   {
     name: 'unenroll',
-    argHint: '[path | --repo <url> | --account <key>]',
+    argHint: '[path | --repo <url> | --account <key> | --work-subscriptions]',
     summary: 'Stop sending a repository or a web chat account from a scoped attachment',
-    args: ['--repo', '--account'],
+    args: ['--repo', '--account', '--work-subscriptions'],
   },
   {
     name: 'sync-history',

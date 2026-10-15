@@ -288,6 +288,33 @@ describe('scoped attachment claims', () => {
   });
 });
 
+// The one request a personal device makes beyond the policy pull, the device
+// report and the command check, said beside them.
+const WHOAMI_SENTENCE =
+  'On a personal device, the background sync also asks the deployment once which account its key ' +
+  'belongs to, when the device does not know it yet.';
+
+describe('the identity request on a personal device', () => {
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    // The page's body paragraphs on a personal device, or its egress footnote
+    // when that is the only place it describes one.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
+
+    it('says the background sync asks once which account the key belongs to', () => {
+      expect(claim).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(WHOAMI_SENTENCE);
+    });
+  });
+
+  it('says it in SECURITY.md, beside the policy pull and the device report', () => {
+    expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+  });
+});
+
 describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   const footnote = footnoteOf(text);
 

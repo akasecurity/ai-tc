@@ -63,8 +63,18 @@ function hookEntries(): string[] {
   const config = readFileSync(join(PLUGIN_ROOT, 'tsup.config.ts'), 'utf8');
   return [...config.matchAll(/'src\/hooks\/([^'/]+)\.ts'/g)]
     .map((match) => match[1])
-    .filter((name): name is string => name !== undefined);
+    .filter((name): name is string => name !== undefined && name !== LAUNCHER);
 }
+
+/**
+ * The launcher every hook command runs before its body (launch.ts). It is not
+ * an entry in this sense: it has no main() and counts nothing, because the
+ * counter reaches the store layer and the launcher bundles nothing it does not
+ * need before the compile cache is on. Its own fail-open exit is driven by
+ * test/hooks/launch-run.test.ts in-process and by
+ * test/e2e/hook-launcher.e2e.test.ts against the built launcher.
+ */
+const LAUNCHER = 'launch';
 
 /**
  * Every file in `src/hooks` shaped like an entry — one that ends by exiting —

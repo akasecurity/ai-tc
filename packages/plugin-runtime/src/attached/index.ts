@@ -97,6 +97,7 @@ export {
   printableForTerminal,
   renderAttachedStatus,
   renderPolicyLine,
+  WORK_SUBSCRIPTION_COMMANDS,
 } from './status.ts';
 export { runAttachedSync } from './sync-entry.ts';
 export { readSyncState, SYNC_STATE_FILENAME, syncStatePath, writeSyncState } from './sync-state.ts';

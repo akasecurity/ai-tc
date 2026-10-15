@@ -309,6 +309,11 @@ function harness(script: Script) {
   const who = script.who === undefined ? ANA : script.who;
   const deps: AttachDeps = {
     base,
+    // Named so a status read finds no login file under the developer's own home.
+    claudePaths: {
+      home: join(base, 'claude-home'),
+      managedSettings: join(base, 'claude-managed-settings.json'),
+    },
     prompter: io,
     // A getter, so a case can change the overlay while an attach is in flight.
     get managedSettings(): ManagedSettings | null {
@@ -739,6 +744,9 @@ describe('the personal-device question', () => {
     for (const phrase of REPORT_OLD_PHRASES) expect(h.output()).not.toContain(phrase);
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
+    );
+    expect(flat(h.output())).toContain(
+      'A personal device also asks the deployment once, from the background sync, which account its key belongs to, when the device does not know it yet.',
     );
     expect(h.output()).not.toContain('Nothing is sent');
     expect(h.output()).not.toContain('schedule');
@@ -3007,6 +3015,8 @@ describe('what an attach says', () => {
         'the machine is attached as a personal device, the fact that it is one. Where',
         'a scan is available (the coding-agent plugins, not a browser chat), the same',
         'session start also checks it for device commands.',
+        'The background sync also asks that deployment once which account this',
+        "machine's key belongs to, when the machine does not know it yet.",
         'Re-attaching with an aka older than this one, from its command line or its',
         'dashboard, makes this machine machine-wide.',
         '',

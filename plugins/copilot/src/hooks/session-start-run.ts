@@ -7,6 +7,8 @@
  * stdin:   CLI    { sessionId, timestamp, cwd, source, initialPrompt? }
  *          VSCode { hook_event_name, session_id, cwd, source }
  * stdout:  NOTHING, on every path, on both dialects.
+ * stderr:  the session start's once-per-session notices (forwarding, stale
+ *          plugin, warn-era cap) and the store-redirect warning, when any apply.
  *
  * The once-per-session inventory pass: resolve this machine's host / harness /
  * account and the project, upsert them, and open the Session audit-event root
@@ -56,7 +58,7 @@
  * token nor stdin, and never exits. `./session-start.ts` is the entry that
  * feeds it, and `runHookFailOpen` there is what guarantees the exit 0.
  */
-import { handleSessionStart } from '@akasecurity/plugin-runtime';
+import { handleSessionStart, sessionStartNotice } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCopilotProvider } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
@@ -115,12 +117,15 @@ export const runSessionStart: HookHandler = async (event, stdin, options = {}) =
     },
     config,
   );
-  // Stale-session notice (once per session — it rides the SessionStart claim):
-  // a newer binary recorded the mirror, so this session's plugin generation is
-  // outdated and its installed-pack writes are gated. stderr, never stdout:
-  // this hook has no decision channel at all, and an invented payload here
-  // would be read as one.
-  if (result.staleBinaryNotice !== null) writeNotice(`[aka] ${result.staleBinaryNotice}`);
+  // The session start's notices, once per session (they ride the SessionStart
+  // claim): where this session's activity is forwarded, that a newer binary
+  // recorded the mirror (so this session's plugin generation is outdated and
+  // its installed-pack writes are gated), and that a warn-era store's
+  // block/redact categories were capped to warn. stderr, never stdout: this
+  // hook has no decision channel and no message field on either dialect, and
+  // an invented payload here would be read as a decision.
+  const notice = sessionStartNotice(result);
+  if (notice !== undefined) writeNotice(notice);
 
   return undefined;
 };

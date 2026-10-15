@@ -11,15 +11,17 @@
  * swallowed throw, or never ran. Every silence case therefore sits beside the
  * row it should — or should not — leave in the store.
  */
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
+import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCopilotProvider } from '@akasecurity/plugin-sdk';
 import { HARNESS, SOURCE_TOOL } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
@@ -159,4 +161,74 @@ describe('runSessionStart', () => {
       expect(existsSync(akaHome)).toBe(false);
     },
   );
+});
+
+// The session start's notices have no other channel on this host: no message
+// field on either dialect, and stdout is read only as a decision. So they go to
+// stderr, and each one is driven here from the state that produces it.
+describe('runSessionStart notices on stderr', () => {
+  let stderr: string[];
+  let restoreGateway: (() => void) | undefined;
+
+  beforeEach(() => {
+    stderr = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    restoreGateway?.();
+    restoreGateway = undefined;
+    vi.restoreAllMocks();
+  });
+
+  async function start(sessionId: string): Promise<unknown> {
+    const input = { ...fixture('cli', 'sessionStart.json'), cwd, sessionId };
+    return runSessionStart('sessionStart', JSON.stringify(input), { akaHome, homeDir: home });
+  }
+
+  function seedWarnEraStore(): void {
+    const settingsDir = join(akaHome, 'settings');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({ policy: 'warn' }));
+    const db = openLocalDatabase(join(akaHome, 'data'));
+    try {
+      db.policies.upsertCategoryAction('secret', 'block');
+    } finally {
+      db.close();
+    }
+  }
+
+  it('writes nothing on a fresh standalone home', async () => {
+    expect(await start('s-fresh')).toBeUndefined();
+    expect(stderr.join('')).toBe('');
+    // The control: the session root landed, so the silence is a decision.
+    expect(rows("SELECT id FROM audit_events WHERE event_type = 'session'")).toHaveLength(1);
+  });
+
+  it('writes the warn-era notice once, when the cap actually lands', async () => {
+    seedWarnEraStore();
+    expect(await start('s-warn-1')).toBeUndefined();
+    const first = stderr.join('');
+    expect(first).toContain('the global "warn only" handling was retired');
+    expect(first.endsWith('\n')).toBe(true);
+
+    stderr = [];
+    await start('s-warn-2');
+    // Nothing left to cap, so the second session says nothing about it.
+    expect(stderr.join('')).not.toContain('warn only');
+  });
+
+  it('writes the forwarding line on a machine whose gateway forwards', async () => {
+    restoreGateway = setDefaultGatewayFactory((cfg, meta) => {
+      const gateway = standaloneGatewayFactory(cfg, meta);
+      return Object.assign(gateway, {
+        forwardingScope: () => ({ deploymentName: 'Acme', mode: 'machine' as const }),
+      });
+    });
+    expect(await start('s-attached')).toBeUndefined();
+    expect(stderr.join('')).toBe('AKA: forwarding everything to Acme (machine-wide)\n');
+  });
 });

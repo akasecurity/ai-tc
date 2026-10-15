@@ -204,12 +204,7 @@ export {
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
-export {
-  PER_KEY_MARKER_RETAIN_MS,
-  PER_KEY_PRUNE_BATCH,
-  throttled,
-  throttledPerKey,
-} from './throttle.ts';
+export { throttled, throttledPerKey } from './throttle.ts';
 export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,

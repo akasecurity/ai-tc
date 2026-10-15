@@ -147,11 +147,11 @@ describe('throttledPerKey', () => {
       backdate(`p-s${String(i)}`, PER_KEY_MARKER_RETAIN_MS + 60_000);
     }
 
-    throttledPerKey(dir, 'p', 'first', 30_000);
+    throttledPerKey(dir, 'p', 'k1', 30_000);
     const stale = (): number => readdirSync(dir).filter((n) => n.startsWith('p-s')).length;
     expect(stale()).toBe(10);
 
-    throttledPerKey(dir, 'p', 'second', 30_000);
+    throttledPerKey(dir, 'p', 'k2', 30_000);
     expect(stale()).toBe(0);
   });
 

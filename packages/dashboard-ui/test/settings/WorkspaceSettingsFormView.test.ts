@@ -550,12 +550,12 @@ describe('stale grant enables the one-save re-consent', () => {
 // visibly wrong — and the next unrelated save submitted `historySyncConsent:
 // false`, which the server action maps to `undefined` and DELETES, taking
 // acknowledgedAt with it. The user was never asked; the grant simply vanished.
-// The current payload, asserted against the copy that describes it. The schema's
+// The v3 payload, asserted against the copy that describes it. The schema's
 // tripwire (packages/schema, "the payload version and its disclosure move
 // together") fails on a bump and names this file; these are the claims it sends
 // the author here to check. Substance, never headings — the whole failure mode
 // is copy that still reads plausibly while describing a narrower payload.
-describe('history-sync disclosure states what the current payload sends', () => {
+describe('history-sync disclosure states what payload v3 sends', () => {
   it('names the captured text, the masking, and what declining costs', () => {
     // The widening: captured text is inside the grant now.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('INCLUDES ITS TEXT');

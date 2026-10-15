@@ -97,15 +97,7 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // grant is invalidated and re-asked, for the same reason v1's was — declining
 // now changes what text can leave the machine for a set of rows it did not
 // before.
-//
-// v4 WIDENS THE SUBJECT ONCE MORE, inside the same "everything this machine
-// still owes" scope. On a scoped attachment the owed set now includes the
-// activity of coding-agent sessions signed in to a work subscription, in any
-// folder, keyed by the session's own key rather than by an enrolled repository.
-// A v3 scoped grant was given against text that said activity outside enrolled
-// repositories is not sent, so every v3 grant, machine-wide ones included, is
-// invalidated and re-asked, for the same reason v1's and v2's were.
-export const HISTORY_SYNC_PAYLOAD_VERSION = 4;
+export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other

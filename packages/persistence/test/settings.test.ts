@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import type { ManagedSettings, SimpleDetectionPolicy } from '@akasecurity/schema';
 import {
   canSweepSyncLane,
+  HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeValid,
   parseAttachmentScope,
@@ -424,7 +425,11 @@ describe('a garbled attachmentScope', () => {
     specVersion: 9,
     runMode: 'attached',
     controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
-    historySyncConsent: { acknowledgedAt: AT, payloadVersion: 3, endpoint: ENDPOINT },
+    historySyncConsent: {
+      acknowledgedAt: AT,
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    },
     modelJudgeConsent: { acknowledgedAt: AT, payloadVersion: 1 },
     vaultConsent: { acknowledgedAt: AT, version: 1 },
     onboardedAt: AT,

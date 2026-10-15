@@ -458,9 +458,15 @@ describe('isHistorySyncConsentValid', () => {
 // consent is given, over what is already on disk — so the pre-attach backlog
 // is no longer structural-only: it now carries the same prompt/reply/tool-
 // result TEXT as an undelivered live send, masked by the same rule.
+//
+// v4 widens the subject once more, inside that same scope: on a scoped
+// attachment the owed set now includes the activity of coding-agent sessions
+// signed in to a work subscription, in any folder, keyed by the session's own
+// key rather than by an enrolled repository. A v3 scoped grant was given
+// against text that said activity outside enrolled repositories is not sent.
 describe('the payload version and its disclosure move together', () => {
   it('fails on a bump so the copy gets re-read', () => {
-    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(3);
+    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(4);
   });
 });
 
@@ -485,6 +491,19 @@ describe('isHistorySyncConsentStale', () => {
   // A current grant is not stale — nothing to re-ask.
   it('is false for a grant that already covers the current payload', () => {
     expect(isHistorySyncConsentStale(consent(HISTORY_SYNC_PAYLOAD_VERSION), ENDPOINT)).toBe(false);
+  });
+
+  // The literals 3 and 4 are deliberate: a grant given under the payload that
+  // excluded work-subscription sessions must be re-asked, and one given under the
+  // payload that includes them must not.
+  it('is true, and not valid, for a grant recorded at payload version 3', () => {
+    expect(isHistorySyncConsentStale(consent(3), ENDPOINT)).toBe(true);
+    expect(isHistorySyncConsentValid(consent(3), ENDPOINT)).toBe(false);
+  });
+
+  it('is false, and valid, for a grant recorded at payload version 4', () => {
+    expect(isHistorySyncConsentStale(consent(4), ENDPOINT)).toBe(false);
+    expect(isHistorySyncConsentValid(consent(4), ENDPOINT)).toBe(true);
   });
 
   // THE SAFETY PROPERTY. Both clauses are wrong at once — old payload AND a
@@ -730,7 +749,7 @@ describe('canSweepSyncLane', () => {
         ...base,
         historySyncConsent: {
           acknowledgedAt: '2026-01-01T00:00:00.000Z',
-          payloadVersion: 3,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
           endpoint: 'https://cp.example',
         },
       }),

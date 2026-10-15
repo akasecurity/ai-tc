@@ -25,6 +25,11 @@ export interface InventoryNavProps {
   onSelectType: (type: AssetType) => void;
   /** True while the lists are still loading with nothing cached. */
   isLoading?: boolean | undefined;
+  /**
+   * Set when the host cannot read the harness and asset lists. The reason is shown
+   * in their place, and nothing is counted or summarised from the lists it lacks.
+   */
+  assetsRefusal?: string | undefined;
 }
 
 export function InventoryNav({
@@ -38,6 +43,7 @@ export function InventoryNav({
   onSelectHarness,
   onSelectType,
   isLoading,
+  assetsRefusal,
 }: InventoryNavProps) {
   const empty = harnesses.length === 0 && projects.length === 0 && assetGroups.length === 0;
   // Every project and asset once, counted the way the tables count them.
@@ -53,6 +59,10 @@ export function InventoryNav({
           <span className="font-display text-sm font-semibold">All assets</span>
           {isLoading && empty ? (
             <span className="ml-auto text-xs text-text-3">…</span>
+          ) : assetsRefusal !== undefined ? (
+            <span className="ml-auto text-xs text-text-3" title={assetsRefusal}>
+              Not available
+            </span>
           ) : (
             <span
               className={cn(
@@ -85,7 +95,9 @@ export function InventoryNav({
         {isLoading && empty ? (
           <div className="px-3 py-6 text-center text-xs text-text-3">Loading inventory…</div>
         ) : view === 'harness' ? (
-          harnesses.length === 0 ? (
+          assetsRefusal !== undefined ? (
+            <EmptyState message={assetsRefusal} />
+          ) : harnesses.length === 0 ? (
             <EmptyState message="No harnesses detected" />
           ) : (
             <ul className="flex flex-col gap-0.5">
@@ -111,6 +123,7 @@ export function InventoryNav({
           <ul className="flex flex-col gap-0.5">
             {GROUPS.map((g) => {
               const rows = typeRows(g.type, projects, assetGroups);
+              const unreadable = assetsRefusal !== undefined && g.type !== 'project';
               return (
                 <NavRow
                   key={g.type}
@@ -126,8 +139,8 @@ export function InventoryNav({
                     </span>
                   }
                   label={g.label}
-                  count={rows.length}
-                  attention={rows.filter(needsAttention).length}
+                  count={unreadable ? null : rows.length}
+                  attention={unreadable ? 0 : rows.filter(needsAttention).length}
                   selected={g.type === type}
                   onSelect={() => {
                     onSelectType(g.type);
@@ -152,7 +165,8 @@ function NavRow({
 }: {
   icon: ReactNode;
   label: string;
-  count: number;
+  /** null when the count is not known. */
+  count: number | null;
   attention: number;
   selected: boolean;
   onSelect: () => void;
@@ -180,7 +194,7 @@ function NavRow({
             className="size-1.5 shrink-0 rounded-full bg-sev-high"
           />
         )}
-        <span className="shrink-0 text-xs tabular-nums text-text-3">{count}</span>
+        <span className="shrink-0 text-xs tabular-nums text-text-3">{count ?? '—'}</span>
       </button>
     </li>
   );

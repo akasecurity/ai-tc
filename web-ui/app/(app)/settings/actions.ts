@@ -30,10 +30,12 @@ import {
   readForwardHealth,
   readSightingSharing,
   readWorkspaceSettings,
+  removeAttachedIdentity,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir,
   settledDecisionHolds,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
   writesSettingsFirst,
@@ -839,6 +841,22 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // Why a settings write failed: an administrator's lock, or a write that did not land.
   const settingsRefusal = (error: unknown): string =>
     error instanceof ManagedFieldError ? managedRefusal(error.fields) : SETTINGS_WRITE_ERROR;
+  // Who the key belongs to, as digests beside the credential, once both writes
+  // have landed: recorded for a scoped attach, removed for a machine-wide one,
+  // with every session's account state cleared either way. A record that cannot
+  // be written leaves none, and the attach stands.
+  const recordAttachedAccount = (): void => {
+    if (mode === 'scoped') {
+      writeAttachedIdentity(dataDir(), {
+        endpoint,
+        apiKey: accessKey,
+        tenantName: identity.tenantName,
+        userEmail: identity.userEmail,
+      });
+    } else {
+      removeAttachedIdentity(dataDir());
+    }
+  };
 
   if (settingsFirst) {
     // The first write: when it fails nothing has changed and there is nothing to
@@ -858,6 +876,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       revalidatePath('/settings');
       return { ok: false, error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS };
     }
+    recordAttachedAccount();
     revalidatePath('/settings');
     return { ok: true };
   }
@@ -888,6 +907,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     const reason = settingsRefusal(error);
     return { ok: false, error: note === undefined ? reason : `${reason} ${note}` };
   }
+  recordAttachedAccount();
   revalidatePath('/settings');
   return { ok: true };
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -291,21 +291,23 @@ describe('the attachment the factory builds — work accounts', () => {
 
   // A lock that cannot be taken because the data directory is gone is not one a
   // later call cures, so the scope answers refused and leaves a caller no retry.
+  // The gateway is closed before the directory is removed, so nothing holds a
+  // file in it open; the scope learns through the directory path alone.
   it('answers refused, not timeout, when the identity record lock cannot be taken', async () => {
     writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
     writeIdentity();
     const gateway = resolveGatewayForConfig(configFor(attachedSettings()));
+    const scope = accountScopeOf(gateway);
     try {
-      const scope = accountScopeOf(gateway);
-      if (scope === undefined) throw new Error('the gateway offered no account scope');
       // The precondition, so the case cannot pass on a scope that refuses for another reason.
-      expect(scope.learn(LEARNED)).toBe('written');
-
-      removeTree(dataDirOf(home));
-
-      expect(scope.learn(`claude:${randomUUID()}`)).toBe('refused');
+      expect(scope?.learn(LEARNED)).toBe('written');
     } finally {
       await gateway.close();
     }
+
+    removeTree(dataDirOf(home));
+    expect(existsSync(dataDirOf(home))).toBe(false);
+
+    expect(scope?.learn(`claude:${randomUUID()}`)).toBe('refused');
   });
 });

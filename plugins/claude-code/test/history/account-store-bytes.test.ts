@@ -104,15 +104,26 @@ async function wholeSession(org: string): Promise<Transcript> {
 describe('what a session leaves under the AKA home', () => {
   it("a personal session's full reconcile leaves no bytes of its uuid", async () => {
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro' });
-    await wholeSession(dev.personalOrg);
+    const t = await wholeSession(dev.personalOrg);
     const needles = [
       dev.personalOrg,
       dev.personalOrg.toUpperCase(),
       sessionAccountHash(`claude:${dev.personalOrg}`),
     ];
-    for (const path of filesUnder(dev.base)) {
-      const bytes = readFileSync(path).toString('latin1');
-      for (const needle of needles) expect(bytes.includes(needle), path).toBe(false);
+    const walked = filesUnder(dev.base).map((path) => ({
+      path,
+      bytes: readFileSync(path).toString('latin1'),
+    }));
+    // The walk read bytes, and the same search finds values they do carry, one in
+    // the session's observation log and one in the store: the absences below are
+    // over bytes that were read, not over an empty walk.
+    const log = walked.find(({ path }) => path.endsWith(`${t.sessionId}.log`));
+    expect(walked.length).toBeGreaterThan(0);
+    expect((log?.bytes.length ?? 0) > 0).toBe(true);
+    expect(log?.bytes.includes('"k":"n"')).toBe(true);
+    expect(walked.some(({ bytes }) => bytes.includes(t.sessionId))).toBe(true);
+    for (const { bytes } of walked) {
+      for (const needle of needles) expect(bytes.includes(needle)).toBe(false);
     }
   });
 

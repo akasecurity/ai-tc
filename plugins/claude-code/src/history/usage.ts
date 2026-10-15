@@ -17,6 +17,8 @@
 // inventory then the root (idempotent) BEFORE the leaves — it never trusts
 // SessionStart. Provider is then read back off the ensured root,
 // never from live env (which would mislabel backfilled history under today's env).
+import { existsSync } from 'node:fs';
+
 import { sessionAccountsDir } from '@akasecurity/persistence';
 import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
@@ -38,6 +40,7 @@ import {
   holdDecision,
   NO_ATTRIBUTION_CARRY,
   readObservations,
+  sessionLogPath,
 } from '@akasecurity/plugin-sdk/account';
 import type {
   AuditEventInput,
@@ -495,8 +498,15 @@ export async function reconcileSessionTail(
   // One scope-key memo for this tail pass, shared by both leaf kinds.
   const scopeKeyOf = scopeKeyMemo();
   try {
-    // The carried attribution state belongs to the offset it was written at: a
-    // tail that starts anywhere else (a rotation, a rewrite) is attributed afresh.
+    // The carried attribution state belongs to the offset it was written at, so a
+    // tail that starts anywhere else is attributed afresh: a transcript shorter
+    // than the stored offset is read from 0, and the scrub rewrite below stores
+    // offset 0. A replaced transcript longer than the stored offset is not noticed.
+    // A call already written can be read again in either case. In the local store
+    // its llm_call row takes the fresh scope key only when its output count has
+    // grown; an equal count keeps the first-written key even if the fresh
+    // attribution differs. A tool_call row there keeps its first key. Row counts
+    // do not change.
     const attribution = attributeTail(
       gateway,
       config.dataDir,
@@ -505,15 +515,22 @@ export async function reconcileSessionTail(
       trace,
       from === checkpoint.offset ? checkpoint : undefined,
     );
-    const waiting = pendingTimes(attribution, trace);
+    const waiting = pendingTimes(attribution, trace, records, toolCallRecords);
     const hold =
       waiting.length === 0
         ? undefined
         : holdDecision({ pendingTimes: waiting, pending: checkpoint.pending, now: now() });
     if (hold?.hold === true) {
       // A record's closing observation is not written yet: no row is written, the
-      // offsets stay where they are, and the next pass reads this tail again.
-      writeOffset(config.dataDir, sessionId, { ...checkpoint, pending: hold.pending });
+      // transcript offset stays where it is, and the next pass reads this tail
+      // again. The scrub of the transcript file below does not run either, so a
+      // held pass strikes nothing: a raw secret in these lines stays until the
+      // pass that writes.
+      writeOffset(config.dataDir, sessionId, {
+        ...checkpoint,
+        ...(attribution?.logReset === true ? { logOffset: 0, carried: undefined } : {}),
+        pending: hold.pending,
+      });
       return { llmCalls: 0, skipped: 0, toolCalls: 0 };
     }
     const accountOf =
@@ -588,7 +605,7 @@ export async function reconcileSessionTail(
         });
         // A rewrite changes the file's byte layout, so the just-persisted offset
         // no longer marks a line boundary. Reset it: the next pass re-reads the
-        // whole (now pointer-bearing) file, which the idempotent writes absorb.
+        // whole (now pointer-bearing) file and attributes it afresh.
         if (scrubbed !== null && scrubbed.rewritten > 0) {
           writeOffset(config.dataDir, sessionId, {
             offset: 0,
@@ -751,7 +768,9 @@ function setNum(attrs: LlmCallAttributes, key: string, value: unknown): void {
 
 // The account each assistant line of the tail ran under, from the session's
 // observation log, or undefined where this gateway stamps no account keys: every
-// row then keeps its repository key.
+// row then keeps its repository key. `logReset` is set when the log is shorter
+// than the stored offset or gone, as after an identity write: it is read from its
+// start with no carried state, and the returned offsets are the ones to store.
 function attributeTail(
   gateway: DataGateway,
   dataDir: string,
@@ -759,37 +778,61 @@ function attributeTail(
   transcriptPath: string,
   trace: UsageAccountTrace,
   carry: Pick<UsageOffset, 'logOffset' | 'carried'> | undefined,
-): AttributionResult | undefined {
+): (AttributionResult & { readonly logReset: boolean }) | undefined {
   try {
     const scope = accountScopeOf(gateway);
     if (scope === undefined) return undefined;
-    const carried = carry?.carried ?? NO_ATTRIBUTION_CARRY;
-    const logOffset = carry?.logOffset ?? 0;
+    const stateDir = sessionAccountsDir(dataDir);
+    let carried = carry?.carried ?? NO_ATTRIBUTION_CARRY;
+    let logOffset = carry?.logOffset ?? 0;
+    let log = readObservations(stateDir, sessionId, logOffset);
+    const logReset =
+      logOffset > 0 && (log.size < logOffset || !existsSync(sessionLogPath(stateDir, sessionId)));
+    if (logReset) {
+      carried = NO_ATTRIBUTION_CARRY;
+      logOffset = 0;
+      log = readObservations(stateDir, sessionId, 0);
+    }
     const orgAt = (pos: number | undefined): string | undefined =>
       pos === undefined ? undefined : credentialOrgAt(transcriptPath, sessionId, pos);
-    return attributeRecords({
-      marks: trace.marks,
-      observations: readObservations(sessionAccountsDir(dataDir), sessionId, logOffset).entries,
-      logOffset,
-      carry: carried,
-      anchorOrg: orgAt(carried.anchorAt),
-      lastOrg: orgAt(carried.lastOrgAt),
-      bindingHash: scope.bindingHash,
-      inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
-    });
+    return {
+      ...attributeRecords({
+        marks: trace.marks,
+        observations: log.entries,
+        logOffset,
+        carry: carried,
+        anchorOrg: orgAt(carried.anchorAt),
+        lastOrg: orgAt(carried.lastOrgAt),
+        bindingHash: scope.bindingHash,
+        inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
+      }),
+      logReset,
+    };
   } catch {
     return undefined;
   }
 }
 
-// The times of the tail's records still waiting for their closing observation.
+// The times of the tail's lines that will be written as rows and are still
+// waiting for their closing observation: the lines that become llm_call rows and
+// the lines that carry a tool call, whose tool_call rows are stamped for the account
+// their own line ran under. A line that writes neither, such as a synthetic or
+// zero-usage record with no tool call, never holds the pass.
 function pendingTimes(
   attribution: AttributionResult | undefined,
   trace: UsageAccountTrace,
+  records: readonly UsageRecord[],
+  toolCalls: readonly ToolCallRecord[],
 ): number[] {
   if (attribution === undefined) return [];
+  const written = new Set([
+    ...records.flatMap((rec) => (rec.kind === 'assistant' ? [rec.uuid] : [])),
+    ...toolCalls.flatMap((call) => (call.uuid === undefined ? [] : [call.uuid])),
+  ]);
   return trace.marks.flatMap((mark) =>
-    mark.kind === 'record' && attribution.records.get(mark.id)?.status === 'pending'
+    mark.kind === 'record' &&
+    written.has(mark.id) &&
+    attribution.records.get(mark.id)?.status === 'pending'
       ? [mark.t]
       : [],
   );

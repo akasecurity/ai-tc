@@ -158,8 +158,8 @@ describe('history-sync copy on a personal device', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toBe(
       'Whether activity the repositories enrolled on this device have not delivered to the ' +
         'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-        'outside one, is not sent. What qualifies is some of what an enrolled repository recorded ' +
-        'here before you enrolled it, sent as: ' +
+        'outside one, is not sent by this setting. What qualifies is some of what an enrolled ' +
+        'repository recorded here before you enrolled it, sent as: ' +
         'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
         'call, which tools were called with their inputs truncated and every detected secret ' +
         'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
@@ -249,7 +249,7 @@ describe('history-sync copy on a personal device', () => {
       expect(text).not.toContain('before it attached');
     }
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
-      'Activity in any other repository, or outside one, is not sent.',
+      'Activity in any other repository, or outside one, is not sent by this setting.',
     );
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
       'With no repository enrolled and no work subscription recognised, no activity is sent.',

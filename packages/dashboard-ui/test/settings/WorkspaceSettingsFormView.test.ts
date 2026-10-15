@@ -1377,6 +1377,17 @@ describe('WorkspaceSettingsFormView web-chat capture control', () => {
     expect(WEB_CHAT_SECTION_DESCRIPTION).not.toMatch(/nothing is sent anywhere/i);
   });
 
+  // A personal device, and a machine whose credential AKA cannot read, record a
+  // prompt nowhere, so a sentence saying a user's own messages are already
+  // recorded is false on exactly the machines that show a withheld notice above
+  // this one.
+  it('says a prompt is recorded only on a machine that records one', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toContain(
+      'Except on a personal device, or on a machine whose control-plane credential AKA cannot read, which never record them, your own messages are already recorded and this grant does not widen that;',
+    );
+    expect(WEB_CHAT_SECTION_DESCRIPTION).not.toContain('masked. Your own messages are already');
+  });
+
   it('defaults to the not-granted wording, never assuming the grant', () => {
     expect(revoked?.description).toMatch(/never assumed/i);
     expect(revoked?.label).toMatch(/not granted/i);
@@ -1811,9 +1822,8 @@ describe('work subscriptions on a personal device', () => {
 
   it('names the sessions it also sends, and the opt-out, on an attached personal device', () => {
     const html = page({ onDetach: () => undefined, attachmentMode: 'scoped' });
-    expect(html).toContain(
-      'Claude Code sessions signed in to a work subscription of your organization',
-    );
+    expect(html).toContain('Claude Code sessions signed in to a work subscription');
+    expect(html).not.toContain('work subscription of your organization');
     expect(html).toContain('aka unenroll --work-subscriptions');
   });
 

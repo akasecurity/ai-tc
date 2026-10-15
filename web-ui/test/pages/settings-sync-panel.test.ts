@@ -703,6 +703,19 @@ describe('the settings route — the sync panel', () => {
     }
   });
 
+  // A tool call's detections go with that call and the device report carries
+  // finding counts and dates, so "not sent from here" would deny both.
+  it('says what of the findings is sent, not that none is', async () => {
+    attach();
+    grant();
+
+    const findings = ((await panel()).localOnly ?? []).find((line) => line.id === 'findings');
+    expect(findings?.detail).toBe(
+      'derived by your deployment from the activity it receives; what was detected in a tool call’s inputs goes with that call, and the device report carries finding counts and dates',
+    );
+    expect(findings?.detail).not.toContain('not sent from here');
+  });
+
   // Every relative label on the page has to be computed against ONE instant, or
   // the server render and the hydration disagree whenever a rounding boundary
   // falls between them and React discards the markup. That the instant is
@@ -721,8 +734,8 @@ describe('the settings route — the sync panel', () => {
 });
 
 describe('the settings route — the sync panel on a scoped attachment', () => {
-  // A scoped attachment sends activity only from what its enrolled repositories
-  // recorded, and its history drain filters every pass by that scope. The bars
+  // A scoped attachment sends activity only from what is enrolled on it, and its
+  // history drain filters every pass by that scope. The bars
   // are counted by the same scope, resolved from the same inputs, so they
   // describe what this machine sends rather than everything its store holds.
   // Each case writes a real credential file and a real settings record; only the
@@ -862,7 +875,7 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
 });
 
 // The not-shared line says what is sent from now on, and a personal device
-// sends activity only from its enrolled repositories. The route reads the mode
+// sends activity only from what is enrolled on it. The route reads the mode
 // once, for the form, and the panel takes the same answer; a machine-wide
 // attachment's props carry no flag at all.
 describe('the settings route — the sync panel on a personal device', () => {

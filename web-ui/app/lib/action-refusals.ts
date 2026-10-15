@@ -231,7 +231,7 @@ export const ATTACH_LABEL_INVALID =
  * until it is reloaded, so the copy says to reload.
  */
 export const ATTACH_MODE_REQUIRED =
-  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
+  'This machine already holds an access key that may make it a personal device (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
 
 /**
  * An attach whose key was verified, and then found the machine's credential
@@ -271,7 +271,7 @@ export const SYNC_NOT_ATTACHED =
  * decision the user makes on this page.
  */
 export const SYNC_NOT_GRANTED =
-  'Existing activity is not shared with your deployment, so a pass would send nothing. Change that above to start sending it.';
+  'Existing activity is not shared with your deployment. Change that above to start sending it.';
 
 export const SYNC_KEY_UNUSABLE =
   'This machine cannot use its key for your deployment, so a pass would send nothing. Re-attach to repair it.';

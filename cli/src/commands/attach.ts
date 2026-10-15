@@ -23,10 +23,12 @@ import {
   readLocalHistoryPreview,
   readManagedSettings,
   readSightingSharing,
+  removeAttachedIdentity,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   settledDecisionHolds,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
   writesSettingsFirst,
@@ -961,6 +963,21 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // Who the key belongs to, as digests beside the credential, now that both
+  // writes have landed: recorded for a scoped attach, removed for a machine-wide
+  // one, with every session's account state cleared either way. A record that
+  // cannot be written leaves none, and the attach stands.
+  if (mode === 'scoped') {
+    writeAttachedIdentity(dataDirOf(base), {
+      endpoint,
+      apiKey,
+      tenantName: identity.tenantName,
+      userEmail: identity.userEmail,
+    });
+  } else {
+    removeAttachedIdentity(dataDirOf(base));
+  }
+
   // The capture half of the grant. The structural half needs no equivalent
   // call: it re-derives its own backlog from `backlogBefore` on the drain's
   // next pass. A capture is reachable only through `outbox_owed`, and this is
@@ -1678,8 +1695,9 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 /**
  * Everything derived from an attachment: the cached bundle, the recorded sync
  * outcome, the forward breaker's state, the count of events the batch budget
- * discarded, the last posture send's outcome, and how far the history drain had
- * got. All six are meaningless without one, and all six MISLEAD if they survive
+ * discarded, the last posture send's outcome, how far the history drain had got,
+ * the record of who attached the machine, and every session's account state. All
+ * of them are meaningless without one, and all of them MISLEAD if they survive
  * it — the drop tally most legibly, since a freshly attached machine would
  * otherwise open by reporting events it lost to a deployment it no longer talks to.
  *

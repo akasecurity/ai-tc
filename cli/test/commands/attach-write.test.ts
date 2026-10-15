@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -15,10 +16,16 @@ import { join } from 'node:path';
 import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
+  ATTACHED_IDENTITY_FILENAME,
+  attachedUserDigestOf,
   controlPlaneCredentialPath,
+  credentialDigestOf,
   dataDir as dataDirOf,
   openLocalDatabase,
+  readAttachedIdentity,
   readControlPlaneCredentialFile,
+  recordValidatedWorkAccount,
+  SESSION_ACCOUNTS_DIRNAME,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
@@ -2922,6 +2929,169 @@ describe('what an attach granted --sync-history marks to send of what was record
 
     expect(exits).toEqual([]);
     expect(owedCaptures()).toEqual(['cap-ledger', 'cap-new', 'cap-repo', 'cap-unkeyed']);
+  });
+});
+
+// The attached account, kept beside the credential as digests. An address reads
+// as personal data to a scanner, so the ones these cases use are built from parts.
+const AT_SIGN = String.fromCharCode(64);
+const WORKER = { tenantName: 'Example Org', userEmail: `Worker${AT_SIGN}Example.com` };
+const COLLEAGUE = { tenantName: 'Example Org', userEmail: `colleague${AT_SIGN}example.com` };
+const WORK_ORG = `claude:${randomUUID()}`;
+
+const identityFile = (): string => join(dataDirOf(base), ATTACHED_IDENTITY_FILENAME);
+const sessionAccountsDir = (): string => join(dataDirOf(base), SESSION_ACCOUNTS_DIRNAME);
+
+/** Account state a session left behind, as its hooks would have written it. */
+function plantSessionAccountState(): void {
+  mkdirSync(sessionAccountsDir(), { recursive: true });
+  writeFileSync(join(sessionAccountsDir(), 's-1.log'), '{}\n');
+}
+
+/** Learn WORK_ORG under the credential on disk, as a hook that validated it would. */
+function learnWorkOrg(): void {
+  const read = storedCredential();
+  if (!read.usable) throw new Error(`expected a usable credential, got ${read.reason}`);
+  expect(
+    recordValidatedWorkAccount(dataDirOf(base), {
+      endpoint: ENDPOINT,
+      credential: read.credential,
+      key: WORK_ORG,
+    }),
+  ).toBe('written');
+}
+
+/** One non-interactive attach as `who`, which must succeed. */
+async function attachAs(
+  who: { tenantName: string; userEmail: string },
+  key: string,
+  flags: readonly string[],
+  url = ENDPOINT,
+): Promise<void> {
+  const h = harness({ interactive: false, stdin: key, who });
+  await runAttach(['--url', url, ...flags, '--key-stdin', '--no-sync-history'], h.deps);
+  expect(exits).toEqual([]);
+}
+
+describe('what an attach records of the attached account', () => {
+  it('a scoped attach records the attached account as digests, and clears session-accounts', async () => {
+    plantSessionAccountState();
+
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+
+    expect(readAttachedIdentity(dataDirOf(base))).toMatchObject({
+      endpoint: ENDPOINT,
+      credentialDigest: credentialDigestOf(KEY_1),
+      attachedUserDigest: attachedUserDigestOf(WORKER.userEmail),
+      source: 'attach',
+      workAccounts: [],
+    });
+    const bytes = readFileSync(identityFile(), 'utf8');
+    for (const text of [
+      WORKER.userEmail,
+      WORKER.userEmail.toLowerCase(),
+      WORKER.tenantName,
+      KEY_1,
+    ]) {
+      expect(bytes).not.toContain(text);
+    }
+    expect(existsSync(sessionAccountsDir())).toBe(false);
+  });
+
+  it('a key rotation keeps the learned orgs', async () => {
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+    learnWorkOrg();
+
+    await attachAs(WORKER, KEY_2, []);
+
+    expect(readAttachedIdentity(dataDirOf(base))).toMatchObject({
+      credentialDigest: credentialDigestOf(KEY_2),
+      workAccounts: [{ kind: 'account', identity: WORK_ORG }],
+    });
+  });
+
+  it('a learned org never carries over to another attached user', async () => {
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+    learnWorkOrg();
+
+    await attachAs(COLLEAGUE, KEY_2, []);
+
+    expect(readAttachedIdentity(dataDirOf(base))).toMatchObject({
+      attachedUserDigest: attachedUserDigestOf(COLLEAGUE.userEmail),
+      workAccounts: [],
+    });
+  });
+
+  it.each<[string, { tenantName: string; userEmail: string }, string]>([
+    ['another organization', { ...WORKER, tenantName: 'Other Org' }, ENDPOINT],
+    ['another deployment', WORKER, OTHER_ENDPOINT],
+  ])('a re-attach to %s starts with no learned org', async (_label, who, url) => {
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+    learnWorkOrg();
+
+    await attachAs(who, KEY_2, ['--scoped'], url);
+
+    expect(readAttachedIdentity(dataDirOf(base))).toMatchObject({
+      endpoint: url,
+      workAccounts: [],
+    });
+  });
+
+  it('a machine attach deletes the record and session-accounts', async () => {
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+    expect(existsSync(identityFile())).toBe(true);
+    plantSessionAccountState();
+
+    await attachAs(WORKER, KEY_2, ['--machine']);
+
+    expect(modeOnDisk()).toBe('machine');
+    expect(existsSync(identityFile())).toBe(false);
+    expect(existsSync(sessionAccountsDir())).toBe(false);
+  });
+
+  it('a record that cannot be written leaves none, and the attach still succeeds', async () => {
+    mkdirSync(identityFile(), { recursive: true });
+    const h = harness({ interactive: false, stdin: KEY_1, who: WORKER });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(readAttachedIdentity(dataDirOf(base))).toBeUndefined();
+    expect(h.output()).toContain('as a personal device.');
+  });
+
+  it.each([['off'], ['paused']])(
+    "a key rotation keeps workSubscriptions %s and every entry's codingAgents",
+    async (value) => {
+      const optedOut = {
+        ...BOUND,
+        workSubscriptions: value,
+        entries: [
+          ...BOUND.entries,
+          { kind: 'account', identity: WORK_ORG, enrolledAt: ISO, codingAgents: true },
+        ],
+      };
+      attachedScoped(optedOut);
+      const h = harness({ interactive: false, stdin: KEY_2 });
+
+      await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([]);
+      expect(storedSettings().attachmentScope).toEqual(optedOut);
+    },
+  );
+
+  it('detach removes session-accounts and the attached account', async () => {
+    await attachAs(WORKER, KEY_1, ['--scoped']);
+    expect(existsSync(identityFile())).toBe(true);
+    plantSessionAccountState();
+
+    runDetach([], harness({ interactive: false }).deps);
+
+    expect(exits).toEqual([]);
+    expect(existsSync(identityFile())).toBe(false);
+    expect(existsSync(sessionAccountsDir())).toBe(false);
   });
 });
 

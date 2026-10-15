@@ -104,14 +104,19 @@ you, which makes a warn hard to tell from `monitor` on this host. Set
 It reads `.github/hooks/*.json` on the **default branch** and nowhere else, and
 it has no local store of its own.
 
-**Nothing in the session says where its activity goes.** On a machine attached
-to the organization's control plane, the Claude Code and Codex plugins print one
-line at session start: forwarding everything, forwarding for the enrolled
-repository the session is in, or local-only. This adapter's session-start hook
-opens the session root and writes nothing to either channel, so no such line is
-printed on any surface here. `aka
-status` shows whether this machine is attached, whether it sends everything or
-only enrolled repositories, and which repositories are enrolled.
+**Where the session's activity goes may not be shown to you.** On a machine
+attached to the organization's control plane, the Claude Code and Codex plugins
+print one line at session start: forwarding everything, forwarding for the
+enrolled repository the session is in, or local-only. This adapter's
+session-start hook has no message field on either surface, so it writes that
+line to **stderr**, together with its other once-per-session notices: that a
+newer AKA binary is on the machine than this plugin, that a warn-era store's
+block and redact categories were kept at warn, and that the store path is
+redirected. Its stdout stays empty. Whether the CLI shows a successful hook's
+stderr to you has not been confirmed (see above), so these lines may reach only
+the debug log. `aka status` shows whether this machine is attached, whether it
+sends everything or only enrolled repositories, and which repositories are
+enrolled.
 
 ### Capability matrix
 

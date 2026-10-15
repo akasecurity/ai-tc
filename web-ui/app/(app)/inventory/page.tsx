@@ -57,7 +57,7 @@ export default async function InventoryPage({
     <div className="flex h-full min-h-0 flex-col p-6">
       <PageHead
         title="Inventory"
-        sub="Projects, skills, MCP servers, hooks & configuration — with attention flags & per-file LLM access"
+        sub="Projects, skills, MCP servers, hooks & configuration — with attention flags & files withheld from models"
       />
       <InventoryClient
         harnesses={harnesses}
@@ -66,6 +66,11 @@ export default async function InventoryPage({
         active={active}
         assetDetail={assetDetail}
         blocked={blocked?.files ?? []}
+        blockedError={
+          item?.type === 'project' && blocked === null
+            ? 'the project is not in the local store'
+            : null
+        }
         harnessEvents={EMPTY_HARNESS_EVENTS}
         renderedAt={renderInstant()}
         locale={await renderLocale()}

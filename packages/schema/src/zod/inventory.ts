@@ -307,7 +307,7 @@ export type ProjectTreeResponse = z.infer<typeof ProjectTreeResponse>;
 // ─── Shape 14: FileDetail ────────────────────────────────────────────────────
 
 /**
- * Powers the per-file detail drawer.
+ * One file's detail, as the per-file read returns it.
  * Extends FileSummary with project context and findingsRefs.
  */
 export const FileDetail = FileSummary.extend({

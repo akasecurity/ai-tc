@@ -1,4 +1,12 @@
-import { readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -37,8 +45,14 @@ describe('loadOrCreateCaptureIdKey', () => {
   it.skipIf(process.platform === 'win32')(
     'fails as an unclaimable key, not a corrupt one, when a dangling symlink holds the path',
     () => {
-      symlinkSync(join(store.dataDir, 'nowhere'), join(store.dataDir, CAPTURE_ID_KEY_FILENAME));
+      const target = join(store.dataDir, 'nowhere');
+      const file = join(store.dataDir, CAPTURE_ID_KEY_FILENAME);
+      symlinkSync(target, file);
       expect(() => loadOrCreateCaptureIdKey(store.dataDir)).toThrow(KeyUnclaimableError);
+      expect(() => loadOrCreateCaptureIdKey(store.dataDir)).toThrow(/symlink/i);
+      expect(lstatSync(file).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(file)).toBe(target);
+      expect(existsSync(target)).toBe(false);
     },
   );
 });

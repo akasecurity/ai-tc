@@ -4,14 +4,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type * as Persistence from '@akasecurity/persistence';
-import { openLocalDatabase } from '@akasecurity/persistence';
+import { ATTACHED_IDENTITY_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { bundledDetections, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX } from '@akasecurity/schema';
 import { ESLint, Linter } from 'eslint';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as FileLock from '../../../../packages/persistence/src/file-lock.ts';
 import type * as Remote from '../../../../packages/remote/src/index.ts';
+import { scanHistory } from '../../src/history/scan.ts';
 import {
   NO_ACCOUNT,
   recordSessionStartAccount,
@@ -70,6 +72,23 @@ vi.mock('@akasecurity/persistence', async (importOriginal) => {
   };
 });
 
+// A lock on the identity record that fails for a reason other than contention, which
+// `recordValidatedWorkAccount` answers as refused rather than as a timeout. Every
+// other lock is the real one.
+const unavailable = vi.hoisted((): { file: string | undefined } => ({ file: undefined }));
+vi.mock('../../../../packages/persistence/src/file-lock.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof FileLock>();
+  return {
+    ...real,
+    withFileLock: <T>(file: string, fn: () => T, options?: FileLock.FileLockOptions): T => {
+      if (file === unavailable.file) {
+        throw new real.FileLockError('unavailable', file, 'refused by the test');
+      }
+      return real.withFileLock(file, fn, options);
+    },
+  };
+});
+
 // The one UserPromptSubmit case drives the entry itself: stdin is the payload
 // this holds, and what the entry would print is dropped. Every other case calls
 // an importable run. The fail-open count is a spy so a case can see a fault the
@@ -91,6 +110,7 @@ beforeEach(() => {
 afterEach(() => {
   lock.held = false;
   cap.filledBy = [];
+  unavailable.file = undefined;
   dev.dispose();
 });
 
@@ -152,17 +172,23 @@ const refusalKeys = (): (string | null)[] =>
 
 const SECRET_RULE_ID = 'secrets/twilio-key';
 
+/** The bundled secret rule's pack, and one value that rule detects. */
+function secretRule() {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === SECRET_RULE_ID));
+  const example = pack?.rules.find((r) => r.id === SECRET_RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(`bundled rule ${SECRET_RULE_ID} is missing or has no example`);
+  }
+  return { pack, example };
+}
+
 /**
  * A prompt holding a bundled rule's own example value, with that rule's pack set
  * to redact in the local store, so the tokenize helper answers with a rewrite and
  * records the prompt.
  */
 function redactablePrompt(): string {
-  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === SECRET_RULE_ID));
-  const example = pack?.rules.find((r) => r.id === SECRET_RULE_ID)?.examples?.[0];
-  if (pack === undefined || example === undefined) {
-    throw new Error(`bundled rule ${SECRET_RULE_ID} is missing or has no example`);
-  }
+  const { pack, example } = secretRule();
   const db = openLocalDatabase(dev.dataDir);
   try {
     db.installedPacks.recordInventory(bundledDetections());
@@ -426,6 +452,34 @@ describe('a work session across a /clear, a missing boundary and two logins', ()
     expect(dev.learnedKeys()).toEqual([]);
   });
 
+  it('a second org named under one boundary ends the session account, and the hooks after it keep the repository key', async () => {
+    const t = startedSession(dev.workOrg);
+    await write(t, dev.personal);
+    t.prompt(later(4));
+    t.org(randomUUID(), later(5));
+    t.reply(later(6));
+    await write(t, dev.personal, 'after-change.md');
+    await write(t, dev.personal, 'and-after.md');
+    const keys = captureKeys();
+    expect(isAgentKeyFor(keys[0], dev.workOrg)).toBe(true);
+    expect(keys.slice(1).map((key) => key === PERSONAL_KEY)).toEqual([true, true]);
+    expect(forwarded()).toBe(1);
+    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+    const gateway = gatewayFor();
+    try {
+      const account = resolveHookAccount(gateway, {
+        dataDir: dev.dataDir,
+        sessionId: t.sessionId,
+        transcriptPath: t.path,
+        cwd: dev.personal,
+      });
+      expect(account.accountKey).toBeUndefined();
+      expect(account.view).toEqual({ none: 'org-changed' });
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it('two sessions under two Claude config dirs are each decided by their own login', async () => {
     const otherConfig = join(dev.home, 'personal-claude');
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro', configDir: otherConfig });
@@ -443,6 +497,85 @@ describe('a work session across a /clear, a missing boundary and two logins', ()
     expect(third).toBe(PERSONAL_KEY);
     expect(forwarded()).toBe(1);
     expect(dev.sessionState(personal.sessionId).log).not.toMatch(/"k":"w"/);
+  });
+});
+
+describe('a session that starts before the attached-identity record exists', () => {
+  beforeEach(() => {
+    dev.attach({ identity: false });
+    dev.login({ org: dev.workOrg });
+  });
+
+  it('is not stamped once the record appears, until a later session start records a boundary', async () => {
+    const t = startedSession(dev.workOrg);
+    await write(t, dev.personal);
+    expect(dev.sessionState(t.sessionId).log.includes('"b":')).toBe(false);
+    dev.writeIdentity();
+    await write(t, dev.personal, 'record-present.md');
+    expect(dev.sessionState(t.sessionId).log.includes('"b":')).toBe(false);
+    recordSessionStartAccount({
+      config: dev.config(),
+      sessionId: t.sessionId,
+      transcriptPath: t.path,
+      cwd: dev.personal,
+      source: 'clear',
+    });
+    await write(t, dev.personal, 'after-clear.md');
+    const [first, second, third] = captureKeys();
+    expect([first, second].map((key) => key === PERSONAL_KEY)).toEqual([true, true]);
+    expect(isAgentKeyFor(third, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+  });
+});
+
+describe('a work session whose key the identity record refuses to learn', () => {
+  beforeEach(() => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+  });
+
+  it.each<[string, (t: Transcript) => void]>([
+    [
+      'the learned-account cap is reached',
+      () => {
+        cap.filledBy = Array.from(
+          { length: ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX },
+          () => `claude:${randomUUID()}`,
+        );
+      },
+    ],
+    [
+      'the record does not hold for the credential the gateway was built with',
+      (t) => {
+        dev.attach({ apiKey: OTHER_TEST_KEY });
+        dev.boundary(t);
+      },
+    ],
+    [
+      'the record lock cannot be taken',
+      () => {
+        unavailable.file = join(dev.dataDir, ATTACHED_IDENTITY_FILENAME);
+      },
+    ],
+  ])('gives no account and answers the cap when %s', async (_cause, refuse) => {
+    const t = startedSession(dev.workOrg);
+    const gateway = gatewayFor();
+    try {
+      refuse(t);
+      const account = resolveHookAccount(gateway, {
+        dataDir: dev.dataDir,
+        sessionId: t.sessionId,
+        transcriptPath: t.path,
+        cwd: dev.personal,
+      });
+      expect(account.accountKey).toBeUndefined();
+      expect(account.admitWith).toBeUndefined();
+      expect(account.view).toEqual({ none: 'cap-reached' });
+      expect(stampFor(gateway, account, PERSONAL_KEY)).toBe(PERSONAL_KEY);
+    } finally {
+      await gateway.close();
+    }
+    expect(dev.learnedKeys().includes(`claude:${dev.workOrg}`)).toBe(false);
   });
 });
 
@@ -513,6 +646,38 @@ describe('a machine-wide attachment', () => {
     expect(captureKeys()).toEqual([PERSONAL_KEY]);
     expect(forwarded()).toBe(1);
     expect(existsSync(join(dev.dataDir, 'session-accounts'))).toBe(false);
+  });
+});
+
+describe('a history backfill on an attachment that has learned a work account', () => {
+  it("keys a leaking message by its repository alone, and sends nothing under the account's key", async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    const t = startedSession(dev.workOrg);
+    await write(t, dev.personal);
+    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+    const sentBefore = forwarded();
+    const root = join(dev.root, 'history');
+    const project = join(root, '-notes');
+    mkdirSync(project, { recursive: true });
+    const record = {
+      type: 'user',
+      cwd: dev.personal,
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: `deploy with ${secretRule().example}` },
+    };
+    writeFileSync(join(project, `${randomUUID()}.jsonl`), `${JSON.stringify(record)}\n`);
+    const config = dev.config();
+
+    await scanHistory(
+      { ...config, settings: { ...config.settings, historicalAccess: 'full' } },
+      { dir: root },
+    );
+
+    const prompts = dev.storedRows().filter((row) => row.eventType === 'prompt');
+    expect(prompts.length).toBe(1);
+    expect(prompts[0]?.scopeKey === PERSONAL_KEY).toBe(true);
+    expect(forwarded()).toBe(sentBefore);
   });
 });
 
@@ -588,11 +753,53 @@ describe('captures, policy questions and refusal rows go through stamped-capture
     ['a capture', 'runtime.capture({ text });'],
     ['a capture by a computed name', "runtime['capture']({ text });"],
     ['a deferred capture', 'runtime.captureDeferred({ text });'],
+    ['a destructured capture', 'const { capture } = runtime; capture({ text });'],
+    [
+      'a destructured deferred capture',
+      'const { captureDeferred } = runtime; captureDeferred({ text });',
+    ],
     ['the governance question', 'governanceApplies(gateway, key);'],
+    ['the governance question through a namespace', 'sdk.governanceApplies(gateway, key);'],
+    [
+      'the governance question through a namespace by a computed name',
+      "sdk['governanceApplies'](gateway, key);",
+    ],
+    [
+      'an aliased import of the governance question',
+      "import { governanceApplies as ga } from 'x';",
+    ],
+    [
+      'an import of the governance question by a string name',
+      "import { 'governanceApplies' as ga } from 'x';",
+    ],
     ['a refusal row', 'buildModelRefusalEvent({ id });'],
+    ['a refusal row through a namespace', 'sdk.buildModelRefusalEvent({ id });'],
+    [
+      'a refusal row through a namespace by a computed name',
+      "sdk['buildModelRefusalEvent']({ id });",
+    ],
+    [
+      'an aliased import of the refusal row',
+      "import { buildModelRefusalEvent as build } from 'x';",
+    ],
   ])('refuses %s in a hook and in a mod helper', (_label, code) => {
     expect(fired('src/hooks/post-tool-use.ts', code)).toBe(1);
     expect(fired('src/mod/tokenize-run.ts', code)).toBe(1);
+  });
+
+  it.each([
+    ['a call whose name is held in a variable', 'runtime[method]({ text });'],
+    [
+      'a call through a binding renamed by assignment',
+      'const send = runtime.capture; send({ text });',
+    ],
+    [
+      'a call through a binding renamed by destructuring',
+      'const { capture: send } = runtime; send({ text });',
+    ],
+    ['an indirect call through call', 'runtime.capture.call(runtime, { text });'],
+  ])('does not see %s', (_label, code) => {
+    expect(fired('src/hooks/post-tool-use.ts', code)).toBe(0);
   });
 
   it('allows them in stamped-capture.ts', () => {

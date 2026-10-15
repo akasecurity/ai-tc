@@ -45,3 +45,25 @@ describe('dropShieldedFindings', () => {
     ]);
   });
 });
+
+describe('shieldPointers over sighting tokens', () => {
+  const FP = 'xY_-'.repeat(10) + 'abc';
+  const TOKEN = ['[[aka:fp:v', '12.', FP, ']]'].join('');
+
+  it('blanks a sighting token like a pointer', () => {
+    const text = `key ${TOKEN} and ${POINTER}.`;
+    const shielded = shieldPointers(text);
+    expect(shielded.text).toBe(
+      `key ${' '.repeat(TOKEN.length)} and ${' '.repeat(POINTER.length)}.`,
+    );
+    expect(shielded.spans).toEqual([
+      { start: 4, end: 4 + TOKEN.length },
+      { start: 9 + TOKEN.length, end: 9 + TOKEN.length + POINTER.length },
+    ]);
+  });
+
+  it('leaves a token with a malformed fingerprint visible', () => {
+    const short = ['[[aka:fp:v1.', FP.slice(1), ']]'].join('');
+    expect(shieldPointers(short).spans).toEqual([]);
+  });
+});

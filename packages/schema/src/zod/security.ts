@@ -2,7 +2,7 @@
 // Responses are SEMANTIC, not presentational: no color/icon/label fields — the
 // frontend maps those from the enums. None of these shapes carry tenancy or
 // user-scoping fields.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { Severity } from './finding.ts';
 import { Harness } from './harness-map.ts';

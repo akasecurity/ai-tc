@@ -113,12 +113,12 @@ afterEach(() => {
 });
 
 describe('collectFiles', () => {
-  it('walks a tree skipping vendored dirs, dotdirs, and oversized files', () => {
+  it('walks a tree skipping vendored and generated dirs and oversized files', () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     mkdirSync(join(root, 'node_modules'));
     writeFileSync(join(root, 'node_modules', 'dep.js'), SECRET);
-    mkdirSync(join(root, '.hidden'));
-    writeFileSync(join(root, '.hidden', 'sneaky.txt'), SECRET);
+    mkdirSync(join(root, '.cache'));
+    writeFileSync(join(root, '.cache', 'sneaky.txt'), SECRET);
     writeFileSync(join(root, 'huge.bin'), 'x'.repeat(1_000_001));
 
     const files = [...collectFiles(root)];

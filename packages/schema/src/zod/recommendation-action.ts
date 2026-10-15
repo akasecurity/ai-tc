@@ -8,7 +8,7 @@
 // SQL bind parameter. Whether the rule exists, and whether the method names a
 // disposition a human is allowed to write, are domain checks the action still
 // makes against state this schema cannot see.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { ResolutionMethod } from './finding.ts';
 

@@ -3095,6 +3095,110 @@ describe('what an attach records of the attached account', () => {
   });
 });
 
+const OPTED_OUT_FRESH = { ...FRESH, workSubscriptions: 'off' };
+
+describe('a fresh enrolled list keeps the opt-out of work-subscription recognition', () => {
+  async function rotateKey(): Promise<void> {
+    const h = harness({ interactive: false, stdin: KEY_2 });
+    await runAttach(['--url', ENDPOINT, '--key-stdin', '--no-sync-history'], h.deps);
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+  }
+
+  it.each<[string, unknown]>([
+    [
+      'a record that names no account',
+      { endpoint: ENDPOINT, workSubscriptions: 'off', entries: [entry(REPO)] },
+    ],
+    [
+      'a record for another organization',
+      { ...BOUND, tenantName: 'Other Org', workSubscriptions: 'off' },
+    ],
+    [
+      'a record for another account',
+      { ...BOUND, userEmail: 'member-18', workSubscriptions: 'off' },
+    ],
+    ['a value this version reads as off', { ...UNBOUND, workSubscriptions: 'paused' }],
+  ])('keeps the opt-out of %s', async (_how, record) => {
+    attachedScoped(record);
+
+    await rotateKey();
+
+    expect(storedSettings().attachmentScope).toEqual(OPTED_OUT_FRESH);
+  });
+
+  it('keeps the opt-out of a record left beside a machine-wide credential', async () => {
+    writeControlPlaneCredential(settingsDirOf(base), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: KEY_1,
+      mintedAt: ISO,
+    });
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: ISO },
+        attachmentScope: { ...BOUND, workSubscriptions: 'off' },
+      },
+      base,
+      null,
+    );
+    const h = harness({ interactive: false, stdin: KEY_2 });
+
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+    expect(exits).toEqual([]);
+    expect(modeOnDisk()).toBe('scoped');
+    expect(storedSettings().attachmentScope).toEqual(OPTED_OUT_FRESH);
+  });
+
+  it('keeps the opt-out and nothing else of the record it replaces', async () => {
+    attachedScoped({
+      ...BOUND_AND_NEWER,
+      tenantName: 'Other Org',
+      workSubscriptions: 'off',
+      entries: [
+        ...BOUND_AND_NEWER.entries,
+        { kind: 'account', identity: WORK_ORG, enrolledAt: ISO, codingAgents: true },
+      ],
+    });
+
+    await rotateKey();
+
+    expect(storedSettings().attachmentScope).toEqual(OPTED_OUT_FRESH);
+  });
+
+  it.each<[string, unknown]>([
+    ['holds no opt-out', { ...UNBOUND }],
+    [
+      'is for another deployment',
+      {
+        endpoint: OTHER_ENDPOINT,
+        tenantName: ANA.tenantName,
+        userEmail: ANA.userEmail,
+        workSubscriptions: 'off',
+        entries: [],
+      },
+    ],
+    [
+      'cannot be read: an organization name longer than this version accepts',
+      { ...BOUND, tenantName: 'x'.repeat(201), workSubscriptions: 'off' },
+    ],
+    [
+      'cannot be read: entries that are not a list',
+      { endpoint: ENDPOINT, entries: 'not a list', workSubscriptions: 'off' },
+    ],
+    ['cannot be read: a value that is not a record', 'not a record'],
+  ])('starts with recognition on when the record it replaces %s', async (_how, record) => {
+    attachedScoped(record);
+
+    await rotateKey();
+
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+});
+
 describe('aka detach', () => {
   it('clears the enrolled list, so a later scoped attach as the same account starts empty', async () => {
     attachedScoped(BOUND);

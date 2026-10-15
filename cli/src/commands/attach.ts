@@ -28,6 +28,7 @@ import {
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   settledDecisionHolds,
+  turnWorkSubscriptionsOff,
   writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
@@ -61,10 +62,12 @@ import {
   attachmentModeOf,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttachmentScopeBoundTo,
+  isAttachmentScopeValid,
   originOnly,
   parseAttachmentScope,
   sightingSharingLine,
   unsafeEndpointReason,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { homeBase } from '../lib/args.ts';
@@ -818,7 +821,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // for someone else, or naming nobody cannot be shown to be this account's;
   // and a bound list found beside a machine-wide credential, or none, was left
   // by a writer that did not clear it (an older aka's re-attach or detach), so
-  // its enrollments belong to an attachment that has ended.
+  // its enrollments belong to an attachment that has ended. The fresh one keeps
+  // the opt-out of work-subscription recognition the replaced record held for
+  // this endpoint (freshScopeKeepingOptOut).
   // `previous` is the credential on disk just before the write, not the one the
   // mode was decided from: another aka may have attached this machine in between,
   // and what is kept must follow what is there now.
@@ -853,7 +858,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     cleared.readableEntries =
       cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
     cleared.unread = unreadInReplacedList(stored);
-    return freshAttachmentScope(endpoint, identity);
+    return freshScopeKeepingOptOut(stored, endpoint, identity);
   };
 
   // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave.
@@ -1522,6 +1527,24 @@ function whyListCleared(
   if (tenantName !== who.tenantName) return 'organization';
   if (userEmail !== who.userEmail) return 'account';
   return undefined;
+}
+
+/**
+ * The list a scoped attach writes in place of one it does not keep: empty and
+ * bound to `who`, with the opt-out of work-subscription recognition `stored`
+ * holds carried over, and nothing else of it. `stored` counts only when it is
+ * readable and names `endpoint`; the opt-out of any other record is dropped, so
+ * it cannot switch recognition off for a deployment it was not made for.
+ */
+function freshScopeKeepingOptOut(
+  stored: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+): unknown {
+  const fresh = freshAttachmentScope(endpoint, who);
+  return isAttachmentScopeValid(stored, endpoint) && !workSubscriptionsOn(stored)
+    ? turnWorkSubscriptionsOff(fresh, endpoint).next
+    : fresh;
 }
 
 /** The line that opens the report of a list a scoped attach did not keep. */

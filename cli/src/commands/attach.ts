@@ -1053,6 +1053,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'the machine is attached as a personal device, the fact that it is one. Where',
           'a scan is available (the coding-agent plugins, not a browser chat), the same',
           'session start also checks it for device commands.',
+          'The background sync also asks that deployment once which account this',
+          "machine's key belongs to, when the machine does not know it yet.",
           // An aka older than this one writes a version-1 credential on every
           // attach, from its command line and from its dashboard alike, and
           // version 1 is machine-wide. Said here because the reader is the one
@@ -1421,6 +1423,8 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  machine is attached as a personal device, the fact that it is one. Where a',
       '  scan is available (the coding-agent plugins, not a browser chat), the same',
       '  session start also checks it for device commands.',
+      '  A personal device also asks the deployment once, from the background sync,',
+      '  which account its key belongs to, when the device does not know it yet.',
       '  A machine your organization owns sends activity from anywhere on this',
       '  machine.',
       '',

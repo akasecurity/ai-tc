@@ -157,11 +157,14 @@ const ENROLL_HINT =
 /**
  * The `user` line when no identity record counts for this credential. What a
  * work subscription is recognised against is then unknown, so none is. Never
- * the user's address: the record holds only a digest of it.
+ * the user's address: the record holds only a digest of it. The plugin's
+ * background sync asks the deployment once which account the key belongs to,
+ * which is what both lines wait for.
  */
 const USER_LINES = {
-  unknown: '  user       not known on this device — work subscriptions are not recognised',
-  untied: '  user       not tied to this key — work subscriptions are not recognised',
+  unknown:
+    '  user       not known until this machine syncs — work subscriptions are not recognised yet',
+  untied: '  user       not tied to this key — the next sync re-checks it',
 } as const;
 
 /**

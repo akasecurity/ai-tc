@@ -806,16 +806,14 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   it('says the attached user is not known when this device holds no identity record', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     expect(lines()).toContain(
-      '  user       not known on this device — work subscriptions are not recognised',
+      '  user       not known until this machine syncs — work subscriptions are not recognised yet',
     );
   });
 
   it('says the attached user is not tied to this key when the record belongs to another one', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     writeRecord('another-key-entirely');
-    expect(lines()).toContain(
-      '  user       not tied to this key — work subscriptions are not recognised',
-    );
+    expect(lines()).toContain('  user       not tied to this key — the next sync re-checks it');
   });
 
   it('names the day the attached user was checked when the record belongs to this key', () => {

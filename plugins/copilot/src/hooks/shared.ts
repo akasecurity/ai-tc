@@ -470,8 +470,10 @@ export function baseMetadata(
  *   a row. A scoped attachment's verdict is decided by the key, so it must come
  *   from the event itself.
  * - Under VS Code the process cwd is the home directory anyway.
- * - This host never runs a session start, so there is no session-root key the
- *   fallback would need to match.
+ * - The session root is keyed from the same source: `sessionStart` declines a
+ *   payload with no cwd rather than reading the process's, so its root's key
+ *   comes only from a payload cwd too. A process-cwd fallback here could only
+ *   produce a key no root on this host carries.
  *
  * A VS Code payload that does carry a cwd (its hook entry declared one) is keyed
  * like a CLI one: the dialect is a payload format, not a host.

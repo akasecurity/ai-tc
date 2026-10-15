@@ -251,7 +251,7 @@ describe('renderCaptureSites', () => {
     // Three different sentences, and only one of them says it records.
     expect(new Set([unenrolled, off, recorded]).size).toBe(3);
     expect(recorded).toContain('recorded and sent');
-    expect(off).toContain('nothing is recorded');
+    expect(off).toContain('nothing from its chats is recorded');
   });
 
   it('words the personal-device note as what is recorded or sent from a chat, with the tool calls and token usage', () => {
@@ -263,10 +263,10 @@ describe('renderCaptureSites', () => {
   it('words each account state exactly', () => {
     const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
     expect(accountNote({ identity, enrolled: false, recorded: false })).toBe(
-      `${identity} — not enrolled; to send its replies and its Claude Code sessions, run aka enroll --account ${identity}`,
+      `${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`,
     );
     expect(accountNote({ identity, enrolled: true, recorded: false })).toBe(
-      `${identity} — enrolled, but web-chat capture is off, so nothing is recorded`,
+      `${identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded`,
     );
     expect(accountNote({ identity, enrolled: true, recorded: true })).toBe(
       `${identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`,

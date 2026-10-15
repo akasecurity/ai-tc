@@ -93,8 +93,16 @@ function withStop(line: string, basis: AccountBasis | undefined, managed: boolea
 /**
  * The line for a session forwarded from any folder: the work subscription it is
  * signed in to, or, for an account enrolled by hand, that account.
+ *
+ * Without a basis the session's login shows no work account, while its stored
+ * root is keyed by one (a resumed session). The root's key does not say whether
+ * recognition or an enrollment by hand put it in scope, so the line claims
+ * neither a work subscription nor the command that stops either.
  */
 function accountLine(name: string, basis: AccountBasis | undefined, managed: boolean): string {
+  if (basis === undefined) {
+    return `AKA: forwarding this session to ${name} — for the account it first ran under.`;
+  }
   const login = basis === 'manual' ? 'an account you enrolled by hand' : 'a work subscription';
   return withStop(
     `AKA: forwarding this session to ${name} — signed in to ${login}.`,
@@ -133,11 +141,13 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  *                    Each names the account enrolled by hand in place of the work
  *                    subscription, and never the opt-out, when the login is one. The
  *                    pending line does so too with work subscriptions off on the device.
+ *                    An account line with no login basis says
+ *                    `AKA: forwarding this session to <name> — for the account it first ran under.`
  *
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled
  * by hand. The opt-out is left out where an administrator manages the
- * connection.
+ * connection. The line with no login basis names neither command.
  *
  * Taken from that gateway rather than re-derived from the configuration, so the
  * line says what the object doing the forwarding will do. A standalone machine,

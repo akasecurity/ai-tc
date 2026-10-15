@@ -85,9 +85,9 @@ export function accountNote(account: {
   if (account.recorded)
     return `${account.identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`;
   if (account.enrolled) {
-    return `${account.identity} — enrolled, but web-chat capture is off, so nothing is recorded`;
+    return `${account.identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded`;
   }
-  return `${account.identity} — not enrolled; to send its replies and its Claude Code sessions, run aka enroll --account ${account.identity}`;
+  return `${account.identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${account.identity}`;
 }
 
 // Read through a widened ALIAS rather than a cast at the lookup: the table is

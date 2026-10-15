@@ -44,10 +44,11 @@ import { terminalPrompter } from '../lib/prompter.ts';
 // asks again rather than carrying an old answer to a new recipient.
 //
 // On a machine attached as a personal device the grant is narrower, and every
-// line here says so: only the repositories enrolled there send their history,
-// and no activity from anywhere else is sent by it. The sessions of a work
-// subscription the device recognises, and of an account enrolled by hand, are
-// sent as part of being attached, which the grant does not change. The wording
+// line here says so: only the repositories and accounts enrolled there send
+// their history, and no other activity is sent by it. The sessions of a work
+// subscription the device recognises, and of an account enrolled by hand with
+// its claude.ai chat replies, are sent as part of being attached, which the
+// grant does not change. The wording
 // follows the mode of the credential held for the connection the settings name;
 // anything short of a usable personal-device credential keeps the machine-wide
 // wording, the one that says more is sent, never less.
@@ -67,24 +68,25 @@ and turning it off does not stop it.`;
 
 /**
  * The same help on a machine attached as a personal device. The flags are the
- * same; what they send is narrower: only the repositories enrolled there. The
- * sessions of a work subscription the device recognises, and of an account
- * enrolled by hand, are sent as part of being attached, whatever the grant says.
+ * same; what they send is narrower: only the repositories and accounts enrolled
+ * there. The sessions of a work subscription the device recognises, and of an
+ * account enrolled by hand with its claude.ai chat replies, are sent as part of
+ * being attached, whatever the grant says.
  */
 const USAGE_SCOPED = `Usage: aka sync-history [--on | --off] [--run]
 
-Whether this personal device may send what the repositories you enroll recorded before
-you enrolled them. Activity from any other repository, or from outside one, is not sent
-by this setting. Claude Code sessions signed in to a recognised work subscription or to an
-account enrolled by hand with \`aka enroll --account\` are sent as part of being attached,
-which this setting does not change.
+Whether this personal device may send what the repositories and accounts you enroll recorded
+before you enrolled them. Nothing else recorded here is sent by this setting. Claude Code
+sessions signed in to a recognised work subscription or to an account enrolled by hand with
+\`aka enroll --account\`, and the replies in that account's claude.ai chats, are sent as part
+of being attached, which this setting does not change.
 
   --on          Send it. Takes effect in the background, over later sessions.
   --off         Do not send it. Stops anything not already sent.
   --run         Send a slice now, in this process, instead of waiting.
   --home <dir>  Use an alternate AKA home instead of ~/.aka.
 
-With no flag, prints what is currently in force. Activity an enrolled repository
+With no flag, prints what is currently in force. Activity an enrolled repository or account
 records from now on is sent because this machine is attached; that is not what this
 grant covers, and turning it off does not stop it.`;
 
@@ -304,26 +306,28 @@ function grant(
   const where = deploymentName(connection);
   if (scoped) {
     // A personal device. The seed above marked only what the enrolled
-    // repositories hold (nothing, with none enrolled), and the drain's capture
-    // read applies the same scope whatever was marked, so the subject is
-    // theirs. The line says so, and that the sessions of a recognised work
-    // subscription or an account enrolled by hand go as part of being attached,
-    // which this grant does not change.
+    // repositories and accounts hold (nothing, with none enrolled), and the
+    // drain's capture read applies the same scope whatever was marked, so the
+    // subject is theirs. The line says so, and that the sessions of a recognised
+    // work subscription or an account enrolled by hand, and that account's chat
+    // replies, go as part of being attached, which this grant does not change.
     io.out(
-      `Sending the unsent activity of the repositories enrolled here to ${where}.\n` +
-        'Activity from any other repository, or from outside one, is not sent by this setting.\n' +
+      `Sending the unsent activity of the repositories and accounts enrolled here to ${where}.\n` +
+        'Nothing else recorded here is sent by this setting.\n' +
         'Claude Code sessions signed in to a recognised work subscription or to an account\n' +
-        'enrolled by hand with `aka enroll --account` are sent as part of being attached, which\n' +
-        'this setting does not change; with none of those and no repository enrolled, no activity\n' +
-        'is sent at all: `aka enroll --list` shows what is enrolled, `aka status` what is\n' +
-        'recognised. What is sent is some of what an enrolled repository recorded here before you\n' +
-        'enrolled it: for a captured prompt, reply or tool result, that includes its text. A value in\n' +
-        'that text is masked only where the policy assigned to the detection that flagged it is redact\n' +
-        'or block; under monitor or warn it goes as it was seen, and no detection ships on redact or\n' +
+        "enrolled by hand with `aka enroll --account`, and the replies in that account's\n" +
+        'claude.ai chats, are sent as part of being attached, which this setting does not\n' +
+        'change. With no repository enrolled, no account enrolled by hand and no work\n' +
+        'subscription recognised, no activity is sent at all: `aka enroll --list` shows\n' +
+        'what is enrolled, `aka status` what is recognised. What is sent is some of what an\n' +
+        'enrolled repository or account recorded here before you enrolled it: for a captured\n' +
+        'prompt, reply or tool result, that includes its text. A value in that text is masked\n' +
+        'only where the policy assigned to the detection that flagged it is redact or block;\n' +
+        'under monitor or warn it goes as it was seen, and no detection ships on redact or\n' +
         'block. It goes in the background, a little at a time, starting with your next session.\n' +
-        'Anything already sent cannot be recalled. Anything a live send from an enrolled repository,\n' +
-        'a recognised work subscription or an account enrolled by hand could not deliver is sent later\n' +
-        'whether or not this is on.\n',
+        'Anything already sent cannot be recalled. Anything a live send from an enrolled\n' +
+        'repository, a recognised work subscription or an account enrolled by hand could not\n' +
+        'deliver is sent later whether or not this is on.\n',
     );
     return true;
   }
@@ -356,12 +360,12 @@ function revoke(
   }
   io.out(
     scoped
-      ? 'Not sending the unsent activity of the repositories enrolled here. Anything already\n' +
-          'sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
-          'repositories, from Claude Code sessions signed in to a recognised work subscription\n' +
-          'and from those signed in to an account enrolled by hand is part of being attached and\n' +
-          'continues, and anything a live send from any of them could not deliver is still sent\n' +
-          'later.\n'
+      ? 'Not sending the unsent activity of the repositories and accounts enrolled here. Anything\n' +
+          'already sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
+          'repositories, from Claude Code sessions signed in to a recognised work subscription,\n' +
+          'and from an account enrolled by hand (its Claude Code sessions and claude.ai chat replies)\n' +
+          'is part of being attached and continues, and anything a live send from any of them could\n' +
+          'not deliver is still sent later.\n'
       : "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
           'this stops what has not gone yet. Live sending is part of being attached and\n' +
           'continues, and anything a live send could not deliver is still sent later.\n',
@@ -374,10 +378,10 @@ function describe(settings: WorkspaceSettings, scoped: boolean): string {
     return 'This machine is not attached to a deployment, so it sends nothing.';
   }
   const where = deploymentName(settings.controlPlane);
-  // What the grant covers. On a personal device that is the enrolled
-  // repositories' backlog, never the whole machine's.
+  // What the grant covers. On a personal device that is the backlog of the
+  // enrolled repositories and accounts, never the whole machine's.
   const subject = scoped
-    ? 'the unsent activity of the repositories enrolled here'
+    ? 'the unsent activity of the repositories and accounts enrolled here'
     : "this machine's unsent activity";
   if (isHistorySyncConsentValid(settings.historySyncConsent, settings.controlPlane.endpoint)) {
     // On a personal device with nothing enrolled, "Sending" alone would describe
@@ -401,7 +405,7 @@ function describe(settings: WorkspaceSettings, scoped: boolean): string {
   return isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane.endpoint)
     ? `Not sending ${subject} to ${where}: your grant predates a change.\n` +
         (scoped
-          ? 'It now also covers the text of what an enrolled repository recorded before you\n' +
+          ? 'It now also covers the text of what an enrolled repository or account recorded before you\n' +
             'enrolled it — not just what a live send from one failed to deliver afterward — in\n' +
             'which a value is masked only where the detection that flagged it is set to redact or\n' +
             'block, and no detection ships on redact or block.\n'

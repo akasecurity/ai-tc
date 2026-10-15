@@ -335,14 +335,11 @@ describe('aka enroll — usage', () => {
   it('says the scoped limit applies to activity, and that the report and policy pull do not stop', async () => {
     const io = recorder();
     expect(await runEnroll(['--everything'], deps(io))).toBe(2);
-    expect(io.errors()).toContain(
-      'activity is sent to the deployment\nonly from the repositories and web chat accounts enrolled here',
+    expect(flat(io.errors())).toContain(
+      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) that this device recognises; activity anywhere else stays on this machine.",
     );
-    expect(io.errors()).toContain(
-      "The policy pull and the device report are not limited to them: the report's\nfinding counts and dates are for everything recorded on the machine.",
-    );
-    expect(io.errors()).toContain(
-      'Claude Code sessions signed in to a work subscription of your organization\nthat this device recognises',
+    expect(flat(io.errors())).toContain(
+      "The policy pull, the sighting-key fetch, the command check and the device report are not limited to them: the report's finding counts and dates are for everything recorded on the machine.",
     );
     expect(io.errors()).not.toContain('across every repository');
     expect(io.errors()).not.toContain('only activity in');
@@ -351,8 +348,8 @@ describe('aka enroll — usage', () => {
   it('limits what unenroll promises in its usage to sessions and scans started afterwards', async () => {
     const io = recorder();
     expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
-    expect(io.errors()).toContain(
-      'sessions, scans and chats started afterwards keep its activity on this machine.',
+    expect(flat(io.errors())).toContain(
+      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
     );
     expect(io.errors()).not.toContain('from then on');
   });
@@ -416,6 +413,9 @@ describe('aka enroll — who may enroll', () => {
       'machine-wide, so activity from\nanywhere on this machine is sent and nothing is enrolled.',
     );
     expect(io.errors()).not.toContain('every repository');
+    expect(flat(io.errors())).toContain(
+      'To send activity only from what you enroll and from recognised work subscriptions, re-attach with',
+    );
     expect(io.errors()).toContain(`aka attach --url ${ENDPOINT} --scoped`);
     expect(storedScope()).toBeUndefined();
   });
@@ -1302,7 +1302,7 @@ describe('aka enroll — a list this version cannot read', () => {
     const io = recorder();
     expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
     expect(io.output()).toBe(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.\n` +
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n` +
         'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
         'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
         'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
@@ -1330,7 +1330,9 @@ describe('aka enroll — what was recorded before', () => {
     expect(shown).toContain(
       'The history sync also sends the rest of its activity recorded before this machine attached',
     );
-    expect(shown).toContain('other than those captures, stays on this machine.');
+    expect(flat(shown)).toContain(
+      'other than those captures and what a Claude Code session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
+    );
     expect(shown).not.toContain('Other activity recorded in it before now stays on this machine.');
   });
 
@@ -1414,7 +1416,7 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.`,
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.`,
     );
     // Said as far as it is true: a scan already running may have read the scope
     // before the edit, so nothing promises it stops; and what was waiting is
@@ -1907,7 +1909,7 @@ describe('aka enroll --account — Claude Code sessions', () => {
       'Claude Code sessions are sent to Acme too: every session signed in to this organization, from any folder, with its folder, project and branch names, and its claude.ai chats when web chat capture is on.',
     );
     expect(shown).toContain(
-      'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of each new session stays on this machine.',
+      'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of each new session follows the repository rule: it is sent only from an enrolled repository.',
     );
     expect(shown).toContain(
       'a login under another email, a plan Claude Code does not show, or a device a colleague approved.',
@@ -1983,6 +1985,9 @@ describe('aka enroll --account — the login signed in now on a personal plan', 
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
     expect(identities()).toEqual([ACCOUNT]);
+    expect(flat(io.output())).toContain(
+      'Enrolling its organization sends every Claude Code session signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.',
+    );
   });
 
   it('enrolls nothing when the answer is no', async () => {
@@ -2185,7 +2190,10 @@ describe('aka enroll --work-subscriptions', () => {
     const shown = flat(io.output());
     expect(shown).toContain('Work subscriptions are on again on this device for Acme.');
     expect(shown).toContain(
-      "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, compares the signed-in email with your AKA account, and sends none of it (no email, plan or account id).",
+      'A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan), under the same email as your AKA account, sends everything it records from its first reply on, from any folder, with its folder, project and branch names.',
+    );
+    expect(shown).toContain(
+      "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand.",
     );
     expect(shown).not.toContain('own login file');
     expect(shown).toContain(

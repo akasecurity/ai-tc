@@ -179,12 +179,13 @@ is what a backfill or a drain sends.
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository
 or not (a browser chat included), the machine pulls the deployment's policy (at
-most every 15 minutes) and sends it a device report (at most hourly): a device
-identifier, host name, versions, detection packs, policy counts, finding counts
-and dates for everything recorded on the machine, and, when the machine is
-attached as a personal device, the fact that it is one. Where a scan is
-available (the coding-agent plugins, not a browser chat), the same session start
-also checks it for device commands. The finding count is the number of findings
+most every 15 minutes) and its sighting key (at most daily) and sends it a
+device report (at most hourly): a device identifier, host name, versions,
+detection packs, policy counts, finding counts and dates for everything
+recorded on the machine, and, when the machine is attached as a personal
+device, the fact that it is one. Where a scan is available (the coding-agent
+plugins, not a browser chat), the same session start also checks it for device
+commands. The finding count is the number of findings
 detected in captured prompts, responses, code changes and tool uses, from every
 session, with the dates of the first and latest one. A report can also go when a
 response finishes in a session that is already running, still at most hourly.
@@ -193,27 +194,33 @@ therefore learns when the tool is in use anywhere on this machine.
 
 On a personal device, one kind of session forwards beyond what is enrolled. A
 Claude Code session counts as a work subscription when it is signed in through
-claude.ai to a Team or Enterprise plan of your organization under the same email
-as the AKA account that attached the device. Such a session sends everything it
-records from its first reply on, from any folder, with that folder's project and
-branch names, and your organization's prohibited models are refused in any
-folder of it. To tell whether a session is one, the device reads Claude Code's
-login file, the session's own log, and Claude Code's settings files (the
-project's own included) and environment variables that choose the account or
-provider, compares the signed-in email with the account that attached the
-device, and sends none of what it reads. The first prompt of a new session, a
-personal plan, another email, an API key or another provider, and the rest of a
-session whose organization changes follow the repository rule;
-`aka enroll --account` enrolls by hand a work subscription the device cannot
-recognise. An organization recognised this way never records or forwards a
-claude.ai chat. A personal device that attached before its plugin could
-recognise work subscriptions starts recognising them when the plugin updates,
-with no new prompt, so update `aka` first. `aka unenroll --work-subscriptions`
-turns recognition off on this device and `aka enroll --work-subscriptions` turns
-it back on; while it is off, enrolled repositories and accounts enrolled by hand
-still forward, and your organization's model restrictions apply only to them. A
-machine whose connection an administrator manages attaches machine-wide only, so
-it has no personal-device mode and no such opt-out.
+claude.ai to a Team or Enterprise plan under the same email as the AKA account
+that attached the device. Such a session sends everything it records from its
+first reply on, from any folder, with that folder's project and branch names,
+and your organization's prohibited models are refused in any folder of it. To
+tell whether a session is one, the device reads Claude Code's login file, the
+session's own log, and Claude Code's settings files (the project's own
+included) and environment variables that choose the account or provider, and
+compares the signed-in email with the account that attached the device. The
+check sends none of what it reads, though the token usage and tool calls read
+from that same log are forwarded with the rest of the activity of a recognised
+session or of one signed in to an account enrolled by hand. The first prompt of
+a new session, a personal plan, another email, an API key or another provider,
+and the rest of a session whose organization changes follow the repository
+rule; `aka enroll --account` enrolls by hand an account the device cannot
+recognise, and the Claude Code sessions of an account enrolled that way then
+forward from their first reply on whatever the plan or email, though not under
+an API key or another provider. An organization recognised this way never
+records or forwards a claude.ai chat. A personal device that attached before
+its plugin could recognise work subscriptions starts recognising them when the
+plugin updates, with no new prompt, so update `aka` first.
+`aka unenroll --work-subscriptions` turns recognition off on this device and
+`aka enroll --work-subscriptions` turns it back on; it turns off only the
+automatic recognition, so while it is off, enrolled repositories and accounts
+enrolled by hand still forward (`aka unenroll --account` stops an account), and
+your organization's model restrictions apply only to them. A machine whose
+connection an administrator manages attaches machine-wide only, so it has no
+personal-device mode and no such opt-out.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
@@ -226,12 +233,12 @@ subscription (above) or to an account enrolled by hand with
 claude.ai account enrolled with `aka enroll --account`, with their tool calls
 and token usage (a prompt typed into a web chat is not recorded there at all);
 everything else stays on the machine. Under the `aka sync-history` grant,
-enrolling a repository also queues the captures still kept for it, including
-those it recorded between attaching and enrolling. The policy pull, the command
-check and the device report are the exception: they go on either kind of
-attachment, whatever is enrolled, and a scoped machine's report also says that
-it is attached as a personal device. A machine that was never attached forwards
-none of this.
+enrolling a repository or an account also queues the captures still kept for
+it, including those a repository recorded between attaching and enrolling. The
+policy pull, the sighting-key fetch, the command check and the device report
+are the exception: they go on either kind of attachment, whatever is enrolled,
+and a scoped machine's report also says that it is attached as a personal
+device. A machine that was never attached forwards none of this.
 
 ## Supported versions
 

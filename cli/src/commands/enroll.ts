@@ -228,7 +228,14 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
   const entry: AttachmentScopeEntry =
     built.kind === 'account' ? { ...built, codingAgents: true } : built;
   const loginNow = entry.kind === 'account' ? claudeCodeLoginNow(ready) : undefined;
-  if (loginNow !== undefined && !(await personalPlanGuard(ready, entry.identity, loginNow))) {
+  // An account the list already holds for Claude Code sessions is not written
+  // again, so there is nothing to confirm.
+  const alreadyHeld = entry.kind === 'account' && holdsCodingAccount(ready, entry.identity);
+  if (
+    loginNow !== undefined &&
+    !alreadyHeld &&
+    !(await personalPlanGuard(ready, entry.identity, loginNow))
+  ) {
     return fail(1);
   }
   // Echoed BEFORE the write, through the strip `aka status` uses, so what is
@@ -716,19 +723,46 @@ function turnRecognitionOff(ready: Prepared): number {
     return fail(1);
   }
   // Every run, so a forget that failed once is retried by the next.
+  const learned = heldIdentityOf(ready)?.workAccounts.length ?? 0;
   const credential = readControlPlaneCredentialFile(settingsDirOf(base), connection);
-  if (credential.usable) {
+  const cleared =
+    credential.usable &&
     forgetWorkAccounts(dataDirOf(base), {
       endpoint: connection.endpoint,
       credential: credential.credential,
     });
+  const busy = learned > 0 && !cleared;
+  if (edit.changed.length > 0) {
+    io.out(offLines(edit.committed, connection.endpoint, name) + (busy ? LEARNED_BUSY : ''));
+  } else if (busy) {
+    io.out(`${alreadyOff(name)}. ${LEARNED_BUSY}`);
+  } else if (learned > 0) {
+    io.out(
+      `${alreadyOff(name)}. The work accounts it had learned were cleared again; nothing else changed.\n`,
+    );
+  } else {
+    io.out(`${alreadyOff(name)}; nothing changed.\n`);
   }
-  io.out(
-    edit.changed.length === 0
-      ? `Recognition of work subscriptions is already off for ${name} on this device; nothing changed.\n`
-      : offLines(edit.committed, connection.endpoint, name),
-  );
   return 0;
+}
+
+const alreadyOff = (name: string): string =>
+  `Recognition of work subscriptions is already off for ${name} on this device`;
+
+/** What follows when the record's lock could not be taken to empty the learned work accounts. */
+const LEARNED_BUSY =
+  'The work accounts this device had learned could not be cleared now because the record is busy; ' +
+  'running this command again clears them.\n';
+
+/** Whether the stored list for this deployment holds `key` as an account entry that covers Claude Code sessions. */
+function holdsCodingAccount(ready: Prepared, key: string): boolean {
+  const { attachmentScope } = ready.settings;
+  if (!isAttachmentScopeValid(attachmentScope, ready.connection.endpoint)) return false;
+  return (
+    parseAttachmentScope(attachmentScope)?.entries.some(
+      (entry) => entry.kind === 'account' && entry.identity === key && entry.codingAgents === true,
+    ) ?? false
+  );
 }
 
 /** Remove the opt-out. The identity record is not touched. */

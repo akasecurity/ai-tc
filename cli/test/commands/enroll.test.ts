@@ -1,18 +1,31 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
   DB_FILENAME,
+  readAttachedIdentity,
   recordDetectedWebAccount,
+  recordValidatedWorkAccount,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { attachmentScopeLines } from '@akasecurity/plugin-runtime';
+import { attachmentScopeLines, WORK_SUBSCRIPTION_COMMANDS } from '@akasecurity/plugin-runtime';
+import { CLAUDE_ACCOUNT_ENV_NAMES } from '@akasecurity/plugin-sdk/account';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
@@ -26,9 +39,13 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  fixtureEmail,
+  workConfig,
+} from '../../../packages/plugin-sdk/test/helpers/transcript-builder.ts';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { COMMAND_SPECS } from '../../src/command-manifest.ts';
-import { runAttach } from '../../src/commands/attach.ts';
+import { runAttach, runStatus } from '../../src/commands/attach.ts';
 import { defaultLabel, quotedForShell, runEnroll, runUnenroll } from '../../src/commands/enroll.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
@@ -100,11 +117,16 @@ const GRINNING_FACE = String.fromCodePoint(0x1f600);
 
 let base: string;
 let work: string;
+let claudeHome: string;
 let exits: number[];
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'aka-enroll-home-'));
   work = mkdtempSync(join(tmpdir(), 'aka-enroll-work-'));
+  claudeHome = mkdtempSync(join(tmpdir(), 'aka-enroll-claude-'));
+  // A key, a provider flag or a desktop login in the developer's own environment
+  // would change what the Claude Code login check answers.
+  for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, '');
   exits = [];
   seed.calls = [];
   seed.answer = 0;
@@ -116,6 +138,8 @@ beforeEach(() => {
 afterEach(() => {
   removeTree(base);
   removeTree(work);
+  removeTree(claudeHome);
+  vi.unstubAllEnvs();
 });
 
 function recorder(): Prompter & { output: () => string; errors: () => string } {
@@ -144,6 +168,7 @@ function deps(
 ) {
   return {
     base,
+    claudePaths: { home: claudeHome, managedSettings: join(claudeHome, 'managed-settings.json') },
     prompter: io,
     managedSettings: options.managedSettings ?? null,
     exit: (code: number) => {
@@ -286,6 +311,11 @@ describe('aka enroll — usage', () => {
     ['--list with an account', ['--list', '--account', 'claude:x']],
     ['--list-detected with a repository', ['--list-detected', '--repo', WORK_REPO]],
     ['--list and --list-detected together', ['--list', '--list-detected']],
+    ['--work-subscriptions with a repository', ['--work-subscriptions', '--repo', WORK_REPO]],
+    ['--work-subscriptions with --list', ['--work-subscriptions', '--list']],
+    ['--work-subscriptions with an account', ['--work-subscriptions', '--account', 'claude:x']],
+    ['--yes with no account', ['--yes']],
+    ['--yes with a repository', ['--yes', '--repo', WORK_REPO]],
   ])('refuses %s as a usage error, before reading anything', async (_name, argv) => {
     const io = recorder();
     expect(await runEnroll(argv, deps(io))).toBe(2);
@@ -301,7 +331,10 @@ describe('aka enroll — usage', () => {
       'activity is sent to the deployment\nonly from the repositories and web chat accounts enrolled here',
     );
     expect(io.errors()).toContain(
-      "The policy pull and the device report are\nnot limited to them: the report's finding counts and dates are for everything\nrecorded on the machine.",
+      "The policy pull and the device report are not limited to them: the report's\nfinding counts and dates are for everything recorded on the machine.",
+    );
+    expect(io.errors()).toContain(
+      'Claude Code sessions signed in to a work subscription of your organization\nthat this device recognises',
     );
     expect(io.errors()).not.toContain('across every repository');
     expect(io.errors()).not.toContain('only activity in');
@@ -325,6 +358,12 @@ describe('aka enroll — usage', () => {
   it('aka unenroll takes no --list-detected', async () => {
     const io = recorder();
     expect(await runUnenroll(['--list-detected'], deps(io))).toBe(2);
+    expect(io.errors()).toContain('Usage: aka unenroll');
+  });
+
+  it('aka unenroll takes no --yes', async () => {
+    const io = recorder();
+    expect(await runUnenroll(['--account', 'claude:x', '--yes'], deps(io))).toBe(2);
     expect(io.errors()).toContain('Usage: aka unenroll');
   });
 
@@ -1578,6 +1617,14 @@ function enrolledAccount(identity = ACCOUNT) {
   return { kind: 'account', identity, label: 'claude.ai account', enrolledAt: NOW };
 }
 
+const CODING_LABEL = 'Claude account (Claude Code and claude.ai)';
+
+// An account entry that covers the coding-agent sessions signed in to the
+// account as well as its chats.
+function codingAccount(identity = ACCOUNT) {
+  return { kind: 'account', identity, label: CODING_LABEL, enrolledAt: NOW, codingAgents: true };
+}
+
 // The web-chat block: the capture consent, and the account grant when asked.
 function webChat(options: { consent?: boolean; grant?: boolean } = {}) {
   return {
@@ -1610,9 +1657,9 @@ describe('aka enroll --account', () => {
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(exits).toEqual([]);
-    expect(storedScope()).toEqual(fresh([enrolledAccount()]));
+    expect(storedScope()).toEqual(fresh([codingAccount()]));
     const shown = io.output();
-    expect(shown).toContain(`Enrolling ${ACCOUNT} (claude.ai account) with Acme.\n`);
+    expect(shown).toContain(`Enrolling ${ACCOUNT} (${CODING_LABEL}) with Acme.\n`);
     expect(shown).toContain(
       "Enrolled. Replies in this account's chats, with their tool calls and token usage, are\nrecorded and sent to Acme from now on. Prompts typed in it are still checked, and not recorded.\n",
     );
@@ -1657,7 +1704,7 @@ describe('aka enroll --account', () => {
   });
 
   it('changes nothing for an account already enrolled', async () => {
-    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
@@ -1776,10 +1823,593 @@ describe('aka enroll --list-detected', () => {
     expect(io.output()).toBe(
       'Web chat accounts seen on this machine, for Acme:\n' +
         `  ${OTHER_ACCOUNT}, last seen 2026-10-06 — not enrolled: \`aka enroll --account ${OTHER_ACCOUNT}\`\n` +
-        `  ${ACCOUNT}, last seen 2026-10-05 — enrolled\n`,
+        `  ${ACCOUNT}, last seen 2026-10-05 — enrolled\n` +
+        'Claude Code — signed in now:\n  none (no login file)\n',
     );
     // Listing writes nothing.
     expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+// The Claude Code login fixtures: the attaching member's address and another,
+// generated per run, and Claude Code's login file in the suite's own Claude home.
+const CLAUDE_MEMBER = fixtureEmail(`member-${randomUUID().slice(0, 8)}`);
+const SOMEONE_ELSE = fixtureEmail(`other-${randomUUID().slice(0, 8)}`);
+// `as const`: the credential readers take the version as the literal `2`.
+const SCOPED_CREDENTIAL = {
+  specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  mode: 'scoped',
+  endpoint: ENDPOINT,
+  apiKey: TEST_KEY,
+} as const;
+
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+
+function claudeSignIn(
+  account: Readonly<Record<string, unknown>> = {},
+  email: string = CLAUDE_MEMBER,
+  org: string = ORG,
+): void {
+  writeFileSync(join(claudeHome, '.claude.json'), JSON.stringify(workConfig(org, email, account)));
+}
+
+/** The record that tells this device who attached it, bound to the test credential. */
+function knownMember(): void {
+  writeAttachedIdentity(dataDirOf(base), {
+    endpoint: ENDPOINT,
+    apiKey: TEST_KEY,
+    tenantName: MEMBER.tenantName,
+    userEmail: CLAUDE_MEMBER,
+  });
+}
+
+/** A work account a hook validated on this device. */
+function learn(key: string): void {
+  recordValidatedWorkAccount(dataDirOf(base), {
+    endpoint: ENDPOINT,
+    credential: SCOPED_CREDENTIAL,
+    key,
+  });
+}
+
+/**
+ * Every file under `dir` with its bytes, the store's own files left out: what a
+ * command that persists nothing must leave as it found it.
+ */
+function treeOf(dir: string): Record<string, string> {
+  const tree: Record<string, string> = {};
+  for (const name of readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
+    const path = join(dir, name);
+    if (!statSync(path).isFile() || basename(name).startsWith(DB_FILENAME)) continue;
+    tree[name] = readFileSync(path, 'base64');
+  }
+  return tree;
+}
+
+describe('aka enroll --account — Claude Code sessions', () => {
+  it('marks the entry for Claude Code sessions, and says what it forwards and from when', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([codingAccount()]));
+    const shown = flat(io.output());
+    expect(shown).toContain(
+      'Claude Code sessions are sent to Acme too: every session signed in to this organization, from any folder, with its folder, project and branch names, and its claude.ai chats when web chat capture is on.',
+    );
+    expect(shown).toContain(
+      'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of each new session stays on this machine.',
+    );
+    expect(shown).toContain(
+      'a login under another email, a plan Claude Code does not show, or a device a colleague approved.',
+    );
+    expect(shown).not.toContain('has not seen Claude Code');
+  });
+
+  it('adds the marker in place to an entry enrolled for its chats only, and queues nothing again', async () => {
+    const earlier = { ...enrolledAccount(), enrolledAt: '2026-10-02T09:00:00.000Z' };
+    attach({ scope: fresh([earlier]), extra: { ...webChat(), ...consent() } });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([{ ...earlier, codingAgents: true }]));
+    expect(io.output()).toContain('it now also covers Claude Code sessions.\n');
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('still enrolls while work subscriptions are off, and says the opt-out does not cover it', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'off' }, extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT]);
+    expect(flat(io.output())).toContain(
+      'an account you enroll by hand still forwards, because the opt-out covers only automatic recognition.',
+    );
+  });
+
+  it('says when Claude Code has not been seen signed in to that organization', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(flat(io.output())).toContain(
+      'This machine has not seen Claude Code signed in to that organization; its sessions are sent once one is.',
+    );
+  });
+
+  it.each<[string, string]>([
+    ['--account', `agent:${'0'.repeat(16)}:${ACCOUNT}`],
+    ['--repo', `agent:${'0'.repeat(16)}:${ACCOUNT}`],
+    ['--account', '  AGENT:anything'],
+  ])('refuses an agent key given to %s, and writes nothing', async (flag, value) => {
+    attach({ scope: fresh(), extra: webChat() });
+    const before = stored();
+    const io = recorder();
+    expect(await runEnroll([flag, value], deps(io))).toBe(1);
+    expect(io.errors()).toContain('an agent: key is never enrolled');
+    expect(stored()).toEqual(before);
+    expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+describe('aka enroll --account — the login signed in now on a personal plan', () => {
+  function answering(answer: string) {
+    const asked: string[] = [];
+    const io = {
+      ...recorder(),
+      ask: (question: string): Promise<string> => {
+        asked.push(question);
+        return Promise.resolve(answer);
+      },
+    };
+    return { io, asked };
+  }
+
+  it('asks on a terminal before enrolling it, and enrolls on yes', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked } = answering('y');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+    expect(identities()).toEqual([ACCOUNT]);
+  });
+
+  it('enrolls nothing when the answer is no', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const before = stored();
+    const { io } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(io.output()).toContain('Nothing was enrolled.\n');
+    expect(stored()).toEqual(before);
+  });
+
+  it('refuses without a terminal unless --yes, and writes nothing', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_pro' });
+    const before = stored();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(io.errors()).toContain('Run this on a terminal to confirm, or add --yes.');
+    expect(stored()).toEqual(before);
+    const yes = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT, '--yes'], deps(yes))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT]);
+  });
+
+  // The key and the plan are read before the address can be compared, so the
+  // guard holds before the first sync has told the device who attached it.
+  it('asks even before this device knows who attached it', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    claudeSignIn({ organizationType: 'claude_max' });
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(identities()).toEqual([]);
+  });
+
+  it('asks nothing for a Team login, or for a key the login signed in now does not name', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    claudeSignIn();
+    expect(await runEnroll(['--account', ACCOUNT], deps(recorder()))).toBe(0);
+    claudeSignIn({ organizationType: 'claude_max' }, CLAUDE_MEMBER, randomUUID());
+    expect(await runEnroll(['--account', OTHER_ACCOUNT], deps(recorder()))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT, OTHER_ACCOUNT]);
+  });
+});
+
+describe('aka unenroll --work-subscriptions', () => {
+  it('turns them off, forgets the learned work accounts, and says what still forwards', async () => {
+    attach({ scope: fresh([enrolled(), codingAccount()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(storedScope()).toEqual({
+      ...fresh([enrolled(), codingAccount()]),
+      workSubscriptions: 'off',
+    });
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+    const shown = flat(io.output());
+    for (const said of [
+      'Work subscriptions are off on this device for Acme.',
+      'Sessions signed in to a work subscription stop forwarding at their next event, from any folder outside an enrolled repository',
+      `${WORK_REPO} — \`aka unenroll --repo ${WORK_REPO}\` removes it`,
+      `${ACCOUNT} — \`aka unenroll --account ${ACCOUNT}\` removes it`,
+      "Your organization's model restrictions now apply only in enrolled repositories and to accounts enrolled by hand.",
+      'Nothing already sent is recalled. Rows recorded but not yet sent stay on this device, and are sent if you turn recognition back on and the same work account is recognised again.',
+      '`aka enroll --work-subscriptions` turns recognition back on.',
+    ]) {
+      expect(shown).toContain(said);
+    }
+  });
+
+  it('says so when they are already off, changes nothing, and forgets the learned accounts again', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const before = stored();
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Recognition of work subscriptions is already off for Acme on this device; nothing changed.\n',
+    );
+    expect(stored()).toEqual(before);
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+  });
+
+  it('keeps every other key and entry of the record as found', async () => {
+    const newer = {
+      ...fresh([enrolled()]),
+      builtBy: 'a newer build',
+      entries: [enrolled(), { kind: 'org', identity: 'example-org', enrolledAt: NOW }],
+    };
+    attach({ scope: newer });
+    expect(await runUnenroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual({ ...newer, workSubscriptions: 'off' });
+  });
+});
+
+describe('aka enroll --work-subscriptions', () => {
+  it('turns them back on, and says waiting rows are sent once their account is recognised again', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' } });
+    const io = recorder();
+    expect(await runEnroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([enrolled()]));
+    const shown = flat(io.output());
+    expect(shown).toContain('Work subscriptions are on again on this device for Acme.');
+    expect(shown).toContain(
+      "This device checks that from Claude Code's own login file and sends no email, plan or account id.",
+    );
+    expect(shown).toContain(
+      'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
+    );
+  });
+
+  it('clears a stored value this version does not know, which reads as off', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'paused' } });
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(fresh());
+  });
+
+  it('says so when they are already on, and changes nothing', async () => {
+    attach({ scope: fresh([enrolled()]) });
+    const before = stored();
+    const io = recorder();
+    expect(await runEnroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Recognition of work subscriptions is already on for Acme on this device; nothing changed.\n',
+    );
+    expect(stored()).toEqual(before);
+  });
+
+  it('writes nothing to the identity record', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'off' } });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const record = readFileSync(join(dataDirOf(base), 'attached-identity.json'), 'utf8');
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(readFileSync(join(dataDirOf(base), 'attached-identity.json'), 'utf8')).toBe(record);
+  });
+});
+
+describe('aka enroll and aka unenroll --work-subscriptions where there is no personal-device mode', () => {
+  it.each<[string, () => void, ManagedSettings | null]>([
+    ['an unattached machine', () => undefined, null],
+    [
+      'a machine-wide attachment',
+      () => {
+        attach({ mode: 'machine' });
+      },
+      null,
+    ],
+    [
+      'a managed machine-wide attachment',
+      () => {
+        attach({ mode: 'machine' });
+      },
+      governedBy(),
+    ],
+    [
+      'a managed machine that still holds a scoped credential',
+      () => {
+        attach({ scope: fresh([enrolled()]) });
+      },
+      governedBy(),
+    ],
+  ])(
+    '--work-subscriptions refuses on an unattached, machine-wide or managed machine and writes nothing (%s)',
+    async (_name, arrange, managedSettings) => {
+      arrange();
+      for (const run of [runEnroll, runUnenroll]) {
+        const before = stored();
+        const io = recorder();
+        expect(await run(['--work-subscriptions'], deps(io, { managedSettings }))).toBe(1);
+        expect(stored()).toEqual(before);
+        expect(io.output()).toBe('');
+      }
+      expect(settingsWrite.calls).toBe(0);
+    },
+  );
+
+  it('leaves the learned work accounts of a managed device alone', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(
+      await runUnenroll(['--work-subscriptions'], deps(io, { managedSettings: governedBy() })),
+    ).toBe(1);
+    expect(io.errors()).toContain(
+      'cannot be changed while an administrator manages its connection; re-attaching makes it machine-wide',
+    );
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts.map((e) => e.identity)).toEqual([
+      OTHER_ACCOUNT,
+    ]);
+  });
+});
+
+describe('aka unenroll --account — work accounts this device validated', () => {
+  it('refuses a work account validated automatically and not enrolled by hand, naming the opt-out', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const before = stored();
+    const io = recorder();
+    expect(await runUnenroll(['--account', OTHER_ACCOUNT], deps(io))).toBe(1);
+    expect(flat(io.errors())).toContain(
+      `${OTHER_ACCOUNT} was validated automatically for Acme while this device is attached as its account; \`aka unenroll --work-subscriptions\` stops recognising work subscriptions on this device.`,
+    );
+    expect(stored()).toEqual(before);
+  });
+
+  it('removes the manual entry of a key also validated automatically, and says recognition continues', async () => {
+    attach({ scope: fresh([codingAccount(OTHER_ACCOUNT)]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(await runUnenroll(['--account', OTHER_ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+    expect(io.output()).toContain(
+      'Automatic recognition of that account continues until `aka unenroll --work-subscriptions`.\n',
+    );
+  });
+
+  it('says sessions signed in to it stop forwarding, and what is already recorded stays', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    const io = recorder();
+    expect(await runUnenroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(flat(io.output())).toContain(
+      'Sessions signed in to it stop forwarding at their next event; anything already recorded under it stays on this device, even inside enrolled repositories.',
+    );
+    expect(io.output()).not.toContain('Automatic recognition');
+  });
+});
+
+describe('aka enroll --list-detected — the Claude Code login', () => {
+  it('lists the organization signed in now, its plan hint and its state', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      `Claude Code — signed in now:\n  ${ACCOUNT}  Team or Enterprise plan  would validate\n`,
+    );
+  });
+
+  it.each<[string, Record<string, unknown>, boolean, string]>([
+    ['enrolled', fresh([codingAccount()]), false, 'enrolled'],
+    ['validated automatically', fresh(), true, 'validated automatically'],
+    [
+      'off',
+      { ...fresh(), workSubscriptions: 'off' },
+      false,
+      'would validate, but work subscriptions are off on this device',
+    ],
+  ])('says it is %s', async (_name, scope, learned, state) => {
+    attach({ scope, extra: webChat({ grant: true }) });
+    knownMember();
+    if (learned) learn(ACCOUNT);
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`  ${ACCOUNT}  Team or Enterprise plan  ${state}\n`);
+  });
+
+  it('prints only the key and whether it counts off a terminal', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`Claude Code — signed in now:\n  ${ACCOUNT}  not-recognised\n`);
+    expect(io.output()).not.toContain('personal plan');
+  });
+
+  it('--list-detected never prints the fixture email and writes nothing', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn({}, CLAUDE_MEMBER);
+    recordDetectedWebAccount(dataDirOf(base), ACCOUNT, SOURCE_TOOL.ClaudeAi);
+    const homeBefore = treeOf(base);
+    const claudeBefore = treeOf(claudeHome);
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    for (const address of [CLAUDE_MEMBER, SOMEONE_ELSE]) {
+      expect(io.output()).not.toContain(address);
+      expect(io.errors()).not.toContain(address);
+    }
+    expect(treeOf(base)).toEqual(homeBefore);
+    expect(treeOf(claudeHome)).toEqual(claudeBefore);
+    expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+// The commands `aka status` prints are the ones a person copies and runs. Each
+// is run through the real argument parser, so a printed command the parser
+// refuses fails here, and a printed key that the command does not act on does too.
+describe('aka status — the commands it prints', () => {
+  const claudePaths = () => ({
+    home: claudeHome,
+    managedSettings: join(claudeHome, 'managed-settings.json'),
+  });
+
+  async function statusText(): Promise<string> {
+    const io = recorder();
+    await runStatus([], { base, prompter: io, managedSettings: null, claudePaths: claudePaths() });
+    return io.output();
+  }
+
+  const printedCommands = (text: string): string[] =>
+    [...text.matchAll(/`(aka (?:enroll|unenroll)[^`]*)`/g)].flatMap((match) =>
+      match[1] === undefined ? [] : [match[1]],
+    );
+
+  async function runPrinted(
+    command: string,
+  ): Promise<{ code: number; io: ReturnType<typeof recorder> }> {
+    const [, verb, ...argv] = command.split(' ');
+    const io = recorder();
+    const code = await (verb === 'enroll' ? runEnroll : runUnenroll)(argv, deps(io));
+    return { code, io };
+  }
+
+  it.each<[string, () => void, string[]]>([
+    [
+      'a device with work subscriptions on',
+      () => {
+        attach({ scope: fresh() });
+      },
+      [WORK_SUBSCRIPTION_COMMANDS.off, 'aka enroll'],
+    ],
+    [
+      'a device with work subscriptions off',
+      () => {
+        attach({ scope: { ...fresh(), workSubscriptions: 'off' } });
+      },
+      [WORK_SUBSCRIPTION_COMMANDS.on],
+    ],
+    [
+      'a Claude Code login that shows no plan',
+      () => {
+        attach({ scope: fresh() });
+        knownMember();
+        claudeSignIn({ organizationType: undefined });
+      },
+      [`aka enroll --account ${ACCOUNT}`],
+    ],
+  ])('prints commands the parser accepts for %s', async (_name, arrange, expected) => {
+    arrange();
+    const commands = printedCommands(await statusText());
+    for (const command of expected) expect(commands).toContain(command);
+    for (const command of commands) {
+      const { code, io } = await runPrinted(command);
+      expect(code, command).not.toBe(2);
+      expect(io.errors(), command).not.toContain('Usage: aka');
+    }
+  });
+
+  it('prints the same commands the two verbs are documented with', () => {
+    expect(WORK_SUBSCRIPTION_COMMANDS).toEqual({
+      off: 'aka unenroll --work-subscriptions',
+      on: 'aka enroll --work-subscriptions',
+    });
+  });
+
+  // The chats-only line tells a person to run the command again; running exactly
+  // that command marks the entry, and the answer is not "already enrolled".
+  it('marks an account entry stored without the marker when its printed command is run', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    const printed = printedCommands(await statusText()).filter((command) =>
+      command.startsWith('aka enroll --account '),
+    );
+    expect(printed).toEqual([`aka enroll --account ${ACCOUNT}`]);
+    const { code, io } = await runPrinted(printed[0] ?? '');
+    expect(code).toBe(0);
+    expect(io.output()).not.toContain('Already enrolled');
+    expect(storedScope()).toEqual(fresh([{ ...enrolledAccount(), codingAgents: true }]));
+    expect(printedCommands(await statusText())).not.toContain(`aka enroll --account ${ACCOUNT}`);
+  });
+});
+
+describe('aka status — the Claude Code login, through the command', () => {
+  const claudePaths = () => ({
+    home: claudeHome,
+    managedSettings: join(claudeHome, 'managed-settings.json'),
+  });
+
+  async function statusText(
+    options: { interactive?: boolean; cwd?: string; paths?: boolean } = {},
+  ): Promise<string> {
+    const io = { ...recorder(), isInteractive: options.interactive ?? true };
+    const project = options.cwd;
+    await runStatus([], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      ...(options.paths === false ? {} : { claudePaths: claudePaths() }),
+      ...(project === undefined ? {} : { cwd: () => project }),
+    });
+    return io.output();
+  }
+
+  it('names the Claude Code login on a terminal, and collapses the line off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    claudeSignIn();
+    expect(await statusText()).toContain(
+      '  this login Claude Code — a work subscription for the attached user — its sessions forward from any folder\n',
+    );
+    const piped = await statusText({ interactive: false });
+    expect(piped).toContain('  this login details on an interactive terminal\n');
+    expect(piped).not.toContain('Claude Code —');
+  });
+
+  it('reads the login from the Claude home it is given, not the machine it runs on', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    expect(await statusText()).toContain('  this login Claude Code — login file not found\n');
+  });
+
+  it('reads the project settings layers of the working directory it is given', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    claudeSignIn();
+    const project = mkdtempSync(join(tmpdir(), 'aka-enroll-project-'));
+    try {
+      mkdirSync(join(project, '.claude'));
+      writeFileSync(
+        join(project, '.claude', 'settings.json'),
+        JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }),
+      );
+      expect(await statusText({ cwd: project })).toContain(
+        '  this login Claude Code — an API key or another provider is in use\n',
+      );
+    } finally {
+      removeTree(project);
+    }
   });
 });
 

@@ -42,6 +42,7 @@ import {
   promptRedactionLines,
   readHostVersionCache,
 } from '@akasecurity/plugin-sdk';
+import type { ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
@@ -140,6 +141,14 @@ export interface AttachDeps {
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
   managedSettings?: ManagedSettings | null;
+  /**
+   * Where Claude Code keeps its login and settings files, for the status line
+   * that says why its login counts. Leaving it out reads the real home and the
+   * system managed-settings file.
+   */
+  claudePaths?: ClaudeLoginPaths | undefined;
+  /** The project whose Claude Code settings can veto its login. Defaults to the working directory. */
+  cwd?: (() => string) | undefined;
   base?: string;
   prompter?: Prompter;
   /** The transport, injectable so tests verify a credential without a network. */
@@ -1785,7 +1794,15 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   const base = deps.base ?? homeBase(args.home);
   const dataDir = dataDirOf(base);
 
-  const block = renderAttachedStatus({ base, settingsDir: settingsDirOf(base), dataDir });
+  const block = renderAttachedStatus({
+    base,
+    settingsDir: settingsDirOf(base),
+    dataDir,
+    isTTY: io.isInteractive,
+    managedSettings: deps.managedSettings,
+    claudePaths: deps.claudePaths ?? {},
+    cwd: (deps.cwd ?? (() => process.cwd()))(),
+  });
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);

@@ -519,7 +519,7 @@ describe('cli/README.md Codex work-subscription disclosure', () => {
     "the device reads Codex's login file, the first line of the thread's own log and the environment variables that choose the account or provider",
     "the login's workspace with the one that created the thread",
     "the token usage and tool calls read from that thread's log are forwarded with the rest of the activity of a recognised thread or of one signed in to a workspace enrolled by hand",
-    'A token refresh keeps a recognised thread forwarding; a switch of workspace, email, plan or login mode ends it for the rest of that thread.',
+    'A token refresh keeps a recognised thread forwarding; a switch to another workspace or email, to a plan that does not count, or to another login mode ends it for the rest of that thread.',
     "A resumed thread, a personal plan, a service account, another email, an API key or access token (in the environment or as the login), another provider or a gateway, a thread whose log does not name the login's workspace as its creator, and a login Codex keeps outside its login file (in the system keychain, for one) follow the repository rule.",
     'the Codex threads of a workspace enrolled that way then forward whatever the plan or email',
     '`aka unenroll --work-subscriptions` turns the recognition of Codex threads off too',
@@ -531,6 +531,13 @@ describe('cli/README.md Codex work-subscription disclosure', () => {
 
   it.each(CODEX_PHRASES)('says %j in the egress footnote', (phrase) => {
     expect(footnote).toContain(phrase);
+  });
+
+  it('says only a plan that does not count ends a thread, never any change of plan', () => {
+    for (const text of [body, footnote]) {
+      expect(text).toContain('to a plan that does not count');
+      expect(text).not.toContain('a switch of workspace, email, plan or login mode');
+    }
   });
 
   it('names Codex sessions where the body and the footnote sum up what a personal device forwards', () => {

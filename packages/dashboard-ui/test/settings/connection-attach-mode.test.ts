@@ -216,7 +216,7 @@ describe('attach-mode copy', () => {
       "Activity is sent only from repositories and accounts you enroll with `aka enroll`, and from Claude Code and Codex sessions signed in to a work subscription (Claude Team or Enterprise, ChatGPT Business, Team, Enterprise or Edu) under the same email as your AKA account, from any folder, with that folder's project and branch names; activity anywhere else stays on this machine.",
     );
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
-      "the plugin forwards activity only from repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll --account`, whose Claude Code sessions send everything they record from the first reply on, from any folder, with that folder's project and branch names, whose Codex sessions send everything they record, from any folder, with that folder's project and branch names, and whose claude.ai chats, where web chat capture is granted, send their replies, with their tool calls and token usage; from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, which send everything they record from the first reply on, from any folder, with that folder's project and branch names; and from new Codex sessions signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, which send everything they record, from any folder, with that folder's project and branch names. Activity anywhere else stays on this machine.",
+      "the plugin forwards activity only from repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll --account`, whose Claude Code sessions send everything they record from the first reply on, from any folder, with that folder's project and branch names, whose new Codex sessions send everything they record, from any folder, with that folder's project and branch names, and whose claude.ai chats, where web chat capture is granted, send their replies, with their tool calls and token usage; from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, which send everything they record from the first reply on, from any folder, with that folder's project and branch names; and from new Codex sessions signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, which send everything they record, from any folder, with that folder's project and branch names. Activity anywhere else stays on this machine.",
     );
   });
 
@@ -236,9 +236,19 @@ describe('attach-mode copy', () => {
     // session sends from its first reply on.
     const sends =
       "send everything they record, from any folder, with that folder's project and branch names";
-    expect(CONNECTION_FORWARDING_NOTICE_SCOPED.split(`Codex sessions ${sends}`)).toHaveLength(2);
+    expect(
+      CONNECTION_FORWARDING_NOTICE_SCOPED.split(`whose new Codex sessions ${sends}`),
+    ).toHaveLength(2);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED.split(`which ${sends}`)).toHaveLength(2);
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).not.toMatch(/Codex sessions[^;]*first reply/);
+  });
+
+  it('says a new Codex session wherever the notice speaks of Codex sessions alone', () => {
+    // A resumed Codex thread never counts, an account enrolled by hand included,
+    // so a clause about Codex alone cannot cover every session.
+    const notice = CONNECTION_FORWARDING_NOTICE_SCOPED;
+    expect(notice.match(/Codex sessions/g)).toHaveLength(2);
+    expect(notice.match(/new Codex sessions/g)).toHaveLength(2);
   });
 
   it('says on a governed machine that a personal-device attach is refused', () => {

@@ -1342,14 +1342,14 @@ export const CONNECTION_FORWARDING_NOTICE =
 // or a line it does not cross:
 //
 //   - the plugin forwards activity only from repositories you enroll, from
-//     accounts you enroll (their Claude Code or Codex sessions from any folder
-//     and, from the browser extension, their claude.ai replies) and from the
-//     Claude Code and Codex sessions of a work subscription the device
-//     recognises (the forward paths decide by that scope before they send), and
-//     the notice names the command that stops the last, which leaves what is
-//     enrolled by hand. A Claude Code session's organization is read from its
-//     own log, which names none until the first reply, so those sessions send
-//     from the first reply on;
+//     accounts you enroll (their Claude Code sessions and new Codex sessions
+//     from any folder and, from the browser extension, their claude.ai replies)
+//     and from the Claude Code and Codex sessions of a work subscription the
+//     device recognises (the forward paths decide by that scope before they
+//     send), and the notice names the command that stops the last, which leaves
+//     what is enrolled by hand. A Claude Code session's organization is read
+//     from its own log, which names none until the first reply, so those
+//     sessions send from the first reply on;
 //   - the work-subscription check reads the login file, the environment
 //     variables and the session's own log, and, for Claude Code, its settings
 //     files, and the notice names each. It says the check sends none of it, not
@@ -1372,7 +1372,7 @@ export const CONNECTION_FORWARDING_NOTICE_SCOPED =
   'While this machine is attached as a personal device, the plugin forwards activity only from ' +
   'repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll ' +
   '--account`, whose Claude Code sessions send everything they record from the first reply on, ' +
-  "from any folder, with that folder's project and branch names, whose Codex sessions send " +
+  "from any folder, with that folder's project and branch names, whose new Codex sessions send " +
   "everything they record, from any folder, with that folder's project and branch names, and " +
   'whose claude.ai chats, where web chat capture is granted, send their replies, with their ' +
   'tool calls and token usage; from Claude Code sessions signed in to a work subscription (a ' +

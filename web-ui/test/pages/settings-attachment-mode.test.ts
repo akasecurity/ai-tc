@@ -205,7 +205,7 @@ describe('SettingsClient and the mode', () => {
     'While this machine is attached as a personal device, the plugin forwards activity only from ' +
     'repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll ' +
     '--account`, whose Claude Code sessions send everything they record from the first reply on, ' +
-    "from any folder, with that folder's project and branch names, whose Codex sessions send " +
+    "from any folder, with that folder's project and branch names, whose new Codex sessions send " +
     "everything they record, from any folder, with that folder's project and branch names, and " +
     'whose claude.ai chats, where web chat capture is granted, send their replies, with their ' +
     'tool calls and token usage; from Claude Code sessions signed in to a work subscription (a ' +

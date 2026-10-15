@@ -460,8 +460,8 @@ const CODEX_WORK_SENTENCES = [
   'The check sends none of what it reads, though the token usage and tool calls read from that ' +
     "thread's log are forwarded with the rest of the activity of a recognised thread or of one " +
     'signed in to a workspace enrolled by hand.',
-  'A token refresh keeps a recognised thread forwarding; a switch of workspace, email, plan or ' +
-    'login mode ends it for the rest of that thread.',
+  'A token refresh keeps a recognised thread forwarding; a switch to another workspace or email, ' +
+    'to a plan that does not count, or to another login mode ends it for the rest of that thread.',
   'A resumed thread, a personal plan, a service account, another email, an API key or access ' +
     'token (in the environment or as the login), another provider or a gateway, a thread whose ' +
     "log does not name the login's workspace as its creator, and a login Codex keeps outside " +
@@ -520,6 +520,14 @@ describe('Codex work-subscription claims', () => {
     const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
     expect(section).toContain(CODEX_WORK_SENTENCE);
     expect(section).toContain(`${CODEX_WORK_SENTENCE} ${CODEX_READ_SENTENCE}`);
+  });
+
+  it('says only a plan that does not count ends a thread, never any change of plan', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toContain('to a plan that does not count');
+      expect(text).not.toContain('a switch of workspace, email, plan or login mode');
+    }
   });
 
   it('does not claim the scan protects a Codex home the environment relocates', () => {

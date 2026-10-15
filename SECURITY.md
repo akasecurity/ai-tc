@@ -238,17 +238,18 @@ device and the login's workspace with the one that created the thread. The
 check sends none of what it reads, though the token usage and tool calls read
 from that thread's log are forwarded with the rest of the activity of a
 recognised thread or of one signed in to a workspace enrolled by hand. A token
-refresh keeps a recognised thread forwarding; a switch of workspace, email,
-plan or login mode ends it for the rest of that thread. A resumed thread, a
-personal plan, a service account, another email, an API key or access token (in
-the environment or as the login), another provider or a gateway, a thread whose
-log does not name the login's workspace as its creator, and a login Codex keeps
-outside its login file (in the system keychain, for one) follow the repository
-rule. `aka enroll --account` enrolls by hand a workspace the device cannot
-recognise, and the Codex threads of a workspace enrolled that way then forward
-whatever the plan or email, though not a resumed thread, one under an API key
-or access token, one on another provider or a gateway, or one whose login Codex
-keeps outside its login file; a switch of workspace or login mode ends them.
+refresh keeps a recognised thread forwarding; a switch to another workspace or
+email, to a plan that does not count, or to another login mode ends it for the
+rest of that thread. A resumed thread, a personal plan, a service account,
+another email, an API key or access token (in the environment or as the login),
+another provider or a gateway, a thread whose log does not name the login's
+workspace as its creator, and a login Codex keeps outside its login file (in
+the system keychain, for one) follow the repository rule.
+`aka enroll --account` enrolls by hand a workspace the device cannot recognise,
+and the Codex threads of a workspace enrolled that way then forward whatever
+the plan or email, though not a resumed thread, one under an API key or access
+token, one on another provider or a gateway, or one whose login Codex keeps
+outside its login file; a switch of workspace or login mode ends them.
 `aka unenroll --work-subscriptions` turns the recognition of Codex threads off
 too and `aka enroll --work-subscriptions` turns it back on; a workspace
 enrolled by hand still forwards while it is off (`aka unenroll --account` stops

@@ -1399,8 +1399,10 @@ describe('aka enroll — what was recorded before', () => {
       const io = recorder();
       expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
       expect(seed.calls).toEqual([]);
-      expect(io.output()).toContain('Nothing recorded in it before now is sent.');
-      expect(io.output()).toContain('aka sync-history --on');
+      expect(flat(io.output())).toContain(
+        'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached. To send its earlier history as well, run `aka sync-history --on`.',
+      );
+      expect(io.output()).not.toContain('before now');
     },
   );
 });
@@ -1729,13 +1731,14 @@ describe('aka enroll --account', () => {
     expect(storedScope()).toBeUndefined();
   });
 
-  it('sends nothing earlier without a history-sync grant, and says how to', async () => {
+  it('sends nothing earlier without a history-sync grant but what a live send left owed, and says how to', async () => {
     attach({ scope: fresh(), extra: webChat() });
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
-    expect(io.output()).toContain(
-      'Nothing recorded in it before now is sent. To send its earlier replies as well,\nrun `aka sync-history --on`.\n',
+    expect(flat(io.output())).toContain(
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached. To send its earlier replies as well, run `aka sync-history --on`.',
     );
+    expect(io.output()).not.toContain('before now');
     expect(seed.calls).toEqual([]);
   });
 
@@ -1855,6 +1858,9 @@ const SCOPED_CREDENTIAL = {
 
 const flat = (text: string): string => text.replace(/\s+/g, ' ');
 
+const UNTIL_USER_KNOWN =
+  'This device does not know yet which AKA user attached it, so a Claude Code session outside an enrolled repository is not sent until it does; one inside an enrolled repository is sent under the repository rule.';
+
 function claudeSignIn(
   account: Readonly<Record<string, unknown>> = {},
   email: string = CLAUDE_MEMBER,
@@ -1906,15 +1912,29 @@ describe('aka enroll --account — Claude Code sessions', () => {
     expect(storedScope()).toEqual(fresh([codingAccount()]));
     const shown = flat(io.output());
     expect(shown).toContain(
-      'Claude Code sessions are sent to Acme too: every session signed in to this organization, from any folder, with its folder, project and branch names, and its claude.ai chats when web chat capture is on.',
+      "Claude Code sessions signed in to this organization are sent to Acme too, from any folder, with their folder, project and branch names, and this account's claude.ai chats when web chat capture is on.",
     );
     expect(shown).toContain(
-      'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of each new session follows the repository rule: it is sent only from an enrolled repository.',
+      'A session already running starts forwarding at its next event, and a new one from its first reply on. The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
     );
+    expect(shown).toContain(
+      'Nothing a Claude Code session recorded before this enrollment is sent this way, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached.',
+    );
+    for (const notPrinted of [
+      'every session signed in to this organization',
+      'That starts with the next session',
+      'no Claude Code session recorded before now',
+      'nothing recorded before now',
+      'it is sent only from an enrolled repository',
+    ]) {
+      expect(shown).not.toContain(notPrinted);
+    }
     expect(shown).toContain(
       'a login under another email, a plan Claude Code does not show, or a device a colleague approved.',
     );
-    expect(shown).not.toContain('has not seen Claude Code');
+    expect(shown).not.toContain('Claude Code is not signed in to that organization');
+    expect(shown).not.toContain('could not be read, so no session');
+    expect(shown).not.toContain('does not know yet which AKA user');
   });
 
   it('adds the marker in place to an entry enrolled for its chats only, and queues nothing again', async () => {
@@ -1937,14 +1957,91 @@ describe('aka enroll --account — Claude Code sessions', () => {
     );
   });
 
-  it('says when Claude Code has not been seen signed in to that organization', async () => {
-    attach({ scope: fresh(), extra: webChat() });
-    const io = recorder();
-    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
-    expect(flat(io.output())).toContain(
-      'This machine has not seen Claude Code signed in to that organization; its sessions are sent once one is.',
-    );
-  });
+  it.each<[string, () => void]>([
+    ['there is no login file', () => undefined],
+    [
+      'the login is for another organization',
+      () => {
+        claudeSignIn({}, CLAUDE_MEMBER, randomUUID());
+      },
+    ],
+  ])(
+    'says Claude Code is not signed in to that organization now when %s',
+    async (_case, signIn) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      signIn();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      const shown = flat(io.output());
+      expect(shown).toContain(
+        'Claude Code is not signed in to that organization on this machine now; its sessions are sent when it is.',
+      );
+      expect(shown).not.toContain('has not seen Claude Code');
+      expect(shown).not.toContain('could not be read');
+    },
+  );
+
+  it.each<[string, () => void]>([
+    [
+      'the login file does not parse',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+      },
+    ],
+    [
+      'the login file does not parse and the environment names the account',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+        vi.stubEnv('CLAUDE_CODE_ORGANIZATION_UUID', ORG);
+      },
+    ],
+  ])(
+    'says the login file could not be read, not that Claude Code is signed out, when %s',
+    async (_case, unreadable) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      unreadable();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      const shown = flat(io.output());
+      expect(shown).toContain(
+        "Claude Code's login file could not be read, so no session is sent this way until it can be.",
+      );
+      expect(shown).not.toContain('is not signed in to that organization');
+      expect(shown).not.toContain('does not know yet which AKA user');
+    },
+  );
+
+  it.each<[string, () => void]>([
+    [
+      'the login is for that organization',
+      () => {
+        claudeSignIn();
+      },
+    ],
+    ['there is no login file', () => undefined],
+    [
+      'the login file does not parse',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+      },
+    ],
+  ])(
+    'says a session outside an enrolled repository waits until the device knows who attached it, and one inside follows the repository rule, when %s',
+    async (_case, signIn) => {
+      attach({ scope: fresh([enrolled()]), extra: webChat() });
+      signIn();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      expect(identities()).toEqual([WORK_REPO, ACCOUNT]);
+      const shown = flat(io.output());
+      expect(shown).toContain(UNTIL_USER_KNOWN);
+      expect(shown).not.toContain('sends no Claude Code session');
+      expect(shown).not.toContain('is not signed in to that organization');
+      expect(shown).not.toContain('could not be read, so no session');
+    },
+  );
 
   it.each<['enroll' | 'unenroll', string, string]>(
     (['enroll', 'unenroll'] as const).flatMap((verb) => [
@@ -1985,9 +2082,24 @@ describe('aka enroll --account — the login signed in now on a personal plan', 
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
     expect(identities()).toEqual([ACCOUNT]);
-    expect(flat(io.output())).toContain(
-      'Enrolling its organization sends every Claude Code session signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.',
+    const shown = flat(io.output());
+    expect(shown).toContain(
+      'Enrolling its organization sends the Claude Code sessions signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats. The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
     );
+    expect(shown).not.toContain('sends every Claude Code session');
+    expect(shown).not.toContain('does not know yet which AKA user');
+  });
+
+  it('says before it asks that a session outside an enrolled repository waits until the device knows who attached it', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+    const shown = flat(io.output());
+    expect(shown).toContain(UNTIL_USER_KNOWN);
+    expect(shown).not.toContain('sends no Claude Code session');
+    expect(shown.indexOf('does not know yet')).toBeLessThan(shown.indexOf('Nothing was enrolled.'));
   });
 
   it('enrolls nothing when the answer is no', async () => {
@@ -2194,6 +2306,9 @@ describe('aka enroll --work-subscriptions', () => {
     );
     expect(shown).toContain(
       "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand.",
+    );
+    expect(shown).toContain(
+      'The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
     );
     expect(shown).not.toContain('own login file');
     expect(shown).toContain(

@@ -1,8 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import {
   ATTACHED_IDENTITY_FILENAME,
   attachedUserDigestOf,
@@ -18,6 +19,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { attachToControlPlane, detachFromControlPlane } from '../../app/(app)/settings/actions.ts';
+import {
+  ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS,
+  ATTACH_CREDENTIAL_UNWRITABLE,
+  SETTINGS_WRITE_ERROR,
+} from '../../app/lib/action-refusals.ts';
 import { type LoopbackServer, startLoopbackServer } from '../helpers/loopback.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
 
@@ -32,6 +38,38 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+
+// Stand-ins, unarmed by default so every call reaches the real function. Armed,
+// the settings write throws, or the numbered credential write does (counted from
+// the last reset). Both are counted.
+const stand = vi.hoisted(() => ({
+  failSettingsWrite: false,
+  failCredentialWriteAt: undefined as number | undefined,
+  credentialWrites: 0,
+  settingsWrites: 0,
+}));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    applyOnboarding: (
+      ...args: Parameters<typeof actual.applyOnboarding>
+    ): ReturnType<typeof actual.applyOnboarding> => {
+      stand.settingsWrites += 1;
+      if (stand.failSettingsWrite) throw new Error('settings write failed');
+      return actual.applyOnboarding(...args);
+    },
+    writeControlPlaneCredential: (
+      ...args: Parameters<typeof actual.writeControlPlaneCredential>
+    ): void => {
+      stand.credentialWrites += 1;
+      if (stand.failCredentialWriteAt === stand.credentialWrites) {
+        throw new Error('credential write failed');
+      }
+      actual.writeControlPlaneCredential(...args);
+    },
+  };
+});
 
 // Homes are removed when this FILE finishes, not after each test. See the helper.
 const newHome = tempHomes('aka-web-attach-identity-');
@@ -108,6 +146,10 @@ function storedSettings(): Record<string, unknown> {
 beforeEach(async () => {
   home = newHome();
   osHome.dir = home;
+  stand.failSettingsWrite = false;
+  stand.failCredentialWriteAt = undefined;
+  stand.credentialWrites = 0;
+  stand.settingsWrites = 0;
   deployment = await startLoopbackServer();
   other = await startLoopbackServer();
   answerAs(deployment, WORKER);
@@ -205,6 +247,105 @@ describe('the dashboard attach records who the key belongs to', () => {
     expect(readControlPlaneCredentialFile(settingsDir(akaHome()))).toMatchObject({
       usable: true,
       credential: { mode: 'scoped' },
+    });
+  });
+
+  describe('an attach that fails at a write leaves the attached account as it was', () => {
+    interface FailedWrite {
+      name: string;
+      /** The stored list is one this attach does not keep, which writes the settings first. */
+      settingsFirst: boolean;
+      arm: () => void;
+      /** The writes reached, counted from the moment the machine is arranged. */
+      writes: { settings: number; credential: number };
+      error: string;
+    }
+
+    const FAILED_WRITES: FailedWrite[] = [
+      {
+        name: 'the settings write, after the credential was written first',
+        settingsFirst: false,
+        arm: () => {
+          stand.failSettingsWrite = true;
+        },
+        writes: { settings: 1, credential: 2 },
+        error: SETTINGS_WRITE_ERROR,
+      },
+      {
+        name: 'the credential write, ahead of the settings',
+        settingsFirst: false,
+        arm: () => {
+          stand.failCredentialWriteAt = 1;
+        },
+        writes: { settings: 0, credential: 1 },
+        error: ATTACH_CREDENTIAL_UNWRITABLE,
+      },
+      {
+        name: 'the settings write, ahead of the credential',
+        settingsFirst: true,
+        arm: () => {
+          stand.failSettingsWrite = true;
+        },
+        writes: { settings: 1, credential: 0 },
+        error: SETTINGS_WRITE_ERROR,
+      },
+      {
+        name: 'the credential write, after the settings were written first',
+        settingsFirst: true,
+        arm: () => {
+          stand.failCredentialWriteAt = 1;
+        },
+        writes: { settings: 1, credential: 1 },
+        error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS,
+      },
+    ];
+
+    /** What the account state is on disk: the record's text, and the names under session-accounts. */
+    function accountState(): { record: string | undefined; sessions: string[] | undefined } {
+      return {
+        record: existsSync(identityFile()) ? readFileSync(identityFile(), 'utf8') : undefined,
+        sessions: existsSync(sessionAccounts()) ? readdirSync(sessionAccounts()).sort() : undefined,
+      };
+    }
+
+    it.for(FAILED_WRITES)('at $name', async (row) => {
+      await attach('scoped');
+      learnWorkOrg();
+      plantSessionAccountState();
+      if (row.settingsFirst) {
+        const unbound = {
+          endpoint: deployment.origin,
+          entries: [
+            {
+              kind: 'repo',
+              identity: 'github.com/example-org/payments-api',
+              enrolledAt: ENROLLED_AT,
+            },
+          ],
+        };
+        writeFileSync(
+          settingsFile(),
+          JSON.stringify({ ...storedSettings(), attachmentScope: unbound }),
+        );
+      }
+      const before = accountState();
+      expect(readAttachedIdentity(akaData())?.workAccounts).toHaveLength(1);
+      expect(before.sessions).toEqual(['s-1.log']);
+      stand.settingsWrites = 0;
+      stand.credentialWrites = 0;
+      row.arm();
+
+      const res = await attachToControlPlane({
+        endpoint: deployment.origin,
+        accessKey: ROTATED_KEY,
+        mode: 'scoped',
+      });
+
+      expect(res).toEqual({ ok: false, error: row.error });
+      expect({ settings: stand.settingsWrites, credential: stand.credentialWrites }).toEqual(
+        row.writes,
+      );
+      expect(accountState()).toEqual(before);
     });
   });
 

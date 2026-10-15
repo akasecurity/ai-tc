@@ -91,6 +91,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'clearSightingKeys',
   'compareBinaryVersions',
   'computeFindingKey',
+  'configAssetRow',
   'controlPlaneCredentialPath',
   'controlPlanePolicyFloor',
   'createKeyProvider',

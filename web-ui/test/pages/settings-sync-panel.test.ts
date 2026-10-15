@@ -734,10 +734,11 @@ describe('the settings route — the sync panel', () => {
 });
 
 describe('the settings route — the sync panel on a scoped attachment', () => {
-  // A scoped attachment sends activity only from what is enrolled on it, and its
-  // history drain filters every pass by that scope. The bars
-  // are counted by the same scope, resolved from the same inputs, so they
-  // describe what this machine sends rather than everything its store holds.
+  // A scoped attachment sends activity only from what is enrolled on it and from
+  // recognised work-subscription sessions, and its history drain filters every
+  // pass by that scope. The bars are counted by the same scope, resolved from the
+  // same inputs, so they describe what this machine sends rather than everything
+  // its store holds.
   // Each case writes a real credential file and a real settings record; only the
   // store's rows are seeded by hand, and one case calls the reader directly to
   // give it a mode the page could not read.
@@ -875,9 +876,10 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
 });
 
 // The not-shared line says what is sent from now on, and a personal device
-// sends activity only from what is enrolled on it. The route reads the mode
-// once, for the form, and the panel takes the same answer; a machine-wide
-// attachment's props carry no flag at all.
+// sends activity only from what is enrolled on it and from recognised
+// work-subscription sessions. The route reads the mode once, for the form, and
+// the panel takes the same answer; a machine-wide attachment's props carry no
+// flag at all.
 describe('the settings route — the sync panel on a personal device', () => {
   it('tells the panel the machine is a personal device', async () => {
     attachScoped();

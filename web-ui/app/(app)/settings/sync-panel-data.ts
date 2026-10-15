@@ -233,7 +233,7 @@ export function readSyncPanel(
     // A personal device sends activity only from what is enrolled on it and
     // from recognised work-subscription sessions, so the not-shared line says
     // what is sent from now on and the panel says whether the second is on.
-    // Present only on one, so a machine-wide attachment's props are what they were.
+    // Present only on one: a machine-wide attachment's props carry neither.
     ...(attachmentMode === 'scoped'
       ? { scoped: true, workSubscriptions: workSubscriptionsState(settings) }
       : {}),

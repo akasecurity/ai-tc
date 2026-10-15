@@ -180,9 +180,10 @@ describe('SyncPanelView', () => {
 
   // ─── A scoped attachment with nothing in its scope ──────────────────────────
   //
-  // A scoped attachment counts only what is enrolled, so its store can
-  // be full while it has no bar to draw, and "Nothing recorded yet" over that
-  // store would be false. Each of the two causes has its own sentence.
+  // A scoped attachment counts what is enrolled and the sessions of a recognised
+  // work subscription, so its store can be full while it has no bar to draw, and
+  // "Nothing recorded yet" over that store would be false. Each of the two causes
+  // has its own sentence.
 
   it('says no repository is enrolled, and how to enroll one, when the scope is empty', () => {
     const html = render({ state: { status: 'nothing-in-scope', enrolled: 0 } });
@@ -226,11 +227,12 @@ describe('SyncPanelView', () => {
 
   // ─── On a personal device ──────────────────────────────────────────────────
   //
-  // A personal device sends activity only from what is enrolled on it, so the
-  // line saying what is sent from now on must not say "this machine". The host
-  // passes `scoped` only for one; anything else keeps the machine-wide line.
+  // A personal device sends activity only from what is enrolled on it and from
+  // recognised work-subscription sessions, so the line saying what is sent from
+  // now on must not say "this machine". The host passes `scoped` only for one;
+  // anything else keeps the machine-wide line.
 
-  it("says only an enrolled repository's or account's activity is sent from now on", () => {
+  it('says activity in an enrolled repository or account, or a recognised work-subscription session, is sent from now on', () => {
     const html = render({ state: { status: 'not-shared' }, scoped: true });
     expect(html).toContain(
       'Existing activity is not shared. Only activity recorded from now on in an enrolled repository or account, or in a recognised work-subscription session, is sent.',
@@ -246,9 +248,10 @@ describe('SyncPanelView', () => {
     expect(html).not.toContain('enrolled repository');
   });
 
-  // The bars on a personal device count only what is enrolled, so a header
-  // saying what "this machine" has sent would claim more than they show.
-  it('says the header counts only what is enrolled on a personal device', () => {
+  // The bars on a personal device count what is enrolled and the rows of a
+  // recognised work subscription, so a header saying what "this machine" has sent
+  // would claim more than they show.
+  it('says the header counts what is enrolled and recognised work subscriptions on a personal device', () => {
     const html = render({ scoped: true });
     expect(html).toMatch(
       /What this machine has sent to (?:<!-- -->)?plane\.example(?:<!-- -->)? from what is enrolled and from recognised work subscriptions, and what it still owes\./,

@@ -1823,7 +1823,7 @@ describe('work subscriptions on a personal device', () => {
   it('names the sessions it also sends, and the opt-out, on an attached personal device', () => {
     const html = page({ onDetach: () => undefined, attachmentMode: 'scoped' });
     expect(html).toContain('Claude Code sessions signed in to a work subscription');
-    expect(html).not.toContain('work subscription of your organization');
+    expect(html).not.toContain('of your organization');
     expect(html).toContain('aka unenroll --work-subscriptions');
   });
 

@@ -23,6 +23,13 @@ export {
   UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
 export type {
+  AssetRow,
+  ConfigAssetContext,
+  ConfigInventoryRow,
+  PostureFindingRow,
+} from './config-assets.ts';
+export { configAssetRow } from './config-assets.ts';
+export type {
   CredentialFileRead,
   CredentialState,
   CredentialUnusableReason,

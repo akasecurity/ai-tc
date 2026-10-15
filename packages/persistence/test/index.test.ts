@@ -86,6 +86,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'clearAttachmentDerivedState',
   'compareBinaryVersions',
   'computeFindingKey',
+  'configAssetRow',
   'controlPlaneCredentialPath',
   'controlPlanePolicyFloor',
   'createKeyProvider',

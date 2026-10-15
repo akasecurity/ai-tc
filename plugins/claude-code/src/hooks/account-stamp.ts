@@ -29,7 +29,12 @@ export interface HookAccount {
   /** `claude:<uuid>` when the session check named one; undefined: the repository key applies. */
   readonly accountKey: string | undefined;
   readonly basis: AccountBasis | undefined;
-  /** What this hook's check answered, when one ran. */
+  /**
+   * What this hook's check answered, when one ran. A matched key the identity record refuses
+   * to learn gives no account and is answered `cap-reached`, whatever the cause: for example the
+   * learned account cap, a record that does not hold for the gateway's credential, or a record
+   * lock that cannot be taken for a reason other than a timeout.
+   */
   readonly view: AccountCheck | undefined;
   /** The binding hash, set when this invocation's own full check validated the key. */
   readonly admitWith: string | undefined;
@@ -110,10 +115,11 @@ function checkSession(gateway: object, sessionId: string, input: HookAccountInpu
     if (result.threw) countFailOpen();
     const { check } = result;
     if (!isAccountMatch(check)) return { ...NO_ACCOUNT, view: check };
-    // The write re-checks the learned-org cap inside the lock, so it can refuse
-    // a key the check passed, and a refused key is not admitted either. A write
-    // that times out leaves the key unwritten; the admit below still forwards
-    // this invocation, and the next full check writes it.
+    // The write re-checks the record inside its lock, so it can refuse a key the
+    // check passed. A refused write, whatever the cause (see `HookAccount.view`),
+    // is reported as the cap and the key is not stamped, so it is not admitted
+    // either. A write that times out leaves the key unwritten; the admit below
+    // still forwards this invocation, and the next full check writes it.
     if (result.mayAdmit && scope.learn(check.key) === 'refused') {
       return { ...NO_ACCOUNT, view: { none: 'cap-reached' } };
     }

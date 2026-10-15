@@ -39,11 +39,12 @@ export interface SyncKindRow {
  *
  * A LINE, never a bar, and that is the honest shape rather than a smaller one.
  * A bar implies a denominator and a direction of travel; none of these has
- * either. Findings are re-derived by the deployment from the activity it
- * receives, project data shares are reconciled whole-project so there is no
- * per-item backlog, and inventory is a snapshot keyed by id where the last pass
- * wins. Rendering any of them as "0% synced" would be a false statement about
- * the product, not a rough one.
+ * either. Findings are derived by the deployment from the activity it
+ * receives, with a tool call's detections riding along with that call, project
+ * data shares are reconciled whole-project so there is no per-item backlog, and
+ * inventory is a snapshot keyed by id where the last pass wins. Rendering any of
+ * them as "0% synced" would be a false statement about the product, not a rough
+ * one.
  */
 export interface SyncLocalOnlyLine {
   id: string;
@@ -74,14 +75,13 @@ export type SyncPanelState =
   | { status: 'consent-stale' }
   | { status: 'credential-unusable'; detail: string }
   | { status: 'nothing-recorded' }
-  // A SCOPED attachment whose enrolled repositories hold nothing to count. Its
-  // own member rather than `nothing-recorded`, because a scoped attachment
-  // counts only what its scope covers: its store can be full of activity from
-  // repositories it does not enroll, and "Nothing recorded yet" over that store
-  // would be false. `enrolled` is how many identities the scope enrolls for
-  // this deployment, as this build resolves it (repositories, and web-chat
-  // accounts, though nothing writes an account entry yet; a list this build
-  // cannot read resolves to 0), so a scope with none can say how to add one.
+  // A SCOPED attachment whose enrollment holds nothing to count. Its own member
+  // rather than `nothing-recorded`, because a scoped attachment counts only what
+  // its scope covers: its store can be full of activity from repositories it
+  // does not enroll, and "Nothing recorded yet" over that store would be false.
+  // `enrolled` is how many identities the scope enrolls for this deployment, as
+  // this build resolves it (repositories and accounts; a list this build cannot
+  // read resolves to 0), so a scope with none can say how to add one.
   | { status: 'nothing-in-scope'; enrolled: number }
   | { status: 'ready'; kinds: readonly SyncKindRow[] };
 
@@ -131,7 +131,7 @@ export interface SyncPanelViewProps {
   localOnly?: readonly SyncLocalOnlyLine[] | undefined;
   /**
    * The machine is attached as a personal device, which sends activity only
-   * from the repositories enrolled on it and from recognised work
+   * from the repositories and accounts enrolled on it and from recognised work
    * subscriptions, so the header and the line saying what is sent from now on
    * name them. Set by the host from the credential's mode, and only for one:
    * absent reads as machine-wide, the wording that says more is sent, never less.
@@ -183,9 +183,10 @@ function KindRow({ row, locale }: { row: SyncKindRow; locale: string }) {
 /**
  * What this machine has sent to its deployment, and what it still owes: of all
  * its activity on a machine-wide attachment, and on a personal device (`scoped`)
- * of only what the repositories enrolled on it and the sessions of a recognised
- * work subscription hold, where the header says so. On a personal device it also
- * says whether recognised work subscriptions are sent, when the host reports it.
+ * of only what the repositories and accounts enrolled on it and the sessions of a
+ * recognised work subscription hold, where the header says so. On a personal
+ * device it also says whether recognised work subscriptions are sent, when the
+ * host reports it.
  *
  * Props-driven and bundler-agnostic like every view here: it fetches nothing and
  * decides nothing about which machine it is describing.
@@ -248,8 +249,8 @@ export function SyncPanelView({
           <p data-slot="sync-work-subscriptions" className="text-ui text-text-2">
             {workSubscriptions === 'on' ? (
               <>
-                Work subscriptions are on: Claude Code sessions signed in to a work subscription of
-                your organization under your AKA account’s email are sent from any folder. Run{' '}
+                Work subscriptions are on: Claude Code sessions signed in with your AKA account’s
+                email to a Claude Team or Enterprise plan are sent from any folder. Run{' '}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">
                   aka unenroll --work-subscriptions
                 </code>{' '}
@@ -257,7 +258,8 @@ export function SyncPanelView({
               </>
             ) : (
               <>
-                Work subscriptions are off on this machine: only what is enrolled is sent. Run{' '}
+                Work subscriptions are off on this machine: only activity from what is enrolled is
+                sent. Run{' '}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">
                   aka enroll --work-subscriptions
                 </code>{' '}
@@ -269,10 +271,10 @@ export function SyncPanelView({
         {state.status === 'not-shared' && (
           <p className="text-ui text-text-2">
             {/* What is sent from now on is the attachment's own, and a personal
-                device's attachment sends activity only from its enrolled
-                repositories and from recognised work-subscription sessions. */}
+                device's attachment sends activity only from what is enrolled on
+                it and from recognised work-subscription sessions. */}
             {scoped === true
-              ? 'Existing activity is not shared. Only activity an enrolled repository, or a recognised work-subscription session, records from now on is sent.'
+              ? 'Existing activity is not shared. Only activity recorded from now on in an enrolled repository or account, or in a recognised work-subscription session, is sent.'
               : 'Existing activity is not shared. Only what this machine records from now on is sent.'}
           </p>
         )}
@@ -293,13 +295,13 @@ export function SyncPanelView({
                 does not mean nothing is sent. */}
             {workSubscriptions === 'on' ? (
               <>
-                No repository on this machine is enrolled for {deployment}, so only sessions signed
-                in to a recognised work subscription are sent to it. Run{' '}
+                Nothing on this machine is enrolled for {deployment}, so only activity from sessions
+                signed in to a recognised work subscription is sent to it. Run{' '}
               </>
             ) : (
               <>
-                No repository on this machine is enrolled for {deployment}, so none of this
-                machine’s activity is sent to it. Run{' '}
+                Nothing on this machine is enrolled for {deployment}, so none of this machine’s
+                activity is sent to it. Run{' '}
               </>
             )}
             <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">aka enroll</code>{' '}
@@ -308,8 +310,8 @@ export function SyncPanelView({
         )}
         {state.status === 'nothing-in-scope' && state.enrolled > 0 && (
           <p className="text-ui text-text-2">
-            Nothing from an enrolled repository has been sent or queued yet. Activity anywhere else
-            on this machine stays on it, except from sessions signed in to a recognised work
+            Nothing from what is enrolled has been sent or queued yet. Activity anywhere else on
+            this machine stays on it, except from sessions signed in to a recognised work
             subscription.
           </p>
         )}

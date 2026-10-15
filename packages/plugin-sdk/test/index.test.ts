@@ -227,6 +227,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'shippedRegexMatchers',
   'substituteModelPointers',
   'throttled',
+  'throttledPerKey',
   'toPosix',
   'tokenizeText',
   'tokenizeValue',

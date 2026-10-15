@@ -30,10 +30,11 @@ interface LockWorkerData {
   file: string;
   busyTimeoutMs: number;
   holdMs: number | null;
+  exclusive: boolean;
   shared: SharedArrayBuffer;
 }
 
-const { file, busyTimeoutMs, holdMs, shared } = workerData as LockWorkerData;
+const { file, busyTimeoutMs, holdMs, exclusive, shared } = workerData as LockWorkerData;
 const signal = new Int32Array(shared);
 
 function announce(state: number): void {
@@ -61,6 +62,17 @@ function takeLock(): DatabaseSync | undefined {
     // would then misreport as a lock it could not take. Setting it would also
     // convert the store under test, which a fault injector has no business
     // doing.
+    if (exclusive) {
+      // EXCLUSIVE locking mode holds an exclusive lock on the database FILE,
+      // which blocks every other connection — readers included — from taking
+      // even a shared lock. That is the lock the last connection to close a WAL
+      // store holds while it checkpoints and deletes the log. The read is what
+      // takes it: in this mode the lock is acquired on first access.
+      db.exec('PRAGMA locking_mode = EXCLUSIVE');
+      db.exec('BEGIN EXCLUSIVE');
+      db.prepare('SELECT count(*) FROM sqlite_master').get();
+      return db;
+    }
     // BEGIN IMMEDIATE takes the write lock up front rather than on first write,
     // so the lock is held the instant this returns — no statement needed.
     db.exec('BEGIN IMMEDIATE');
@@ -87,7 +99,8 @@ if (!held) {
   Atomics.wait(signal, RELEASE, 0, holdMs ?? Infinity);
 
   // ROLLBACK, not COMMIT: the lock existed to block another writer, and the
-  // transaction is not meant to leave anything behind.
+  // transaction is not meant to leave anything behind. In EXCLUSIVE locking
+  // mode the file lock outlives the transaction; the close below releases it.
   held.exec('ROLLBACK');
   held.close();
   announce(STATE_RELEASED);

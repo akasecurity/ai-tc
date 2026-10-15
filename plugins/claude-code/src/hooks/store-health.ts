@@ -74,11 +74,74 @@ export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
  * it correctly — so moving it aside would destroy the corpus to work around a
  * binary that is merely behind. The skew branch therefore names the version gap
  * and says nothing about the file.
+ *
+ * A third cause, a store another process held locked past the open's wait, is
+ * also intact, and gets its own message for the same reason. Every other
+ * failure keeps the generic message, naming the SQLite or filesystem code
+ * when the error carries one.
  */
 export function storeDegradedMessage(dbPath: string, error: unknown): string {
-  return error instanceof StoreAheadOfBuildError
-    ? storeAheadMessage(dbPath, error)
-    : storeUnavailableMessage(dbPath);
+  if (error instanceof StoreAheadOfBuildError) return storeAheadMessage(dbPath, error);
+  const cause = storeOpenCause(error);
+  if (cause?.busy === true) return storeBusyMessage(dbPath, cause.text);
+  return storeUnavailableMessage(dbPath, cause?.text);
+}
+
+// SQLite's primary result codes for "another connection holds a lock".
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
+
+// SQLite's fixed descriptions are short lowercase prose. A value of any other
+// shape is not one of them and is left out.
+const SQLITE_ERRSTR_SHAPE = /^[a-z0-9 ,()'-]{1,80}$/i;
+
+/**
+ * What the open failure was, in terms that carry no user data.
+ *
+ * Only two fields are read, and neither is the error's message. A node:sqlite
+ * error carries `errcode` (the extended result code) and `errstr`, SQLite's own
+ * fixed description of that code, so the pair names the failure without
+ * repeating anything the statement or the path contained. A filesystem error
+ * from creating the data dir carries a `code` such as `EACCES`, which is read
+ * only when it has that shape. Anything else yields nothing, and the message
+ * says what it said before.
+ */
+export function storeOpenCause(
+  error: unknown,
+): { readonly text: string; readonly busy: boolean } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const { errcode, errstr, code } = error as {
+    errcode?: unknown;
+    errstr?: unknown;
+    code?: unknown;
+  };
+  if (typeof errcode === 'number' && Number.isSafeInteger(errcode)) {
+    const primary = errcode & 0xff;
+    const described = typeof errstr === 'string' && SQLITE_ERRSTR_SHAPE.test(errstr);
+    const description = described ? `: ${errstr}` : '';
+    return {
+      text: `SQLite error ${String(errcode)}${description}`,
+      busy: primary === SQLITE_BUSY || primary === SQLITE_LOCKED,
+    };
+  }
+  if (typeof code === 'string' && /^E[A-Z0-9]{1,15}$/.test(code)) {
+    return { text: code, busy: false };
+  }
+  return undefined;
+}
+
+/**
+ * The degradation warning for a store another process held locked for longer
+ * than the open waits. The file is intact, so the repair advice the generic
+ * message gives would be wrong here; and every hook opens the store afresh, so
+ * the condition lasts only as long as the other process holds it.
+ */
+export function storeBusyMessage(dbPath: string, cause: string): string {
+  return (
+    `AKA could not open its local store (${dbPath}) because another process held it locked longer than AKA waits (${cause}). ` +
+    'Detection, enforcement, and recording were skipped for this tool call (fails open, so your session keeps working). ' +
+    'The store is not damaged and needs no repair; each later call opens it again.'
+  );
 }
 
 /** The degradation warning for a store written by a newer AKA build. */
@@ -92,10 +155,15 @@ export function storeAheadMessage(dbPath: string, skew: StoreAheadOfBuildError):
   );
 }
 
-/** The degradation warning shown when the store itself cannot be opened. */
-export function storeUnavailableMessage(dbPath: string): string {
+/**
+ * The degradation warning shown when the store itself cannot be opened. `cause`
+ * is `storeOpenCause`'s text, named when there is one so the warning says which
+ * failure it was.
+ */
+export function storeUnavailableMessage(dbPath: string, cause?: string): string {
+  const reason = cause === undefined ? '' : ` (${cause})`;
   return (
-    `AKA could not open its local store (${dbPath}) — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +
+    `AKA could not open its local store (${dbPath})${reason} — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +
     'To restore protection, check the file and its permissions; a corrupt store can be moved aside and AKA will recreate it.'
   );
 }

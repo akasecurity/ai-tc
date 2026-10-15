@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { throttled } from '@akasecurity/plugin-sdk';
+import { throttledPerKey } from '@akasecurity/plugin-sdk';
 
 import { safeSessionId } from './tail.ts';
 
@@ -27,7 +27,9 @@ const RECONCILE_THROTTLE_MS = 30_000;
 // the first session in a 30s window starve every OTHER concurrent session (multiple
 // tabs/projects — common) of its live capture until it won a later window, quietly
 // regressing the "live per-turn capture" goal. Per-session markers throttle each
-// session independently while still batching that session's own turns.
+// session independently while still batching that session's own turns. Markers
+// for sessions idle past a day are removed as new attempts are recorded (see
+// `throttledPerKey`), so one file per session does not accumulate for ever.
 const RECONCILE_MARKER_PREFIX = 'reconcile-last-attempt';
 
 /**
@@ -41,8 +43,8 @@ export function triggerReconcile(dataDir: string, sessionId: string, transcriptP
   try {
     // The session id rides in from hook stdin — sanitize before it becomes a
     // marker filename so it can never name anything outside dataDir.
-    const marker = `${RECONCILE_MARKER_PREFIX}-${safeSessionId(sessionId)}`;
-    if (throttled(dataDir, marker, RECONCILE_THROTTLE_MS)) return;
+    const key = safeSessionId(sessionId);
+    if (throttledPerKey(dataDir, RECONCILE_MARKER_PREFIX, key, RECONCILE_THROTTLE_MS)) return;
     const here = dirname(fileURLToPath(import.meta.url));
     const child = spawn(process.execPath, [join(here, 'reconcile.js'), sessionId, transcriptPath], {
       detached: true,

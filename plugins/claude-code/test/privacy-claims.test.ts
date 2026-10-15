@@ -194,7 +194,8 @@ const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
 const flat = (text: string): string => text.replace(/\s+/g, ' ');
 const REPORT_SENTENCE =
   'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
-  "included), the machine pulls the deployment's policy (at most every 15 minutes) and sends it " +
+  "included), the machine pulls the deployment's policy (at most every 15 minutes) and its " +
+  'sighting key (at most daily) and sends it ' +
   'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
   'policy counts, finding counts and dates for everything recorded on the machine, and, when the ' +
   'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
@@ -252,6 +253,12 @@ describe('scoped attachment claims', () => {
       expect(flat(text)).not.toContain(PREVIOUS_REPORT_SENTENCE);
     });
 
+    it('never lists the policy pull and the device report without the sighting-key fetch', () => {
+      expect(flat(text)).not.toContain(
+        "pulls the deployment's policy (at most every 15 minutes) and sends it a device report",
+      );
+    });
+
     it('limits what is forwarded to activity, not to the repositories themselves', () => {
       expect(claim).toMatch(
         /only activity from the repositories you enroll|activity only from the repositories enrolled/i,
@@ -272,17 +279,17 @@ describe('scoped attachment claims', () => {
     // They go on either kind, but the report is not the same on both: a scoped
     // machine's says that it is attached as a personal device.
     expect(section).toContain(
-      'The policy pull, the command check and the device report are the exception: they go ' +
-        "on either kind of attachment, whatever is enrolled, and a scoped machine's report also " +
-        'says that it is attached as a personal device.',
+      'The policy pull, the sighting-key fetch, the command check and the device report are the ' +
+        "exception: they go on either kind of attachment, whatever is enrolled, and a scoped machine's " +
+        'report also says that it is attached as a personal device.',
     );
     expect(section).not.toMatch(/the same way on either kind of attachment/i);
     // What enrolling queues under the history grant is said where the scoped mode is
     // introduced, not in the paragraph on what the grant covers on any attachment.
     expect(section).toContain(
-      'activity in any other repository stays on the machine. Under the `aka sync-history` ' +
-        'grant, enrolling a repository also queues the captures still kept for it, including ' +
-        'those it recorded between attaching and enrolling.',
+      'everything else stays on the machine. Under the `aka sync-history` ' +
+        'grant, enrolling a repository or an account also queues the captures still kept for it, ' +
+        'including those a repository recorded between attaching and enrolling.',
     );
     expect(section).not.toMatch(/\ball of the above\b/i);
   });
@@ -312,6 +319,143 @@ describe('the identity request on a personal device', () => {
 
   it('says it in SECURITY.md, beside the policy pull and the device report', () => {
     expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+  });
+});
+
+/**
+ * A Claude Code session signed in to a work subscription forwards everything it
+ * records from its first reply on, from any folder. Every page that describes a
+ * personal device says so in the same words: how the device tells and what that
+ * check sends, the cases that keep to the repository rule, the account enrolled
+ * by hand, that a recognised organization never selects a claude.ai chat, that
+ * existing devices start with the plugin update, and the opt-out with the
+ * machines that have none.
+ */
+const CLAUDE_WORK_SENTENCE =
+  'A Claude Code session counts as a work subscription when it is signed in through claude.ai to a ' +
+  'Team or Enterprise plan under the same email as the AKA account that ' +
+  'attached the device. Such a session sends everything it records from its first reply on, from ' +
+  "any folder, with that folder's project and branch names, and your organization's prohibited " +
+  "models are refused in any folder of it. To tell whether a session is one, the device reads Claude Code's " +
+  "login file, the session's own log, and Claude Code's settings files (the project's own included) " +
+  'and environment variables that choose the account or provider, and compares the signed-in email ' +
+  'with the account that attached the device. The check sends none of what it reads, though the ' +
+  'token usage and tool calls read from that same log are forwarded with the rest of the activity ' +
+  'of a recognised session or of one signed in to an account enrolled by hand. The first prompt of a ' +
+  'new session, a personal plan, another email, an API key or another provider, and the rest of a ' +
+  'session whose organization changes follow the repository rule; `aka enroll --account` enrolls ' +
+  'by hand an account the device cannot recognise, and the Claude Code sessions of an account ' +
+  'enrolled that way then forward from their first reply on whatever the plan or email, though not ' +
+  'under an API key or another provider. An organization recognised this way ' +
+  'never records or forwards a claude.ai chat. A personal device that attached before its plugin ' +
+  'could recognise work subscriptions starts recognising them when the plugin updates, with no new ' +
+  'prompt, so update `aka` first. `aka unenroll --work-subscriptions` ' +
+  'turns recognition off on this device and `aka enroll --work-subscriptions` turns it back on; ' +
+  'it turns off only the automatic recognition, so while it is off, enrolled repositories and ' +
+  'accounts enrolled by hand still forward (`aka unenroll --account` stops an account), and your ' +
+  "organization's model restrictions apply only to them. A machine whose connection an " +
+  'administrator manages attaches machine-wide only, so it has no personal-device mode and no such ' +
+  'opt-out.';
+
+// Every list of what a personal device sends names the Claude Code sessions of an account
+// enrolled by hand beside those of a recognised work subscription, because an account enrolled
+// with `aka enroll --account` forwards its Claude Code sessions whatever the opt-out says.
+const HAND_ENROLLED_LIST =
+  /signed in to a recognised work subscription or to an account (?:you enroll|enrolled) by hand with `aka enroll --account`/;
+
+describe('Claude Code work-subscription claims', () => {
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    // Where the page describes a personal device: its body paragraphs, or its
+    // egress footnote when that is the only place it does, as the plugin page.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
+
+    it('says what a recognised work subscription forwards, in the one sentence group', () => {
+      expect(claim).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('never says the device sends the login email, plan or account id', () => {
+      expect(flat(text)).not.toMatch(/sends? (?:the|your) (?:login )?(?:email|plan|account id)/i);
+    });
+
+    it('does not say the device reads only part of the login file', () => {
+      expect(flat(text)).not.toMatch(/reads only the email/i);
+      expect(flat(text)).not.toContain('own login file');
+    });
+
+    it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {
+      expect(claim).toMatch(HAND_ENROLLED_LIST);
+      expect(flat(footnoteOf(text))).toMatch(HAND_ENROLLED_LIST);
+    });
+
+    it('never ties a work subscription or a plan to the organization', () => {
+      expect(flat(text)).not.toMatch(/(?:plan|subscription) of your organization/i);
+    });
+
+    it('says the check sends none of what it reads, not that the device does', () => {
+      expect(flat(text)).not.toContain('and sends none of what it reads');
+    });
+  });
+
+  it('says it in SECURITY.md, and names the sessions where the scoped mode is introduced', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(CLAUDE_WORK_SENTENCE);
+    expect(section).toContain(
+      'in Claude Code sessions signed in to a recognised work subscription (above) or to an account ' +
+        'enrolled by hand with `aka enroll --account`',
+    );
+    expect(section).not.toMatch(/reads only the email/i);
+    expect(section).not.toMatch(/(?:plan|subscription) of your organization/i);
+    expect(section).not.toContain('and sends none of what it reads');
+  });
+
+  it('says on the plugin page that prohibited models are refused in any folder of such a session', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'the models that policy prohibits are refused only in those repositories and in any folder of such a Claude Code session',
+    );
+  });
+
+  it('says on the plugin page that the chat replies of an account enrolled by hand are forwarded too', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'is forwarded, as are, from the browser extension, the replies in a claude.ai account enrolled that way; everything else stays on the machine',
+    );
+  });
+
+  it('says on the plugin page that either kind of attachment sends more than activity', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'Attached either way, the machine still sends more than activity, and no repository limits it.',
+    );
+    expect(footnote).not.toContain('That machine still sends more than activity');
+  });
+});
+
+describe('README.md scoped attachment lists', () => {
+  const readme = flat(repoFile('README.md'));
+  const footnote = flat(footnoteOf(repoFile('README.md')));
+
+  it('names every request the enrolled list does not limit', () => {
+    expect(readme).toContain(
+      'the policy pull, the sighting-key fetch, the command check and the device report are not limited to what is enrolled',
+    );
+  });
+
+  it('says what enrolling queues under the history opt-in, and what stays local', () => {
+    expect(footnote).toContain(
+      'enrolling a repository or an account also queues the captures still kept for it, and enrolling a repository sends its activity from before the attachment, while what that repository recorded between attaching and enrolling, other than those captures and what a Claude Code session of a recognised work subscription or of an account enrolled by hand there already sent, stays local.',
+    );
+  });
+
+  it('says the sighting key is fetched whether or not sharing is on', () => {
+    expect(footnote).toContain(
+      'under a key the deployment issues (the machine fetches that key over the same connection, whether or not sharing is on)',
+    );
   });
 });
 

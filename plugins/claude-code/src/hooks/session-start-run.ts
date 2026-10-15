@@ -80,8 +80,10 @@ export async function runSessionStart(
     harnessInterface: deps.harnessInterface,
     // A session whose login is a work subscription, or cannot be told yet, leaves
     // its root to the reconcile, which keys it by the account its first reply ran
-    // under. The session start still writes it at once where its repository is
-    // enrolled, and on a machine-wide attachment.
+    // under: the session start leaves a stub with no attributes, and the root is on
+    // disk only once a reconcile pass writes it. The session start still writes the
+    // root at once where its repository is enrolled, and on a machine-wide
+    // attachment.
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,
     // The basis the login view reached, given only for a work login.
     accountBasis: account.basis,

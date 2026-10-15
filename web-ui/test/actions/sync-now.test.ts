@@ -190,6 +190,16 @@ describe('syncNow', () => {
     expect(spawn.bases).toEqual([]);
   });
 
+  // A pass without the grant still delivers what the live forward marked owed,
+  // so the refusal says the existing activity is not shared and never that a
+  // pass would send nothing.
+  it('words the missing grant as a setting, and does not say a pass would send nothing', () => {
+    expect(SYNC_NOT_GRANTED).toBe(
+      'Existing activity is not shared with your deployment. Change that above to start sending it.',
+    );
+    expect(SYNC_NOT_GRANTED).not.toContain('would send nothing');
+  });
+
   // A grant recorded against an older payload shape authorizes nothing today,
   // and the drain would refuse it anyway. Checked here so the refusal is a
   // sentence on the page rather than a pass that starts and does nothing.

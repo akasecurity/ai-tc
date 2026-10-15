@@ -226,6 +226,7 @@ function toAssetSummary(row: AssetRow): AssetSummary {
     name: row.name,
     sub: row.sub ?? '',
     flags: safeJson(row.flagsJson, [] as Flag[]),
+    meta: safeJson<Record<string, unknown>>(row.metaJson, {}),
   };
   if (row.assetType === 'mcp' && row.effectiveTrust) summary.trust = row.effectiveTrust;
   return summary;

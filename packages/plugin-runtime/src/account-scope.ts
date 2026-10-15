@@ -55,9 +55,11 @@ export interface AccountScope {
    * Write `accountKey` to the identity record as a learned work account, with
    * the gateway's own credential: 'present' when the record already holds it,
    * 'refused' while work subscriptions are off, for a value that is not an
-   * account key, at the cap, or when the record does not hold for the
-   * credential, 'written' when it added the key, and 'timeout' when the record's
-   * lock was not taken (a later call can retry). It admits nothing. Total.
+   * account key, at the cap, when the record does not hold for the credential,
+   * or when the record's lock cannot be taken for a reason waiting does not cure
+   * (a missing or unwritable data directory), 'written' when it added the key,
+   * and 'timeout' only when the record's lock timed out (a later call can
+   * retry). It admits nothing. Total.
    */
   learn(accountKey: string): WorkAccountWrite;
   /** The binding hash of the identity record this scope was built from. */

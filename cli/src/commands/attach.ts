@@ -1819,7 +1819,8 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
     isTTY: io.isInteractive,
     managedSettings: deps.managedSettings,
     claudePaths: deps.claudePaths ?? {},
-    codexHome: deps.codexHome ?? codexHomeDir(),
+    // null: a CODEX_HOME that is no usable directory still asks for the line, which reads as no login file.
+    codexHome: deps.codexHome ?? codexHomeDir() ?? null,
     cwd: (deps.cwd ?? (() => process.cwd()))(),
   });
   // Only for an attached machine: a standalone one has no policy to be current.

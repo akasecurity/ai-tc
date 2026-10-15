@@ -97,8 +97,12 @@ export interface RenderAttachedStatusDeps {
   claudePaths?: ClaudeLoginPaths | undefined;
   /** The project whose Claude Code settings layers can veto the login. Defaults to the working directory. */
   cwd?: string | undefined;
-  /** Codex's home directory, whose login file the Codex line describes. Absent, no Codex login is read. */
-  codexHome?: string | undefined;
+  /**
+   * Codex's home directory, whose login file the Codex line describes. `null`
+   * asks for the line when the environment names no usable home, which reads as
+   * no login file. Absent, no Codex login is read and the line is left out.
+   */
+  codexHome?: string | null | undefined;
 }
 
 /**
@@ -389,18 +393,21 @@ export interface CodexLoginViewInput {
   /** The stored `attachmentScope`, raw. */
   readonly scope: unknown;
   readonly endpoint: string;
-  /** Codex's home directory; without one no login file is read. */
+  /** Codex's home directory; without one no login file is read, and the login reads as absent. */
   readonly codexHome: string | undefined;
 }
 
 /**
  * The Codex login signed in now, checked the way a new thread would be, without a
  * thread: the same login reader, the address compared by digest, the plan read as
- * a state. An account enrolled by hand counts first. The opt-out is checked last,
- * so a personal plan reads as one whether or not the user opted out, and `off`
- * names only a login that would otherwise count. The key and the plan state are
- * given before the device knows who attached it, so `aka enroll` can ask about a
- * personal plan before the first sync. Persists nothing. Never throws.
+ * a state. The login file is read before the environment can veto it, so the key
+ * and the plan state are given under a key, a token or a gateway too, and before
+ * the device knows who attached it, so `aka enroll` can ask about a personal plan
+ * before the first sync. An account enrolled by hand counts before the address and
+ * the plan are compared. Those two are compared before the opt-out, so a personal
+ * plan reads as one whether or not the user opted out; the opt-out is compared
+ * before the cap on recognised accounts, so with recognition off a login that
+ * would otherwise be over the cap reads as `off`. Persists nothing. Never throws.
  */
 export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
   const unnamed = (state: CodexLoginState): CodexLoginView => ({
@@ -409,11 +416,15 @@ export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
     state,
   });
   try {
-    if (codexEnvVetoed()) return unnamed('veto');
-    if (input.codexHome === undefined) return unnamed('absent');
-    const read = inspectCodexLogin(input.codexHome, input.identity?.attachedUserDigest);
-    if (read.status === 'absent') return unnamed('absent');
-    if (read.status !== 'ok') return unnamed('unreadable');
+    const vetoed = codexEnvVetoed();
+    const read =
+      input.codexHome === undefined
+        ? undefined
+        : inspectCodexLogin(input.codexHome, input.identity?.attachedUserDigest);
+    if (read?.status !== 'ok') {
+      if (vetoed) return unnamed('veto');
+      return unnamed(read === undefined || read.status === 'absent' ? 'absent' : 'unreadable');
+    }
     const { login } = read;
     const key = chatgptKey(login.accountId);
     const named = (state: CodexLoginState): CodexLoginView => ({
@@ -421,6 +432,7 @@ export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
       planState: login.planState,
       state,
     });
+    if (vetoed) return named('veto');
     if (input.identity === undefined) return named('attached-user-unknown');
     if (manualCodingKeys(input.scope, input.endpoint).has(key)) return named('manual');
     if (!login.emailMatchesAttached) return named('email');
@@ -633,7 +645,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
             identity: heldIdentity,
             scope: settings.attachmentScope,
             endpoint: connection.endpoint,
-            codexHome: deps.codexHome,
+            codexHome: deps.codexHome ?? undefined,
           }),
         ),
       );

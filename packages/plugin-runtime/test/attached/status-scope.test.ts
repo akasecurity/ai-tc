@@ -862,6 +862,22 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     );
   });
 
+  it('lists a learned ChatGPT workspace as new Codex threads forwarding, not as Claude Code sessions', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    const workspace = `chatgpt:${randomUUID()}`;
+    learn(workspace);
+    const [learned] = record().workAccounts;
+    if (learned === undefined) throw new Error('nothing was learned');
+    const shown = status();
+
+    expect(
+      shown.includes(
+        `             ${workspace} (validated ${learned.enrolledAt.slice(0, 10)}) — new Codex threads signed in to it forward from any folder`,
+      ),
+    ).toBe(true);
+    expect(shown.includes('Claude Code sessions signed in to it')).toBe(false);
+  });
+
   it('lists no learned work account while work subscriptions are off', () => {
     attach('scoped', { ...bound([entry(WORK_REPO)]), workSubscriptions: 'off' });
     learn(LEARNED);

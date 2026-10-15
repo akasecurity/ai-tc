@@ -137,6 +137,11 @@ const EXPECTED_INLINE_DISABLES = {
   // status read that names no home finds an empty directory, not the developer's.
   'test/setup/no-host-claude-config.ts': [ENV_RULE],
 
+  // The same declaration for Codex: its home moved to an empty directory and the
+  // key, token and gateway variables cleared, so a status read that names no home
+  // finds no login and no veto from the developer's own environment.
+  'test/setup/no-host-codex-config.ts': [ENV_RULE],
+
   // The same boundary one step out: a harness that spawns a real shipped
   // SCRIPT rather than a real hook. install.sh needs the host PATH to find
   // curl, tar and shasum at all.

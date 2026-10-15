@@ -666,6 +666,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/helpers/store-template.ts',
   'test/helpers/turbo-inputs.ts',
   'test/setup/no-host-claude-config.ts',
+  'test/setup/no-host-codex-config.ts',
   'test/setup/no-managed-settings.ts',
   'test/setup/no-network.ts',
   'test/vitest/coverage.ts',

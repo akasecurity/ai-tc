@@ -213,6 +213,30 @@ describe('aka status — the Codex login', () => {
     }
   });
 
+  it('prints the veto line under a key, and names neither the workspace nor its plan', () => {
+    attachScoped();
+    signIn('plus');
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const shown = render();
+    expect(codexLine(shown)).toContain('Codex — an API key or another provider is in use');
+    expect(shown.includes(CHATGPT_KEY)).toBe(false);
+    expect(codexLine(shown).includes('workspace plan')).toBe(false);
+  });
+
+  it('prints the Codex line, as no login file, when the caller asks with no usable home', () => {
+    attachScoped();
+    signIn('business');
+    const shown = renderAttachedStatus({
+      base,
+      settingsDir: settingsDirOf(base),
+      dataDir: dataDirOf(base),
+      codexHome: null,
+      isTTY: true,
+      now: () => NOW,
+    });
+    expect(codexLine(shown)).toContain('Codex — login file not found');
+  });
+
   it('reads no login and prints no Codex line unless the caller names a Codex home', () => {
     attachScoped();
     signIn('business');
@@ -292,6 +316,13 @@ describe('codexLoginView', () => {
     expect(view().state).toBe('cap-reached');
   });
 
+  it('reads a login that would be over the cap as off while work subscriptions are off', () => {
+    attachScoped();
+    signIn('business');
+    for (let i = 0; i < 8; i += 1) learn(`chatgpt:${randomUUID()}`);
+    expect(view({ ...SCOPE, workSubscriptions: 'off' }).state).toBe('off');
+  });
+
   it('reads a scope that is not a record as work subscriptions off', () => {
     attachScoped();
     signIn('business');
@@ -324,11 +355,90 @@ describe('codexLoginView', () => {
     expect(read.key).toBeUndefined();
   });
 
-  it('reads a key in the Codex environment as a veto', () => {
-    attachScoped();
-    signIn('business');
-    vi.stubEnv('CODEX_API_KEY', randomUUID());
-    expect(view().state).toBe('veto');
+  describe('under a key, a token or a gateway in the Codex environment', () => {
+    const vetoes: [string, () => void][] = [
+      [
+        'a key',
+        () => {
+          vi.stubEnv('CODEX_API_KEY', randomUUID());
+        },
+      ],
+      [
+        'a token',
+        () => {
+          vi.stubEnv('CODEX_ACCESS_TOKEN', randomUUID());
+        },
+      ],
+      [
+        'a gateway address',
+        () => {
+          vi.stubEnv('OPENAI_BASE_URL', 'https://gateway.example.com/v1');
+        },
+      ],
+    ];
+
+    it.each(vetoes)('reads %s as a veto, and still names the login and its plan', (_name, set) => {
+      attachScoped();
+      signIn('plus');
+      set();
+      const read = view();
+      expect(read.state).toBe('veto');
+      expect(read.key === CHATGPT_KEY).toBe(true);
+      expect(read.planState).toBe('other');
+      expect(Object.keys(read).sort()).toEqual(['key', 'planState', 'state']);
+    });
+
+    it('names a workspace plan as one, so the veto never reads as a personal plan', () => {
+      attachScoped();
+      signIn('business');
+      vi.stubEnv('CODEX_API_KEY', randomUUID());
+      expect(view().planState).toBe('company');
+    });
+
+    it('names the login before the device knows who attached it', () => {
+      signIn('plus');
+      vi.stubEnv('CODEX_API_KEY', randomUUID());
+      const read = codexLoginView({
+        identity: undefined,
+        scope: undefined,
+        endpoint: ENDPOINT,
+        codexHome,
+      });
+      expect(read.state).toBe('veto');
+      expect(read.key === CHATGPT_KEY).toBe(true);
+      expect(read.planState).toBe('other');
+    });
+
+    it('names nothing when there is no login to read, and still reads as a veto', () => {
+      attachScoped();
+      vi.stubEnv('CODEX_API_KEY', randomUUID());
+      const read = view();
+      expect(read.state).toBe('veto');
+      expect(read.key).toBeUndefined();
+      expect(read.planState).toBeUndefined();
+    });
+
+    it('names nothing for a login of another mode, and still reads as a veto', () => {
+      attachScoped();
+      writeCodexAuth(codexHome, { accountId: WORKSPACE, email: MEMBER, authMode: 'apikey' });
+      vi.stubEnv('CODEX_API_KEY', randomUUID());
+      const read = view();
+      expect(read.state).toBe('veto');
+      expect(read.key).toBeUndefined();
+    });
+
+    it('names nothing when no Codex home is given, and still reads as a veto', () => {
+      attachScoped();
+      vi.stubEnv('CODEX_API_KEY', randomUUID());
+      const read = codexLoginView({
+        identity: readAttachedIdentity(dataDirOf(base)),
+        scope: SCOPE,
+        endpoint: ENDPOINT,
+        codexHome: undefined,
+      });
+      expect(read.state).toBe('veto');
+      expect(read.key).toBeUndefined();
+    });
   });
 
   it('reads a login of another mode as unreadable', () => {

@@ -235,8 +235,10 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     );
     return fail(1);
   }
-  // An account entry written here covers the coding-agent sessions signed in to
-  // the account as well as its web chats.
+  // An account entry written here covers the coding-agent sessions signed in to the
+  // account: Claude Code for a claude key, Codex threads for a chatgpt key. A claude
+  // entry covers its claude.ai chats as well; a chatgpt entry covers no web chats,
+  // because ChatGPT's web chat carries no account key.
   const entry: AttachmentScopeEntry =
     built.kind === 'account' ? { ...built, codingAgents: true } : built;
   const provider =
@@ -253,8 +255,8 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
   // Echoed BEFORE the write, through the strip `aka status` uses, so what is
   // about to be enrolled is on screen whatever happens next.
   io.out(`Enrolling ${shown(identity)} with ${name}.\n`);
-  // Set by the updater when the account was already stored for its chats alone
-  // and gained the marker in place rather than being added.
+  // Set by the updater when the account was already stored without the
+  // coding-agent marker and gained it in place rather than being added.
   const marking = { inPlace: false };
   const edit = editScope(base, managed, connection.endpoint, (raw) => {
     const { next, added } = addAttachmentScopeEntries(raw, connection.endpoint, [entry]);
@@ -366,7 +368,7 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   const unreadable = !isAttachmentScopeValid(edit.committed.attachmentScope, connection.endpoint);
   io.out(
     (identity.kind === 'account'
-      ? `Unenrolled ${repository}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`
+      ? unenrolledAccountLine(identity.key, repository, name)
       : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
@@ -975,6 +977,16 @@ function learnedHere(ready: Prepared): readonly string[] {
 function enrolledByHand(ready: Prepared, matches: readonly string[]): boolean {
   const record = parseAttachmentScope(ready.settings.attachmentScope);
   return record?.entries.some((entry) => matches.includes(entry.identity)) ?? false;
+}
+
+/**
+ * The first line of an account's unenroll result. Only a claude key has claude.ai
+ * chats to check; a chatgpt entry covers Codex threads alone.
+ */
+function unenrolledAccountLine(key: string, removed: string, name: string): string {
+  return key.startsWith(`${WEB_ACCOUNT_PROVIDER.ChatGpt}:`)
+    ? `Unenrolled ${removed}. From now on, Codex threads signed in to it are not sent to ${name} by this entry.\n`
+    : `Unenrolled ${removed}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`;
 }
 
 /** What taking an account out of the list means for the sessions signed in to it. */

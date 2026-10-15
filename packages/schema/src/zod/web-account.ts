@@ -117,8 +117,8 @@ export function isWebAccountKey(key: unknown): boolean {
 /**
  * The account key a user typed, normalized to the stored form, or `undefined`
  * when it names no web account. Both halves are trimmed and lower-cased, so a
- * key copied with different case or spacing enrolls the account the extension
- * stamps. Only case and surrounding space are forgiven: a lookalike character
+ * key copied with different case or spacing names the account its stored form
+ * names. Only case and surrounding space are forgiven: a lookalike character
  * still names no provider or no id.
  */
 export function normalizeWebAccountKey(input: unknown): string | undefined {

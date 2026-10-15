@@ -252,10 +252,7 @@ describe('an object-shaped VS Code result', () => {
     expect(past.truncated).toBe(true);
   });
 
-  // The leaf count bounds the TRAVERSAL, not only what is collected: once it is
-  // reached, nothing further down is entered. A getter counts every read of
-  // the node past the bound, which only entering that node makes.
-  // And the stop is literal: once the count is reached no later sibling is
+  // The stop is literal: once the leaf count is reached no later sibling is
   // walked at all, even one that would refuse at the top of the walk. A Proxy
   // counts every key lookup on a sibling container, which only walking it
   // (Object.keys at the top of the walk, or Object.entries below) makes;
@@ -287,6 +284,9 @@ describe('an object-shaped VS Code result', () => {
     expect(keyReads).toBeGreaterThanOrEqual(siblings.length);
   });
 
+  // The leaf count bounds the TRAVERSAL, not only what is collected: once it is
+  // reached, nothing further down is entered. A getter counts every read of
+  // the node past the bound, which only entering that node makes.
   it('stops walking once the leaf count is reached', () => {
     const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
     let reads = 0;

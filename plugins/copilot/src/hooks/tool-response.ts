@@ -133,6 +133,16 @@ function stringAt(response: unknown, path: readonly string[]): string | undefine
   return typeof current === 'string' ? current : undefined;
 }
 
+// Whether a node the walk does not enter could have held text: a non-empty
+// string, or a container with anything in it. An empty container, a number or
+// an empty string left nothing unscanned.
+function couldCarryText(node: unknown): boolean {
+  return (
+    (typeof node === 'string' && node !== '') ||
+    (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
+  );
+}
+
 /**
  * Every non-empty string leaf of a structured result, under the walk bounds.
  *
@@ -146,16 +156,6 @@ function stringAt(response: unknown, path: readonly string[]): string | undefine
  * chunks), while this one scans string VALUES only. A key reaches the model
  * unscanned, and is not counted as truncated either.
  */
-// Whether a node the walk does not enter could have held text: a non-empty
-// string, or a container with anything in it. An empty container, a number or
-// an empty string left nothing unscanned.
-function couldCarryText(node: unknown): boolean {
-  return (
-    (typeof node === 'string' && node !== '') ||
-    (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
-  );
-}
-
 function leafFields(response: object): ResponseFields {
   const fields: ScannableResponseField[] = [];
   let truncated = false;

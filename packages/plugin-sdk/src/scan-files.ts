@@ -71,6 +71,19 @@ export function scanFileKind(
 }
 
 /**
+ * Credential files inside home-directory dot-directories, as posix paths
+ * relative to the home directory. A scan whose target is the home directory
+ * reads these, while every other home dot-directory stays unentered.
+ */
+export const HOME_SECRET_FILES: readonly string[] = [
+  '.aws/credentials',
+  '.config/gh/hosts.yml',
+  '.docker/config.json',
+  '.gem/credentials',
+  '.kube/config',
+];
+
+/**
  * Whether a capture is a whole-file snapshot of a secret-bearing file. Such a
  * capture is recorded locally and never forwarded to a control plane. Decided
  * from the two fields that persist with the stored row, so a row read back

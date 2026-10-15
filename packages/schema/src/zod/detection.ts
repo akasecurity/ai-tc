@@ -1,6 +1,6 @@
 // Detections API contracts — v1 (control-plane only, no registry fan-out in this file)
 // All shapes defined here are contracts-first; service and route code consume them.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory, Severity } from './finding.ts';
 import { Namespace, PackId, PublisherKind, SemVer } from './registry.ts';
@@ -150,8 +150,8 @@ export { Matcher, RegexMatcher };
 // parsed `Rule` objects in both the local SQLite store and the tenant Postgres
 // one — and were simply projected away here, which made this shape a
 // description of a rule the engine does not run. Half the bundled catalog is
-// affected: of 109 rules, 21 carry `postValidators`, 25 `appliesTo`, 18
-// `requiresNearby` (57 distinct rules), and all 109 carry `examples`.
+// affected: of 111 rules, 21 carry `postValidators`, 26 `appliesTo`, 18
+// `requiresNearby` (58 distinct rules), and all 111 carry `examples`.
 //
 // That gap is not cosmetic for anything that re-runs a rule from this shape. A
 // rule whose `postValidators` are dropped loses its false-positive guard and

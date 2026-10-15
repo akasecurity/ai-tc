@@ -667,6 +667,72 @@ describe('SecretVault', () => {
     });
   });
 
+  describe('fingerprint de-reference', () => {
+    const value = ['fp', 'value', String(7 * 6), 'q'.repeat(12)].join('-');
+    const lengthDigest = (raw: string): string => `digest:${String(raw.length)}`;
+
+    it('hands only the digest back, and audits a fingerprint-target row', async () => {
+      const token = await tokenize(value);
+      const seen: string[] = [];
+      const result = await vault.fingerprintPointer(token, (raw) => {
+        seen.push(raw);
+        return lengthDigest(raw);
+      });
+
+      expect(result).toEqual({
+        digest: `digest:${String(value.length)}`,
+        ruleId: 'aws-access-key-id',
+      });
+      expect(seen).toEqual([value]);
+      const rows = derefRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        target: 'fingerprint',
+        reason: 'sighting',
+        outcome: 'revealed',
+      });
+      expect(JSON.stringify(rows)).not.toContain(value);
+    });
+
+    it('refuses a pointer outside the secret category without opening it', async () => {
+      const token = await tokenize(value, 'pii');
+      await expect(vault.fingerprintPointer(token, lengthDigest)).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()).toHaveLength(0);
+    });
+
+    it('answers unavailable for a purged pointer, and audits it', async () => {
+      const token = await tokenize(value);
+      vault.purgeVault();
+      await expect(vault.fingerprintPointer(token, lengthDigest)).resolves.toBe(UNAVAILABLE);
+      expect(derefRows().at(-1)).toMatchObject({ target: 'fingerprint', outcome: 'unavailable' });
+    });
+
+    it('answers unavailable when the digest throws', async () => {
+      const token = await tokenize(value);
+      await expect(
+        vault.fingerprintPointer(token, () => {
+          throw new Error('digest fault');
+        }),
+      ).resolves.toBe(UNAVAILABLE);
+    });
+
+    it('refuses a fingerprint target through the value-returning door', async () => {
+      const token = await tokenize(value);
+      const opts = { target: 'fingerprint', reason: 'sighting' } as unknown as Parameters<
+        typeof vault.detokenize
+      >[1];
+      await expect(vault.detokenize(token, opts)).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()).toHaveLength(0);
+    });
+
+    it('answers unavailable for text that is not a pointer', async () => {
+      await expect(vault.fingerprintPointer('not a pointer', lengthDigest)).resolves.toBe(
+        UNAVAILABLE,
+      );
+      expect(derefRows()).toHaveLength(0);
+    });
+  });
+
   function derefRows(): {
     pointerId: string;
     target: string;

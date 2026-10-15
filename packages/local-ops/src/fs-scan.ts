@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
+import { type Dirent, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 
@@ -34,6 +34,7 @@ import {
   createPolicyResolver,
   evaluateIgnore,
   evidenceLookup,
+  HOME_SECRET_FILES,
   type IgnoreLayer,
   isProtectedScanPath,
   type PolicyResolver,
@@ -71,7 +72,7 @@ import { isActionAtLeast, SOURCE_TOOL } from '@akasecurity/schema';
 //   .akaignore  → SKIP: explicit user intent aimed at this scanner. Same
 //                 gitignore syntax, hard skip — no read, no stored event, no
 //                 finding. A negation (`!vendor/`) also re-includes a directory
-//                 from the default SKIP_DIRS/dot-directory floor — but NOT from
+//                 from the default SKIP_DIRS/home dot-directory floor — but NOT from
 //                 the protected paths (`protectedScanRoots` in
 //                 @akasecurity/plugin-sdk), which no ignore file can override.
 
@@ -116,17 +117,44 @@ export function isProtectedTarget(err: unknown): err is ProtectedTargetError {
   );
 }
 
-// Directories never worth scanning (vendored / build output / VCS). Not an
-// absolute invariant: an `!` negation in .akaignore re-includes one.
+// Directories never worth scanning (vendored / build output / VCS / tool
+// caches). Every other dot-directory is entered, except directly under the
+// home directory (see `visit`). Not an absolute invariant: an `!` negation in
+// .akaignore re-includes one.
 const SKIP_DIRS = new Set([
   'node_modules',
-  '.git',
   'dist',
-  '.next',
   'coverage',
-  '.turbo',
   'build',
   'out',
+  '.angular',
+  '.cache',
+  '.dart_tool',
+  '.direnv',
+  '.docusaurus',
+  '.eggs',
+  '.expo',
+  '.git',
+  '.gradle',
+  '.hg',
+  '.mypy_cache',
+  '.next',
+  '.npm',
+  '.nuxt',
+  '.nx',
+  '.nyc_output',
+  '.parcel-cache',
+  '.pnpm-store',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.serverless',
+  '.svelte-kit',
+  '.svn',
+  '.terraform',
+  '.tox',
+  '.turbo',
+  '.venv',
+  '.yarn',
 ]);
 // Skip files larger than this — they're almost never hand-authored secrets, and
 // reading them as text is wasteful. (1 MB.)
@@ -174,10 +202,9 @@ export function* collectFiles(
   // bench and the existing callers keep their one-argument form.
   opts: CollectFilesOptions = {},
 ): Generator<CollectedFile> {
-  const protectedRoots = protectedScanRoots(
-    opts.home ?? homedir(),
-    opts.akaHome ?? defaultDataDir(),
-  );
+  const home = opts.home ?? homedir();
+  const protectedRoots = protectedScanRoots(home, opts.akaHome ?? defaultDataDir());
+  const homeCanonical = canonicalizeScanPath(home);
   // The target's on-disk identity, taken once. Every path below is built from
   // it by `join`, so no walked entry pays a second `realpath` — an in-walk
   // symlink cannot reintroduce an alias, because a link is neither
@@ -206,7 +233,59 @@ export function* collectFiles(
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, canonicalTarget, protectedRoots, opts.onNestedRepository);
+  yield* visit(target, canonicalTarget, protectedRoots, homeCanonical, opts.onNestedRepository);
+  if (canonicalTarget === homeCanonical)
+    yield* homeSecretFiles(target, homeCanonical, protectedRoots);
+}
+
+// The HOME_SECRET_FILES that exist under the home directory, for a scan whose
+// target is that directory. Each is subject to the home's own .akaignore (the
+// file or any directory above it) and marked by its .gitignore. A file whose
+// top-level directory an .akaignore negation re-includes is skipped here,
+// because `visit` walks that directory.
+function* homeSecretFiles(
+  home: string,
+  homeCanonical: string,
+  protectedRoots: readonly string[],
+): Generator<CollectedFile> {
+  const skipLayers = withLayer([], readIgnoreLayer(home, AKAIGNORE_FILENAME, 0));
+  const markLayers = withLayer([], readIgnoreLayer(home, '.gitignore', 0));
+  for (const rel of HOME_SECRET_FILES) {
+    const dirs = rel.split('/');
+    const name = dirs.pop();
+    const top = dirs[0];
+    if (name === undefined || top === undefined) continue;
+    if (evaluateIgnore(skipLayers, '', top, true) === 'unignored') continue;
+    let dirRel = '';
+    let skipped = false;
+    let gitignored = false;
+    for (const dir of dirs) {
+      if (evaluateIgnore(skipLayers, dirRel, dir, true) === 'ignored') {
+        skipped = true;
+        break;
+      }
+      gitignored ||= evaluateIgnore(markLayers, dirRel, dir, true) === 'ignored';
+      dirRel = childRel(dirRel, dir);
+    }
+    if (skipped || evaluateIgnore(skipLayers, dirRel, name, false) === 'ignored') continue;
+    const path = join(home, ...dirs, name);
+    if (
+      isProtectedScanPath(canonicalizeScanPath(join(homeCanonical, ...dirs, name)), protectedRoots)
+    ) {
+      continue;
+    }
+    let size: number;
+    try {
+      const st = lstatSync(path);
+      if (!st.isFile()) continue;
+      size = st.size;
+    } catch {
+      continue;
+    }
+    if (size > MAX_BYTES) continue;
+    gitignored ||= evaluateIgnore(markLayers, dirRel, name, false) === 'ignored';
+    yield { path, gitignored };
+  }
 }
 
 // One directory being walked: its listing, the next entry to visit, and the
@@ -243,6 +322,9 @@ function* visit(
   root: string,
   rootCanonical: string,
   protectedRoots: readonly string[],
+  // The home directory's canonical form: directly under it, dot-directories are
+  // not entered.
+  homeCanonical: string,
   // See CollectFilesOptions.onNestedRepository.
   onNestedRepository: ((dir: string) => void) | undefined,
 ): Generator<CollectedFile> {
@@ -333,11 +415,13 @@ function* visit(
       if (isProtectedScanPath(canonical, protectedRoots)) continue;
       const skipState = evaluateIgnore(dirSkipLayers, dirRel, entry.name, true);
       // Precedence: an explicit .akaignore re-include beats the default floor
-      // (SKIP_DIRS + dot-directories); otherwise the floor and .akaignore
-      // matches both hard-skip.
+      // (SKIP_DIRS + dot-directories directly under the home directory);
+      // otherwise the floor and .akaignore matches both hard-skip.
       if (
         skipState !== 'unignored' &&
-        (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.') || skipState === 'ignored')
+        (SKIP_DIRS.has(entry.name) ||
+          (dirCanonical === homeCanonical && entry.name.startsWith('.')) ||
+          skipState === 'ignored')
       ) {
         continue;
       }

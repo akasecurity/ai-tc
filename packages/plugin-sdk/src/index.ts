@@ -202,6 +202,8 @@ export {
   SOURCE_EXTENSIONS,
 } from './scan-files.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
+export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
+export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled, throttledPerKey } from './throttle.ts';

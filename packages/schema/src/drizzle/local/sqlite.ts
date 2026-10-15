@@ -1118,9 +1118,17 @@ export const secretVaultDeref = sqliteTable(
     // erase the record that a de-reference happened.
     pointerId: text(COL.pointerId).notNull(),
     at: integer(COL.at).notNull(),
-    target: text(COL.target, { enum: ['human', 'model'] }).notNull(),
+    target: text(COL.target, { enum: ['human', 'model', 'fingerprint'] }).notNull(),
     reason: text(COL.reason, {
-      enum: ['display', 'explicit-reveal', 'view-render', 'model-input', 'remediation', 'purge'],
+      enum: [
+        'display',
+        'explicit-reveal',
+        'view-render',
+        'model-input',
+        'remediation',
+        'sighting',
+        'purge',
+      ],
     }).notNull(),
     outcome: text(COL.outcome, { enum: ['revealed', 'refused', 'unavailable'] }).notNull(),
     // Present only on a model crossing a reveal grant authorized.

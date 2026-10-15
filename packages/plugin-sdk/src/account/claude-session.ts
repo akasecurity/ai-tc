@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/persistence/sqlite-free';
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { SessionBoundary } from './observation-log.ts';
 import { sessionScanCachePath } from './observation-log.ts';

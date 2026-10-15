@@ -45,7 +45,9 @@ import { terminalPrompter } from '../lib/prompter.ts';
 //
 // On a machine attached as a personal device the grant is narrower, and every
 // line here says so: only the repositories enrolled there send their history,
-// and no activity from anywhere else is sent. The wording follows the mode of
+// and no activity from anywhere else is sent by it. The sessions of a work
+// subscription the device recognises are sent as part of being attached, which
+// the grant does not change. The wording follows the mode of
 // the credential held for the connection the settings name; anything short of a
 // usable personal-device credential keeps the machine-wide wording, the one
 // that says more is sent, never less.
@@ -65,12 +67,16 @@ and turning it off does not stop it.`;
 
 /**
  * The same help on a machine attached as a personal device. The flags are the
- * same; what they send is narrower: only the repositories enrolled there.
+ * same; what they send is narrower: only the repositories enrolled there. The
+ * sessions of a work subscription the device recognises are sent as part of
+ * being attached, whatever the grant says.
  */
 const USAGE_SCOPED = `Usage: aka sync-history [--on | --off] [--run]
 
 Whether this personal device may send what the repositories you enroll recorded before
-you enrolled them. No activity from any other repository, or from outside one, is sent.
+you enrolled them. Activity from any other repository, or from outside one, is not sent
+by this setting. Claude Code sessions signed in to a recognised work subscription are sent
+as part of being attached, which this setting does not change.
 
   --on          Send it. Takes effect in the background, over later sessions.
   --off         Do not send it. Stops anything not already sent.
@@ -299,18 +305,21 @@ function grant(
     // A personal device. The seed above marked only what the enrolled
     // repositories hold (nothing, with none enrolled), and the drain's capture
     // read applies the same scope whatever was marked, so the subject is
-    // theirs, and the line says no activity is sent until one is enrolled.
+    // theirs. The line says so, and that the sessions of a recognised work
+    // subscription go as part of being attached, which this grant does not change.
     io.out(
       `Sending the unsent activity of the repositories enrolled here to ${where}.\n` +
-        'No activity from any other repository, or from outside one, is sent, and with none enrolled\n' +
-        'no activity is sent at all: `aka enroll --list` shows what is enrolled. What is sent is some\n' +
-        'of what an enrolled repository recorded here before you enrolled it: for a captured\n' +
-        'prompt, reply or tool result, that includes its text. A value in that text is masked only where the policy\n' +
-        'assigned to the detection that flagged it is redact or block; under monitor or warn it\n' +
-        'goes as it was seen, and no detection ships on redact or block. It goes in the\n' +
-        'background, a little at a time, starting with your next session. Anything already sent\n' +
-        'cannot be recalled. Anything a live send from one could not deliver is sent later\n' +
-        'whether or not this is on.\n',
+        'Activity from any other repository, or from outside one, is not sent by this setting.\n' +
+        'Claude Code sessions signed in to a recognised work subscription are sent as part of being\n' +
+        'attached, which this setting does not change; with none of those and none enrolled, no\n' +
+        'activity is sent at all: `aka enroll --list` shows what is enrolled, `aka status` what is\n' +
+        'recognised. What is sent is some of what an enrolled repository recorded here before you\n' +
+        'enrolled it: for a captured prompt, reply or tool result, that includes its text. A value in\n' +
+        'that text is masked only where the policy assigned to the detection that flagged it is redact\n' +
+        'or block; under monitor or warn it goes as it was seen, and no detection ships on redact or\n' +
+        'block. It goes in the background, a little at a time, starting with your next session.\n' +
+        'Anything already sent cannot be recalled. Anything a live send from an enrolled repository\n' +
+        'or a recognised work subscription could not deliver is sent later whether or not this is on.\n',
     );
     return true;
   }
@@ -345,8 +354,9 @@ function revoke(
     scoped
       ? 'Not sending the unsent activity of the repositories enrolled here. Anything already\n' +
           'sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
-          'repositories is part of being attached and continues, and anything a live send from\n' +
-          'one could not deliver is still sent later.\n'
+          'repositories, and from Claude Code sessions signed in to a recognised work subscription,\n' +
+          'is part of being attached and continues, and anything a live send from either could not\n' +
+          'deliver is still sent later.\n'
       : "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
           'this stops what has not gone yet. Live sending is part of being attached and\n' +
           'continues, and anything a live send could not deliver is still sent later.\n',
@@ -369,7 +379,8 @@ function describe(settings: WorkspaceSettings, scoped: boolean): string {
     // a send that cannot happen, so the line says so.
     return scoped
       ? `Sending ${subject} to ${where}.\n` +
-          'With no repository enrolled, no activity is sent: `aka enroll --list` shows what is enrolled.'
+          'With no repository enrolled and no work subscription recognised, no activity is sent:\n' +
+          '`aka enroll --list` shows what is enrolled, `aka status` what is recognised.'
       : `Sending ${subject} to ${where}.`;
   }
   // A grant that exists but does not apply — given for another deployment, or

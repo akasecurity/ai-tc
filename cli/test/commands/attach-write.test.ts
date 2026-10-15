@@ -31,6 +31,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { CLAUDE_ACCOUNT_ENV_NAMES } from '@akasecurity/plugin-sdk/account';
 import type { AttachmentMode } from '@akasecurity/schema';
 import {
   attachmentModeOf,
@@ -157,7 +158,8 @@ const NEEDS_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll and ' +
+  'from Claude Code sessions signed in to a work subscription, or with ' +
   '--machine to send activity from anywhere on this machine. Nothing was changed.';
 // What a failed save says when it put the earlier credential file back, and what
 // it says when it did not, by how it did not.
@@ -538,6 +540,10 @@ describe('parseAttachArgs: the mode flags', () => {
     expect(h.errors()).toContain(
       '  --scoped   A personal device: send activity only from the repositories you',
     );
+    expect(flat(h.errors())).toContain(
+      "--scoped A personal device: send activity only from the repositories you enroll with `aka enroll`, and from Claude Code sessions signed in to a work subscription of your organization under your AKA account's email (`aka unenroll --work-subscriptions` stops those).",
+    );
+    expect(h.errors()).not.toContain('none is sent until you enroll one');
     expect(h.errors()).toContain(
       '  --machine  A machine your organization owns: send activity from anywhere on\n' +
         '             this machine.',
@@ -750,6 +756,10 @@ describe('the personal-device question', () => {
     expect(flat(h.output())).toContain(REPORT_SENTENCE("your organization's"));
     expect(flat(h.output())).not.toContain(PREVIOUS_REPORT_SENTENCE("your organization's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(h.output()).not.toContain(phrase);
+    expect(flat(h.output())).toContain(
+      "A personal device sends activity only from the repositories you enroll with `aka enroll`. It also sends everything from Claude Code sessions signed in to a work subscription of your organization (Claude Team or Enterprise) under the same email as your AKA account, from any folder, with that folder's project and branch names. It checks this on the device, from the coding agent's own login file, and sends no email, plan or account id. To send only from the repositories you enroll, run `aka unenroll --work-subscriptions` after attaching.",
+    );
+    expect(h.output()).not.toContain('none until you enroll one');
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
     );
@@ -971,7 +981,8 @@ describe('widening a personal device with --machine', () => {
       `This machine is attached to ${ENDPOINT} as a personal device: activity is`,
     );
     expect(h.output()).toContain(
-      'sent only from the repositories enrolled on it. With --machine, activity from',
+      'sent only from the repositories enrolled on it and from Claude Code sessions signed in\n' +
+        'to a work subscription. With --machine, activity from',
     );
     expect(h.output()).toContain(
       'anywhere on this machine is sent, and the enrolled list is cleared.',
@@ -3333,6 +3344,9 @@ describe('what an attach says', () => {
     expect(said).toContain(
       "repository is sent as that repository's activity, even when it reads files",
     );
+    expect(flat(said)).toContain(
+      "A Claude Code session signed in to a work subscription of your organization (Claude Team or Enterprise) under the same email as your AKA account also sends everything it records from its first reply on, from any folder, with that folder's project and branch names; this device checks that from Claude Code's own login file and sends no email, plan or account id. `aka unenroll --work-subscriptions` stops it on this device.",
+    );
     expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
     expect(flat(said)).not.toContain(PREVIOUS_REPORT_SENTENCE("that deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
@@ -3357,7 +3371,13 @@ describe('what an attach says', () => {
         '',
         'Activity is sent to that deployment only from repositories you enroll, and',
         'the Data Shares register a scan records goes only for an enrolled',
-        'repository — destinations and call sites, never source text. Activity',
+        'repository — destinations and call sites, never source text. A Claude Code',
+        'session signed in to a work subscription of your organization (Claude Team',
+        'or Enterprise) under the same email as your AKA account also sends',
+        'everything it records from its first reply on, from any folder, with that',
+        "folder's project and branch names; this device checks that from Claude",
+        "Code's own login file and sends no email, plan or account id.",
+        '`aka unenroll --work-subscriptions` stops it on this device. Activity',
         'anywhere else stays on this machine. A command you run inside an enrolled',
         "repository is sent as that repository's activity, even when it reads files",
         'elsewhere.',
@@ -3461,6 +3481,9 @@ describe('what an attach says', () => {
     const said = h.output();
     expect(said).toContain(
       'This machine is attaching as a personal device: AKA sends the activity of',
+    );
+    expect(flat(said)).toContain(
+      'the repositories you enroll with `aka enroll` and of Claude Code sessions signed in to a recognised work subscription, and none from anywhere else.',
     );
     // The caveat the success text keeps is kept here too.
     expect(said).toContain('activity, even when it reads files elsewhere.');
@@ -3749,5 +3772,47 @@ describe('what an attach prints of strings it did not write', () => {
     expect(exits).toEqual([1]);
     expect(h.errors()).toContain('home[2J');
     expect(h.errors()).not.toContain(ESC);
+  });
+});
+
+describe('a personal-device attach and aka status, with work subscriptions', () => {
+  // A key, a provider flag or a desktop login in the developer's own environment
+  // would change what the status line reads.
+  beforeEach(() => {
+    for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('writes no work-subscriptions field: attaching turns nothing off', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1 });
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+
+  it('writes no work-subscriptions field on the browser path either', async () => {
+    const h = harness({
+      interactive: true,
+      answers: ['y', 'y'],
+      device: { kind: 'attached', apiKey: KEY_1, identity: ANA },
+    });
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+
+  it('aka status names the Claude Code login on a terminal, and collapses the line off one', async () => {
+    attachedScoped(FRESH);
+    const tty = harness({ interactive: true });
+    await runStatus([], tty.deps);
+    expect(tty.output()).toContain('  this login Claude Code — ');
+    const piped = harness({ interactive: false });
+    await runStatus([], piped.deps);
+    expect(piped.output()).toContain('  this login details on an interactive terminal\n');
+    expect(piped.output()).not.toContain('Claude Code —');
   });
 });

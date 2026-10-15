@@ -451,3 +451,32 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     expect(CLAIM).toMatch(/Detection, enforcement, and your store run on your machine/);
   });
 });
+
+/**
+ * The CLI page's own pins on the work-subscription sentences: in the body
+ * paragraph that introduces a personal device, and in the egress footnote that
+ * corrects the page's locality claim, with the sentence on prohibited models
+ * widened to match. The plugin suite pins the whole sentence group.
+ */
+describe('cli/README.md work-subscription disclosure', () => {
+  const PHRASES = [
+    "sends everything it records from its first reply on, from any folder, with that folder's project and branch names",
+    "The device reads only the email, plan and workspace id from Claude Code's own login file, compares them on the device with the account that attached it, and sends none of them.",
+    '`aka unenroll --work-subscriptions` turns recognition off on this device',
+    'A machine whose connection an administrator manages attaches machine-wide only, so it has no personal-device mode and no such opt-out.',
+  ];
+
+  it('says each phrase in the body and in the egress footnote', () => {
+    for (const phrase of PHRASES) {
+      expect(body).toContain(phrase);
+      expect(footnote).toContain(phrase);
+    }
+  });
+
+  it('refuses prohibited models in any folder of a work-subscription session, not only in enrolled repositories', () => {
+    expect(body).toContain(
+      'the models it prohibits are refused only in the repositories you enroll and in any folder of a work-subscription session',
+    );
+    expect(body).not.toMatch(/refused only in the repositories you enroll\)/);
+  });
+});

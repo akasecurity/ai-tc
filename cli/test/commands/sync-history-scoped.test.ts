@@ -43,6 +43,7 @@ const ENDPOINT = 'https://aka.acme.test';
 const OTHER_ENDPOINT = 'https://aka.other.test';
 const TEST_KEY = 'not-a-real-key';
 const ESC = String.fromCharCode(0x1b);
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
 // A part of a recorded address that must never reach the screen.
 const HIDDEN = 'hiddenpart';
 
@@ -203,7 +204,9 @@ const SCOPED = {
     'Usage: aka sync-history [--on | --off] [--run]',
     '',
     'Whether this personal device may send what the repositories you enroll recorded before',
-    'you enrolled them. No activity from any other repository, or from outside one, is sent.',
+    'you enrolled them. Activity from any other repository, or from outside one, is not sent',
+    'by this setting. Claude Code sessions signed in to a recognised work subscription are sent',
+    'as part of being attached, which this setting does not change.',
     '',
     '  --on          Send it. Takes effect in the background, over later sessions.',
     '  --off         Do not send it. Stops anything not already sent.',
@@ -216,27 +219,31 @@ const SCOPED = {
   ].join('\n'),
   granted: [
     'Sending the unsent activity of the repositories enrolled here to Acme.',
-    'No activity from any other repository, or from outside one, is sent, and with none enrolled',
-    'no activity is sent at all: `aka enroll --list` shows what is enrolled. What is sent is some',
-    'of what an enrolled repository recorded here before you enrolled it: for a captured',
-    'prompt, reply or tool result, that includes its text. A value in that text is masked only where the policy',
-    'assigned to the detection that flagged it is redact or block; under monitor or warn it',
-    'goes as it was seen, and no detection ships on redact or block. It goes in the',
-    'background, a little at a time, starting with your next session. Anything already sent',
-    'cannot be recalled. Anything a live send from one could not deliver is sent later',
-    'whether or not this is on.',
+    'Activity from any other repository, or from outside one, is not sent by this setting.',
+    'Claude Code sessions signed in to a recognised work subscription are sent as part of being',
+    'attached, which this setting does not change; with none of those and none enrolled, no',
+    'activity is sent at all: `aka enroll --list` shows what is enrolled, `aka status` what is',
+    'recognised. What is sent is some of what an enrolled repository recorded here before you',
+    'enrolled it: for a captured prompt, reply or tool result, that includes its text. A value in',
+    'that text is masked only where the policy assigned to the detection that flagged it is redact',
+    'or block; under monitor or warn it goes as it was seen, and no detection ships on redact or',
+    'block. It goes in the background, a little at a time, starting with your next session.',
+    'Anything already sent cannot be recalled. Anything a live send from an enrolled repository',
+    'or a recognised work subscription could not deliver is sent later whether or not this is on.',
     '',
   ].join('\n'),
   revoked: [
     'Not sending the unsent activity of the repositories enrolled here. Anything already',
     'sent stays sent — this stops what has not gone yet. Live sending from enrolled',
-    'repositories is part of being attached and continues, and anything a live send from',
-    'one could not deliver is still sent later.',
+    'repositories, and from Claude Code sessions signed in to a recognised work subscription,',
+    'is part of being attached and continues, and anything a live send from either could not',
+    'deliver is still sent later.',
     '',
   ].join('\n'),
   inForce: [
     'Sending the unsent activity of the repositories enrolled here to Acme.',
-    'With no repository enrolled, no activity is sent: `aka enroll --list` shows what is enrolled.',
+    'With no repository enrolled and no work subscription recognised, no activity is sent:',
+    '`aka enroll --list` shows what is enrolled, `aka status` what is recognised.',
     '',
   ].join('\n'),
   notGranted: [
@@ -294,6 +301,36 @@ describe('aka sync-history on a personal device', () => {
   it('describes a grant given to another deployment', async () => {
     attach('scoped', { consent: consent(ELSEWHERE) });
     expect((await run([])).output()).toBe(SCOPED.elsewhere);
+  });
+
+  // What this setting sends and what a recognised work subscription sends are two
+  // things; each line that describes the first keeps them apart.
+  it('says what this setting does not send, in the help and in the grant', async () => {
+    attach('scoped');
+    const help = await run(['--bogus']);
+    const granted = await run(['--on']);
+    const notSent =
+      'Activity from any other repository, or from outside one, is not sent by this setting.';
+    expect(flat(help.errors())).toContain(notSent);
+    expect(flat(granted.output())).toContain(notSent);
+  });
+
+  it('says a recognised work subscription is sent as part of being attached, which the setting does not change', async () => {
+    attach('scoped');
+    const help = await run(['--bogus']);
+    const granted = await run(['--on']);
+    const part =
+      'Claude Code sessions signed in to a recognised work subscription are sent as part of being attached, which this setting does not change';
+    expect(flat(help.errors())).toContain(part);
+    expect(flat(granted.output())).toContain(part);
+  });
+
+  it('says a revoke leaves a recognised work subscription sending', async () => {
+    attach('scoped', { consent: consent() });
+    const revoked = await run(['--off']);
+    expect(flat(revoked.output())).toContain(
+      'Live sending from enrolled repositories, and from Claude Code sessions signed in to a recognised work subscription, is part of being attached and continues',
+    );
   });
 
   it('prints the same line under a pass report', async () => {

@@ -280,11 +280,74 @@ describe('scoped attachment claims', () => {
     // What enrolling queues under the history grant is said where the scoped mode is
     // introduced, not in the paragraph on what the grant covers on any attachment.
     expect(section).toContain(
-      'activity in any other repository stays on the machine. Under the `aka sync-history` ' +
+      'everything else stays on the machine. Under the `aka sync-history` ' +
         'grant, enrolling a repository also queues the captures still kept for it, including ' +
         'those it recorded between attaching and enrolling.',
     );
     expect(section).not.toMatch(/\ball of the above\b/i);
+  });
+});
+
+/**
+ * A Claude Code session signed in to a work subscription of the organization
+ * forwards everything it records, from any folder. Every page that describes a
+ * personal device says so in the same words: how the device tells, the cases
+ * that keep to the repository rule, the fallback, that a recognised organization
+ * never selects a claude.ai chat, that existing devices start with the plugin
+ * update, and the opt-out with the machines that have none.
+ */
+const CLAUDE_WORK_SENTENCE =
+  'A Claude Code session counts as a work subscription when it is signed in through claude.ai to a ' +
+  'Team or Enterprise plan of your organization under the same email as the AKA account that ' +
+  'attached the device. Such a session sends everything it records from its first reply on, from ' +
+  "any folder, with that folder's project and branch names, and your organization's prohibited " +
+  'models are refused in any folder of it. The device reads only the email, plan and workspace id ' +
+  "from Claude Code's own login file, compares them on the device with the account that attached " +
+  'it, and sends none of them. The first prompt of a new session, a personal plan, another email, ' +
+  'an API key or another provider, and the rest of a session whose organization changes follow the ' +
+  'repository rule; `aka enroll --account` enrolls by hand a work subscription the device cannot ' +
+  'recognise. An organization recognised this way never records or forwards a claude.ai chat. A ' +
+  'personal device attached before this release starts recognising work subscriptions when its ' +
+  'plugin updates, with no new prompt, so update `aka` first. `aka unenroll --work-subscriptions` ' +
+  'turns recognition off on this device and `aka enroll --work-subscriptions` turns it back on; ' +
+  'while it is off, enrolled repositories and accounts enrolled by hand still forward, and your ' +
+  "organization's model restrictions apply only to them. A machine whose connection an " +
+  'administrator manages attaches machine-wide only, so it has no personal-device mode and no such ' +
+  'opt-out.';
+
+describe('Claude Code work-subscription claims', () => {
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    // Where the page describes a personal device: its body paragraphs, or its
+    // egress footnote when that is the only place it does, as the plugin page.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
+
+    it('says what a recognised work subscription forwards, in the one sentence group', () => {
+      expect(claim).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('never says the device sends the login email, plan or account id', () => {
+      expect(flat(text)).not.toMatch(/sends? (?:the|your) (?:login )?(?:email|plan|account id)/i);
+    });
+  });
+
+  it('says it in SECURITY.md, and names the sessions where the scoped mode is introduced', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(CLAUDE_WORK_SENTENCE);
+    expect(section).toContain(
+      'in Claude Code sessions signed in to a recognised work subscription (above)',
+    );
+  });
+
+  it('says on the plugin page that prohibited models are refused in any folder of such a session', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'the models that policy prohibits are refused only in those repositories and in any folder of such a session',
+    );
   });
 });
 

@@ -22,6 +22,7 @@ export {
   removeAttachmentScopeEntries,
   UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
+export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
 export type {
   CredentialFileRead,
   CredentialState,
@@ -100,6 +101,7 @@ export {
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
+  keyedCaptureWireId,
   llmCallId,
   normalizeHost,
   promptId,
@@ -286,9 +288,11 @@ export {
   SIGHTING_KEY_FILENAME,
   sightingKeyEndpointFingerprint,
 } from './vault/sighting-keys.ts';
+export { SIGHTING_DOMAIN, sightingToken } from './vault/sighting-token.ts';
 export type {
   DetokenizeOptions,
   DetokenizeResult,
+  PointerDigest,
   SecretVaultDeps,
   TokenizeMeta,
   TokenizeResult,

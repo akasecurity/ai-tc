@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,5 +35,27 @@ describe('triggerReconcile — per-session throttle', () => {
     // capture delayed; with the per-session marker it spawns immediately.
     triggerReconcile(dir, 'sess-B', '/t/b.jsonl');
     expect(spawnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes markers of sessions idle past a day, and keeps every recent one', () => {
+    const day = 24 * 60 * 60 * 1000;
+    const old = join(dir, 'reconcile-last-attempt-sess-old');
+    const recent = join(dir, 'reconcile-last-attempt-sess-recent');
+    const unrelated = join(dir, 'session-start-last');
+    for (const file of [old, recent, unrelated]) writeFileSync(file, '0');
+    const longAgo = new Date(Date.now() - 2 * day);
+    utimesSync(old, longAgo, longAgo);
+    utimesSync(unrelated, longAgo, longAgo);
+    const lastHour = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(recent, lastHour, lastHour);
+
+    triggerReconcile(dir, 'sess-new', '/t/new.jsonl');
+
+    expect(spawnSpy).toHaveBeenCalledTimes(1);
+    expect(existsSync(old)).toBe(false);
+    // The positive control: the sweep ran, and still left alone what it must.
+    expect(existsSync(recent)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+    expect(existsSync(join(dir, 'reconcile-last-attempt-sess-new'))).toBe(true);
   });
 });

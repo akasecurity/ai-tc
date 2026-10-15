@@ -19,6 +19,7 @@ export const DEREF_REASON_LABEL: Record<VaultDerefReason, string> = {
   'view-render': 'View render',
   'model-input': 'Model input',
   remediation: 'Remediation',
+  sighting: 'Sighting token',
   purge: 'Purge',
 };
 

@@ -2,7 +2,7 @@ import { dirname } from 'node:path';
 
 import { managedScopedRefusal } from '@akasecurity/persistence';
 import type { AccountBasis } from '@akasecurity/schema';
-import { isAgentScopeKey } from '@akasecurity/schema';
+import { isAgentScopeKey, isRepoShapedScopeKey } from '@akasecurity/schema';
 
 import { printableForTerminal } from './status.ts';
 
@@ -57,6 +57,8 @@ export type ForwardingScope =
       mode: 'account-pending';
       basis: AccountBasis | undefined;
       managed: boolean;
+      /** False when work subscriptions are off on this device: the line then names the account enrolled by hand. */
+      workSubscriptionsOn: boolean;
     };
 
 /**
@@ -110,10 +112,13 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  *
  *   machine          `AKA: forwarding everything to <name> (machine-wide)`
  *   scoped, in       `AKA: forwarding to <name> (<enrolled repository>)`, and, for a
- *                    work login, that the session also sends its work in other folders
+ *                    work login, that the session also sends its work in other folders;
+ *                    a root key that does not name a repository is left out of the line
  *   scoped, out      `AKA: local-only (not enrolled); work in an enrolled repository is still forwarded`
  *   account          `AKA: forwarding this session to <name> — signed in to a work subscription.`
  *   account-pending  `AKA: this session forwards to <name> once Claude confirms the work subscription, from its first reply.`
+ *                    With work subscriptions off on the device it names the account
+ *                    enrolled by hand instead, and never the opt-out.
  *
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled
@@ -154,6 +159,9 @@ export function forwardingLine(
       case 'account':
         return withStop(workLine, scope.basis, scope.managed);
       case 'account-pending':
+        if (!scope.workSubscriptionsOn) {
+          return `AKA: this session forwards to ${name} once Claude confirms it is signed in to an account you enrolled by hand, from its first reply. ${MANUAL_STOP}`;
+        }
         return withStop(
           `AKA: this session forwards to ${name} once Claude confirms the work subscription, from its first reply.`,
           scope.basis,
@@ -164,7 +172,9 @@ export function forwardingLine(
         if (isAgentScopeKey(scope.rootKey)) {
           return withStop(workLine, scope.work?.basis, scope.work?.managed ?? false);
         }
-        const repository = `AKA: forwarding to ${name} (${printableForTerminal(scope.rootKey, 200)})`;
+        const repository = isRepoShapedScopeKey(scope.rootKey)
+          ? `AKA: forwarding to ${name} (${printableForTerminal(scope.rootKey, 200)})`
+          : `AKA: forwarding to ${name}`;
         if (scope.work === undefined) return repository;
         const because =
           scope.work.basis === 'manual'

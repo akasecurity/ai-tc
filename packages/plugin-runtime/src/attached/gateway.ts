@@ -1513,7 +1513,8 @@ export class AttachedDataGateway
    * `account`; a repository root answers `scoped`, with `work` when the session
    * start's login was a work subscription. A root it recorded no verdict for
    * answers `account-pending` when the session start left the root to the
-   * reconcile, and null otherwise: a session start whose pass stopped before the
+   * reconcile, carrying whether the account scope has work subscriptions on, and
+   * null otherwise: a session start whose pass stopped before the
    * root has no answer to give, since the history reconcile writes a missing root
    * later, keyed the same way, and forwards the session's records under it, so
    * saying local-only there would be wrong as often as right. Never recorded from
@@ -1529,7 +1530,13 @@ export class AttachedDataGateway
     const verdict = this.rootVerdicts.get(rootId);
     if (verdict === undefined) {
       return session?.rootDeferred === true
-        ? { deploymentName, mode: 'account-pending', basis, managed }
+        ? {
+            deploymentName,
+            mode: 'account-pending',
+            basis,
+            managed,
+            workSubscriptionsOn: this.deps.account?.context.workSubscriptionsOn ?? true,
+          }
         : null;
     }
     let rootKey: string | undefined;

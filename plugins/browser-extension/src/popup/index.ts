@@ -67,7 +67,7 @@ const ENFORCEMENT_NOTES: Record<EnforcementFault, string> = {
 // worded here.
 export const WITHHELD_NOTES: Record<WebChatWithholding, string> = {
   'personal-device':
-    'personal device — chats are checked, and only replies in an enrolled account are recorded or sent',
+    'personal device — chats are checked; from them, only replies in an enrolled account, with their tool calls and token usage, are recorded or sent',
   'unreadable-attachment':
     'attachment unreadable — chats are checked, and nothing from them is recorded or sent; run aka status',
 };
@@ -83,11 +83,11 @@ export function accountNote(account: {
   recorded: boolean;
 }): string {
   if (account.recorded)
-    return `${account.identity} — enrolled; replies in it are recorded and sent`;
+    return `${account.identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`;
   if (account.enrolled) {
     return `${account.identity} — enrolled, but web-chat capture is off, so nothing is recorded`;
   }
-  return `${account.identity} — not enrolled; to send its replies, run aka enroll --account ${account.identity}`;
+  return `${account.identity} — not enrolled; to send its replies and its Claude Code sessions, run aka enroll --account ${account.identity}`;
 }
 
 // Read through a widened ALIAS rather than a cast at the lookup: the table is

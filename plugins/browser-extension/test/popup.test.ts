@@ -254,6 +254,25 @@ describe('renderCaptureSites', () => {
     expect(off).toContain('nothing is recorded');
   });
 
+  it('words the personal-device note as what is recorded or sent from a chat, with the tool calls and token usage', () => {
+    expect(WITHHELD_NOTES['personal-device']).toBe(
+      'personal device — chats are checked; from them, only replies in an enrolled account, with their tool calls and token usage, are recorded or sent',
+    );
+  });
+
+  it('words each account state exactly', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    expect(accountNote({ identity, enrolled: false, recorded: false })).toBe(
+      `${identity} — not enrolled; to send its replies and its Claude Code sessions, run aka enroll --account ${identity}`,
+    );
+    expect(accountNote({ identity, enrolled: true, recorded: false })).toBe(
+      `${identity} — enrolled, but web-chat capture is off, so nothing is recorded`,
+    );
+    expect(accountNote({ identity, enrolled: true, recorded: true })).toBe(
+      `${identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`,
+    );
+  });
+
   it('words an unreadable attachment as its own reason', () => {
     renderCaptureSites(response({ withheld: 'unreadable-attachment' }));
     expect(document.getElementById('capture-withheld')?.textContent).toBe(

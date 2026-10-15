@@ -58,7 +58,7 @@ const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 // A part of a recorded address that must never reach the screen.
 const HIDDEN = 'hiddenpart';
 const NOT_LIMITED =
-  '             the policy pull and the device report are not limited to what is enrolled';
+  '             the policy pull, the command check and the device report are not limited to what is enrolled';
 // The three states of the list itself that forward no activity. Each has its own
 // headline, because what to do about one is not what to do about another.
 const WORK_ONLY_SENT = 'only sessions signed in to a recognised work subscription are sent';
@@ -68,10 +68,17 @@ const MISSING_LIST = [
   '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
   '             drops the list when it saves settings)',
 ];
-const UNREADABLE_HEADLINE =
-  '  scope      the enrolled list cannot be read by this aka — it sends no activity under it';
+const UNREADABLE_HEADLINE = `  scope      the enrolled list cannot be read by this aka — ${WORK_ONLY_SENT}`;
 const UNREADABLE_LIST = [
   UNREADABLE_HEADLINE,
+  '             (it may have been written by a newer aka)',
+];
+// The same state once work subscriptions are off, which a stored value that is
+// not a record reads as.
+const UNREADABLE_HEADLINE_OFF =
+  '  scope      the enrolled list cannot be read by this aka — no activity is sent';
+const UNREADABLE_LIST_OFF = [
+  UNREADABLE_HEADLINE_OFF,
   '             (it may have been written by a newer aka)',
 ];
 const EMPTY_HEADLINE = `  scope      nothing enrolled yet — ${WORK_ONLY_SENT}`;
@@ -341,7 +348,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   it('says the list cannot be read when the stored scope is not a record at all', () => {
     attach('scoped', 'not-a-scope-record');
     const out = status();
-    expect(out).toContain(`\n${UNREADABLE_LIST.join('\n')}\n`);
+    expect(out).toContain(`\n${UNREADABLE_LIST_OFF.join('\n')}\n`);
     expect(out).not.toMatch(/^ {2}scope {6}nothing enrolled/m);
   });
 
@@ -635,7 +642,7 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     attach('scoped', scope, consent);
     writeHistorySyncState(dataDir, emptyScopePass);
     const out = status();
-    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).toMatch(/^ {2}history {4}nothing to send — nothing is in scope yet$/m);
     expect(out).not.toContain('complete —');
     expect(out).not.toMatch(/records sent/);
   });
@@ -643,7 +650,9 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
   it('says nothing is sent before the first pass too, when nothing is enrolled', () => {
     attach('scoped', bound(), consent);
     const out = status();
-    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).toMatch(/^ {2}history {4}nothing to send — nothing is in scope yet$/m);
+    expect(out).toContain(`\n${EMPTY_HEADLINE}\n`);
+    expect(out).not.toContain('forwards no activity');
     expect(out).not.toContain('waiting for the first pass');
   });
 
@@ -681,7 +690,7 @@ describe('attachmentScopeLines — what the record does not limit', () => {
         ],
       },
     ],
-  ])('ends the block for %s with the policy pull and the device report', (_name, scope) => {
+  ])('ends the block for %s with what the record does not limit', (_name, scope) => {
     const lines = attachmentScopeLines(scope, ENDPOINT);
     expect(lines[lines.length - 1]).toBe(NOT_LIMITED);
     expect(lines.filter((line) => line === NOT_LIMITED)).toHaveLength(1);
@@ -694,7 +703,7 @@ describe('attachmentScopeLines — what the record does not limit', () => {
 
   it('prints it nowhere on a machine-wide attachment', () => {
     attach('machine', bound([entry(WORK_REPO)]));
-    expect(status()).not.toContain('the policy pull and the device report');
+    expect(status()).not.toContain('not limited to what is enrolled');
   });
 });
 
@@ -729,6 +738,15 @@ describe('attachmentScopeLines — a missing list and one this build cannot read
     const lines = attachmentScopeLines(raw, ENDPOINT);
     expect(lines).toEqual([...UNREADABLE_LIST, NOT_LIMITED]);
     expect(lines.join('\n')).not.toContain('aka enroll');
+  });
+
+  it('says only recognised work subscriptions are sent for an unreadable list while they are on, and nothing once they are off', () => {
+    const unreadable = { endpoint: ENDPOINT, ...MEMBER, entries: 'x' };
+    expect(attachmentScopeLines(unreadable, ENDPOINT)).toEqual([...UNREADABLE_LIST, NOT_LIMITED]);
+    expect(attachmentScopeLines({ ...unreadable, workSubscriptions: 'off' }, ENDPOINT)).toEqual([
+      ...UNREADABLE_LIST_OFF,
+      NOT_LIMITED,
+    ]);
   });
 
   it('gives the missing list, the unreadable list and the empty list three different blocks', () => {
@@ -806,14 +824,16 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   it('says the attached user is not known when this device holds no identity record', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     expect(lines()).toContain(
-      '  user       not known until this machine syncs — work subscriptions are not recognised yet',
+      '  user       not known until this machine syncs — until then work subscriptions are not recognised and no Claude Code session is sent for an enrolled account',
     );
   });
 
   it('says the attached user is not tied to this key when the record belongs to another one', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     writeRecord('another-key-entirely');
-    expect(lines()).toContain('  user       not tied to this key — the next sync re-checks it');
+    expect(lines()).toContain(
+      '  user       not tied to this key — the next sync re-checks it; until then no Claude Code session is sent for a work subscription or an enrolled account',
+    );
   });
 
   it('names the day the attached user was checked when the record belongs to this key', () => {

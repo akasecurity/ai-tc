@@ -424,6 +424,16 @@ describe('the forwarding line at session start', () => {
     expect(line.includes('aka unenroll --account')).toBe(true);
   });
 
+  it('names the account enrolled by hand, not a work subscription, for a login on one while work subscriptions are on', async () => {
+    dev.attach({ manual: [`claude:${dev.workOrg}`] });
+    dev.login({ org: dev.workOrg });
+    const line = await shownAtSessionStart();
+    expect(line.includes('signed in to an account you enrolled by hand')).toBe(true);
+    expect(line.includes('work subscription')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll --account')).toBe(true);
+  });
+
   it('names the work subscription and the opt-out when work subscriptions are on and the login file does not parse', async () => {
     dev.attach({ manual: [`claude:${dev.workOrg}`] });
     dev.unreadableLogin();

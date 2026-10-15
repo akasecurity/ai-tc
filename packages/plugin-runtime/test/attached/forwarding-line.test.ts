@@ -154,6 +154,8 @@ const OPT_OUT = '`aka unenroll --work-subscriptions` stops this on this device.'
 const MANUAL_STOP =
   'Enrolled by hand; `aka unenroll --account` with its key stops this (`aka status` lists it).';
 const WORK_LINE = 'AKA: forwarding this session to Acme — signed in to a work subscription.';
+const WORK_LINE_BY_HAND =
+  'AKA: forwarding this session to Acme — signed in to an account you enrolled by hand.';
 const PENDING_LINE =
   'AKA: this session forwards to Acme once Claude confirms the work subscription, from its first reply.';
 const PENDING_BY_HAND =
@@ -217,12 +219,37 @@ describe('forwardingLine — a work-subscription session', () => {
     );
   });
 
-  it('a manual session names the command that stops it', () => {
+  it('a manual session names the account enrolled by hand and the command that stops it', () => {
+    expect(forwardingLine(answering(accountScope('manual')), 's1')).toBe(
+      `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
+    );
+    expect(forwardingLine(answering(pendingScope('manual')), 's1')).toBe(
+      `${PENDING_BY_HAND} ${MANUAL_STOP}`,
+    );
     for (const scope of [accountScope('manual'), pendingScope('manual')]) {
       const line = forwardingLine(answering(scope), 's1');
-      expect(line).toContain(MANUAL_STOP);
       expect(line).not.toContain('--work-subscriptions');
+      expect(line).not.toContain('work subscription');
     }
+  });
+
+  it('a session in an agent-keyed root names the account enrolled by hand when that is its basis', () => {
+    const forwardedAgentRoot = (work: {
+      basis: NonNullable<Basis>;
+      managed: boolean;
+    }): ForwardingScope => ({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: AGENT,
+      rootForwards: true,
+      work,
+    });
+    expect(
+      forwardingLine(answering(forwardedAgentRoot({ basis: 'manual', managed: false })), 's1'),
+    ).toBe(`${WORK_LINE_BY_HAND} ${MANUAL_STOP}`);
+    expect(
+      forwardingLine(answering(forwardedAgentRoot({ basis: 'validated', managed: false })), 's1'),
+    ).toBe(`${WORK_LINE} ${OPT_OUT}`);
   });
 
   it('a root left to the reconcile names the account enrolled by hand when work subscriptions are off', () => {
@@ -252,7 +279,7 @@ describe('forwardingLine — a work-subscription session', () => {
       `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS}`,
     );
     expect(forwardingLine(answering(accountScope('manual', true)), 's1')).toBe(
-      `${WORK_LINE} ${MANUAL_STOP}`,
+      `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
     );
   });
 
@@ -603,7 +630,7 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
   });
 
   it('names the command that stops an account enrolled by hand, for a root left to the reconcile', async () => {
-    expect(await deferredLine('manual')).toBe(`${PENDING_LINE} ${MANUAL_STOP}`);
+    expect(await deferredLine('manual')).toBe(`${PENDING_BY_HAND} ${MANUAL_STOP}`);
   });
 
   it('prints no line for a session the device does not record', async () => {

@@ -237,6 +237,22 @@ describe('aka status — the Codex login', () => {
     expect(codexLine(shown)).toContain('Codex — login file not found');
   });
 
+  it('prints the veto line, not no login file, when the caller asks with no usable home under a key', () => {
+    attachScoped();
+    signIn('business');
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const shown = renderAttachedStatus({
+      base,
+      settingsDir: settingsDirOf(base),
+      dataDir: dataDirOf(base),
+      codexHome: null,
+      isTTY: true,
+      now: () => NOW,
+    });
+    expect(codexLine(shown)).toContain('Codex — an API key or another provider is in use');
+    expect(codexLine(shown).includes('login file not found')).toBe(false);
+  });
+
   it('reads no login and prints no Codex line unless the caller names a Codex home', () => {
     attachScoped();
     signIn('business');
@@ -441,14 +457,34 @@ describe('codexLoginView', () => {
     });
   });
 
-  it('reads a login of another mode as unreadable', () => {
+  it('reads a login of another mode as unreadable, naming nothing', () => {
     attachScoped();
     writeCodexAuth(codexHome, { accountId: WORKSPACE, email: MEMBER, authMode: 'apikey' });
-    expect(view().state).toBe('unreadable');
+    const read = view();
+    expect(read.state).toBe('unreadable');
+    expect(read.key).toBeUndefined();
+    expect(read.planState).toBeUndefined();
   });
 
-  it('reads a missing login file as absent', () => {
+  it('reads a missing login file as absent, naming nothing', () => {
     attachScoped();
-    expect(view().state).toBe('absent');
+    const read = view();
+    expect(read.state).toBe('absent');
+    expect(read.key).toBeUndefined();
+    expect(read.planState).toBeUndefined();
+  });
+
+  it('reads no Codex home as absent, naming nothing, and reads no login file', () => {
+    attachScoped();
+    signIn('business');
+    const read = codexLoginView({
+      identity: readAttachedIdentity(dataDirOf(base)),
+      scope: SCOPE,
+      endpoint: ENDPOINT,
+      codexHome: undefined,
+    });
+    expect(read.state).toBe('absent');
+    expect(read.key).toBeUndefined();
+    expect(read.planState).toBeUndefined();
   });
 });

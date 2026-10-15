@@ -142,6 +142,11 @@ const EXPECTED_INLINE_DISABLES = {
   // finds no login and no veto from the developer's own environment.
   'test/setup/no-host-codex-config.ts': [ENV_RULE],
 
+  // The guard's own test reads those variables back from the process, which no
+  // other seam shows: the account check reads an empty string as unset, so only
+  // the environment itself tells a cleared variable from a missing one.
+  'cli/test/codex-config-guard.test.ts': [ENV_RULE],
+
   // The same boundary one step out: a harness that spawns a real shipped
   // SCRIPT rather than a real hook. install.sh needs the host PATH to find
   // curl, tar and shasum at all.

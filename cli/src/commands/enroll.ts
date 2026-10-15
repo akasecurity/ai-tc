@@ -1134,16 +1134,19 @@ const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
 };
 
 /**
- * The web chat account `--account` names.
+ * The account `--account` names: a Claude account, whose key the browser
+ * extension stamps, or a ChatGPT workspace, whose key the Codex login supplies.
+ * For `unenroll`, a stored entry of either kind.
  *
- * Normalized to the stored form (normalizeWebAccountKey): the id lower-cased and
- * the whitespace around it dropped, so a key copied in another case enrolls the
- * account the extension stamps. Anything that is not an account key is refused
- * by name, never stored: a key the host can never stamp would enroll nothing.
+ * `aka enroll --account` normalizes the key to the stored form
+ * (normalizeWebAccountKey): lower-cased, with the whitespace around it dropped, so
+ * a key copied in another case enrolls the same account. Anything that is not an
+ * account key is refused, naming the text typed, and never stored.
  *
- * `aka unenroll --account` also matches the text exactly as typed, the rule
- * storedIdentity gives `--repo`: an entry a newer build stored under another
- * rule must still be removable.
+ * `aka unenroll --account` matches the normalized key and also the text exactly
+ * as typed, the rule storedIdentity gives `--repo`, and takes text that is not an
+ * account key as it stands: an entry stored under a different normalization form
+ * must still be removable.
  */
 function accountIdentity(verb: Verb, input: string): Identity {
   const typed = input.trim();

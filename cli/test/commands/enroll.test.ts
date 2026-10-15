@@ -1712,7 +1712,7 @@ describe('aka enroll --account', () => {
     const io = recorder();
     expect(await runEnroll(['--account', input], deps(io))).toBe(1);
     expect(exits).toEqual([1]);
-    expect(io.errors()).toContain('is not a web chat account key');
+    expect(io.errors()).toContain(`aka enroll: ${input} is not a web chat account key.\n`);
     expect(io.errors()).toContain('`aka enroll --list-detected`');
     expect(io.errors()).toContain('chatgpt:<workspace-id>');
     expect(stored()).toEqual(before);
@@ -1790,6 +1790,17 @@ describe('aka unenroll --account', () => {
     const io = recorder();
     expect(await runUnenroll(['--account', 'claude:legacy-id'], deps(io))).toBe(0);
     expect(identities()).toEqual([]);
+  });
+
+  it('removes an entry stored in another case when the key is typed as it is stored', async () => {
+    const stored = `claude:${ORG.toUpperCase()}`;
+    attach({
+      scope: fresh([{ kind: 'account', identity: stored, enrolledAt: NOW }, enrolled()]),
+      extra: webChat(),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--account', stored], deps(io))).toBe(0);
+    expect(identities()).toEqual([WORK_REPO]);
   });
 
   it('says so when the account is not enrolled', async () => {
@@ -2834,6 +2845,19 @@ describe('aka enroll --account chatgpt:', () => {
     ).toBe(true);
     expect(shown.includes('chats')).toBe(false);
     expect(shown.includes('claude.ai')).toBe(false);
+  });
+
+  it('is taken out by aka unenroll --account from an entry stored in another case, typed as stored', async () => {
+    const stored = `chatgpt:${CODEX_WORKSPACE.toUpperCase()}`;
+    attach({ scope: fresh([codexAccount(stored)]) });
+    expect(await runUnenroll(['--account', stored], deps(recorder()))).toBe(0);
+    expect(identities()).toEqual([]);
+  });
+
+  it('is taken out by aka unenroll --account from an entry stored under a key enroll refuses', async () => {
+    attach({ scope: fresh([codexAccount('chatgpt:payments')]) });
+    expect(await runUnenroll(['--account', 'chatgpt:payments'], deps(recorder()))).toBe(0);
+    expect(identities()).toEqual([]);
   });
 
   it('names both key forms when it refuses a key', async () => {

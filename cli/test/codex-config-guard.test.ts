@@ -9,6 +9,7 @@ import {
 } from '@akasecurity/persistence';
 import {
   CLAUDE_ACCOUNT_ENV_NAMES,
+  CODEX_ACCOUNT_ENV_NAMES,
   codexEnvVetoed,
   codexHomeDir,
   readCodexAccountEnv,
@@ -22,12 +23,24 @@ import type { Prompter } from '../src/lib/prompter.ts';
 
 // A suite that names no Codex home reads one anyway: `aka status` looks for the
 // login file under the real home unless told where else to look, and a Codex key,
-// token or gateway address in the environment vetoes the login before the file is
-// read. The setup file wired in vitest.config.ts moves the home to an empty
-// directory and clears those variables for every case, and these cases show where
-// it lands.
+// token or gateway address in the environment vetoes the login whatever the file
+// holds. The setup file wired in vitest.config.ts moves the home to an empty
+// directory and sets those variables to the empty string for every case, and these
+// cases show where it lands.
+
+// eslint-disable-next-line n/no-process-env -- a test guard, not product code: it reads back the environment the setup file declared.
+const env = process.env;
+
+// Every variable the account check reads except the home, which the cases below
+// show moved rather than cleared.
+const CLEARED_BY_SETUP = CODEX_ACCOUNT_ENV_NAMES.filter((name) => name !== 'CODEX_HOME');
 
 describe('the Codex environment a suite starts with', () => {
+  it.each(CLEARED_BY_SETUP)('has %s present in the environment and empty', (name) => {
+    expect(Object.hasOwn(env, name)).toBe(true);
+    expect(env[name] === '').toBe(true);
+  });
+
   it('names an empty directory under the temp root as the Codex home, not the real home', () => {
     const home = codexHomeDir();
     if (home === undefined) throw new Error('the Codex home is not a usable directory');

@@ -99,8 +99,10 @@ export interface RenderAttachedStatusDeps {
   cwd?: string | undefined;
   /**
    * Codex's home directory, whose login file the Codex line describes. `null`
-   * asks for the line when the environment names no usable home, which reads as
-   * no login file. Absent, no Codex login is read and the line is left out.
+   * asks for the line when the environment names no usable home: it reads as no
+   * login file, or as an API key or another provider in use when a key, a token
+   * or a gateway is set. Left out, no Codex login is read and the status has no
+   * Codex line.
    */
   codexHome?: string | null | undefined;
 }
@@ -393,21 +395,34 @@ export interface CodexLoginViewInput {
   /** The stored `attachmentScope`, raw. */
   readonly scope: unknown;
   readonly endpoint: string;
-  /** Codex's home directory; without one no login file is read, and the login reads as absent. */
+  /** Codex's home directory. Without one no login file is read. */
   readonly codexHome: string | undefined;
 }
 
 /**
  * The Codex login signed in now, checked the way a new thread would be, without a
  * thread: the same login reader, the address compared by digest, the plan read as
- * a state. The login file is read before the environment can veto it, so the key
- * and the plan state are given under a key, a token or a gateway too, and before
- * the device knows who attached it, so `aka enroll` can ask about a personal plan
- * before the first sync. An account enrolled by hand counts before the address and
- * the plan are compared. Those two are compared before the opt-out, so a personal
- * plan reads as one whether or not the user opted out; the opt-out is compared
- * before the cap on recognised accounts, so with recognition off a login that
- * would otherwise be over the cap reads as `off`. Persists nothing. Never throws.
+ * a state.
+ *
+ * The login file is read before the environment can veto it, so a login that was
+ * read is named by its key and plan state under a key, a token or a gateway too,
+ * and before the device knows who attached it, so `aka enroll` can ask about a
+ * personal plan before the first sync. What each case reads as:
+ * - no Codex home, or no login file under it: `absent`, naming nothing;
+ * - a file that is not a ChatGPT login this device can read: `unreadable`, naming
+ *   nothing;
+ * - either of those while a key, a token or a gateway is set: `veto`, naming
+ *   nothing;
+ * - a login while a key, a token or a gateway is set: `veto`, naming its key and
+ *   plan state;
+ * - a login otherwise: the state the checks described next give, naming its key
+ *   and plan state.
+ *
+ * An account enrolled by hand counts before the address and the plan are
+ * compared. Those two are compared before the opt-out, so a personal plan reads as
+ * one whether or not the user opted out; the opt-out is compared before the cap on
+ * recognised accounts, so with recognition off a login that would otherwise be
+ * over the cap reads as `off`. Persists nothing. Never throws.
  */
 export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
   const unnamed = (state: CodexLoginState): CodexLoginView => ({

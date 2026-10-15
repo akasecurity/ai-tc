@@ -17,9 +17,10 @@ import {
   type WorkspaceSettingsFormViewProps,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
-// The Unsent activity row on a machine attached as a personal device. Such a
-// machine sends activity only from its enrolled repositories, so every string
-// the row shows there names them and none describes the whole machine's backlog.
+// The Unsent activity row on a machine attached as a personal device. The
+// backlog the grant covers there is what its enrolled repositories and accounts
+// recorded, so every string the row shows names those and none describes the
+// whole machine's backlog.
 // The host passes the credential's mode as `attachmentMode`; anything but
 // 'scoped' keeps the machine-wide wording, the one that says more is sent,
 // never less.
@@ -150,16 +151,16 @@ describe('history-sync copy on a personal device', () => {
   // fix what they do say.
   it('pins the personal-device row summary word for word', () => {
     expect(HISTORY_SYNC_ROW_DESCRIPTION_SCOPED).toBe(
-      'Whether activity the repositories enrolled here have not delivered may be sent later.',
+      'Whether activity the repositories and accounts enrolled here have not delivered may be sent later.',
     );
   });
 
   it('pins the personal-device disclosure word for word', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toBe(
-      'Whether activity the repositories enrolled on this device have not delivered to the ' +
-        'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-        'outside one, is not sent by this setting. What qualifies is some of what an enrolled ' +
-        'repository recorded here before you enrolled it, sent as: ' +
+      'Whether activity the repositories and accounts enrolled on this device have not delivered ' +
+        'to the deployment it is attached to may be sent later. Activity anywhere else is not ' +
+        'sent by this setting. What qualifies is some of what an enrolled repository or account ' +
+        'recorded here before you enrolled it, sent as: ' +
         'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
         'call, which tools were called with their inputs truncated and every detected secret ' +
         'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
@@ -168,10 +169,10 @@ describe('history-sync copy on a personal device', () => {
         'masked only where that policy is redact or block, and under monitor or warn the value is ' +
         'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
         'or block, so on a default install nothing in that text is masked. Live sending from ' +
-        'enrolled repositories, and from Claude Code sessions signed in to a work subscription of ' +
-        'your organization that this device recognises, is part of being attached and this setting ' +
-        'does not change it: anything a live send from either could not deliver is kept and sent ' +
-        'later either way. With no repository enrolled and no work subscription recognised, no ' +
+        'enrolled repositories and accounts, and from Claude Code sessions signed in to a work ' +
+        'subscription that this device recognises, is part of being attached and this setting ' +
+        'does not change it: anything a live send from any of them could not deliver is kept and ' +
+        'sent later either way. With nothing enrolled and no work subscription recognised, no ' +
         'activity is sent. Sending happens in the background over later ' +
         'sessions. Revoking stops what has not been sent; it cannot recall what has.',
     );
@@ -183,13 +184,13 @@ describe('history-sync copy on a personal device', () => {
         value: 'revoked',
         label: 'Not shared',
         description:
-          'What an enrolled repository recorded before you enrolled it is not sent (default — never assumed).',
+          'What an enrolled repository or account recorded before you enrolled it is not sent (default — never assumed).',
       },
       {
         value: 'granted',
         label: 'Shared',
         description:
-          'Some of what the repositories enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent by this setting.',
+          'Some of what the repositories and accounts enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity anywhere else is not sent by this setting.',
       },
     ]);
   });
@@ -249,14 +250,32 @@ describe('history-sync copy on a personal device', () => {
       expect(text).not.toContain('before it attached');
     }
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
-      'Activity in any other repository, or outside one, is not sent by this setting.',
+      'Activity anywhere else is not sent by this setting.',
     );
     expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
-      'With no repository enrolled and no work subscription recognised, no activity is sent.',
+      'With nothing enrolled and no work subscription recognised, no activity is sent.',
     );
   });
 
-  // The grant covers earlier history of the enrolled repositories. A work
+  // `aka enroll --account` queues an enrolled account's earlier captures, which
+  // belong to no repository, so a string that limited the grant to repositories
+  // would deny what it does.
+  it('names enrolled accounts beside enrolled repositories wherever the grant is described', () => {
+    const grant = [
+      HISTORY_SYNC_ROW_DESCRIPTION_SCOPED,
+      HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED,
+      ...HISTORY_SYNC_CHOICES_SCOPED.map((c) => c.description),
+    ];
+    for (const text of grant)
+      expect(text).toMatch(/repository or account|repositories and accounts/);
+    for (const text of grant) expect(text).not.toContain('any other repository');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).not.toContain('outside one');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED).toContain(
+      'Live sending from enrolled repositories and accounts,',
+    );
+  });
+
+  // The grant covers earlier history of the enrolled repositories and accounts. A work
   // subscription's sessions are live activity the attachment already permits, so
   // the one place this copy names them is the part-of-being-attached sentence.
   it('does not describe the grant as covering work-subscription sessions', () => {
@@ -279,11 +298,12 @@ describe('history-sync copy on a personal device', () => {
     expect(end).toBeGreaterThan(start);
     const sentence = HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED.slice(start, end);
     expect(sentence).toContain(
-      'Claude Code sessions signed in to a work subscription of your organization that this device recognises',
+      'Claude Code sessions signed in to a work subscription that this device recognises',
     );
+    expect(sentence).not.toContain('of your organization');
     expect(sentence).toContain('is part of being attached and this setting does not change it');
     expect(sentence).toContain('could not deliver is kept and sent later either way');
-    expect(sentence).toContain('no repository enrolled and no work subscription recognised');
+    expect(sentence).toContain('nothing enrolled and no work subscription recognised');
   });
 
   // Only the subject narrows. The payload, the masking rule and what declining

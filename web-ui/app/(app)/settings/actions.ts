@@ -789,7 +789,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   //     carry a list or a grant. A list enrolled under another organization or
   //     account would forward under the new key.
   // A stop then leaves what the machine had before beside no list (machine-wide)
-  // or an empty one (scoped), which sends no repository's activity.
+  // or an empty one (scoped), which enrolls no repository or account.
   //
   // THE EXCEPTION is a scoped attach over a usable machine-wide credential, which
   // writes the credential first, as `aka attach` does. In `aka attach`, settings

@@ -23,10 +23,13 @@ import {
   readLocalHistoryPreview,
   readManagedSettings,
   readSightingSharing,
+  removeAttachedIdentity,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   settledDecisionHolds,
+  turnWorkSubscriptionsOff,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
   writesSettingsFirst,
@@ -60,10 +63,12 @@ import {
   attachmentModeOf,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttachmentScopeBoundTo,
+  isAttachmentScopeValid,
   originOnly,
   parseAttachmentScope,
   sightingSharingLine,
   unsafeEndpointReason,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { homeBase } from '../lib/args.ts';
@@ -825,7 +830,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // for someone else, or naming nobody cannot be shown to be this account's;
   // and a bound list found beside a machine-wide credential, or none, was left
   // by a writer that did not clear it (an older aka's re-attach or detach), so
-  // its enrollments belong to an attachment that has ended.
+  // its enrollments belong to an attachment that has ended. The fresh one keeps
+  // the opt-out of work-subscription recognition the replaced record held for
+  // this endpoint (freshScopeKeepingOptOut).
   // `previous` is the credential on disk just before the write, not the one the
   // mode was decided from: another aka may have attached this machine in between,
   // and what is kept must follow what is there now.
@@ -860,7 +867,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     cleared.readableEntries =
       cleared.because === undefined ? 0 : (parseAttachmentScope(stored)?.entries.length ?? 0);
     cleared.unread = unreadInReplacedList(stored);
-    return freshAttachmentScope(endpoint, identity);
+    return freshScopeKeepingOptOut(stored, endpoint, identity);
   };
 
   // THE ORDER OF THE TWO WRITES, chosen by what a stop between them would leave.
@@ -968,6 +975,21 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     io.err(saveFailedMessage(err, rollback));
     exit(1);
     return;
+  }
+
+  // Who the key belongs to, as digests beside the credential, now that both
+  // writes have landed: recorded for a scoped attach, removed for a machine-wide
+  // one, with every session's account state cleared either way. A record that
+  // cannot be written leaves none, and the attach stands.
+  if (mode === 'scoped') {
+    writeAttachedIdentity(dataDirOf(base), {
+      endpoint,
+      apiKey,
+      tenantName: identity.tenantName,
+      userEmail: identity.userEmail,
+    });
+  } else {
+    removeAttachedIdentity(dataDirOf(base));
   }
 
   // The capture half of the grant. The structural half needs no equivalent
@@ -1520,6 +1542,24 @@ function whyListCleared(
   return undefined;
 }
 
+/**
+ * The list a scoped attach writes in place of one it does not keep: empty and
+ * bound to `who`, with the opt-out of work-subscription recognition `stored`
+ * holds carried over, and nothing else of it. `stored` counts only when it is
+ * readable and names `endpoint`; the opt-out of any other record is dropped, so
+ * it cannot switch recognition off for a deployment it was not made for.
+ */
+function freshScopeKeepingOptOut(
+  stored: unknown,
+  endpoint: string,
+  who: Pick<PluginWhoami, 'tenantName' | 'userEmail'>,
+): unknown {
+  const fresh = freshAttachmentScope(endpoint, who);
+  return isAttachmentScopeValid(stored, endpoint) && !workSubscriptionsOn(stored)
+    ? turnWorkSubscriptionsOff(fresh, endpoint).next
+    : fresh;
+}
+
 /** The line that opens the report of a list a scoped attach did not keep. */
 function clearedListLine(readableEntries: number): string {
   return readableEntries === 1
@@ -1691,8 +1731,9 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 /**
  * Everything derived from an attachment: the cached bundle, the recorded sync
  * outcome, the forward breaker's state, the count of events the batch budget
- * discarded, the last posture send's outcome, and how far the history drain had
- * got. All six are meaningless without one, and all six MISLEAD if they survive
+ * discarded, the last posture send's outcome, how far the history drain had got,
+ * the record of who attached the machine, and every session's account state. All
+ * of them are meaningless without one, and all of them MISLEAD if they survive
  * it — the drop tally most legibly, since a freshly attached machine would
  * otherwise open by reporting events it lost to a deployment it no longer talks to.
  *

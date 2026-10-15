@@ -505,6 +505,36 @@ describe('cli/README.md work-subscription disclosure', () => {
 });
 
 /**
+ * The CLI page's own pins on the Codex work-subscription sentences, in its body
+ * paragraph and in the egress footnote. The plugin suite pins the whole sentence
+ * group on this page; these pin the phrase of each sentence a reader quotes, on
+ * the parse this suite already makes of the page. Each phrase is Codex's own, so
+ * the Claude Code sentences beside them cannot satisfy it.
+ */
+describe('cli/README.md Codex work-subscription disclosure', () => {
+  const CODEX_PHRASES = [
+    'A Codex thread counts as a work subscription when it is new and signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace',
+    "with its login saved in Codex's login file and OpenAI as the provider",
+    "Such a thread sends everything it records, from any folder, with that folder's project and branch names, and your organization's prohibited models are refused in any folder of it.",
+    "the device reads Codex's login file, the first line of the thread's own log and the environment variables that choose the account or provider",
+    "the login's workspace with the one that created the thread",
+    "the token usage and tool calls read from that thread's log are forwarded with the rest of the activity of a recognised thread or of one signed in to a workspace enrolled by hand",
+    'A token refresh keeps a recognised thread forwarding; a switch of workspace, email, plan or login mode ends it for the rest of that thread.',
+    "A resumed thread, a personal plan, a service account, another email, an API key or access token (in the environment or as the login), another provider or a gateway, a thread whose log does not name the login's workspace as its creator, and a login Codex keeps outside its login file (in the system keychain, for one) follow the repository rule.",
+    'the Codex threads of a workspace enrolled that way then forward whatever the plan or email',
+    '`aka unenroll --work-subscriptions` turns the recognition of Codex threads off too',
+  ];
+
+  it.each(CODEX_PHRASES)('says %j in the body', (phrase) => {
+    expect(body).toContain(phrase);
+  });
+
+  it.each(CODEX_PHRASES)('says %j in the egress footnote', (phrase) => {
+    expect(footnote).toContain(phrase);
+  });
+});
+
+/**
  * The command table and the manifest the help is built from describe the two
  * enrollment verbs in the same words: an enrolled Claude account sends its
  * Claude Code sessions as well as its claude.ai chats.

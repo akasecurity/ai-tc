@@ -224,6 +224,38 @@ your organization's model restrictions apply only to them. A machine whose
 connection an administrator manages attaches machine-wide only, so it has no
 personal-device mode and no such opt-out.
 
+A Codex thread counts as a work subscription when it is new and signed in with
+ChatGPT to a Business, Team, Enterprise or Edu workspace under the same email
+as the AKA account that attached the device, with its login saved in Codex's
+login file and OpenAI as the provider. Such a thread sends everything it
+records, from any folder, with that folder's project and branch names, and your
+organization's prohibited models are refused in any folder of it. To tell
+whether a thread is one, the device reads Codex's login file, the first line of
+the thread's own log and the environment variables that choose the account or
+provider, and compares the signed-in email with the account that attached the
+device and the login's workspace with the one that created the thread. The
+check sends none of what it reads, though the token usage and tool calls read
+from that thread's log are forwarded with the rest of the activity of a
+recognised thread or of one signed in to a workspace enrolled by hand. A token
+refresh keeps a recognised thread forwarding; a switch of workspace, email,
+plan or login mode ends it for the rest of that thread. A resumed thread, a
+personal plan, a service account, another email, an API key or access token (in
+the environment or as the login), another provider or a gateway, a thread whose
+log does not name the login's workspace as its creator, and a login Codex keeps
+outside its login file (in the system keychain, for one) follow the repository
+rule. `aka enroll --account` enrolls by hand a workspace the device cannot
+recognise, and the Codex threads of a workspace enrolled that way then forward
+whatever the plan or email, though not a resumed thread, one under an API key
+or access token, one on another provider or a gateway, or one whose login Codex
+keeps outside its login file; a switch of workspace or login mode ends them.
+`aka unenroll --work-subscriptions` turns the recognition of Codex threads off
+too and `aka enroll --work-subscriptions` turns it back on; a workspace
+enrolled by hand still forwards while it is off (`aka unenroll --account` stops
+it). Recognising a Codex thread reads Codex's login token only in memory, for
+the claims that give its email, plan and workspace: the token is never kept,
+logged, printed or sent, and the recognition never copies the login file into
+the local store.
+
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of

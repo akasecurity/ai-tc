@@ -436,6 +436,103 @@ describe('Claude Code work-subscription claims', () => {
   });
 });
 
+/**
+ * A new Codex thread signed in with ChatGPT to a company workspace forwards
+ * everything it records, from any folder. Every page that describes a personal
+ * device says so in the same words: what counts, how the device tells and what
+ * that check sends, every case that keeps a thread to the repository rule, the
+ * workspace enrolled by hand, and the opt-out.
+ */
+const CODEX_WORK_SENTENCES = [
+  'A Codex thread counts as a work subscription when it is new and signed in with ChatGPT to a ' +
+    'Business, Team, Enterprise or Edu workspace under the same email as the AKA account that ' +
+    "attached the device, with its login saved in Codex's login file and OpenAI as the provider.",
+  "Such a thread sends everything it records, from any folder, with that folder's project and " +
+    "branch names, and your organization's prohibited models are refused in any folder of it.",
+  "To tell whether a thread is one, the device reads Codex's login file, the first line of the " +
+    "thread's own log and the environment variables that choose the account or provider, and " +
+    "compares the signed-in email with the account that attached the device and the login's " +
+    'workspace with the one that created the thread.',
+  'The check sends none of what it reads, though the token usage and tool calls read from that ' +
+    "thread's log are forwarded with the rest of the activity of a recognised thread or of one " +
+    'signed in to a workspace enrolled by hand.',
+  'A token refresh keeps a recognised thread forwarding; a switch of workspace, email, plan or ' +
+    'login mode ends it for the rest of that thread.',
+  'A resumed thread, a personal plan, a service account, another email, an API key or access ' +
+    'token (in the environment or as the login), another provider or a gateway, a thread whose ' +
+    "log does not name the login's workspace as its creator, and a login Codex keeps outside " +
+    'its login file (in the system keychain, for one) follow the repository rule.',
+  '`aka enroll --account` enrolls by hand a workspace the device cannot recognise, and the Codex ' +
+    'threads of a workspace enrolled that way then forward whatever the plan or email, though not ' +
+    'a resumed thread, one under an API key or access token, one on another provider or a ' +
+    'gateway, or one whose login Codex keeps outside its login file; a switch of workspace or ' +
+    'login mode ends them.',
+  '`aka unenroll --work-subscriptions` turns the recognition of Codex threads off too and ' +
+    '`aka enroll --work-subscriptions` turns it back on; a workspace enrolled by hand still ' +
+    'forwards while it is off (`aka unenroll --account` stops it).',
+];
+const CODEX_WORK_SENTENCE = CODEX_WORK_SENTENCES.join(' ');
+
+// What the login read keeps, said where the security page describes what crosses.
+const CODEX_READ_SENTENCE =
+  "Recognising a Codex thread reads Codex's login token only in memory, for the claims that give " +
+  'its email, plan and workspace: the token is never kept, logged, printed or sent, and the ' +
+  'recognition never copies the login file into the local store.';
+
+// The front doors that describe a personal device and the coding agents it runs;
+// `SCOPED_READMES` also selects the Claude Code plugin page, which describes that
+// plugin only.
+const CODEX_PAGES = ['README.md', 'cli/README.md'] as const;
+
+describe('Codex work-subscription claims', () => {
+  describe.each(CODEX_PAGES)('%s', (name) => {
+    const text = repoFile(name);
+
+    it('says what a recognised ChatGPT work subscription forwards from Codex, in the one sentence group', () => {
+      expect(flat(text)).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('says it in the body, not only in the footnote', () => {
+      expect(flat(paragraphs(text).join('\n'))).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('never says a resumed thread or a keychain login counts', () => {
+      expect(flat(text)).not.toMatch(/resumed (?:Codex )?threads? (?:also )?(?:forward|count)/i);
+      expect(flat(text)).not.toMatch(/keychain logins? (?:also )?(?:forward|count)/i);
+    });
+
+    it('never says the device sends the login email, plan or workspace id', () => {
+      expect(flat(text)).not.toMatch(
+        /sends? (?:the|your) (?:login )?(?:email|plan|account id|workspace id)/i,
+      );
+    });
+  });
+
+  it('says in SECURITY.md what the login read keeps, beside what it forwards', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(CODEX_WORK_SENTENCE);
+    expect(section).toContain(`${CODEX_WORK_SENTENCE} ${CODEX_READ_SENTENCE}`);
+  });
+
+  it('does not claim the scan protects a Codex home the environment relocates', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      expect(flat(repoFile(name))).not.toMatch(/aka scan[^.]*protects[^.]*CODEX_HOME/i);
+    }
+  });
+
+  it('counts only company workspaces, never a service account or a personal plan', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toMatch(/Business, Team, Enterprise or Edu workspace/);
+      expect(text).toMatch(/A resumed thread, a personal plan, a service account/);
+    }
+  });
+});
+
 describe('README.md scoped attachment lists', () => {
   const readme = flat(repoFile('README.md'));
   const footnote = flat(footnoteOf(repoFile('README.md')));

@@ -9,7 +9,10 @@ import {
   SIGHTING_SHARE_STANDALONE_NOTE,
   SightingSharingView,
 } from '../../src/settings/SightingSharingView.tsx';
-import { HISTORY_SYNC_SECTION_LABEL } from '../../src/settings/WorkspaceSettingsFormView.tsx';
+import {
+  CONNECTION_SECTION_LABEL,
+  HISTORY_SYNC_SECTION_LABEL,
+} from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
 const state = (over: Partial<SightingSharing> = {}): SightingSharing => ({
   mode: 'scoped',
@@ -43,7 +46,10 @@ describe('SightingSharingView', () => {
   it('scopes the payload sentence to sightings and points at the attached-mode disclosure', () => {
     const html = render(state());
     expect(html).toContain('data-slot="sighting-share-scope"');
-    expect(SIGHTING_SHARE_SCOPE_NOTE).toContain('credential sightings only');
+    expect(SIGHTING_SHARE_SCOPE_NOTE).toBe(
+      'This setting covers credential sightings only. What else an attached machine sends is set out under Connection and Unsent activity above.',
+    );
+    expect(SIGHTING_SHARE_SCOPE_NOTE).toContain(CONNECTION_SECTION_LABEL);
     expect(SIGHTING_SHARE_SCOPE_NOTE).toContain(HISTORY_SYNC_SECTION_LABEL);
     expect(html).not.toContain('data-slot="sighting-share-standalone"');
   });

@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { gatherReport } from '@akasecurity/local-ops';
 import { describe, expect, it } from 'vitest';
 
-import { GLOBAL_FLAGS } from '../src/command-manifest.ts';
+import { COMMAND_SPECS, GLOBAL_FLAGS } from '../src/command-manifest.ts';
 
 /**
  * Every npm package the passive update check looks up, taken from the real
@@ -449,5 +449,86 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     // anywhere a reader meets it), positive over the claim itself.
     expect(body).not.toMatch(/Everything runs on your machine/i);
     expect(CLAIM).toMatch(/Detection, enforcement, and your store run on your machine/);
+  });
+});
+
+/**
+ * The CLI page's own pins on the work-subscription sentences: in the body
+ * paragraph that introduces a personal device, and in the egress footnote that
+ * corrects the page's locality claim. The sentence on prohibited models names
+ * any folder of a work-subscription session. The plugin suite pins the whole
+ * sentence group.
+ */
+describe('cli/README.md work-subscription disclosure', () => {
+  const PHRASES = [
+    "sends everything it records from its first reply on, from any folder, with that folder's project and branch names",
+    "To tell whether a session is one, the device reads Claude Code's login file, the session's own log, and Claude Code's settings files (the project's own included) and environment variables that choose the account or provider, and compares the signed-in email with the account that attached the device. The check sends none of what it reads, though the token usage and tool calls read from that same log are forwarded with the rest of the activity of a recognised session or of one signed in to an account enrolled by hand.",
+    '`aka enroll --account` enrolls by hand an account the device cannot recognise, and the Claude Code sessions of an account enrolled that way then forward from their first reply on whatever the plan or email, though not under an API key or another provider.',
+    '`aka unenroll --work-subscriptions` turns recognition off on this device',
+    'it turns off only the automatic recognition, so while it is off, enrolled repositories and accounts enrolled by hand still forward (`aka unenroll --account` stops an account)',
+    'A machine whose connection an administrator manages attaches machine-wide only, so it has no personal-device mode and no such opt-out.',
+  ];
+
+  it('says each phrase in the body and in the egress footnote', () => {
+    for (const phrase of PHRASES) {
+      expect(body).toContain(phrase);
+      expect(footnote).toContain(phrase);
+    }
+  });
+
+  it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {
+    expect(body).toContain(
+      'signed in to a recognised work subscription or to an account you enroll by hand with `aka enroll --account`',
+    );
+    expect(footnote).toContain(
+      'signed in to a recognised work subscription or to an account enrolled by hand with `aka enroll --account`',
+    );
+  });
+
+  it('refuses prohibited models in any folder of a work-subscription or hand-enrolled session, not only in enrolled repositories', () => {
+    expect(body).toContain(
+      'the models it prohibits are refused only in the repositories you enroll and in any folder of a session signed in to a recognised work subscription or to an account you enroll by hand)',
+    );
+    expect(body).not.toMatch(/refused only in the repositories you enroll\)/);
+  });
+
+  it('never ties a work subscription or a plan to the organization', () => {
+    expect(body).not.toMatch(/(?:plan|subscription) of your organization/i);
+    expect(footnote).not.toMatch(/(?:plan|subscription) of your organization/i);
+  });
+
+  it('says the browser extension chat session start also fetches the sighting key', () => {
+    expect(body).toContain(
+      "so the machine still pulls the organization's policy and its sighting key and sends its device report",
+    );
+  });
+});
+
+/**
+ * The command table and the manifest the help is built from describe the two
+ * enrollment verbs in the same words: an enrolled Claude account sends its
+ * Claude Code sessions as well as its claude.ai chats.
+ */
+describe('cli/README.md enrollment commands', () => {
+  const ENROLL = 'Claude accounts (Claude Code sessions and claude.ai chats)';
+  const row = (verb: string): string =>
+    new RegExp(`\\| \`aka ${verb}\` \\|[^|]*\\|`).exec(body)?.[0] ?? '';
+
+  it('names the Claude accounts an enrollment covers in the command table', () => {
+    expect(row('enroll')).not.toBe('');
+    expect(row('enroll')).toContain(`choose which repositories and ${ENROLL} are sent`);
+    expect(row('unenroll')).toContain('Stop sending a repository or a Claude account');
+    expect(row('unenroll')).not.toContain('claude.ai account');
+  });
+
+  it('says the same in the help summaries', () => {
+    const summary = (name: string): string =>
+      COMMAND_SPECS.find((spec) => spec.name === name)?.summary ?? '';
+    expect(summary('enroll')).toContain(
+      `which repositories and ${ENROLL} a scoped attachment sends`,
+    );
+    expect(summary('unenroll')).toBe(
+      'Stop sending a repository or a Claude account from a scoped attachment',
+    );
   });
 });

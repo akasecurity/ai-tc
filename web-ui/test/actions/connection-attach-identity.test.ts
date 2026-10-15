@@ -7,6 +7,7 @@ import type * as Persistence from '@akasecurity/persistence';
 import {
   ATTACHED_IDENTITY_FILENAME,
   attachedUserDigestOf,
+  codingScopeExtrasAt,
   credentialDigestOf,
   dataDir,
   readAttachedIdentity,
@@ -16,6 +17,7 @@ import {
   SETTINGS_FILENAME,
   settingsDir,
 } from '@akasecurity/persistence';
+import type { WorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { attachToControlPlane, detachFromControlPlane } from '../../app/(app)/settings/actions.ts';
@@ -82,6 +84,7 @@ const ORGANIZATION = 'Example Org';
 const WORKER = `Worker${AT_SIGN}Example.com`;
 const COLLEAGUE = `colleague${AT_SIGN}example.com`;
 const WORK_ORG = `claude:${randomUUID()}`;
+const LATER_WORK_ORG = `claude:${randomUUID()}`;
 const ENROLLED_AT = '2026-10-14T00:00:00.000Z';
 
 let home: string;
@@ -125,15 +128,15 @@ function plantSessionAccountState(): void {
   writeFileSync(join(sessionAccounts(), 's-1.log'), '{}\n');
 }
 
-/** Learn WORK_ORG under the credential on disk, as a hook that validated it would. */
-function learnWorkOrg(): void {
+/** Learn a work account under the credential on disk, as a hook that validated it would. */
+function learnWorkOrg(key = WORK_ORG): void {
   const read = readControlPlaneCredentialFile(settingsDir(akaHome()));
   if (!read.usable) throw new Error(`expected a usable credential, got ${read.reason}`);
   expect(
     recordValidatedWorkAccount(akaData(), {
       endpoint: deployment.origin,
       credential: read.credential,
-      key: WORK_ORG,
+      key,
     }),
   ).toBe('written');
 }
@@ -346,6 +349,71 @@ describe('the dashboard attach records who the key belongs to', () => {
         row.writes,
       );
       expect(accountState()).toEqual(before);
+    });
+
+    // The refusal for this failure says a key already held still sends the
+    // sessions of any work subscription it recognises. It does: the list is
+    // empty, the identity record beside the key is untouched, and so a work
+    // account learned under that key forwards, and so does one first seen after
+    // the failure.
+    async function failTheCredentialWriteAfterTheSettings(): Promise<void> {
+      const unbound = {
+        endpoint: deployment.origin,
+        entries: [
+          {
+            kind: 'repo',
+            identity: 'github.com/example-org/payments-api',
+            enrolledAt: ENROLLED_AT,
+          },
+        ],
+      };
+      writeFileSync(
+        settingsFile(),
+        JSON.stringify({ ...storedSettings(), attachmentScope: unbound }),
+      );
+      stand.credentialWrites = 0;
+      stand.failCredentialWriteAt = 1;
+
+      const res = await attachToControlPlane({
+        endpoint: deployment.origin,
+        accessKey: ROTATED_KEY,
+        mode: 'scoped',
+      });
+
+      expect(res).toEqual({ ok: false, error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS });
+    }
+
+    function forwardingIdentities(): string[] {
+      const settings = storedSettings() as Pick<
+        WorkspaceSettings,
+        'controlPlane' | 'attachmentScope'
+      >;
+      expect(settings.attachmentScope).toMatchObject({ entries: [] });
+      return codingScopeExtrasAt(settingsDir(akaHome()), akaData(), settings).map(
+        (entry) => entry.identity,
+      );
+    }
+
+    it('leaves the key already held forwarding a learned work account once the credential is not saved after the settings', async () => {
+      await attach('scoped');
+      learnWorkOrg();
+
+      await failTheCredentialWriteAfterTheSettings();
+
+      expect(forwardingIdentities().map((identity) => identity.endsWith(WORK_ORG))).toEqual([true]);
+    });
+
+    it('leaves the key already held recognising a work account first seen after the credential is not saved after the settings', async () => {
+      await attach('scoped');
+      learnWorkOrg();
+      await failTheCredentialWriteAfterTheSettings();
+
+      learnWorkOrg(LATER_WORK_ORG);
+
+      const forwarding = forwardingIdentities();
+      expect(forwarding).toHaveLength(2);
+      expect(forwarding.some((identity) => identity.endsWith(WORK_ORG))).toBe(true);
+      expect(forwarding.some((identity) => identity.endsWith(LATER_WORK_ORG))).toBe(true);
     });
   });
 

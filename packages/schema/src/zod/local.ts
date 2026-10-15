@@ -6,7 +6,7 @@
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type {
   auditEvents,
@@ -97,6 +97,11 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // grant is invalidated and re-asked, for the same reason v1's was — declining
 // now changes what text can leave the machine for a set of rows it did not
 // before.
+//
+// Captures the live path itself marked owed are not under this grant: they are
+// delivery of activity the attachment already permits, sent later by the same
+// drain whether or not the grant is given. The grant covers the consent and
+// enroll seeds, which mark history the live path never offered.
 export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
 
 // How the plugin runs.

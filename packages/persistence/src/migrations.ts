@@ -1015,6 +1015,13 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   if (!columns.includes('outbox_owed')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
   }
+  // Set beside `outbox_owed` by the live forward path only, so the drain can
+  // deliver what the live path itself owes without the history-sync grant that
+  // the consent and enroll seeds need. Rows marked before this column existed
+  // stay behind the grant.
+  if (!columns.includes('outbox_live')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_live integer`);
+  }
   // WHY a row that failed needs two more columns, and not a fourth value in
   // `synced_at`. That column is already tri-valued — NULL, a delivery time, the
   // skip sentinel — and three shipped predicates are pinned against it

@@ -24,8 +24,9 @@
   "scripts": {
     "build": "tsup && node build/engine.mjs",
     "dev": "tsup --watch",
-    "lint": "eslint src test eval build hooks types *.config.*",
+    "lint": "eslint src test eval bench build hooks types *.config.*",
     "test": "vitest run",
+    "bench": "vitest bench --run --outputJson=bench-results.json",
     "typecheck": "tsc --noEmit",
     "prepack": "pnpm run build",
     "test:mod-runtime": "node test/mod-runtime/prepare.mjs && claude plugin test test/mod-runtime"

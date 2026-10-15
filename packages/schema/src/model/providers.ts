@@ -9,7 +9,7 @@
 // Pure data + pure functions: no I/O, no `process.env`, no `fetch`, no Node-API
 // deps, no Drizzle — this module sits on the emitted import graph from the
 // package entry (see `test/entry-graph.test.ts`).
-import { z } from 'zod';
+import * as z from 'zod';
 
 /**
  * The organisation that trained the model. `unknown` is the honest answer for a

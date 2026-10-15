@@ -1,5 +1,4 @@
-import { request as httpRequest } from 'node:http';
-import { request as httpsRequest, type RequestOptions } from 'node:https';
+import type { RequestOptions } from 'node:https';
 
 import { originOnly } from '@akasecurity/schema';
 
@@ -214,7 +213,17 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
   // rather than repeating it. Repeating it here would mean re-parsing `url`
   // (already done above) against a second copy of the same predicate, which is
   // exactly the drift the two would fall into.
-  const send_ = url.protocol === 'http:' ? httpRequest : httpsRequest;
+  //
+  // Both transports are loaded here, on the first request, rather than at
+  // module load. Every hook process bundles this module, and linking a static
+  // `node:http`/`node:https` import builds the module's ESM namespace, which
+  // reads every export — including the lazily loaded `WebSocket`,
+  // `CloseEvent` and `MessageEvent` getters, which load Node's bundled fetch
+  // implementation. A process that never sends would pay that on every call.
+  const send_ =
+    url.protocol === 'http:'
+      ? (await import('node:http')).request
+      : (await import('node:https')).request;
 
   const requestOptions: RequestOptions = {
     method: options.method,

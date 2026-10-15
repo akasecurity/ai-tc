@@ -233,6 +233,144 @@ describe('the dashboard attach records who the key belongs to', () => {
   );
 });
 
+describe('the dashboard attach keeps the opt-out of work-subscription recognition in a fresh list', () => {
+  /** The list a fresh attach writes for WORKER on the deployment. */
+  const fresh = (): Record<string, unknown> => ({
+    endpoint: deployment.origin,
+    tenantName: ORGANIZATION,
+    userEmail: WORKER,
+    entries: [],
+  });
+
+  /** A scoped attach, then `record` stored as the enrolled list, then the key rotated. */
+  async function rotateOver(record: unknown): Promise<void> {
+    await attach('scoped');
+    writeFileSync(settingsFile(), JSON.stringify({ ...storedSettings(), attachmentScope: record }));
+    await attach(undefined, ROTATED_KEY);
+    expect(readControlPlaneCredentialFile(settingsDir(akaHome()))).toMatchObject({
+      usable: true,
+      credential: { mode: 'scoped' },
+    });
+  }
+
+  const entry = (identity: string): Record<string, unknown> => ({
+    kind: 'repo',
+    identity,
+    enrolledAt: ENROLLED_AT,
+  });
+
+  it.each<[string, (endpoint: string) => unknown]>([
+    [
+      'a record that names no account',
+      (endpoint) => ({
+        endpoint,
+        workSubscriptions: 'off',
+        entries: [entry('github.com/example-org/payments-api')],
+      }),
+    ],
+    [
+      'a record for another organization',
+      (endpoint) => ({
+        endpoint,
+        tenantName: 'Other Org',
+        userEmail: WORKER,
+        workSubscriptions: 'off',
+        entries: [],
+      }),
+    ],
+    [
+      'a record for another account',
+      (endpoint) => ({
+        endpoint,
+        tenantName: ORGANIZATION,
+        userEmail: COLLEAGUE,
+        workSubscriptions: 'off',
+        entries: [],
+      }),
+    ],
+    [
+      'a value this version reads as off',
+      (endpoint) => ({ endpoint, workSubscriptions: 'paused', entries: [] }),
+    ],
+  ])('keeps the opt-out of %s', async (_how, record) => {
+    await rotateOver(record(deployment.origin));
+
+    expect(storedSettings().attachmentScope).toEqual({ ...fresh(), workSubscriptions: 'off' });
+  });
+
+  it('keeps the opt-out of a record left beside a machine-wide credential', async () => {
+    await attach('machine');
+    writeFileSync(
+      settingsFile(),
+      JSON.stringify({
+        ...storedSettings(),
+        attachmentScope: {
+          endpoint: deployment.origin,
+          tenantName: ORGANIZATION,
+          userEmail: WORKER,
+          workSubscriptions: 'off',
+          entries: [],
+        },
+      }),
+    );
+
+    await attach('scoped', ROTATED_KEY);
+
+    expect(storedSettings().attachmentScope).toEqual({ ...fresh(), workSubscriptions: 'off' });
+  });
+
+  it('keeps the opt-out and nothing else of the record it replaces', async () => {
+    await rotateOver({
+      endpoint: deployment.origin,
+      tenantName: 'Other Org',
+      userEmail: WORKER,
+      workSubscriptions: 'off',
+      builtBy: 'a newer build',
+      entries: [
+        entry('github.com/example-org/payments-api'),
+        { kind: 'account', identity: WORK_ORG, enrolledAt: ENROLLED_AT, codingAgents: true },
+        { kind: 'org', identity: 'example-org', enrolledAt: ENROLLED_AT },
+      ],
+    });
+
+    expect(storedSettings().attachmentScope).toEqual({ ...fresh(), workSubscriptions: 'off' });
+  });
+
+  it.each<[string, (endpoint: string) => unknown]>([
+    ['holds no opt-out', (endpoint) => ({ endpoint, entries: [] })],
+    [
+      'is for another deployment',
+      () => ({
+        endpoint: other.origin,
+        tenantName: ORGANIZATION,
+        userEmail: WORKER,
+        workSubscriptions: 'off',
+        entries: [],
+      }),
+    ],
+    [
+      'cannot be read: an organization name longer than this version accepts',
+      (endpoint) => ({
+        endpoint,
+        tenantName: 'x'.repeat(201),
+        userEmail: WORKER,
+        workSubscriptions: 'off',
+        entries: [],
+      }),
+    ],
+    [
+      'cannot be read: entries that are not a list',
+      (endpoint) => ({ endpoint, workSubscriptions: 'off', entries: 'not a list' }),
+    ],
+    ['cannot be read: a value that is not a record', () => 'not a record'],
+  ])('starts with recognition on when the record it replaces %s', async (_how, record) => {
+    await rotateOver(record(deployment.origin));
+
+    expect(storedSettings().attachmentScope).toEqual(fresh());
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+});
+
 describe('the dashboard detach', () => {
   it('detach removes session-accounts and the attached account', async () => {
     await attach('scoped');

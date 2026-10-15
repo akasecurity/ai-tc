@@ -7,7 +7,7 @@
 // event stream carries a raw model string and nothing else. The one rule the
 // whole module exists to enforce is that an unknown fact is recorded as unknown
 // and never as a plausible default.
-import { z } from 'zod';
+import * as z from 'zod';
 
 /**
  * A curated category tag for what kind of model this is, or `null` for a

@@ -75,13 +75,25 @@ export interface TokenizeMeta {
 }
 
 export interface DetokenizeOptions {
-  target: DetokenizeTarget;
+  // `fingerprint` is reachable only through `fingerprintPointer`, which never
+  // returns the value.
+  target: Exclude<DetokenizeTarget, 'fingerprint'>;
   reason: VaultDerefReason;
   // Required for a model-target crossing. Absent → refused.
   grantId?: string | undefined;
   // How many pointers one batched render resolved. Ignored for reasons that are
   // never batched.
   pointerCount?: number | undefined;
+}
+
+interface DerefOptions extends Omit<DetokenizeOptions, 'target'> {
+  target: DetokenizeTarget;
+}
+
+/** A pointer's sighting digest and the rule its value was vaulted under. */
+export interface PointerDigest {
+  digest: string;
+  ruleId: string;
 }
 
 interface ParsedPointerToken {
@@ -265,6 +277,35 @@ export class SecretVault {
    * model. Every call that gets as far as an identified row writes an audit row.
    */
   async detokenize(token: string, opts: DetokenizeOptions): Promise<DetokenizeResult> {
+    // The type already excludes it; an untyped caller must not reach the value this way either.
+    if ((opts.target as string) === 'fingerprint') return UNAVAILABLE;
+    return await this.#deref(token, opts);
+  }
+
+  /**
+   * Resolve a secret-category pointer and hand back only `digest` of its value,
+   * with the rule it was vaulted under. Audited as a `fingerprint`-target
+   * de-reference. Any other category, an unresolvable pointer, or a throwing
+   * `digest` answers UNAVAILABLE.
+   */
+  async fingerprintPointer(
+    token: string,
+    digest: (raw: string) => string,
+  ): Promise<PointerDigest | typeof UNAVAILABLE> {
+    const parsed = parsePointer(token);
+    if (parsed?.category !== 'secret') return UNAVAILABLE;
+    const raw = await this.#deref(token, { target: 'fingerprint', reason: 'sighting' });
+    if (raw === UNAVAILABLE) return UNAVAILABLE;
+    const row = this.#repo.byPointerId(base32Encode(parsed.pointerId));
+    if (!row) return UNAVAILABLE;
+    try {
+      return { digest: digest(raw), ruleId: row.ruleId };
+    } catch {
+      return UNAVAILABLE;
+    }
+  }
+
+  async #deref(token: string, opts: DerefOptions): Promise<DetokenizeResult> {
     const parsed = parsePointer(token);
     if (!parsed) return UNAVAILABLE;
 
@@ -637,7 +678,7 @@ export class SecretVault {
     return row;
   }
 
-  #audit(pointerId: string, opts: DetokenizeOptions, outcome: VaultDerefOutcome): void {
+  #audit(pointerId: string, opts: DerefOptions, outcome: VaultDerefOutcome): void {
     this.#repo.recordDeref({
       id: randomUUID(),
       pointerId,

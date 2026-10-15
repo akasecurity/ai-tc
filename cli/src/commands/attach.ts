@@ -42,6 +42,7 @@ import {
   promptRedactionLines,
   readHostVersionCache,
 } from '@akasecurity/plugin-sdk';
+import type { ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
@@ -140,6 +141,14 @@ export interface AttachDeps {
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
   managedSettings?: ManagedSettings | null;
+  /**
+   * Where Claude Code keeps its login and settings files, for the status line
+   * that says why its login counts. Leaving it out reads the real home and the
+   * system managed-settings file.
+   */
+  claudePaths?: ClaudeLoginPaths | undefined;
+  /** The project whose Claude Code settings can veto its login. Defaults to the working directory. */
+  cwd?: (() => string) | undefined;
   base?: string;
   prompter?: Prompter;
   /** The transport, injectable so tests verify a credential without a network. */
@@ -988,9 +997,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // to grant consent after the fact, and it installs nothing itself — so
   // gating this on consent would leave a machine that grants later with no
   // scheduler until its next `aka attach`. A declined machine's scheduled
-  // pass is a genuine no-op (`runHistorySyncPass` returns the 'no-consent'
-  // skip reason and forwards nothing) rather than a silent cost, which is
-  // what makes installing ahead of consent the cheaper failure mode.
+  // pass forwards only what the live path left undelivered (`runHistorySyncPass`
+  // returns the 'no-consent' skip reason), which is what makes installing ahead
+  // of consent the cheaper failure mode.
   (deps.installBackgroundSync ?? installBackgroundSync)(base);
 
   // What attaching forwards depends on the MODE, and each block is true of its
@@ -1044,6 +1053,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'the machine is attached as a personal device, the fact that it is one. Where',
           'a scan is available (the coding-agent plugins, not a browser chat), the same',
           'session start also checks it for device commands.',
+          'The background sync also asks that deployment once which account this',
+          "machine's key belongs to, when the machine does not know it yet.",
           // An aka older than this one writes a version-1 credential on every
           // attach, from its command line and from its dashboard alike, and
           // version 1 is machine-wide. Said here because the reader is the one
@@ -1274,30 +1285,16 @@ async function askAboutHistory(
   }
 
   const preview = readLocalHistoryPreview(dataDirOf(base));
-  // NO EARLY RETURN ON AN EMPTY STORE, and that changed with payload v2.
-  //
-  // Under v1 the grant's only subject was the pre-attach backlog, so an empty
-  // store made the question one with no subject and skipping it was right. v2
-  // gave it a second subject that exists on any machine, empty or not: whether a
-  // capture the live path FAILS to deliver is kept and retried or dropped. A
-  // fresh machine — the common case for a first `aka attach` — has no history
-  // and every future undelivered capture to decide about.
-  //
-  // Skipping the question there would leave it permanently ungranted and
-  // silently drop that traffic, which is the v1 behaviour the outbox exists to
-  // end. So the numbers are what an empty store costs, not the question: `scale`
-  // below already has a branch for a store it could not read, and that is the
-  // one an empty store now takes too.
+  // Asked on an empty store too: a preview that counts nothing is the same
+  // answer as a store it could not read, and the grant still applies to whatever
+  // is recorded here before the answer is acted on.
 
   if (!io.isInteractive) {
     io.err(NO_TERMINAL_FOR_HISTORY);
     return undefined;
   }
 
-  // Two shapes, because the grant has two subjects and only one of them needs a
-  // store to be interesting. A machine with history is told how much; a machine
-  // without one is still asked, about the half that is entirely in its future.
-  // What attaching forwards regardless of this answer is not said here: this
+  // A machine with history is told how much. What attaching forwards regardless of this answer is not said here: this
   // question is skipped by both flags and by a session with no terminal, so it
   // is said once, by `runAttach`, after the attachment has been written.
   const backlog =
@@ -1314,9 +1311,7 @@ async function askAboutHistory(
       '',
       `Verified against ${printableForTerminal(identity.tenantName, 200)}.`,
       '',
-      ...(backlog === undefined ? [] : [backlog]),
-      `AKA can ${backlog === undefined ? '' : 'also '}keep anything a live send fails to deliver, instead of`,
-      'dropping it.',
+      backlog ?? 'AKA can send activity this machine has already recorded locally.',
       '',
       ...(backlog === undefined
         ? []
@@ -1334,24 +1329,13 @@ async function askAboutHistory(
       // where the policy assigned its detection is redact or block — so copy
       // promising that every detected secret is masked first would be false
       // under monitor and warn, which is every detection until the user
-      // promotes one. Saying so is the point of asking, and it now covers BOTH
-      // buckets alike: once granted, that history is sent through the same
-      // outbox mark and the same drain as an undelivered live send, so the
-      // same masking rule applies to both.
-      ...(backlog === undefined
-        ? [
-            'For anything a live send could not deliver — the deployment was',
-            'unreachable, or refused the key — what was captured, which for a',
-          ]
-        : [
-            'For that history, and for anything a later live send could not',
-            'deliver — the deployment was unreachable, or refused the key — what',
-            'was captured, which for a',
-          ]),
+      // promotes one. Saying so is the point of asking.
+      'For that history, what was captured, which for a',
       ...MASKING_RULE_LINES,
       '',
       'Saying no does not stop live sending — that is part of being attached.',
-      'It means an undelivered item is dropped rather than kept and retried.',
+      'It means nothing recorded before now is sent. Anything a live send could',
+      'not deliver is kept and sent later either way, encoded as a live send is.',
       '',
       'It runs in the background over your next few sessions. Anything sent',
       'cannot be recalled.',
@@ -1372,7 +1356,7 @@ async function askAboutHistory(
  * recorded, enrolled or not, so a number would describe what this grant never
  * sends. What the grant can send is said in terms of enrolled repositories:
  * some of what one recorded before it was enrolled (whatever this machine still
- * holds of it), and anything a live send from one fails to deliver. The tenant
+ * holds of it). The tenant
  * name comes from the deployment, so it goes through the terminal strip.
  */
 function scopedHistoryQuestion(tenantName: string): string {
@@ -1385,23 +1369,20 @@ function scopedHistoryQuestion(tenantName: string): string {
     "A command you run inside an enrolled repository is sent as that repository's",
     'activity, even when it reads files elsewhere.',
     'It can also send some of what an enrolled repository recorded here before',
-    'you enrolled it, and keep anything a live send from one fails to deliver,',
-    'instead of dropping it.',
+    'you enrolled it.',
     '',
     'For an enrolled repository, that history is which sessions ran, when, in',
     'which project, repo and git branch; token usage and model per call; which',
     'tools were called, with their inputs truncated; what AKA detected in those',
     'tool inputs; and the prompts, assistant replies and tool results themselves.',
     '',
-    'For that history, and for anything a later live send could not',
-    'deliver — the deployment was unreachable, or refused the key — what',
-    'was captured, which for a',
+    'For that history, what was captured, which for a',
     ...MASKING_RULE_LINES,
     '',
     'Saying no does not stop live sending from enrolled repositories — that is',
     'part of being attached. It means nothing an enrolled repository recorded',
-    'before you enrolled it is sent, and an undelivered item is dropped rather',
-    'than kept and retried.',
+    'before you enrolled it is sent. Anything a live send from one could not',
+    'deliver is kept and sent later either way, encoded as a live send is.',
     '',
     'It runs in the background over your next few sessions. Anything sent',
     'cannot be recalled.',
@@ -1442,6 +1423,8 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  machine is attached as a personal device, the fact that it is one. Where a',
       '  scan is available (the coding-agent plugins, not a browser chat), the same',
       '  session start also checks it for device commands.',
+      '  A personal device also asks the deployment once, from the background sync,',
+      '  which account its key belongs to, when the device does not know it yet.',
       '  A machine your organization owns sends activity from anywhere on this',
       '  machine.',
       '',
@@ -1785,7 +1768,15 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   const base = deps.base ?? homeBase(args.home);
   const dataDir = dataDirOf(base);
 
-  const block = renderAttachedStatus({ base, settingsDir: settingsDirOf(base), dataDir });
+  const block = renderAttachedStatus({
+    base,
+    settingsDir: settingsDirOf(base),
+    dataDir,
+    isTTY: io.isInteractive,
+    managedSettings: deps.managedSettings,
+    claudePaths: deps.claudePaths ?? {},
+    cwd: (deps.cwd ?? (() => process.cwd()))(),
+  });
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);

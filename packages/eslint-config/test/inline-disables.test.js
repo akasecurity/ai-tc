@@ -132,6 +132,11 @@ const EXPECTED_INLINE_DISABLES = {
   // Chrome does.
   'plugins/browser-extension/test/native-host/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
 
+  // A test guard that declares the environment every CLI case starts in: it
+  // writes the one variable Claude Code's config location is read from, so a
+  // status read that names no home finds an empty directory, not the developer's.
+  'test/setup/no-host-claude-config.ts': [ENV_RULE],
+
   // The same boundary one step out: a harness that spawns a real shipped
   // SCRIPT rather than a real hook. install.sh needs the host PATH to find
   // curl, tar and shasum at all.

@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { throttled } from '@akasecurity/plugin-sdk';
+import { throttledPerKey } from '@akasecurity/plugin-sdk';
 
 import { safeSessionId } from './tail.ts';
 
@@ -36,8 +36,8 @@ const RECONCILE_MARKER_PREFIX = 'reconcile-last-attempt';
  */
 export function triggerReconcile(dataDir: string, sessionId: string, transcriptPath: string): void {
   try {
-    const marker = `${RECONCILE_MARKER_PREFIX}-${safeSessionId(sessionId)}`;
-    if (throttled(dataDir, marker, RECONCILE_THROTTLE_MS)) return;
+    const key = safeSessionId(sessionId);
+    if (throttledPerKey(dataDir, RECONCILE_MARKER_PREFIX, key, RECONCILE_THROTTLE_MS)) return;
     const here = dirname(fileURLToPath(import.meta.url));
     const child = spawn(process.execPath, [join(here, 'reconcile.js'), sessionId, transcriptPath], {
       detached: true,

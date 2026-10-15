@@ -323,11 +323,21 @@ function closeQuietly(db: DatabaseSync): void {
 // contention; foreign keys enforce the event→finding reference. The package's
 // SQL functions (sql-functions.ts) are registered on the same connection, so a
 // statement prepared on it can call them.
+//
+// busy_timeout is set FIRST, before any statement touches the file. The
+// journal_mode PRAGMA is the first statement that reads the store, and it takes
+// a shared lock to do so; a connection with no busy handler is refused that lock
+// immediately (SQLITE_BUSY) while another connection holds the file exclusively.
+// That is an ordinary state on a WAL store shared by short-lived processes: the
+// last connection to close checkpoints the log and deletes it under an exclusive
+// lock, so any process opening during that checkpoint met the refusal with no
+// wait at all and the whole open failed. With the timeout in place first, the
+// open waits the checkpoint out like any other contended statement.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
   try {
-    db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 2000');
+    db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA foreign_keys = ON');
     registerSqlFunctions(db);
   } catch (err) {

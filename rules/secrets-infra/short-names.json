@@ -11,5 +11,6 @@
   "secrets-infra/docker-config-auth": "Docker auth",
   "secrets-infra/kubeconfig-token": "Kubeconfig token",
   "secrets-infra/api-key-header": "API key header",
-  "secrets-infra/generic-high-entropy-secret": "High-entropy secret"
+  "secrets-infra/generic-high-entropy-secret": "High-entropy secret",
+  "secrets-infra/secret-config-value": "Secret config value"
 }

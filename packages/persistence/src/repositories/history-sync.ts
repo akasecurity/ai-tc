@@ -522,6 +522,9 @@ export class SqliteHistorySyncRepository {
   private readonly releaseBoundaryStmt: StatementSync;
   private readonly freezeBoundaryStmt: StatementSync;
   private readonly captureRowsStmt: StatementSync;
+  private readonly liveCaptureRowsStmt: StatementSync;
+  private readonly scopedLiveCaptureRowsStmt: StatementSync;
+  private readonly hasLiveOwedStmt: StatementSync;
   private readonly markOwedStmt: StatementSync;
   private readonly markCaptureBacklogOwedStmt: StatementSync;
   private readonly captureSkipCountStmt: StatementSync;
@@ -701,6 +704,51 @@ export class SqliteHistorySyncRepository {
         LIMIT :limit`,
     );
 
+    // The live path's own debt: owed captures the live forward marked, recorded
+    // since the current attachment began (`:since`). The consent and enroll
+    // seeds never set `outbox_live`, so nothing here needs the history grant.
+    // INDEXED BY because the `started_at` lower bound otherwise draws the planner
+    // onto idx_audit_type_t, which walks every capture since the attach rather
+    // than only the owed ones.
+    this.liveCaptureRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events INDEXED BY idx_audit_outbox_owed
+        WHERE synced_at IS NULL
+          AND sync_claimed_at IS NULL
+          AND outbox_owed = 1
+          AND outbox_live = 1
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at >= :since
+          AND started_at < :before
+        ORDER BY started_at
+        LIMIT :limit`,
+    );
+    // INDEXED BY for the reason scopedCaptureRowsStmt gives.
+    this.scopedLiveCaptureRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events INDEXED BY idx_audit_scope_owed
+        WHERE synced_at IS NULL
+          AND sync_claimed_at IS NULL
+          AND outbox_owed = 1
+          AND outbox_live = 1
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at >= :since
+          AND started_at < :before
+          AND ${inScope('scope_key')}
+        ORDER BY started_at
+        LIMIT :limit`,
+    );
+    this.hasLiveOwedStmt = db.prepare(
+      `SELECT 1 AS owed
+         FROM audit_events INDEXED BY idx_audit_outbox_owed
+        WHERE synced_at IS NULL
+          AND outbox_owed = 1
+          AND outbox_live = 1
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at >= :since
+        LIMIT 1`,
+    );
+
     // Settling clears the claim in the same statement. A row that has a
     // delivery time and still reads as claimed would show up in two states at
     // once, and the pair is only ever written together.
@@ -713,7 +761,7 @@ export class SqliteHistorySyncRepository {
     // day captures gain a re-arm (structural rows have one), where a stray
     // marker on a settled row would start to mean something.
     this.markOwedStmt = db.prepare(
-      `UPDATE audit_events SET outbox_owed = 1 WHERE id = :id AND synced_at IS NULL`,
+      `UPDATE audit_events SET outbox_owed = 1, outbox_live = 1 WHERE id = :id AND synced_at IS NULL`,
     );
 
     // The consent-time backfill: everything this machine already has, as of the
@@ -918,7 +966,7 @@ export class SqliteHistorySyncRepository {
     // which deployment could possibly have written a given marker is exactly
     // what which side of the switch its row falls on.
     this.disownCapturesStmt = db.prepare(
-      `UPDATE audit_events SET outbox_owed = NULL
+      `UPDATE audit_events SET outbox_owed = NULL, outbox_live = NULL
         WHERE outbox_owed IS NOT NULL
           AND event_type IN (${CAPTURE_TYPE_LIST})
           AND started_at < :attachedAt`,
@@ -1082,6 +1130,32 @@ export class SqliteHistorySyncRepository {
           before,
           scopeKeys: scopeKeysParam(scopeKeys),
         });
+  }
+
+  /**
+   * Captures the live path itself owes, recorded at or after `since` (the
+   * current attachment's start), oldest first. Never a row only the consent or
+   * enroll seed marked. `scopeKeys` scopes it as `pendingCaptureRows` does.
+   */
+  pendingLiveCaptureRows(
+    limit: number,
+    before: number,
+    since: number,
+    scopeKeys?: readonly string[],
+  ): AuditEventRow[] {
+    return scopeKeys === undefined
+      ? allRows<AuditEventRow>(this.liveCaptureRowsStmt, { limit, before, since })
+      : allRows<AuditEventRow>(this.scopedLiveCaptureRowsStmt, {
+          limit,
+          before,
+          since,
+          scopeKeys: scopeKeysParam(scopeKeys),
+        });
+  }
+
+  /** Whether the live path owes any capture recorded at or after `since`. */
+  hasLiveOwedCaptures(since: number): boolean {
+    return this.hasLiveOwedStmt.get({ since }) !== undefined;
   }
 
   /**

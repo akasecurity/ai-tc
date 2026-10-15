@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { manifestKindOf } from '@akasecurity/detections';
+import { type FileEgressHits, manifestKindOf } from '@akasecurity/detections';
 import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
 import { resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -79,6 +79,10 @@ function storedSites(dir: string): StoredSite[] {
 async function scanAndRecord(db: LocalDatabase, target: string, base: string) {
   const result = await scanPathIntoStore(db, target, { rules: [] });
   return recordProjectEgress(db, target, result.egress, base);
+}
+
+function walkedWithEndpoint(files: readonly FileEgressHits[], relative: string): boolean {
+  return files.some((f) => f.file.endsWith(relative) && f.endpoints.length > 0);
 }
 
 let root: string;
@@ -417,7 +421,9 @@ describe('recordProjectEgress — dot-path exclusion', () => {
     // dot-file like a real .releaserc.js IS walked and read.
     writeCall(join(root, '.releaserc.js'), 'api.acme-webhooks.com');
 
-    const recorded = await scanAndRecord(db, root, base);
+    const scan = await scanPathIntoStore(db, root, { rules: [] });
+    expect(walkedWithEndpoint(scan.egress.files, '.releaserc.js')).toBe(true);
+    const recorded = recordProjectEgress(db, root, scan.egress, base);
 
     // The reconciler's walk-mode delete excludes dot-paths ('file NOT LIKE
     // '.%''), so a stored row here could never be cleared by a later scan.
@@ -426,16 +432,17 @@ describe('recordProjectEgress — dot-path exclusion', () => {
     expect(storedSites(store)).toEqual([]);
   });
 
-  it('does not store egress from a dot-directory reached via an .akaignore negation', async () => {
+  it('does not store egress from a file under a dot-directory the walk enters', async () => {
     initRepo(root, REMOTE_URL);
-    // A bare '!' re-include beats the default dot-directory skip (fs-scan.ts),
-    // so this nested file IS walked despite living under a dot-directory —
-    // proving the exclusion below is a second, independent gate, not just a
-    // restatement of the walker's own default dot-directory skip.
-    writeFileSync(join(root, '.akaignore'), '!.github/\n');
+    // The walk enters `.github`, so the file is scanned; the egress record
+    // still excludes it.
     writeCall(join(root, '.github', 'scripts', 'notify.js'), 'api.acme-webhooks.com');
 
-    const recorded = await scanAndRecord(db, root, base);
+    const scan = await scanPathIntoStore(db, root, { rules: [] });
+    expect(walkedWithEndpoint(scan.egress.files, join('.github', 'scripts', 'notify.js'))).toBe(
+      true,
+    );
+    const recorded = recordProjectEgress(db, root, scan.egress, base);
 
     expect(recorded).toMatchObject({ destinations: 0, endpoints: 0, callSites: 0 });
     expect(storedSites(store)).toEqual([]);

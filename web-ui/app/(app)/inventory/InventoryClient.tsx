@@ -47,6 +47,7 @@ export function InventoryClient({
   active,
   assetDetail,
   blocked,
+  blockedError,
   harnessEvents,
   renderedAt,
   locale,
@@ -59,6 +60,8 @@ export function InventoryClient({
   assetDetail: AssetDetailData | null;
   /** The opened project's auto-blocked files. */
   blocked: FileSummary[];
+  /** Set when the opened project's withheld files could not be read. */
+  blockedError: string | null;
   harnessEvents: HarnessEventsResponse;
   /**
    * The instant the server rendered against, advanced through useRenderClock —
@@ -182,6 +185,7 @@ export function InventoryClient({
             <ProjectDetail
               project={project}
               blocked={blocked}
+              blockedError={blockedError}
               harnesses={harnesses}
               onBack={back}
               backLabel={backLabel}

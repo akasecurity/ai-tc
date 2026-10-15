@@ -1128,7 +1128,7 @@ Two things about that ban are worth knowing before trusting it. It reaches what
 `react-hooks/purity` cannot — that rule reports a clock read inside a COMPONENT,
 so a module-level helper in a client file is invisible to it, and that is exactly
 where the one site this sweep did not find by hand was living
-(`HarnessOverview`'s `formatEvent`). And it cannot follow a binding, so a clock
+(`HarnessInventory`'s `formatEvent`). And it cannot follow a binding, so a clock
 reached through an imported helper goes unseen; the required argument is what
 covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
 one sanctioned reader, and its exemption is written in that package's

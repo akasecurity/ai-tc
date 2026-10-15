@@ -75,19 +75,35 @@ export const WITHHELD_NOTES: Record<WebChatWithholding, string> = {
 /**
  * The line naming the account a site's requests were last seen in, on a machine
  * that withholds web chats: whether replies in it are recorded and sent, and if
- * not, why, with the command that would enroll it.
+ * not, why, with the command that would enroll it where enrolling would send
+ * anything. An unreadable attachment is given as the reason ahead of capture
+ * being off: no chat is recorded while the credential cannot be read, whatever
+ * the capture setting.
  */
-export function accountNote(account: {
-  identity: string;
-  enrolled: boolean;
-  recorded: boolean;
-}): string {
+export function accountNote(
+  account: { identity: string; enrolled: boolean; recorded: boolean },
+  capture: { withheld: WebChatWithholding; consented: boolean },
+): string {
+  const { identity } = account;
   if (account.recorded)
-    return `${account.identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`;
+    return `${identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`;
+  const unreadable = capture.withheld === 'unreadable-attachment';
   if (account.enrolled) {
-    return `${account.identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded`;
+    if (unreadable) {
+      return `${identity} — enrolled, but the attachment is unreadable, so nothing from its chats is recorded`;
+    }
+    if (!capture.consented) {
+      return `${identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded; turn it on under Settings in aka dashboard`;
+    }
+    return `${identity} — enrolled, but replies in it are not being recorded`;
   }
-  return `${account.identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${account.identity}`;
+  if (unreadable) {
+    return `${identity} — not enrolled, and the attachment is unreadable, so nothing from its chats is recorded`;
+  }
+  if (!capture.consented) {
+    return `${identity} — not enrolled; to send its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}; its replies are sent only while web-chat capture is on, under Settings in aka dashboard`;
+  }
+  return `${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`;
 }
 
 // Read through a widened ALIAS rather than a cast at the lookup: the table is
@@ -103,15 +119,15 @@ export function renderCaptureSites(response: CaptureStateResponse): void {
   const sitesEl = document.getElementById('capture-sites');
   if (!section || !notEnabled || !withheldEl || !sitesEl) return;
   section.hidden = false;
-  // Ahead of the consent answer: a machine that withholds records nothing from
-  // a chat whether or not capture was consented to, so the network states would
-  // describe recording that is not happening. What still matters there is
-  // whether each site is being CHECKED, so its enforcement faults are shown
-  // beneath the line. An older host's reply lacks the field and reads as not
-  // withheld.
-  withheldEl.hidden = response.withheld === undefined;
-  if (response.withheld !== undefined) {
-    withheldEl.textContent = WITHHELD_NOTES[response.withheld];
+  // Ahead of the consent answer: while the host withholds, the section shows the
+  // withholding reason, each account's note and each site's enforcement faults,
+  // and none of the network states. Whether each site is being CHECKED still
+  // matters there, so its enforcement faults are shown beneath the line. An
+  // older host's reply lacks the field and reads as not withheld.
+  const { withheld, consented } = response;
+  withheldEl.hidden = withheld === undefined;
+  if (withheld !== undefined) {
+    withheldEl.textContent = WITHHELD_NOTES[withheld];
     notEnabled.hidden = true;
     sitesEl.replaceChildren(
       ...response.sites.flatMap((site) => {
@@ -121,7 +137,7 @@ export function renderCaptureSites(response: CaptureStateResponse): void {
         if (site.account !== undefined) {
           const accountRow = document.createElement('div');
           accountRow.className = 'row muted';
-          accountRow.textContent = `${SITE_LABELS[site.tool]}: ${accountNote(site.account)}`;
+          accountRow.textContent = `${SITE_LABELS[site.tool]}: ${accountNote(site.account, { withheld, consented })}`;
           rows.push(accountRow);
         }
         const note = site.enforcement === undefined ? undefined : NOTE_FOR[site.enforcement];

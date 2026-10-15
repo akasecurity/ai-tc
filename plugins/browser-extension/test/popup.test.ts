@@ -208,7 +208,7 @@ describe('renderCaptureSites', () => {
     );
     const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
     expect(rows.map((row) => row.textContent)).toEqual([
-      `Claude.ai: ${accountNote({ identity, enrolled: false, recorded: false })}`,
+      `Claude.ai: ${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`,
       'Claude.ai: not enforcing — composer and send button not found',
     ]);
     // The account is information, the fault is an error: only one is styled
@@ -239,9 +239,13 @@ describe('renderCaptureSites', () => {
   it('words each account state so it says whether anything is recorded, and how to change it', () => {
     const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
     const enroll = `aka enroll --account ${identity}`;
-    const unenrolled = accountNote({ identity, enrolled: false, recorded: false });
-    const off = accountNote({ identity, enrolled: true, recorded: false });
-    const recorded = accountNote({ identity, enrolled: true, recorded: true });
+    const readable = { withheld: 'personal-device', consented: true } as const;
+    const unenrolled = accountNote({ identity, enrolled: false, recorded: false }, readable);
+    const off = accountNote(
+      { identity, enrolled: true, recorded: false },
+      { withheld: 'personal-device', consented: false },
+    );
+    const recorded = accountNote({ identity, enrolled: true, recorded: true }, readable);
     for (const note of [unenrolled, off, recorded]) expect(note.startsWith(identity)).toBe(true);
     // Only the account that is not enrolled is sent to the command that
     // enrolls it; an enrolled one is not told to enroll again.
@@ -260,17 +264,128 @@ describe('renderCaptureSites', () => {
     );
   });
 
-  it('words each account state exactly', () => {
+  describe('accountNote, word for word', () => {
     const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
-    expect(accountNote({ identity, enrolled: false, recorded: false })).toBe(
-      `${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`,
-    );
-    expect(accountNote({ identity, enrolled: true, recorded: false })).toBe(
-      `${identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded`,
-    );
-    expect(accountNote({ identity, enrolled: true, recorded: true })).toBe(
-      `${identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`,
-    );
+    type Account = Parameters<typeof accountNote>[0];
+    type Capture = Parameters<typeof accountNote>[1];
+    const notEnrolled: Account = { identity, enrolled: false, recorded: false };
+    const enrolledOff: Account = { identity, enrolled: true, recorded: false };
+    const enrolledRecorded: Account = { identity, enrolled: true, recorded: true };
+    const readable: Capture = { withheld: 'personal-device', consented: true };
+    const consentOff: Capture = { withheld: 'personal-device', consented: false };
+    const unreadable: Capture = { withheld: 'unreadable-attachment', consented: true };
+    const unreadableConsentOff: Capture = { withheld: 'unreadable-attachment', consented: false };
+
+    it('says that replies and sessions are sent on enrolling, where capture is on and the attachment is readable', () => {
+      expect(accountNote(notEnrolled, readable)).toBe(
+        `${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`,
+      );
+    });
+
+    it('says that replies in an enrolled account are recorded and sent', () => {
+      expect(accountNote(enrolledRecorded, readable)).toBe(
+        `${identity} — enrolled; replies in it, with their tool calls and token usage, are recorded and sent`,
+      );
+    });
+
+    it('names web-chat capture as why an enrolled account records nothing while it is off', () => {
+      expect(accountNote(enrolledOff, consentOff)).toBe(
+        `${identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded; turn it on under Settings in aka dashboard`,
+      );
+    });
+
+    it('says enrolling sends sessions but replies only while capture is on, where it is off', () => {
+      expect(accountNote(notEnrolled, consentOff)).toBe(
+        `${identity} — not enrolled; to send its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}; its replies are sent only while web-chat capture is on, under Settings in aka dashboard`,
+      );
+    });
+
+    it('names the unreadable attachment as why an enrolled account records nothing', () => {
+      expect(accountNote(enrolledOff, unreadable)).toBe(
+        `${identity} — enrolled, but the attachment is unreadable, so nothing from its chats is recorded`,
+      );
+    });
+
+    it('offers no enroll command for an account that is not enrolled while the attachment is unreadable', () => {
+      const note = accountNote(notEnrolled, unreadable);
+      expect(note).toBe(
+        `${identity} — not enrolled, and the attachment is unreadable, so nothing from its chats is recorded`,
+      );
+      expect(note).not.toContain('aka enroll');
+    });
+
+    it('gives the unreadable attachment as the reason when capture is also off', () => {
+      expect(accountNote(enrolledOff, unreadableConsentOff)).toBe(
+        accountNote(enrolledOff, unreadable),
+      );
+      expect(accountNote(notEnrolled, unreadableConsentOff)).toBe(
+        accountNote(notEnrolled, unreadable),
+      );
+      expect(accountNote(enrolledOff, unreadableConsentOff)).not.toContain('web-chat capture');
+    });
+
+    it('does not blame capture, or the attachment, when an enrolled account is simply not recorded', () => {
+      expect(accountNote(enrolledOff, readable)).toBe(
+        `${identity} — enrolled, but replies in it are not being recorded`,
+      );
+    });
+  });
+
+  describe('the account row in the capture section', () => {
+    const identity = 'claude:0a1b2c3d-0000-4000-8000-00000000000a';
+    const rowFor = (
+      account: { enrolled: boolean; recorded: boolean },
+      overrides: Partial<CaptureStateResponse>,
+    ): string | null | undefined => {
+      renderCaptureSites(
+        response({
+          sites: [{ tool: 'claude-ai', state: 'idle', account: { identity, ...account } }],
+          ...overrides,
+        }),
+      );
+      return document.getElementById('capture-sites')?.children[0]?.textContent;
+    };
+
+    it('names an unreadable attachment, not capture, for an enrolled account on such a machine', () => {
+      expect(
+        rowFor({ enrolled: true, recorded: false }, { withheld: 'unreadable-attachment' }),
+      ).toBe(
+        `Claude.ai: ${identity} — enrolled, but the attachment is unreadable, so nothing from its chats is recorded`,
+      );
+    });
+
+    it('names web-chat capture for an enrolled account when the reply says it is off', () => {
+      expect(
+        rowFor(
+          { enrolled: true, recorded: false },
+          { withheld: 'personal-device', consented: false },
+        ),
+      ).toBe(
+        `Claude.ai: ${identity} — enrolled, but web-chat capture is off, so nothing from its chats is recorded; turn it on under Settings in aka dashboard`,
+      );
+    });
+
+    it('words enrolling from the capture condition, for an account that is not enrolled', () => {
+      expect(
+        rowFor(
+          { enrolled: false, recorded: false },
+          { withheld: 'personal-device', consented: false },
+        ),
+      ).toBe(
+        `Claude.ai: ${identity} — not enrolled; to send its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}; its replies are sent only while web-chat capture is on, under Settings in aka dashboard`,
+      );
+      expect(rowFor({ enrolled: false, recorded: false }, { withheld: 'personal-device' })).toBe(
+        `Claude.ai: ${identity} — not enrolled; to send its replies, and its Claude Code sessions where the device does not already send them, run aka enroll --account ${identity}`,
+      );
+    });
+
+    it('offers no enroll command to an account that is not enrolled on an unreadable attachment', () => {
+      expect(
+        rowFor({ enrolled: false, recorded: false }, { withheld: 'unreadable-attachment' }),
+      ).toBe(
+        `Claude.ai: ${identity} — not enrolled, and the attachment is unreadable, so nothing from its chats is recorded`,
+      );
+    });
   });
 
   it('words an unreadable attachment as its own reason', () => {

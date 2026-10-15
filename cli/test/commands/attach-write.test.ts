@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -3059,6 +3060,90 @@ describe('what an attach records of the attached account', () => {
     expect(modeOnDisk()).toBe('scoped');
     expect(readAttachedIdentity(dataDirOf(base))).toBeUndefined();
     expect(h.output()).toContain('as a personal device.');
+  });
+
+  describe('an attach that fails at a write leaves the attached account as it was', () => {
+    interface FailedWrite {
+      name: string;
+      /** The stored list is one this attach does not keep, which writes the settings first. */
+      settingsFirst: boolean;
+      arm: () => void;
+      /** The writes reached, counted from the moment the machine is arranged. */
+      writes: { settings: number; credential: number };
+      says: string;
+    }
+
+    const FAILED_WRITES: FailedWrite[] = [
+      {
+        name: 'the settings write, after the credential was written first',
+        settingsFirst: false,
+        arm: () => {
+          stand.failSettingsWrite = true;
+        },
+        writes: { settings: 1, credential: 2 },
+        says: LEFT_AS_IT_WAS,
+      },
+      {
+        name: 'the credential write, ahead of the settings',
+        settingsFirst: false,
+        arm: () => {
+          stand.failCredentialWriteAt = 1;
+        },
+        writes: { settings: 0, credential: 1 },
+        says: LEFT_AS_IT_WAS,
+      },
+      {
+        name: 'the settings write, ahead of the credential',
+        settingsFirst: true,
+        arm: () => {
+          stand.failSettingsWrite = true;
+        },
+        writes: { settings: 1, credential: 0 },
+        says: LEFT_AS_IT_WAS,
+      },
+      {
+        name: 'the credential write, after the settings were written first',
+        settingsFirst: true,
+        arm: () => {
+          stand.failCredentialWriteAt = 1;
+        },
+        writes: { settings: 1, credential: 1 },
+        says: CREDENTIAL_NOT_SAVED,
+      },
+    ];
+
+    /** What the account state is on disk: the record's text, and the names under session-accounts. */
+    function accountState(): { record: string | undefined; sessions: string[] | undefined } {
+      return {
+        record: existsSync(identityFile()) ? readFileSync(identityFile(), 'utf8') : undefined,
+        sessions: existsSync(sessionAccountsDir())
+          ? readdirSync(sessionAccountsDir()).sort()
+          : undefined,
+      };
+    }
+
+    it.for(FAILED_WRITES)('at $name', async (row) => {
+      await attachAs(WORKER, KEY_1, ['--scoped']);
+      learnWorkOrg();
+      plantSessionAccountState();
+      if (row.settingsFirst) applyOnboarding({ attachmentScope: UNBOUND }, base, null);
+      const before = accountState();
+      expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toHaveLength(1);
+      expect(before.sessions).toEqual(['s-1.log']);
+      stand.settingsWrites = 0;
+      stand.credentialWrites = 0;
+      row.arm();
+      const h = harness({ interactive: false, stdin: KEY_2, who: WORKER });
+
+      await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+
+      expect(exits).toEqual([1]);
+      expect(h.errors()).toContain(row.says);
+      expect({ settings: stand.settingsWrites, credential: stand.credentialWrites }).toEqual(
+        row.writes,
+      );
+      expect(accountState()).toEqual(before);
+    });
   });
 
   it.each([['off'], ['paused']])(

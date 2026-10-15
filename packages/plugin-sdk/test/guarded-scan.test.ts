@@ -290,3 +290,69 @@ describe('createGuardedScanner', () => {
     }
   });
 });
+
+// The bounded scan's once-per-scanner stderr line says the field was refused.
+// A caller that refuses it gets that line; one that only observes (a capture
+// hook with no channel to stop the text) reports the field itself, and the SDK
+// must not claim an enforcement that never took place. `remainingMs: 0`
+// reaches the timeout arm without starting a worker, and a closed scanner
+// reaches the unavailable arm.
+describe('scanBounded stderr line', () => {
+  const PARTITION = { verified: [VERIFIED_SECRET], unverified: [] };
+
+  it.each([
+    ['omitted (the refusing default)', undefined, true],
+    ['true', true, true],
+    ['false', false, false],
+  ] as const)('timeout with refuses %s', async (_label, refuses, writesLine) => {
+    const stderr = captureStderr();
+    const scanner = createGuardedScanner(PARTITION, fakeGateway(), {
+      workerUrl: CRASHING_WORKER,
+      startBudgetMs: START_MS,
+    });
+    try {
+      const outcome = await scanner.scanBounded('large field', undefined, {
+        budgetMs: BUDGET_MS,
+        startBudgetMs: START_MS,
+        remainingMs: 0,
+        ...(refuses === undefined ? {} : { refuses }),
+      });
+      // The outcome does not depend on `refuses`; only the line does.
+      expect(outcome.status).toBe('timeout');
+      if (writesLine) {
+        expect(stderr.lines()).toBe(
+          '[aka] a large input could not be scanned within its time limit and was refused.\n',
+        );
+      } else {
+        expect(stderr.lines()).toBe('');
+      }
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+  ] as const)('unavailable with refuses %s', async (refuses, writesLine) => {
+    const stderr = captureStderr();
+    const scanner = createGuardedScanner(PARTITION, fakeGateway(), {
+      workerUrl: CRASHING_WORKER,
+      startBudgetMs: START_MS,
+    });
+    await scanner.close();
+    const outcome = await scanner.scanBounded('large field', undefined, {
+      budgetMs: BUDGET_MS,
+      startBudgetMs: START_MS,
+      refuses,
+    });
+    expect(outcome.status).toBe('unavailable');
+    if (writesLine) {
+      expect(stderr.lines()).toBe(
+        '[aka] a large input could not be scanned and was refused: the scan worker is closed.\n',
+      );
+    } else {
+      expect(stderr.lines()).toBe('');
+    }
+  });
+});

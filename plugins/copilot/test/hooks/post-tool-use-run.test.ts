@@ -17,8 +17,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plugin-sdk';
+import {
+  bundledDetections,
+  createPluginRuntime,
+  LARGE_INPUT_THRESHOLD_CHARS,
+  loadConfig,
+} from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
@@ -26,7 +32,9 @@ import {
   unscannedPastWalkLimitsMessage,
   unscannedTooLargeMessage,
 } from '../../src/exception-guidance.ts';
+import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from '../../src/hooks/large-input.ts';
 import { runPostToolUse } from '../../src/hooks/post-tool-use-run.ts';
+import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +99,8 @@ let root: string;
 let akaHome: string;
 let cwd: string;
 let stderr: string[];
+// `(node:1234) ExperimentalWarning: …` and the `--trace-warnings` hint after it.
+const NODE_WARNING = /^\(node:\d+\) |--trace-warnings/u;
 
 function checkout(name: string, remote: string): string {
   const dir = join(root, name);
@@ -151,9 +161,13 @@ function findingRows(): Record<string, unknown>[] {
   );
 }
 
-/** What this hook said on stderr, minus node's own runtime warnings. */
+/**
+ * Everything written to stderr except node's own runtime warnings — the hook's
+ * notices AND the SDK's `[aka]` lines, so a line the SDK writes on the hook's
+ * behalf is read like any other.
+ */
 function akaStderr(): string {
-  return stderr.filter((line) => /\bAKA\b/u.test(line)).join('');
+  return stderr.filter((line) => !NODE_WARNING.test(line)).join('');
 }
 
 describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
@@ -244,6 +258,40 @@ describe.each(DIALECTS)('runPostToolUse on the $kind dialect', (d) => {
     expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
     expect(findingRows()).toEqual([]);
     expectNoEchoOf(text, FIXTURE.example);
+    // Nothing on stderr claims the result was refused: this hook cannot refuse
+    // it, so the SDK's refusal line is not written. The case below is the
+    // control that the same bounded scan does write it for a refusing caller.
+    expect(stderr.join('')).not.toMatch(/refus/iu);
+  });
+
+  it('writes the SDK refusal line for a refusing caller over the same absent worker', async () => {
+    seedPolicy('block');
+    const filler = 'lorem ipsum dolor sit amet '.repeat(
+      Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27),
+    );
+    const config = loadConfig(akaHome);
+    const gateway = openGatewayOrNull(config);
+    if (gateway === null) throw new Error('the test store did not open');
+    const runtime = createPluginRuntime(gateway, config.settings, {
+      dataDir: config.dataDir,
+      largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, true),
+      scanIsolation: {
+        workerUrl: pathToFileURL(join(root, 'no-worker-here', 'scan-worker.js')),
+      },
+    });
+    try {
+      const result = await runtime.capture({
+        kind: 'prompt',
+        sourceTool: SOURCE_TOOL.Copilot,
+        text: `TWILIO=${FIXTURE.example} ${filler}`,
+      });
+      expect(result.scanIncomplete).toBeDefined();
+    } finally {
+      await runtime.close();
+    }
+    expect(stderr.join('')).toMatch(
+      /\[aka\] a large input could not be scanned.* and was refused/u,
+    );
   });
 
   it('warns once per session when the store cannot be opened', async () => {

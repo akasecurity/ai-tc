@@ -36,9 +36,15 @@ export const HOOK_SCAN_DEADLINE_MS = 15_000;
  * over by `deadlineAt` (on `now`'s clock). The remaining time is read when each
  * bounded scan starts, so it is fixed by the deadline rather than by how many
  * fields came before.
+ *
+ * `refuses` says whether the hook refuses a field it could not scan: true for
+ * preToolUse, which denies it, and false for the prompt and result hooks, which
+ * can only report it — so the SDK writes no line saying such a field "was
+ * refused" beside the hook's own notice that it went through unchanged.
  */
 export function largeInputBound(
   deadlineAt: number,
+  refuses: boolean,
   now: () => number = () => performance.now(),
 ): LargeInputScanOptions {
   return {
@@ -46,5 +52,6 @@ export function largeInputBound(
     budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
     startBudgetMs: LARGE_INPUT_START_BUDGET_MS,
     remainingMs: () => deadlineAt - now(),
+    refuses,
   };
 }

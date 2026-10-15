@@ -122,7 +122,7 @@ export const runPostToolUse: HookHandler = async (event, stdin, options = {}) =>
   // a deadline shared by every field of this result (see large-input.ts).
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, false),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),

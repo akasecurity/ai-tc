@@ -129,7 +129,7 @@ export const runUserPromptSubmit: HookHandler = async (event, stdin, options = {
   // comes back as `scanIncomplete`, which `promptDecision` reports as unscanned.
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, false),
     ...(options.scanWorkerUrl === undefined
       ? {}
       : { scanIsolation: { workerUrl: options.scanWorkerUrl } }),

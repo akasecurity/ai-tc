@@ -128,7 +128,7 @@ async function main(): Promise<HookOutput | undefined> {
   // finish (see large-input.ts).
   const runtime = createPluginRuntime(gateway, config.settings, {
     dataDir: config.dataDir,
-    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS),
+    largeInput: largeInputBound(HOOK_SCAN_DEADLINE_MS, true),
   });
   const kind = callKind(dialect, call.name);
   const metadata = baseMetadata(dialect, input) ?? {};

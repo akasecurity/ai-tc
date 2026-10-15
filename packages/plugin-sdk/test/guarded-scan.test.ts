@@ -304,7 +304,7 @@ describe('scanBounded stderr line', () => {
     ['omitted (the refusing default)', undefined, true],
     ['true', true, true],
     ['false', false, false],
-  ] as const)('timeout with refuses %s', async (_label, refuses, writesLine) => {
+  ] as const)('the timeout arm with refuses %s', async (_label, refuses, writesLine) => {
     const stderr = captureStderr();
     const scanner = createGuardedScanner(PARTITION, fakeGateway(), {
       workerUrl: CRASHING_WORKER,

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 // Single source of truth for the built-in policy ids, declared in display order
 // (monitor → warn → redact → vault → block, least → most restrictive). This one runtime

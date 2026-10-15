@@ -16,12 +16,12 @@ import { isParseableBinaryVersion } from '@akasecurity/persistence';
 import { BASELINE_HOOK_EVENTS, HOST_FLOORS } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
+import { scannableInputFields, SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
 import { SUBAGENT_TOOLS } from '../../src/hooks/subagent-tools.ts';
 import { SCANNED_RESPONSE_TOOL_NAMES } from '../../src/hooks/tool-response.ts';
 
 interface HooksManifest {
-  hooks: Record<string, { matcher?: string }[]>;
+  hooks: Record<string, { matcher?: string; hooks?: { command?: string }[] }[]>;
 }
 
 const manifest = JSON.parse(
@@ -32,18 +32,37 @@ const manifest = JSON.parse(
 ) as HooksManifest;
 
 /**
- * The matcher a hook event declares, as the regex the harness applies. Claude
+ * One manifest entry's matcher, as the regex the harness applies. Claude
  * Code tests a matcher holding regex syntax UNANCHORED — `Bas|Zzz.*` fires on
  * `Bash` — so it is compiled here exactly as written. Wrapping it in `^(?:…)$`
  * would hide every tool name the harness matches by substring (`Task` selecting
  * `TaskCreate`), which is the case the controls below exist to catch.
  */
-function matcherFor(event: string): RegExp {
-  const entry = manifest.hooks[event]?.[0];
+function entryMatcher(entry: { matcher?: string } | undefined, event: string): RegExp {
   expect(entry, `${event} is registered`).toBeDefined();
   const matcher = entry?.matcher;
   expect(matcher, `${event} declares a matcher`).toBeTypeOf('string');
   return new RegExp(matcher ?? '');
+}
+
+/**
+ * What a hook event selects across ALL its entries: a tool is covered when any
+ * entry's matcher takes it. PreToolUse has two (the node hook, and the Read/Grep
+ * path gate that starts it only when needed); reading only the first entry
+ * would call Read and Grep unguarded.
+ */
+function matcherFor(event: string): { test: (tool: string) => boolean } {
+  const entries = manifest.hooks[event] ?? [];
+  expect(entries.length, `${event} is registered`).toBeGreaterThan(0);
+  const matchers = entries.map((entry) => entryMatcher(entry, event));
+  return { test: (tool) => matchers.some((m) => m.test(tool)) };
+}
+
+/** The PreToolUse entry whose command names `script`. */
+function preToolUseEntryRunning(script: string): { matcher?: string } | undefined {
+  return manifest.hooks.PreToolUse?.find((entry) =>
+    entry.hooks?.some((hook) => hook.command?.includes(`/scripts/${script}`)),
+  );
 }
 
 // Tools whose names contain a matched tool's name, and which neither hook reads.
@@ -72,6 +91,21 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     expect(SUBAGENT_TOOLS.has('Agent'), 'the current spelling is in the set').toBe(true);
   });
 
+  it('sends Read and Grep through the path gate, never straight to node', () => {
+    // The gate is the cost argument: node takes 70-120 ms to start, and Read
+    // is the most frequent tool call there is. A Read matched by the node entry
+    // would pay that on every call (or, matched by both, run the check twice).
+    const gate = entryMatcher(preToolUseEntryRunning('path-gate.sh'), 'PreToolUse');
+    const node = entryMatcher(preToolUseEntryRunning('pre-tool-use.js'), 'PreToolUse');
+    for (const tool of ['Read', 'Grep']) {
+      expect(gate.test(tool), `${tool} reaches the gate`).toBe(true);
+      expect(node.test(tool), `${tool} skips the direct node entry`).toBe(false);
+    }
+    // And the gate takes nothing else: every other tool's check lives in node.
+    expect(gate.test('Bash')).toBe(false);
+    expect(gate.test('Write')).toBe(false);
+  });
+
   it('matches the dynamic handlers the static table cannot speak for', () => {
     // MultiEdit and mcp__* reach fields through their own branches, so they are
     // absent from SCANNED_TOOL_NAMES and the derivation above says nothing
@@ -85,8 +119,8 @@ describe('the PreToolUse matcher selects every tool the hook can act on', () => 
     // The control: a matcher rewritten to `.*` would pass every assertion above
     // while removing the bound the hook's own cost argument rests on.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('Read')).toBe(false);
     expect(matcher.test('Glob')).toBe(false);
+    expect(matcher.test('TodoWrite')).toBe(false);
     for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
   });
 });
@@ -124,6 +158,54 @@ describe('the PostToolUse matcher selects every tool whose output the hook scans
     expect(matcher.test('Edit')).toBe(false);
     expect(matcher.test('mcp_server_tool')).toBe(false);
     for (const tool of SUBSTRING_NEIGHBOURS) expect(matcher.test(tool), tool).toBe(false);
+  });
+});
+
+/**
+ * The alternatives a matcher spells, split into exact tool names and patterns.
+ * Every hook call is a node process, so a name the hook cannot act on is a
+ * process started for nothing on each call of that tool. The coverage cases
+ * above say what a matcher must reach; these say it reaches nothing else.
+ */
+function alternatives(event: string): { names: string[]; patterns: string[] } {
+  // An event may carry SEVERAL entries, each with its own hook command: on
+  // PreToolUse the scanning hook rides the anchored alternation and the
+  // credential-path gate rides a bare `Read|Grep`. The tools the event reaches
+  // are therefore the union over every entry, and reading only the first one
+  // reports the gate's tools as missing.
+  const names = new Set<string>();
+  const patterns = new Set<string>();
+  for (const entry of manifest.hooks[event] ?? []) {
+    const source = entry.matcher ?? '';
+    expect(source, `${event} has a matcher on every entry`).not.toBe('');
+    // Either the anchored alternation the scanning hook uses, or a bare list.
+    const body = /^\^\(\?:(.*)\)\$$/.exec(source)?.[1] ?? source;
+    for (const part of body.split('|')) {
+      if (/^\w+$/.test(part)) names.add(part);
+      else patterns.add(part);
+    }
+  }
+  return { names: [...names].sort(), patterns: [...patterns].sort() };
+}
+
+describe('each matcher names only tools its hook acts on', () => {
+  it('PreToolUse: the field table, the spawn tools, MultiEdit and the mcp__ family', () => {
+    const { names, patterns } = alternatives('PreToolUse');
+    expect(names).toEqual(
+      [...new Set([...SCANNED_TOOL_NAMES, ...SUBAGENT_TOOLS, 'MultiEdit'])].sort(),
+    );
+    expect(patterns).toEqual(['mcp__.*']);
+    // MultiEdit is in no table, so its place in the matcher rests on the
+    // dynamic handler actually reading it.
+    expect(
+      scannableInputFields('MultiEdit', { edits: [{ new_string: 'x' }] }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('PostToolUse: the response table and the mcp__ family', () => {
+    const { names, patterns } = alternatives('PostToolUse');
+    expect(names).toEqual([...new Set([...SCANNED_RESPONSE_TOOL_NAMES, ...SUBAGENT_TOOLS])].sort());
+    expect(patterns).toEqual(['mcp__.*']);
   });
 });
 

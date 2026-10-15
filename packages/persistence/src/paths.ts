@@ -238,9 +238,9 @@ export function classifyOccupant(file: string): Occupant {
 /**
  * Raised when a creation-exclusive publish lost the race but the winner cannot
  * be read back afterwards. It lives beside createOwnerOnlyFileSync rather than
- * in either key's module because BOTH machine-local keys — the exception
- * fingerprint key and the vault keyring — publish their first copy through that
- * one primitive, and so fail through one type.
+ * in any key's module because every machine-local key — the exception
+ * fingerprint key, the vault keyring and the capture id key — publishes its
+ * first copy through that one primitive, and so fails through one type.
  *
  * It carries a `code` because the surfaces that render key failures branch on
  * one: a codeless error is treated as a CORRUPT key file, whose remedy is

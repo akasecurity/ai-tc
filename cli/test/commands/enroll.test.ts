@@ -54,13 +54,15 @@ import { main } from '../../src/main.ts';
 // `aka enroll` / `aka unenroll` / `aka enroll --list` against a real settings
 // file and a real credential file in a temp home.
 //
-// Two seams in the persistence module, both pass-through until a case arms
+// Three seams in the persistence module, all pass-through until a case arms
 // them. `seedEnrolledCapturesOwed` records what it was asked to queue and
 // answers `seed.answer`, so the consent gate and the copy are pinned without a
 // store (the queue itself is pinned in @akasecurity/persistence's own suite).
 // `applyOnboarding` counts its calls, can run `settingsWrite.before` once ahead
 // of the real write (a concurrent re-attach landing between the command's check
 // and its write), or throw `settingsWrite.failure` (a write that fails).
+// `forgetWorkAccounts` answers false without touching the record while
+// `forgetSeam.fails` is set, as it does when the record's lock cannot be taken.
 interface SeedCall {
   dataDir: string;
   keys: string[];
@@ -69,6 +71,7 @@ const seed = vi.hoisted((): { calls: SeedCall[]; answer: number | undefined } =>
   calls: [],
   answer: 0,
 }));
+const forgetSeam = vi.hoisted((): { fails: boolean } => ({ fails: false }));
 const settingsWrite = vi.hoisted(
   (): { calls: number; before: (() => void) | undefined; failure: Error | undefined } => ({
     calls: 0,
@@ -85,6 +88,10 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
       seed.calls.push({ dataDir, keys: [...keys] });
       return seed.answer;
     },
+    forgetWorkAccounts: (
+      ...args: Parameters<typeof actual.forgetWorkAccounts>
+    ): ReturnType<typeof actual.forgetWorkAccounts> =>
+      forgetSeam.fails ? false : actual.forgetWorkAccounts(...args),
     applyOnboarding: (
       ...args: Parameters<typeof actual.applyOnboarding>
     ): ReturnType<typeof actual.applyOnboarding> => {
@@ -130,6 +137,7 @@ beforeEach(() => {
   exits = [];
   seed.calls = [];
   seed.answer = 0;
+  forgetSeam.fails = false;
   settingsWrite.calls = 0;
   settingsWrite.before = undefined;
   settingsWrite.failure = undefined;
@@ -1936,16 +1944,19 @@ describe('aka enroll --account — Claude Code sessions', () => {
     );
   });
 
-  it.each<[string, string]>([
-    ['--account', `agent:${'0'.repeat(16)}:${ACCOUNT}`],
-    ['--repo', `agent:${'0'.repeat(16)}:${ACCOUNT}`],
-    ['--account', '  AGENT:anything'],
-  ])('refuses an agent key given to %s, and writes nothing', async (flag, value) => {
-    attach({ scope: fresh(), extra: webChat() });
+  it.each<['enroll' | 'unenroll', string, string]>(
+    (['enroll', 'unenroll'] as const).flatMap((verb) => [
+      [verb, '--account', `agent:${'0'.repeat(16)}:${ACCOUNT}`] as const,
+      [verb, '--repo', `agent:${'0'.repeat(16)}:${ACCOUNT}`] as const,
+      [verb, '--account', '  AGENT:anything'] as const,
+    ]),
+  )('refuses an agent key given to aka %s %s, and writes nothing', async (verb, flag, value) => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
     const before = stored();
     const io = recorder();
-    expect(await runEnroll([flag, value], deps(io))).toBe(1);
-    expect(io.errors()).toContain('an agent: key is never enrolled');
+    const run = verb === 'enroll' ? runEnroll : runUnenroll;
+    expect(await run([flag, value], deps(io))).toBe(1);
+    expect(io.errors()).toContain(`aka ${verb}: an agent: key is never enrolled`);
     expect(stored()).toEqual(before);
     expect(settingsWrite.calls).toBe(0);
   });
@@ -2009,6 +2020,42 @@ describe('aka enroll --account — the login signed in now on a personal plan', 
     expect(identities()).toEqual([]);
   });
 
+  it('asks nothing for an account already enrolled for Claude Code sessions, on a terminal', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const before = stored();
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(asked).toEqual([]);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(io.output()).not.toContain('personal plan');
+    expect(stored()).toEqual(before);
+    expect(exits).toEqual([]);
+  });
+
+  it('asks nothing for an account already enrolled for Claude Code sessions, off a terminal and without --yes', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const before = stored();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(io.errors()).toBe('');
+    expect(stored()).toEqual(before);
+    expect(exits).toEqual([]);
+  });
+
+  it('still asks for an account stored without the marker, whose chats alone were enrolled', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+  });
+
   it('asks nothing for a Team login, or for a key the login signed in now does not name', async () => {
     attach({ scope: fresh(), extra: webChat() });
     claudeSignIn();
@@ -2050,13 +2097,71 @@ describe('aka unenroll --work-subscriptions', () => {
     knownMember();
     learn(OTHER_ACCOUNT);
     const before = stored();
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toHaveLength(1);
     const io = recorder();
     expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
     expect(io.output()).toContain(
-      'Recognition of work subscriptions is already off for Acme on this device; nothing changed.\n',
+      'Recognition of work subscriptions is already off for Acme on this device. The work accounts it had learned were cleared again; nothing else changed.\n',
     );
+    expect(io.output()).not.toContain('nothing changed.\n');
     expect(stored()).toEqual(before);
     expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+  });
+
+  it('says only that nothing changed when they are already off and nothing was learned', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toBe(
+      'Recognition of work subscriptions is already off for Acme on this device; nothing changed.\n',
+    );
+  });
+
+  // The record's lock cannot be taken, so the learned accounts stay. The opt-out
+  // is stored all the same, and the command says what is left and what clears it.
+  it('says the learned accounts could not be cleared because the record is busy, when already off', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(flat(io.output())).toContain(
+      'The work accounts this device had learned could not be cleared now because the record is busy; running this command again clears them.',
+    );
+    expect(io.output()).not.toContain('were cleared again');
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toHaveLength(1);
+    forgetSeam.fails = false;
+    const again = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(again))).toBe(0);
+    expect(again.output()).toContain('were cleared again');
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+  });
+
+  it('stores the opt-out and says the record is busy when turning them off now', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(storedScope()).toEqual({ ...fresh([enrolled()]), workSubscriptions: 'off' });
+    const shown = flat(io.output());
+    expect(shown).toContain('Work subscriptions are off on this device for Acme.');
+    expect(shown).toContain(
+      'The work accounts this device had learned could not be cleared now because the record is busy; running this command again clears them.',
+    );
+  });
+
+  it('does not call a record with nothing learned busy', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).not.toContain('busy');
   });
 
   it('keeps every other key and entry of the record as found', async () => {

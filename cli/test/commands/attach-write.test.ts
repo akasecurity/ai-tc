@@ -309,6 +309,11 @@ function harness(script: Script) {
   const who = script.who === undefined ? ANA : script.who;
   const deps: AttachDeps = {
     base,
+    // Named so a status read finds no login file under the developer's own home.
+    claudePaths: {
+      home: join(base, 'claude-home'),
+      managedSettings: join(base, 'claude-managed-settings.json'),
+    },
     prompter: io,
     // A getter, so a case can change the overlay while an attach is in flight.
     get managedSettings(): ManagedSettings | null {

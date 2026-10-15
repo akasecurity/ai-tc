@@ -350,7 +350,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
     const out = status();
     expect(out).toContain(`\n${EMPTY_HEADLINE}\n`);
     expect(out).toContain(
-      '(run `aka enroll` inside a work repository to add it, or `aka enroll --account` for a work subscription this device does not recognise)',
+      '(run `aka enroll` inside a work repository to add it, or `aka enroll --account <key>` for a work subscription this device does not recognise)',
     );
   });
 

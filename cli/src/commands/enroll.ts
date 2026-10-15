@@ -984,6 +984,7 @@ function identityOf(verb: Verb, args: EnrollArgs, cwd: string): Identity {
  */
 const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude account (Claude Code and claude.ai)',
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: 'ChatGPT workspace (Codex)',
 };
 
 /**

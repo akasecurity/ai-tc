@@ -174,6 +174,7 @@ const USER_LINES = {
  */
 const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: 'new Codex threads signed in to it forward from any folder',
 };
 
 /** The commands that turn work-subscription recognition off and back on, as every surface prints them. */

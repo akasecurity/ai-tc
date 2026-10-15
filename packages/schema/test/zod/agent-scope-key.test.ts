@@ -93,9 +93,12 @@ describe('isRepoShapedScopeKey', () => {
 });
 
 describe('AGENT_ACCOUNT_PROVIDER_OF', () => {
-  it('names a provider for Claude Code alone', () => {
+  it('names a provider for Claude Code and Codex', () => {
     const named = Object.entries(AGENT_ACCOUNT_PROVIDER_OF).filter(([, p]) => p !== undefined);
-    expect(named).toEqual([[SOURCE_TOOL.ClaudeCode, WEB_ACCOUNT_PROVIDER.Claude]]);
+    expect(named).toEqual([
+      [SOURCE_TOOL.ClaudeCode, 'claude'],
+      [SOURCE_TOOL.Codex, 'chatgpt'],
+    ]);
   });
 
   // An account key on a web chat row is the chat's; a coding row never takes it.

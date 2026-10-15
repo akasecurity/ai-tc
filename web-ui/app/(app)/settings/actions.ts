@@ -35,6 +35,7 @@ import {
   seedCaptureBacklogOwed,
   settingsDir,
   settledDecisionHolds,
+  turnWorkSubscriptionsOff,
   writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
@@ -59,6 +60,7 @@ import {
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeBoundTo,
+  isAttachmentScopeValid,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isSightingShareConsentValid,
@@ -79,6 +81,7 @@ import {
   type WebChatCapture,
   type WebChatCaptureConsentChoice,
   webChatCaptureOf,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -1210,7 +1213,9 @@ function replacesPersonalDevice(mode: AttachmentMode, ...reads: CredentialFileRe
  * record bound to them: a record for another endpoint, for someone else, or with
  * no binding at all cannot be checked, and one left beside a machine-wide
  * credential (or none) belongs to an attachment that ended, so it does not carry
- * over.
+ * over. The one thing the fresh record takes from the replaced one is its opt-out
+ * of work-subscription recognition, and only when that record is readable and
+ * names this endpoint.
  *
  * `endpoint` is the effective one: a scoped attach happens only where no
  * administrator governs the connection, so nothing overlays it.
@@ -1225,7 +1230,11 @@ function scopeRecordFor(
   keepsList: (stored: unknown) => boolean,
 ): unknown {
   if (who === undefined) return undefined;
-  return keepsList(raw) ? raw : freshAttachmentScope(endpoint, who);
+  if (keepsList(raw)) return raw;
+  const fresh = freshAttachmentScope(endpoint, who);
+  return isAttachmentScopeValid(raw, endpoint) && !workSubscriptionsOn(raw)
+    ? turnWorkSubscriptionsOff(fresh, endpoint).next
+    : fresh;
 }
 
 /**

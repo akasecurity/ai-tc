@@ -56,6 +56,14 @@ describe('DISMISS_METHODS', () => {
     expect(DISMISS_METHODS.map((m) => m.value).sort()).toEqual([...DismissMethod.options].sort());
   });
 
+  it('lets a person mark a match as test or example data, apart from a false positive', () => {
+    // Test fixtures and example values are real matches of a correct rule, so
+    // they are neither 'the rule is wrong' nor 'accepted risk'.
+    expect(DismissMethod.options).toContain('test-or-example');
+    const offered = DISMISS_METHODS.find((m) => m.value === 'test-or-example');
+    expect(offered?.label).toBe('Test or example data');
+  });
+
   it('labels each one in plain words, without naming the enum member', () => {
     for (const m of DISMISS_METHODS) {
       expect(m.label).not.toBe(m.value);

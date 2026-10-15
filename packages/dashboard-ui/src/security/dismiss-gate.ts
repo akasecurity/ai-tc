@@ -17,7 +17,7 @@ import { DISMISS_CONFIRMATION } from '@akasecurity/schema';
 import type { Choice } from '../shared/ChoiceGroup.tsx';
 
 /**
- * The two dispositions the dialog offers, in the order it renders them.
+ * The dispositions the dialog offers, in the order it renders them.
  *
  * Typed as `Choice` so it can be handed straight to `ChoiceGroup`, which
  * renders every option's description at once. A type-only import, so this
@@ -26,7 +26,8 @@ import type { Choice } from '../shared/ChoiceGroup.tsx';
  * The descriptions are load-bearing rather than decorative: the two answers
  * differ in what they CLAIM, not merely in how a report groups them later.
  * 'Accepted risk' says the finding is real and this team has chosen to live
- * with it; 'Not a real finding' says the rule is wrong. A reader who cannot see
+ * with it; 'Not a real finding' says the rule is wrong; 'Test or example data'
+ * says the rule is right but the value is a fixture or a sample. A reader who cannot see
  * both descriptions while choosing has no way to tell them apart from the
  * labels alone.
  */
@@ -40,6 +41,12 @@ export const DISMISS_METHODS: readonly Choice<DismissMethod>[] = [
     value: 'false-positive',
     label: 'Not a real finding',
     description: 'The rule matched something that is not actually sensitive.',
+  },
+  {
+    value: 'test-or-example',
+    label: 'Test or example data',
+    description:
+      'The match is real, but the value is a test fixture or an example, not a live one.',
   },
 ];
 

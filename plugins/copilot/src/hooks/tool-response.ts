@@ -146,6 +146,16 @@ function stringAt(response: unknown, path: readonly string[]): string | undefine
  * chunks), while this one scans string VALUES only. A key reaches the model
  * unscanned, and is not counted as truncated either.
  */
+// Whether a node the walk does not enter could have held text: a non-empty
+// string, or a container with anything in it. An empty container, a number or
+// an empty string left nothing unscanned.
+function couldCarryText(node: unknown): boolean {
+  return (
+    (typeof node === 'string' && node !== '') ||
+    (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
+  );
+}
+
 function leafFields(response: object): ResponseFields {
   const fields: ScannableResponseField[] = [];
   let truncated = false;
@@ -160,12 +170,7 @@ function leafFields(response: object): ResponseFields {
     // could have carried text marks the result truncated — an empty container
     // or a number left nothing unscanned.
     if (depth > RESULT_WALK_MAX_DEPTH || fields.length >= RESULT_WALK_MAX_LEAVES) {
-      if (
-        (typeof node === 'string' && node !== '') ||
-        (typeof node === 'object' && node !== null && Object.keys(node).length > 0)
-      ) {
-        truncated = true;
-      }
+      if (couldCarryText(node)) truncated = true;
       return;
     }
     if (typeof node === 'string') {
@@ -182,7 +187,16 @@ function leafFields(response: object): ResponseFields {
     const entries: [string, unknown][] = Array.isArray(node)
       ? node.map((item, index): [string, unknown] => [String(index), item])
       : Object.entries(node);
-    for (const [key, value] of entries) walk(value, [...path, key], depth + 1);
+    for (const [index, [key, value]] of entries.entries()) {
+      walk(value, [...path, key], depth + 1);
+      if (fields.length >= RESULT_WALK_MAX_LEAVES) {
+        // The leaf count is reached: no later sibling is entered. One that
+        // could have carried text is reported as left out, read without
+        // descending into it.
+        if (entries.slice(index + 1).some(([, rest]) => couldCarryText(rest))) truncated = true;
+        break;
+      }
+    }
   };
 
   walk(response, [], 0);

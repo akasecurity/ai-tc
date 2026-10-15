@@ -255,6 +255,38 @@ describe('an object-shaped VS Code result', () => {
   // The leaf count bounds the TRAVERSAL, not only what is collected: once it is
   // reached, nothing further down is entered. A getter counts every read of
   // the node past the bound, which only entering that node makes.
+  // And the stop is literal: once the count is reached no later sibling is
+  // walked at all, even one that would refuse at the top of the walk. A Proxy
+  // counts every key lookup on a sibling container, which only walking it
+  // (Object.keys at the top of the walk, or Object.entries below) makes;
+  // `couldCarryText`'s check reads its keys once, so the count tells the
+  // remaining-sibling check apart from a walk of every sibling.
+  it('enters no sibling past the one that reached the leaf count', () => {
+    const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
+    let keyReads = 0;
+    const watched = (): object =>
+      new Proxy(
+        { k: 'text' },
+        {
+          ownKeys(target) {
+            keyReads += 1;
+            return Reflect.ownKeys(target);
+          },
+        },
+      );
+    const siblings = Array.from({ length: 5 }, watched);
+    const past = scannableResponseFields('vscode', [...at, ...siblings]);
+    expect(past.fields).toHaveLength(RESULT_WALK_MAX_LEAVES);
+    expect(past.truncated).toBe(true);
+    // Only the first remaining sibling is looked at: the check stops at the
+    // first one that could carry text, and no sibling is walked.
+    expect(keyReads).toBe(1);
+    // The control: below the bound each watched sibling is walked.
+    keyReads = 0;
+    scannableResponseFields('vscode', siblings);
+    expect(keyReads).toBeGreaterThanOrEqual(siblings.length);
+  });
+
   it('stops walking once the leaf count is reached', () => {
     const at = Array.from({ length: RESULT_WALK_MAX_LEAVES }, (_, i) => `leaf ${String(i)}`);
     let reads = 0;

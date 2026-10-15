@@ -2185,8 +2185,9 @@ describe('aka enroll --work-subscriptions', () => {
     const shown = flat(io.output());
     expect(shown).toContain('Work subscriptions are on again on this device for Acme.');
     expect(shown).toContain(
-      "This device checks that from Claude Code's own login file and sends no email, plan or account id.",
+      "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, compares the signed-in email with your AKA account, and sends none of it (no email, plan or account id).",
     );
+    expect(shown).not.toContain('own login file');
     expect(shown).toContain(
       'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
     );

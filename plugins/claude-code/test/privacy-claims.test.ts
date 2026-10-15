@@ -301,19 +301,27 @@ const CLAUDE_WORK_SENTENCE =
   'Team or Enterprise plan of your organization under the same email as the AKA account that ' +
   'attached the device. Such a session sends everything it records from its first reply on, from ' +
   "any folder, with that folder's project and branch names, and your organization's prohibited " +
-  'models are refused in any folder of it. The device reads only the email, plan and workspace id ' +
-  "from Claude Code's own login file, compares them on the device with the account that attached " +
-  'it, and sends none of them. The first prompt of a new session, a personal plan, another email, ' +
-  'an API key or another provider, and the rest of a session whose organization changes follow the ' +
-  'repository rule; `aka enroll --account` enrolls by hand a work subscription the device cannot ' +
-  'recognise. An organization recognised this way never records or forwards a claude.ai chat. A ' +
-  'personal device attached before this release starts recognising work subscriptions when its ' +
-  'plugin updates, with no new prompt, so update `aka` first. `aka unenroll --work-subscriptions` ' +
+  "models are refused in any folder of it. To tell whether a session is one, the device reads Claude Code's " +
+  "login file, the session's own log, and Claude Code's settings files (the project's own included) " +
+  'and environment variables that choose the account or provider, compares the signed-in email with ' +
+  'the account that attached the device, and sends none of what it reads. The first prompt of a ' +
+  'new session, a personal plan, another email, an API key or another provider, and the rest of a ' +
+  'session whose organization changes follow the repository rule; `aka enroll --account` enrolls ' +
+  'by hand a work subscription the device cannot recognise. An organization recognised this way ' +
+  'never records or forwards a claude.ai chat. A personal device that attached before its plugin ' +
+  'could recognise work subscriptions starts recognising them when the plugin updates, with no new ' +
+  'prompt, so update `aka` first. `aka unenroll --work-subscriptions` ' +
   'turns recognition off on this device and `aka enroll --work-subscriptions` turns it back on; ' +
   'while it is off, enrolled repositories and accounts enrolled by hand still forward, and your ' +
   "organization's model restrictions apply only to them. A machine whose connection an " +
   'administrator manages attaches machine-wide only, so it has no personal-device mode and no such ' +
   'opt-out.';
+
+// Every list of what a personal device sends names the Claude Code sessions of an account
+// enrolled by hand beside those of a recognised work subscription, because an account enrolled
+// with `aka enroll --account` forwards its Claude Code sessions whatever the opt-out says.
+const HAND_ENROLLED_LIST =
+  /signed in to a recognised work subscription or to an account (?:you enroll|enrolled) by hand with `aka enroll --account`/;
 
 describe('Claude Code work-subscription claims', () => {
   describe.each(SCOPED_READMES)('$name', ({ text }) => {
@@ -333,14 +341,26 @@ describe('Claude Code work-subscription claims', () => {
     it('never says the device sends the login email, plan or account id', () => {
       expect(flat(text)).not.toMatch(/sends? (?:the|your) (?:login )?(?:email|plan|account id)/i);
     });
+
+    it('does not say the device reads only part of the login file', () => {
+      expect(flat(text)).not.toMatch(/reads only the email/i);
+      expect(flat(text)).not.toContain('own login file');
+    });
+
+    it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {
+      expect(claim).toMatch(HAND_ENROLLED_LIST);
+      expect(flat(footnoteOf(text))).toMatch(HAND_ENROLLED_LIST);
+    });
   });
 
   it('says it in SECURITY.md, and names the sessions where the scoped mode is introduced', () => {
     const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
     expect(section).toContain(CLAUDE_WORK_SENTENCE);
     expect(section).toContain(
-      'in Claude Code sessions signed in to a recognised work subscription (above)',
+      'in Claude Code sessions signed in to a recognised work subscription (above) or to an account ' +
+        'enrolled by hand with `aka enroll --account`',
     );
+    expect(section).not.toMatch(/reads only the email/i);
   });
 
   it('says on the plugin page that prohibited models are refused in any folder of such a session', () => {

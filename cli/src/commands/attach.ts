@@ -98,9 +98,11 @@ Registers this machine against your organization's AKA deployment.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
   --scoped   A personal device: send activity only from the repositories you
-             enroll with \`aka enroll\`, and from Claude Code sessions signed in
-             to a work subscription of your organization under your AKA
-             account's email (\`aka unenroll --work-subscriptions\` stops those).
+             enroll with \`aka enroll\`, from Claude Code sessions signed in to
+             a work subscription of your organization under your AKA
+             account's email (\`aka unenroll --work-subscriptions\` stops
+             those), and from Claude Code sessions signed in to an account you
+             enroll by hand with \`aka enroll --account\`.
              Whenever a session starts anywhere on this machine, in a
              repository or not (a browser chat included), the machine pulls
              the deployment's policy (at most every 15 minutes) and sends it a
@@ -266,8 +268,9 @@ const NEEDS_MODE_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll and ' +
-  'from Claude Code sessions signed in to a work subscription, or with ' +
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, ' +
+  'from Claude Code sessions signed in to a work subscription and from those signed in to an ' +
+  'account you enroll by hand, or with ' +
   '--machine to send activity from anywhere on this machine. Nothing was changed.';
 
 /**
@@ -1046,9 +1049,13 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'session signed in to a work subscription of your organization (Claude Team',
           'or Enterprise) under the same email as your AKA account also sends',
           'everything it records from its first reply on, from any folder, with that',
-          "folder's project and branch names; this device checks that from Claude",
-          "Code's own login file and sends no email, plan or account id.",
-          '`aka unenroll --work-subscriptions` stops it on this device. Activity',
+          "folder's project and branch names. The device checks that locally: it",
+          "reads Claude Code's login file, the session's own log, and the settings and",
+          'environment that choose the account, compares the signed-in email with your',
+          'AKA account, and sends none of it (no email, plan or account id).',
+          '`aka unenroll --work-subscriptions` stops it on this device. A Claude Code',
+          'session signed in to an account you enroll by hand with',
+          '`aka enroll --account` is sent too. Activity',
           'anywhere else stays on this machine. A command you run inside an enrolled',
           "repository is sent as that repository's activity, even when it reads files",
           'elsewhere.',
@@ -1395,7 +1402,8 @@ function scopedHistoryQuestion(tenantName: string): string {
     '',
     'This machine is attaching as a personal device: AKA sends the activity of',
     'the repositories you enroll with `aka enroll` and of Claude Code sessions',
-    'signed in to a recognised work subscription, and none from anywhere else.',
+    'signed in to a recognised work subscription or to an account you enroll by',
+    'hand with `aka enroll --account`, and none from anywhere else.',
     "A command you run inside an enrolled repository is sent as that repository's",
     'activity, even when it reads files elsewhere.',
     'It can also send some of what an enrolled repository recorded here before',
@@ -1447,9 +1455,12 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  with `aka enroll`. It also sends everything from Claude Code sessions',
       '  signed in to a work subscription of your organization (Claude Team or',
       '  Enterprise) under the same email as your AKA account, from any folder,',
-      "  with that folder's project and branch names. It checks this on the device,",
-      "  from the coding agent's own login file, and sends no email, plan or account",
-      '  id. To send only from the repositories you enroll, run',
+      "  with that folder's project and branch names. It checks this on the device:",
+      "  it reads Claude Code's login file, the session's own log, and the settings",
+      '  and environment that choose the account, compares the signed-in email with',
+      '  your AKA account, and sends none of it (no email, plan or account id). It',
+      '  also sends the Claude Code sessions signed in to an account you enroll by',
+      '  hand with `aka enroll --account`. To send only from what you enroll, run',
       '  `aka unenroll --work-subscriptions` after attaching. Whenever a session',
       '  starts anywhere on this machine, in a repository or not (a browser chat',
       "  included), the machine pulls your organization's policy (at most every 15",
@@ -1486,8 +1497,9 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
     [
       '',
       `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: activity is`,
-      'sent only from the repositories enrolled on it and from Claude Code sessions signed in',
-      'to a work subscription. With --machine, activity from',
+      'sent only from the repositories enrolled on it, from Claude Code sessions signed in',
+      'to a work subscription and from those signed in to an account enrolled by hand.',
+      'With --machine, activity from',
       'anywhere on this machine is sent, and the enrolled list is cleared.',
       '',
     ].join('\n'),

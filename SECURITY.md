@@ -197,21 +197,23 @@ claude.ai to a Team or Enterprise plan of your organization under the same email
 as the AKA account that attached the device. Such a session sends everything it
 records from its first reply on, from any folder, with that folder's project and
 branch names, and your organization's prohibited models are refused in any
-folder of it. The device reads only the email, plan and workspace id from Claude
-Code's own login file, compares them on the device with the account that
-attached it, and sends none of them. The first prompt of a new session, a
+folder of it. To tell whether a session is one, the device reads Claude Code's
+login file, the session's own log, and Claude Code's settings files (the
+project's own included) and environment variables that choose the account or
+provider, compares the signed-in email with the account that attached the
+device, and sends none of what it reads. The first prompt of a new session, a
 personal plan, another email, an API key or another provider, and the rest of a
 session whose organization changes follow the repository rule;
 `aka enroll --account` enrolls by hand a work subscription the device cannot
 recognise. An organization recognised this way never records or forwards a
-claude.ai chat. A personal device attached before this release starts
-recognising work subscriptions when its plugin updates, with no new prompt, so
-update `aka` first. `aka unenroll --work-subscriptions` turns recognition off on
-this device and `aka enroll --work-subscriptions` turns it back on; while it is
-off, enrolled repositories and accounts enrolled by hand still forward, and your
-organization's model restrictions apply only to them. A machine whose connection
-an administrator manages attaches machine-wide only, so it has no
-personal-device mode and no such opt-out.
+claude.ai chat. A personal device that attached before its plugin could
+recognise work subscriptions starts recognising them when the plugin updates,
+with no new prompt, so update `aka` first. `aka unenroll --work-subscriptions`
+turns recognition off on this device and `aka enroll --work-subscriptions` turns
+it back on; while it is off, enrolled repositories and accounts enrolled by hand
+still forward, and your organization's model restrictions apply only to them. A
+machine whose connection an administrator manages attaches machine-wide only, so
+it has no personal-device mode and no such opt-out.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
@@ -219,16 +221,17 @@ forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
 `aka enroll`, in Claude Code sessions signed in to a recognised work
-subscription (above) and, from the browser extension, the replies in a claude.ai
-account enrolled with `aka enroll --account`, with their tool calls and token
-usage (a prompt typed into a web chat is not recorded there at all); everything
-else stays on the machine. Under the `aka sync-history` grant, enrolling a
-repository also queues the captures still kept for it, including those it
-recorded between attaching and enrolling. The policy pull, the command check and
-the device report are the exception: they go on either kind of attachment,
-whatever is enrolled, and a scoped machine's report also says that it is
-attached as a personal device. A machine that was never attached forwards none
-of this.
+subscription (above) or to an account enrolled by hand with
+`aka enroll --account` and, from the browser extension, the replies in a
+claude.ai account enrolled with `aka enroll --account`, with their tool calls
+and token usage (a prompt typed into a web chat is not recorded there at all);
+everything else stays on the machine. Under the `aka sync-history` grant,
+enrolling a repository also queues the captures still kept for it, including
+those it recorded between attaching and enrolling. The policy pull, the command
+check and the device report are the exception: they go on either kind of
+attachment, whatever is enrolled, and a scoped machine's report also says that
+it is attached as a personal device. A machine that was never attached forwards
+none of this.
 
 ## Supported versions
 

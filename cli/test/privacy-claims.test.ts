@@ -455,13 +455,14 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
 /**
  * The CLI page's own pins on the work-subscription sentences: in the body
  * paragraph that introduces a personal device, and in the egress footnote that
- * corrects the page's locality claim, with the sentence on prohibited models
- * widened to match. The plugin suite pins the whole sentence group.
+ * corrects the page's locality claim. The sentence on prohibited models names
+ * any folder of a work-subscription session. The plugin suite pins the whole
+ * sentence group.
  */
 describe('cli/README.md work-subscription disclosure', () => {
   const PHRASES = [
     "sends everything it records from its first reply on, from any folder, with that folder's project and branch names",
-    "The device reads only the email, plan and workspace id from Claude Code's own login file, compares them on the device with the account that attached it, and sends none of them.",
+    "To tell whether a session is one, the device reads Claude Code's login file, the session's own log, and Claude Code's settings files (the project's own included) and environment variables that choose the account or provider, compares the signed-in email with the account that attached the device, and sends none of what it reads.",
     '`aka unenroll --work-subscriptions` turns recognition off on this device',
     'A machine whose connection an administrator manages attaches machine-wide only, so it has no personal-device mode and no such opt-out.',
   ];
@@ -471,6 +472,15 @@ describe('cli/README.md work-subscription disclosure', () => {
       expect(body).toContain(phrase);
       expect(footnote).toContain(phrase);
     }
+  });
+
+  it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {
+    expect(body).toContain(
+      'signed in to a recognised work subscription or to an account you enroll by hand with `aka enroll --account`',
+    );
+    expect(footnote).toContain(
+      'signed in to a recognised work subscription or to an account enrolled by hand with `aka enroll --account`',
+    );
   });
 
   it('refuses prohibited models in any folder of a work-subscription session, not only in enrolled repositories', () => {

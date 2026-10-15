@@ -825,7 +825,9 @@ function onLines(name: string): string {
     'A Claude Code session signed in to a work subscription of your organization (Claude Team or Enterprise), ' +
     'under the same email as your AKA account, sends everything it records, from any folder, with its ' +
     'folder, project and branch names.\n' +
-    "This device checks that from Claude Code's own login file and sends no email, plan or account id.\n" +
+    "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and " +
+    'environment that choose the account, compares the signed-in email with your AKA account, and sends none of it ' +
+    '(no email, plan or account id).\n' +
     'A work account is recognised again the next time a session signed in to it runs. Rows recorded under it ' +
     'before you turned recognition off, and not yet sent, are sent once it is recognised again.\n'
   );

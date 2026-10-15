@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ import { agentKey, defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { accountScopeOf } from '../../src/account-scope.ts';
 import { resolveGatewayForConfig } from '../../src/attached/factory.ts';
 import type * as GatewayModule from '../../src/attached/gateway.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
@@ -187,15 +188,19 @@ describe('the attachment the factory builds — work accounts', () => {
   const scopedCredential = (apiKey = TEST_KEY) =>
     ({ specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey, mintedAt: AT }) as const;
 
-  // The identity record a scoped attach writes for the credential holding
-  // `apiKey`, and one work account a hook validated under it.
-  function learn(account: string, apiKey = TEST_KEY): void {
+  // The identity record a scoped attach writes for the credential holding `apiKey`.
+  function writeIdentity(apiKey = TEST_KEY): void {
     writeAttachedIdentity(dataDirOf(home), {
       endpoint: ENDPOINT,
       apiKey,
       tenantName: 'Acme',
       userEmail: EMAIL,
     });
+  }
+
+  // The identity record for `apiKey`, and one work account a hook validated under it.
+  function learn(account: string, apiKey = TEST_KEY): void {
+    writeIdentity(apiKey);
     recordValidatedWorkAccount(dataDirOf(home), {
       endpoint: ENDPOINT,
       credential: scopedCredential(apiKey),
@@ -282,5 +287,27 @@ describe('the attachment the factory builds — work accounts', () => {
     const given = extrasGivenFor('machine');
     expect(given.length).toBeGreaterThan(0);
     expect(given.every((extras) => extras.length === 0)).toBe(true);
+  });
+
+  // A lock that cannot be taken because the data directory is gone is not one a
+  // later call cures, so the scope answers refused and leaves a caller no retry.
+  // The gateway is closed before the directory is removed, so nothing holds a
+  // file in it open; the scope learns through the directory path alone.
+  it('answers refused, not timeout, when the identity record lock cannot be taken', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    writeIdentity();
+    const gateway = resolveGatewayForConfig(configFor(attachedSettings()));
+    const scope = accountScopeOf(gateway);
+    try {
+      // The precondition, so the case cannot pass on a scope that refuses for another reason.
+      expect(scope?.learn(LEARNED)).toBe('written');
+    } finally {
+      await gateway.close();
+    }
+
+    removeTree(dataDirOf(home));
+    expect(existsSync(dataDirOf(home))).toBe(false);
+
+    expect(scope?.learn(`claude:${randomUUID()}`)).toBe('refused');
   });
 });

@@ -1,7 +1,10 @@
+import { dirname } from 'node:path';
+
 import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
 import {
   canonicalRepoUrl,
   llmCallId,
+  readSightingSharing,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
   toolCallId,
@@ -16,6 +19,7 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
+import type { BoundedScanRequest } from '@akasecurity/plugin-sdk';
 import { bundledDetections, isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventBatchAck,
@@ -63,7 +67,10 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
 import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
+import type { OutboundEncoder } from './outbound-encoder.ts';
+import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
@@ -172,6 +179,16 @@ export interface AttachedDataGatewayDeps {
    */
   attachment: ResolvedAttachmentScope;
   /**
+   * Rewrites every forwarded capture's secrets into sighting tokens. Defaults to
+   * the encoder over the `~/.aka` root holding `dataDir`, scanning with this
+   * gateway's own effective ruleset.
+   */
+  encoder?: OutboundEncoder;
+  /** How long the live path waits for an encode before holding the capture owed. */
+  encodeBudgetMs?: number;
+  /** The bound the default encoder's worker scan runs under. */
+  scanBound?: BoundedScanRequest;
+  /**
    * The deployment's name as a terminal shows it, for the session-start line
    * (`forwardingScope`). Optional: a gateway built without one offers no line,
    * which is the answer a gateway that cannot name where it forwards should give.
@@ -235,8 +252,8 @@ function bundledRulesFlat(): readonly Rule[] {
  * `Event.content` is raw prompt/tool text. What makes retaining it acceptable is
  * that the text is ALREADY at rest here — recordCapture writes it on every
  * machine, attached or not — so a queue changes how long delivery may be owed
- * rather than whether plaintext sits on disk, and the deferred send is behind
- * its own consent, whose copy says exactly that.
+ * rather than whether plaintext sits on disk. A capture the live path owes is
+ * delivered by the drain without the history grant, encoded as a live send is.
  *
  * There is still no SPOOL FILE: the queue is `synced_at` on the row that was
  * already written, so nothing is copied anywhere to enqueue it.
@@ -275,7 +292,18 @@ export class AttachedDataGateway
    */
   private readonly rootVerdicts = new Map<string, ScopeVerdict>();
 
-  constructor(private readonly deps: AttachedDataGatewayDeps) {}
+  private readonly encoder: OutboundEncoder;
+
+  constructor(private readonly deps: AttachedDataGatewayDeps) {
+    this.encoder =
+      deps.encoder ??
+      createStoreOutboundEncoder(dirname(deps.dataDir), {
+        loadRules: async () => (await this.getPolicyBundle()).rules ?? [],
+        // Asked per capture, so a change of the sharing answer applies to the next send.
+        readSharing: () => readSightingSharing(dirname(deps.dataDir)).sharing,
+        ...(deps.scanBound === undefined ? {} : { scanBound: deps.scanBound }),
+      });
+  }
 
   // ---------------------------------------------------------------------
   // The scope verdict: whether a row written locally may also be forwarded.
@@ -551,6 +579,23 @@ export class AttachedDataGateway
     }
   }
 
+  /**
+   * The encoded event, or undefined to hold the capture owed. Bounded by the
+   * decision-path budget on its own, before the forward and outside the breaker,
+   * so a slow scan holds the capture rather than delaying the hook or counting
+   * as a deployment failure.
+   */
+  private async encodeForWire(event: IngestEvent): Promise<IngestEvent | undefined> {
+    try {
+      return await withTimeout(
+        this.encoder.encodeEvent(event),
+        this.deps.encodeBudgetMs ?? DECISION_PATH_BUDGET_MS,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
   /** TOTAL, like `verdictFor`: a record it cannot read stays local. */
   private staysLocal(record: CaptureRecord): boolean {
     try {
@@ -586,6 +631,13 @@ export class AttachedDataGateway
     // never the slug.
     const wireEvent = this.captureForWire(record);
     if (wireEvent === undefined) return;
+    // Secrets leave only as sighting tokens. A capture that cannot be encoded
+    // is held owed rather than sent, without touching the forward breaker.
+    const encoded = await this.encodeForWire(wireEvent);
+    if (encoded === undefined) {
+      this.deps.local.markCaptureOwed(record.event);
+      return;
+    }
     // ONLY the event crosses; `record.findings` stays on this machine. There is
     // no field on `IngestBatch`/`Event` that could carry them, and that is the
     // contract rather than an oversight: the plane re-derives its own findings
@@ -606,7 +658,7 @@ export class AttachedDataGateway
     const forwarded = await this.deps.forward.run(
       () =>
         this.deps.client.ingestEvents({
-          events: [wireEvent],
+          events: [encoded],
           ...(record.dedupe ? { dedupe: record.dedupe } : {}),
         }),
       { decisionPath: true },
@@ -1271,6 +1323,7 @@ export class AttachedDataGateway
   }
 
   async close(): Promise<void> {
+    await this.encoder.close();
     return this.deps.local.close();
   }
 

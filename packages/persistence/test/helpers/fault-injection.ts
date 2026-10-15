@@ -444,6 +444,13 @@ export interface LockStoreOptions {
   /** `busy_timeout` for the holder's own handle while it takes the lock. */
   busyTimeoutMs?: number;
   /**
+   * Hold the database file EXCLUSIVELY (`locking_mode = EXCLUSIVE`) instead of
+   * taking the write lock. That blocks readers as well as writers, and with
+   * them the first statement of an open — the state a WAL store is in while
+   * its last connection checkpoints and deletes the log on close.
+   */
+  exclusive?: boolean;
+  /**
    * Register `release()` for teardown, most conveniently the temp store's own
    * `onCleanup`. Without it, a body that throws while the lock is held leaks
    * the holder thread and its open handle on the store.
@@ -481,6 +488,7 @@ export function lockStore(file: string, opts: LockStoreOptions = {}): StoreLock 
       file,
       busyTimeoutMs: opts.busyTimeoutMs ?? 2000,
       holdMs: opts.holdMs ?? null,
+      exclusive: opts.exclusive ?? false,
       shared,
     },
   });

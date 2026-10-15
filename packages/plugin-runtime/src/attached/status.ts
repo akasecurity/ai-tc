@@ -152,16 +152,19 @@ const MODE_LINES: Record<AttachmentMode, string> = {
  * read carry none.
  */
 const ENROLL_HINT =
-  '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account` for a work subscription this device does not recognise)';
+  '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account <key>` for a work subscription this device does not recognise)';
 
 /**
  * The `user` line when no identity record counts for this credential. What a
  * work subscription is recognised against is then unknown, so none is. Never
- * the user's address: the record holds only a digest of it.
+ * the user's address: the record holds only a digest of it. The plugin's
+ * background sync asks the deployment once which account the key belongs to,
+ * which is what both lines wait for.
  */
 const USER_LINES = {
-  unknown: '  user       not known on this device — work subscriptions are not recognised',
-  untied: '  user       not tied to this key — work subscriptions are not recognised',
+  unknown:
+    '  user       not known until this machine syncs — work subscriptions are not recognised yet',
+  untied: '  user       not tied to this key — the next sync re-checks it',
 } as const;
 
 /**
@@ -173,13 +176,19 @@ const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
 };
 
+/** The commands that turn work-subscription recognition off and back on, as every surface prints them. */
+export const WORK_SUBSCRIPTION_COMMANDS = {
+  off: 'aka unenroll --work-subscriptions',
+  on: 'aka enroll --work-subscriptions',
+} as const;
+
 /**
  * The `work` line, by whether recognition is on, each naming the command that
  * changes it, on a personal device whose connection nobody manages.
  */
 const WORK_LINES = {
-  on: '  work       subscriptions on — `aka unenroll --work-subscriptions` turns them off on this device',
-  off: '  work       subscriptions off — you turned them off; `aka enroll --work-subscriptions` turns them back on',
+  on: `  work       subscriptions on — \`${WORK_SUBSCRIPTION_COMMANDS.off}\` turns them off on this device`,
+  off: `  work       subscriptions off — you turned them off; \`${WORK_SUBSCRIPTION_COMMANDS.on}\` turns them back on`,
 } as const;
 
 /**

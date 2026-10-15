@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readControlPlaneCredentialState } from '@akasecurity/persistence';
+import {
+  DB_FILENAME,
+  openLocalDatabase,
+  readControlPlaneCredentialState,
+} from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { throttled } from '@akasecurity/plugin-sdk';
 import { isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
@@ -44,6 +50,29 @@ export interface HistorySyncTriggerDeps {
   scriptUrl?: URL;
   spawnChild?: (scriptPath: string) => void;
   isThrottled?: (dataDir: string) => boolean;
+  /** Whether the live path owes a capture recorded at or after `sinceMs`. */
+  hasOwedLiveCaptures?: (dataDir: string, sinceMs: number) => boolean;
+}
+
+// Reads the throttle marker's age without writing it, so a machine with nothing
+// owed is not stamped as having run a pass.
+function markerIsFresh(dataDir: string): boolean {
+  try {
+    const age = Date.now() - statSync(join(dataDir, HISTORY_SYNC_MARKER_NAME)).mtimeMs;
+    return age < HISTORY_SYNC_THROTTLE_MS;
+  } catch {
+    return false;
+  }
+}
+
+function storeOwesLiveCaptures(dataDir: string, sinceMs: number): boolean {
+  if (!existsSync(join(dataDir, DB_FILENAME))) return false;
+  const db = openLocalDatabase(dataDir);
+  try {
+    return db.historySync.hasLiveOwedCaptures(sinceMs);
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -58,10 +87,9 @@ export interface HistorySyncTriggerDeps {
  * NEVER THROWS. It runs inside SessionStart, where a failure must cost a pass
  * and never a session.
  *
- * THE GRANT IS CHECKED HERE, not only in the child. A machine whose user never
- * consented must not pay a process spawn to discover that, and — more to the
- * point — must not write the throttle marker either, which is a file appearing
- * on disk because of a feature that is off.
+ * THE GRANT IS CHECKED HERE, not only in the child. Without it the only work a
+ * pass may do is deliver the captures the live path owes, so a machine that owes
+ * none pays no process spawn and writes no throttle marker.
  *
  * ATTACHED FIRST, THROTTLE LAST. Without that ordering every unattached machine
  * forks a child every five minutes for the life of the install, and "unattached"
@@ -77,7 +105,17 @@ export function triggerHistorySync(config: PluginConfig, deps: HistorySyncTrigge
     if (!isAttached(config.settings)) return;
     const connection = config.settings.controlPlane;
     if (connection === undefined) return;
-    if (!isHistorySyncConsentValid(config.settings.historySyncConsent, connection.endpoint)) return;
+    // Without the grant a pass may only deliver what the live path owes, so it
+    // is started only when there is some.
+    if (!isHistorySyncConsentValid(config.settings.historySyncConsent, connection.endpoint)) {
+      const sinceMs = Date.parse(connection.attachedAt);
+      if (!Number.isFinite(sinceMs)) return;
+      // Inside the window the throttle below would refuse anyway, so the store
+      // is not opened.
+      if (markerIsFresh(config.dataDir)) return;
+      const owes = deps.hasOwedLiveCaptures ?? storeOwesLiveCaptures;
+      if (!owes(config.dataDir, sinceMs)) return;
+    }
     // A credential that is absent, untrusted or minted for another deployment
     // means there is nothing to send to — and the child would only rediscover
     // that after paying a process spawn.

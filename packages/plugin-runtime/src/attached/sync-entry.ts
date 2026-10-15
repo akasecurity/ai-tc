@@ -2,6 +2,7 @@ import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
 import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
+import { refreshAttachedIdentity } from './identity-refresh.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
 import { runSightingKeySync } from './sighting-key-sync.ts';
@@ -64,6 +65,18 @@ export async function runAttachedSync(
   // route — so a 403 there is not proof of a 403 here, and declining to even
   // ask would be this device deciding on the deployment's behalf.
   if (policyOutcome === 'unauthorized') return;
+
+  // Learns which account the key belongs to when no identity record holds for
+  // it. Its own try: a failure here must not skip the jobs that follow.
+  try {
+    await refreshAttachedIdentity({
+      base,
+      settingsDir: settingsDir(base),
+      dataDir: dataDir(base),
+    });
+  } catch {
+    // `refreshAttachedIdentity` never throws; nothing is waiting on this process.
+  }
 
   // Fetches the sighting key only when none is stored or it is a day old.
   // `runSightingKeySync` never throws.

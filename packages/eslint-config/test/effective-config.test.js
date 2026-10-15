@@ -665,6 +665,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/helpers/sighting-sender-guard.ts',
   'test/helpers/store-template.ts',
   'test/helpers/turbo-inputs.ts',
+  'test/setup/no-host-claude-config.ts',
   'test/setup/no-managed-settings.ts',
   'test/setup/no-network.ts',
   'test/vitest/coverage.ts',
@@ -2747,8 +2748,8 @@ describe('ignore flags subtract from what an invocation covers', () => {
       ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       [
-        'eslint src test eval build hooks types *.config.*',
-        ['src', 'test', 'eval', 'build', 'hooks', 'types'],
+        'eslint src test eval bench build hooks types *.config.*',
+        ['src', 'test', 'eval', 'bench', 'build', 'hooks', 'types'],
       ],
       ['eslint src *.config.*', ['src']],
       // tools/installer ships no `src` at all: the thing under test is the

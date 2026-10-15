@@ -170,3 +170,65 @@ describe('opening a store whose write lock is held', () => {
     db.close();
   });
 });
+
+// The state a WAL store is in while its last connection closes: that connection
+// checkpoints the log and deletes it under an EXCLUSIVE lock on the database
+// file, and for that stretch no other connection can take even a shared lock.
+// With many short-lived hook processes on one store this happens on almost
+// every hook exit, so an open has to wait it out rather than fail.
+describe('opening a store another connection holds exclusively', () => {
+  // The OPEN PATH is this describe's subject, so it keeps the full open.
+  const store = useTempStore('aka-fault-exclusive-open-');
+
+  it('refuses a handle with no busy timeout at once — the condition is real', () => {
+    // The positive control for the case below: the hold refuses the very
+    // statement the open begins with, immediately, on a handle that has not
+    // set a busy timeout yet. That was the open's own order before.
+    store.open().close();
+    const raw = store.openRaw();
+    const lock = lockStore(store.dbFile, { exclusive: true, onCleanup: store.onCleanup });
+
+    const err = errorFrom(() => {
+      raw.exec('PRAGMA journal_mode = WAL');
+    });
+    lock.release();
+
+    expect(err).toBeDefined();
+    expect(primaryCode(err)).toBe(SQLITE_BUSY);
+  });
+
+  it('waits out a hold shorter than busy_timeout and opens', () => {
+    store.open().close();
+    const lock = lockStore(store.dbFile, {
+      exclusive: true,
+      holdMs: 300,
+      onCleanup: store.onCleanup,
+    });
+
+    let db: ReturnType<typeof openLocalDatabase> | null = null;
+    let err: unknown;
+    try {
+      db = openLocalDatabase(store.dataDir);
+    } catch (caught) {
+      err = caught;
+    }
+    lock.release();
+
+    expect(err).toBeUndefined();
+    expect(db).not.toBeNull();
+    db?.close();
+  });
+
+  it('still fails with SQLITE_BUSY once the hold outlasts busy_timeout', () => {
+    // The wait has a limit, and what reaches the caller past it is the SQLite
+    // code a hook can report rather than a bare failure.
+    store.open().close();
+    const lock = lockStore(store.dbFile, { exclusive: true, onCleanup: store.onCleanup });
+
+    const err = errorFrom(() => openLocalDatabase(store.dataDir));
+    lock.release();
+
+    expect(err).toBeDefined();
+    expect(primaryCode(err)).toBe(SQLITE_BUSY);
+  });
+});

@@ -43,9 +43,11 @@ The plugin installs Claude Code hooks that run locally with no `node_modules`, a
 
 - **SessionStart** — snapshot the session context.
 - **UserPromptSubmit** — scan prompts before they reach the model.
-- **PreToolUse** — scan tool inputs (Bash, Edit, Write, MultiEdit, NotebookEdit, WebFetch, WebSearch,
-  Agent / Task, and any `mcp__*` tool) before they run. Sensitive content in text a tool merely stores is
-  masked in place; in text a tool acts on — a shell command, a URL, a search query, an MCP argument —
+- **PreToolUse** — scan tool inputs (Bash, Edit, Write, MultiEdit, WebFetch, WebSearch, Agent /
+  Task, and any `mcp__*` tool) before they run, and check the path of a Read or Grep that names a
+  credential file (`.env`, a private key, `.netrc`, `credentials*`, `*auth.json`, shell rc files).
+  Sensitive content in text a tool merely stores is masked in
+  place; in text a tool acts on — a shell command, a URL, a search query, an MCP argument —
   masking would change what runs, so the call is blocked instead.
 - **PostToolUse** — scan tool outputs and file reads (Bash, Read, WebFetch, Grep, WebSearch
   summaries and links, the report of a subagent run in the foreground, and the text blocks of any

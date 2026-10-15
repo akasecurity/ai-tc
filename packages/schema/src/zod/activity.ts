@@ -6,7 +6,7 @@
 // fill/tone/dot fields and no pre-formatted strings; the frontend maps those
 // from the enums/counts below. No shape here carries user or tenancy scoping
 // fields (service method params only).
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { Severity } from './finding.ts';
 import { Harness } from './harness-map.ts';

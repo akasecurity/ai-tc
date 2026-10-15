@@ -156,8 +156,8 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
-// The grant covering activity this machine has not delivered: what it recorded
-// BEFORE it attached, and what a live send could not deliver. On a personal
+// The grant covering activity this machine recorded BEFORE it attached. What a
+// live send could not deliver is sent later whether or not it is given. On a personal
 // device that is the enrolled repositories' activity (see the _SCOPED set
 // below), and enrolling a repository under the grant also queues the captures
 // still kept for it, including any recorded after attaching. Separate from the
@@ -173,9 +173,7 @@ export const HISTORY_SYNC_ROW_DESCRIPTION =
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
-  'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
-  'live send could not deliver because the deployment was unreachable or refused the ' +
-  'credential. Both are sent the same way: which sessions ran and when, in which project, repo ' +
+  'sent later: what was already recorded before it attached. It is sent as: which sessions ran and when, in which project, repo ' +
   'and branch, token usage and model per call, which tools were called with their inputs ' +
   'truncated and every detected secret already masked, what was detected in those inputs, and ' +
   'the prompts, assistant replies and tool results themselves — for which a captured one ' +
@@ -184,7 +182,7 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
   'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
   'text is masked. Live sending is part of being attached and this setting does not change ' +
-  'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
+  'it: anything a live send could not deliver is kept and sent later either way. Sending ' +
   'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
   'cannot recall what has.';
 
@@ -193,13 +191,13 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Anything not delivered live is dropped, as it was before this setting existed (default — never assumed).',
+      'Activity from before this machine attached is not sent (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'Activity from before this machine attached, and anything undelivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
   },
 ];
 
@@ -231,11 +229,8 @@ export const HISTORY_SYNC_ROW_DESCRIPTION_SCOPED =
 export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'Whether activity the repositories enrolled on this device have not delivered to the ' +
   'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-  'outside one, is not sent, except from Claude Code sessions signed in to a work ' +
-  'subscription of your organization that this device recognises. Two kinds qualify: some ' +
-  'of what an enrolled repository recorded ' +
-  'here before you enrolled it, and anything a live send from one could not deliver because ' +
-  'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
+  'outside one, is not sent. What qualifies is some of what an enrolled repository recorded ' +
+  'here before you enrolled it, sent as: ' +
   'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
   'call, which tools were called with their inputs truncated and every detected secret ' +
   'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
@@ -244,11 +239,11 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'masked only where that policy is redact or block, and under monitor or warn the value is ' +
   'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
   'or block, so on a default install nothing in that text is masked. Live sending from ' +
-  'enrolled repositories and recognised work-subscription sessions is part of being attached ' +
-  'and this setting does not change it: ' +
-  'declining means an undelivered item is dropped rather than kept and retried. With no ' +
-  'repository enrolled and no work subscription recognised, no activity is sent. Sending ' +
-  'happens in the background over later ' +
+  'enrolled repositories, and from Claude Code sessions signed in to a work subscription of ' +
+  'your organization that this device recognises, is part of being attached and this setting ' +
+  'does not change it: anything a live send from either could not deliver is kept and sent ' +
+  'later either way. With no repository enrolled and no work subscription recognised, no ' +
+  'activity is sent. Sending happens in the background over later ' +
   'sessions. Revoking stops what has not been sent; it cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
@@ -256,13 +251,13 @@ export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Anything an enrolled repository does not deliver live is dropped rather than kept (default — never assumed).',
+      'What an enrolled repository recorded before you enrolled it is not sent (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent, except from Claude Code sessions signed in to a work subscription of your organization that this device recognises.',
+      'Some of what the repositories enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent by this setting.',
   },
 ];
 

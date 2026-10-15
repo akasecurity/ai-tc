@@ -1,6 +1,6 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
-import { ActionTaken } from './finding.ts';
+import { ActionTaken, DetectionCategory } from './finding.ts';
 import { SourceTool } from './harness-map.ts';
 
 // 'tool_use' is the enforcement record for a tool call whose arguments were
@@ -20,6 +20,33 @@ export type EventKind = z.infer<typeof EventKind>;
 // must constrain to these kinds; interpolate into `... event_type IN (${…})`.
 // A code-defined constant, never user input — direct interpolation is injection-safe.
 export const CAPTURE_EVENT_TYPES_SQL = EventKind.options.map((k) => `'${k}'`).join(',');
+
+// A secret's sighting token: `[[aka:fp:v<keyVersion>.<fingerprint>]]`, where the
+// fingerprint is the unpadded base64url of a 32-byte HMAC-SHA256. It carries no
+// value, rule or category, and `fp` is not a DetectionCategory, so a sighting
+// token never parses as a vault pointer. Whoever holds the key can test a
+// guessed value against a token.
+export const SIGHTING_TOKEN_PATTERN = /\[\[aka:fp:v[1-9][0-9]{0,15}\.[A-Za-z0-9_-]{43}\]\]/;
+
+export const SIGHTING_TOKEN_ANCHORED = new RegExp(`^${SIGHTING_TOKEN_PATTERN.source}$`);
+
+/** A fresh global scanner for sighting tokens in text. */
+export function sightingTokenScanner(): RegExp {
+  return new RegExp(SIGHTING_TOKEN_PATTERN.source, 'g');
+}
+
+/**
+ * One sighting token in a capture's content and the detection that found its
+ * value. Further per-value descriptors are added to this object.
+ */
+export const CaptureSighting = z
+  .object({
+    token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+    ruleId: z.string().min(1),
+    category: DetectionCategory,
+  })
+  .meta({ id: 'CaptureSighting' });
+export type CaptureSighting = z.infer<typeof CaptureSighting>;
 
 export const EventMetadata = z
   .object({
@@ -130,6 +157,9 @@ export const EventMetadata = z
     // exactly what a clean, empty capture looks like — this marker is the only
     // thing that tells the two apart. Absent on every capture that was scanned.
     scanIncomplete: z.enum(['timeout', 'unavailable']).optional(),
+    // The sighting tokens in `content`, one entry per distinct token and rule.
+    // Set only on a forwarded capture; the locally stored copy holds the values.
+    sightings: z.array(CaptureSighting).optional(),
   })
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;

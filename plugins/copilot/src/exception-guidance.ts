@@ -86,6 +86,20 @@ export function unscannedTooLargeMessage(subject: string, delivered: string): st
   );
 }
 
+// The same capture-only fact when the cause is not time but the scan worker:
+// it could not be started, died, or failed the job (`scanIncomplete:
+// 'unavailable'`). That is a fault in AKA rather than in the field — a missing
+// worker fails every field this large until the install is repaired — so the
+// sentence points at the install and never at the size of what was sent. Like
+// its siblings it never says blocked, names no rule and offers no exception.
+export function unscannedWorkerUnavailableMessage(subject: string, delivered: string): string {
+  return (
+    `AKA's scan worker could not run, so this ${subject} was not scanned: nothing in it ` +
+    `was checked and ${delivered}. This is a fault in AKA, not a limit on what was sent: ` +
+    'if it happens again, reinstall the AKA plugin to repair it.'
+  );
+}
+
 // The same capture-only fact when the cause is not time but the bounds a
 // structured result is read under: text past the depth, item-count or size
 // limits was never collected, so it was never scanned. Saying "within the time

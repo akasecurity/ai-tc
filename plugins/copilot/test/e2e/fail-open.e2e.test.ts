@@ -28,7 +28,10 @@ import { bundledDetections, LARGE_INPUT_THRESHOLD_CHARS } from '@akasecurity/plu
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { tooLargeToScanMessage, unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
+import {
+  tooLargeToScanMessage,
+  unscannedWorkerUnavailableMessage,
+} from '../../src/exception-guidance.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { withTempHome } from '../helpers/run-hook.ts';
 
@@ -783,9 +786,11 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       }, `aka-copilot-prompt-no-worker-${kind}-`);
 
       const text = notice(run);
+      // The worker file is gone: an install fault, not a size limit.
       expect(text).toContain(
-        unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'),
+        unscannedWorkerUnavailableMessage('prompt', 'it was sent to the model unchanged'),
       );
+      expect(text).not.toMatch(/shorten/iu);
       expect(run.stdout).not.toContain('permissionDecision');
       expect(run.stdout).not.toContain('"decision"');
       expectNoEchoOf(run.stdout, FIXTURE.example);
@@ -801,6 +806,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       const text = notice(run);
       expect(text).toContain(RULE_ID);
       expect(text).not.toContain('could not scan');
+      expect(text).not.toContain('was not scanned');
     });
   },
   120_000,
@@ -846,12 +852,14 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
 
       expect(run.status, run.stderr).toBe(0);
       const text = notice(run);
+      // The worker file is gone: an install fault, not a size limit.
       expect(text).toContain(
-        unscannedTooLargeMessage(
+        unscannedWorkerUnavailableMessage(
           `${tool} result`,
           'the output already reached the model unchanged',
         ),
       );
+      expect(text).not.toMatch(/shorten/iu);
       expect(run.stdout).not.toContain('modifiedResult');
       expect(run.stdout).not.toContain('"decision"');
       expectNoEchoOf(run.stdout, FIXTURE.example);
@@ -866,6 +874,7 @@ describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode'))
       const text = notice(run);
       expect(text).toContain(RULE_ID);
       expect(text).not.toContain('could not scan');
+      expect(text).not.toContain('was not scanned');
     });
   },
   120_000,

@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   unscannedPastWalkLimitsMessage,
   unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
 } from '../../src/exception-guidance.ts';
 import { responseDecision, scanResponseFields } from '../../src/hooks/scan-response.ts';
 import type { ScannableResponseField } from '../../src/hooks/tool-response.ts';
@@ -119,8 +120,10 @@ describe('scanResponseFields', () => {
 });
 
 /** What the runtime returns for a field whose bounded scan did not finish. */
-function refused(): CaptureResult {
-  return { action: 'block', findings: [], text: null, scanIncomplete: 'timeout' };
+function refused(
+  scanIncomplete: NonNullable<CaptureResult['scanIncomplete']> = 'timeout',
+): CaptureResult {
+  return { action: 'block', findings: [], text: null, scanIncomplete };
 }
 
 const DELIVERED = 'the output already reached the model unchanged';
@@ -177,6 +180,32 @@ describe('a result that was not wholly scanned', () => {
     expect(notice).toContain('r.warn');
     expect(notice).toContain(unscannedTooLargeMessage('part of the bash result', DELIVERED));
     expect(notice).not.toContain('this bash result');
+  });
+
+  // No worker is an install fault, not a size limit: the advice must not be
+  // to shorten the result.
+  it('reads a field with no worker to scan it as an install fault, not a timeout', async () => {
+    const outcome = await outcomeOf([CLI_FIELD], [refused('unavailable')]);
+    expect(outcome.unscanned).toBe(true);
+    expect(outcome.workerUnavailable).toBe(true);
+    expect(outcome.timedOut).toBe(false);
+    const notice = String(responseDecision('cli', outcome).notice);
+    expect(notice).toBe(unscannedWorkerUnavailableMessage('bash result', DELIVERED));
+    expect(notice).not.toMatch(/shorten|time limit/iu);
+    expect(responseDecision('vscode', outcome).output).toEqual({
+      systemMessage: unscannedWorkerUnavailableMessage('bash result', DELIVERED),
+    });
+  });
+
+  it('says each cause once when fields split between a timeout and no worker', async () => {
+    const outcome = await outcomeOf(
+      [CLI_FIELD, CLI_FIELD, CLI_FIELD, CLI_FIELD],
+      [refused('timeout'), refused('unavailable'), refused('timeout'), refused('unavailable')],
+    );
+    const notice = String(responseDecision('cli', outcome).notice);
+    const timeout = unscannedTooLargeMessage('part of the bash result', DELIVERED);
+    const missing = unscannedWorkerUnavailableMessage('part of the bash result', DELIVERED);
+    expect(notice).toBe(`${timeout} ${missing}`);
   });
 
   it('stays silent for a clean result that was wholly scanned (the control)', async () => {

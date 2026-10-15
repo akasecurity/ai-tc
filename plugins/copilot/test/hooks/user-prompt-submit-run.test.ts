@@ -34,7 +34,10 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
-import { unscannedTooLargeMessage } from '../../src/exception-guidance.ts';
+import {
+  unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
+} from '../../src/exception-guidance.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from '../../src/hooks/large-input.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { runUserPromptSubmit } from '../../src/hooks/user-prompt-submit-run.ts';
@@ -247,14 +250,25 @@ describe.each(DIALECTS)('runUserPromptSubmit on the $kind dialect', (d) => {
 
     const text = notice(await run(prompt, { scanWorkerUrl: absent }));
 
-    // Positive control: the unscanned sentence, and nothing about a block.
-    expect(text).toBe(unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'));
-    expect(text).not.toMatch(/\bblocked\b/iu);
-    // Recorded, with the refusal on the row and none of the prompt in it.
+    // Recorded, with the refusal on the row and none of the content in it.
     const [row] = promptRows();
     expect(row?.content).toBe('');
     const attrs = JSON.parse(String(row?.attributes)) as Record<string, unknown>;
     expect(['unavailable', 'timeout']).toContain(attrs.scan_incomplete);
+    // Positive control: the sentence for the cause the row records, and
+    // nothing about a block. The hook's deadline is measured from process
+    // start, so a long-running test process can reach it before the missing
+    // worker is noticed; a fresh hook process (the e2e no-worker rows) always
+    // reports the missing worker.
+    if (attrs.scan_incomplete === 'unavailable') {
+      expect(text).toBe(
+        unscannedWorkerUnavailableMessage('prompt', 'it was sent to the model unchanged'),
+      );
+      expect(text).not.toMatch(/shorten/iu);
+    } else {
+      expect(text).toBe(unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'));
+    }
+    expect(text).not.toMatch(/\bblocked\b/iu);
     expect(findingRows()).toEqual([]);
     expectNoEchoOf(text, FIXTURE.example);
     // Nothing on stderr claims the prompt was refused: this hook cannot refuse

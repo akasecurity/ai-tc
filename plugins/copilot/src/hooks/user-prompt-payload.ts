@@ -25,7 +25,11 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
-import { exceptionPointer, unscannedTooLargeMessage } from '../exception-guidance.ts';
+import {
+  exceptionPointer,
+  unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
+} from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookEvent } from './event-name.ts';
 import type { HookOutput } from './shared.ts';
@@ -145,9 +149,14 @@ export function promptDecision(
   },
 ): PromptDecision {
   if (result.scanIncomplete !== undefined) {
+    // A worker that could not run is an install fault, not a prompt that was
+    // too big, so the two causes get different advice.
+    const delivered = 'it was sent to the model unchanged';
     return onChannel(
       dialect,
-      unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged'),
+      result.scanIncomplete === 'unavailable'
+        ? unscannedWorkerUnavailableMessage('prompt', delivered)
+        : unscannedTooLargeMessage('prompt', delivered),
     );
   }
   if (event === 'transformed') return { output: null };

@@ -37,6 +37,7 @@ import {
   exceptionPointer,
   unscannedPastWalkLimitsMessage,
   unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
 } from '../exception-guidance.ts';
 import type { Dialect } from './dialect.ts';
 import type { HookOutput } from './shared.ts';
@@ -80,8 +81,15 @@ export interface ResponseScanOutcome {
    * checked, and must never read as clean.
    */
   unscanned: boolean;
-  /** A field's bounded scan did not finish (`CaptureResult.scanIncomplete`). */
+  /** A field's bounded scan ran out of time (`scanIncomplete: 'timeout'`). */
   timedOut: boolean;
+  /**
+   * A field's bounded scan found no worker able to run it (`scanIncomplete:
+   * 'unavailable'`). Kept apart from `timedOut` because the advice differs: a
+   * slow scan is about the size of the result, a missing worker is an install
+   * fault no smaller result fixes.
+   */
+  workerUnavailable: boolean;
   /**
    * The reader's walk bounds left text out (`ResponseFields.truncated`). Kept
    * apart from `timedOut` because the two say different things to the user: one
@@ -111,6 +119,7 @@ export async function scanResponseFields(
     completedScans: 0,
     unscanned: collected.truncated,
     timedOut: false,
+    workerUnavailable: false,
     walkTruncated: collected.truncated,
   };
 
@@ -123,7 +132,8 @@ export async function scanResponseFields(
     // model — but the field is reported as unscanned rather than as clean.
     if (result.scanIncomplete !== undefined) {
       outcome.unscanned = true;
-      outcome.timedOut = true;
+      if (result.scanIncomplete === 'unavailable') outcome.workerUnavailable = true;
+      else outcome.timedOut = true;
       continue;
     }
     outcome.completedScans += 1;
@@ -198,15 +208,21 @@ export function responseDecision(dialect: Dialect, outcome: ResponseScanOutcome)
       `unchanged.${pointer}`;
   }
   const delivered = 'the output already reached the model unchanged';
+  // Scoped to the part that went unchecked whenever any field did finish, or
+  // whenever the two causes below split the unchecked fields between them, so
+  // a sentence never claims "nothing in it was checked" of the whole result
+  // beside findings from, or a different cause for, another part.
+  const subject =
+    outcome.completedScans > 0 || (outcome.timedOut && outcome.workerUnavailable)
+      ? `part of the ${outcome.toolName} result`
+      : `${outcome.toolName} result`;
+  // Each cause is said once, however many fields it cost.
   if (outcome.timedOut) {
-    // Scoped to the part that went unchecked whenever any field did finish, so
-    // the sentence never claims "nothing in it was checked" beside findings
-    // from the part that was.
-    const subject =
-      outcome.completedScans > 0
-        ? `part of the ${outcome.toolName} result`
-        : `${outcome.toolName} result`;
     const unscanned = unscannedTooLargeMessage(subject, delivered);
+    message = message === undefined ? unscanned : `${message} ${unscanned}`;
+  }
+  if (outcome.workerUnavailable) {
+    const unscanned = unscannedWorkerUnavailableMessage(subject, delivered);
     message = message === undefined ? unscanned : `${message} ${unscanned}`;
   }
   if (outcome.walkTruncated) {

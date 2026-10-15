@@ -11,6 +11,7 @@ import {
   tooLargeToScanMessage,
   unscannedPastWalkLimitsMessage,
   unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
   withheldBanner,
   withheldToolText,
 } from '../src/exception-guidance.ts';
@@ -205,6 +206,25 @@ describe('unscannedTooLargeMessage', () => {
         'nothing in it was checked and it was sent to the model unchanged. Shorten it or ' +
         'send it in smaller parts to have it scanned.',
     );
+    expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
+    expect(message).not.toContain('aka exception');
+  });
+});
+
+// The install-fault counterpart: the worker could not run, so the advice is
+// about AKA, not about the size of what was sent.
+describe('unscannedWorkerUnavailableMessage', () => {
+  it('says the worker could not run, where the content went, and to repair the install', () => {
+    const message = unscannedWorkerUnavailableMessage(
+      'prompt',
+      'it was sent to the model unchanged',
+    );
+    expect(message).toBe(
+      "AKA's scan worker could not run, so this prompt was not scanned: nothing in it was " +
+        'checked and it was sent to the model unchanged. This is a fault in AKA, not a limit ' +
+        'on what was sent: if it happens again, reinstall the AKA plugin to repair it.',
+    );
+    expect(message).not.toMatch(/shorten|smaller parts|time limit/iu);
     expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
     expect(message).not.toContain('aka exception');
   });

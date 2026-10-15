@@ -53,10 +53,13 @@ run, and what is at stake is only whether its output reaches the model.
 
 **A prompt or tool result too large to scan in time is reported, not
 refused.** A field of 32,768 characters or more is scanned in a separate thread
-under a deadline. If that scan does not finish — or there is no thread to run it
-in — AKA says the text was too large to scan and that it went to the model
-unchanged. It is never treated as clean, and never stopped: neither event has a
-channel to stop it with. A structured tool result is read only to a fixed
+under a deadline. If that scan does not finish, AKA says the text was too large
+to scan in time and that it went to the model unchanged. If AKA's scan thread
+could not run at all, it says that instead: nothing was checked, the text went
+to the model unchanged, and the plugin should be reinstalled if it happens
+again — a missing scan thread is an install fault, and every text this large
+goes unscanned until it is repaired. Either way it is never treated as clean,
+and never stopped: neither event has a channel to stop it with. A structured tool result is read only to a fixed
 depth, number of text values and total size; anything past those limits is
 reported as unscanned in the same way.
 

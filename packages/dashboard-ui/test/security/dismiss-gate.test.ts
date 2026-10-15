@@ -62,6 +62,12 @@ describe('DISMISS_METHODS', () => {
     expect(DismissMethod.options).toContain('test-or-example');
     const offered = DISMISS_METHODS.find((m) => m.value === 'test-or-example');
     expect(offered?.label).toBe('Test or example data');
+    // The description is what separates it from 'Not a real finding': the match
+    // is real and the rule is right, only the value is a fixture or a sample.
+    const falsePositive = DISMISS_METHODS.find((m) => m.value === 'false-positive');
+    expect(offered?.description).toMatch(/real/);
+    expect(offered?.description).toMatch(/test fixture|example/);
+    expect(offered?.description).not.toBe(falsePositive?.description);
   });
 
   it('labels each one in plain words, without naming the enum member', () => {

@@ -23,13 +23,13 @@ import type { Choice } from '../shared/ChoiceGroup.tsx';
  * renders every option's description at once. A type-only import, so this
  * module stays free of React and can be unit-tested with no DOM.
  *
- * The descriptions are load-bearing rather than decorative: the two answers
+ * The descriptions are load-bearing rather than decorative: the answers
  * differ in what they CLAIM, not merely in how a report groups them later.
  * 'Accepted risk' says the finding is real and this team has chosen to live
  * with it; 'Not a real finding' says the rule is wrong; 'Test or example data'
- * says the rule is right but the value is a fixture or a sample. A reader who cannot see
- * both descriptions while choosing has no way to tell them apart from the
- * labels alone.
+ * says the rule is right but the value is a fixture or a sample. A reader who
+ * cannot see every description while choosing has no way to tell them apart
+ * from the labels alone.
  */
 export const DISMISS_METHODS: readonly Choice<DismissMethod>[] = [
   {

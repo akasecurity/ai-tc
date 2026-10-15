@@ -18,12 +18,14 @@ const STAMPED_ONLY =
   'model-refusal row only through src/hooks/stamped-capture.ts, whose functions take the key ' +
   "the session's account scope stamped.";
 
-// Each name is refused as a member call, as a member call by a computed literal and as a plain
-// call, which is how a destructured or imported function is called. The two policy functions are
-// also refused as import specifiers, so renaming one on import does not hide it.
+// Each name is refused as a member call, as a member call by a computed literal (a string, or a
+// template with no expression) and as a plain call, which is how a destructured or imported
+// function is called. The two policy functions are also refused as import specifiers, so renaming
+// one on import does not hide it.
 // A selector cannot follow a binding, so the rule does not see a call whose name is held in a
-// variable, a call through a binding renamed on the way (`const send = runtime.capture`,
-// `const { capture: send } = runtime`) or an indirect call (`runtime.capture.call(...)`).
+// variable or built by a template with an expression, a call through a binding renamed on the way
+// (`const send = runtime.capture`, `const { capture: send } = runtime`) or an indirect call
+// (`runtime.capture.call(...)`).
 const STAMPED_NAMES = ['capture', 'captureDeferred', 'governanceApplies', 'buildModelRefusalEvent'];
 const STAMPED_IMPORTS = ['governanceApplies', 'buildModelRefusalEvent'].join('|');
 const stampedOnlySelectors = [
@@ -31,6 +33,7 @@ const stampedOnlySelectors = [
     `CallExpression[callee.name='${name}']`,
     `CallExpression[callee.property.name='${name}']`,
     `CallExpression[callee.property.value='${name}']`,
+    `CallExpression[callee.property.type='TemplateLiteral'][callee.property.expressions.length=0][callee.property.quasis.0.value.cooked='${name}']`,
   ]),
   `ImportSpecifier[imported.name=/^(${STAMPED_IMPORTS})$/]`,
   `ImportSpecifier[imported.value=/^(${STAMPED_IMPORTS})$/]`,

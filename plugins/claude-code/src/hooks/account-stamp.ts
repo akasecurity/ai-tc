@@ -31,9 +31,9 @@ export interface HookAccount {
   readonly basis: AccountBasis | undefined;
   /**
    * What this hook's check answered, when one ran. A matched key the identity record refuses
-   * to learn gives no account and is answered `cap-reached`, whatever the cause: the learned
-   * account cap, a record that does not hold for the gateway's credential, or a record lock
-   * that cannot be taken.
+   * to learn gives no account and is answered `cap-reached`, whatever the cause: for example the
+   * learned account cap, a record that does not hold for the gateway's credential, or a record
+   * lock that cannot be taken for a reason other than a timeout.
    */
   readonly view: AccountCheck | undefined;
   /** The binding hash, set when this invocation's own full check validated the key. */

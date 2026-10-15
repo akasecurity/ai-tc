@@ -552,7 +552,7 @@ describe('a work session whose key the identity record refuses to learn', () => 
       },
     ],
     [
-      'the record lock cannot be taken',
+      'the record lock cannot be taken for a reason other than a timeout',
       () => {
         unavailable.file = join(dev.dataDir, ATTACHED_IDENTITY_FILENAME);
       },
@@ -752,7 +752,9 @@ describe('captures, policy questions and refusal rows go through stamped-capture
   it.each([
     ['a capture', 'runtime.capture({ text });'],
     ['a capture by a computed name', "runtime['capture']({ text });"],
+    ['a capture by a computed template name', 'runtime[`capture`]({ text });'],
     ['a deferred capture', 'runtime.captureDeferred({ text });'],
+    ['a deferred capture by a computed template name', 'runtime[`captureDeferred`]({ text });'],
     ['a destructured capture', 'const { capture } = runtime; capture({ text });'],
     [
       'a destructured deferred capture',
@@ -763,6 +765,10 @@ describe('captures, policy questions and refusal rows go through stamped-capture
     [
       'the governance question through a namespace by a computed name',
       "sdk['governanceApplies'](gateway, key);",
+    ],
+    [
+      'the governance question through a namespace by a computed template name',
+      'sdk[`governanceApplies`](gateway, key);',
     ],
     [
       'an aliased import of the governance question',
@@ -779,6 +785,10 @@ describe('captures, policy questions and refusal rows go through stamped-capture
       "sdk['buildModelRefusalEvent']({ id });",
     ],
     [
+      'a refusal row through a namespace by a computed template name',
+      'sdk[`buildModelRefusalEvent`]({ id });',
+    ],
+    [
       'an aliased import of the refusal row',
       "import { buildModelRefusalEvent as build } from 'x';",
     ],
@@ -789,6 +799,14 @@ describe('captures, policy questions and refusal rows go through stamped-capture
 
   it.each([
     ['a call whose name is held in a variable', 'runtime[method]({ text });'],
+    [
+      'a call whose name is a template holding only an expression',
+      'runtime[`${method}`]({ text });',
+    ],
+    [
+      'a call whose name is a template that starts with a refused name and holds an expression',
+      'runtime[`capture${suffix}`]({ text });',
+    ],
     [
       'a call through a binding renamed by assignment',
       'const send = runtime.capture; send({ text });',

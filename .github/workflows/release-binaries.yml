@@ -473,11 +473,12 @@ jobs:
             dist/VERSION
           if-no-files-found: error
 
-  # Writes the rendered formula into the Homebrew tap with a token scoped to
-  # that repository alone. No write scope here: a token able to write THIS
-  # repository would be a second, broader credential on the same runner for no
-  # reason, and nothing is checked out, so no repository token is persisted
-  # either.
+  # Writes the rendered formula into the Homebrew tap with a token minted for
+  # this one job from a GitHub App, scoped to that repository alone, valid for an
+  # hour and revoked when the job ends. No write scope here: a token able to
+  # write THIS repository would be a second, broader credential on the same
+  # runner for no reason, and nothing is checked out, so no repository token is
+  # persisted either.
   #
   # The target is a literal rather than a repository variable: both READMEs name
   # this tap, and a reader cannot observe a variable.
@@ -488,41 +489,73 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Secrets are unreadable from an `if:`, so the job carries whether the token
-    # is set — a boolean, never the value. A job-level mapping of the token
-    # itself would put it in the environment of every step, the artifact
-    # download included; this way it reaches one process, as GH_TOKEN in the
-    # step that calls the API.
+    # Secrets are unreadable from an `if:`, so the job carries whether the app
+    # is configured — a boolean, never a value. A job-level mapping of the
+    # private key would put it in the environment of every step, the artifact
+    # download included; this way it reaches one step, the one that mints the
+    # token, and the token that step returns reaches one step, as GH_TOKEN in
+    # the step that calls the API.
     env:
-      HOMEBREW_TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+      RELEASE_APP_CONFIGURED: ${{ vars.AKA_RELEASE_APP_CLIENT_ID != '' && secrets.AKA_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/download-artifact@v4
+      # Pinned by commit SHA like the token action below: this job goes on to
+      # hand a private key to a later step, and every step in a job runs as the
+      # same user.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: package-manifests
           path: manifests
 
-      # On the canonical repository a missing token is a configuration fault:
+      # On the canonical repository a missing app is a configuration fault:
       # the binaries are released and immutable, the tap still serves the
       # previous formula, and a silent skip means nobody learns until someone
       # notices `brew install` is stale.
-      - name: Fail if the Homebrew tap token is not configured
-        if: github.repository == 'akasecurity/ai-tc' && env.HOMEBREW_TAP_TOKEN_SET != 'true'
+      - name: Fail if the Homebrew release app is not configured
+        if: github.repository == 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         env:
           TARGET_REPO: akasecurity/homebrew-tap
           TARGET_PATH: Formula/aka.rb
         run: |
-          echo "::error::the binaries were released but the HOMEBREW_TAP_TOKEN secret is not configured — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Restore the secret, then re-run this job."
+          echo "::error::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Configure the app, then re-run this job."
           exit 1
 
-      - name: Report an unconfigured Homebrew tap
-        if: github.repository != 'akasecurity/ai-tc' && env.HOMEBREW_TAP_TOKEN_SET != 'true'
+      - name: Report an unconfigured Homebrew release app
+        if: github.repository != 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         run: |
-          echo '::notice::no HOMEBREW_TAP_TOKEN secret on this repository — no formula published'
+          echo '::notice::no release app configured on this repository — no formula published'
+
+      # `owner` AND `repositories` are both required: given `owner` alone the
+      # action scopes the token to EVERY repository the app is installed on.
+      # `permission-contents` is named because a token otherwise inherits all of
+      # the installation's permissions. `skip-token-revoke` is left at its
+      # default, so the token is revoked when the job ends.
+      - name: Mint a token for the Homebrew tap
+        id: tap-token
+        if: env.RELEASE_APP_CONFIGURED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AKA_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AKA_RELEASE_APP_PRIVATE_KEY }}
+          owner: akasecurity
+          repositories: homebrew-tap
+          permission-contents: write
+
+      # Minting is the likeliest first failure of this job: the app left off the
+      # repository selection, a key rotated incorrectly, a wrong client id. By
+      # here the release is already out, so say so rather than leave only the
+      # action's own error.
+      - name: Explain a failed Homebrew token mint
+        if: failure() && steps.tap-token.outcome == 'failure'
+        env:
+          TARGET_REPO: akasecurity/homebrew-tap
+          TARGET_PATH: Formula/aka.rb
+        run: |
+          echo "::error::the binaries were released but a token for ${TARGET_REPO} could not be minted, so ${TARGET_PATH} was not updated. Check that the release app is installed on that repository with Contents read and write approved, that the AKA_RELEASE_APP_CLIENT_ID variable names it and that the AKA_RELEASE_APP_PRIVATE_KEY secret holds one of its keys, then re-run this job."
 
       - name: Push Formula/aka.rb to the tap
-        if: env.HOMEBREW_TAP_TOKEN_SET == 'true'
+        if: env.RELEASE_APP_CONFIGURED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
           TARGET_REPO: akasecurity/homebrew-tap
           TARGET_PATH: Formula/aka.rb
           SOURCE_FILE: manifests/aka.rb
@@ -596,31 +629,50 @@ jobs:
     permissions:
       contents: read
     env:
-      SCOOP_BUCKET_TOKEN_SET: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
+      RELEASE_APP_CONFIGURED: ${{ vars.AKA_RELEASE_APP_CLIENT_ID != '' && secrets.AKA_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: package-manifests
           path: manifests
 
-      - name: Fail if the Scoop bucket token is not configured
-        if: github.repository == 'akasecurity/ai-tc' && env.SCOOP_BUCKET_TOKEN_SET != 'true'
+      - name: Fail if the Scoop release app is not configured
+        if: github.repository == 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         env:
           TARGET_REPO: akasecurity/scoop-bucket
           TARGET_PATH: bucket/aka.json
         run: |
-          echo "::error::the binaries were released but the SCOOP_BUCKET_TOKEN secret is not configured — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Restore the secret, then re-run this job."
+          echo "::error::the binaries were released but the release app is not configured (the AKA_RELEASE_APP_CLIENT_ID variable and the AKA_RELEASE_APP_PRIVATE_KEY secret) — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Configure the app, then re-run this job."
           exit 1
 
-      - name: Report an unconfigured Scoop bucket
-        if: github.repository != 'akasecurity/ai-tc' && env.SCOOP_BUCKET_TOKEN_SET != 'true'
+      - name: Report an unconfigured Scoop release app
+        if: github.repository != 'akasecurity/ai-tc' && env.RELEASE_APP_CONFIGURED != 'true'
         run: |
-          echo '::notice::no SCOOP_BUCKET_TOKEN secret on this repository — no manifest published'
+          echo '::notice::no release app configured on this repository — no manifest published'
+
+      - name: Mint a token for the Scoop bucket
+        id: bucket-token
+        if: env.RELEASE_APP_CONFIGURED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AKA_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AKA_RELEASE_APP_PRIVATE_KEY }}
+          owner: akasecurity
+          repositories: scoop-bucket
+          permission-contents: write
+
+      - name: Explain a failed Scoop token mint
+        if: failure() && steps.bucket-token.outcome == 'failure'
+        env:
+          TARGET_REPO: akasecurity/scoop-bucket
+          TARGET_PATH: bucket/aka.json
+        run: |
+          echo "::error::the binaries were released but a token for ${TARGET_REPO} could not be minted, so ${TARGET_PATH} was not updated. Check that the release app is installed on that repository with Contents read and write approved, that the AKA_RELEASE_APP_CLIENT_ID variable names it and that the AKA_RELEASE_APP_PRIVATE_KEY secret holds one of its keys, then re-run this job."
 
       - name: Push bucket/aka.json to the bucket
-        if: env.SCOOP_BUCKET_TOKEN_SET == 'true'
+        if: env.RELEASE_APP_CONFIGURED == 'true'
         env:
-          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          GH_TOKEN: ${{ steps.bucket-token.outputs.token }}
           TARGET_REPO: akasecurity/scoop-bucket
           TARGET_PATH: bucket/aka.json
           SOURCE_FILE: manifests/aka.json

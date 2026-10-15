@@ -1,4 +1,5 @@
 import { captureWireId } from '@akasecurity/persistence';
+import { isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type { AuditEventRow } from '@akasecurity/schema';
 import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
@@ -32,6 +33,18 @@ import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/
  * attribute — so reading `attributes.session_id` would silently derive every id
  * against `null` and duplicate the entire backlog.
  */
+/** The session and raw file path a stored capture's wire id is derived from. */
+export function captureIdentityOf(row: AuditEventRow): {
+  sessionId: string | null;
+  filePath: string | null;
+} {
+  const attributes = parseAttributes(row.attributes ?? null);
+  return {
+    sessionId: row.rootSessionId ?? null,
+    filePath: typeof attributes.file_path === 'string' ? attributes.file_path : null,
+  };
+}
+
 export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   // Only the capture grain belongs on this lane. A structural row reaching here
   // means a caller crossed the lanes, and sending it to /v1/events would file a
@@ -69,6 +82,17 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   if (occurredAt === undefined) return undefined;
 
   const attributes = parseAttributes(row.attributes ?? null);
+  // A secret-bearing file's snapshot is local-only on every lane, whatever kind
+  // it was filed under. Refused here as well as on the live forward, so a row
+  // marked owed by any writer is still never sent.
+  if (
+    isSecretBearingFileSnapshot({
+      filePath: stringOrUndefined(attributes.file_path),
+      wholeFile: attributes.whole_file === true,
+    })
+  ) {
+    return undefined;
+  }
   // Required on the wire, and it identifies which harness produced the row, so
   // there is nothing safe to default it to. An unparseable value is a skip.
   const sourceTool = SourceTool.safeParse(attributes.source_tool);

@@ -6,6 +6,7 @@ import {
   HISTORY_SYNC_LEASE_STALE_MS,
   openLocalDatabase,
   readControlPlaneCredentialFile,
+  readSightingSharing,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -28,10 +29,12 @@ import {
   scopeVerdict,
 } from '@akasecurity/schema';
 
-import { rebuildCapture } from './capture-rebuild.ts';
+import { captureIdentityOf, rebuildCapture } from './capture-rebuild.ts';
 import { isForwardPaused, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
+import type { CaptureIdentity, OutboundEncoder } from './outbound-encoder.ts';
+import { createStoreOutboundEncoder, storeEffectiveRules } from './outbound-encoder.ts';
 import { withScopedRepo } from './scoped-repo.ts';
 
 /**
@@ -191,10 +194,14 @@ export type HistorySyncSkipReason =
   | 'already-running'
   | 'failed';
 
-/** A pass that made no attempt, and why. */
+/**
+ * A history pass that made no attempt, and why. `owedLive` is present when the
+ * pass had no history grant but still delivered what the live path owes.
+ */
 export interface HistorySyncSkipped {
   attempted: false;
   reason: HistorySyncSkipReason;
+  owedLive?: { sent: number; skipped: number };
 }
 
 export interface HistorySyncResult {
@@ -267,6 +274,8 @@ export interface RunHistorySyncDeps {
    * batch of one into — see sendChunk's `sendSingleRow`.
    */
   sendOne?: (event: RecordAuditEventRequest) => Promise<void>;
+  /** Rewrites each resent capture's secrets into sighting tokens; defaults to this machine's own. */
+  encoder?: OutboundEncoder;
 }
 
 /** sha256 of the endpoint. Nothing reads the address back; only sameness matters. */
@@ -321,17 +330,22 @@ export async function runHistorySync(
     if (!isAttached(settings)) return didNotRun('not-attached');
     const connection = settings.controlPlane;
     if (connection === undefined) return didNotRun('not-attached');
+    // THE GRANT GATES HISTORY, NOT THE LIVE PATH'S OWN DEBT. Without it the pass
+    // still delivers the captures the live forward marked owed during this
+    // attachment, encoded and under the same scope, and nothing else.
     const consent = settings.historySyncConsent;
-    if (!isHistorySyncConsentValid(consent, connection.endpoint) || consent === undefined) {
-      return didNotRun('no-consent');
+    const granted =
+      consent !== undefined && isHistorySyncConsentValid(consent, connection.endpoint);
+    const consentAcknowledgedAtMs = granted ? Date.parse(consent.acknowledgedAt) : Number.NaN;
+    if (granted && !Number.isFinite(consentAcknowledgedAtMs)) {
+      return didNotRun('attachment-unreadable');
     }
-    const consentAcknowledgedAtMs = Date.parse(consent.acknowledgedAt);
-    if (!Number.isFinite(consentAcknowledgedAtMs)) return didNotRun('attachment-unreadable');
 
     // The WIDE read: the client below needs the key itself, and this runs in
     // the plugin's own process rather than anywhere a browser can see.
     const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
-    if (!state.usable) return didNotRun('credential-unusable');
+    // An ungranted machine reports the missing grant: that is the setting a person can act on.
+    if (!state.usable) return didNotRun(granted ? 'credential-unusable' : 'no-consent');
 
     // WHAT THIS PASS MAY SEND, resolved from the settings read above and the
     // credential just read. The mode lives on the credential (a machine
@@ -380,6 +394,14 @@ export async function runHistorySync(
 
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
+    const encoder =
+      deps.encoder ??
+      createStoreOutboundEncoder(deps.base, {
+        db,
+        loadRules: () => storeEffectiveRules(deps.dataDir),
+        // Asked per capture: a row held while sharing was on goes with the current answer.
+        readSharing: () => readSightingSharing(deps.base).sharing,
+      });
 
     // WHERE THE BACKLOG ENDS. Everything recorded from the attachment onwards is
     // the live forward path's to deliver, and it delivers it with the
@@ -397,8 +419,10 @@ export async function runHistorySync(
     // moves — a re-attach to the same deployment must not widen it.
     const fingerprint = endpointFingerprint(connection.endpoint);
     const recorded = ledger.deployment();
-    let backlogBefore: number;
-    if (recorded.fingerprint !== fingerprint) {
+    let backlogBefore = attachedAtMs;
+    if (!granted) {
+      // No history pass: the deployment ledger and its boundary are left as they are.
+    } else if (recorded.fingerprint !== fingerprint) {
       // A different deployment. Nothing sent to the last one counts here, so
       // the stamps go and a fresh boundary is frozen. The consent check above
       // has already confirmed `consent` is valid for THIS endpoint, so it is
@@ -512,7 +536,7 @@ export async function runHistorySync(
       });
 
     try {
-      return await drain({
+      const drainDeps: DrainDeps = {
         ledger,
         send,
         sendOne,
@@ -524,9 +548,16 @@ export async function runHistorySync(
         pid,
         backlogBefore,
         liveScope,
-      });
+        encodeCapture: (event, identity) => encoder.encodeEvent(event, identity),
+      };
+      if (!granted) {
+        const owedLive = await drainOwedLive({ ...drainDeps, liveOwedSince: attachedAtMs });
+        return { ...didNotRun('no-consent'), owedLive };
+      }
+      return await drain(drainDeps);
     } finally {
       ledger.release(pid);
+      await encoder.close();
     }
   } catch {
     // `failed` rather than a message: the caught value is the one thing here
@@ -587,6 +618,34 @@ interface DrainDeps {
    * its repository out of the very next read.
    */
   liveScope: () => ResolvedAttachmentScope;
+  /**
+   * The outbound encoder every capture passes through before it is sent. Never
+   * throws; undefined holds the capture owed and ends the lane for this pass.
+   */
+  encodeCapture: (
+    event: IngestEvent,
+    identity: CaptureIdentity,
+  ) => Promise<IngestEvent | undefined>;
+  /**
+   * Set for a pass without the history grant: the capture lane then reads only
+   * what the live path marked owed at or after this instant.
+   */
+  liveOwedSince?: number;
+}
+
+/** The capture lane alone, over what the live path owes: a pass without the history grant. */
+async function drainOwedLive(d: DrainDeps): Promise<{ sent: number; skipped: number }> {
+  const startedAt = d.now();
+  d.ledger.releaseStaleClaims(startedAt - HISTORY_SYNC_LEASE_STALE_MS);
+  let lastHeartbeat = startedAt;
+  const beat = (): void => {
+    const at = d.now();
+    if (at - lastHeartbeat < HEARTBEAT_EVERY_MS) return;
+    d.ledger.heartbeat(d.pid, at);
+    lastHeartbeat = at;
+  };
+  const { sent, skipped } = await drainCaptures(d, startedAt + d.budgetMs, beat);
+  return { sent, skipped };
 }
 
 /**
@@ -900,11 +959,19 @@ async function drainCaptures(
     // stamped with an enrolled key, so a repository unenrolled since the last
     // batch is already out of this one.
     const scope = d.liveScope();
-    const rows = d.ledger.pendingCaptureRows(
-      CAPTURE_BATCH_SIZE,
-      d.now() - CAPTURE_GRACE_MS,
-      scopeFilterOf(scope),
-    );
+    const rows =
+      d.liveOwedSince === undefined
+        ? d.ledger.pendingCaptureRows(
+            CAPTURE_BATCH_SIZE,
+            d.now() - CAPTURE_GRACE_MS,
+            scopeFilterOf(scope),
+          )
+        : d.ledger.pendingLiveCaptureRows(
+            CAPTURE_BATCH_SIZE,
+            d.now() - CAPTURE_GRACE_MS,
+            d.liveOwedSince,
+            scopeFilterOf(scope),
+          );
     if (rows.length === 0) return { sent, skipped };
 
     // THE SEND-TIME RE-CHECK: the same scope, asked again of each row in memory,
@@ -937,6 +1004,7 @@ async function drainCaptures(
 
     const ready: { id: string; event: IngestEvent }[] = [];
     const unbuildable: string[] = [];
+    let held = false;
     for (const { row, key } of inScopeRows) {
       const event = rebuildCapture(row);
       if (event === undefined) {
@@ -955,7 +1023,13 @@ async function drainCaptures(
       // id is reproduced from the row's session, content hash and file path,
       // never the slug, and the stamps below go by the row id. `key` is absent
       // exactly on a machine attachment, whose body stays what it was.
-      ready.push({ id: row.id, event: key === undefined ? event : withScopedRepo(event, key) });
+      const scoped = key === undefined ? event : withScopedRepo(event, key);
+      const encoded = await d.encodeCapture(scoped, captureIdentityOf(row));
+      if (encoded === undefined) {
+        held = true;
+        break;
+      }
+      ready.push({ id: row.id, event: encoded });
     }
     // ONE write for the page rather than one per row: markSkipped takes a list,
     // and each call is its own IMMEDIATE transaction competing for the store's
@@ -964,6 +1038,8 @@ async function drainCaptures(
       d.ledger.markSkipped(unbuildable, d.now());
       skipped += unbuildable.length;
     }
+    // Nothing this pass can encode is sent; every unsent row stays owed.
+    if (held) return { sent, skipped };
     if (ready.length === 0) {
       // BEFORE the continue, not after it. Every statement on this path —
       // pendingCaptureRows, rebuildCapture, markSkipped — is synchronous, so a

@@ -23,7 +23,7 @@ import { basename, dirname, join } from 'node:path';
 
 import { assertRawFree } from '@akasecurity/plugin-sdk';
 import { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { TriageWritebackPlan } from './writeback.ts';
 

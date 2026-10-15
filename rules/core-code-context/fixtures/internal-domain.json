@@ -59,5 +59,10 @@
     "text": "connect to db.internal.example.de on 5432",
     "shouldMatch": true,
     "expectedSpans": [{ "start": 11, "end": 22 }]
+  },
+  {
+    "label": "accepted loss: a keyword followed by exactly one more label reads as a file extension",
+    "text": "ssh to myhost.corp.de, then tail logs.corp.archive on prod.test.aws",
+    "shouldMatch": false
   }
 ]

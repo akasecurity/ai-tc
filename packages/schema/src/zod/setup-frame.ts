@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory } from './finding.ts';
 import { BuiltinPolicyId } from './policy.ts';

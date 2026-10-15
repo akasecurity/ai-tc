@@ -17,8 +17,6 @@
 // inventory then the root (idempotent) BEFORE the leaves — it never trusts
 // SessionStart. Provider is then read back off the ensured root,
 // never from live env (which would mislabel backfilled history under today's env).
-import { existsSync } from 'node:fs';
-
 import { sessionAccountsDir } from '@akasecurity/persistence';
 import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
@@ -40,7 +38,6 @@ import {
   holdDecision,
   NO_ATTRIBUTION_CARRY,
   readObservations,
-  sessionLogPath,
 } from '@akasecurity/plugin-sdk/account';
 import type {
   AuditEventInput,
@@ -528,7 +525,9 @@ export async function reconcileSessionTail(
       // pass that writes.
       writeOffset(config.dataDir, sessionId, {
         ...checkpoint,
-        ...(attribution?.logReset === true ? { logOffset: 0, carried: undefined } : {}),
+        ...(attribution?.logReset === true
+          ? { logOffset: 0, logStartedAt: undefined, carried: undefined }
+          : {}),
         pending: hold.pending,
       });
       return { llmCalls: 0, skipped: 0, toolCalls: 0 };
@@ -567,7 +566,11 @@ export async function reconcileSessionTail(
       lastPromptId: result.lastPromptId,
       ...(attribution === undefined
         ? {}
-        : { logOffset: attribution.logOffset, carried: attribution.carry }),
+        : {
+            logOffset: attribution.logOffset,
+            logStartedAt: attribution.logStartedAt,
+            carried: attribution.carry,
+          }),
     });
     // The store now reflects this tail; scrub the transcript FILE itself so a raw
     // secret in the new lines (Claude Code logs a prompt even when a hook blocked
@@ -768,26 +771,30 @@ function setNum(attrs: LlmCallAttributes, key: string, value: unknown): void {
 
 // The account each assistant line of the tail ran under, from the session's
 // observation log, or undefined where this gateway stamps no account keys: every
-// row then keeps its repository key. `logReset` is set when the log is shorter
-// than the stored offset or gone, as after an identity write: it is read from its
-// start with no carried state, and the returned offsets are the ones to store.
+// row then keeps its repository key. The log is read from its start, with no
+// carried state, when it is absent, shorter than the stored offset, or its first
+// line is not at the stored time: a log cleared and grown again is another log,
+// whatever its size. A stored log offset with no stored time restarts the read
+// too. The returned offsets and time are the ones to store.
 function attributeTail(
   gateway: DataGateway,
   dataDir: string,
   sessionId: string,
   transcriptPath: string,
   trace: UsageAccountTrace,
-  carry: Pick<UsageOffset, 'logOffset' | 'carried'> | undefined,
-): (AttributionResult & { readonly logReset: boolean }) | undefined {
+  carry: Pick<UsageOffset, 'logOffset' | 'logStartedAt' | 'carried'> | undefined,
+):
+  (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number }) | undefined {
   try {
     const scope = accountScopeOf(gateway);
     if (scope === undefined) return undefined;
     const stateDir = sessionAccountsDir(dataDir);
+    const startedAt = logStartedAtOf(stateDir, sessionId);
     let carried = carry?.carried ?? NO_ATTRIBUTION_CARRY;
     let logOffset = carry?.logOffset ?? 0;
     let log = readObservations(stateDir, sessionId, logOffset);
-    const logReset =
-      logOffset > 0 && (log.size < logOffset || !existsSync(sessionLogPath(stateDir, sessionId)));
+    const sameLog = startedAt !== undefined && startedAt === carry?.logStartedAt;
+    const logReset = logOffset > 0 && (log.size < logOffset || !sameLog);
     if (logReset) {
       carried = NO_ATTRIBUTION_CARRY;
       logOffset = 0;
@@ -795,22 +802,36 @@ function attributeTail(
     }
     const orgAt = (pos: number | undefined): string | undefined =>
       pos === undefined ? undefined : credentialOrgAt(transcriptPath, sessionId, pos);
+    const attribution = attributeRecords({
+      marks: trace.marks,
+      observations: log.entries,
+      logOffset,
+      carry: carried,
+      anchorOrg: orgAt(carried.anchorAt),
+      lastOrg: orgAt(carried.lastOrgAt),
+      bindingHash: scope.bindingHash,
+      inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
+    });
     return {
-      ...attributeRecords({
-        marks: trace.marks,
-        observations: log.entries,
-        logOffset,
-        carry: carried,
-        anchorOrg: orgAt(carried.anchorAt),
-        lastOrg: orgAt(carried.lastOrgAt),
-        bindingHash: scope.bindingHash,
-        inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
-      }),
+      ...attribution,
       logReset,
+      ...(attribution.logOffset > 0 && startedAt !== undefined ? { logStartedAt: startedAt } : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+// A log line is a few hundred bytes at most, so the first one is inside this window.
+const LOG_FIRST_LINE_WINDOW_BYTES = 4096;
+
+// The time of the first line of a session's observation log, which names the log
+// for as long as it lives: the log is append-only, and a log that is cleared and
+// written again starts at a later time. Undefined when there is no log or no
+// line of it is readable in the window.
+function logStartedAtOf(stateDir: string, sessionId: string): number | undefined {
+  return readObservations(stateDir, sessionId, 0, LOG_FIRST_LINE_WINDOW_BYTES).entries[0]
+    ?.observation.t;
 }
 
 // The times of the tail's lines that will be written as rows and are still

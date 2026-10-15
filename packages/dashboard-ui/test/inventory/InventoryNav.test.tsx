@@ -83,7 +83,11 @@ afterEach(() => {
 const entries = (): string[] =>
   [...mounted.host.querySelectorAll('nav li button')].map((b) => b.textContent);
 
-function mount(view: 'harness' | 'type', handlers: { onSelectHarness?: () => void } = {}): void {
+function mount(
+  view: 'harness' | 'type',
+  handlers: { onSelectHarness?: () => void } = {},
+  assetsRefusal?: string,
+): void {
   renderRoot(
     mounted.root,
     <InventoryNav
@@ -96,6 +100,7 @@ function mount(view: 'harness' | 'type', handlers: { onSelectHarness?: () => voi
       type="project"
       onSelectHarness={handlers.onSelectHarness ?? vi.fn()}
       onSelectType={vi.fn()}
+      assetsRefusal={assetsRefusal}
     />,
   );
 }
@@ -133,5 +138,34 @@ describe('InventoryNav', () => {
       (buttons[1] as HTMLButtonElement).click();
     });
     expect(onSelectHarness).toHaveBeenCalledWith('cursor');
+  });
+
+  describe('when the host cannot read the asset lists', () => {
+    const REASON = 'You do not have enough permissions.';
+
+    it('claims no review count, clean or otherwise', () => {
+      mount('type', {}, REASON);
+      expect(mounted.host.textContent).toContain('Not available');
+      expect(mounted.host.textContent).not.toContain('All clear');
+      expect(mounted.host.textContent).not.toContain('to review');
+    });
+
+    it('shows the reason instead of a harness list', () => {
+      mount('harness', {}, REASON);
+      expect(mounted.host.textContent).toContain(REASON);
+      expect(mounted.host.textContent).not.toContain('No harnesses detected');
+      expect(mounted.host.querySelectorAll('nav li')).toHaveLength(0);
+    });
+
+    it('counts projects but no asset type it could not read', () => {
+      mount('type', {}, REASON);
+      expect(entries()).toEqual([
+        'Projects1',
+        'Skills—',
+        'MCP servers—',
+        'Hooks—',
+        'Configuration—',
+      ]);
+    });
   });
 });

@@ -3,166 +3,116 @@
 import {
   AssetDetail,
   EmptyState,
-  FileDetailDrawer,
-  HarnessOverview,
+  HarnessInventory,
+  InventoryDetailFallback,
   InventoryNav,
+  type InventoryRow,
   type InventorySelection as Selection,
-  ProjectPane,
+  inventoryTypeMeta,
+  ProjectDetail,
+  rowType,
+  TypeInventory,
+  typeRows,
   useRenderClock,
 } from '@akasecurity/dashboard-ui';
 import type {
-  AccessLevel,
   AssetDetail as AssetDetailData,
   AssetGroup,
-  AssetSummary,
-  AssetType,
-  FileDetail,
   FileSummary,
   HarnessEventsResponse,
   HarnessSummary,
   ProjectSummary,
-  ProjectTreeResponse,
   TrustLevel,
 } from '@akasecurity/schema';
-import { Card, cn, Sheet, SheetContent } from '@akasecurity/ui-kit';
+import { Card, cn } from '@akasecurity/ui-kit';
 import { usePathname } from 'next/navigation';
-import { useCallback, useState, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 
 import { useNavigationTransition } from '../../components/NavigationTransition';
-import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
-import { setFileAccess, setMcpTrust } from './actions';
+import { setMcpTrust } from './actions';
 import { buildInventoryParams } from './filters';
 
-type TypeFilter = 'all' | AssetType;
-
 /**
- * Client shell for the OSS Inventory page. The nav lists + the selected node's
- * detail come from the Server Component (which reads the local store per URL);
- * selecting a node, browsing a project's files, searching, or opening the file
- * drawer pushes a new URL so the server re-queries — the OSS store is server-only.
- * View mode / type filter / expanded rows / nav search are pure client state. The
- * file-access + MCP-trust edits go through Server Actions.
+ * Client shell for the OSS Inventory page. The lists and the opened row's detail
+ * come from the Server Component, which reads the local store per URL; changing
+ * the selection pushes a new URL so the server re-queries. Each table's search,
+ * filters, sort and page are client state, and the table stays mounted while a
+ * row is open so they survive the trip to the details page and back. The
+ * MCP-trust edit goes through a Server Action.
  */
 export function InventoryClient({
   harnesses,
   assetGroups,
   projects,
-  attention,
-  activeSel,
-  proj,
-  selHarness,
+  active,
   assetDetail,
-  tree,
   blocked,
   harnessEvents,
-  fileDetail,
-  path,
-  fq,
-  drawer,
   renderedAt,
   locale,
 }: {
   harnesses: HarnessSummary[];
   assetGroups: AssetGroup[];
   projects: ProjectSummary[];
-  attention: number;
-  activeSel: Selection | null;
-  proj: ProjectSummary | null;
-  selHarness: HarnessSummary | null;
+  /** The selection the server resolved from the URL. */
+  active: Selection;
   assetDetail: AssetDetailData | null;
-  tree: ProjectTreeResponse | null;
+  /** The opened project's auto-blocked files. */
   blocked: FileSummary[];
-  harnessEvents: HarnessEventsResponse | null;
-  fileDetail: FileDetail | null;
-  path: string[];
-  fq: string;
-  drawer: string | null;
+  harnessEvents: HarnessEventsResponse;
   /**
-   * The instant the server rendered against. Advanced through useRenderClock
-   * below rather than read directly — see that hook's doc for why: freezing it
-   * for the life of this client component would not just go stale, it would
-   * turn the harness feed's day bucket false. Unlike a relative-time label,
-   * that bucket is a discrete Today/Yesterday/date branch computed once per
-   * event and then held, so a session left open across local midnight would
-   * go on showing "Today" for an event days old were this never advanced.
+   * The instant the server rendered against, advanced through useRenderClock —
+   * see that hook's doc for why freezing it would turn relative times and the
+   * harness feed's day buckets false in a long-open tab.
    */
   renderedAt: number;
-  /**
-   * The locale the SERVER resolved from the request's Accept-Language header.
-   * Every timestamp below is formatted in it, on the server and again in
-   * the browser, so the two renders agree. See app/lib/render-locale.ts.
-   */
+  /** The locale the server resolved from the request's Accept-Language header. */
   locale: string;
 }) {
   const renderClock = useRenderClock(renderedAt);
   const pathname = usePathname();
-  // Navigation transition (selection/search/path pushes) — distinct from the
-  // write transition below, which tracks the access/trust Server Actions.
   const { isPending: navPending, push: pushUrl } = useNavigationTransition();
-
-  // Pure client state — no server refetch.
-  const [viewMode, setViewMode] = useState<'tree' | 'type'>('tree');
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
-  const [navQuery, setNavQuery] = useState('');
-  const [showBlocked, setShowBlocked] = useState(true);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
-    const first = harnesses[0]?.id;
-    return first ? { [first]: true } : {};
-  });
   const [isWriting, startTransition] = useTransition();
-  // Surface a failed file-access / MCP-trust write instead of silently keeping the
-  // old value — these are security-posture controls, so a silent no-op is worst.
+  // A failed MCP-trust write surfaces here rather than silently keeping the old
+  // value — it is a security-posture control.
   const [writeError, setWriteError] = useState<string | null>(null);
 
-  const buildUrl = useCallback(
-    (opts: { sel?: Selection | null; path?: string[]; fq?: string; file?: string | null }) => {
-      const qs = buildInventoryParams(opts).toString();
-      return qs ? `${pathname}?${qs}` : pathname;
-    },
-    [pathname],
-  );
+  const navigate = (sel: Selection) => {
+    const qs = buildInventoryParams(sel).toString();
+    pushUrl(qs ? `${pathname}?${qs}` : pathname);
+  };
 
-  // In-project file search — the shared hook owns debounce/resync/cancel. A
-  // debounced search keeps the current selection + path and drops the drawer;
-  // navigating with no term (a selection change) clears the box, so the previous
-  // project's search never leaks onto the new node.
-  const {
-    query: fileQuery,
-    setQuery: setFileQuery,
-    onNavigate,
-  } = useDebouncedUrlQuery(fq, (term) => buildUrl({ sel: activeSel, path, fq: term }));
+  const harness = harnesses.find((h) => h.id === active.harness) ?? null;
+  const item = active.item;
+  const project =
+    item?.type === 'project'
+      ? (projects.find((p) => p.id === item.id) ??
+        harness?.projects.find((p) => p.id === item.id) ??
+        null)
+      : null;
+  const backLabel =
+    active.view === 'harness'
+      ? (harness?.label ?? 'harness')
+      : inventoryTypeMeta(active.type).label;
 
-  const push = useCallback(
-    (opts: { sel?: Selection | null; path?: string[]; fq?: string; file?: string | null }) => {
-      onNavigate(opts.fq ?? '');
-      pushUrl(buildUrl(opts));
-    },
-    [onNavigate, pushUrl, buildUrl],
-  );
-
-  // Run a write action inside the transition, guarding against overlapping writes
-  // and surfacing failure inline.
-  const runWrite = (label: string, action: () => Promise<boolean>) => {
+  const open = (row: InventoryRow) => {
+    navigate({ ...active, item: { type: rowType(row), id: row.id } });
+  };
+  const back = () => {
+    navigate({ ...active, item: null });
+  };
+  const updateTrust = (assetId: string, trust: TrustLevel) => {
     if (isWriting) return;
     setWriteError(null);
     startTransition(async () => {
       try {
-        if (!(await action())) setWriteError(`Couldn't ${label} — reload to refresh.`);
+        if (!(await setMcpTrust(assetId, trust))) {
+          setWriteError("Couldn't update MCP trust — reload to refresh.");
+        }
       } catch {
-        setWriteError(`Couldn't ${label}. Please try again.`);
+        setWriteError("Couldn't update MCP trust. Please try again.");
       }
     });
-  };
-
-  // Selection handlers — a new node drops path/fq/file so the file browser resets.
-  const selectHarness = (id: string) => {
-    push({ sel: { type: 'harness', id } });
-  };
-  const selectProject = (id: string) => {
-    push({ sel: { type: 'project', id } });
-  };
-  const selectAsset = (it: AssetSummary) => {
-    push({ sel: { type: it.type as Exclude<AssetType, 'project'>, id: it.id } });
   };
 
   return (
@@ -183,104 +133,80 @@ export function InventoryClient({
         )}
       >
         <InventoryNav
+          harnesses={harnesses}
           projects={projects}
           assetGroups={assetGroups}
-          harnesses={harnesses}
-          sel={activeSel}
-          viewMode={viewMode}
-          onViewMode={setViewMode}
-          expanded={expanded}
-          onToggleExpand={(id, next) => {
-            setExpanded((m) => ({ ...m, [id]: next ?? !m[id] }));
+          view={active.view}
+          onView={(view) => {
+            navigate({ ...active, view, item: null });
           }}
-          typeFilter={typeFilter}
-          onTypeFilter={setTypeFilter}
-          query={navQuery}
-          onQuery={setNavQuery}
-          attention={attention}
-          onSelectProject={selectProject}
-          onSelectAsset={selectAsset}
-          onSelectHarness={selectHarness}
+          harness={active.harness}
+          type={active.type}
+          onSelectHarness={(id) => {
+            navigate({ ...active, view: 'harness', harness: id, item: null });
+          }}
+          onSelectType={(type) => {
+            navigate({ ...active, view: 'type', type, item: null });
+          }}
         />
 
-        {proj ? (
-          <ProjectPane
-            proj={proj}
-            path={path}
-            onPathChange={(p) => {
-              push({ sel: activeSel, path: p });
-            }}
-            query={fileQuery}
-            onQueryChange={setFileQuery}
-            tree={tree}
-            isLoading={false}
-            error={null}
-            onSetAccess={(filePath, access) => {
-              runWrite('update file access', () => setFileAccess(proj.id, filePath, access));
-            }}
-            onOpenFile={(filePath) => {
-              push({ sel: activeSel, path, fq, file: filePath });
-            }}
-            drawerPath={drawer}
-            blocked={blocked}
-            showBlocked={showBlocked}
-            onToggleBlocked={() => {
-              setShowBlocked((s) => !s);
-            }}
-            locale={locale}
-          />
-        ) : (
-          <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            {selHarness ? (
-              <HarnessOverview
+        <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className={cn('flex min-h-0 flex-1 flex-col', item && 'hidden')}>
+            {active.view === 'harness' ? (
+              harness ? (
+                <HarnessInventory
+                  key={harness.id}
+                  harness={harness}
+                  events={harnessEvents}
+                  onOpen={open}
+                  renderedAt={renderClock}
+                  locale={locale}
+                />
+              ) : (
+                <div className="grid min-h-0 flex-1 place-items-center p-8">
+                  <EmptyState message="No assets to display" />
+                </div>
+              )
+            ) : (
+              <TypeInventory
+                key={active.type}
+                type={active.type}
+                rows={typeRows(active.type, projects, assetGroups)}
+                onOpen={open}
                 renderedAt={renderClock}
-                locale={locale}
-                harness={selHarness}
-                events={harnessEvents}
-                onSelect={selectAsset}
-                onSelectProject={selectProject}
               />
-            ) : assetDetail ? (
-              <AssetDetail
-                asset={assetDetail}
-                onTrust={(v: TrustLevel) => {
-                  runWrite('update MCP trust', () => setMcpTrust(assetDetail.id, v));
-                }}
-              />
-            ) : (
-              <div className="grid min-h-0 flex-1 place-items-center p-8">
-                <EmptyState message="No assets to display" />
-              </div>
             )}
-          </Card>
-        )}
-      </div>
+          </div>
 
-      {/* per-file detail drawer */}
-      <Sheet
-        open={drawer !== null && proj !== null}
-        onOpenChange={(open) => {
-          if (!open) push({ sel: activeSel, path, fq });
-        }}
-      >
-        <SheetContent className="p-0" aria-describedby={undefined}>
-          {proj &&
-            drawer !== null &&
-            (fileDetail ? (
-              <FileDetailDrawer
-                file={fileDetail}
-                locale={locale}
-                onChange={(v: AccessLevel) => {
-                  runWrite('update file access', () => setFileAccess(proj.id, fileDetail.path, v));
-                }}
-              />
-            ) : (
-              <div className="grid h-full place-items-center p-6 text-center text-sm text-text-3">
-                File not found
-              </div>
-            ))}
-        </SheetContent>
-      </Sheet>
+          {project ? (
+            <ProjectDetail
+              project={project}
+              blocked={blocked}
+              harnesses={harnesses}
+              onBack={back}
+              backLabel={backLabel}
+              renderedAt={renderClock}
+              locale={locale}
+            />
+          ) : item && assetDetail ? (
+            <AssetDetail
+              asset={assetDetail}
+              onTrust={(v) => {
+                updateTrust(assetDetail.id, v);
+              }}
+              onBack={back}
+              backLabel={backLabel}
+              locale={locale}
+            />
+          ) : item ? (
+            <InventoryDetailFallback
+              message="This item is no longer in the inventory"
+              onBack={back}
+              backLabel={backLabel}
+            />
+          ) : null}
+        </Card>
+      </div>
     </>
   );
 }

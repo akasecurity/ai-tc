@@ -162,6 +162,7 @@ describe('AssetSummary', () => {
     sub: 'mcp://notion-bridge',
     flags: ['change'],
     trust: 'unapproved',
+    meta: { transport: 'stdio' },
   };
 
   it('parses a valid mcp asset with trust', () => {
@@ -179,6 +180,7 @@ describe('AssetSummary', () => {
       name: 'bash',
       sub: 'shell',
       flags: [],
+      meta: {},
     };
     const result = AssetSummary.safeParse(skillAsset);
     expect(result.success).toBe(true);
@@ -194,6 +196,10 @@ describe('AssetSummary', () => {
 
   it('rejects missing required fields', () => {
     expect(AssetSummary.safeParse({ id: 'x', type: 'mcp', name: 'x' }).success).toBe(false);
+  });
+
+  it('requires the type-specific meta record', () => {
+    expect(AssetSummary.safeParse({ ...validAsset, meta: undefined }).success).toBe(false);
   });
 });
 
@@ -284,6 +290,7 @@ describe('HarnessSummary', () => {
             sub: 'mcp://notion-bridge',
             flags: ['change'],
             trust: 'unapproved',
+            meta: {},
           },
         ],
       },
@@ -340,6 +347,7 @@ describe('AssetGroup', () => {
           sub: 'local · stdio',
           flags: [],
           trust: 'known-good',
+          meta: {},
         },
       ],
     };
@@ -355,7 +363,7 @@ describe('AssetGroup', () => {
       type: 'skill',
       total: 3,
       flagRollup: {},
-      items: [{ id: 'skill-bash', type: 'skill', name: 'bash', sub: 'shell', flags: [] }],
+      items: [{ id: 'skill-bash', type: 'skill', name: 'bash', sub: 'shell', flags: [], meta: {} }],
     };
     const result = AssetGroup.safeParse(group);
     expect(result.success).toBe(true);

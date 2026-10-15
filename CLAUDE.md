@@ -967,10 +967,11 @@ changes. The gaps that exist today:
   for. `plugins/copilot/hooks.json` therefore registers **camelCase events alone** — the four
   it carries are `sessionStart`, `userPromptSubmitted`, `preToolUse` and `postToolUse`, each
   once — and a VS Code entry belongs in the file that host itself reads. Of those four only
-  `preToolUse` ENFORCES: the other three capture, scan and record, and pass
-  `rewritable: false` because neither host has a prompt-stop or result-withhold channel this
-  repository has observed, so a `redact` resolves to `redactFallback` inside the runtime
-  rather than the hook claiming an enforcement the host would ignore.
+  `preToolUse` ENFORCES. `userPromptSubmitted` and `postToolUse` capture, scan and record,
+  and pass `rewritable: false` because neither host has a prompt-stop or result-withhold
+  channel this repository has observed, so a `redact` resolves to `redactFallback` inside
+  the runtime rather than the hook claiming an enforcement the host would ignore.
+  `sessionStart` scans nothing: it opens the session root every later capture hangs off.
   `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
   payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records
   every prompt twice.

@@ -76,10 +76,10 @@ and turning it off does not stop it.`;
 const USAGE_SCOPED = `Usage: aka sync-history [--on | --off] [--run]
 
 Whether this personal device may send what the repositories and accounts you enroll recorded
-before you enrolled them. Nothing else recorded here is sent by this setting. Claude Code
-sessions signed in to a recognised work subscription or to an account enrolled by hand with
-\`aka enroll --account\`, and the replies in that account's claude.ai chats, are sent as part
-of being attached, which this setting does not change.
+before you enrolled them. Nothing else recorded here is sent by this setting. Claude Code and
+Codex sessions signed in to a recognised work subscription or to an account enrolled by hand
+with \`aka enroll --account\`, and the replies in that account's claude.ai chats, are sent as
+part of being attached, which this setting does not change.
 
   --on          Send it. Takes effect in the background, over later sessions.
   --off         Do not send it. Stops anything not already sent.
@@ -314,8 +314,8 @@ function grant(
     io.out(
       `Sending the unsent activity of the repositories and accounts enrolled here to ${where}.\n` +
         'Nothing else recorded here is sent by this setting.\n' +
-        'Claude Code sessions signed in to a recognised work subscription or to an account\n' +
-        "enrolled by hand with `aka enroll --account`, and the replies in that account's\n" +
+        'Claude Code and Codex sessions signed in to a recognised work subscription or to an\n' +
+        "account enrolled by hand with `aka enroll --account`, and the replies in that account's\n" +
         'claude.ai chats, are sent as part of being attached, which this setting does not\n' +
         'change. With no repository enrolled, no account enrolled by hand and no work\n' +
         'subscription recognised, no activity is sent at all: `aka enroll --list` shows\n' +
@@ -362,9 +362,9 @@ function revoke(
     scoped
       ? 'Not sending the unsent activity of the repositories and accounts enrolled here. Anything\n' +
           'already sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
-          'repositories, from Claude Code sessions signed in to a recognised work subscription,\n' +
-          'and from an account enrolled by hand (its Claude Code sessions and claude.ai chat replies)\n' +
-          'is part of being attached and continues, and anything a live send from any of them could\n' +
+          'repositories, from Claude Code and Codex sessions signed in to a recognised work subscription,\n' +
+          'and from an account enrolled by hand (its Claude Code or Codex sessions and claude.ai chat\n' +
+          'replies) is part of being attached and continues, and anything a live send from any of them could\n' +
           'not deliver is still sent later.\n'
       : "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
           'this stops what has not gone yet. Live sending is part of being attached and\n' +

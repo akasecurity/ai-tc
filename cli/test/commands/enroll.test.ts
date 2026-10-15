@@ -336,8 +336,10 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runEnroll(['--everything'], deps(io))).toBe(2);
     expect(flat(io.errors())).toContain(
-      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) that this device recognises; activity anywhere else stays on this machine.",
+      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code and Codex sessions signed in to a work subscription (a Claude Team or Enterprise plan, or a ChatGPT Business, Team, Enterprise or Edu plan) that this device recognises; activity anywhere else stays on this machine.",
     );
+    // Only the ChatGPT workspace plans count, so the usage never names a service account.
+    expect(io.errors()).not.toMatch(/service account|enterprise_cbp_automation/i);
     expect(flat(io.errors())).toContain(
       "The policy pull, the sighting-key fetch, the command check and the device report are not limited to them: the report's finding counts and dates are for everything recorded on the machine.",
     );
@@ -349,7 +351,7 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
     expect(flat(io.errors())).toContain(
-      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
+      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code or Codex session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
     );
     expect(io.errors()).not.toContain('from then on');
   });
@@ -1302,7 +1304,7 @@ describe('aka enroll — a list this version cannot read', () => {
     const io = recorder();
     expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
     expect(io.output()).toBe(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n` +
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code or Codex session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n` +
         'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
         'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
         'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
@@ -1331,7 +1333,7 @@ describe('aka enroll — what was recorded before', () => {
       'The history sync also sends the rest of its activity recorded before this machine attached',
     );
     expect(flat(shown)).toContain(
-      'other than those captures and what a Claude Code session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
+      'other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
     );
     expect(shown).not.toContain('Other activity recorded in it before now stays on this machine.');
   });
@@ -1416,7 +1418,7 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.`,
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code or Codex session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.`,
     );
     // Said as far as it is true: a scan already running may have read the scope
     // before the edit, so nothing promises it stops; and what was waiting is

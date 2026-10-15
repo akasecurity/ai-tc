@@ -194,8 +194,9 @@ response finishes in a session that is already running, still at most hourly.
 The report carries no event content and names no repository. The deployment
 therefore learns when the tool is in use anywhere on this machine.
 
-On a personal device, one kind of session forwards beyond what is enrolled. A
-Claude Code session counts as a work subscription when it is signed in through
+On a personal device, Claude Code and Codex sessions signed in to a work
+subscription forward beyond what is enrolled. A Claude Code session counts
+as a work subscription when it is signed in through
 claude.ai to a Team or Enterprise plan under the same email as the AKA account
 that attached the device. Such a session sends everything it records from its
 first reply on, from any folder, with that folder's project and branch names,
@@ -261,7 +262,7 @@ disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`, in Claude Code sessions signed in to a recognised work
+`aka enroll`, in Claude Code and Codex sessions signed in to a recognised work
 subscription (above) or to an account enrolled by hand with
 `aka enroll --account` and, from the browser extension, the replies in a
 claude.ai account enrolled with `aka enroll --account`, with their tool calls

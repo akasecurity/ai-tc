@@ -532,6 +532,17 @@ describe('cli/README.md Codex work-subscription disclosure', () => {
   it.each(CODEX_PHRASES)('says %j in the egress footnote', (phrase) => {
     expect(footnote).toContain(phrase);
   });
+
+  it('names Codex sessions where the body and the footnote sum up what a personal device forwards', () => {
+    for (const text of [body, footnote]) {
+      expect(text).toContain(
+        'Claude Code and Codex sessions signed in to a recognised work subscription or to an account',
+      );
+      expect(text).not.toContain(
+        'Claude Code sessions signed in to a recognised work subscription',
+      );
+    }
+  });
 });
 
 /**

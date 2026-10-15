@@ -405,8 +405,12 @@ describe('Claude Code work-subscription claims', () => {
     const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
     expect(section).toContain(CLAUDE_WORK_SENTENCE);
     expect(section).toContain(
-      'in Claude Code sessions signed in to a recognised work subscription (above) or to an account ' +
-        'enrolled by hand with `aka enroll --account`',
+      'On a personal device, Claude Code and Codex sessions signed in to a work subscription forward ' +
+        'beyond what is enrolled.',
+    );
+    expect(section).toContain(
+      'in Claude Code and Codex sessions signed in to a recognised work subscription (above) or to an ' +
+        'account enrolled by hand with `aka enroll --account`',
     );
     expect(section).not.toMatch(/reads only the email/i);
     expect(section).not.toMatch(/(?:plan|subscription) of your organization/i);
@@ -524,6 +528,18 @@ describe('Codex work-subscription claims', () => {
     }
   });
 
+  it('names Codex sessions wherever a page sums up what a personal device forwards', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toContain(
+        'Claude Code and Codex sessions signed in to a recognised work subscription',
+      );
+      expect(text).not.toContain(
+        'Claude Code sessions signed in to a recognised work subscription',
+      );
+    }
+  });
+
   it('counts only company workspaces, never a service account or a personal plan', () => {
     for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
       const text = flat(repoFile(name));
@@ -545,7 +561,7 @@ describe('README.md scoped attachment lists', () => {
 
   it('says what enrolling queues under the history opt-in, and what stays local', () => {
     expect(footnote).toContain(
-      'enrolling a repository or an account also queues the captures still kept for it, and enrolling a repository sends its activity from before the attachment, while what that repository recorded between attaching and enrolling, other than those captures and what a Claude Code session of a recognised work subscription or of an account enrolled by hand there already sent, stays local.',
+      'enrolling a repository or an account also queues the captures still kept for it, and enrolling a repository sends its activity from before the attachment, while what that repository recorded between attaching and enrolling, other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays local.',
     );
   });
 

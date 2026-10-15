@@ -169,8 +169,8 @@ describe('history-sync copy on a personal device', () => {
         'masked only where that policy is redact or block, and under monitor or warn the value is ' +
         'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
         'or block, so on a default install nothing in that text is masked. Live sending from ' +
-        'enrolled repositories and accounts, and from Claude Code sessions signed in to a work ' +
-        'subscription that this device recognises, is part of being attached and this setting ' +
+        'enrolled repositories and accounts, and from Claude Code and Codex sessions signed in to a ' +
+        'work subscription that this device recognises, is part of being attached and this setting ' +
         'does not change it: anything a live send from any of them could not deliver is kept and ' +
         'sent later either way. With nothing enrolled and no work subscription recognised, no ' +
         'activity is sent. Sending happens in the background over later ' +
@@ -298,7 +298,7 @@ describe('history-sync copy on a personal device', () => {
     expect(end).toBeGreaterThan(start);
     const sentence = HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED.slice(start, end);
     expect(sentence).toContain(
-      'Claude Code sessions signed in to a work subscription that this device recognises',
+      'Claude Code and Codex sessions signed in to a work subscription that this device recognises',
     );
     expect(sentence).not.toContain('of your organization');
     expect(sentence).toContain('is part of being attached and this setting does not change it');

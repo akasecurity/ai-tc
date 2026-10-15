@@ -204,10 +204,10 @@ const SCOPED = {
     'Usage: aka sync-history [--on | --off] [--run]',
     '',
     'Whether this personal device may send what the repositories and accounts you enroll recorded',
-    'before you enrolled them. Nothing else recorded here is sent by this setting. Claude Code',
-    'sessions signed in to a recognised work subscription or to an account enrolled by hand with',
-    "`aka enroll --account`, and the replies in that account's claude.ai chats, are sent as part",
-    'of being attached, which this setting does not change.',
+    'before you enrolled them. Nothing else recorded here is sent by this setting. Claude Code and',
+    'Codex sessions signed in to a recognised work subscription or to an account enrolled by hand',
+    "with `aka enroll --account`, and the replies in that account's claude.ai chats, are sent as",
+    'part of being attached, which this setting does not change.',
     '',
     '  --on          Send it. Takes effect in the background, over later sessions.',
     '  --off         Do not send it. Stops anything not already sent.',
@@ -221,8 +221,8 @@ const SCOPED = {
   granted: [
     'Sending the unsent activity of the repositories and accounts enrolled here to Acme.',
     'Nothing else recorded here is sent by this setting.',
-    'Claude Code sessions signed in to a recognised work subscription or to an account',
-    "enrolled by hand with `aka enroll --account`, and the replies in that account's",
+    'Claude Code and Codex sessions signed in to a recognised work subscription or to an',
+    "account enrolled by hand with `aka enroll --account`, and the replies in that account's",
     'claude.ai chats, are sent as part of being attached, which this setting does not',
     'change. With no repository enrolled, no account enrolled by hand and no work',
     'subscription recognised, no activity is sent at all: `aka enroll --list` shows',
@@ -240,9 +240,9 @@ const SCOPED = {
   revoked: [
     'Not sending the unsent activity of the repositories and accounts enrolled here. Anything',
     'already sent stays sent — this stops what has not gone yet. Live sending from enrolled',
-    'repositories, from Claude Code sessions signed in to a recognised work subscription,',
-    'and from an account enrolled by hand (its Claude Code sessions and claude.ai chat replies)',
-    'is part of being attached and continues, and anything a live send from any of them could',
+    'repositories, from Claude Code and Codex sessions signed in to a recognised work subscription,',
+    'and from an account enrolled by hand (its Claude Code or Codex sessions and claude.ai chat',
+    'replies) is part of being attached and continues, and anything a live send from any of them could',
     'not deliver is still sent later.',
     '',
   ].join('\n'),
@@ -326,7 +326,7 @@ describe('aka sync-history on a personal device', () => {
     const help = await run(['--bogus']);
     const granted = await run(['--on']);
     const part =
-      "Claude Code sessions signed in to a recognised work subscription or to an account enrolled by hand with `aka enroll --account`, and the replies in that account's claude.ai chats, are sent as part of being attached, which this setting does not change";
+      "Claude Code and Codex sessions signed in to a recognised work subscription or to an account enrolled by hand with `aka enroll --account`, and the replies in that account's claude.ai chats, are sent as part of being attached, which this setting does not change";
     expect(flat(help.errors())).toContain(part);
     expect(flat(granted.output())).toContain(part);
   });
@@ -335,7 +335,7 @@ describe('aka sync-history on a personal device', () => {
     attach('scoped', { consent: consent() });
     const revoked = await run(['--off']);
     expect(flat(revoked.output())).toContain(
-      'Live sending from enrolled repositories, from Claude Code sessions signed in to a recognised work subscription, and from an account enrolled by hand (its Claude Code sessions and claude.ai chat replies) is part of being attached and continues',
+      'Live sending from enrolled repositories, from Claude Code and Codex sessions signed in to a recognised work subscription, and from an account enrolled by hand (its Claude Code or Codex sessions and claude.ai chat replies) is part of being attached and continues',
     );
   });
 

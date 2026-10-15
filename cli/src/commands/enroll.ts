@@ -102,9 +102,10 @@ const ENROLL_USAGE = `Usage: aka enroll [path]
 
 On a machine attached in the scoped mode, activity is sent to the deployment
 only from the repositories and Claude accounts enrolled here (an account's
-Claude Code sessions and its claude.ai chat replies), and from Claude Code
-sessions signed in to a work subscription (a Claude Team or Enterprise plan)
-that this device recognises; activity anywhere else stays on this machine.
+Claude Code sessions and its claude.ai chat replies), and from Claude Code and
+Codex sessions signed in to a work subscription (a Claude Team or Enterprise
+plan, or a ChatGPT Business, Team, Enterprise or Edu plan) that this device
+recognises; activity anywhere else stays on this machine.
 The policy pull, the sighting-key fetch, the command check and the device
 report are not limited to them: the report's finding counts and dates are for
 everything recorded on the machine.
@@ -131,8 +132,8 @@ const UNENROLL_USAGE = `Usage: aka unenroll [path]
 
 Stops sending a repository or a Claude account from a scoped attachment:
 sessions, scans and chats started afterwards keep its activity on this machine,
-except a Claude Code session signed in to a recognised work subscription or to
-another account enrolled by hand, which forwards from any folder.
+except a Claude Code or Codex session signed in to a recognised work subscription
+or to another account enrolled by hand, which forwards from any folder.
 
   [path]                The repository this directory is in (default: .).
   --repo <repo>         A clone URL, or a key, as in github.com/acme/payments-api.
@@ -354,7 +355,7 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   io.out(
     (identity.kind === 'account'
       ? `Unenrolled ${repository}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code or Codex session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -1419,9 +1420,9 @@ function earlierActivity(
     queuedLines(queued) +
     'The history sync also sends the rest of its activity recorded before this machine attached\n' +
     '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
-    'attaching and enrolling, other than those captures and what a Claude Code session of a\n' +
-    'recognised work subscription or of an account enrolled by hand there already sent, stays\n' +
-    'on this machine.\n'
+    'attaching and enrolling, other than those captures and what a Claude Code or Codex session\n' +
+    'of a recognised work subscription or of an account enrolled by hand there already sent,\n' +
+    'stays on this machine.\n'
   );
 }
 

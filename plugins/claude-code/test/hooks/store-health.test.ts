@@ -510,7 +510,7 @@ describe('storeDegradedMessage — the failure is named', () => {
     expectNoEchoOf(message, secret);
   });
 
-  it('reads only the code and SQLite\'s own description, never the message', () => {
+  it("reads only the code and SQLite's own description, never the message", () => {
     const secret = `k${randomUUID().replaceAll('-', '')}`;
     const err = Object.assign(new Error(`near "${secret}": syntax error`), {
       errcode: 1,
@@ -523,7 +523,7 @@ describe('storeDegradedMessage — the failure is named', () => {
     expectNoEchoOf(message, secret);
   });
 
-  it('drops a description that is not shaped like SQLite\'s own', () => {
+  it("drops a description that is not shaped like SQLite's own", () => {
     const secret = `/Users/someone/${randomUUID()}`;
     expect(storeOpenCause({ errcode: 14, errstr: secret })).toEqual({
       text: 'SQLite error 14',
@@ -540,8 +540,7 @@ describe('storeDegradedMessage — the failure is named', () => {
   it('treats SQLITE_LOCKED and an extended BUSY code as a lock', () => {
     expect(storeOpenCause({ errcode: 6, errstr: 'database table is locked' })?.busy).toBe(true);
     expect(storeOpenCause({ errcode: 517, errstr: 'database is locked' })?.busy).toBe(true);
-    expect(storeOpenCause({ errcode: 11, errstr: 'database disk image is malformed' })?.busy).toBe(
-      false,
-    );
+    const corrupt = storeOpenCause({ errcode: 11, errstr: 'database disk image is malformed' });
+    expect(corrupt?.busy).toBe(false);
   });
 });

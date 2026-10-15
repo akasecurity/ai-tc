@@ -12,7 +12,7 @@
 // reason WorkspaceSettings documents: an id registers the schema globally, and a
 // swagger setup would emit it as an OpenAPI component. Nothing about the vault
 // belongs on a public API surface.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory, VariableName } from './finding.ts';
 
@@ -159,7 +159,9 @@ export type PointerIdentity = z.infer<typeof PointerIdentity>;
 
 // ─── De-reference audit ──────────────────────────────────────────────────────
 
-export const DetokenizeTarget = z.enum(['human', 'model']);
+// `fingerprint` resolves a value only to hash it for a sighting token; the value
+// itself is never returned to the caller.
+export const DetokenizeTarget = z.enum(['human', 'model', 'fingerprint']);
 export type DetokenizeTarget = z.infer<typeof DetokenizeTarget>;
 
 // A CLOSED vocabulary, not a naming convention: the audit view groups on these,
@@ -170,6 +172,8 @@ export type DetokenizeTarget = z.infer<typeof DetokenizeTarget>;
 //   view-render     a dashboard surface resolved it to render a record
 //   model-input     a model-echoed pointer was de-referenced back for the model
 //   remediation     a transcript/at-rest rewrite path resolved it
+//   sighting        a forwarded capture's pointer was resolved to its sighting
+//                   token; only the token leaves the vault
 //   purge           entries were destroyed, making their pointers unresolvable.
 //                   Not a de-reference, but it belongs in the same trail: the
 //                   record that values were destroyed has to outlive them.
@@ -179,6 +183,7 @@ export const VaultDerefReason = z.enum([
   'view-render',
   'model-input',
   'remediation',
+  'sighting',
   'purge',
 ]);
 export type VaultDerefReason = z.infer<typeof VaultDerefReason>;

@@ -570,7 +570,7 @@ describe('history-sync disclosure states what payload v3 sends', () => {
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('No detection ships on redact or block');
     // Declining must not be sold as "this stops sending"; live sending remains.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Live sending is part of being attached');
-    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('dropped rather than kept');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('kept and sent later either way');
     // The pre-attach half of the grant did not go away when v2 widened it.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('before it attached');
   });

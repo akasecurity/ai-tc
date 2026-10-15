@@ -148,6 +148,14 @@ function quietLocal(): AttachedDataGatewayDeps['local'] {
     markCaptureDelivered: () => undefined,
     markCaptureOwed: () => undefined,
     markAuditEventsDelivered: () => undefined,
+    getPolicyBundle: () =>
+      Promise.resolve({
+        version: 'v',
+        policies: [],
+        rules: [],
+        customKeywords: [],
+        fetchedAt: '2026-01-01T00:00:00.000Z',
+      }),
   } as unknown as AttachedDataGatewayDeps['local'];
 }
 

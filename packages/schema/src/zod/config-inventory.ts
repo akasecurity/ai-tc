@@ -13,7 +13,7 @@
 // dangling component in anything that walks these schemas (the .meta id-leak
 // gotcha in local.ts). Add one only when a shape here acquires a name something
 // else refers to.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { ActionTaken, Span } from './finding.ts';
 import type { TrustLevel } from './inventory.ts';

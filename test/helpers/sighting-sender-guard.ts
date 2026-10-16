@@ -12,7 +12,7 @@ export interface SourceFile {
 const MENTIONS_SIGHTINGS = /sighting/i;
 
 const IMPORTS_GATE =
-  /import\s*\{[^}]*\b(?:readSightingSharing|resolveSightingSharing)\b[^}]*\}\s*from\s*'@akasecurity\/(?:persistence|schema)'/;
+  /import\s*\{[^}]*\b(?:readSightingSharing|resolveSightingSharing)\b[^}]*\}\s*from\s*'(?:@akasecurity\/(?:persistence|schema)|\.\/sighting-sharing\.ts)'/;
 
 const CALLS_GATE = /\b(?:readSightingSharing|resolveSightingSharing)\s*\(/;
 

@@ -6,8 +6,9 @@
 // imports — line numbers come from counting newlines in the raw text. Callers
 // gate what reaches extractEgress: code files only (EGRESS_CODE_EXTENSIONS),
 // never lockfiles, never text containing NUL bytes.
-import type { HttpMethod, Transport } from '@akasecurity/schema';
+import type { EgressCredentialRef, HttpMethod, Span, Transport } from '@akasecurity/schema';
 
+import { enclosingCalls, variableRefsOf, variableScanBudget } from './credential-refs.ts';
 import { isPrivateOrReservedIPv4, isValidIPv4 } from './registry.ts';
 
 /** One URL or bare-IP destination reference found in a file's text. */
@@ -26,6 +27,10 @@ export interface RawEndpointHit {
   line: number;
   /** Redacted, capped at SNIPPET_MAX characters. */
   snippet: string;
+  /** The call expression the hit sits in, as offsets into the text. */
+  call?: Span;
+  /** The environment variables that call reads; absent when it reads none. */
+  credentialRefs?: EgressCredentialRef[];
 }
 
 // Source extensions URL/IP extraction runs on, mirroring the scanner's walker
@@ -367,11 +372,19 @@ export function redactSnippet(line: string, anchor = 0): string {
   return snippetWindow(redactedLineOf(line), anchor);
 }
 
+export interface ExtractEgressOptions {
+  /**
+   * Find each hit's enclosing call and the environment variables it reads.
+   * Only a scan that may send credential references has a use for them.
+   */
+  calls?: boolean;
+}
+
 /**
  * Pull every URL literal and bare public IPv4 reference out of one file's
  * text, sorted ascending by line, then by url (never by match order).
  */
-export function extractEgress(text: string): RawEndpointHit[] {
+export function extractEgress(text: string, opts: ExtractEgressOptions = {}): RawEndpointHit[] {
   const lineStarts = lineStartOffsets(text);
   const urlSpans: (readonly [number, number])[] = [];
   const hits: RawEndpointHit[] = [];
@@ -385,6 +398,9 @@ export function extractEgress(text: string): RawEndpointHit[] {
   const redactedOf = memoizeByLine((index) => redactedLineOf(lineTextOf(index)));
   const snippetAt = (index: number, offset: number): string =>
     snippetWindow(redactedOf(index), offset - (lineStarts[index] ?? 0));
+  // Each hit's offset, by position in `hits`, for the one call-search pass.
+  const hitOffsets: number[] = [];
+  const hitEnds: number[] = [];
 
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const start = match.index;
@@ -406,6 +422,8 @@ export function extractEgress(text: string): RawEndpointHit[] {
       line: index + 1,
       snippet: snippetAt(index, start),
     });
+    hitOffsets.push(start);
+    hitEnds.push(start + matched.length);
   }
 
   for (const match of text.matchAll(IPV4_CANDIDATE)) {
@@ -416,10 +434,42 @@ export function extractEgress(text: string): RawEndpointHit[] {
     const parsed = parseBareIp(match[0], ipContextOf(index));
     if (parsed === null) continue;
 
-    hits.push({ ...parsed, method: 'REF', line: index + 1, snippet: snippetAt(index, start) });
+    hits.push({
+      ...parsed,
+      method: 'REF',
+      line: index + 1,
+      snippet: snippetAt(index, start),
+    });
+    hitOffsets.push(start);
+    hitEnds.push(start + match[0].length);
   }
 
-  return hits.sort(compareHits);
+  return (opts.calls === true ? withCalls(text, hits, hitOffsets, hitEnds) : hits).sort(
+    compareHits,
+  );
+}
+
+// Each hit with the call expression it sits in and the variables that call reads.
+function withCalls(
+  text: string,
+  hits: RawEndpointHit[],
+  offsets: readonly number[],
+  ends: readonly number[],
+): RawEndpointHit[] {
+  if (hits.length === 0) return hits;
+  const calls = enclosingCalls(text, offsets);
+  const refsByCall = new Map<number, EgressCredentialRef[]>();
+  const budget = variableScanBudget();
+  return hits.map((hit, i) => {
+    const call = calls[i];
+    if (call === undefined || call.end < (ends[i] ?? 0)) return hit;
+    let refs = refsByCall.get(call.start);
+    if (refs === undefined) {
+      refs = variableRefsOf(text, call, budget);
+      refsByCall.set(call.start, refs);
+    }
+    return refs.length === 0 ? { ...hit, call } : { ...hit, call, credentialRefs: refs };
+  });
 }
 
 interface ParsedDestination {

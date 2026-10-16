@@ -61,6 +61,9 @@ const EXPECTED = [
   // route through createRemoteClient and cannot be handed a URL.
   'createSharesSender',
   'SHARES_FORWARD_TIMEOUT_MS',
+  // The same kind of adapter for a scan's credential sightings, and its deadline.
+  'createCredentialSightingsSender',
+  'CREDENTIAL_SIGHTINGS_TIMEOUT_MS',
 ] as const;
 
 describe('the package export surface', () => {

@@ -13,8 +13,21 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative } from 'node:path';
 
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
+  CredentialSightingsOutcome,
+  CredentialSightingsSend,
+  ManagedSettings,
+  ScanSighting,
+  SightingKey,
+} from '@akasecurity/plugin-runtime';
+import {
+  combineCredentialSightingsOutcomes,
+  planSightingShare,
+  resolveDataGateway,
+  sendScanSightings,
+} from '@akasecurity/plugin-runtime';
+import type {
+  AtRestVault,
   DataGateway,
   FileEgressHits,
   ManifestKind,
@@ -33,11 +46,14 @@ import {
   extractManifestSdks,
   isVendoredPath,
   manifestKindOf,
+  openScanVault,
   resolveEgress,
   resolveNonGitProject,
   resolveRepoIdentity,
   resolveWorktreeRoot,
+  secretSightingsOf,
   toPosix,
+  withLiteralCredentialRefs,
 } from '@akasecurity/plugin-sdk';
 
 import type { DiscoverOptions } from './discover.ts';
@@ -59,6 +75,10 @@ import {
 // root itself (see scanDir), so the walk's own option is not one a host sets.
 export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot' | 'protectedRoots'> {
   sourceTool: SourceTool;
+  // Replaces the attached transport the scan's credential sightings take.
+  sendSightings?: CredentialSightingsSend | undefined;
+  // Replaces the managed settings file; `null` reads a machine with no administrator.
+  managedSettings?: ManagedSettings | null | undefined;
 }
 
 // scanAllRepos options: discovery scope + scan options.
@@ -75,6 +95,8 @@ export interface WorktreeScanSummary {
   gitignoredFindings: number;
   byRule: Record<string, number>;
   bySeverity: Record<string, number>;
+  // What the scan did with the credential sightings it found.
+  sightings?: CredentialSightingsOutcome;
 }
 
 export interface MultiRepoScanSummary {
@@ -85,6 +107,7 @@ export interface MultiRepoScanSummary {
   totalGitignoredFindings: number;
   byRule: Record<string, number>;
   bySeverity: Record<string, number>;
+  sightings?: CredentialSightingsOutcome;
 }
 
 // The previously scanned state loaded once per scan (already filtered to the
@@ -102,15 +125,29 @@ interface LedgerContext {
 // the ledger keeps advancing while egress is switched off — without it, files
 // left untouched during the off period would carry ledger rows that suppress
 // the re-read forever, so their egress would never be extracted once it is
-// switched back on.
+// switched back on. Whether the scan vaults is folded in for the same reason:
+// files skipped as unchanged while vault consent was absent are re-read once
+// consent is granted, so their secrets are vaulted. So is whether the scan
+// shares credential sightings, to which deployment, in which attachment mode
+// and with which repositories enrolled, and under which key version: files
+// skipped while sharing was off, while attached elsewhere or while their
+// repository was not enrolled, are re-read once that changes, so their
+// sightings are sent.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
   dataSharesInPlace: boolean,
+  vaulting: boolean,
+  sightings: SightingRun | undefined,
 ): Promise<LedgerContext> {
   const egressMaterial = `${dataSharesInPlace ? 'egress:on' : 'egress:off'}\n${EGRESS_VERSION_MATERIAL}`;
+  const vaultMaterial = vaulting ? ':vault:on' : '';
+  const sightingMaterial =
+    sightings === undefined
+      ? ''
+      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${String(sightings.key.keyVersion)}`;
   const rulesetHash = contentHashOf(
-    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}`,
+    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
   return {
     previous: await gateway.scanLedger(rulesetHash),
@@ -167,6 +204,8 @@ function egressKey(root: string, absPath: string): string | null {
 // removed from a file gets cleared.
 interface EgressAccumulator {
   project: EgressProject;
+  // Whether code files are searched for the credentials each call site uses.
+  calls: boolean;
   files: FileEgressHits[];
   scannedFiles: string[];
   deletedFiles: string[];
@@ -187,11 +226,12 @@ interface EgressAccumulator {
 // Open an accumulator for this scan, or null when the project identity cannot
 // be resolved (a root that vanished mid-scan) — egress is a side benefit of a
 // scan and never breaks the scan that triggered it.
-function startEgress(rootDir: string): EgressAccumulator | null {
+function startEgress(rootDir: string, calls: boolean): EgressAccumulator | null {
   const project = resolveEgressProject(rootDir);
   if (project === null) return null;
   return {
     project,
+    calls,
     files: [],
     scannedFiles: [],
     deletedFiles: [],
@@ -202,27 +242,31 @@ function startEgress(rootDir: string): EgressAccumulator | null {
 
 // Extract one just-read file's egress. Code files yield URL/IP hits; manifests
 // yield SDK dependencies. Files containing NUL bytes are binary and are skipped.
+// Returns the code file's entry, which the file's secrets are later attached to.
 function collectFileEgress(
   acc: EgressAccumulator,
   absPath: string,
   content: string,
   manifestKind: ManifestKind | null,
-): void {
+): FileEgressHits | undefined {
   const file = egressKey(acc.project.root, absPath);
-  if (file === null) return;
+  if (file === null) return undefined;
   acc.scannedFiles.push(file);
 
-  if (content.includes('\u0000')) return;
+  if (content.includes('\u0000')) return undefined;
 
   const vendored = isVendoredPath(file);
   if (manifestKind !== null) {
     const sdkHits = extractManifestSdks(content, manifestKind);
     if (sdkHits.length > 0) acc.files.push({ file, vendored, endpoints: [], sdkHits });
-    return;
+    return undefined;
   }
-  if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return;
-  const endpoints = extractEgress(content);
-  if (endpoints.length > 0) acc.files.push({ file, vendored, endpoints, sdkHits: [] });
+  if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return undefined;
+  const endpoints = extractEgress(content, { calls: acc.calls });
+  if (endpoints.length === 0) return undefined;
+  const entry: FileEgressHits = { file, vendored, endpoints, sdkHits: [] };
+  acc.files.push(entry);
+  return entry;
 }
 
 // Re-scan resolver: diff a path's previously-open at-rest finding_keys against
@@ -416,6 +460,47 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
   return decided.key !== prev.scopeKey || decided.root !== prev.scopeRoot;
 }
 
+// A scan that shares credential sightings: the AKA home whose attachment it
+// sends through, the key it computes tokens with, and the transport seams.
+interface SightingRun {
+  base: string;
+  key: SightingKey;
+  endpointFingerprint: string;
+  scopeFingerprint: string;
+  send: CredentialSightingsSend | undefined;
+  managedSettings: ManagedSettings | null | undefined;
+}
+
+// Send this root's sightings under its project.
+async function shareSightings(
+  run: SightingRun,
+  rootDir: string,
+  sightings: readonly ScanSighting[],
+): Promise<CredentialSightingsOutcome> {
+  const project = resolveEgressProject(rootDir);
+  if (project === null) return { status: 'not-shared', reason: 'local-error' };
+  return sendScanSightings(
+    run.base,
+    {
+      project: {
+        projectKey: project.projectKey,
+        name: project.project,
+        root: project.root,
+      },
+      sightings,
+    },
+    { send: run.send, managedSettings: run.managedSettings },
+  );
+}
+
+// Whether every sighting the scan could send reached the deployment. When not,
+// the files that produced sightings are not ledgered, so the next scan reads
+// them again. A sighting kept local is not owed: enrolling its repository
+// changes the ledger fingerprint, which reads it again then.
+function deliveredAll(outcome: CredentialSightingsOutcome): boolean {
+  return outcome.status === 'sent' && outcome.failure === undefined && outcome.unsent === 0;
+}
+
 // What a scan without a register records: no repository. Only a scan with a
 // register has any use for one.
 const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
@@ -433,11 +518,16 @@ async function scanDir(
   ledger: LedgerContext,
   rootDir: string,
   opts: ScanOptions,
+  vault: AtRestVault | undefined,
+  sightingRun: SightingRun | undefined,
 ): Promise<WorktreeScanSummary> {
   // Resolved before anything is read, and shared by the source and manifest
   // walks.
   const protectedRoots = resolveProtectedRoots(opts.home, opts.akaHome ?? akaHomeOf(config));
   const byRule: Record<string, number> = {};
+  const sightings: ScanSighting[] = [];
+  // The paths whose files held a secret.
+  const sightingPaths = new Set<string>();
   const bySeverity: Record<string, number> = {};
   const updates: ScanLedgerEntry[] = [];
   let scanned = 0;
@@ -449,7 +539,7 @@ async function scanDir(
   // plugin config already carries. Resolved once, up front, so a disabled
   // toggle skips extraction itself rather than extracting and discarding.
   const egress: EgressAccumulator | null = config.settings.dataSharesInPlace
-    ? startEgress(rootDir)
+    ? startEgress(rootDir, sightingRun !== undefined)
     : null;
 
   // The scope key lookups for this root (./scope-key.ts). One per call, so what
@@ -554,7 +644,9 @@ async function scanDir(
     // skips but BEFORE the tier-3 dedup below. A file whose content duplicates
     // an already-seen file still contains this project's egress, so hooking
     // extraction to capture instead would silently drop it.
-    if (egress) collectFileEgress(egress, file.path, file.content, null);
+    const fileEgress = egress
+      ? collectFileEgress(egress, file.path, file.content, null)
+      : undefined;
 
     // Content-hash dedup across files/repos and previously recorded events.
     // Still ledger the path: identical content means identical (no) findings.
@@ -566,7 +658,17 @@ async function scanDir(
     // starve the re-scan resolver (resolveRemovedFindings below never runs for
     // a skipped path) and leave the keys open forever, so fall through to a
     // full capture whose key diff can resolve them.
-    if (seen.has(hash) && (await gateway.openAtRestKeysForPath(file.path)).length === 0) {
+    //
+    // A vaulting scan never skips here either: each path holding a vaulted
+    // value records its own sighting, which only a capture of that path does.
+    // A sharing scan never skips here either: a duplicate in another place is
+    // another sighting.
+    if (
+      vault === undefined &&
+      sightingRun === undefined &&
+      seen.has(hash) &&
+      (await gateway.openAtRestKeysForPath(file.path)).length === 0
+    ) {
       skipped++;
       updates.push(ledgerEntry);
       continue;
@@ -602,9 +704,19 @@ async function scanDir(
         ...(scopeKey !== undefined ? { scopeKey } : {}),
       },
       // 'content-hash': a re-run mints fresh event ids for identical content;
-      // the store uses the hash to drop what it already recorded.
-      { persist: 'with-findings', dedupe: 'content-hash' },
+      // the store uses the hash to drop what it already recorded. With vault
+      // consent, each detected secret is vaulted and stored as its pointer.
+      { persist: 'with-findings', dedupe: 'content-hash', ...(vault ? { vault } : {}) },
     );
+
+    if (sightingRun !== undefined) {
+      const found = secretSightingsOf(sightingRun.key, result.findings, file.path, scopeKey);
+      if (found.sightings.length > 0) sightingPaths.add(file.path);
+      sightings.push(...found.sightings);
+      if (fileEgress !== undefined) {
+        fileEgress.endpoints = withLiteralCredentialRefs(fileEgress.endpoints, found.spans);
+      }
+    }
 
     for (const finding of result.findings) {
       findings++;
@@ -640,13 +752,33 @@ async function scanDir(
     }
   }
 
+  let sightingOutcome: CredentialSightingsOutcome | undefined;
+  if (sightingRun !== undefined) {
+    sightingOutcome = await shareSightings(sightingRun, rootDir, sightings);
+    if (!deliveredAll(sightingOutcome)) {
+      const unsent = updates.filter((entry) => !sightingPaths.has(entry.path));
+      updates.length = 0;
+      updates.push(...unsent);
+    }
+  }
+  const sharedSightings = sightingOutcome === undefined ? {} : { sightings: sightingOutcome };
+
   // Egress commits BEFORE the ledger. If the write fails the ledger batch is
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
   const committed = await commitEgress(gateway, egress, scopeKeyOf);
   if (committed === null) {
-    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+    return {
+      rootDir,
+      scanned,
+      skipped,
+      findings,
+      gitignoredFindings,
+      byRule,
+      bySeverity,
+      ...sharedSightings,
+    };
   }
 
   // Same reasoning, for a different loss. `ledger.rulesetHash` was computed
@@ -656,11 +788,29 @@ async function scanDir(
   // hash, and the next run would skip exactly the files the dropped rules never
   // saw. Skipping the batch costs a re-read; writing it hides the gap.
   if (runtime.scanIsolationDegraded()) {
-    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+    return {
+      rootDir,
+      scanned,
+      skipped,
+      findings,
+      gitignoredFindings,
+      byRule,
+      bySeverity,
+      ...sharedSightings,
+    };
   }
 
   await gateway.recordScanned(ledgerable(updates, egress, committed));
-  return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+  return {
+    rootDir,
+    scanned,
+    skipped,
+    findings,
+    gitignoredFindings,
+    byRule,
+    bySeverity,
+    ...sharedSightings,
+  };
 }
 
 // Ledger + extract every dependency manifest under the SCAN root — the same
@@ -889,6 +1039,33 @@ function ledgerable(
   });
 }
 
+// Whether this scan shares credential sightings, decided once before it walks:
+// the run that computes tokens, or the outcome that says why it does not. A
+// plan that cannot be made shares nothing.
+function planSightings(
+  config: PluginConfig,
+  opts: ScanOptions,
+): { run: SightingRun | undefined; outcome: CredentialSightingsOutcome | undefined } {
+  try {
+    const base = dirname(config.dataDir);
+    const plan = planSightingShare(base, { managedSettings: opts.managedSettings });
+    if (!plan.ok) return { run: undefined, outcome: plan.outcome };
+    return {
+      run: {
+        base,
+        key: plan.key,
+        endpointFingerprint: plan.endpointFingerprint,
+        scopeFingerprint: plan.scopeFingerprint,
+        send: opts.sendSightings,
+        managedSettings: opts.managedSettings,
+      },
+      outcome: undefined,
+    };
+  } catch {
+    return { run: undefined, outcome: undefined };
+  }
+}
+
 export async function scanWorktree(
   config: PluginConfig,
   opts: ScanOptions,
@@ -896,11 +1073,31 @@ export async function scanWorktree(
   const rootDir = opts.rootDir ?? process.cwd();
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  const vault = openScanVault(config);
+  const sightings = planSightings(config, opts);
   try {
     const seen = await gateway.knownContentHashes();
-    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
-    return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
+    const ledger = await loadLedger(
+      gateway,
+      runtime,
+      config.settings.dataSharesInPlace,
+      vault !== undefined,
+      sightings.run,
+    );
+    const summary = await scanDir(
+      runtime,
+      gateway,
+      config,
+      seen,
+      ledger,
+      rootDir,
+      opts,
+      vault,
+      sightings.run,
+    );
+    return sightings.outcome === undefined ? summary : { ...summary, sightings: sightings.outcome };
   } finally {
+    vault?.close();
     await runtime.close();
   }
 }
@@ -912,6 +1109,8 @@ export async function scanAllRepos(
   const repoDirs = discoverGitRepos(opts);
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  const vault = openScanVault(config);
+  const sightings = planSightings(config, opts);
   const summary: MultiRepoScanSummary = {
     repos: [],
     totalScanned: 0,
@@ -926,10 +1125,32 @@ export async function scanAllRepos(
     const seen = await gateway.knownContentHashes();
     // Ledger paths are absolute, so one load covers every repo; scanDir records
     // its updates per repo, so a long --discover sweep keeps partial progress.
-    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
+    const ledger = await loadLedger(
+      gateway,
+      runtime,
+      config.settings.dataSharesInPlace,
+      vault !== undefined,
+      sightings.run,
+    );
+    if (sightings.outcome !== undefined) summary.sightings = sightings.outcome;
     for (const rootDir of repoDirs) {
-      const repoSummary = await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
+      const repoSummary = await scanDir(
+        runtime,
+        gateway,
+        config,
+        seen,
+        ledger,
+        rootDir,
+        opts,
+        vault,
+        sightings.run,
+      );
       summary.repos.push({ rootDir, summary: repoSummary });
+      if (repoSummary.sightings !== undefined) {
+        summary.sightings =
+          combineCredentialSightingsOutcomes(summary.sightings, repoSummary.sightings) ??
+          repoSummary.sightings;
+      }
       summary.totalScanned += repoSummary.scanned;
       summary.totalSkipped += repoSummary.skipped;
       summary.totalFindings += repoSummary.findings;
@@ -942,6 +1163,7 @@ export async function scanAllRepos(
       }
     }
   } finally {
+    vault?.close();
     await runtime.close();
   }
 

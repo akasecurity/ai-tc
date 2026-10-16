@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { readClaudeAccountEnv } from '@akasecurity/plugin-sdk/account';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { locateSessionTranscript } from '../../src/hooks/account-stamp.ts';
@@ -61,6 +62,17 @@ describe('findSessionTranscript', () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
     const sessionId = randomUUID();
     const path = plant(join(configDir, 'projects'), 'some-project', sessionId);
+    expect(findSessionTranscript(sessionId)).toBe(path);
+  });
+
+  it('finds the session file under ~/.claude when CLAUDE_CONFIG_DIR is unset', () => {
+    const home = join(dev.root, 'another-home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+    expect(readClaudeAccountEnv().configDir).toBeUndefined();
+    const sessionId = randomUUID();
+    const path = plant(join(home, '.claude', 'projects'), 'some-project', sessionId);
     expect(findSessionTranscript(sessionId)).toBe(path);
   });
 

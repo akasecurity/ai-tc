@@ -3,6 +3,8 @@ import type {
   AttachDeviceRequest as AttachDeviceRequestT,
   AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  CredentialSightingsAck as CredentialSightingsAckT,
+  CredentialSightingsRequest as CredentialSightingsRequestT,
   DeviceCommand as DeviceCommandT,
   DeviceCommandAckBody as DeviceCommandAckBodyT,
   EgressIngestRequest as EgressIngestRequestT,
@@ -20,6 +22,8 @@ import {
   AttachDeviceGrant,
   AttachTokenResponse,
   AuditEventBatchAck,
+  CredentialSightingsAck,
+  CredentialSightingsRequest,
   DeviceCommandAckBody,
   DeviceCommandPollResponse,
   EgressIngestRequest,
@@ -44,10 +48,10 @@ import {
   send,
 } from './http.ts';
 
-// The eleven routes an attached machine may call, and nothing else.
+// The twelve routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: seven writes and four self-scoped reads. There is
+// credential to: eight writes and four self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
@@ -78,6 +82,7 @@ const ROUTES = {
   shares: '/v1/shares',
   commands: '/v1/plugin/commands',
   sightingKey: '/v1/sighting-key',
+  credentialSightings: '/v1/credential-sightings',
 } as const;
 
 /**
@@ -168,6 +173,11 @@ export interface RemoteClient {
    * a parse failure carries any part of the body.
    */
   getSightingKey(): Promise<SightingKeyResponseT>;
+  /**
+   * POST /v1/credential-sightings — sighting tokens and their descriptors from
+   * one scan. Validated before it is sent; a 404 raises `RemoteRouteAbsent`.
+   */
+  recordCredentialSightings(request: CredentialSightingsRequestT): Promise<CredentialSightingsAckT>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -436,6 +446,21 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       const response = await send({ ...common, method: 'GET', url: url(ROUTES.sightingKey) });
       if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.sightingKey);
       return parsed(SightingKeyResponse, okBody(response), ROUTES.sightingKey);
+    },
+
+    async recordCredentialSightings(request) {
+      const validated = CredentialSightingsRequest.safeParse(request);
+      if (!validated.success) {
+        throw new RemoteRequestInvalid(ROUTES.credentialSightings, validated.error);
+      }
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.credentialSightings),
+        body: JSON.stringify(validated.data),
+      });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.credentialSightings);
+      return parsed(CredentialSightingsAck, okBody(response), ROUTES.credentialSightings);
     },
   };
 }

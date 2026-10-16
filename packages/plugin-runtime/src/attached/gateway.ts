@@ -4,6 +4,7 @@ import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persis
 import {
   canonicalRepoUrl,
   llmCallId,
+  planSightingShare,
   readSightingSharing,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
@@ -189,6 +190,13 @@ export interface AttachedDataGatewayDeps {
    * gateway's own effective ruleset.
    */
   encoder?: OutboundEncoder;
+  /**
+   * Whether a forwarded register may carry its call sites' credential
+   * references: true only while this machine shares credential sightings and
+   * holds a sighting key. Defaults to reading that from the `~/.aka` root
+   * holding `dataDir`.
+   */
+  shareCredentialRefs?: () => boolean;
   /** How long the live path waits for an encode before holding the capture owed. */
   encodeBudgetMs?: number;
   /** The bound the default encoder's worker scan runs under. */
@@ -1224,10 +1232,21 @@ export class AttachedDataGateway
     // deleted paths are.
     const register = await this.registerForWire(input, context);
     if (register === undefined) return summary;
+    const credentialRefs = this.mayShareCredentialRefs();
     await this.deps.forward.run(() =>
-      this.deps.client.recordProjectEgress(toEgressIngestRequest(register)),
+      this.deps.client.recordProjectEgress(toEgressIngestRequest(register, { credentialRefs })),
     );
     return summary;
+  }
+
+  private mayShareCredentialRefs(): boolean {
+    try {
+      return this.deps.shareCredentialRefs
+        ? this.deps.shareCredentialRefs()
+        : planSightingShare(dirname(this.deps.dataDir)).ok;
+    } catch {
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------

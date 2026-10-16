@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CREDENTIAL_REFS_PER_CALL_SITE_MAX,
   EgressCallSiteHit,
+  EgressCredentialRef,
   EgressEcosystem,
   EgressReconcile,
   EgressWriteSummary,
@@ -9,6 +11,7 @@ import {
   RecordProjectEgressInput,
   ResolvedEgressHit,
 } from '../../src/zod/egress-extraction.ts';
+import { MAX_VARIABLE_NAME_LENGTH } from '../../src/zod/finding.ts';
 
 // ─── EgressEcosystem ──────────────────────────────────────────────────────────
 
@@ -277,5 +280,54 @@ describe('EgressWriteSummary', () => {
         truncated: false,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('EgressCredentialRef', () => {
+  const token = `[[aka:fp:v1.${'A'.repeat(43)}]]`;
+
+  it('accepts a literal ref as a sighting token and rule id', () => {
+    expect(EgressCredentialRef.safeParse({ kind: 'literal', token, ruleId: 'r' }).success).toBe(
+      true,
+    );
+  });
+
+  it('accepts a variable ref by name', () => {
+    expect(
+      EgressCredentialRef.safeParse({ kind: 'variable', variableName: 'STRIPE_KEY' }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a literal ref carrying anything but a sighting token', () => {
+    expect(
+      EgressCredentialRef.safeParse({ kind: 'literal', token: 'plain-value', ruleId: 'r' }).success,
+    ).toBe(false);
+  });
+
+  it('refuses a literal ref with an extra member, such as a value', () => {
+    expect(
+      EgressCredentialRef.safeParse({ kind: 'literal', token, ruleId: 'r', value: 'x' }).success,
+    ).toBe(false);
+  });
+
+  it('refuses an empty or over-long variable name', () => {
+    expect(EgressCredentialRef.safeParse({ kind: 'variable', variableName: '' }).success).toBe(
+      false,
+    );
+    expect(
+      EgressCredentialRef.safeParse({
+        kind: 'variable',
+        variableName: 'V'.repeat(MAX_VARIABLE_NAME_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds a resolved hit to the per-call-site cap', () => {
+    const refs = Array.from({ length: CREDENTIAL_REFS_PER_CALL_SITE_MAX + 1 }, (_, i) => ({
+      kind: 'variable' as const,
+      variableName: `V${String(i)}`,
+    }));
+    expect(ResolvedEgressHit.shape.credentialRefs.safeParse(refs).success).toBe(false);
+    expect(ResolvedEgressHit.shape.credentialRefs.safeParse(refs.slice(1)).success).toBe(true);
   });
 });

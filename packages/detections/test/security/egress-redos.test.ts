@@ -184,7 +184,7 @@ describe('egress extraction is bounded on a 1 MB file', () => {
 
   it('strips trailing punctuation from a 1 MB URL candidate', () => {
     const text = hostileUrl(MB);
-    const ms = burned(() => extractEgress(text));
+    const ms = burned(() => extractEgress(text, { calls: true }));
     expect(
       ms,
       `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB URL candidate ` +
@@ -193,9 +193,50 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     ).toBeLessThan(EXTRACTION_BUDGET_MS);
   });
 
+  it.each([
+    ['calls that never close', "fetch('https://a.example.com/x', {"],
+    ['nested calls that never close', "f(g(h('https://a.example.com/x'"],
+  ])('finds the call around each hit in a 1 MB file of %s', (_label, unit) => {
+    const text = unit.repeat(Math.ceil(MB / unit.length));
+    const ms = burned(() => extractEgress(text, { calls: true }));
+    expect(
+      ms,
+      `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB file of unclosed calls ` +
+        `(budget ${String(EXTRACTION_BUDGET_MS)}ms). The call search is no longer held to its ` +
+        `per-file step budget.`,
+    ).toBeLessThan(EXTRACTION_BUDGET_MS);
+  });
+
+  it.each([
+    ['double', '\\"'],
+    ['single', "\\'"],
+    ['backtick', '\\`'],
+  ])('costs the same on a 1 MB line of escaped %s quotes as on one without', (_label, unit) => {
+    // A budget would not catch this. Each string scan is bounded, so a quote
+    // that restarts one at every other character is linear with a constant of
+    // thousands — ~1.5s at 1 MB, inside the budget. The ratio against the same
+    // line with the quotes taken out is the assertion.
+    const lead = "fetch('https://a.example.com/x') ";
+    const quoted = lead + unit.repeat(MB / 2);
+    const plain = lead + '\\a'.repeat(MB / 2);
+    // Positive control: the hit reaches the call search, which is what walks the line.
+    expect(extractEgress(quoted, { calls: true }).map((hit) => hit.call)).toEqual([
+      { start: 5, end: 32 },
+    ]);
+
+    const withQuotes = fastest(() => extractEgress(quoted, { calls: true }));
+    const without = fastest(() => extractEgress(plain, { calls: true }));
+    expect(
+      withQuotes / Math.max(without, 1),
+      `extractEgress cost ${without.toFixed(1)}ms on a 1 MB line and ${withQuotes.toFixed(1)}ms ` +
+        `on the same line of escaped quotes. Each quote is restarting a string scan the one ` +
+        `before it already ran; resume from where that scan stopped.`,
+    ).toBeLessThan(3);
+  });
+
   it('takes a snippet per hit from a 1 MB single-line bundle', () => {
     const text = minifiedBundle(MB);
-    const ms = burned(() => extractEgress(text));
+    const ms = burned(() => extractEgress(text, { calls: true }));
     expect(
       ms,
       `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB minified bundle ` +
@@ -211,7 +252,7 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     // and a bundle with a token in it is the file this product is pointed at on
     // purpose, so it is the case that matters most.
     const text = maskedBundle(MB);
-    const ms = burned(() => extractEgress(text));
+    const ms = burned(() => extractEgress(text, { calls: true }));
     expect(
       ms,
       `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB minified bundle carrying one ` +
@@ -293,8 +334,8 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     const manyLines = `${MINIFIED_UNIT.trimEnd()}\n`.repeat(
       Math.ceil(200_000 / MINIFIED_UNIT.length),
     );
-    const fromOne = extractEgress(oneLine);
-    const fromMany = extractEgress(manyLines);
+    const fromOne = extractEgress(oneLine, { calls: true });
+    const fromMany = extractEgress(manyLines, { calls: true });
     expect(fromOne.length).toBe(fromMany.length);
     expect(fromOne.length).toBeGreaterThan(1_000);
     expect(fromOne.map((h) => h.url)).toEqual(fromMany.map((h) => h.url));
@@ -302,7 +343,7 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     // And the masked variant, which reaches the anchor mapping the plain one
     // never touches: same urls, and every snippet still 200 characters of the
     // redacted line rather than a window mapped off the end of it.
-    const masked = extractEgress(maskedBundle(200_000));
+    const masked = extractEgress(maskedBundle(200_000), { calls: true });
     expect(masked.map((h) => h.url)).toEqual(fromOne.map((h) => h.url));
     expect(masked.every((h) => h.snippet.length <= 200)).toBe(true);
     // The window still lands on the surrounding evidence rather than off the

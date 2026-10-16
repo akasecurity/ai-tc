@@ -114,7 +114,19 @@ export function terminalPrompter(io: TerminalIo = processIo()): Prompter {
     ask(question) {
       return new Promise((resolve) => {
         const rl = createInterface({ input: io.input, output: io.output });
+        // Closing the input (Ctrl-D, end of stream) never calls the question
+        // callback, so without this the promise stays unsettled and Node exits
+        // the process mid-await. The close that rl.close() raises below is
+        // detached first, or it would answer before the typed line does. The
+        // newline is the one Enter would have echoed; without it the caller's
+        // next line is appended to the question.
+        const onClose = () => {
+          io.output.write('\n');
+          resolve('');
+        };
+        rl.once('close', onClose);
         rl.question(question, (answer) => {
+          rl.removeListener('close', onClose);
           rl.close();
           resolve(answer);
         });

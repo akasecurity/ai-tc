@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import type { RecordProjectEgressInput } from '@akasecurity/schema';
-import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, AttachmentScopeEntry } from '@akasecurity/schema';
+import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
+  AttachmentScopeEntry,
+  CREDENTIAL_REFS_PER_CALL_SITE_MAX,
+  EgressIngestRequest,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -972,5 +977,49 @@ describe('hashProjectKey — linear in the remote URL', () => {
     const spent = burned(() => REPLACED_TRAILING_SLASHES.exec(slashRun(CONTROL_LENGTH)));
 
     expect(spent).toBeGreaterThan(BUDGET_MS);
+  });
+});
+
+describe('toEgressIngestRequest credential references', () => {
+  const token = `[[aka:fp:v3.${'Q'.repeat(43)}]]`;
+  const refs = [
+    { kind: 'literal' as const, token, ruleId: 'stripe-secret-key' },
+    { kind: 'variable' as const, variableName: 'STRIPE_SECRET_KEY' },
+  ];
+  const withRefs = input({ hits: [hit({ credentialRefs: refs }), hit({ url: 'https://x.co/a' })] });
+
+  it('omits them unless the caller says they may be shared', () => {
+    for (const payload of [
+      toEgressIngestRequest(withRefs),
+      toEgressIngestRequest(withRefs, { credentialRefs: false }),
+    ]) {
+      expect(payload.hits.every((h) => !('credentialRefs' in h))).toBe(true);
+    }
+  });
+
+  it('carries them, and only on the call sites that have them, when they may be shared', () => {
+    const payload = toEgressIngestRequest(withRefs, { credentialRefs: true });
+    expect(payload.hits[0]?.credentialRefs).toEqual(refs);
+    expect('credentialRefs' in (payload.hits[1] ?? {})).toBe(false);
+    expect(EgressIngestRequest.safeParse(payload).success).toBe(true);
+  });
+
+  it('drops a reference the wire contract would refuse, and the field with none left', () => {
+    const bad = [{ kind: 'literal' as const, token: 'not-a-token', ruleId: 'r' }];
+    const payload = toEgressIngestRequest(input({ hits: [hit({ credentialRefs: bad })] }), {
+      credentialRefs: true,
+    });
+    expect('credentialRefs' in (payload.hits[0] ?? {})).toBe(false);
+  });
+
+  it('holds a call site to the per-call-site cap', () => {
+    const many = Array.from({ length: CREDENTIAL_REFS_PER_CALL_SITE_MAX + 3 }, (_, i) => ({
+      kind: 'variable' as const,
+      variableName: `K${String(i)}`,
+    }));
+    const payload = toEgressIngestRequest(input({ hits: [hit({ credentialRefs: many })] }), {
+      credentialRefs: true,
+    });
+    expect(payload.hits[0]?.credentialRefs).toHaveLength(CREDENTIAL_REFS_PER_CALL_SITE_MAX);
   });
 });

@@ -1,6 +1,6 @@
 import * as z from 'zod';
 
-import type { AttachmentMode } from './control-plane.ts';
+import type { AttachmentMode, RemoteFailureKind } from './control-plane.ts';
 import type { WorkspaceSettings } from './local.ts';
 import type { ManagedSettings } from './managed.ts';
 
@@ -193,4 +193,100 @@ export function sightingSharingLine(state: SightingSharing): string {
     `(${sightingShareModeLabel(state.mode)}) — ${sightingShareReasonText(state)} ` +
     SIGHTING_SHARE_PAYLOAD_NOTE
   );
+}
+
+/**
+ * What a scan did with the credential sightings it found.
+ *
+ *   not-shared  nothing was sent: sharing is off, this run opted out, the
+ *               machine holds no sighting key, no usable credential, or the
+ *               sightings could not be prepared on this machine (`local-error`)
+ *   sent        `shared` were delivered, `keptLocal` stayed on this machine
+ *               because a scoped attachment does not enroll their repository or
+ *               they lie outside the project, and `unsent` were not delivered
+ *               because of `failure`. All three count distinct values per
+ *               location class.
+ */
+export type CredentialSightingsOutcome =
+  | { status: 'not-shared'; reason: 'sharing-off'; sharing: SightingSharing }
+  | { status: 'not-shared'; reason: 'opt-out' | 'no-key' | 'no-credential' | 'local-error' }
+  | {
+      status: 'sent';
+      shared: number;
+      keptLocal: number;
+      unsent: number;
+      failure?: RemoteFailureKind;
+    };
+
+/** One outcome for several scans: the sends summed, else the first refusal. */
+export function combineCredentialSightingsOutcomes(
+  a: CredentialSightingsOutcome | undefined,
+  b: CredentialSightingsOutcome | undefined,
+): CredentialSightingsOutcome | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  if (a.status !== 'sent') return b.status === 'sent' ? b : a;
+  if (b.status !== 'sent') return a;
+  const failure = a.failure ?? b.failure;
+  return {
+    status: 'sent',
+    shared: a.shared + b.shared,
+    keptLocal: a.keptLocal + b.keptLocal,
+    unsent: a.unsent + b.unsent,
+    ...(failure === undefined ? {} : { failure }),
+  };
+}
+
+const SIGHTING_FAILURE_TEXT: Record<RemoteFailureKind, string> = {
+  unauthorized: 'the deployment rejected this machine’s key; re-attach with `aka attach`',
+  forbidden:
+    'the key is not permitted to send credential sightings; re-attach, or ask your organization admin',
+  'route-absent': 'the deployment does not accept credential sightings yet',
+  'invalid-request': 'this build assembled a request the contract refuses; please report it',
+  rejected: 'the deployment refused the request; this build and the deployment are out of step',
+  unreachable: 'control plane unreachable; the next scan sends them again',
+};
+
+function sentText(outcome: Extract<CredentialSightingsOutcome, { status: 'sent' }>): string {
+  const { shared, keptLocal, unsent, failure } = outcome;
+  const sharedText = `${String(shared)} shared with your organization`;
+  if (failure !== undefined) {
+    const reason = SIGHTING_FAILURE_TEXT[failure];
+    return shared === 0
+      ? `not shared — ${reason}`
+      : `${sharedText}; ${String(unsent)} not sent — ${reason}`;
+  }
+  if (shared === 0) {
+    return keptLocal === 0
+      ? 'none found to share'
+      : 'not shared — kept on this machine (not enrolled, or outside the project)';
+  }
+  return keptLocal === 0
+    ? sharedText
+    : `${sharedText}; ${String(keptLocal)} kept on this machine (not enrolled, or outside the project)`;
+}
+
+/** The scan footer: what this scan shared, or why it shared nothing. */
+export function credentialSightingsLine(outcome: CredentialSightingsOutcome): string {
+  if (outcome.status === 'sent') {
+    return `Credential sightings: ${sentText(outcome)}. ${SIGHTING_SHARE_PAYLOAD_NOTE}`;
+  }
+  switch (outcome.reason) {
+    case 'sharing-off':
+      return sightingSharingLine(outcome.sharing);
+    case 'opt-out':
+      return notShared('forwarding was skipped for this scan');
+    case 'no-key':
+      return notShared('this machine has no sighting key yet; it is fetched on the next sync');
+    case 'no-credential':
+      return notShared(
+        'no usable credential for the attached deployment; re-attach with `aka attach`',
+      );
+    case 'local-error':
+      return notShared('they could not be prepared on this machine; the next scan tries again');
+  }
+}
+
+function notShared(reason: string): string {
+  return `Credential sightings: not shared — ${reason}. ${SIGHTING_SHARE_PAYLOAD_NOTE}`;
 }

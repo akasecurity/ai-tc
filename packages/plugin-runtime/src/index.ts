@@ -36,4 +36,20 @@ export {
   setDefaultGatewayFactory,
   standaloneGatewayFactory,
 } from './resolve.ts';
+export type {
+  CredentialSightingsOutcome,
+  CredentialSightingsSend,
+  ManagedSettings,
+  ScanSighting,
+  SendScanSightingsDeps,
+  SightingKey,
+  SightingScanProject,
+  SightingSharePlan,
+} from './scan-sightings.ts';
+export {
+  combineCredentialSightingsOutcomes,
+  planSightingShare,
+  sendScanSightings,
+  sightingToken,
+} from './scan-sightings.ts';
 export { StandaloneDataGateway } from './standalone-gateway.ts';

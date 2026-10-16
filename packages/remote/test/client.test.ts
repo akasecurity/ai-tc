@@ -1,4 +1,8 @@
-import type { EgressIngestRequest, StorePostureSnapshot } from '@akasecurity/schema';
+import type {
+  CredentialSightingsRequest,
+  EgressIngestRequest,
+  StorePostureSnapshot,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createAttachClient, createRemoteClient } from '../src/client.ts';
@@ -70,6 +74,22 @@ const sightingKeyBody = {
   algorithm: 'hmac-sha256',
   key: Buffer.alloc(32, 7).toString('base64url'),
   previous: [{ keyVersion: 2, key: Buffer.alloc(32, 5).toString('base64url') }],
+};
+
+const sightingsRequest: CredentialSightingsRequest = {
+  sightings: [
+    {
+      token: ['[[aka:fp:v3.', 'C'.repeat(43), ']]'].join(''),
+      ruleId: 'aws-access-key',
+      category: 'secret',
+      variableName: 'AWS_ACCESS_KEY_ID',
+      locationClass: 'project-dot-directory',
+      project: { projectKey: 'b'.repeat(64), name: 'acme/widgets' },
+      gitTracked: true,
+      seenAt: '2026-10-14T09:00:00.000Z',
+    },
+  ],
+  scanId: '6f2d64f0-b6a4-4bb1-9a3c-6a4c26f5c9d1',
 };
 
 /**
@@ -563,7 +583,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the eleven, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the twelve, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -618,6 +638,7 @@ describe('routes', () => {
     await client.pollCommand();
     await client.ackCommand('cmd_1', { outcome: 'reported', projectsScanned: 0 });
     await client.getSightingKey();
+    await client.recordCredentialSightings(sightingsRequest);
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -631,6 +652,7 @@ describe('routes', () => {
       'GET /v1/plugin/commands',
       'POST /v1/plugin/commands/cmd_1/ack',
       'GET /v1/sighting-key',
+      'POST /v1/credential-sightings',
     ]);
   });
 
@@ -1068,5 +1090,59 @@ describe('the sighting-key fetch', () => {
     expect(error).toBeInstanceOf(RemoteRequestError);
     expect(error?.message).toContain('403');
     expectNoEchoOf(error?.message, sightingKeyBody.key);
+  });
+});
+
+describe('the credential-sightings route', () => {
+  const server = useLoopbackServer();
+
+  it('issues exactly POST /v1/credential-sightings with the credential and the body', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 1 }));
+    });
+
+    const ack = await client.recordCredentialSightings(sightingsRequest);
+
+    const seen = server.received.at(-1);
+    expect(`${seen?.method ?? ''} ${seen?.url ?? ''}`).toBe('POST /v1/credential-sightings');
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(JSON.parse(seen?.body ?? '')).toEqual(sightingsRequest);
+    expect(ack).toEqual({ accepted: 1 });
+  });
+
+  it('refuses a body the contract rejects before it reaches the wire', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    await expect(client.recordCredentialSightings({ sightings: [] })).rejects.toMatchObject({
+      name: 'RemoteRequestInvalid',
+    });
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('names a deployment that predates the route', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.recordCredentialSightings(sightingsRequest)).rejects.toBeInstanceOf(
+      RemoteRouteAbsent,
+    );
+  });
+
+  it('refuses an acknowledgement it cannot read', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 'all' }));
+    });
+
+    await expect(client.recordCredentialSightings(sightingsRequest)).rejects.toBeInstanceOf(
+      RemoteResponseInvalid,
+    );
   });
 });

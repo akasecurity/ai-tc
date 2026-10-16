@@ -37,6 +37,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CODEX_ACCOUNT_ENV_NAMES, CODEX_CREDENTIAL_ENV } from '@akasecurity/plugin-sdk/account';
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -492,10 +493,12 @@ const CODEX_WORK_SENTENCES = [
     'signed in to a workspace enrolled by hand.',
   'A token refresh keeps a recognised thread forwarding; a switch to another workspace or email, ' +
     'to a plan that does not count, or to another login mode ends it for the rest of that thread.',
-  'A resumed thread, a personal plan, a service account, another email, an API key or access ' +
-    'token (in the environment or as the login), another provider or a gateway, a thread whose ' +
-    "log does not name the login's workspace as its creator, and a login Codex keeps outside " +
-    'its login file (in the system keychain, for one) follow the repository rule.',
+  'A resumed thread, a personal plan, a service account, another email, a saved login that uses ' +
+    'an API key or any login mode other than ChatGPT, a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` ' +
+    'in the environment, an `OPENAI_BASE_URL` naming a host other than api.openai.com, a thread ' +
+    "whose log does not name OpenAI as its provider or the login's workspace as its creator, " +
+    'and a login Codex keeps outside its login file (in the system keychain, for one) follow ' +
+    'the repository rule.',
   'A Codex thread whose first log line is not on disk when it starts is checked again at its next ' +
     'prompt or tool call: its session record and the token usage and tool calls read from its log ' +
     'follow the repository rule, and its prompts, tool calls and results forward from any folder ' +
@@ -503,9 +506,11 @@ const CODEX_WORK_SENTENCES = [
     'still missing then, it follows the repository rule for the rest of the thread.',
   '`aka enroll --account` enrolls by hand a workspace the device cannot recognise, and the Codex ' +
     'threads of a workspace enrolled that way then forward whatever the plan or email, though not ' +
-    'a resumed thread, one under an API key or access token, one on another provider or a ' +
-    'gateway, or one whose login Codex keeps outside its login file; a switch of workspace or ' +
-    'login mode ends them.',
+    'a resumed thread, one whose saved login uses an API key or any login mode other than ' +
+    'ChatGPT, one with a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` in the environment, one with an ' +
+    '`OPENAI_BASE_URL` naming a host other than api.openai.com, one whose log does not name ' +
+    'OpenAI as its provider, or one whose login Codex keeps outside its login file; a switch of ' +
+    'workspace or login mode ends them.',
   '`aka unenroll --work-subscriptions` turns the recognition of Codex threads off too and ' +
     '`aka enroll --work-subscriptions` turns it back on; a workspace enrolled by hand still ' +
     'forwards while it is off (`aka unenroll --account` stops it).',
@@ -589,6 +594,33 @@ describe('Codex work-subscription claims', () => {
       expect(text).toMatch(/Business, Team, Enterprise or Edu workspace/);
       expect(text).toMatch(/A resumed thread, a personal plan, a service account/);
     }
+  });
+
+  it('drops the unnamed API key, token and gateway wording from the Codex sentences', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).not.toContain('an API key or access token');
+      expect(text).not.toContain('one under an API key');
+      expect(text).not.toContain('(in the environment or as the login)');
+      expect(text).not.toContain('another provider or a gateway');
+    }
+  });
+
+  describe('the environment variables the sentence group names', () => {
+    const named = new Set(CODEX_WORK_SENTENCE.match(/\b(?:CODEX|OPENAI)_[A-Z0-9_]+\b/g));
+
+    it('are the credential variables and the base URL the account check reads, and no other', () => {
+      expect([...named].sort()).toEqual([...CODEX_CREDENTIAL_ENV, 'OPENAI_BASE_URL'].sort());
+      for (const name of named) expect(CODEX_ACCOUNT_ENV_NAMES).toContain(name);
+    });
+
+    it.each([...CODEX_PAGES, 'SECURITY.md'])(
+      '%s does not name OPENAI_API_KEY, which the account check does not read',
+      (name) => {
+        expect(CODEX_ACCOUNT_ENV_NAMES).not.toContain('OPENAI_API_KEY');
+        expect(flat(repoFile(name))).not.toContain('OPENAI_API_KEY');
+      },
+    );
   });
 });
 

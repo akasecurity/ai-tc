@@ -195,7 +195,7 @@ const flat = (text: string): string => text.replace(/\s+/g, ' ');
 const REPORT_SENTENCE =
   'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
   "included), the machine pulls the deployment's policy (at most every 15 minutes) and its " +
-  'sighting key (at most daily) and sends it ' +
+  'sighting key (when none is stored or the stored one is a day old) and sends it ' +
   'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
   'policy counts, finding counts and dates for everything recorded on the machine, and, when the ' +
   'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
@@ -433,6 +433,22 @@ describe('Claude Code work-subscription claims', () => {
       'Attached either way, the machine still sends more than activity, and no repository limits it.',
     );
     expect(footnote).not.toContain('That machine still sends more than activity');
+  });
+
+  it('says on the plugin page which line a session outside an enrolled repository opens with, and what it forwards from when', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'a local-only line says that work in an enrolled repository is still forwarded. ' +
+        'On a personal device, a Claude Code session outside an enrolled repository opens with ' +
+        'one of two lines: one saying it forwards to the deployment from its first reply, once ' +
+        'the account is confirmed, which a recognised work subscription and an account enrolled ' +
+        'by hand get (an API key or another provider keeps the session local-only), or the ' +
+        'local-only line. A session that forwards sends everything it records from its first ' +
+        'reply on, token usage and tool calls included; the first prompt of a new session ' +
+        'follows the repository rule. The line is a convenience, not the record',
+    );
+    expect(footnote).not.toContain('opens with that local-only line too');
+    expect(footnote).not.toContain('its first prompt stays on the machine');
   });
 });
 

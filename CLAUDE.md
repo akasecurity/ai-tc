@@ -254,7 +254,7 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace â
 | `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
 | `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
 | `plugins/claude-code/src/hooks/session-start.ts`  | file-scoped ESLint config         | the interface the host stamps on its own subprocess env     |
-| `packages/plugin-sdk/src/account/account-env.ts`  | file-scoped ESLint config         | Claude Code login env, compared in memory only              |
+| `packages/plugin-sdk/src/account/account-env.ts`  | file-scoped ESLint config         | Claude Code and Codex login env, compared in memory only    |
 
 Prefer a file-scoped config opt-out over an inline disable â€” an inline disable is invisible to anyone auditing the ESLint configs. Adding another site means updating this table.
 

@@ -11,12 +11,18 @@
 import { createHash } from 'node:crypto';
 
 import type {
+  EgressCredentialRef as EgressCredentialRefT,
   EgressIngestHit,
   EgressIngestRequest,
   RecordProjectEgressInput,
   ResolvedEgressHit,
 } from '@akasecurity/schema';
-import { ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH, printable } from '@akasecurity/schema';
+import {
+  ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
+  CREDENTIAL_REFS_PER_CALL_SITE_MAX,
+  EgressCredentialRef,
+  printable,
+} from '@akasecurity/schema';
 
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
@@ -445,7 +451,17 @@ export function scopeKeyOfProjectKey(projectKey: string): string | undefined {
     : undefined;
 }
 
-function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {
+function wireCredentialRefs(hit: ResolvedEgressHit): EgressCredentialRefT[] {
+  const refs: EgressCredentialRefT[] = [];
+  for (const ref of hit.credentialRefs ?? []) {
+    const parsed = EgressCredentialRef.safeParse(ref);
+    if (parsed.success) refs.push(parsed.data);
+  }
+  return refs.slice(0, CREDENTIAL_REFS_PER_CALL_SITE_MAX);
+}
+
+function toIngestHit(hit: ResolvedEgressHit, shareCredentialRefs: boolean): EgressIngestHit {
+  const refs = shareCredentialRefs ? wireCredentialRefs(hit) : [];
   return {
     host: hit.host,
     kind: hit.kind,
@@ -465,6 +481,7 @@ function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {
       dynamic: hit.site.dynamic,
       vendored: hit.site.vendored,
     },
+    ...(refs.length === 0 ? {} : { credentialRefs: refs }),
   };
 }
 
@@ -476,14 +493,22 @@ function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {
  * strips everything that must not leave the device: `site.snippet` (source
  * text), the plaintext `projectKey` (replaced with its digest), and
  * `projectId` (a device-local id the tenant's inventory cannot resolve).
+ *
+ * A call site's credential references are carried only when
+ * `opts.credentialRefs` is true, which a caller sets only while this machine
+ * shares credential sightings and holds a sighting key.
  */
-export function toEgressIngestRequest(input: RecordProjectEgressInput): EgressIngestRequest {
+export function toEgressIngestRequest(
+  input: RecordProjectEgressInput,
+  opts: { credentialRefs?: boolean } = {},
+): EgressIngestRequest {
+  const shareCredentialRefs = opts.credentialRefs === true;
   const { hits, droppedFiles } = capHits(input.hits, input.reconcile.mode);
   const reconcile = withoutDroppedFiles(input.reconcile, droppedFiles);
   return {
     projectKey: hashProjectKey(input.projectKey),
     project: input.project,
     reconcile,
-    hits: hits.map(toIngestHit),
+    hits: hits.map((hit) => toIngestHit(hit, shareCredentialRefs)),
   };
 }

@@ -34,7 +34,7 @@ import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/p
 import type { ModFinding, ModFindingWhere } from '@akasecurity/schema';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { resolveHookAccount, stampFor } from '../hooks/account-stamp.ts';
+import { locateSessionTranscript, resolveHookAccount, stampFor } from '../hooks/account-stamp.ts';
 import {
   baseMetadata,
   captureScopeKey,
@@ -94,13 +94,12 @@ async function tokenize(stdin: string): Promise<HelperRun> {
   // killing this process all leave the store untouched, so the command hook,
   // which then decides the raw prompt itself, is the only one to record it.
   const runtime = createPluginRuntime(opened.gateway, config.settings, { dataDir: config.dataDir });
-  // The mod hands this helper no transcript path, so the session's org cannot be
-  // read here: the capture keeps its repository key, and the login view is still
-  // recorded for the session.
+  // The mod hands this helper no transcript path, so it locates the session's own.
+  // The capture is stamped for the session's account, as the hook's is.
   const account = resolveHookAccount(opened.gateway, {
     dataDir: config.dataDir,
     sessionId,
-    transcriptPath: undefined,
+    transcriptPath: locateSessionTranscript(config, sessionId),
     cwd: getString(input, 'cwd'),
   });
   let answer: { text: string; note: string | null; findings: ModFinding[] } | null;

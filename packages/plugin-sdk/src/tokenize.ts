@@ -1,8 +1,14 @@
 // The vault glue over the local SQLite vault under the data directory, and
 // the free functions that run over one shared instance of it. The glue itself
 // lives in `vault-glue.ts`, which opens no store.
+import { dirname } from 'node:path';
+
 import type { MatchResult } from '@akasecurity/detections';
-import type { ExceptionPolicyProvider, FingerprintKey } from '@akasecurity/persistence';
+import type {
+  ExceptionPolicyProvider,
+  FingerprintKey,
+  LocalDatabase,
+} from '@akasecurity/persistence';
 import {
   createKeyProvider,
   defaultDataDir,
@@ -13,7 +19,7 @@ import {
   SecretVault,
   UserGrantPolicyProvider,
 } from '@akasecurity/persistence';
-import type { PointerDescriptor } from '@akasecurity/schema';
+import type { PointerDescriptor, WorkspaceSettings } from '@akasecurity/schema';
 import { isVaultConsentValid } from '@akasecurity/schema';
 
 import { dataDir } from './data-dir.ts';
@@ -36,6 +42,8 @@ export interface CreateVaultGlueOptions {
   base?: string;
   // Test seam: a vault core to use instead of opening the real store.
   vault?: VaultCore;
+  // An open store to use instead of opening one. The glue never closes it.
+  db?: LocalDatabase;
   // Test seam: a reveal-grant resolver to pair with an injected vault.
   revealResolver?: ModelDerefGrantResolver;
   // The reveal decision seam. Defaults to the user-driven provider (the grant
@@ -63,7 +71,9 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
   const base = options?.base ?? defaultDataDir();
   try {
     const dir = dataDir(base);
-    const db = openLocalDatabase(dir, { shippedRegexMatchers: shippedRegexMatchers() });
+    const db =
+      options?.db ?? openLocalDatabase(dir, { shippedRegexMatchers: shippedRegexMatchers() });
+    const owned = options?.db === undefined;
     const settings = readWorkspaceSettings(base);
     // Resolved before the vault so the grant verifier below can close over it.
     // An injected provider replaces the user-grant one wholesale, and the vault
@@ -129,11 +139,34 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
         return null;
       }
     };
-    return new SecretVaultGlue(vaultWithSightings, revealGrantResolver, () => {
-      db.close();
-    });
+    return new SecretVaultGlue(
+      vaultWithSightings,
+      revealGrantResolver,
+      owned
+        ? () => {
+            db.close();
+          }
+        : undefined,
+    );
   } catch {
     return new SecretVaultGlue(UNOPENABLE_VAULT);
+  }
+}
+
+/**
+ * The glue a whole-file scan vaults through, over the home `config` names, or
+ * undefined without vault consent — the scan then vaults nothing. `db`, when
+ * given, is the open store to vault into. The caller closes the glue.
+ */
+export function openScanVault(
+  config: { settings: WorkspaceSettings; dataDir: string },
+  db?: LocalDatabase,
+): VaultGlue | undefined {
+  try {
+    if (!isVaultConsentValid(config.settings.vaultConsent)) return undefined;
+    return createVaultGlue({ base: dirname(config.dataDir), ...(db === undefined ? {} : { db }) });
+  } catch {
+    return undefined;
   }
 }
 

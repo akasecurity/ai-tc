@@ -179,15 +179,14 @@ is what a backfill or a drain sends.
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository
 or not (a browser chat included), the machine pulls the deployment's policy (at
-most every 15 minutes) and its sighting key (at most daily) and sends it a
-device report (at most hourly): a device identifier, host name, versions,
-detection packs, policy counts, finding counts and dates for everything
-recorded on the machine, and, when the machine is attached as a personal
-device, the fact that it is one. Where a scan is available (the coding-agent
-plugins, not a browser chat), the same session start also checks it for device
-commands. On a personal device, the background sync also asks the deployment
-once which account its key belongs to, when the device does not know it yet. The
-finding count is the number of findings
+most every 15 minutes) and its sighting key (when none is stored or the stored
+one is a day old) and sends it a device report (at most hourly): a device
+identifier, host name, versions, detection packs, policy counts, finding counts
+and dates for everything recorded on the machine, and, when the machine is
+attached as a personal device, the fact that it is one. Where a scan is
+available (the coding-agent plugins, not a browser chat), the same session
+start also checks it for device commands. On a personal device, the background sync also asks the deployment
+once which account its key belongs to, when the device does not know it yet. The finding count is the number of findings
 detected in captured prompts, responses, code changes and tool uses, from every
 session, with the dates of the first and latest one. A report can also go when a
 response finishes in a session that is already running, still at most hourly.
@@ -208,12 +207,13 @@ check sends none of what it reads, though the token usage and tool calls read
 from that same log are forwarded with the rest of the activity of a recognised
 session or of one signed in to an account enrolled by hand. The first prompt of
 a new session, a personal plan, another email, an API key or another provider,
-and the rest of a session whose organization changes follow the repository
-rule; `aka enroll --account` enrolls by hand an account the device cannot
-recognise, and the Claude Code sessions of an account enrolled that way then
-forward from their first reply on whatever the plan or email, though not under
-an API key or another provider. An organization recognised this way never
-records or forwards a claude.ai chat. A personal device that attached before
+a reply written before the device has confirmed the account, and the rest of a
+session whose organization changes follow the repository rule;
+`aka enroll --account` enrolls by hand an account the device cannot recognise,
+and the Claude Code sessions of an account enrolled that way then forward from
+their first reply on whatever the plan or email, though not under an API key or
+another provider. An organization recognised this way never records or forwards
+a claude.ai chat. A personal device that attached before
 its plugin could recognise work subscriptions starts recognising them when the
 plugin updates, with no new prompt, so update `aka` first.
 `aka unenroll --work-subscriptions` turns recognition off on this device and

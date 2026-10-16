@@ -166,6 +166,17 @@ describe('attributeRecords', () => {
     expect(fresh.records.get('b')).toEqual({ status: 'none' });
   });
 
+  it('attributes a running session from the first work view after its account came into scope, and nothing recorded before', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('before', 2), record('between', 4), record('after', 6)],
+      observations: [startup(0), personal(1.5), personal(3), work(org, 5), work(org, 7)],
+    });
+    expect(result.records.get('before')).toEqual({ status: 'none' });
+    expect(result.records.get('between')).toEqual({ status: 'none' });
+    expect(result.records.get('after')).toEqual({ status: 'account', key: `claude:${org}` });
+  });
+
   it('needs the account agent key in scope now', () => {
     const org = randomUUID();
     const result = run({

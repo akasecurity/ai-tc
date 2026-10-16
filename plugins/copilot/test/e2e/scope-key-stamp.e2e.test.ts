@@ -1,7 +1,7 @@
 /**
- * The Copilot capture site stamps the scope key of the checkout its payload
- * names, driven through the REAL built pre-tool-use hook against a throwaway
- * store. The entry runs main() on import, so the row it writes is the only
+ * The Copilot capture sites stamp the scope key of the checkout their payload
+ * names, driven through the REAL built pre-tool-use, user-prompt-submit and
+ * post-tool-use hooks against a throwaway store. The entry runs main() on import, so the row it writes is the only
  * place a missing `scopeKey` shows.
  *
  * Copilot is stricter than the other hosts about WHERE the key of a capture
@@ -32,6 +32,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/copilot
 const PLUGIN_ROOT = join(HERE, '..', '..');
 const SCRIPT = join(PLUGIN_ROOT, 'scripts', 'pre-tool-use.js');
+const PROMPT_SCRIPT = join(PLUGIN_ROOT, 'scripts', 'user-prompt-submit.js');
+const RESULT_SCRIPT = join(PLUGIN_ROOT, 'scripts', 'post-tool-use.js');
 const MANIFEST = join(PLUGIN_ROOT, 'plugin.json');
 
 // The userinfo in an scp-style remote (`<user>@<host>:path`) reads as an email
@@ -83,8 +85,9 @@ function runHook(
   home: string,
   payload: unknown,
   processCwd: string,
+  script: string = SCRIPT,
 ): { status: number; stderr: string } {
-  const result = spawnSync(process.execPath, [SCRIPT, event, MANIFEST], {
+  const result = spawnSync(process.execPath, [script, event, MANIFEST], {
     cwd: processCwd,
     env: { HOME: home, USERPROFILE: home },
     input: JSON.stringify(payload),
@@ -275,5 +278,163 @@ describe('a VS Code single-file write is keyed by the file it writes, or not at 
       expect(run.status, run.stderr).toBe(0);
       expectEveryCapture(home, { kind: 'code_change', scopeKey: null, repo: 'work-repo' });
     }, 'aka-copilot-scope-key-write-failclosed-');
+  });
+});
+
+// A prompt names no file, so it is keyed like any other call that names none:
+// by the cwd the payload carries, and never by the hook process's own.
+function cliPrompt(cwd: string | undefined): Record<string, unknown> {
+  return {
+    sessionId: SESSION_ID,
+    timestamp: 1788547858031,
+    ...(cwd === undefined ? {} : { cwd }),
+    prompt: 'run the shell command: false',
+  };
+}
+
+function vscodePrompt(cwd: string): Record<string, unknown> {
+  return {
+    hook_event_name: 'UserPromptSubmit',
+    session_id: SESSION_ID,
+    cwd,
+    prompt: 'run the shell command: false',
+  };
+}
+
+describe('user-prompt-submit stamps the scope key of the cwd its payload names', () => {
+  // A submitted prompt is recorded clean or not, so no policy is seeded: the
+  // row itself is the positive control `expectEveryCapture` counts.
+  it('CLI dialect: the prompt row carries the canonical repo key', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'userPromptSubmitted',
+        home,
+        cliPrompt(checkout(home)),
+        home,
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-cli-');
+  });
+
+  it('VS Code dialect with a declared cwd: keyed the same way', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'UserPromptSubmit',
+        home,
+        vscodePrompt(checkout(home)),
+        home,
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-vscode-');
+  });
+
+  it('no payload cwd: no key, though the hook runs inside a keyed checkout', () => {
+    withTempHome((home) => {
+      const run = runHook(
+        'userPromptSubmitted',
+        home,
+        cliPrompt(undefined),
+        checkout(home),
+        PROMPT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      // The slug took the CLI's process-cwd fallback; the key did not.
+      expectEveryCapture(home, { kind: 'prompt', scopeKey: null, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-prompt-nocwd-');
+  });
+});
+
+// A tool result carries the key preToolUse stamped for its call: the payload
+// cwd for an ordinary call, the target file for a VS Code single-file write,
+// and no key for a patch. The result holds a finding, because this hook records
+// with-findings only; the row is the positive control.
+function cliResult(cwd: string | undefined, toolName = 'bash'): Record<string, unknown> {
+  return {
+    sessionId: SESSION_ID,
+    timestamp: 1788547866546,
+    ...(cwd === undefined ? {} : { cwd }),
+    toolName,
+    toolArgs: toolName === 'apply_patch' ? { input: '*** Begin Patch\n*** End Patch\n' } : {},
+    toolResult: { resultType: 'success', textResultForLlm: command() },
+  };
+}
+
+function vscodeResult(
+  cwd: string | undefined,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    hook_event_name: 'PostToolUse',
+    session_id: SESSION_ID,
+    timestamp: 1788547866546,
+    ...(cwd === undefined ? {} : { cwd }),
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_response: command(),
+  };
+}
+
+describe('post-tool-use stamps the same scope key its call carried', () => {
+  it('CLI dialect: the response row carries the payload cwd key', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const run = runHook('postToolUse', home, cliResult(checkout(home)), home, RESULT_SCRIPT);
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-result-cli-');
+  });
+
+  it('VS Code dialect with a declared cwd: keyed the same way', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const call = vscodeResult(checkout(home), 'run_in_terminal', { command: 'cat x' });
+      const run = runHook('PostToolUse', home, call, home, RESULT_SCRIPT);
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: WORK_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-result-vscode-');
+  });
+
+  it('no payload cwd: no key, though the hook runs inside a keyed checkout', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const run = runHook('postToolUse', home, cliResult(undefined), checkout(home), RESULT_SCRIPT);
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: null, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-result-nocwd-');
+  });
+
+  it('a CLI apply_patch result gets no key, as its call got none', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const run = runHook(
+        'postToolUse',
+        home,
+        cliResult(checkout(home), 'apply_patch'),
+        home,
+        RESULT_SCRIPT,
+      );
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: null, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-result-patch-');
+  });
+
+  it('a VS Code file-write result is keyed by the file it wrote, not the payload cwd', () => {
+    withTempHome((home) => {
+      seedMonitor(home);
+      const work = checkout(home);
+      const personal = checkout(home, 'personal', PERSONAL_REMOTE);
+      const call = vscodeResult(work, 'create_file', {
+        filePath: join(personal, 'notes.ts'),
+        content: CODE,
+      });
+      const run = runHook('PostToolUse', home, call, home, RESULT_SCRIPT);
+      expect(run.status, run.stderr).toBe(0);
+      expectEveryCapture(home, { kind: 'response', scopeKey: PERSONAL_KEY, repo: 'work-repo' });
+    }, 'aka-copilot-scope-key-result-write-');
   });
 });

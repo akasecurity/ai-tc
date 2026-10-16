@@ -4,6 +4,8 @@
 // module, both scan pipelines, and the persistence writer.
 import { z } from 'zod';
 
+import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
+import { VariableName } from './finding.ts';
 import {
   DataClass,
   DestinationKind,
@@ -53,6 +55,30 @@ export const EgressCallSiteHit = z
   .meta({ id: 'EgressCallSiteHit' });
 export type EgressCallSiteHit = z.infer<typeof EgressCallSiteHit>;
 
+/** The most credential references one call site carries. */
+export const CREDENTIAL_REFS_PER_CALL_SITE_MAX = 8;
+
+/**
+ * A credential a call site uses, found inside the call expression: a secret
+ * written in it, as its sighting token, or an environment variable it reads, by
+ * name. Never a value, an excerpt or a masked value.
+ */
+export const EgressCredentialRef = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('literal'),
+      token: z.string().regex(SIGHTING_TOKEN_ANCHORED),
+      ruleId: z.string().min(1).max(256),
+    })
+    .strict(),
+  z.object({ kind: z.literal('variable'), variableName: VariableName.min(1) }).strict(),
+]);
+export type EgressCredentialRef = z.infer<typeof EgressCredentialRef>;
+
+export const EgressCredentialRefs = z
+  .array(EgressCredentialRef)
+  .max(CREDENTIAL_REFS_PER_CALL_SITE_MAX);
+
 // One fully resolved egress observation, ready for the store writer.
 export const ResolvedEgressHit = z
   .object({
@@ -70,6 +96,8 @@ export const ResolvedEgressHit = z
     template: z.boolean(),
     dataClass: DataClass,
     site: EgressCallSiteHit,
+    /** Held in memory for the forward only; the store writes none of it. */
+    credentialRefs: EgressCredentialRefs.optional(),
   })
   .meta({ id: 'ResolvedEgressHit' });
 export type ResolvedEgressHit = z.infer<typeof ResolvedEgressHit>;

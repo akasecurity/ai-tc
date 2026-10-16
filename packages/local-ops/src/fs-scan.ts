@@ -3,7 +3,7 @@ import { type Dirent, lstatSync, readdirSync, readFileSync, statSync } from 'nod
 import { homedir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 
-import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
+import type { FileEgressHits, MatchResult, TokenizedSecretSpan } from '@akasecurity/detections';
 import {
   dropShieldedFindings,
   EGRESS_CODE_EXTENSIONS,
@@ -15,6 +15,7 @@ import {
   maskMatch,
   scan,
   shieldPointers,
+  withLiteralCredentialRefs,
   withVariableNames,
 } from '@akasecurity/detections';
 import type {
@@ -727,6 +728,12 @@ export async function scanPathIntoStore(
     if (matches.length === 0) continue;
     if (opts.sightingKey) {
       sightings.push(...sightingsOf(opts.sightingKey, matches, file));
+      if (fileEgress) {
+        fileEgress.endpoints = withLiteralCredentialRefs(
+          fileEgress.endpoints,
+          secretTokenSpans(opts.sightingKey, matches),
+        );
+      }
     }
 
     // Resolved through the same reading the live path uses (see
@@ -836,6 +843,27 @@ export async function scanPathIntoStore(
     nestedRepositories,
     sightings,
   };
+}
+
+// The secret matches in one file as token spans, for the call sites they sit in.
+function secretTokenSpans(
+  key: SightingKey,
+  matches: readonly MatchResult[],
+): TokenizedSecretSpan[] {
+  const spans: TokenizedSecretSpan[] = [];
+  for (const match of matches) {
+    if (match.category !== 'secret') continue;
+    try {
+      spans.push({
+        ...match.span,
+        ruleId: match.ruleId,
+        token: sightingToken(key, match.rawMatch),
+      });
+    } catch {
+      // Left out; the scan itself goes on.
+    }
+  }
+  return spans;
 }
 
 // The secret matches in one file, as sighting tokens. A value that cannot be

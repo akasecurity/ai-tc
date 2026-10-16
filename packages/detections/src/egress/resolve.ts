@@ -87,6 +87,7 @@ function resolveEndpointHit(
       dynamic: endpoint.template,
       vendored: file.vendored,
     },
+    ...(endpoint.credentialRefs === undefined ? {} : { credentialRefs: endpoint.credentialRefs }),
   };
 }
 

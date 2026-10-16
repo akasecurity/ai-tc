@@ -193,6 +193,20 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     ).toBeLessThan(EXTRACTION_BUDGET_MS);
   });
 
+  it.each([
+    ['calls that never close', "fetch('https://a.example.com/x', {"],
+    ['nested calls that never close', "f(g(h('https://a.example.com/x'"],
+  ])('finds the call around each hit in a 1 MB file of %s', (_label, unit) => {
+    const text = unit.repeat(Math.ceil(MB / unit.length));
+    const ms = burned(() => extractEgress(text));
+    expect(
+      ms,
+      `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB file of unclosed calls ` +
+        `(budget ${String(EXTRACTION_BUDGET_MS)}ms). The call search is no longer held to its ` +
+        `per-file step budget.`,
+    ).toBeLessThan(EXTRACTION_BUDGET_MS);
+  });
+
   it('takes a snippet per hit from a 1 MB single-line bundle', () => {
     const text = minifiedBundle(MB);
     const ms = burned(() => extractEgress(text));

@@ -39,6 +39,7 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
   SourceTool,
+  TokenizedSecretSpan,
 } from '@akasecurity/plugin-sdk';
 import {
   canonicalizeScanPath,
@@ -59,6 +60,7 @@ import {
   resolveWorktreeRoot,
   scanFileKind,
   toPosix,
+  withLiteralCredentialRefs,
 } from '@akasecurity/plugin-sdk';
 
 import type { DiscoverOptions } from './discover.ts';
@@ -234,27 +236,31 @@ function startEgress(rootDir: string): EgressAccumulator | null {
 
 // Extract one just-read file's egress. Code files yield URL/IP hits; manifests
 // yield SDK dependencies. Files containing NUL bytes are binary and are skipped.
+// Returns the code file's entry, which the file's secrets are later attached to.
 function collectFileEgress(
   acc: EgressAccumulator,
   absPath: string,
   content: string,
   manifestKind: ManifestKind | null,
-): void {
+): FileEgressHits | undefined {
   const file = egressKey(acc.project.root, absPath);
-  if (file === null) return;
+  if (file === null) return undefined;
   acc.scannedFiles.push(file);
 
-  if (content.includes('\u0000')) return;
+  if (content.includes('\u0000')) return undefined;
 
   const vendored = isVendoredPath(file);
   if (manifestKind !== null) {
     const sdkHits = extractManifestSdks(content, manifestKind);
     if (sdkHits.length > 0) acc.files.push({ file, vendored, endpoints: [], sdkHits });
-    return;
+    return undefined;
   }
-  if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return;
+  if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return undefined;
   const endpoints = extractEgress(content);
-  if (endpoints.length > 0) acc.files.push({ file, vendored, endpoints, sdkHits: [] });
+  if (endpoints.length === 0) return undefined;
+  const entry: FileEgressHits = { file, vendored, endpoints, sdkHits: [] };
+  acc.files.push(entry);
+  return entry;
 }
 
 // Re-scan resolver: diff a path's previously-open at-rest finding_keys against
@@ -460,6 +466,27 @@ interface SightingRun {
 // A dotenv file is read only for its sightings: its content is never recorded
 // or forwarded by this pass.
 const MAX_SECRET_FILE_BYTES = 512 * 1024;
+
+// The secret matches of one file as token spans, for the call sites they sit in.
+function secretTokenSpans(
+  key: SightingKey,
+  matches: CaptureResult['findings'],
+): TokenizedSecretSpan[] {
+  const spans: TokenizedSecretSpan[] = [];
+  for (const match of matches) {
+    if (match.category !== 'secret') continue;
+    try {
+      spans.push({
+        ...match.span,
+        ruleId: match.ruleId,
+        token: sightingToken(key, match.rawMatch),
+      });
+    } catch {
+      // Left out; the scan goes on.
+    }
+  }
+  return spans;
+}
 
 // The secret matches of one file as sighting tokens. A value that cannot be
 // reduced to a token is left out.
@@ -688,7 +715,9 @@ async function scanDir(
     // skips but BEFORE the tier-3 dedup below. A file whose content duplicates
     // an already-seen file still contains this project's egress, so hooking
     // extraction to capture instead would silently drop it.
-    if (egress) collectFileEgress(egress, file.path, file.content, null);
+    const fileEgress = egress
+      ? collectFileEgress(egress, file.path, file.content, null)
+      : undefined;
 
     // Content-hash dedup across files/repos and previously recorded events.
     // Still ledger the path: identical content means identical (no) findings.
@@ -756,6 +785,12 @@ async function scanDir(
       const found = sightingsOf(sightingRun.key, result.findings, file, scopeKey);
       if (found.length > 0) sightingPaths.add(file.path);
       sightings.push(...found);
+      if (fileEgress !== undefined) {
+        fileEgress.endpoints = withLiteralCredentialRefs(
+          fileEgress.endpoints,
+          secretTokenSpans(sightingRun.key, result.findings),
+        );
+      }
     }
 
     for (const finding of result.findings) {

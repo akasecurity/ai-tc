@@ -26,6 +26,8 @@ import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type * as Shared from '../../src/hooks/shared.ts';
 import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 import { runModTokenize } from '../../src/mod/tokenize-run.ts';
+import type { ToolCallAnswer } from '../../src/mod/tool-call-answer.ts';
+import { runModToolCall } from '../../src/mod/tool-call-run.ts';
 import type { Device, Transcript } from '../helpers/account-fixture.ts';
 import {
   device,
@@ -89,10 +91,10 @@ vi.mock('../../../../packages/persistence/src/file-lock.ts', async (importOrigin
   };
 });
 
-// The one UserPromptSubmit case drives the entry itself: stdin is the payload
-// this holds, and what the entry would print is dropped. Every other case calls
-// an importable run. The fail-open count is a spy so a case can see a fault the
-// hook swallowed.
+// The UserPromptSubmit and PostToolUse cases drive their entries (runEntry):
+// stdin is the payload this holds, and what the entry would print is dropped.
+// Every other case calls an importable run. The fail-open count is a spy so a
+// case can see a fault the hook swallowed.
 const stdin = vi.hoisted(() => ({ value: '' }));
 const failOpen = vi.hoisted(() => ({ count: vi.fn() }));
 vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
@@ -154,6 +156,40 @@ async function write(t: Transcript, cwd: string, name = 'notes.md'): Promise<voi
   );
 }
 
+/** The payload the host hands a hook of this session. */
+const hookPayload = (t: Transcript, event: string): Record<string, unknown> => ({
+  session_id: t.sessionId,
+  transcript_path: t.path,
+  cwd: dev.personal,
+  hook_event_name: event,
+});
+
+/**
+ * A hook entry run on `payload` the way the host runs it: the entry reads its
+ * stdin, does its work on import, and what it would print is dropped. The module
+ * registry is reset so each call runs the entry again. The clock reads zero:
+ * PostToolUse spends a scan budget counted from process start, which a test
+ * worker that has run for seconds has already used up.
+ */
+async function runEntry(entry: 'prompt' | 'post-tool-use', payload: object): Promise<void> {
+  stdin.value = JSON.stringify(payload);
+  vi.resetModules();
+  const exit = vi
+    .spyOn(process, 'exit')
+    .mockImplementation((() => undefined) as typeof process.exit);
+  const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+  try {
+    if (entry === 'prompt') await import('../../src/hooks/user-prompt-submit.ts');
+    else await import('../../src/hooks/post-tool-use.ts');
+  } finally {
+    clock.mockRestore();
+    exit.mockRestore();
+  }
+}
+
+/** Every stored row of `eventType`, oldest first. */
+const rowsOf = (eventType: string) => dev.storedRows().filter((row) => row.eventType === eventType);
+
 /** The scope key of every file write the store holds, oldest first. */
 const captureKeys = (): (string | null)[] =>
   dev
@@ -183,11 +219,13 @@ function secretRule() {
 }
 
 /**
- * A prompt holding a bundled rule's own example value, with that rule's pack set
- * to redact in the local store, so the tokenize helper answers with a rewrite and
- * records the prompt.
+ * A bundled rule's own example value, with that rule's pack set to redact in the
+ * local store. A helper rewrites it in a data field and records the capture. In an
+ * executable field the runtime resolves the redact into the workspace's
+ * `redactFallback`: the shipped `warn` lets the command through unchanged, and a
+ * `block` denies the call, which is still recorded.
  */
-function redactablePrompt(): string {
+function redactableValue(): string {
   const { pack, example } = secretRule();
   const db = openLocalDatabase(dev.dataDir);
   try {
@@ -196,8 +234,24 @@ function redactablePrompt(): string {
   } finally {
     db.close();
   }
-  return `please deploy using this key: ${example} and then tell me when it is done`;
+  return example;
 }
+
+/** What the tool.call mod helper answers for `tool` run with `input` in `t`'s session. */
+async function modToolCall(
+  t: Transcript,
+  tool: string,
+  input: Record<string, unknown>,
+): Promise<ToolCallAnswer> {
+  const run = await runModToolCall(
+    JSON.stringify({ v: 1, tool, input, sessionId: t.sessionId, cwd: dev.personal }),
+  );
+  expect(run.code).toBe(0);
+  return JSON.parse(run.stdout) as ToolCallAnswer;
+}
+
+const redactablePrompt = (): string =>
+  `please deploy using this key: ${redactableValue()} and then tell me when it is done`;
 
 /** How many login views of a work account the session's log holds. */
 const workViews = (sessionId: string): number =>
@@ -264,44 +318,119 @@ describe('a scoped attachment with no work-subscription setting, signed in to a 
       source: 'startup',
     });
     t.prompt(later(1));
-    stdin.value = JSON.stringify({
-      session_id: t.sessionId,
-      transcript_path: t.path,
-      cwd: dev.personal,
-      hook_event_name: 'UserPromptSubmit',
-      prompt: 'a prompt',
-    });
-    const exit = vi
-      .spyOn(process, 'exit')
-      .mockImplementation((() => undefined) as typeof process.exit);
-    try {
-      await import('../../src/hooks/user-prompt-submit.ts');
-    } finally {
-      exit.mockRestore();
-    }
-    const prompts = dev.storedRows().filter((row) => row.eventType === 'prompt');
-    expect(prompts.map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    await runEntry('prompt', { ...hookPayload(t, 'UserPromptSubmit'), prompt: 'a prompt' });
+    expect(rowsOf('prompt').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
     expect(forwarded()).toBe(0);
   });
 
-  it('the tokenize mod helper gets no session account: its recorded prompt keeps the repository key, nothing is sent, and the login view is recorded', async () => {
+  it('a later prompt, once the host has named the org, is stamped with the agent key and forwarded', async () => {
     const t = startedSession(dev.workOrg);
-    // A hook that reads the transcript has learned the org, so the account is in
-    // scope for the helper's gateway and only the missing transcript keeps it out.
-    await write(t, dev.personal);
-    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
-    const sentBefore = forwarded();
-    const viewsBefore = workViews(t.sessionId);
-    failOpen.count.mockClear();
+    t.prompt(later(4));
+    await runEntry('prompt', { ...hookPayload(t, 'UserPromptSubmit'), prompt: 'a later prompt' });
+    const prompts = rowsOf('prompt');
+    expect(prompts).toHaveLength(1);
+    expect(isAgentKeyFor(prompts[0]?.scopeKey, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+  });
+
+  it('a tool result carrying a finding is stamped with the agent key and forwarded', async () => {
+    const t = startedSession(dev.workOrg);
+    await runEntry('post-tool-use', {
+      ...hookPayload(t, 'PostToolUse'),
+      tool_name: 'Bash',
+      tool_input: { command: 'cat .env' },
+      tool_response: { stdout: `TWILIO=${secretRule().example}`, stderr: '' },
+    });
+    const responses = rowsOf('response');
+    expect(responses).toHaveLength(1);
+    expect(isAgentKeyFor(responses[0]?.scopeKey, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+  });
+
+  it.each([
+    ['a prompt', 'prompt'],
+    ['a conversation row', 'tool-result'],
+  ])(
+    'the tokenize mod helper stamps %s with the session account: the recorded key is the agent key, it is forwarded and the org is learned',
+    async (_what, door) => {
+      const t = startedSession(dev.workOrg);
+      const viewsBefore = workViews(t.sessionId);
+      const run = await runModTokenize(
+        JSON.stringify({
+          v: 1,
+          text: redactablePrompt(),
+          sessionId: t.sessionId,
+          cwd: dev.personal,
+          ...(door === 'prompt' ? {} : { row: { door } }),
+        }),
+      );
+      expect(run.code).toBe(0);
+      const recorded = rowsOf(door === 'prompt' ? 'prompt' : 'response');
+      expect(recorded).toHaveLength(1);
+      expect(isAgentKeyFor(recorded[0]?.scopeKey, dev.workOrg)).toBe(true);
+      expect(forwarded()).toBe(1);
+      expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+      expect(failOpen.count).not.toHaveBeenCalled();
+      expect(workViews(t.sessionId)).toBe(viewsBefore + 1);
+    },
+  );
+
+  it('the tokenize mod helper keeps the repository key on turn 1, before the host has named the org', async () => {
+    const t = dev.transcript(randomUUID());
+    recordSessionStartAccount({
+      config: dev.config(),
+      sessionId: t.sessionId,
+      transcriptPath: t.path,
+      cwd: dev.personal,
+      source: 'startup',
+    });
+    t.prompt(later(1));
     const run = await runModTokenize(
       JSON.stringify({ v: 1, text: redactablePrompt(), sessionId: t.sessionId, cwd: dev.personal }),
     );
     expect(run.code).toBe(0);
-    const prompts = dev.storedRows().filter((row) => row.eventType === 'prompt');
-    expect(prompts.map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
-    expect(forwarded()).toBe(sentBefore);
-    expect(failOpen.count).not.toHaveBeenCalled();
-    expect(workViews(t.sessionId)).toBe(viewsBefore + 1);
+    expect(rowsOf('prompt').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    expect(forwarded()).toBe(0);
+  });
+
+  it('the tool.call mod helper stamps a data field it rewrites with the session account: the recorded key is the agent key, it is forwarded and the org is learned', async () => {
+    const t = startedSession(dev.workOrg);
+    const value = redactableValue();
+    const answer = await modToolCall(t, 'Write', {
+      file_path: join(dev.personal, 'notes.md'),
+      content: `key ${value}`,
+    });
+    expect(answer.deny === null).toBe(true);
+    expect(answer.input === null).toBe(false);
+    expect(JSON.stringify(answer.input).includes(value)).toBe(false);
+    const recorded = rowsOf('code_change');
+    expect(recorded).toHaveLength(1);
+    expect(isAgentKeyFor(recorded[0]?.scopeKey, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+  });
+
+  it('the tool.call mod helper stamps a command the shipped fallback lets through with the session account: the call is neither denied nor rewritten, the recorded key is the agent key and it is forwarded', async () => {
+    const t = startedSession(dev.workOrg);
+    const answer = await modToolCall(t, 'Bash', { command: `deploy --key ${redactableValue()}` });
+    expect(answer.deny === null).toBe(true);
+    expect(answer.input === null).toBe(true);
+    const recorded = rowsOf('tool_use');
+    expect(recorded).toHaveLength(1);
+    expect(isAgentKeyFor(recorded[0]?.scopeKey, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+  });
+
+  it('the tool.call mod helper stamps a command the workspace blocks with the session account: the call is denied, the recorded key is the agent key, it is forwarded and the org is learned', async () => {
+    dev.attach({ redactFallback: 'block' });
+    const t = startedSession(dev.workOrg);
+    const answer = await modToolCall(t, 'Bash', { command: `deploy --key ${redactableValue()}` });
+    expect(typeof answer.deny).toBe('string');
+    const recorded = rowsOf('tool_use');
+    expect(recorded).toHaveLength(1);
+    expect(isAgentKeyFor(recorded[0]?.scopeKey, dev.workOrg)).toBe(true);
+    expect(forwarded()).toBe(1);
+    expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
   });
 
   it('refuses a prohibited model in a work session in a personal folder, with the row keyed to the session', async () => {
@@ -589,6 +718,45 @@ describe('a personal login on a scoped attachment', () => {
     const t = startedSession(dev.personalOrg);
     await write(t, dev.personal);
     expect(captureKeys()).toEqual([PERSONAL_KEY]);
+    expect(forwarded()).toBe(0);
+    expect(dev.learnedKeys()).toEqual([]);
+  });
+
+  it('keeps the repository key for a later prompt and a tool result, and forwards neither', async () => {
+    const t = startedSession(dev.personalOrg);
+    t.prompt(later(4));
+    await runEntry('prompt', { ...hookPayload(t, 'UserPromptSubmit'), prompt: 'a later prompt' });
+    await runEntry('post-tool-use', {
+      ...hookPayload(t, 'PostToolUse'),
+      tool_name: 'Bash',
+      tool_input: { command: 'cat .env' },
+      tool_response: { stdout: `TWILIO=${secretRule().example}`, stderr: '' },
+    });
+    expect(rowsOf('prompt').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    expect(rowsOf('response').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    expect(forwarded()).toBe(0);
+    expect(dev.learnedKeys()).toEqual([]);
+  });
+
+  it('keeps the repository key for what the mod helpers record, and forwards nothing', async () => {
+    dev.attach({ redactFallback: 'block' });
+    const t = startedSession(dev.personalOrg);
+    const value = redactableValue();
+    const tokenized = await runModTokenize(
+      JSON.stringify({ v: 1, text: `use ${value}`, sessionId: t.sessionId, cwd: dev.personal }),
+    );
+    const called = await runModToolCall(
+      JSON.stringify({
+        v: 1,
+        tool: 'Bash',
+        input: { command: `deploy --key ${value}` },
+        sessionId: t.sessionId,
+        cwd: dev.personal,
+      }),
+    );
+    expect([tokenized.code, called.code]).toEqual([0, 0]);
+    expect(rowsOf('prompt').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
+    expect(rowsOf('tool_use').map((row) => row.scopeKey)).toEqual([PERSONAL_KEY]);
     expect(forwarded()).toBe(0);
     expect(dev.learnedKeys()).toEqual([]);
   });

@@ -95,6 +95,8 @@ export interface AttachOptions {
   readonly userEmail?: string;
   readonly apiKey?: string;
   readonly workSubscriptions?: 'off' | undefined;
+  /** What a redact resolves to on a field that cannot be rewritten; the default (`warn`) when omitted. */
+  readonly redactFallback?: 'block';
   /** False: no attached-identity record yet, as when the background sync has not asked. */
   readonly identity?: boolean;
 }
@@ -204,6 +206,7 @@ export function device(sent: Sent): Device {
     ];
     const settings = {
       ...defaultWorkspaceSettings(),
+      ...(options.redactFallback === undefined ? {} : { redactFallback: options.redactFallback }),
       runMode: 'attached',
       controlPlane: { endpoint: ENDPOINT, attachedAt: ATTACHED_AT },
       attachmentScope: {

@@ -373,3 +373,111 @@ describe('runHistorySync — rows stamped for a learned work account', () => {
     expect(delivery('agent-backlog-0')).toEqual({ syncedAt: null, owed: null });
   });
 });
+
+// Without a grant the pass still sends what the live path left owed, read through
+// the keys it derives: an owed capture stamped with the agent key of an account
+// enrolled by hand waits while the account is not enrolled and is sent once it is
+// enrolled again.
+describe('runHistorySync — an account enrolled by hand, without a history grant', () => {
+  const ACCOUNT = `claude:${randomUUID()}`;
+
+  function attachWithEntries(entries: readonly unknown[]): void {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+        attachmentScope: { endpoint: ENDPOINT, entries },
+      },
+      home,
+      null,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      mintedAt: AT,
+    });
+  }
+
+  function agentKeyOfAttached(): string {
+    writeAttachedIdentity(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    const record = readAttachedIdentity(dataDirOf(home));
+    const key = record === undefined ? undefined : agentKey(record.scopeTag, ACCOUNT);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  function seedOwed(scopeKey: string, startedAtMs: number): void {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(
+        'owed-session',
+        new Date(startedAtMs - 60_000).toISOString(),
+      );
+      db.auditEvents.insertAuditEvent({
+        id: 'owed-0',
+        eventType: 'prompt',
+        rootSessionId: 'owed-session',
+        parentId: 'owed-session',
+        startedAt: new Date(startedAtMs).toISOString(),
+        content: 'text of owed-0',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code', scope_key: scopeKey },
+      });
+      db.historySync.markCaptureOwed('owed-0');
+    } finally {
+      db.close();
+    }
+  }
+
+  async function pass(): Promise<IngestEvent[]> {
+    const captures: IngestEvent[] = [];
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      now: () => clock,
+      sleep: () => {
+        clock += 1;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendOne: () => Promise.resolve(),
+      sendCaptures: (events) => {
+        captures.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+    return captures;
+  }
+
+  const entry = { kind: 'account', identity: ACCOUNT, enrolledAt: AT, codingAgents: true };
+
+  it('sends an owed capture once the account is enrolled again, and not while it is not', async () => {
+    attachWithEntries([]);
+    seedOwed(agentKeyOfAttached(), T0 - 3_600_000);
+
+    expect(await pass()).toEqual([]);
+    expect(delivery('owed-0')).toEqual({ syncedAt: null, owed: 1 });
+
+    attachWithEntries([entry]);
+    expect((await pass()).map((c) => c.content)).toEqual(['text of owed-0']);
+    expect(delivery('owed-0')?.syncedAt).toEqual(expect.any(Number));
+  });
+
+  it('sends none recorded before the machine attached', async () => {
+    attachWithEntries([entry]);
+    seedOwed(agentKeyOfAttached(), Date.parse(AT) - 3_600_000);
+
+    expect(await pass()).toEqual([]);
+    expect(delivery('owed-0')).toEqual({ syncedAt: null, owed: 1 });
+  });
+});

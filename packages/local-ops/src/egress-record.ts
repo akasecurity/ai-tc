@@ -1,17 +1,13 @@
-import { statSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { relative } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
-import { isVendoredPath, manifestKindOf, resolveEgress } from '@akasecurity/detections';
+import { isVendoredPath, resolveEgress } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { defaultDataDir, readWorkspaceSettings } from '@akasecurity/persistence';
-import {
-  resolveNonGitProject,
-  resolveRepoIdentity,
-  resolveWorktreeRoot,
-  toPosix,
-} from '@akasecurity/plugin-sdk';
+import { toPosix } from '@akasecurity/plugin-sdk';
 import type { EgressWriteSummary, RecordProjectEgressInput } from '@akasecurity/schema';
+
+import { resolveScanProject } from './scan-project.ts';
 
 // The egress-recording pass shared by `aka scan` and the web-ui's Scan page:
 // take the raw per-file extraction the walk produced, anchor it to a stable
@@ -61,50 +57,18 @@ export function recordProjectEgress(
   try {
     if (!readWorkspaceSettings(base).dataSharesInPlace) return null;
 
-    // The identity resolvers walk UP from the target, so they need an absolute
-    // path. A nonexistent target must not resolve through its existing
-    // ancestors into a repo walk — statSync throws into the catch below.
-    const abs = resolve(target);
-    const targetDir = statSync(abs).isDirectory() ? abs : dirname(abs);
-
-    const identity = resolveRepoIdentity(abs);
-    const worktreeRoot = resolveWorktreeRoot(abs);
-
-    // The root every stored path is relative to, and the key every stored row
-    // reconciles on.
-    let root: string;
-    let projectKey: string;
-    let project: string;
-    let projectId: string | null;
-
-    if (identity && worktreeRoot) {
-      // A linked worktree's identity resolves to its HEAD repo (resolveRepoIdentity),
-      // but paths are relativized against worktreeRoot, which is the CURRENT
-      // worktree's own root — so a linked-worktree scan shares its head repo's
-      // project key while its stored file paths are relative to its own checkout.
-      root = worktreeRoot;
-      // identity.url is the remote URL, or the worktree root PATH when the repo
-      // has no remote. The 'git:' prefix keeps that path-shaped fallback from
-      // aliasing the 'path:' key a non-git walk of the same directory produces.
-      projectKey = `git:${identity.url}`;
-      project = identity.name;
-      projectId = db.sourceProject.upsert({
-        url: identity.url,
-        name: identity.name,
-        attributes: {},
-      });
-    } else {
-      // A non-git target anchors on its nearest project boundary: the highest
-      // ancestor carrying a dependency manifest. A scan of any subtree inside
-      // the project then resolves here, so `/proj` and `/proj/src` key on one
-      // project instead of two rows neither scan can reconcile. With no manifest
-      // above the target, the target itself is the root and scans at different
-      // depths cannot reconcile — there is no project boundary to find. `root`
-      // and the `path:` key move to the resolved root together, so stored paths
-      // always match the key.
-      ({ root, projectKey, project } = resolveNonGitProject(targetDir, manifestKindOf));
-      projectId = null;
-    }
+    const scanned = resolveScanProject(target);
+    const { root, projectKey } = scanned;
+    const project = scanned.name;
+    const abs = scanned.target;
+    const projectId =
+      scanned.repo === undefined
+        ? null
+        : db.sourceProject.upsert({
+            url: scanned.repo.url,
+            name: scanned.repo.name,
+            attributes: {},
+          });
 
     const files: FileEgressHits[] = [];
     for (const hit of egress.files) {

@@ -11,20 +11,23 @@ import type {
 import {
   FORWARD_FAILURE_LINES,
   forwardProjectEgress,
+  forwardScanSightings,
   isProtectedTarget,
+  openScanStoreVault,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
+import type { CredentialSightingsSend } from '@akasecurity/persistence';
 import {
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
   openLocalDatabase,
-  readSightingSharing,
+  planSightingShare,
 } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
-import { createSharesSender } from '@akasecurity/remote';
-import type { ManagedSettings } from '@akasecurity/schema';
-import { Severity, sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
+import { createCredentialSightingsSender, createSharesSender } from '@akasecurity/remote';
+import type { CredentialSightingsOutcome, ManagedSettings } from '@akasecurity/schema';
+import { credentialSightingsLine, Severity, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -49,7 +52,13 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //                         attached to none)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
-//   --no-forward          record locally only; skip the forward above
+//   --no-forward          record locally only; skip the forward above and the
+//                         credential sightings below
+//
+// On a machine that shares credential sightings, each secret this scan found
+// is also sent as its sighting token, with its rule, variable name, location
+// class, project and whether git tracks the file. The last text line says how
+// many were shared, or why none were.
 //
 // On an attached machine the register this scan just wrote is also forwarded to
 // that deployment, after the store handle is closed — before the JSON object is
@@ -125,6 +134,8 @@ export function renderEgressLine(egress: EgressRecordResult): string {
  */
 export interface ScanDeps {
   send?: SharesForwardSender;
+  /** The transport for the credential sightings this scan found. */
+  sendSightings?: CredentialSightingsSend;
   /** Replaces the managed settings file; `null` reads a machine with no administrator. */
   managedSettings?: ManagedSettings | null;
 }
@@ -228,8 +239,13 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
   }
 
   registerBundledPacks();
+  const sightingPlan = planSightingShare(home, {
+    managedSettings: deps.managedSettings,
+    enabled: values['no-forward'] !== true,
+  });
   const storeDir = dataDir(home);
   const db = openLocalDatabase(storeDir);
+  const vault = openScanStoreVault(db, home);
 
   let result: ScanPathResult;
   let inventory: ProjectInventoryResult | null;
@@ -260,6 +276,8 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
       // literal `~/.aka` the default would name. `home` is the same base
       // `recordProjectEgress` takes below, for the same reason.
       akaHome: home,
+      vault,
+      sightingKey: sightingPlan.ok ? sightingPlan.key : undefined,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
@@ -277,6 +295,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     process.exitCode = 1;
     return;
   } finally {
+    vault?.close();
     db.close();
   }
 
@@ -297,6 +316,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
         send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
         nestedRepositories,
+        managedSettings: deps.managedSettings,
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit
@@ -308,8 +328,19 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     }
   };
 
+  // Sent in either output mode; only the text mode prints the outcome.
+  const scanned = result;
+  const runSightings = async (): Promise<CredentialSightingsOutcome> => {
+    if (!sightingPlan.ok) return sightingPlan.outcome;
+    return forwardScanSightings(home, target, scanned, {
+      send: deps.sendSightings ?? createCredentialSightingsSender(),
+      managedSettings: deps.managedSettings,
+    });
+  };
+
   if (format === 'json') {
     const forward = await runForward();
+    await runSightings();
     const findings = result.files.flatMap((f) =>
       f.findings.map((d) => ({
         file: f.path,
@@ -363,9 +394,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
     const reported = reportedForward(await runForward());
     if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
-    process.stdout.write(
-      `${sightingSharingLine(readSightingSharing(home, deps.managedSettings))}\n`,
-    );
+    process.stdout.write(`${credentialSightingsLine(await runSightings())}\n`);
   }
 
   if (failOn !== undefined) {

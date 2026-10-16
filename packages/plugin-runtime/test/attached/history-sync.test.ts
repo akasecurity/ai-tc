@@ -1828,6 +1828,49 @@ describe('runHistorySync — a scoped attachment', () => {
     return { pass: attempted(result), sent };
   };
 
+  // Without a grant the pass still sends what the live path left owed, and a
+  // scoped one reads it through the enrolled keys: so an owed capture of a
+  // repository or an account waits while it is not enrolled and is sent once it
+  // is enrolled again.
+  it.each<[string, string, { kind: 'repo' | 'account'; identity: string }]>([
+    ['repository', WORK, { kind: 'repo', identity: WORK }],
+    [
+      'account',
+      'claude:0a1b2c3d-0000-4000-8000-00000000000a',
+      { kind: 'account', identity: 'claude:0a1b2c3d-0000-4000-8000-00000000000a' },
+    ],
+  ])(
+    'sends an owed %s capture without a grant once it is enrolled again, and not while it is not',
+    async (_name, scopeKey, entry) => {
+      attach();
+      credentialRead.value = { usable: true, credential: SCOPED_CREDENTIAL };
+      const enrollOnly = (entries: readonly { kind: string; identity: string }[]): void => {
+        applyOnboarding(
+          {
+            attachmentScope: {
+              endpoint: ENDPOINT,
+              entries: entries.map((e) => ({ ...e, enrolledAt: AT })),
+            },
+          },
+          home,
+        );
+      };
+      enrollOnly([]);
+      seedCaptures([{ id: 'cap-owed', scopeKey }]);
+
+      const waiting = lanes();
+      await run({ sendBatch: waiting.sendBatch, sendCaptures: waiting.sendCaptures });
+      expect(waiting.captures).toEqual([]);
+      expect(delivery('cap-owed')).toEqual({ syncedAt: null, owed: 1 });
+
+      enrollOnly([entry]);
+      const sent = lanes();
+      await run({ sendBatch: sent.sendBatch, sendCaptures: sent.sendCaptures });
+      expect(sent.captures.map((c) => c.content)).toEqual(['text of cap-owed']);
+      expect(delivery('cap-owed')?.syncedAt).toEqual(expect.any(Number));
+    },
+  );
+
   // THE STALL, at the drain. Thirty older personal sessions head every page of
   // twenty-five, and none is ever stamped (they stay eligible for the day their
   // repository is enrolled), so a drain filtering pages in memory would re-read

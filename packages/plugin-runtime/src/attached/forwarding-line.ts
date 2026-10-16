@@ -1,8 +1,13 @@
 import { dirname } from 'node:path';
 
 import { managedScopedRefusal } from '@akasecurity/persistence';
-import type { AccountBasis } from '@akasecurity/schema';
-import { isAgentScopeKey, isRepoShapedScopeKey } from '@akasecurity/schema';
+import type { AccountBasis, WebAccountProvider } from '@akasecurity/schema';
+import {
+  isAgentScopeKey,
+  isRepoShapedScopeKey,
+  parseAgentKey,
+  parseWebAccountKey,
+} from '@akasecurity/schema';
 
 import { printableForTerminal } from './status.ts';
 
@@ -90,25 +95,55 @@ function withStop(line: string, basis: AccountBasis | undefined, managed: boolea
   return managed ? line : `${line} ${OPT_OUT}`;
 }
 
+/** How the opening of an account line reads for a login, by the provider the root's account key names. */
+type AccountOpening = Record<'work' | 'byHand' | 'keyed', (name: string) => string>;
+
+const ACCOUNT_OPENING: Record<WebAccountProvider, AccountOpening> = {
+  claude: {
+    work: (name) => `AKA: forwarding this session to ${name} — signed in to a work subscription.`,
+    byHand: (name) =>
+      `AKA: forwarding this session to ${name} — signed in to an account you enrolled by hand.`,
+    keyed: (name) =>
+      `AKA: forwarding this session to ${name} — for the account it first ran under.`,
+  },
+  chatgpt: {
+    work: (name) =>
+      `AKA: forwarding this thread to ${name} — signed in to a ChatGPT work subscription; it stops if the thread is resumed or its login changes.`,
+    byHand: (name) =>
+      `AKA: forwarding this thread to ${name} — signed in to a ChatGPT workspace you enrolled by hand; it stops if the thread is resumed or switches to another workspace or login mode.`,
+    keyed: (name) =>
+      `AKA: forwarding this thread to ${name} — for the workspace it first ran under.`,
+  },
+};
+
+/** The provider of the account an agent-keyed root names; Claude for any other key. */
+function accountProviderOf(rootKey: string): WebAccountProvider {
+  const agent = parseAgentKey(rootKey);
+  return (
+    (agent === undefined ? undefined : parseWebAccountKey(agent.accountKey)?.provider) ?? 'claude'
+  );
+}
+
 /**
  * The line for a session forwarded from any folder: the work subscription it is
- * signed in to, or, for an account enrolled by hand, that account.
+ * signed in to, or, for an account enrolled by hand, that account. The
+ * provider of the root's account key picks the wording: a Codex thread says
+ * "thread" and names its ChatGPT subscription or workspace.
  *
  * Without a basis the session's login shows no work account, while its stored
  * root is keyed by one (a resumed session). The root's key does not say whether
  * recognition or an enrollment by hand put it in scope, so the line claims
  * neither a work subscription nor the command that stops either.
  */
-function accountLine(name: string, basis: AccountBasis | undefined, managed: boolean): string {
-  if (basis === undefined) {
-    return `AKA: forwarding this session to ${name} — for the account it first ran under.`;
-  }
-  const login = basis === 'manual' ? 'an account you enrolled by hand' : 'a work subscription';
-  return withStop(
-    `AKA: forwarding this session to ${name} — signed in to ${login}.`,
-    basis,
-    managed,
-  );
+function accountLine(
+  name: string,
+  rootKey: string,
+  basis: AccountBasis | undefined,
+  managed: boolean,
+): string {
+  const opening = ACCOUNT_OPENING[accountProviderOf(rootKey)];
+  if (basis === undefined) return opening.keyed(name);
+  return withStop(basis === 'manual' ? opening.byHand(name) : opening.work(name), basis, managed);
 }
 
 /**
@@ -143,6 +178,11 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  *                    pending line does so too with work subscriptions off on the device.
  *                    An account line with no login basis says
  *                    `AKA: forwarding this session to <name> — for the account it first ran under.`
+ *
+ * An account line whose root key names a ChatGPT workspace is worded for a Codex
+ * thread: it says "thread", names the ChatGPT work subscription (or the workspace
+ * enrolled by hand), and says the thread stops being sent when it is resumed or
+ * its login changes.
  *
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled
@@ -180,7 +220,7 @@ export function forwardingLine(
       case 'machine':
         return `AKA: forwarding everything to ${name} (machine-wide)`;
       case 'account':
-        return accountLine(name, scope.basis, scope.managed);
+        return accountLine(name, scope.rootKey, scope.basis, scope.managed);
       case 'account-pending':
         if (!scope.workSubscriptionsOn || scope.basis === 'manual') {
           return `AKA: this session forwards to ${name} once Claude confirms it is signed in to an account you enrolled by hand, from its first reply. ${MANUAL_STOP}`;
@@ -193,7 +233,7 @@ export function forwardingLine(
       case 'scoped': {
         if (!scope.rootForwards || scope.rootKey === undefined) return LOCAL_ONLY;
         if (isAgentScopeKey(scope.rootKey)) {
-          return accountLine(name, scope.work?.basis, scope.work?.managed ?? false);
+          return accountLine(name, scope.rootKey, scope.work?.basis, scope.work?.managed ?? false);
         }
         const repository = isRepoShapedScopeKey(scope.rootKey)
           ? `AKA: forwarding to ${name} (${printableForTerminal(scope.rootKey, 200)})`

@@ -734,3 +734,103 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
     expect(line).not.toContain('--account');
   });
 });
+
+describe('forwardingLine — a Codex thread on a work subscription', () => {
+  const STOPS = 'it stops if the thread is resumed or its login changes.';
+  const CODEX_WORK_LINE = `AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; ${STOPS}`;
+  const CODEX_BY_HAND =
+    'AKA: forwarding this thread to Acme — signed in to a ChatGPT workspace you enrolled by hand; it stops if the thread is resumed or switches to another workspace or login mode.';
+  const CODEX_KEYED = 'AKA: forwarding this thread to Acme — for the workspace it first ran under.';
+  const WORKSPACE = randomUUID();
+
+  function codexRootKey(): string {
+    const key = agentKey(SCOPE_TAG, `chatgpt:${WORKSPACE}`);
+    if (key === undefined) throw new Error('the test agent key did not form');
+    return key;
+  }
+
+  function codexAccount(basis: Basis, managed = false): ForwardingScope {
+    return {
+      deploymentName: 'Acme',
+      mode: 'account',
+      rootKey: codexRootKey(),
+      basis,
+      managed,
+    };
+  }
+
+  const codexForwardedRoot = (work?: {
+    basis: NonNullable<Basis>;
+    managed: boolean;
+  }): ForwardingScope => ({
+    deploymentName: 'Acme',
+    mode: 'scoped',
+    rootKey: codexRootKey(),
+    rootForwards: true,
+    ...(work === undefined ? {} : { work }),
+  });
+
+  it.each(['validated', 'remembered'] as const)(
+    'names the thread and the ChatGPT work subscription, then the opt-out, for a %s thread',
+    (basis) => {
+      expect(forwardingLine(answering(codexAccount(basis)), 's1')).toBe(
+        `${CODEX_WORK_LINE} ${OPT_OUT}`,
+      );
+    },
+  );
+
+  it('leaves the opt-out out where an administrator manages the connection', () => {
+    expect(forwardingLine(answering(codexAccount('validated', true)), 's1')).toBe(CODEX_WORK_LINE);
+  });
+
+  it('names the workspace enrolled by hand and the command that removes it, never a work subscription', () => {
+    for (const managed of [false, true]) {
+      const line = forwardingLine(answering(codexAccount('manual', managed)), 's1');
+      expect(line).toBe(`${CODEX_BY_HAND} ${MANUAL_STOP}`);
+      expect(line).not.toContain('work subscription');
+      expect(line).not.toContain('--work-subscriptions');
+    }
+  });
+
+  it('claims no work subscription and offers no stop command for a thread with no login basis', () => {
+    for (const scope of [
+      codexAccount(undefined),
+      codexAccount(undefined, true),
+      codexForwardedRoot(),
+    ]) {
+      const line = forwardingLine(answering(scope), 's1');
+      expect(line).toBe(CODEX_KEYED);
+      expect(line).not.toContain('work subscription');
+      expect(line).not.toContain('--work-subscriptions');
+      expect(line).not.toContain('--account');
+    }
+  });
+
+  it('words a forwarded agent-keyed root the same way', () => {
+    expect(
+      forwardingLine(answering(codexForwardedRoot({ basis: 'validated', managed: false })), 's1'),
+    ).toBe(`${CODEX_WORK_LINE} ${OPT_OUT}`);
+    expect(
+      forwardingLine(answering(codexForwardedRoot({ basis: 'manual', managed: false })), 's1'),
+    ).toBe(`${CODEX_BY_HAND} ${MANUAL_STOP}`);
+  });
+
+  it('prints no key, workspace id or tag', () => {
+    for (const basis of ['validated', 'remembered', 'manual', undefined] as const) {
+      const line = forwardingLine(answering(codexAccount(basis)), 's1') ?? '';
+      for (const material of [WORKSPACE, 'chatgpt:', 'agent:', SCOPE_TAG]) {
+        expect(line).not.toContain(material);
+      }
+    }
+  });
+
+  it('keeps the Claude Code wording for a Claude account', () => {
+    expect(forwardingLine(answering(accountScope('validated')), 's1')).toBe(
+      `${WORK_LINE} ${OPT_OUT}`,
+    );
+    expect(forwardingLine(answering(accountScope('manual')), 's1')).toBe(
+      `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
+    );
+    expect(forwardingLine(answering(accountScope(undefined)), 's1')).toBe(KEYED_LINE);
+  });
+});

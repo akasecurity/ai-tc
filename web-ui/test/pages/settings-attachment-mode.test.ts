@@ -197,23 +197,29 @@ describe('SettingsClient and the mode', () => {
   // cannot catch a change to it, and a change to one is made here too.
   const SCOPED_MODE_LINE =
     'Scoped — a personal device. Activity is sent only from repositories and accounts you enroll ' +
-    'with `aka enroll`, and from Claude Code sessions signed in to a work subscription under the ' +
-    'same email as your AKA account.';
+    'with `aka enroll`, and from Claude Code and Codex sessions signed in to a work subscription ' +
+    'under the same email as your AKA account.';
   const MACHINE_MODE_LINE =
     'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
   const SCOPED_FORWARDING =
     'While this machine is attached as a personal device, the plugin forwards activity only from ' +
     'repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll ' +
     '--account`, whose Claude Code sessions send everything they record from the first reply on, ' +
-    "from any folder, with that folder's project and branch names, and whose claude.ai chats, " +
-    'where web chat capture is granted, send their replies, with their tool calls and token ' +
-    'usage; and from Claude Code sessions signed in to a work subscription (a Claude Team or ' +
-    'Enterprise plan) under the same email as your AKA account, which send everything they ' +
-    "record from the first reply on, from any folder, with that folder's project and branch " +
-    'names. Activity anywhere else stays on this machine. The device checks a work subscription ' +
+    "from any folder, with that folder's project and branch names, whose new Codex sessions send " +
+    "everything they record, from any folder, with that folder's project and branch names, and " +
+    'whose claude.ai chats, where web chat capture is granted, send their replies, with their ' +
+    'tool calls and token usage; from Claude Code sessions signed in to a work subscription (a ' +
+    'Claude Team or Enterprise plan) under the same email as your AKA account, which send ' +
+    "everything they record from the first reply on, from any folder, with that folder's project " +
+    'and branch names; and from new Codex sessions signed in with ChatGPT to a work subscription ' +
+    '(a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, which send ' +
+    "everything they record, from any folder, with that folder's project and branch names. " +
+    'Activity anywhere else stays on this machine. The device checks a work subscription ' +
     "from Claude Code's own login file, its settings files (the project's own included), the " +
     "environment variables that choose the account or provider, and the session's own log, and " +
-    'the check sends none of it (no email, plan, organization id, setting or variable); run ' +
+    'the check sends none of it (no email, plan, organization id, setting or variable); for ' +
+    "Codex it reads Codex's own login file, the environment variables that choose its account or " +
+    "provider, and the session's own log, and sends none of it either; run " +
     '`aka unenroll --work-subscriptions` to send only from what you enroll. Whenever a session starts ' +
     'anywhere on this machine, in a ' +
     "repository or not (a browser chat included), the machine pulls that deployment's policy (at " +

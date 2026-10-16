@@ -250,7 +250,9 @@ export function SyncPanelView({
             {workSubscriptions === 'on' ? (
               <>
                 Work subscriptions are on: Claude Code sessions signed in with your AKA account’s
-                email to a Claude Team or Enterprise plan are sent from any folder. Run{' '}
+                email to a Claude Team or Enterprise plan, and new Codex sessions signed in with it
+                to a ChatGPT Business, Team, Enterprise or Edu workspace, are sent from any folder.
+                Run{' '}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-text">
                   aka unenroll --work-subscriptions
                 </code>{' '}

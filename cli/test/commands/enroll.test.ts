@@ -343,8 +343,10 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runEnroll(['--everything'], deps(io))).toBe(2);
     expect(flat(io.errors())).toContain(
-      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) that this device recognises; activity anywhere else stays on this machine.",
+      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code and Codex sessions signed in to a work subscription (a Claude Team or Enterprise plan, or a ChatGPT Business, Team, Enterprise or Edu plan) that this device recognises; activity anywhere else stays on this machine.",
     );
+    // Only the ChatGPT workspace plans count, so the usage never names a service account.
+    expect(io.errors()).not.toMatch(/service account|enterprise_cbp_automation/i);
     expect(flat(io.errors())).toContain(
       "The policy pull, the sighting-key fetch, the command check and the device report are not limited to them: the report's finding counts and dates are for everything recorded on the machine.",
     );
@@ -356,7 +358,7 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
     expect(flat(io.errors())).toContain(
-      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
+      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code or Codex session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
     );
     expect(io.errors()).not.toContain('from then on');
   });
@@ -1338,7 +1340,7 @@ describe('aka enroll — what was recorded before', () => {
       'The history sync also sends the rest of its activity recorded before this machine attached',
     );
     expect(flat(shown)).toContain(
-      'other than those captures and what a Claude Code session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
+      'other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
     );
     expect(shown).not.toContain('Other activity recorded in it before now stays on this machine.');
   });
@@ -2317,7 +2319,28 @@ describe('aka enroll --work-subscriptions', () => {
     );
     expect(shown).not.toContain('own login file');
     expect(shown).toContain(
-      'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
+      "A new Codex thread signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace, under the same email as your AKA account, with its login saved in Codex's login file and OpenAI as the provider, sends everything it records, from any folder, with its folder, project and branch names. A resumed thread follows the repository rule: it is sent only from an enrolled repository.",
+    );
+    expect(shown).toContain(
+      "For Codex the device checks the same way, locally: it reads Codex's login file, the first line of the thread's own log and the environment variables that choose the account or provider, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or workspace id), though the token usage and tool calls read from that thread's log are sent with the rest of the activity of a recognised thread or of one signed in to a workspace you enroll by hand.",
+    );
+    // The Codex check waits for no first reply and reads no settings file.
+    const codexLines = io
+      .output()
+      .split('\n')
+      .filter((line) => line.includes('Codex'));
+    expect(codexLines).toHaveLength(3);
+    for (const line of codexLines) {
+      expect(line).not.toContain('first reply');
+      expect(line).not.toContain('settings');
+      expect(line).not.toContain('chatgpt:');
+    }
+    expect(shown).toContain(
+      'A Claude Code session signed in to a work account is recognised again at its next event. A Codex thread signed in to a work account is recognised again at its next event if it started while recognition was on, and not if it started while it was off.',
+    );
+    expect(shown).not.toContain('the next time a session signed in to it runs');
+    expect(shown).toContain(
+      'Rows recorded under a work account before you turned recognition off, and not yet sent, are sent once it is recognised again.',
     );
   });
 

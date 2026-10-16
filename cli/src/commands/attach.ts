@@ -99,12 +99,13 @@ Registers this machine against your organization's AKA deployment.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
   --scoped   A personal device: send activity only from the repositories you
-             enroll with \`aka enroll\`, from Claude Code sessions signed in to
-             a work subscription (a Claude Team or Enterprise plan) under your
-             AKA account's email (\`aka unenroll --work-subscriptions\` stops
-             those), and from an account you enroll by hand with
-             \`aka enroll --account\`: its Claude Code sessions and the replies
-             in its claude.ai chats.
+             enroll with \`aka enroll\`, from Claude Code and Codex sessions
+             signed in to a work subscription (a Claude Team or Enterprise
+             plan, or a ChatGPT Business, Team, Enterprise or Edu plan) under
+             your AKA account's email (\`aka unenroll --work-subscriptions\`
+             stops those), and from an account you enroll by hand with
+             \`aka enroll --account\`: its Claude Code or Codex sessions and the
+             replies in its claude.ai chats.
              Whenever a session starts anywhere on this machine, in a
              repository or not (a browser chat included), the machine pulls
              the deployment's policy (at most every 15 minutes) and its
@@ -273,8 +274,8 @@ const NEEDS_MODE_FLAG =
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
   'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, ' +
-  'from Claude Code sessions signed in to a work subscription, and from an account you enroll ' +
-  'by hand (its Claude Code sessions and claude.ai chat replies), or with ' +
+  'from Claude Code and Codex sessions signed in to a work subscription, and from an account you ' +
+  'enroll by hand (its Claude Code or Codex sessions and claude.ai chat replies), or with ' +
   '--machine to send activity from anywhere on this machine. Nothing was changed.';
 
 /**
@@ -325,8 +326,8 @@ const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as i
 const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
   "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-  'attached again with `aka attach`, though Claude Code sessions of a work subscription it had ' +
-  'recognised may still be sent. Run `aka attach` again before enrolling a repository.';
+  'attached again with `aka attach`, though Claude Code and Codex sessions of a work subscription ' +
+  'it had recognised may still be sent. Run `aka attach` again before enrolling a repository.';
 
 /**
  * What a failed save left of the credential file the machine held before.
@@ -1061,14 +1062,24 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           'compares the signed-in email with your AKA account. The check sends none of',
           'it (no email, plan or account id), though the token usage and tool calls read',
           'from that same log are sent with the rest of the activity of a recognised',
-          'session or of one signed in to an account you enroll by hand.',
+          'session or of one signed in to an account you enroll by hand. A new Codex',
+          'session signed in with ChatGPT to a work subscription (a ChatGPT Business,',
+          'Team, Enterprise or Edu plan) under the same email also sends everything it',
+          "records, from any folder, with that folder's project and branch names. The",
+          "device checks that the same way, from Codex's login file, the session's own",
+          'log and the environment variables that choose the account or provider, and',
+          'the check sends none of it either, though the token usage and tool calls read',
+          'from that log are sent with the rest of the activity of a recognised session',
+          'or of one signed in to a workspace you enroll by hand.',
           '`aka unenroll --work-subscriptions` stops that recognition on this device, and',
           'only that. A Claude Code session signed in to an account you enroll by hand',
           'with `aka enroll --account` is sent too, from its first reply on, and so are',
-          "the replies in that account's claude.ai chats where web chat capture is on;",
-          '`aka unenroll --account` takes that account out. Activity anywhere else stays',
-          'on this machine. A command you run inside an enrolled repository is sent as',
-          "that repository's activity, even when it reads files elsewhere.",
+          "the replies in that account's claude.ai chats where web chat capture is on. A",
+          'new Codex session signed in to a ChatGPT workspace you enroll the same way is',
+          'sent too, from any folder; `aka unenroll --account` takes an account out.',
+          'Activity anywhere else stays on this machine. A command you run inside an',
+          "enrolled repository is sent as that repository's activity, even when it reads",
+          'files elsewhere.',
           // A fresh list that replaced one holding entries this build can read
           // says how many and why they were not kept, so a re-attach that
           // verified as someone else does not empty the list unannounced. A list
@@ -1415,10 +1426,10 @@ function scopedHistoryQuestion(tenantName: string): string {
     `Verified against ${printableForTerminal(tenantName, 200)}.`,
     '',
     'This machine is attaching as a personal device: AKA sends the activity of',
-    'the repositories you enroll with `aka enroll`, of Claude Code sessions signed',
-    'in to a recognised work subscription or to an account you enroll by hand with',
-    "`aka enroll --account`, and of that account's claude.ai chat replies, and none",
-    'from anywhere else.',
+    'the repositories you enroll with `aka enroll`, of Claude Code and Codex sessions',
+    'signed in to a recognised work subscription or to an account you enroll by hand',
+    "with `aka enroll --account`, and of that account's claude.ai chat replies, and",
+    'none from anywhere else.',
     "A command you run inside an enrolled repository is sent as that repository's",
     'activity, even when it reads files elsewhere.',
     'It can also send some of what an enrolled repository or account recorded here',
@@ -1473,13 +1484,21 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '  email as your AKA account, and from those signed in to an account you enroll',
       '  by hand with `aka enroll --account`, from their first reply on, from any',
       "  folder, with that folder's project and branch names; that account's",
-      '  claude.ai chat replies go too. Nothing else is sent as activity. It checks',
-      "  for a work subscription on the device: it reads Claude Code's login file, the",
-      "  session's own log, and the settings and environment that choose the account,",
-      '  and compares the signed-in email with your AKA account. The check sends none',
-      '  of it (no email, plan or account id), though the token usage and tool calls',
-      '  read from that same log are sent with the rest of the activity of a',
-      '  recognised session or of one signed in to an account you enroll by hand. To',
+      '  claude.ai chat replies go too. A new Codex session signed in with ChatGPT to',
+      '  a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under',
+      '  the same email, or to a workspace you enroll by hand, sends everything it',
+      "  records too, from any folder, with that folder's project and branch names.",
+      '  Nothing else is sent as activity. It checks for a work subscription on the',
+      "  device: it reads Claude Code's login file, the session's own log, and the",
+      '  settings and environment that choose the account, and compares the signed-in',
+      '  email with your AKA account. The check sends none of it (no email, plan or',
+      '  account id), though the token usage and tool calls read from that same log',
+      '  are sent with the rest of the activity of a recognised session or of one',
+      "  signed in to an account you enroll by hand. For Codex it reads Codex's login",
+      "  file, the session's own log and the environment variables that choose the",
+      '  account or provider, and sends none of it either, though the token usage and',
+      '  tool calls read from that log are sent with the rest of the activity of a',
+      '  recognised session or of one signed in to a workspace you enroll by hand. To',
       '  send only from what you enroll, run `aka unenroll --work-subscriptions` after',
       '  attaching. Whenever a session starts anywhere on this machine, in a',
       '  repository or not (a browser chat included), the machine pulls your',
@@ -1519,11 +1538,11 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
     [
       '',
       `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: activity is`,
-      'sent only from the repositories enrolled on it, from Claude Code sessions signed in',
-      'to a work subscription, and from an account enrolled by hand (its Claude Code',
-      'sessions and claude.ai chat replies).',
-      'With --machine, activity from',
-      'anywhere on this machine is sent, and the enrolled list is cleared.',
+      'sent only from the repositories enrolled on it, from Claude Code and Codex',
+      'sessions signed in to a work subscription, and from an account enrolled by',
+      'hand (its Claude Code or Codex sessions and claude.ai chat replies). With',
+      '--machine, activity from anywhere on this machine is sent, and the enrolled',
+      'list is cleared.',
       '',
     ].join('\n'),
   );

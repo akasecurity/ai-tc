@@ -1823,6 +1823,7 @@ describe('work subscriptions on a personal device', () => {
   it('names the sessions it also sends, and the opt-out, on an attached personal device', () => {
     const html = page({ onDetach: () => undefined, attachmentMode: 'scoped' });
     expect(html).toContain('Claude Code sessions signed in to a work subscription');
+    expect(html).toContain('new Codex sessions signed in with ChatGPT to a work subscription');
     expect(html).not.toContain('of your organization');
     expect(html).toContain('aka unenroll --work-subscriptions');
   });
@@ -1836,5 +1837,8 @@ describe('work subscriptions on a personal device', () => {
   it('names the opt-out where a first attach is chosen', () => {
     const html = page({ settings: standaloneSettings, onAttach: () => undefined });
     expect(html).toContain('aka unenroll --work-subscriptions');
+    expect(html).toContain(
+      '(Claude Team or Enterprise, ChatGPT Business, Team, Enterprise or Edu)',
+    );
   });
 });

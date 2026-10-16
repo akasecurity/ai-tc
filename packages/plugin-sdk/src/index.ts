@@ -284,6 +284,7 @@ export type {
   ManifestKind,
   ManifestSdkHit,
   RawEndpointHit,
+  TokenizedSecretSpan,
 } from '@akasecurity/detections';
 export {
   EGRESS_CODE_EXTENSIONS,
@@ -294,6 +295,7 @@ export {
   LOCKFILE_BASENAMES,
   manifestKindOf,
   resolveEgress,
+  withLiteralCredentialRefs,
 } from '@akasecurity/detections';
 export type { RecordProjectEgressInput } from '@akasecurity/schema';
 // Read-projection DTOs now live in @akasecurity/schema; re-exported so the SDK's public

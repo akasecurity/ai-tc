@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import {
   canonicalRepoUrl,
+  planSightingShare,
   readControlPlaneCredential,
   readWorkspaceSettings,
   scopeKeyOfProjectKey,
@@ -13,6 +14,7 @@ import { resolveRepoIdentity } from '@akasecurity/plugin-sdk';
 import type {
   AttachedCredentialAny,
   EgressIngestRequest,
+  ManagedSettings,
   RecordProjectEgressInput,
   RemoteFailureKind,
   ScopeVerdict,
@@ -130,6 +132,8 @@ export interface SharesForwardDeps {
    * attachment never reads it.
    */
   nestedRepositories?: readonly string[] | undefined;
+  /** Replaces the managed settings file; `null` reads a machine with no administrator. */
+  managedSettings?: ManagedSettings | null | undefined;
 }
 
 /**
@@ -323,7 +327,10 @@ export async function forwardProjectEgress(
     // The projection is the privacy boundary: source snippets out, the project
     // key digested, the per-project cap applied. Sending `input` itself is the
     // mistake this line exists to make impossible to write by accident.
-    const request = toEgressIngestRequest(input);
+    // Call sites carry their credential references only while this machine
+    // shares credential sightings and holds a sighting key, read again here.
+    const credentialRefs = planSightingShare(base, { managedSettings: deps.managedSettings }).ok;
+    const request = toEgressIngestRequest(input, { credentialRefs });
     const result = await deps.send(
       { endpoint: connection.endpoint, apiKey: credential.apiKey },
       request,

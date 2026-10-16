@@ -20,8 +20,8 @@
 // It also carries what account attribution needs across passes: where the next
 // pass resumes the session's observation log, the time of that log's first line
 // (which names the log the offset indexes), the attribution state carried past
-// this tail, and how many passes have waited at this offset for a record's
-// closing observation.
+// this tail, how many passes have waited at this offset for a record's closing
+// observation, and when the follow-up pass that releases that wait is due.
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -41,6 +41,12 @@ import type {
   PendingHold,
 } from '@akasecurity/plugin-sdk/account';
 
+// A hold on a tail and the follow-up pass asked for to release it.
+export interface HeldPass extends PendingHold {
+  // When the follow-up pass is due, in epoch milliseconds.
+  readonly followUpAt?: number | undefined;
+}
+
 // Per-session reconcile checkpoint, persisted as JSON at
 // `<dataDir>/usage-offsets/<sessionId>`. `offset` is the byte position one past the
 // last COMPLETE line consumed; `lastPromptId` seeds the next pass's run_key.
@@ -59,8 +65,9 @@ export interface UsageOffset {
   logStartedAt?: number | undefined;
   carried?: AttributionCarry | undefined;
   // How many passes have waited at this offset for a record's closing
-  // observation, and when the first of them did.
-  pending?: PendingHold | undefined;
+  // observation, when the first of them did, and when the follow-up pass that
+  // releases the wait is due.
+  pending?: HeldPass | undefined;
 }
 
 // The directory holding per-session offset markers.
@@ -136,7 +143,15 @@ export function writeOffset(dataDir: string, sessionId: string, value: UsageOffs
       ...(value.logStartedAt !== undefined ? { logStartedAt: value.logStartedAt } : {}),
       ...(value.carried !== undefined ? { carried: carriedPayload(value.carried) } : {}),
       ...(value.pending !== undefined
-        ? { pending: { passes: value.pending.passes, since: value.pending.since } }
+        ? {
+            pending: {
+              passes: value.pending.passes,
+              since: value.pending.since,
+              ...(value.pending.followUpAt !== undefined
+                ? { followUpAt: value.pending.followUpAt }
+                : {}),
+            },
+          }
         : {}),
     };
     writeFileSync(offsetPath(dataDir, sessionId), JSON.stringify(payload), {
@@ -204,7 +219,11 @@ function pendingOf(value: unknown): UsageOffset['pending'] {
   if (typeof value !== 'object' || value === null) return undefined;
   const pending = value as Record<string, unknown>;
   return isCount(pending.passes) && isCount(pending.since)
-    ? { passes: pending.passes, since: pending.since }
+    ? {
+        passes: pending.passes,
+        since: pending.since,
+        ...(isCount(pending.followUpAt) ? { followUpAt: pending.followUpAt } : {}),
+      }
     : undefined;
 }
 

@@ -414,14 +414,18 @@ describe('the forwarding line at session start', () => {
     return shown.join('\n');
   }
 
-  it('names the account enrolled by hand, not a work subscription, when work subscriptions are off and the login file does not parse', async () => {
+  const UNDETERMINED_TAIL = 'otherwise it stays local, apart from work in an enrolled repository.';
+
+  it('forwards only if the first reply shows an account enrolled by hand, with no stop command, when work subscriptions are off and the login file does not parse', async () => {
     dev.attach({ workSubscriptions: 'off', manual: [`claude:${dev.workOrg}`] });
     dev.unreadableLogin();
     const line = await shownAtSessionStart();
-    expect(line.includes('once Claude confirms')).toBe(true);
+    expect(line.includes('only if its first reply shows an account enrolled by hand;')).toBe(true);
+    expect(line.includes(UNDETERMINED_TAIL)).toBe(true);
     expect(line.includes('work subscription')).toBe(false);
+    expect(line.includes('once Claude confirms')).toBe(false);
     expect(line.includes('--work-subscriptions')).toBe(false);
-    expect(line.includes('aka unenroll --account')).toBe(true);
+    expect(line.includes('aka unenroll')).toBe(false);
   });
 
   it('names the account enrolled by hand, not a work subscription, for a login on one while work subscriptions are on', async () => {
@@ -434,11 +438,27 @@ describe('the forwarding line at session start', () => {
     expect(line.includes('aka unenroll --account')).toBe(true);
   });
 
-  it('names the work subscription and the opt-out when work subscriptions are on and the login file does not parse', async () => {
+  it('forwards only if the first reply shows a work subscription or an account enrolled by hand, with no stop command, when work subscriptions are on and the login file does not parse', async () => {
     dev.attach({ manual: [`claude:${dev.workOrg}`] });
     dev.unreadableLogin();
     const line = await shownAtSessionStart();
+    expect(
+      line.includes(
+        'only if its first reply shows a work subscription or an account enrolled by hand;',
+      ),
+    ).toBe(true);
+    expect(line.includes(UNDETERMINED_TAIL)).toBe(true);
+    expect(line.includes('once Claude confirms')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll')).toBe(false);
+  });
+
+  it('names the work subscription and the opt-out for a work login while work subscriptions are on', async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    const line = await shownAtSessionStart();
     expect(line.includes('once Claude confirms the work subscription')).toBe(true);
+    expect(line.includes('only if its first reply shows')).toBe(false);
     expect(line.includes('aka unenroll --work-subscriptions')).toBe(true);
   });
 
@@ -452,11 +472,18 @@ describe('the forwarding line at session start', () => {
     expect(line.includes('aka unenroll --account')).toBe(true);
   });
 
-  it('names the work subscription and the opt-out when work subscriptions are on and the login shows no plan', async () => {
+  it('forwards only if the first reply shows a work subscription or an account enrolled by hand, with no stop command, when work subscriptions are on and the login shows no plan', async () => {
     dev.attach();
     dev.login({ org: dev.workOrg, organizationType: null });
     const line = await shownAtSessionStart();
-    expect(line.includes('once Claude confirms the work subscription')).toBe(true);
-    expect(line.includes('aka unenroll --work-subscriptions')).toBe(true);
+    expect(
+      line.includes(
+        'only if its first reply shows a work subscription or an account enrolled by hand;',
+      ),
+    ).toBe(true);
+    expect(line.includes(UNDETERMINED_TAIL)).toBe(true);
+    expect(line.includes('once Claude confirms')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll')).toBe(false);
   });
 });

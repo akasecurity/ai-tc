@@ -84,9 +84,10 @@ export async function runSessionStart(
     // by the account of the first reply it attributes to one; with none, by the
     // account the session is in when the pass ends; with neither, or once its holds
     // are spent, by the repository. While the session is in a work account whose key
-    // is not in scope yet, the pass holds for it. The session start still writes the
-    // root at once where its repository is enrolled, and on a machine-wide
-    // attachment.
+    // is not in scope yet, the pass holds for it, and a held pass spawns its own
+    // follow-ups, so the holds are spent within fifteen minutes even when no hook of
+    // the session fires again. The session start still writes the root at once where
+    // its repository is enrolled, and on a machine-wide attachment.
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,
     // The basis the login view reached, given only for a work login.
     accountBasis: account.basis,

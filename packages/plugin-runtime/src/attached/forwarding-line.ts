@@ -65,9 +65,10 @@ export type ForwardingScope =
       deploymentName: string;
       /** The session start left the root to the reconcile, which keys it by the session's first reply. */
       mode: 'account-pending';
+      /** Undefined when the session start could not tell the login, so the first reply decides. */
       basis: AccountBasis | undefined;
       managed: boolean;
-      /** False when work subscriptions are off on this device: the line then names the account enrolled by hand. */
+      /** False when work subscriptions are off on this device: only an account enrolled by hand can apply. */
       workSubscriptionsOn: boolean;
     };
 
@@ -93,6 +94,8 @@ const LOCAL_ONLY =
 const OPT_OUT = '`aka unenroll --work-subscriptions` stops this on this device.';
 const MANUAL_STOP =
   'Enrolled by hand; `aka unenroll --account` with its key stops this (`aka status` lists it).';
+
+const LOCAL_OTHERWISE = 'otherwise it stays local, apart from work in an enrolled repository.';
 
 /** `line`, then the sentence naming the command that stops it, where one works. */
 function withStop(line: string, basis: AccountBasis | undefined, managed: boolean): string {
@@ -168,6 +171,19 @@ function accountLine(
 }
 
 /**
+ * The line for a root left to the reconcile when the session start could not
+ * tell the login. The first reply decides, so the line claims neither a work
+ * subscription nor an account enrolled by hand, and names no stop command
+ * because neither may apply.
+ */
+function undeterminedLine(name: string, workSubscriptionsOn: boolean): string {
+  const shows = workSubscriptionsOn
+    ? 'a work subscription or an account enrolled by hand'
+    : 'an account enrolled by hand';
+  return `AKA: this session forwards to ${name} only if its first reply shows ${shows}; ${LOCAL_OTHERWISE}`;
+}
+
+/**
  * Whether `aka unenroll --work-subscriptions` works on this device: false where
  * an administrator manages the connection (`managedScopedRefusal`), where that
  * command refuses. `settingsDir` is the AKA home's settings directory. A managed
@@ -197,6 +213,11 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  *                    Each names the account enrolled by hand in place of the work
  *                    subscription, and never the opt-out, when the login is one. The
  *                    pending line does so too with work subscriptions off on the device.
+ *                    A pending line with no login basis (the session start could not
+ *                    tell the login) is conditional:
+ *                    `AKA: this session forwards to <name> only if its first reply shows a work subscription or an account enrolled by hand; otherwise it stays local, apart from work in an enrolled repository.`
+ *                    It drops the work subscription from that condition with work
+ *                    subscriptions off on the device.
  *                    An account line with no login basis says
  *                    `AKA: forwarding this session to <name> — for the account it first ran under.`
  *
@@ -216,7 +237,7 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled
  * by hand. The opt-out is left out where an administrator manages the
- * connection. The line with no login basis names neither command.
+ * connection. A line with no login basis names neither command.
  *
  * Taken from that gateway rather than re-derived from the configuration, so the
  * line says what the object doing the forwarding will do. A standalone machine,
@@ -251,6 +272,7 @@ export function forwardingLine(
       case 'account':
         return accountLine(name, scope.rootKey, scope.basis, scope.managed);
       case 'account-pending':
+        if (scope.basis === undefined) return undeterminedLine(name, scope.workSubscriptionsOn);
         if (!scope.workSubscriptionsOn || scope.basis === 'manual') {
           return `AKA: this session forwards to ${name} once Claude confirms it is signed in to an account you enrolled by hand, from its first reply. ${MANUAL_STOP}`;
         }

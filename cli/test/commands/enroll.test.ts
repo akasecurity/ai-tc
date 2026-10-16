@@ -1915,8 +1915,9 @@ describe('aka enroll --account — Claude Code sessions', () => {
       "Claude Code sessions signed in to this organization are sent to Acme too, from any folder, with their folder, project and branch names, and this account's claude.ai chats when web chat capture is on.",
     );
     expect(shown).toContain(
-      'A session already running starts forwarding at its next event, and a new one from its first reply on. The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
+      'A session already running starts forwarding at its next event, and a new one from its first reply on. The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
     );
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
     expect(shown).toContain(
       'Nothing a Claude Code session recorded before this enrollment is sent this way, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached.',
     );
@@ -2084,10 +2085,11 @@ describe('aka enroll --account — the login signed in now on a personal plan', 
     expect(identities()).toEqual([ACCOUNT]);
     const shown = flat(io.output());
     expect(shown).toContain(
-      'Enrolling its organization sends the Claude Code sessions signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats. The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
+      'Enrolling its organization sends the Claude Code sessions signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats. The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
     );
     expect(shown).not.toContain('sends every Claude Code session');
     expect(shown).not.toContain('does not know yet which AKA user');
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
   });
 
   it('says before it asks that a session outside an enrolled repository waits until the device knows who attached it', async () => {
@@ -2308,9 +2310,10 @@ describe('aka enroll --work-subscriptions', () => {
       "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand.",
     );
     expect(shown).toContain(
-      'The first prompt of a new session, a session that uses an API key or another provider, and the rest of a session whose organization changes follow the repository rule.',
+      'The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
     );
     expect(shown).not.toContain('own login file');
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
     expect(shown).toContain(
       'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
     );

@@ -76,7 +76,7 @@ import { terminalPrompter } from '../lib/prompter.ts';
 import { refusalLine } from '../lib/refusal-line.ts';
 
 // `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories and
-// Claude accounts a SCOPED attachment sends.
+// Claude or ChatGPT accounts a SCOPED attachment sends.
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
@@ -87,9 +87,10 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // may have read the record before the edit, and nothing here says otherwise.
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
-// envelope keys this version does not recognise. The edits append to, or take
-// out of, the stored `entries` array and keep everything else; they never write
-// back a parsed copy, which would drop what this version cannot read.
+// envelope keys the parser does not recognise. The edits append an entry to the
+// stored `entries` array, take one out, mark one in place, or set or clear the
+// work-subscription opt-out, and keep everything else; they never write back a
+// parsed copy, which would drop what the parser cannot read.
 //
 // BOUND TO THE ENDPOINT IN FORCE. The record names the deployment it is for, and
 // that is the EFFECTIVE endpoint, with any administrator's overlay applied: the
@@ -373,7 +374,7 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   io.out(
     (identity.kind === 'account'
       ? unenrolledAccountLine(identity.key, repository, name)
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -912,7 +913,11 @@ const LEARNED_BUSY =
   'The work accounts this device had learned could not be cleared now because the record is busy; ' +
   'running this command again clears them.\n';
 
-/** Whether the stored list for this deployment holds `key` as an account entry that covers Claude Code sessions. */
+/**
+ * Whether the stored list for this deployment holds `key` as an account entry that
+ * covers the coding-agent sessions signed in to it: Claude Code for a claude key,
+ * Codex threads for a chatgpt key.
+ */
 function holdsCodingAccount(ready: Prepared, key: string): boolean {
   const { attachmentScope } = ready.settings;
   if (!isAttachmentScopeValid(attachmentScope, ready.connection.endpoint)) return false;
@@ -1020,9 +1025,9 @@ const UNENROLLED_ACCOUNT_LINE: Record<
 };
 
 /**
- * `aka unenroll` also takes the text of an entry stored under a key that names no
- * provider (`chatgpt:payments`, which `aka enroll` refuses): that text gets the
- * Codex line when it begins `chatgpt:` and the Claude line otherwise.
+ * `aka unenroll` also takes the text of an entry stored under something that is not
+ * an account key (`chatgpt:payments`, which `aka enroll` refuses): that text gets
+ * the Codex line when it begins `chatgpt:` and the Claude line otherwise.
  */
 function unenrolledAccountLine(key: string, removed: string, name: string): string {
   const provider =

@@ -17,6 +17,7 @@ import type {
   AuditEventInput,
   ConfigScanRecord,
   DetectionCategory,
+  EgressIngestRequest,
   IngestAck,
   IngestBatch,
   IngestEvent,
@@ -390,6 +391,9 @@ function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
     forward: overrides.forward ?? passthroughForward(calls),
     attachment: overrides.attachment ?? MACHINE,
     ...(overrides.posture ? { posture: overrides.posture } : {}),
+    ...(overrides.shareCredentialRefs
+      ? { shareCredentialRefs: overrides.shareCredentialRefs }
+      : {}),
     ...(overrides.deploymentName !== undefined ? { deploymentName: overrides.deploymentName } : {}),
   });
   return { gateway, local, client, calls, dataDir };
@@ -673,6 +677,63 @@ describe('writes are local-FIRST, then forwarded', () => {
       droppedFiles: [],
     });
     expect(calls.order).toContain('forward.run');
+  });
+
+  describe('credential references', () => {
+    const refs = [{ kind: 'variable' as const, variableName: 'STRIPE_SECRET_KEY' }];
+    const withRefs = (): RecordProjectEgressInput => ({
+      ...egressInput(),
+      hits: [
+        {
+          host: 'api.stripe.com',
+          kind: 'provider',
+          name: 'Stripe',
+          category: 'payments',
+          providerId: 'stripe',
+          trust: 'recognized',
+          network: null,
+          method: 'POST',
+          transport: 'https',
+          url: 'https://api.stripe.com/v1/charges',
+          template: false,
+          dataClass: 'customer',
+          site: { file: 'pay.ts', line: 3, snippet: 'x', dynamic: false, vendored: false },
+          credentialRefs: refs,
+        },
+      ],
+    });
+    const sent = (client: unknown): EgressIngestRequest | undefined =>
+      (client as { recordProjectEgress: ReturnType<typeof vi.fn> }).recordProjectEgress.mock
+        .calls[0]?.[0] as EgressIngestRequest | undefined;
+
+    it('forwards them while this machine shares sightings and holds a key', async () => {
+      const { gateway, client } = build({ shareCredentialRefs: () => true });
+      await gateway.recordProjectEgress(withRefs());
+      expect(sent(client)?.hits[0]?.credentialRefs).toEqual(refs);
+    });
+
+    it('leaves them out otherwise', async () => {
+      const { gateway, client } = build({ shareCredentialRefs: () => false });
+      await gateway.recordProjectEgress(withRefs());
+      expect(sent(client)?.hits[0]).toBeDefined();
+      expect('credentialRefs' in (sent(client)?.hits[0] ?? {})).toBe(false);
+    });
+
+    it('leaves them out on a machine with no sharing set up, by default', async () => {
+      const { gateway, client } = build();
+      await gateway.recordProjectEgress(withRefs());
+      expect('credentialRefs' in (sent(client)?.hits[0] ?? {})).toBe(false);
+    });
+
+    it('leaves them out when the gate throws', async () => {
+      const { gateway, client } = build({
+        shareCredentialRefs: () => {
+          throw new Error('unreadable');
+        },
+      });
+      await gateway.recordProjectEgress(withRefs());
+      expect('credentialRefs' in (sent(client)?.hits[0] ?? {})).toBe(false);
+    });
   });
 });
 

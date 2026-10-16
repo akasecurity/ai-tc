@@ -1747,3 +1747,40 @@ describe('createPluginRuntime — enforcedIn', () => {
     await rt.close();
   });
 });
+
+// secretsIn lists the secret-category detections in a text and touches nothing.
+describe('createPluginRuntime — secretsIn', () => {
+  it('lists only secrets, with the variable each is assigned to, and writes nothing', async () => {
+    const gw = fakeGateway(bundle());
+    let consumed = 0;
+    gw.consumeException = () => {
+      consumed += 1;
+      return Promise.resolve(true);
+    };
+    let ledger = 0;
+    gw.recordBlockedDetection = () => {
+      ledger += 1;
+      return Promise.resolve();
+    };
+    const rt = createPluginRuntime(gw, settings());
+
+    const found = await rt.secretsIn('API_TOKEN=SECRET_MARKER\ncontact PII_MARKER\n');
+    await rt.close();
+
+    expect(found.map((f) => [f.ruleId, f.variableName])).toContainEqual([
+      'test/secret-marker',
+      'API_TOKEN',
+    ]);
+    expect(found.every((f) => f.category === 'secret')).toBe(true);
+    expect(found.some((f) => f.ruleId === 'test/pii-marker')).toBe(false);
+    expect(gw.records).toHaveLength(0);
+    expect(consumed).toBe(0);
+    expect(ledger).toBe(0);
+  });
+
+  it('finds nothing in text without a secret', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.secretsIn('contact PII_MARKER please')).toEqual([]);
+    await rt.close();
+  });
+});

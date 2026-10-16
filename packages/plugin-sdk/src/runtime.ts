@@ -194,6 +194,14 @@ export interface LargeInputScanOptions {
    * more.
    */
   remainingMs?: (() => number) | undefined;
+  /**
+   * Whether the caller refuses a field that comes back with `scanIncomplete`.
+   * The capture result is the same either way; this decides only whether the
+   * SDK writes its stderr line saying the field was refused. A hook with no
+   * channel to stop the text it observes passes `false` and reports the field
+   * as unscanned itself, so the SDK says nothing. Omitted, the line is written.
+   */
+  refuses?: boolean | undefined;
 }
 
 /**
@@ -750,6 +758,7 @@ export function createPluginRuntime(
           budgetMs: largeInput.budgetMs,
           startBudgetMs: largeInput.startBudgetMs,
           remainingMs: readRemainingMs(largeInput),
+          refuses: largeInput.refuses,
         });
         // RETURNED, never thrown: the catch below fails open, and a field that
         // could not be scanned is exactly the one the caller asked to refuse.

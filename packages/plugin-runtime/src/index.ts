@@ -1,3 +1,11 @@
+export type {
+  AccountScope,
+  AccountScopeContext,
+  AccountScopeReader,
+  StampedScopeKey,
+} from './account-scope.ts';
+export { accountScopeOf, createAccountScope, repoStamp, stampScopeKey } from './account-scope.ts';
+export { readAccountScope } from './attached/factory.ts';
 export * from './attached/index.ts';
 export type { ContentRetentionReport } from './content-retention-pass.ts';
 export { runContentRetentionPass, syncLaneRetentionFor } from './content-retention-pass.ts';

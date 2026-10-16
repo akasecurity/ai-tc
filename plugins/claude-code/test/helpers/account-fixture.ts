@@ -118,8 +118,8 @@ export interface Transcript {
   prompt(at: string, cwd?: string): string;
   /** The host's per-request copy of the session's organization. */
   org(organizationUuid: string, at: string): void;
-  /** An assistant reply to the last prompt; returns its uuid. */
-  reply(at: string, cwd?: string): string;
+  /** An assistant reply to the last prompt, optionally calling a tool; returns its uuid. */
+  reply(at: string, cwd?: string, tool?: { name: string; input: Record<string, unknown> }): string;
 }
 
 export interface Device {
@@ -330,8 +330,9 @@ export function device(sent: Sent): Device {
             attachment: { type: 'credential_org', organizationUuid },
           });
         },
-        reply(at, cwd = personal) {
+        reply(at, cwd = personal, tool) {
           const uuid = randomUUID();
+          const toolUseId = `toolu_${randomUUID().replaceAll('-', '')}`;
           line({
             type: 'assistant',
             sessionId,
@@ -345,10 +346,27 @@ export function device(sent: Sent): Device {
             message: {
               id: `msg_${uuid}`,
               model: 'claude-sonnet-4-5-20250929',
-              content: [{ type: 'text', text: 'done' }],
+              content:
+                tool === undefined
+                  ? [{ type: 'text', text: 'done' }]
+                  : [{ type: 'tool_use', id: toolUseId, name: tool.name, input: tool.input }],
               usage: { input_tokens: 12, output_tokens: 7 },
             },
           });
+          if (tool !== undefined) {
+            line({
+              type: 'user',
+              sessionId,
+              uuid: randomUUID(),
+              promptId: lastPrompt?.promptId,
+              timestamp: at,
+              cwd,
+              message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok' }],
+              },
+            });
+          }
           return uuid;
         },
       };

@@ -226,6 +226,217 @@ describe('attributeRecords', () => {
   });
 });
 
+describe('attributeRecords: the closing account', () => {
+  const key = (org: string): string => `claude:${org}`;
+
+  it('names the account of a work view after the last record, although the view before the record is not a work view', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 2), record('a', 3)],
+      observations: [startup(0), personal(1), work(org, 4)],
+    });
+    expect(result.records.get('a')).toEqual({ status: 'none' });
+    expect(result.closingAccount).toBe(key(org));
+  });
+
+  it('takes a view at the last record time, and none before it', () => {
+    const org = randomUUID();
+    const marks = [orgMark(org, 1), record('a', 2)];
+    expect(run({ marks, observations: [startup(0), work(org, 2)] }).closingAccount).toBe(key(org));
+    expect(run({ marks, observations: [startup(0), work(org, 1)] }).closingAccount).toBeUndefined();
+  });
+
+  it('names no account when the latest view at or after the last record is not a work view', () => {
+    const org = randomUUID();
+    const marks = [orgMark(org, 1), record('a', 2)];
+    for (const latest of [personal(5), logged({ t: at(5), bd: BD, k: 'v' })]) {
+      const result = run({ marks, observations: [startup(0), work(org, 3), latest] });
+      expect(result.closingAccount).toBeUndefined();
+    }
+    const result = run({ marks, observations: [startup(0), personal(3), work(org, 5)] });
+    expect(result.closingAccount).toBe(key(org));
+  });
+
+  it('skips an unreadable view and a view of another binding', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [
+        startup(0),
+        work(org, 3),
+        unreadable(4),
+        logged({ t: at(5), bd: randomBytes(8).toString('hex'), k: 'n' }),
+      ],
+    });
+    expect(result.closingAccount).toBe(key(org));
+  });
+
+  it('names no account when the latest work view is for another key than the records org', () => {
+    const [org, other] = [randomUUID(), randomUUID()];
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), work(other, 3)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('names no account when the key is not in scope', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), work(org, 3)],
+      inScope: () => false,
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('names no account once a different org is seen after the anchor', () => {
+    const [org, other] = [randomUUID(), randomUUID()];
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2), orgMark(other, 3), record('b', 4)],
+      observations: [startup(0), personal(1), work(org, 5)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('names no account for a session with no recorded boundary', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [personal(1), work(org, 3)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('names no account for a chunk with no record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1)],
+      observations: [startup(0), work(org, 3)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('names no account when a boundary falls between the first and the last record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2), orgMark(org, 4), record('b', 5)],
+      observations: [startup(0), personal(1), clear(3), personal(4), work(org, 6)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+
+  it('does not take a view past a boundary that follows the last record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), clear(3), work(org, 4)],
+    });
+    expect(result.closingAccount).toBeUndefined();
+  });
+});
+
+describe('attributeRecords: the unscoped account', () => {
+  const key = (org: string): string => `claude:${org}`;
+  const unscoped = { inScope: () => false };
+
+  it('names the account of a work view after the last record when its key is not in scope, with the record unattributed', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), work(org, 3)],
+      ...unscoped,
+    });
+    expect(result.records.get('a')).toEqual({ status: 'none' });
+    expect(result.closingAccount).toBeUndefined();
+    expect(result.unscopedAccount).toBe(key(org));
+  });
+
+  it('names no account once the key is in scope, where the closing account is named instead', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), work(org, 3)],
+    });
+    expect(result.closingAccount).toBe(key(org));
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account when the latest view at or after the last record is not a work view', () => {
+    const org = randomUUID();
+    const marks = [orgMark(org, 1), record('a', 2)];
+    for (const latest of [personal(5), logged({ t: at(5), bd: BD, k: 'v' })]) {
+      const result = run({ marks, observations: [startup(0), work(org, 3), latest], ...unscoped });
+      expect(result.unscopedAccount).toBeUndefined();
+    }
+  });
+
+  it('names no account when no view follows the last record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), work(org, 1)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account when the latest work view is for another key than the records org', () => {
+    const [org, other] = [randomUUID(), randomUUID()];
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [startup(0), personal(1), work(other, 3)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account once a different org is seen after the anchor', () => {
+    const [org, other] = [randomUUID(), randomUUID()];
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2), orgMark(other, 3), record('b', 4)],
+      observations: [startup(0), personal(1), work(org, 5)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account for a session with no recorded boundary', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2)],
+      observations: [personal(1), work(org, 3)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account for a chunk with no record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1)],
+      observations: [startup(0), work(org, 3)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account when a boundary falls between the first and the last record', () => {
+    const org = randomUUID();
+    const result = run({
+      marks: [orgMark(org, 1), record('a', 2), orgMark(org, 4), record('b', 5)],
+      observations: [startup(0), personal(1), clear(3), personal(4), work(org, 6)],
+      ...unscoped,
+    });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+
+  it('names no account for an empty chunk', () => {
+    const result = run({ marks: [], observations: [startup(0)], ...unscoped });
+    expect(result.unscopedAccount).toBeUndefined();
+  });
+});
+
 describe('holdDecision', () => {
   it('holds while a pending record is under fifteen minutes old, for at most three passes', () => {
     const now = T0 + MINUTE;

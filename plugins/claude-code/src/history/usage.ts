@@ -17,7 +17,8 @@
 // inventory then the root (idempotent) BEFORE the leaves — it never trusts
 // SessionStart. Provider is then read back off the ensured root,
 // never from live env (which would mislabel backfilled history under today's env).
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import { sessionAccountsDir } from '@akasecurity/persistence';
+import { accountScopeOf, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
   createPolicyResolver,
@@ -30,6 +31,14 @@ import {
   sessionRootScopeKey,
   toolCallScopeKey,
 } from '@akasecurity/plugin-sdk';
+import type { AttributionResult } from '@akasecurity/plugin-sdk/account';
+import {
+  attributeRecords,
+  credentialOrgAt,
+  holdDecision,
+  NO_ATTRIBUTION_CARRY,
+  readObservations,
+} from '@akasecurity/plugin-sdk/account';
 import type {
   AuditEventInput,
   InventoryContext,
@@ -40,18 +49,27 @@ import type {
   ToolCallInput,
   ToolCallInspectionInput,
 } from '@akasecurity/schema';
-import { harnessFromTool, isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
+import {
+  harnessFromTool,
+  isAgentScopeKey,
+  isVaultConsentValid,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
 
 import { pluginBuild } from '../build-info.ts';
 import { platformRedactionScope } from '../remediation/redact.ts';
+import { planFollowUp, scheduleFollowUp } from './reconcile-trigger.ts';
+import type { UsageOffset } from './tail.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import { scrubTranscriptTail } from './tail-scrub.ts';
 import {
+  accountTrace,
   type AssistantUsageRecord,
   iterateUsageAndToolCalls,
   parseTranscriptToolCalls,
   parseTranscriptUsage,
   type ToolCallRecord,
+  type UsageAccountTrace,
   type UsageRecord,
 } from './transcripts.ts';
 
@@ -109,6 +127,16 @@ export interface ReconcileSessionOptions {
   // directory shared across sessions is walked once and keyed identically
   // everywhere. When omitted, the call builds its own.
   scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
+  // The account key each assistant line ran under, by its uuid. Each row is
+  // stamped for that account through the gateway's account scope, and the session
+  // root is keyed from the first line that has one; without one (backfill, a
+  // gateway with no account scope) every row keeps its repository key and the
+  // root is keyed from the first line.
+  accountOf?: ((uuid: string) => string | undefined) | undefined;
+  // The account key the session is in once these lines are written. When no line
+  // has an account of its own it keys the session root, which carries the first
+  // line's directory; the rows of those lines keep their repository keys.
+  closingAccount?: string | undefined;
 }
 
 // Reconcile ONE session's usage records into `llm_call` leaves. `records` are the
@@ -148,10 +176,21 @@ export async function reconcileSession(
   }
 
   // FK-safety: ensure inventory + the session root BEFORE any leaf.
-  // Build the inventory context from the transcript's OWN fields (the first
-  // assistant record carries cwd/version/gitBranch/entrypoint) — never live env.
-  const anchor = assistants[0];
-  if (anchor === undefined) return { llmCalls: 0, skipped: 0, lastPromptId };
+  // Build the inventory context from the transcript's OWN fields (the anchor
+  // record carries cwd/version/gitBranch/entrypoint) — never live env.
+  const first = assistants[0];
+  if (first === undefined) return { llmCalls: 0, skipped: 0, lastPromptId };
+  // Every row's key is stamped for the account its line ran under (accountOf).
+  const stamp = stamperFor(gateway, opts.accountOf);
+  // The anchor is the first reply the pass attributes to an account, else the
+  // first reply. A leaf forwards only when its root does, so a root keyed from a
+  // reply no account claims would hold back every later reply the account does
+  // own. The root's key is the anchor's directory, stamped for the anchor's
+  // account, or with no reply attributed for the account the session is in. It
+  // lands only on a root no one wrote yet; a root SessionStart wrote keeps its
+  // own key.
+  const { reply: anchor, accountKey: rootAccount } = rootAnchorOf(gateway, first, assistants, opts);
+  const rootKey = accountStamperFor(gateway)(sessionRootScopeKey(anchor.cwd), rootAccount);
   // The transcript's OWN cwd resolves the session's repo — never the reconciler's
   // own cwd (a relative/empty path would resolve a git root from the reconciler's
   // process cwd and mis-attribute the session). When cwd is absent we skip project
@@ -162,7 +201,10 @@ export async function reconcileSession(
     harnessVersion: anchor.version,
     harnessInterface: anchor.entrypoint,
   });
-  const resolved = await gateway.ensureInventory(ctx);
+  // A root keyed by a session's agent key sends its inventory under that key.
+  const resolved = isAgentScopeKey(rootKey)
+    ? await gateway.ensureInventory(ctx, { scopeKey: rootKey })
+    : await gateway.ensureInventory(ctx);
 
   // Provider for a root the reconciler is creating: model-id heuristic, else
   // 'unknown' — never live env. If SessionStart already wrote the
@@ -173,7 +215,15 @@ export async function reconcileSession(
   // win: the root written just above heals it.
   const heuristicProvider = providerFromModelId(anchor.model);
   await gateway.recordAuditEvent(
-    buildSessionRoot(sessionId, ctx, resolved, anchor, heuristicProvider),
+    buildSessionRoot(
+      sessionId,
+      ctx,
+      resolved,
+      anchor,
+      heuristicProvider,
+      rootKey,
+      first.occurredAt,
+    ),
   );
 
   // Read the EFFECTIVE provider back off the ensured root: env-provider
@@ -201,7 +251,7 @@ export async function reconcileSession(
       parentId: sessionId,
       rootSessionId: sessionId,
       startedAt: rec.occurredAt,
-      attributes: buildAttributes(rec, provider, runKey, scopeKeyOf(rec.cwd)),
+      attributes: buildAttributes(rec, provider, runKey, stamp(scopeKeyOf(rec.cwd), rec.uuid)),
     };
   });
 
@@ -252,6 +302,7 @@ export async function reconcileSessionToolCalls(
   }
 
   const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
+  const stamp = stamperFor(gateway, opts.accountOf);
   const inputs: ToolCallInput[] = toolCalls.map((tc) => {
     const runKey =
       (tc.parentUuid !== undefined ? promptIdByUuid.get(tc.parentUuid) : undefined) ??
@@ -295,7 +346,8 @@ export async function reconcileSessionToolCalls(
     // the repository of what it names, as the hooks key a captured file or Grep
     // (the hooks read a search root only for Grep; a Glob or LS leaf follows the
     // same rule); any other call is keyed by the cwd of the record that issued it.
-    const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
+    // That key is stamped for the account the issuing line ran under.
+    const scopeKey = stamp(toolCallScopeKey(tc, scopeKeyOf), tc.uuid);
     if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {
       sessionId,
@@ -403,15 +455,32 @@ export async function reconcileHistory(
 // offset only advances after a successful read, and a re-read is a no-op via the
 // UPSERT-max / INSERT OR IGNORE writes — so a dropped pass is recovered next time.
 //
+// On a gateway with an account scope, each record is attributed to the account its
+// reply ran under, from the session's observation log. A pass writes nothing, up to
+// three passes and fifteen minutes, while a record's closing observation is not
+// written yet, and while the session root is unwritten and the session is in a work
+// account whose key is not in scope yet, with work subscriptions on: a check at the
+// session's next prompt learns the key, and the root, first-write-wins, is then keyed
+// for the account instead of the repository. A pass that holds spawns a follow-up
+// pass (see planFollowUp), so the hold is spent and the tail written within that
+// budget even when no hook of the session fires again. `followUpDue` names the
+// follow-up this pass is, by the due time its checkpoint recorded; a follow-up
+// whose hold was released or replaced meanwhile does nothing.
+//
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
 export async function reconcileSessionTail(
   config: PluginConfig,
   sessionId: string,
   transcriptPath: string,
+  now: () => number = Date.now,
+  followUpDue?: number,
 ): Promise<{ llmCalls: number; skipped: number; toolCalls: number }> {
   const checkpoint = readOffset(config.dataDir, sessionId);
-  const { chunk, nextOffset } = readTail(transcriptPath, checkpoint.offset);
+  if (followUpDue !== undefined && checkpoint.pending?.followUpAt !== followUpDue) {
+    return { llmCalls: 0, skipped: 0, toolCalls: 0 };
+  }
+  const { chunk, nextOffset, from } = readTail(transcriptPath, checkpoint.offset);
   // Nothing new (or only a half-written final line) → don't even open the store.
   // Still re-persist the offset in case a rotation reset it (nextOffset may differ).
   if (chunk === '') {
@@ -445,19 +514,84 @@ export async function reconcileSessionTail(
   // (`llm_call` avoids this with UPSERT-take-MAX; tool_call intentionally has no
   // equivalent — see `insertToolCall`.) A future mid-turn trigger would widen this gap,
   // so keep the reconciler on turn boundaries. Covered by the tail-path test below.
-  const records = parseTranscriptUsage(chunk);
+  //
+  // The same parse records the account trace: the session's org lines and its
+  // assistant lines, in file order.
+  const trace = accountTrace(from, sessionId);
+  const records = parseTranscriptUsage(chunk, 0, trace);
   const toolCallRecords = parseTranscriptToolCalls(chunk);
 
   const gateway = reconcileGateway(config);
   // One scope-key memo for this tail pass, shared by both leaf kinds.
   const scopeKeyOf = scopeKeyMemo();
   try {
+    // The carried attribution state belongs to the offset it was written at, so a
+    // tail that starts anywhere else is attributed afresh: a transcript shorter
+    // than the stored offset is read from 0, and the scrub rewrite below stores
+    // offset 0. A replaced transcript longer than the stored offset is not noticed.
+    // A call already written can be read again in either case. In the local store
+    // its llm_call row takes the fresh scope key only when its output count has
+    // grown; an equal count keeps the first-written key even if the fresh
+    // attribution differs. A tool_call row there keeps its first key. Row counts
+    // do not change.
+    const attribution = attributeTail(
+      gateway,
+      config.dataDir,
+      sessionId,
+      transcriptPath,
+      trace,
+      from === checkpoint.offset ? checkpoint : undefined,
+    );
+    const waiting = await waitingTimes(
+      gateway,
+      sessionId,
+      attribution,
+      trace,
+      records,
+      toolCallRecords,
+    );
+    const passAt = now();
+    const hold =
+      waiting.length === 0
+        ? undefined
+        : holdDecision({ pendingTimes: waiting, pending: checkpoint.pending, now: passAt });
+    if (hold?.hold === true) {
+      // A record waits for its closing observation, or the session's account key is
+      // not in scope yet: no root and no row is written, the transcript offset stays
+      // where it is, and the next pass reads this tail again. The scrub of the
+      // transcript file below does not run either, so a held pass strikes nothing: a
+      // raw secret in these lines stays until the pass that writes.
+      const plan = planFollowUp({
+        held: hold.pending,
+        before: checkpoint.pending,
+        ownDue: followUpDue,
+        now: passAt,
+      });
+      writeOffset(config.dataDir, sessionId, {
+        ...checkpoint,
+        ...(attribution?.logReset === true
+          ? { logOffset: 0, logStartedAt: undefined, carried: undefined }
+          : {}),
+        pending: plan.pending,
+      });
+      if (plan.dueAt !== undefined) scheduleFollowUp(sessionId, transcriptPath, plan.dueAt);
+      return { llmCalls: 0, skipped: 0, toolCalls: 0 };
+    }
+    const accountOf =
+      attribution === undefined
+        ? undefined
+        : (uuid: string): string | undefined => {
+            const record = attribution.records.get(uuid);
+            return record?.status === 'account' ? record.key : undefined;
+          };
     const result = await reconcileSession(gateway, sessionId, records, {
       seedPromptId: checkpoint.lastPromptId,
       scopeKeyOf,
+      accountOf,
+      closingAccount: attribution?.closingAccount,
     });
     // Tool calls after the usage pass (which ensured the root); shares the same
-    // run_key carry-forward seed and scope-key memo as the llm_call leaves.
+    // run_key carry-forward seed, scope-key memo and attribution as the llm_call leaves.
     const toolCalls = await reconcileSessionToolCalls(
       gateway,
       sessionId,
@@ -466,14 +600,23 @@ export async function reconcileSessionTail(
       {
         seedPromptId: checkpoint.lastPromptId,
         scopeKeyOf,
+        accountOf,
       },
     );
     // Persist the advanced offset + the run_key carry-forward for the next tail pass.
     // Done AFTER the write so a failed pass leaves the offset at its prior value and
-    // the same tail is retried (idempotently) next time.
+    // the same tail is retried (idempotently) next time. The observation log's offset
+    // and the carried attribution state advance with it.
     writeOffset(config.dataDir, sessionId, {
       offset: nextOffset,
       lastPromptId: result.lastPromptId,
+      ...(attribution === undefined
+        ? {}
+        : {
+            logOffset: attribution.logOffset,
+            logStartedAt: attribution.logStartedAt,
+            carried: attribution.carry,
+          }),
     });
     // The store now reflects this tail; scrub the transcript FILE itself so a raw
     // secret in the new lines (Claude Code logs a prompt even when a hook blocked
@@ -511,7 +654,7 @@ export async function reconcileSessionTail(
         });
         // A rewrite changes the file's byte layout, so the just-persisted offset
         // no longer marks a line boundary. Reset it: the next pass re-reads the
-        // whole (now pointer-bearing) file, which the idempotent writes absorb.
+        // whole (now pointer-bearing) file and attributes it afresh.
         if (scrubbed !== null && scrubbed.rewritten > 0) {
           writeOffset(config.dataDir, sessionId, {
             offset: 0,
@@ -562,12 +705,16 @@ function groupBySession(records: Iterable<UsageRecord>): Map<string, UsageRecord
 // transcript's own fields (cwd/version/gitBranch on the anchor) + the resolved
 // inventory `ctx`. This is what makes a session reconstructed purely from history
 // (no SessionStart, e.g. a backfill) show a project/cwd/branch instead of blank.
+//
+// `scopeKey` is the root's key as reconcileSession stamped it.
 function buildSessionRoot(
   sessionId: string,
   ctx: InventoryContext,
   resolved: ResolvedInventory,
   anchor: AssistantUsageRecord,
   provider: string,
+  scopeKey: string | undefined,
+  startedAt: string,
 ): AuditEventInput {
   const attributes: Record<string, unknown> = {};
   const osVersion = ctx.host?.attributes.os_version;
@@ -587,12 +734,13 @@ function buildSessionRoot(
   const nwo = anchor.cwd !== undefined ? resolveRepoNwo(anchor.cwd) : undefined;
   if (nwo !== undefined) attributes.repo = nwo;
   if (anchor.gitBranch !== undefined) attributes.branches = [anchor.gitBranch];
-  // The session's scope key, from the transcript's own cwd (sessionRootScopeKey):
-  // the twin of the root key plugin-runtime's handleSessionStart stamps, and
-  // absent for a relative or empty cwd, a remoteless repository and a record that
-  // names no cwd. When SessionStart's root landed first it wins; the two agree
-  // whenever the session started in the directory its first record names.
-  const scopeKey = sessionRootScopeKey(anchor.cwd);
+  // The session's scope key: the repository key of the anchor's own cwd
+  // (sessionRootScopeKey), stamped for the anchor's account, or for the session's
+  // when no reply has one, which makes it the session's agent key for a recognised
+  // work subscription whose repository is not enrolled. It lands only on a root no
+  // one wrote yet: when SessionStart's root landed first it wins. Absent for a
+  // relative or empty cwd, a remoteless repository and a record that names no cwd,
+  // when no account applies.
   if (scopeKey !== undefined) attributes.scope_key = scopeKey;
 
   const event: AuditEventInput = {
@@ -601,7 +749,7 @@ function buildSessionRoot(
     // The earliest assistant record's timestamp is the best span start we have
     // without SessionStart; the root's started_at is best-effort first-seen anyway
     // (no authoritative span is stored on the structural parent).
-    startedAt: anchor.occurredAt,
+    startedAt,
   };
   if (resolved.hostId) event.hostId = resolved.hostId;
   if (resolved.harnessId) event.harnessId = resolved.harnessId;
@@ -666,4 +814,191 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // mis-report a non-Anthropic provider as having made cache writes it never did).
 function setNum(attrs: LlmCallAttributes, key: string, value: unknown): void {
   if (typeof value === 'number' && Number.isFinite(value)) attrs[key] = value;
+}
+
+// The account each assistant line of the tail ran under, from the session's
+// observation log, or undefined where this gateway stamps no account keys: every
+// row then keeps its repository key. The log is read from its start, with no
+// carried state, when it is absent, shorter than the stored offset, or its first
+// line is not at the stored time: a log cleared and grown again is another log,
+// whatever its size. A stored log offset with no stored time restarts the read
+// too. The returned offsets and time are the ones to store.
+function attributeTail(
+  gateway: DataGateway,
+  dataDir: string,
+  sessionId: string,
+  transcriptPath: string,
+  trace: UsageAccountTrace,
+  carry: Pick<UsageOffset, 'logOffset' | 'logStartedAt' | 'carried'> | undefined,
+):
+  (AttributionResult & { readonly logReset: boolean; readonly logStartedAt?: number }) | undefined {
+  try {
+    const scope = accountScopeOf(gateway);
+    if (scope === undefined) return undefined;
+    const stateDir = sessionAccountsDir(dataDir);
+    const startedAt = logStartedAtOf(stateDir, sessionId);
+    let carried = carry?.carried ?? NO_ATTRIBUTION_CARRY;
+    let logOffset = carry?.logOffset ?? 0;
+    let log = readObservations(stateDir, sessionId, logOffset);
+    const sameLog = startedAt !== undefined && startedAt === carry?.logStartedAt;
+    const logReset = logOffset > 0 && (log.size < logOffset || !sameLog);
+    if (logReset) {
+      carried = NO_ATTRIBUTION_CARRY;
+      logOffset = 0;
+      log = readObservations(stateDir, sessionId, 0);
+    }
+    const orgAt = (pos: number | undefined): string | undefined =>
+      pos === undefined ? undefined : credentialOrgAt(transcriptPath, sessionId, pos);
+    const attribution = attributeRecords({
+      marks: trace.marks,
+      observations: log.entries,
+      logOffset,
+      carry: carried,
+      anchorOrg: orgAt(carried.anchorAt),
+      lastOrg: orgAt(carried.lastOrgAt),
+      bindingHash: scope.bindingHash,
+      inScope: (accountKey) => scope.stamp(undefined, accountKey) !== undefined,
+    });
+    return {
+      ...attribution,
+      logReset,
+      ...(attribution.logOffset > 0 && startedAt !== undefined ? { logStartedAt: startedAt } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// A log line is a few hundred bytes at most, so the first one is inside this window.
+const LOG_FIRST_LINE_WINDOW_BYTES = 4096;
+
+// The time of the first line of a session's observation log, which names the log
+// for as long as it lives: the log is append-only, and a log that is cleared and
+// written again starts at a later time. Undefined when there is no log or no
+// line of it is readable in the window.
+function logStartedAtOf(stateDir: string, sessionId: string): number | undefined {
+  return readObservations(stateDir, sessionId, 0, LOG_FIRST_LINE_WINDOW_BYTES).entries[0]
+    ?.observation.t;
+}
+
+// The times of the tail's lines that will be written as rows and `keep` names: the
+// lines that become llm_call rows and the lines that carry a tool call, whose
+// tool_call rows are stamped for the account their own line ran under. A line that
+// writes neither, such as a synthetic or zero-usage record with no tool call, is
+// never one.
+function writtenTimes(
+  trace: UsageAccountTrace,
+  records: readonly UsageRecord[],
+  toolCalls: readonly ToolCallRecord[],
+  keep: (id: string) => boolean = () => true,
+): number[] {
+  const written = new Set([
+    ...records.flatMap((rec) => (rec.kind === 'assistant' ? [rec.uuid] : [])),
+    ...toolCalls.flatMap((call) => (call.uuid === undefined ? [] : [call.uuid])),
+  ]);
+  return trace.marks.flatMap((mark) =>
+    mark.kind === 'record' && written.has(mark.id) && keep(mark.id) ? [mark.t] : [],
+  );
+}
+
+// The times of the lines the pass waits on: the lines still waiting for their closing
+// observation or, with none, every line it would write while the session root is
+// unwritten and the session is in an account whose key is not in scope yet, when a
+// check can still learn it. A line that writes no row never holds the pass.
+async function waitingTimes(
+  gateway: DataGateway,
+  sessionId: string,
+  attribution: AttributionResult | undefined,
+  trace: UsageAccountTrace,
+  records: readonly UsageRecord[],
+  toolCalls: readonly ToolCallRecord[],
+): Promise<number[]> {
+  if (attribution === undefined) return [];
+  const pending = writtenTimes(
+    trace,
+    records,
+    toolCalls,
+    (id) => attribution.records.get(id)?.status === 'pending',
+  );
+  if (pending.length > 0 || attribution.unscopedAccount === undefined || !learnsKeys(gateway)) {
+    return pending;
+  }
+  return (await rootIsWritten(gateway, sessionId)) ? [] : writtenTimes(trace, records, toolCalls);
+}
+
+// Whether a check can put a key in scope on this gateway: the identity record learns
+// no key while work subscriptions are off.
+function learnsKeys(gateway: DataGateway): boolean {
+  try {
+    return accountScopeOf(gateway)?.context.workSubscriptionsOn === true;
+  } catch {
+    return false;
+  }
+}
+
+// Whether the session root is written: the stub a session start leaves for a deferred
+// root carries no provider. A store that cannot be read counts as written, so the pass
+// does not wait on it.
+async function rootIsWritten(gateway: DataGateway, sessionId: string): Promise<boolean> {
+  try {
+    return (await gateway.readSessionProvider(sessionId)) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+// The reply the session root is anchored on, and the account it is keyed for: the
+// first reply `accountOf` names an account for, with that account; else the first
+// reply, with the account the session is in. A gateway with no account scope, no
+// `accountOf` and a fault name no account.
+function rootAnchorOf(
+  gateway: DataGateway,
+  first: AssistantUsageRecord,
+  assistants: readonly AssistantUsageRecord[],
+  opts: ReconcileSessionOptions,
+): { readonly reply: AssistantUsageRecord; readonly accountKey: string | undefined } {
+  try {
+    const { accountOf } = opts;
+    if (accountOf === undefined || accountScopeOf(gateway) === undefined) {
+      return { reply: first, accountKey: undefined };
+    }
+    for (const reply of assistants) {
+      const accountKey = accountOf(reply.uuid);
+      if (accountKey !== undefined) return { reply, accountKey };
+    }
+    return { reply: first, accountKey: opts.closingAccount };
+  } catch {
+    return { reply: first, accountKey: undefined };
+  }
+}
+
+// `repoKey` stamped, through the gateway's account scope, for `accountKey`. A
+// gateway with no account scope, no account and a fault keep the repository key.
+function accountStamperFor(
+  gateway: DataGateway,
+): (repoKey: string | undefined, accountKey: string | undefined) => string | undefined {
+  const scope = accountScopeOf(gateway);
+  return (repoKey, accountKey) => {
+    try {
+      if (scope === undefined) return repoKey;
+      return accountKey === undefined ? scope.stamp(repoKey) : scope.stamp(repoKey, accountKey);
+    } catch {
+      return repoKey;
+    }
+  };
+}
+
+// A row's key: `repoKey` stamped for the account the line `uuid` ran under.
+function stamperFor(
+  gateway: DataGateway,
+  accountOf: ReconcileSessionOptions['accountOf'],
+): (repoKey: string | undefined, uuid: string | undefined) => string | undefined {
+  const stampAccount = accountStamperFor(gateway);
+  return (repoKey, uuid) => {
+    try {
+      return stampAccount(repoKey, uuid === undefined ? undefined : accountOf?.(uuid));
+    } catch {
+      return repoKey;
+    }
+  };
 }

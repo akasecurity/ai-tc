@@ -11,9 +11,14 @@
  *
  * Two columns carry the weight:
  *
- *  - **`channel`** is what the adapter DOES on that surface today, not what the
- *    host offers. A host capability this package has not wired reads as `none`,
- *    because that is what a user gets.
+ *  - **`channel`** is what the adapter can DO ABOUT A FINDING on that surface
+ *    today, not what the host offers and not whether the event is wired at all.
+ *    A host capability this package has not wired reads as `none`, because that
+ *    is what a user gets — and so does a wired event with nothing to enforce
+ *    with. Three of the four registered events are `none` for the second
+ *    reason: they capture, scan and record, and no host channel this repository
+ *    has confirmed lets them stop or rewrite anything. The `note` is what
+ *    separates the two cases, and it has to.
  *  - **`verified`** is whether a live recording backs it. Every VS Code row is
  *    `false` and stays `false` until a fixture under
  *    `test/fixtures/vscode-provisional/` is replaced by a recording. The value
@@ -28,9 +33,11 @@ export type Surface = (typeof SURFACES)[number];
 /**
  * What the adapter can do about a finding on a given surface and event.
  *
- * `none` is a real answer and the most common one here — it says the event is
- * not wired, or the host offers no channel for it — and it is deliberately not
- * spelled as an absent row: an omitted row reads as an oversight, a `none` row
+ * `none` is a real answer and the most common one here. It says one of three
+ * things, and the `note` is what tells them apart: the event is not wired; the
+ * host offers no channel for it; or the event IS wired and captures and scans,
+ * and there is simply nothing it can enforce with. It is deliberately not
+ * spelled as an absent row — an omitted row reads as an oversight, a `none` row
  * reads as a decision.
  */
 export type Channel = 'block' | 'rewrite' | 'warn' | 'none';
@@ -76,19 +83,27 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
   },
   {
     surface: 'cli',
+    event: 'sessionStart',
+    subject: 'session',
+    channel: 'none',
+    verified: true,
+    note: 'Opens the session root every later capture hangs off, and records the host, harness and project inventory. It decides nothing and emits nothing — there is no verdict to reach on a session start.',
+  },
+  {
+    surface: 'cli',
     event: 'userPromptSubmitted',
     subject: 'prompt',
     channel: 'none',
-    verified: false,
-    note: 'Not wired. The host documents modifiedPrompt, but whether a command hook can use it is contradicted between vendor pages and was not probed.',
+    verified: true,
+    note: 'Captured and scanned; nothing can be stopped or rewritten. modifiedPrompt is documented and was not observed from a command hook, so a block or redact policy is recorded and the prompt is sent unchanged.',
   },
   {
     surface: 'cli',
     event: 'postToolUse',
     subject: 'toolResult',
     channel: 'none',
-    verified: false,
-    note: 'Not wired. modifiedResult is documented and was not observed replacing what the model sees.',
+    verified: true,
+    note: 'Captured and scanned; nothing can be withheld. The tool has already run, and modifiedResult is documented but was not observed replacing what the model sees, so a finding is recorded and the output reaches the model unchanged.',
   },
   {
     surface: 'cli',
@@ -118,11 +133,19 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
   },
   {
     surface: 'vscode',
+    event: 'SessionStart',
+    subject: 'session',
+    channel: 'none',
+    verified: false,
+    note: 'Opens the session root, as on the CLI. A payload carrying no cwd declines without opening the store, because this host spawns a hook from the home directory unless the entry declared one.',
+  },
+  {
+    surface: 'vscode',
     event: 'UserPromptSubmit',
     subject: 'prompt',
     channel: 'none',
     verified: false,
-    note: 'Not wired, and no block or rewrite channel has been observed on this event.',
+    note: 'Captured and scanned; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.',
   },
   {
     surface: 'vscode',
@@ -130,7 +153,7 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     subject: 'tool_response',
     channel: 'none',
     verified: false,
-    note: 'Not wired. This host has no output-rewrite field at all — block or warn are the only channels it would ever offer.',
+    note: 'Captured and scanned; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.',
   },
 
   // ── Cloud coding agent — the CLI's protocol, no local store ──────────────

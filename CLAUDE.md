@@ -1488,13 +1488,14 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
-- **`plugins/copilot` bundles the same core and is NOT one of the four.** It builds
-  `scripts/*.js` through the same `tsup` config and inlines the same `@akasecurity/*`
-  packages, but it is still `"private": true` and publishes nowhere, so it moves on no
-  version line and belongs in no bump above. That sentence stops being true the moment
-  `private` is unset — which is also what moves `required-checks.test.js`'s temporary
-  Windows pin and the `ci.yml` prose that justifies it, so all three change together or
-  `main` reds on a diff that looks innocent.
+- **`plugins/copilot` bundles the same core and is NOT one of the four published artifacts.**
+  It builds `scripts/*.js` through the same `tsup` config and inlines the same
+  `@akasecurity/*` packages. It is still `"private": true` and publishes nowhere, but it
+  sits on the shared version line: every CLI bump moves `plugins/copilot/package.json` and
+  `plugins/copilot/plugin.json` to the same version, and its `test/identity-consistency.test.ts`
+  fails when either differs from the CLI's. Unsetting `private` is what moves
+  `required-checks.test.js`'s temporary Windows pin and the `ci.yml` prose that justifies
+  it, so all three change together or `main` reds on a diff that looks innocent.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
@@ -1526,8 +1527,9 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    `plugins/claude-code/package.json`, `plugins/codex/.codex-plugin/plugin.json` in sync
    with `plugins/codex/package.json`, and `plugins/antigravity/plugin.json` (Antigravity reads
    its manifest from the plugin ROOT, not a dotted dir) in sync with
-   `plugins/antigravity/package.json` (identical version within each pair) whenever that plugin
-   is bumped.
+   `plugins/antigravity/package.json`, and `plugins/copilot/plugin.json` (also at the plugin
+   root) in sync with `plugins/copilot/package.json` (identical version within each pair)
+   whenever that plugin is bumped.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
@@ -1566,7 +1568,7 @@ one shell string are free to disagree about what a workflow publishes.
 published artifacts on one version and each plugin's identity suite pins it to the CLI's; the
 extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
 its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
-moving all four published manifests, the three host manifests and the extension together. Cut
+moving all four published manifests, the three host manifests, the Copilot plugin's two manifests and the extension together. Cut
 that commit on a release branch: on `main` it would sit in front of the next stable cut until the
 matching stable shipped.
 

@@ -156,15 +156,17 @@ const ENROLL_HINT =
 
 /**
  * The `user` line when no identity record counts for this credential. What a
- * work subscription is recognised against is then unknown, so none is. Never
- * the user's address: the record holds only a digest of it. The plugin's
- * background sync asks the deployment once which account the key belongs to,
- * which is what both lines wait for.
+ * work subscription is recognised against is then unknown, so none is, and the
+ * coding-agent keys derive from that record, so no Claude Code session is sent
+ * for an account enrolled by hand either. Never the user's address: the record
+ * holds only a digest of it. The plugin's background sync asks the deployment
+ * once which account the key belongs to, which is what both lines wait for.
  */
 const USER_LINES = {
   unknown:
-    '  user       not known until this machine syncs — work subscriptions are not recognised yet',
-  untied: '  user       not tied to this key — the next sync re-checks it',
+    '  user       not known until this machine syncs — until then work subscriptions are not recognised and no Claude Code session is sent for an enrolled account',
+  untied:
+    '  user       not tied to this key — the next sync re-checks it; until then no Claude Code session is sent for a work subscription or an enrolled account',
 } as const;
 
 /**
@@ -368,10 +370,11 @@ function thisLoginLines(isTTY: boolean, hostLines: readonly string[]): string[] 
 /**
  * The last line of every scope block: what the record does not limit. A scoped
  * attachment's record decides which activity is forwarded, not whether the
- * machine pulls its deployment's policy or sends it a device report.
+ * machine pulls its deployment's policy, checks it for device commands or sends
+ * it a device report.
  */
 const NOT_LIMITED_LINE =
-  '             the policy pull and the device report are not limited to what is enrolled';
+  '             the policy pull, the command check and the device report are not limited to what is enrolled';
 
 /**
  * The note under a SCOPED machine's history numbers when the pass that wrote
@@ -611,9 +614,10 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * empty.
  *
  * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
- * activity is forwarded, not whether the machine pulls its deployment's policy or
- * sends it a device report. So the last line says so in every state, and a block
- * that says no activity is sent does not read as a machine that sends nothing.
+ * activity is forwarded, not whether the machine pulls its deployment's policy,
+ * checks it for device commands or sends it a device report. So the last line
+ * says so in every state, and a block that says no activity is sent does not read
+ * as a machine that sends nothing.
  *
  * Every stored string goes through printableForTerminal. The schema already
  * refuses control characters in an identity or a label; the strip is the layer
@@ -650,7 +654,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
     return [
-      '  scope      the enrolled list cannot be read by this aka — it sends no activity under it',
+      `  scope      the enrolled list cannot be read by this aka — ${nothingEnrolledSends(forwardsWork)}`,
       '             (it may have been written by a newer aka)',
     ];
   }
@@ -974,7 +978,7 @@ function historyLines(
     resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }, extras).keys
       .size === 0
   ) {
-    return ['  history    nothing to send — the scope above forwards no activity'];
+    return ['  history    nothing to send — nothing is in scope yet'];
   }
   // Granted but nothing recorded yet: the grant is real and the first pass has
   // not run. Saying "waiting" rather than "0 sent" avoids reporting a number

@@ -11,9 +11,11 @@ import { applyOnboarding } from '../../src/settings.ts';
 import type { SecurityExec } from '../../src/vault/key-provider.ts';
 import { VAULT_KEY_FILENAME } from '../../src/vault/key-provider.ts';
 import {
+  clearSightingKeys,
   createSightingKeyStore,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
 } from '../../src/vault/sighting-keys.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -21,12 +23,29 @@ const POSIX_MODES = process.platform !== 'win32';
 
 const material = (fill: number): string => Buffer.alloc(32, fill).toString('base64url');
 
+const ENDPOINT_A = 'https://aka.example-a.internal';
+const ENDPOINT_B = 'https://aka.example-b.internal';
+
+/** The settings half of an attachment to `endpoint`, under `custody`. */
+function attachTo(endpoint: string, custody: 'file' | 'keychain' = 'file'): void {
+  applyOnboarding(
+    {
+      runMode: 'attached',
+      controlPlane: { endpoint, attachedAt: '2026-10-01T10:00:00.000Z' },
+      vaultKeyCustody: custody,
+    },
+    base,
+    null,
+  );
+}
+
 const stored = (overrides: Partial<StoredSightingKeys> = {}): StoredSightingKeys => ({
   keyVersion: 2,
   algorithm: 'hmac-sha256',
   key: material(7),
   previous: [{ keyVersion: 1, key: material(3) }],
   fetchedAtMs: 1_766_000_000_000,
+  endpointFingerprint: sightingKeyEndpointFingerprint(ENDPOINT_A),
   ...overrides,
 });
 
@@ -41,6 +60,11 @@ function fakeKeychain(): {
   const arg = (tokens: string[], flag: string): string => tokens[tokens.indexOf(flag) + 1] ?? '';
   const exec: SecurityExec = (args, stdin) => {
     calls.push({ args, stdin });
+    if (args[0] === 'delete-generic-password') {
+      const id = `${arg(args, '-s')}/${arg(args, '-a')}`;
+      if (!items.delete(id)) throw Object.assign(new Error('item not found'), { status: 44 });
+      return '';
+    }
     if (args[0] === 'find-generic-password') {
       const item = items.get(`${arg(args, '-s')}/${arg(args, '-a')}`);
       if (item === undefined) throw Object.assign(new Error('item not found'), { status: 44 });
@@ -193,6 +217,7 @@ describe('keychain custody', () => {
 
 describe('readSightingKeys', () => {
   it('hands out the current and previous versions as raw bytes', () => {
+    attachTo(ENDPOINT_A);
     createSightingKeyStore('file', dir).replace(stored());
 
     const keys = readSightingKeys(base);
@@ -205,14 +230,32 @@ describe('readSightingKeys', () => {
   });
 
   it('reads an absent previous list as empty', () => {
+    attachTo(ENDPOINT_A);
     const withoutPrevious = stored();
     delete withoutPrevious.previous;
     createSightingKeyStore('file', dir).replace(withoutPrevious);
     expect(readSightingKeys(base)?.previous).toEqual([]);
   });
 
+  it('hands out nothing on a machine that is not attached, whatever is stored', () => {
+    createSightingKeyStore('file', dir).replace(stored());
+    expect(readSightingKeys(base)).toBeUndefined();
+  });
+
+  it('hands out nothing when the stored map was issued by another endpoint', () => {
+    attachTo(ENDPOINT_B);
+    createSightingKeyStore('file', dir).replace(stored());
+
+    expect(readSightingKeys(base)).toBeUndefined();
+
+    createSightingKeyStore('file', dir).replace(
+      stored({ endpointFingerprint: sightingKeyEndpointFingerprint(ENDPOINT_B) }),
+    );
+    expect(readSightingKeys(base)?.current.keyVersion).toBe(2);
+  });
+
   it('follows the vault key custody setting', () => {
-    applyOnboarding({ vaultKeyCustody: 'keychain' }, base, null);
+    attachTo(ENDPOINT_A, 'keychain');
     const { exec } = fakeKeychain();
     createSightingKeyStore('keychain', dir, exec).replace(stored());
 
@@ -223,10 +266,59 @@ describe('readSightingKeys', () => {
   });
 
   it('reads an unreadable keychain as no key rather than throwing', () => {
-    applyOnboarding({ vaultKeyCustody: 'keychain' }, base, null);
+    attachTo(ENDPOINT_A, 'keychain');
     const exec: SecurityExec = () => {
       throw Object.assign(new Error('denied'), { status: 1 });
     };
     expect(readSightingKeys(base, { exec })).toBeUndefined();
+  });
+});
+
+describe('clearSightingKeys', () => {
+  it('removes the file under file custody', () => {
+    attachTo(ENDPOINT_A);
+    createSightingKeyStore('file', dir).replace(stored());
+
+    clearSightingKeys(base);
+
+    expect(existsSync(join(dir, SIGHTING_KEY_FILENAME))).toBe(false);
+    expect(createSightingKeyStore('file', dir).read()).toBeUndefined();
+  });
+
+  it('removes the keychain item under keychain custody, and only that item', () => {
+    attachTo(ENDPOINT_A, 'keychain');
+    const { exec, items, calls } = fakeKeychain();
+    items.set('aka-vault/keyring', 'untouched');
+    createSightingKeyStore('keychain', dir, exec).replace(stored());
+
+    clearSightingKeys(base, { exec });
+
+    expect(createSightingKeyStore('keychain', dir, exec).read()).toBeUndefined();
+    expect([...items.entries()]).toEqual([['aka-vault/keyring', 'untouched']]);
+    expect(calls.filter((c) => c.args[0] === 'delete-generic-password')).toHaveLength(1);
+  });
+
+  it('is a no-op when nothing is stored, under either custody', () => {
+    attachTo(ENDPOINT_A, 'keychain');
+    const { exec } = fakeKeychain();
+    expect(() => {
+      clearSightingKeys(base, { exec });
+    }).not.toThrow();
+    expect(() => {
+      clearSightingKeys(base);
+    }).not.toThrow();
+  });
+
+  it('does not throw when the keychain refuses the delete', () => {
+    attachTo(ENDPOINT_A, 'keychain');
+    const exec: SecurityExec = () => {
+      throw Object.assign(new Error('denied'), { status: 1 });
+    };
+    expect(() => {
+      clearSightingKeys(base, { exec });
+    }).not.toThrow();
+    expect(() => {
+      createSightingKeyStore('keychain', dir, exec).remove();
+    }).toThrow(/keychain delete failed \(exit 1\)/);
   });
 });

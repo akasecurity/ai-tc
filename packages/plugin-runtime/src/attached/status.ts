@@ -4,6 +4,7 @@ import type {
   AttachmentMode,
   AttachmentScope,
   AttachmentScopeEntry,
+  ControlPlaneConnection,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -206,15 +207,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     const mode: AttachmentMode | undefined = state.usable
       ? attachmentModeOf(state.credential)
       : undefined;
-    // The name is the label, or the endpoint when there is none. An endpoint is an
-    // address, and the settings one is checked when settings are saved through the
-    // product, not when the file is edited by hand or an overlay pins it, so it
-    // goes through endpointForTerminal, which also keeps userinfo, a query and a
-    // fragment off the screen. A label is free text and gets the plain strip.
-    const plane =
-      connection.label === undefined
-        ? endpointForTerminal(controlPlaneName(connection))
-        : printableForTerminal(controlPlaneName(connection));
+    const plane = deploymentNameForTerminal(connection);
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -696,7 +689,11 @@ function postureLines(dataDir: string, nowMs: number): string[] {
 }
 
 /**
- * How often a hook has thrown and fallen open on this machine, if ever.
+ * How often a hook has fallen open on this machine, if ever: thrown out of its
+ * main(), or let part of a response through unscanned because the scan
+ * deadline or the response size bound cut it short. "failed open" is the right
+ * word for both — each is content the host received with no verdict on it —
+ * so the line does not split them, and the tally does not record which it was.
  *
  * A fail-open is silent by contract — no output, exit 0, the session never
  * notices — so a machine whose hooks throw on every call reads exactly like
@@ -768,6 +765,26 @@ export function endpointForTerminal(endpoint: string): string {
   return parsed.href === bare
     ? printableForTerminal(endpoint, 200)
     : `${printableForTerminal(originOnly(endpoint), 200)}, rest not shown`;
+}
+
+/**
+ * The deployment's name as a terminal shows it: the label, or the settings
+ * address when there is none.
+ *
+ * A label is free text and gets the plain strip at its default bound. The
+ * settings address is checked when settings are saved through the product, not
+ * when the file is edited by hand or an overlay pins it, and the plain strip
+ * leaves userinfo, a query and a fragment in an address. So an address goes
+ * through `endpointForTerminal`, which keeps those off the screen and prints a
+ * clean address whole up to two hundred characters.
+ *
+ * The one copy `aka status`, `aka enroll` and the session-start line print a
+ * deployment's name with, so the same deployment reads the same on all three.
+ */
+export function deploymentNameForTerminal(connection: ControlPlaneConnection): string {
+  return connection.label === undefined
+    ? endpointForTerminal(controlPlaneName(connection))
+    : printableForTerminal(controlPlaneName(connection));
 }
 
 /**

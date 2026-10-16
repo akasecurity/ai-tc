@@ -1,0 +1,10 @@
+{
+  "core-phi/mrn": "Medical record number",
+  "core-phi/hipaa-identifier": "Health plan ID",
+  "core-phi/member-id": "Health plan member ID",
+  "core-phi/group-id": "Health plan group ID",
+  "core-phi/icd10-code": "ICD-10 code",
+  "core-phi/ndc-code": "NDC drug code",
+  "core-phi/genetic-data": "Genetic data",
+  "core-phi/biometric-ref": "Biometric data"
+}

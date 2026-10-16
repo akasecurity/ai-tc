@@ -1,0 +1,638 @@
+// The vault glue over an injected vault core: replace detected spans with
+// pointers, and resolve pointers back for whoever is allowed to see them.
+//
+// This module opens no store. `tokenize.ts` builds the same glue over the
+// local SQLite vault; anything that brings its own `VaultCore` can import this
+// module as `@akasecurity/plugin-sdk/vault-glue` without loading the store
+// layer, whether or not its loader tree-shakes.
+//
+// Every public method follows two rules:
+//
+//   never throw   a caller on the fail-open boundary must not be broken by a
+//                 vault fault. Every public function catches everything.
+//   never leak    a fault while masking must destroy the value, not pass it.
+//                 A span we cannot tokenize is rewritten to the same one-way
+//                 `[REDACTED:CATEGORY]` placeholder the engine emits, and a
+//                 pointer we cannot resolve renders as `[unavailable]`.
+//
+// The two rules compose to: on any failure the session continues and the model
+// sees LESS, never more.
+import type { MatchResult } from '@akasecurity/detections';
+import { maskMatch, scan } from '@akasecurity/detections';
+import type {
+  DetectionCategory,
+  PointerDescriptor,
+  PointerToken,
+  VaultDerefReason,
+  VaultSightingKind,
+} from '@akasecurity/schema';
+import { isActionAtLeast, POINTER_TOKEN_ANCHORED, pointerTokenScanner } from '@akasecurity/schema';
+
+import type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
+import { bundledMaskingRules } from './mask.ts';
+import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
+import type { PolicyResolver } from './policy-resolver.ts';
+
+// The one-way placeholder for a span that could not (or must not) be vaulted —
+// identical to the engine's redact() form so a degraded field is
+// indistinguishable from a pre-vault one.
+function redactedPlaceholder(category: string): string {
+  return `[REDACTED:${category.toUpperCase()}]`;
+}
+
+// What an unresolvable pointer renders as on a human surface.
+export const POINTER_UNAVAILABLE_TEXT = '[unavailable]';
+
+export interface TokenizeTextResult {
+  text: string;
+  // The pointers now present in `text` that this call minted or re-emitted.
+  pointers: PointerToken[];
+  // Spans that were destroyed one-way instead of vaulted (overlap groups, stale
+  // spans, vault faults, consent absent) — the truthful record a caller needs
+  // before telling anyone a value is recoverable. `degraded` means "we meant to
+  // vault this and could not", so a span destroyed BY POLICY is not one of
+  // these; it is a `redacted` entry below.
+  degraded: { category: string }[];
+  // Spans destroyed one-way because the detection that matched chose Redact
+  // rather than Redact & Vault. Nothing went wrong here, which is why these are
+  // kept apart from `degraded` — but they still have to be COUNTED, because a
+  // caller distinguishing a deliberate rewrite from the tokenizer's
+  // unclassifiable blanket has only the two counts to go on: text that changed
+  // while both are empty is the blanket, and a policy-filtered rewrite that
+  // reported nothing here would be mistaken for it on every line.
+  redacted: { category: string }[];
+}
+
+// Human-target only, and deliberately so. This entry applies ONE option set to
+// every pointer in a text, which no per-value grant can authorize — a single
+// grant covers a single value, not whatever else happens to share the string.
+// Model crossings go through substituteModelPointers, which decides pointer by
+// pointer and spends a grant per crossing.
+export interface DetokenizeTextOptions {
+  target: 'human';
+  reason: VaultDerefReason;
+}
+
+export interface DetokenizeTextResult {
+  text: string;
+  // Pointer occurrences replaced with their raw value.
+  revealed: number;
+}
+
+// What the caller knows about ONE value it is asking the vault to hold.
+//
+// `userAuthorized` is provenance, not policy: it says a PERSON asked for this
+// value to be replaced rather than a pack enforcing its assignment. It is
+// recorded on the vault row and is STICKY there — one value is one row, so an
+// automatic path vaulting the same value later must not clear it. Only a
+// user-driven surface sets it; every automatic caller leaves it absent.
+export interface TokenizeValueMeta {
+  ruleId: string;
+  category: DetectionCategory;
+  maskedMatch: string;
+  // The variable the value was assigned to where it was detected.
+  variableName?: string | undefined;
+  userAuthorized?: boolean | undefined;
+}
+
+// The slice of the vault core the glue calls. Narrow on purpose: tests inject a
+// stub here to exercise the degrade branches without a real store.
+export interface VaultCore {
+  tokenize(raw: string, meta: TokenizeValueMeta): Promise<string | symbol>;
+  detokenize(
+    token: string,
+    opts: {
+      target: 'human' | 'model';
+      reason: VaultDerefReason;
+      grantId?: string | undefined;
+      pointerCount?: number | undefined;
+    },
+  ): Promise<string | symbol>;
+  describePointer(token: string): Promise<PointerDescriptor | null>;
+  resolvePointerIdentity(token: string): Promise<{
+    ruleId: string;
+    valueFingerprint: string;
+    fingerprintKeyVersion: number;
+  } | null>;
+  recordSighting?(pointerId: string, sighting: { location: string; kind: VaultSightingKind }): void;
+  // Claim one use of a reveal grant. Called once per grant per crossing, AFTER
+  // a successful de-reference — a refusal must never spend the budget.
+  consumeGrant?(grantId: string): Promise<boolean>;
+}
+
+// Resolves whether a model-echoed pointer may be de-referenced back to raw for
+// the model: a grant id when an active reveal grant covers the value, null
+// otherwise. The default resolver always returns null, so no model de-ref ever
+// happens until a real resolver is wired in.
+export type ModelDerefGrantResolver = (pointer: PointerToken) => Promise<string | null>;
+
+export interface SubstitutePointersResult {
+  text: string;
+  // Pointers replaced by their raw value under a grant.
+  revealed: PointerToken[];
+  // Pointers left literal: no grant, or the vault refused/could not resolve.
+  unresolved: PointerToken[];
+  // The grant ids that authorized the reveals — the caller threads these into
+  // the detection scan so the same crossing's suppression does not spend a
+  // second use.
+  grantIds: string[];
+}
+
+export interface ProbePointersResult {
+  // Distinct pointers an active grant covers, with the covering grant id.
+  granted: Map<PointerToken, string>;
+  // Distinct pointers no grant covers.
+  ungranted: PointerToken[];
+}
+
+export interface TokenizeSighting {
+  location: string;
+  kind: VaultSightingKind;
+}
+
+export interface VaultGlue extends AtRestVault {
+  tokenizeText(
+    text: string,
+    opts?: {
+      findings?: MatchResult[];
+      sighting?: TokenizeSighting;
+      // The subset of `findings` whose detection chose the reversible archetype
+      // (Redact & Vault). Absent ⇒ every finding is kept, which is what callers
+      // predating the per-detection archetype meant. Every span is rewritten
+      // either way; this decides only whether the value behind it survives.
+      reversible?: ReadonlySet<MatchResult>;
+      // The caller's pack policy, for a call that has no findings of its own.
+      // Without it a self-scan rewrites — and vaults — every span it finds,
+      // which mints a recoverable copy of a value whose detection may only have
+      // been asked to log it. With it, the self-scan is narrowed to the spans
+      // policy actually authorizes rewriting, and reversibility is read from
+      // the same bundle rather than defaulted to keep-all.
+      //
+      // It never widens a caller's own `findings`: those were already resolved
+      // upstream, and re-resolving them here would be a second reading of the
+      // same bundle. For the same reason it only ever FILLS IN `reversible` —
+      // when the caller passed none. A caller that passed one has stated the
+      // answer, findings of its own or not, and it stands.
+      resolver?: PolicyResolver;
+    },
+  ): Promise<TokenizeTextResult>;
+  tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string>;
+  detokenizeText(text: string, opts: DetokenizeTextOptions): Promise<DetokenizeTextResult>;
+  describePointerSafe(token: string): Promise<PointerDescriptor | null>;
+  // Grant resolution only — no de-reference, no audit rows. The executable-field
+  // deny path uses this so a mixed field never audits a 'revealed' crossing for
+  // a call that is then blocked.
+  probeModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<ProbePointersResult>;
+  substituteModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<SubstitutePointersResult>;
+  // The live reveal-grant lookup for this store: a grant id when an active
+  // reveal-to-model exception covers the pointer's value, null otherwise.
+  // Always null on a degraded glue. Resolution never spends the grant — the
+  // crossing itself consumes, once per grant, after a successful de-reference,
+  // whatever enforcement mode the covered rule runs under.
+  revealGrantResolver: ModelDerefGrantResolver;
+  /**
+   * Release the store handle this glue opened. Idempotent, and a no-op on a
+   * glue that opened nothing — a degraded one, or one built over an injected
+   * vault without a `release` callback.
+   *
+   * Hook processes need not call it: they exit, and exiting releases the
+   * handle. Anything that OUTLIVES its glue must — a long-lived process leaks a
+   * connection otherwise, and on Windows an open handle blocks removal of the
+   * directory holding the store.
+   */
+  close(): void;
+}
+
+const SEVERITY_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+
+// Disjoint replacement units over the findings of one text. Overlapping spans
+// cannot each map to one vaulted value — the shared characters belong to both —
+// so an overlapping group degrades to the one-way placeholder of its
+// highest-severity member. Only truly disjoint spans tokenize.
+interface SpanGroup {
+  start: number;
+  end: number;
+  // Present when the group is a single finding whose span text matches its
+  // rawMatch exactly; absent means one-way redaction.
+  finding?: MatchResult;
+  // The category of the group's highest-severity member — what the one-way
+  // placeholder names when per-finding identity is lost.
+  category: string;
+  severity: string;
+}
+
+function groupSpans(text: string, findings: MatchResult[]): SpanGroup[] {
+  const sorted = [...findings]
+    .filter((f) => f.span.start >= 0 && f.span.end <= text.length && f.span.start < f.span.end)
+    .sort((a, b) => a.span.start - b.span.start || b.span.end - a.span.end);
+
+  const groups: SpanGroup[] = [];
+  for (const finding of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && finding.span.start < last.end) {
+      // Overlap: widen the group and drop per-finding identity.
+      last.end = Math.max(last.end, finding.span.end);
+      if ((SEVERITY_RANK[finding.severity] ?? 0) > (SEVERITY_RANK[last.severity] ?? 0)) {
+        last.category = finding.category;
+        last.severity = finding.severity;
+      }
+      delete last.finding;
+      continue;
+    }
+    groups.push({
+      start: finding.span.start,
+      end: finding.span.end,
+      finding,
+      category: finding.category,
+      severity: finding.severity,
+    });
+  }
+  return groups;
+}
+
+const NULL_RESOLVER: ModelDerefGrantResolver = () => Promise.resolve(null);
+
+export class SecretVaultGlue implements VaultGlue {
+  readonly #vault: VaultCore;
+  readonly revealGrantResolver: ModelDerefGrantResolver;
+  // Set only when THIS glue opened the store, so a glue over an injected vault
+  // never closes a handle it does not own.
+  #release: (() => void) | undefined;
+
+  constructor(
+    vault: VaultCore,
+    revealGrantResolver: ModelDerefGrantResolver = NULL_RESOLVER,
+    release?: () => void,
+  ) {
+    this.#vault = vault;
+    this.revealGrantResolver = revealGrantResolver;
+    this.#release = release;
+  }
+
+  close(): void {
+    const release = this.#release;
+    // Cleared before the call so a second close is a no-op even if the first
+    // throws — and a throw here is swallowed: releasing a handle is cleanup,
+    // never a reason to fail the caller.
+    this.#release = undefined;
+    try {
+      release?.();
+    } catch {
+      // Already unusable; nothing left to do.
+    }
+  }
+
+  async tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string> {
+    try {
+      const result = await this.#vault.tokenize(raw, meta);
+      // Anything but a well-formed pointer degrades one-way: a sentinel
+      // (consent absent, or a future one), and any other string a core returns,
+      // which may carry the raw value or never resolve as a pointer.
+      return typeof result === 'string' && POINTER_TOKEN_ANCHORED.test(result)
+        ? result
+        : redactedPlaceholder(meta.category);
+    } catch {
+      return redactedPlaceholder(meta.category);
+    }
+  }
+
+  async tokenizeText(
+    text: string,
+    opts?: {
+      findings?: MatchResult[];
+      sighting?: TokenizeSighting;
+      reversible?: ReadonlySet<MatchResult>;
+      resolver?: PolicyResolver;
+    },
+  ): Promise<TokenizeTextResult> {
+    try {
+      const supplied = opts?.findings;
+      const resolver = opts?.resolver;
+      const scanned = supplied ?? this.#selfScan(text);
+      // A self-scan that failed outright cannot tell secret from clean; the
+      // only safe output is the blanket the mask path also emits.
+      if (scanned === null) {
+        return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
+      }
+      // A self-scan finds every span the rules match, and this loop rewrites
+      // every span it is handed — so without a policy to narrow it, a detection
+      // assigned Monitor or Warn has its value stripped and vaulted on the
+      // strength of having matched at all. Narrow it to the spans whose own
+      // action is redact or stronger; a caller's OWN findings arrive already
+      // resolved and are honoured as given.
+      const findings =
+        supplied === undefined && resolver !== undefined
+          ? scanned.filter((f) =>
+              isActionAtLeast(resolver.actionFor(f.ruleId, f.category), 'redact'),
+            )
+          : scanned;
+      // Which of those findings the policy said to KEEP. Absent means "all of
+      // them", which is what every caller predating the per-detection Redact &
+      // Vault archetype meant. Present means the rewrite is mixed: every span
+      // below is still replaced — the difference is only whether the value
+      // behind it survives as recoverable ciphertext or is destroyed. A
+      // resolver answers this from the same bundle that decided the action,
+      // and is what a self-scan has instead of keep-all.
+      //
+      // The resolver only FILLS IN that answer: a caller that passed a set of
+      // its own has already stated it, and re-deriving one here would overrule
+      // the caller with a second reading of a bundle it already read. That
+      // holds whether or not the caller also passed findings — a set that
+      // matches nothing in play means "keep nothing", and keeping nothing is
+      // the direction that destroys values rather than minting recoverable
+      // copies of them.
+      let reversible = opts?.reversible;
+      if (resolver !== undefined && reversible === undefined) {
+        reversible = new Set(findings.filter((f) => resolver.isReversible(f.ruleId)));
+      }
+      const reversibleSet = reversible;
+      const keeps = (finding: MatchResult): boolean =>
+        reversibleSet === undefined || reversibleSet.has(finding);
+      if (findings.length === 0) return { text, pointers: [], degraded: [], redacted: [] };
+
+      const groups = groupSpans(text, findings);
+      const pointers: PointerToken[] = [];
+      const degraded: { category: string }[] = [];
+      const redacted: { category: string }[] = [];
+      let out = text;
+      // Back to front, so earlier offsets stay valid as later spans change width.
+      for (const group of [...groups].reverse()) {
+        const original = text.slice(group.start, group.end);
+        const finding = group.finding;
+        let replacement: string;
+        if (finding === undefined) {
+          // An overlap group: per-finding identity is gone, destroy the region.
+          replacement = redactedPlaceholder(group.category);
+          degraded.unshift({ category: group.category });
+        } else if (original !== finding.rawMatch) {
+          // A span that no longer slices to its finding's rawMatch is stale;
+          // vaulting the sliced text would store something detection never saw.
+          replacement = redactedPlaceholder(group.category);
+          degraded.unshift({ category: group.category });
+        } else if (!keeps(finding)) {
+          // The detection that matched chose one-way Redact. Destroy it here
+          // rather than skipping the span: skipping would leave the raw value
+          // in `out`, since this loop IS the rewrite for every enforced span.
+          // Counted as `redacted` and not as `degraded` — nothing was
+          // downgraded, this is the policy being carried out — but counted,
+          // because a caller looking at a changed text with neither count set
+          // reads it as the unclassifiable blanket.
+          replacement = redactedPlaceholder(finding.category);
+          redacted.unshift({ category: finding.category });
+        } else {
+          replacement = await this.tokenizeValue(finding.rawMatch, {
+            ruleId: finding.ruleId,
+            category: finding.category,
+            maskedMatch: maskMatch(finding.rawMatch),
+            ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
+          });
+          if (POINTER_TOKEN_ANCHORED.test(replacement)) pointers.unshift(replacement);
+          else degraded.unshift({ category: finding.category });
+        }
+        out = out.slice(0, group.start) + replacement + out.slice(group.end);
+      }
+      // Where these pointers just landed — the ledger that makes pointer
+      // correlation visible to the owner. Best-effort: a bookkeeping fault
+      // never affects the rewrite.
+      if (opts?.sighting) this.#recordSightings(pointers, opts.sighting);
+      return { text: out, pointers, degraded, redacted };
+    } catch {
+      // The unknown failure could have left raw spans in place; destroy them.
+      return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
+    }
+  }
+
+  async vaultSpans(
+    text: string,
+    findings: readonly MatchResult[],
+    opts: VaultSpansOptions,
+  ): Promise<Map<MatchResult, PointerToken>> {
+    const vaulted = new Map<MatchResult, PointerToken>();
+    try {
+      // Grouped over every finding, so a span another finding overlaps is never
+      // vaulted: its characters belong to more than one value.
+      for (const group of groupSpans(text, [...findings])) {
+        const finding = group.finding;
+        if (finding === undefined || !opts.selected.has(finding)) continue;
+        if (text.slice(group.start, group.end) !== finding.rawMatch) continue;
+        let token: string | symbol;
+        try {
+          token = await this.#vault.tokenize(finding.rawMatch, {
+            ruleId: finding.ruleId,
+            category: finding.category,
+            maskedMatch: maskMatch(finding.rawMatch),
+            ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
+          });
+        } catch {
+          continue;
+        }
+        // A sentinel (consent absent, an unopenable store) leaves the span as it was.
+        if (typeof token === 'string') vaulted.set(finding, token);
+      }
+    } catch {
+      // Every entry already in the map is a minted pointer; a later fault only
+      // leaves the remaining spans unvaulted.
+    }
+    this.#recordSightings([...new Set(vaulted.values())], opts.sighting);
+    return vaulted;
+  }
+
+  // Where these pointers just landed. Best-effort: a bookkeeping fault never
+  // affects the rewrite.
+  #recordSightings(pointers: readonly PointerToken[], sighting: TokenizeSighting): void {
+    for (const pointer of pointers) {
+      try {
+        const id = pointer.split('.')[1];
+        if (id !== undefined) this.#vault.recordSighting?.(id, sighting);
+      } catch {
+        // best-effort only
+      }
+    }
+  }
+
+  async detokenizeText(text: string, opts: DetokenizeTextOptions): Promise<DetokenizeTextResult> {
+    try {
+      const matches = [...text.matchAll(pointerTokenScanner())];
+      if (matches.length === 0) return { text, revealed: 0 };
+
+      // Resolve each DISTINCT pointer once: one audit row per distinct pointer,
+      // carrying how many times it occurs in this text.
+      const occurrences = new Map<string, number>();
+      for (const match of matches) {
+        occurrences.set(match[0], (occurrences.get(match[0]) ?? 0) + 1);
+      }
+      const resolved = new Map<string, string | null>();
+      for (const [pointer, count] of occurrences) {
+        try {
+          // Pinned rather than forwarded from opts, so a caller reaching past
+          // the type still cannot turn this into a model crossing.
+          const value = await this.#vault.detokenize(pointer, {
+            target: 'human',
+            reason: opts.reason,
+            pointerCount: count,
+          });
+          resolved.set(pointer, typeof value === 'string' ? value : null);
+        } catch {
+          resolved.set(pointer, null);
+        }
+      }
+
+      let out = text;
+      let revealed = 0;
+      for (const match of [...matches].reverse()) {
+        const value = resolved.get(match[0]);
+        const replacement = value ?? POINTER_UNAVAILABLE_TEXT;
+        if (value !== null && value !== undefined) revealed += 1;
+        out = out.slice(0, match.index) + replacement + out.slice(match.index + match[0].length);
+      }
+      return { text: out, revealed };
+    } catch {
+      // Leaving the pointers literal is safe — they carry no secret material.
+      return { text, revealed: 0 };
+    }
+  }
+
+  // Scan with the bundled packs, registered once per process by the mask path.
+  // Pointers already in the text are blanked first so a pointer is never
+  // re-tokenized. Returns null when the registry or the scan itself failed —
+  // the caller must then treat the whole text as unclassifiable.
+  #selfScan(text: string): MatchResult[] | null {
+    try {
+      const rules = bundledMaskingRules();
+      if (rules === null) return null;
+      const shielded = shieldPointers(text);
+      return dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
+    } catch {
+      return null;
+    }
+  }
+
+  async describePointerSafe(token: string): Promise<PointerDescriptor | null> {
+    try {
+      return await this.#vault.describePointer(token);
+    } catch {
+      return null;
+    }
+  }
+
+  async probeModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<ProbePointersResult> {
+    const granted = new Map<PointerToken, string>();
+    const ungranted: PointerToken[] = [];
+    try {
+      for (const pointer of new Set([...text.matchAll(pointerTokenScanner())].map((m) => m[0]))) {
+        try {
+          const grantId = await opts.resolveGrant(pointer);
+          if (grantId === null) ungranted.push(pointer);
+          else granted.set(pointer, grantId);
+        } catch {
+          ungranted.push(pointer);
+        }
+      }
+      return { granted, ungranted };
+    } catch {
+      return { granted: new Map(), ungranted };
+    }
+  }
+
+  async substituteModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<SubstitutePointersResult> {
+    try {
+      const matches = [...text.matchAll(pointerTokenScanner())];
+      if (matches.length === 0) return { text, revealed: [], unresolved: [], grantIds: [] };
+
+      // Two phases: resolve every distinct pointer's grant FIRST, then
+      // de-reference only the granted ones. Every model crossing — revealed or
+      // refused — is audited by the vault itself; the glue adds no rows.
+      const resolved = new Map<string, { value: string; grantId: string } | null>();
+      for (const pointer of new Set(matches.map((m) => m[0]))) {
+        try {
+          const grantId = await opts.resolveGrant(pointer);
+          if (grantId === null) {
+            // No grant: the vault still records the refused crossing.
+            await this.#vault.detokenize(pointer, { target: 'model', reason: 'model-input' });
+            resolved.set(pointer, null);
+            continue;
+          }
+          const value = await this.#vault.detokenize(pointer, {
+            target: 'model',
+            reason: 'model-input',
+            grantId,
+          });
+          resolved.set(pointer, typeof value === 'string' ? { value, grantId } : null);
+        } catch {
+          resolved.set(pointer, null);
+        }
+      }
+
+      // The crossing spends the grant — once per grant, only on success, and
+      // regardless of what enforcement mode the covered rule runs under. Tying
+      // consumption to a later suppression match would make a once-grant
+      // unlimited whenever the rule sits at Monitor/Warn.
+      const spentGrants = new Set<string>();
+      for (const entry of resolved.values()) {
+        if (entry === null || spentGrants.has(entry.grantId)) continue;
+        spentGrants.add(entry.grantId);
+        try {
+          await this.#vault.consumeGrant?.(entry.grantId);
+        } catch {
+          // The reveal already happened; a failed claim only means the next
+          // crossing re-evaluates the grant's remaining budget.
+        }
+      }
+
+      let out = text;
+      const revealed = new Set<string>();
+      const unresolved = new Set<string>();
+      for (const match of [...matches].reverse()) {
+        const entry = resolved.get(match[0]);
+        if (entry === null || entry === undefined) {
+          unresolved.add(match[0]);
+          continue;
+        }
+        revealed.add(match[0]);
+        out = out.slice(0, match.index) + entry.value + out.slice(match.index + match[0].length);
+      }
+      return {
+        text: out,
+        revealed: [...revealed],
+        unresolved: [...unresolved],
+        grantIds: [...spentGrants],
+      };
+    } catch {
+      // Pointers left literal are inert; nothing raw has been substituted.
+      return { text, revealed: [], unresolved: [], grantIds: [] };
+    }
+  }
+}
+
+export interface InjectedVaultGlueOptions {
+  // Answers `revealGrantResolver`. Absent, every lookup resolves null, so no
+  // pointer is ever revealed to the model.
+  revealResolver?: ModelDerefGrantResolver | undefined;
+  // Called once, by the first `close`, to release whatever the core holds.
+  release?: (() => void) | undefined;
+}
+
+/** The glue over a caller-supplied vault core. It opens no store of its own. */
+export function createInjectedVaultGlue(
+  vault: VaultCore,
+  options?: InjectedVaultGlueOptions,
+): VaultGlue {
+  return new SecretVaultGlue(vault, options?.revealResolver, options?.release);
+}
+
+/** Whether `text` contains at least one well-formed pointer token. */
+export function hasPointer(text: string): boolean {
+  return pointerTokenScanner().test(text);
+}

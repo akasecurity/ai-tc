@@ -70,6 +70,15 @@ export function connectionRefusal(refusal: ConnectionRefusal): string {
 export const SETTINGS_WRITE_ERROR = 'Could not write settings.json.';
 
 /**
+ * A save that turned the account grant off, and then could not delete the record
+ * of accounts already seen. The grant is off and the host adds nothing more, so
+ * the sentence says so and names the command that deletes the record.
+ */
+export const WEB_CHAT_ACCOUNTS_NOT_CLEARED =
+  'Account recording is off, but the list of accounts already seen could not be deleted. ' +
+  'Run `aka extension account --off` to delete it.';
+
+/**
  * The three refusals `attachToControlPlane` adds.
  *
  * None of them interpolates anything the caller supplied. That is the point:

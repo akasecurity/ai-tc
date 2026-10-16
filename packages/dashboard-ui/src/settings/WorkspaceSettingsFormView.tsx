@@ -6,7 +6,9 @@ import type {
   ManagedContext,
   ManagedSettingKey,
   ModelJudgeConsentChoice,
+  WebChatAccountConsentChoice,
   WebChatCaptureConsentChoice,
+  WebChatWithholding,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -17,6 +19,7 @@ import {
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   managedByLabel,
   NO_MANAGED_CONTEXT,
@@ -153,8 +156,8 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
-// The grant covering activity this machine has not delivered: what it recorded
-// BEFORE it attached, and what a live send could not deliver. On a personal
+// The grant covering activity this machine recorded BEFORE it attached. What a
+// live send could not deliver is sent later whether or not it is given. On a personal
 // device that is the enrolled repositories' activity (see the _SCOPED set
 // below), and enrolling a repository under the grant also queues the captures
 // still kept for it, including any recorded after attaching. Separate from the
@@ -170,9 +173,7 @@ export const HISTORY_SYNC_ROW_DESCRIPTION =
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
-  'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
-  'live send could not deliver because the deployment was unreachable or refused the ' +
-  'credential. Both are sent the same way: which sessions ran and when, in which project, repo ' +
+  'sent later: what was already recorded before it attached. It is sent as: which sessions ran and when, in which project, repo ' +
   'and branch, token usage and model per call, which tools were called with their inputs ' +
   'truncated and every detected secret already masked, what was detected in those inputs, and ' +
   'the prompts, assistant replies and tool results themselves — for which a captured one ' +
@@ -181,7 +182,7 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
   'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
   'text is masked. Live sending is part of being attached and this setting does not change ' +
-  'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
+  'it: anything a live send could not deliver is kept and sent later either way. Sending ' +
   'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
   'cannot recall what has.';
 
@@ -190,13 +191,13 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Anything not delivered live is dropped, as it was before this setting existed (default — never assumed).',
+      'Activity from before this machine attached is not sent (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'Activity from before this machine attached, and anything undelivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
   },
 ];
 
@@ -227,9 +228,8 @@ export const HISTORY_SYNC_ROW_DESCRIPTION_SCOPED =
 export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'Whether activity the repositories enrolled on this device have not delivered to the ' +
   'deployment it is attached to may be sent later. Activity in any other repository, or ' +
-  'outside one, is not sent. Two kinds qualify: some of what an enrolled repository recorded ' +
-  'here before you enrolled it, and anything a live send from one could not deliver because ' +
-  'the deployment was unreachable or refused the credential. Both are sent the same way: ' +
+  'outside one, is not sent. What qualifies is some of what an enrolled repository recorded ' +
+  'here before you enrolled it, sent as: ' +
   'which sessions ran and when, in which project, repo and branch, token usage and model per ' +
   'call, which tools were called with their inputs truncated and every detected secret ' +
   'already masked, what was detected in those inputs, and the prompts, assistant replies and ' +
@@ -239,7 +239,7 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
   'or block, so on a default install nothing in that text is masked. Live sending from ' +
   'enrolled repositories is part of being attached and this setting does not change it: ' +
-  'declining means an undelivered item is dropped rather than kept and retried. With no ' +
+  'anything a live send from one could not deliver is kept and sent later either way. With no ' +
   'repository enrolled, no activity is sent. Sending happens in the background over later ' +
   'sessions. Revoking stops what has not been sent; it cannot recall what has.';
 
@@ -248,13 +248,13 @@ export const HISTORY_SYNC_CHOICES_SCOPED: Choice<HistorySyncChoice>[] = [
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Anything an enrolled repository does not deliver live is dropped rather than kept (default — never assumed).',
+      'What an enrolled repository recorded before you enrolled it is not sent (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'Some of what the repositories enrolled here recorded before you enrolled them, and anything they have not delivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
+      'Some of what the repositories enrolled here recorded before you enrolled them may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block. Activity in any other repository, or outside one, is not sent.',
   },
 ];
 
@@ -341,6 +341,61 @@ export const WEB_CHAT_STALE_NOTICE =
   'Your grant was recorded against an older version of this setting, which covered less than is ' +
   'recorded now, so it no longer counts as consent. Saving with "Granted" selected re-consents ' +
   'to the current version.';
+
+// The few-word form of a withheld machine's notice, for the collapsed summary,
+// shown only while a valid grant reads "Granted" there: the stored answer is
+// then not the one in force, which is what a row alert is for. Per reason,
+// because a personal device still records in the accounts enrolled on it.
+export const WEB_CHAT_WITHHELD_BADGES: Record<WebChatWithholding, string> = {
+  'personal-device': 'Enrolled accounts only',
+  'unreadable-attachment': 'Not recording',
+};
+
+// What the web-chat row says on a machine whose browser extension records
+// less from a web chat than this grant says, or nothing. Total over the
+// reasons, so a new one fails to compile until it is worded here.
+export const WEB_CHAT_WITHHELD_NOTICES: Record<WebChatWithholding, string> = {
+  'personal-device':
+    'This machine is attached as a personal device, so the extension records a web chat only in a ' +
+    'claude.ai account enrolled with `aka enroll --account`: its replies, with their tool calls ' +
+    'and token usage. Prompts you type are not recorded, and nothing from any other account or ' +
+    'site is. What you send is still blocked, redacted or warned on.',
+  'unreadable-attachment':
+    'This machine holds a control-plane credential AKA cannot read, so the extension records ' +
+    'nothing from a web chat whatever this is set to, until the attachment is repaired. What you ' +
+    'send is still blocked, redacted or warned on.',
+};
+
+export const WEB_CHAT_ACCOUNT_SECTION_LABEL = 'Web chat accounts';
+
+// The account grant's disclosure. What it records is small and has to be named
+// exactly: an account key, and when it was first and last seen. It is a
+// separate grant from capture, so the copy also says it records nothing from a
+// chat and does not turn capture on.
+export const WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION =
+  'Permission for the AKA browser extension to record which claude.ai account each chat is ' +
+  'signed in to: the organization id the chat’s own requests name, and when it was first and ' +
+  'last seen, so `aka enroll --list-detected` can list the accounts for enrolling. Nothing from ' +
+  'the chat is recorded with it, nor any account name or email, and the record is kept in ' +
+  '~/.aka and never sent anywhere. It does not turn web chat capture on. Revoking stops ' +
+  'recording and deletes the record.';
+
+export const WEB_CHAT_ACCOUNT_CHOICES: Choice<WebChatChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not granted',
+    description:
+      'Which accounts the extension sees is not recorded (default — never assumed). The extension ' +
+      'popup still names the account a tab is signed in to.',
+  },
+  {
+    value: 'granted',
+    label: 'Granted',
+    description:
+      'Each claude.ai account the extension sees is recorded under ~/.aka by its organization id, ' +
+      'with when it was seen, for `aka enroll --list-detected`.',
+  },
+];
 
 // A grant recorded against another consent version no longer authorizes
 // anything — the version moved because what is recorded widened. The row still
@@ -665,6 +720,8 @@ export interface WorkspaceSettingsFormViewProps {
       // re-stamps this grant's acknowledgedAt — or deletes it outright the
       // moment its consent version is bumped.
       webChatCaptureConsent: WebChatCaptureConsentChoice;
+      // The account grant, three answers for the same reason.
+      webChatAccountConsent: WebChatAccountConsentChoice;
     },
   ) => void;
   // Register this machine against an organization's deployment, and undo that.
@@ -705,6 +762,10 @@ export interface WorkspaceSettingsFormViewProps {
   // on the rule its attach action refuses on; the form then offers no choice.
   // Absent reads as not held, and the action refuses a scoped attach either way.
   machineOnly?: boolean | undefined;
+  // Why the browser extension records nothing from a web chat on this machine,
+  // read by the host (`webChatWithholding`). Absent when it records as usual,
+  // and the web-chat row then says nothing more than the grant.
+  webChatWithheld?: WebChatWithholding | undefined;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -732,6 +793,7 @@ export function WorkspaceSettingsFormView({
   connectionHeld,
   attachmentMode,
   machineOnly,
+  webChatWithheld,
   detectionsHref = '/detections',
   busy,
   error,
@@ -822,6 +884,24 @@ export function WorkspaceSettingsFormView({
   // Read once: the badge and the row's default-open state must agree about
   // staleness, and two separate calls could not disagree loudly.
   const webChatStale = webChatCaptureStale(settings.webChatCapture);
+  // The account grant: validity seeds the row, and only a touched row sends an
+  // answer, as above.
+  const initialWebChatAccount: WebChatChoice = isWebChatAccountGrantValid(settings.webChatCapture)
+    ? 'granted'
+    : 'revoked';
+  const [webChatAccount, setWebChatAccount] = useState<WebChatChoice>(initialWebChatAccount);
+  const [webChatAccountTouched, setWebChatAccountTouched] = useState(false);
+  const answerWebChatAccount = (choice: WebChatChoice): void => {
+    setWebChatAccountTouched(true);
+    setWebChatAccount(choice);
+  };
+  // The row is for enrolling, which only a personal device does, so it is shown
+  // there; and wherever the grant is on, so it can always be revoked here. A
+  // hidden row sends 'unchanged'.
+  const showWebChatAccount = attachmentMode === 'scoped' || initialWebChatAccount === 'granted';
+  // A valid grant on a machine that records less from a web chat than it says.
+  const webChatInert =
+    webChatWithheld !== undefined && isWebChatCaptureConsentValid(settings.webChatCapture?.consent);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
   const [redactFallback, setRedactFallback] = useState(settings.redactFallback);
@@ -872,7 +952,8 @@ export function WorkspaceSettingsFormView({
     // TOUCHED, for the reason the two above are: a stale grant seeds 'revoked',
     // so declining it in place moves no comparison here and Save would stay
     // disabled with the badge undismissable.
-    webChatTouched;
+    webChatTouched ||
+    webChatAccountTouched;
 
   return (
     // No width of its own: the host decides how wide the settings column is. A
@@ -967,10 +1048,21 @@ export function WorkspaceSettingsFormView({
           // user's behalf when the pinned value is true, so making this lockable
           // would let an organization consent to recording a person's web chats
           // for them. This key is deliberately outside ManagedSettingKey.
-          alert={webChatStale ? WEB_CHAT_STALE_BADGE : undefined}
-          defaultOpen={webChatStale}
+          alert={
+            webChatStale
+              ? WEB_CHAT_STALE_BADGE
+              : webChatInert
+                ? WEB_CHAT_WITHHELD_BADGES[webChatWithheld]
+                : undefined
+          }
+          defaultOpen={webChatStale || webChatInert}
           notice={
             <>
+              {webChatWithheld !== undefined && (
+                <p className="mb-3 text-xs text-text-2" data-slot="web-chat-withheld-notice">
+                  {WEB_CHAT_WITHHELD_NOTICES[webChatWithheld]}
+                </p>
+              )}
               {webChatStale && (
                 <p className="mb-3 text-xs text-sev-high-ink" data-slot="web-chat-stale-notice">
                   {WEB_CHAT_STALE_NOTICE}
@@ -982,6 +1074,23 @@ export function WorkspaceSettingsFormView({
             </>
           }
         />
+        {showWebChatAccount && (
+          <SettingRow
+            label={WEB_CHAT_ACCOUNT_SECTION_LABEL}
+            description="Whether the browser extension may record which claude.ai account each chat is in."
+            name="webChatAccountConsent"
+            choices={WEB_CHAT_ACCOUNT_CHOICES}
+            value={webChatAccount}
+            onChange={answerWebChatAccount}
+            // NO `managed` prop, for the reason the capture row gives: a pinned
+            // grant would be an organization consenting for the person.
+            notice={
+              <p className="mb-3 text-xs text-text-3" data-slot="web-chat-account-disclosure">
+                {WEB_CHAT_ACCOUNT_SECTION_DESCRIPTION}
+              </p>
+            }
+          />
+        )}
         {isAttached(settings) && (
           <SettingRow
             label={HISTORY_SYNC_SECTION_LABEL}
@@ -1128,6 +1237,11 @@ export function WorkspaceSettingsFormView({
               // on everyone's next save once its consent version is bumped.
               webChatCaptureConsent: webChatTouched
                 ? webChat === 'granted'
+                  ? 'granted'
+                  : 'revoked'
+                : 'unchanged',
+              webChatAccountConsent: webChatAccountTouched
+                ? webChatAccount === 'granted'
                   ? 'granted'
                   : 'revoked'
                 : 'unchanged',

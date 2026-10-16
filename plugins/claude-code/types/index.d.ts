@@ -12,6 +12,6 @@
  */
 declare module 'claude-code' {
   interface PluginState {
-    aka: { reveals: number };
+    aka: { reveals: number; findings: number; pane: number };
   }
 }

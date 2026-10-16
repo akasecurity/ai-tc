@@ -254,6 +254,7 @@ describe('runAttachedSync — what a refused credential does to the command pass
     await runAttachedSync(base, { scan: idle() });
 
     expect(pollCommand).not.toHaveBeenCalled();
+    expect(getSightingKey).not.toHaveBeenCalled();
     // The skip must not cost the verdict a human acts on.
     expect(JSON.parse(readFileSync(statePath(), 'utf8'))).toMatchObject({
       outcome: 'unauthorized',

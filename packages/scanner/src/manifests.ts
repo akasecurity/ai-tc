@@ -41,16 +41,17 @@ export interface ManifestCandidate {
  *
  * `onRepositoryRoot` is handed to the walk (see walkTree's option): it is told
  * every directory below `rootDir` that this walk lists and that holds a `.git`
- * entry.
+ * entry. Nothing at or below a `protectedRoots` path is listed or stat'd.
  */
 export function collectManifests(
   rootDir: string,
   maxFileSizeBytes: number = MAX_MANIFEST_BYTES,
   onRepositoryRoot?: (relativeDir: string) => void,
+  protectedRoots?: readonly string[],
 ): ManifestCandidate[] {
   const found: ManifestCandidate[] = [];
 
-  for (const file of walkTree(rootDir, { onRepositoryRoot })) {
+  for (const file of walkTree(rootDir, { onRepositoryRoot, protectedRoots })) {
     const kind = manifestKindOf(file.name);
     if (kind === null) continue;
 

@@ -1,0 +1,11 @@
+{
+  "core-code-context/internal-ip": "Internal IP",
+  "core-code-context/localhost-ref": "Localhost reference",
+  "core-code-context/internal-domain": "Internal domain",
+  "core-code-context/file-path": "Home file path",
+  "core-code-context/stack-trace": "Stack trace",
+  "core-code-context/internal-url": "Internal URL",
+  "core-code-context/feature-flag": "Feature flag",
+  "core-code-context/db-table-name": "Database table name",
+  "core-code-context/gcp-service-account-email": "GCP service account email"
+}

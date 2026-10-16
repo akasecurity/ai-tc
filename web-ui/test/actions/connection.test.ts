@@ -4,10 +4,14 @@ import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
 import {
+  applyOnboarding,
   ATTACHED_DERIVED_FILENAMES,
+  createSightingKeyStore,
   dataDir,
+  keysDir,
   openLocalDatabase,
   readWorkspaceSettings,
+  SIGHTING_KEY_FILENAME,
 } from '@akasecurity/persistence';
 import { isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -79,6 +83,13 @@ vi.mock('@akasecurity/remote', () => ({
 // managed-lock branch is otherwise unreachable from a test: applyOnboarding
 // decides it against a file at an absolute OS path (/etc/aka, /Library/…) that
 // no temp-home redirection can reach.
+// Passes through to the real removal; a case under keychain custody swaps in a
+// fake `security` so nothing reaches the developer's own keychain.
+const sightingClears = vi.hoisted(() => ({
+  calls: 0,
+  exec: undefined as ((args: string[], stdin?: string) => string) | undefined,
+}));
+
 const writeFailure = vi.hoisted(() => ({
   error: null as Error | null,
   // Runs INSIDE the failing applyOnboarding — the only moment another process
@@ -95,6 +106,10 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
         throw writeFailure.error;
       }
       return actual.applyOnboarding(...args);
+    },
+    clearSightingKeys: (base?: string) => {
+      sightingClears.calls += 1;
+      actual.clearSightingKeys(base, sightingClears.exec ? { exec: sightingClears.exec } : {});
     },
   };
 });
@@ -134,6 +149,8 @@ beforeEach(() => {
   writeFailure.error = null;
   writeFailure.onCall = null;
   backgroundSync.uninstallCalls = [];
+  sightingClears.calls = 0;
+  sightingClears.exec = undefined;
 });
 
 describe('attachToControlPlane', () => {
@@ -321,6 +338,43 @@ describe('attachToControlPlane', () => {
 });
 
 describe('detachFromControlPlane', () => {
+  it('removes the stored sighting key under file custody', async () => {
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    createSightingKeyStore('file', keysDir()).replace({
+      keyVersion: 1,
+      algorithm: 'hmac-sha256',
+      key: Buffer.alloc(32, 7).toString('base64url'),
+      fetchedAtMs: 0,
+      endpointFingerprint: '0'.repeat(64),
+    });
+    const file = join(keysDir(), SIGHTING_KEY_FILENAME);
+    expect(existsSync(file)).toBe(true);
+
+    expect(await detachFromControlPlane()).toEqual({ ok: true });
+
+    expect(existsSync(file)).toBe(false);
+    expect(sightingClears.calls).toBe(1);
+  });
+
+  it('removes the stored sighting key under keychain custody', async () => {
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    applyOnboarding({ vaultKeyCustody: 'keychain' }, undefined, null);
+    const items = new Set(['-s aka-sighting-key -a keys']);
+    const seen: string[] = [];
+    sightingClears.exec = (args) => {
+      seen.push(args[0] ?? '');
+      if (args[0] === 'delete-generic-password' && items.delete(args.slice(1).join(' '))) {
+        return '';
+      }
+      throw Object.assign(new Error('item not found'), { status: 44 });
+    };
+
+    expect(await detachFromControlPlane()).toEqual({ ok: true });
+
+    expect(seen).toEqual(['delete-generic-password']);
+    expect(items.size).toBe(0);
+  });
+
   // A grant names the deployment it was given for. Left behind, a re-attach to
   // that same deployment picks it straight back up and the user is never asked
   // again — the decline they would have given is never sought. `aka detach`
@@ -334,6 +388,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -459,6 +514,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
       webChatCaptureConsent: 'unchanged',
+      webChatAccountConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -506,6 +562,7 @@ describe('write failures are reported, never thrown', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -616,6 +673,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -632,6 +690,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -649,6 +708,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        webChatAccountConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });

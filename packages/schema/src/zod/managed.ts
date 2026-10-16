@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { BodyRetention } from './local.ts';
 import { RedactFallback } from './policy.ts';
@@ -56,7 +56,10 @@ export function isManagedSettingKey(value: string): value is ManagedSettingKey {
 // WorkspaceSettings stores dated grant records: an administrator states the
 // answer, and the overlay materialises a grant stamped at read time. An admin
 // cannot forge a user's acknowledgement timestamp, and a `false` is a hard
-// denial the user cannot re-grant while it is locked.
+// denial the user cannot re-grant while it is locked. `sightingShareConsent` is
+// the exception to the materialising: resolveSightingSharing reads the pin
+// itself, because a pinned `true` must never pass for a user's grant on a
+// scoped attachment.
 export const ManagedSettingsValues = z
   .object({
     runMode: z.enum(['standalone', 'attached']).optional(),

@@ -25,7 +25,11 @@ import {
 import { hashProjectKey } from '../src/egress-wire.ts';
 import { keysDir } from '../src/local-layout.ts';
 import { applyOnboarding } from '../src/settings.ts';
-import { createSightingKeyStore, sightingKeysOf } from '../src/vault/sighting-keys.ts';
+import {
+  createSightingKeyStore,
+  sightingKeyEndpointFingerprint,
+  sightingKeysOf,
+} from '../src/vault/sighting-keys.ts';
 import { sightingToken } from '../src/vault/sighting-token.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
@@ -40,6 +44,7 @@ const STORED_KEY = {
   algorithm: 'hmac-sha256' as const,
   key: KEY_BYTES.toString('base64url'),
   fetchedAtMs: 1,
+  endpointFingerprint: sightingKeyEndpointFingerprint(ENDPOINT),
 };
 const REPO_URL = 'https://github.com/acme/widgets.git';
 const REPO_KEY = 'github.com/acme/widgets';
@@ -92,6 +97,7 @@ function consent(): void {
       sightingShareConsent: {
         acknowledgedAt: new Date().toISOString(),
         version: SIGHTING_SHARE_CONSENT_VERSION,
+        endpoint: ENDPOINT,
       },
     },
     store.home,

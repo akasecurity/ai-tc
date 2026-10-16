@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -68,7 +69,13 @@ function attach(consent: boolean): PluginConfig {
       runMode: 'attached',
       controlPlane: { endpoint: ENDPOINT, attachedAt: MINTED_AT },
       ...(consent
-        ? { sightingShareConsent: { acknowledgedAt: new Date().toISOString(), version: 1 } }
+        ? {
+            sightingShareConsent: {
+              acknowledgedAt: new Date().toISOString(),
+              version: 2,
+              endpoint: ENDPOINT,
+            },
+          }
         : {}),
     },
     home,
@@ -92,6 +99,7 @@ function attach(consent: boolean): PluginConfig {
       algorithm: 'hmac-sha256',
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
+      endpointFingerprint: createHash('sha256').update(ENDPOINT).digest('hex'),
     }),
     { mode: 0o600 },
   );
@@ -159,9 +167,14 @@ describe('scanWorktree — credential sightings', () => {
     for (const forbidden of [SOURCE_VALUE, DOTENV_VALUE, repo, 'deploy.ts', '.env']) {
       expect(wire).not.toContain(forbidden);
     }
-    // The dotenv file was read for its sighting only: nothing of it is stored.
-    expect(storedContents(config)).not.toContain(DOTENV_VALUE);
-    expect(storedContents(config)).not.toContain(join(repo, '.env'));
+    // The dotenv file is stored only as a whole-file snapshot, which never leaves
+    // this machine.
+    const stored = JSON.parse(storedContents(config)) as {
+      file_path: string;
+      attributes: string;
+    }[];
+    const dotenv = stored.find((row) => row.file_path === join(repo, '.env'));
+    expect(JSON.parse(dotenv?.attributes ?? '{}')).toMatchObject({ whole_file: true });
   });
 
   it('reads an unchanged file again after a failed send, and not after a delivered one', async () => {

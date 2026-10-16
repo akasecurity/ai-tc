@@ -1,0 +1,22 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.claude/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/.next/**",
+        "!$TURBO_ROOT$/plugins/{claude-code,codex,antigravity,copilot}/scripts/**",
+        "!$TURBO_ROOT$/plugins/browser-extension/native-host/**",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    }
+  }
+}

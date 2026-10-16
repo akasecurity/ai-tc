@@ -1,5 +1,6 @@
 export type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
 export { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
+export { BUNDLED_PACKS } from './bundled-packs.generated.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
 export type { ResolveConfigInventoryInput } from './config-inventory.ts';
@@ -198,6 +199,7 @@ export {
   canonicalizeScanPath,
   HOME_SECRET_FILES,
   isProtectedScanPath,
+  isSecretBearingFileSnapshot,
   protectedScanRoots,
   scanFileKind,
   SOURCE_EXTENSIONS,
@@ -207,25 +209,13 @@ export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
-export { throttled } from './throttle.ts';
-export type {
-  CreateVaultGlueOptions,
-  DetokenizeTextOptions,
-  DetokenizeTextResult,
-  ModelDerefGrantResolver,
-  SubstitutePointersResult,
-  TokenizeTextResult,
-  TokenizeValueMeta,
-  VaultCore,
-  VaultGlue,
-} from './tokenize.ts';
+export { throttled, throttledPerKey } from './throttle.ts';
+export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,
   describePointerSafe,
   detokenizeText,
-  hasPointer,
   openScanVault,
-  POINTER_UNAVAILABLE_TEXT,
   substituteModelPointers,
   tokenizeText,
   tokenizeValue,
@@ -237,6 +227,17 @@ export type {
   CaptureInput,
   CaptureResult,
 } from './types.ts';
+export type {
+  DetokenizeTextOptions,
+  DetokenizeTextResult,
+  ModelDerefGrantResolver,
+  SubstitutePointersResult,
+  TokenizeTextResult,
+  TokenizeValueMeta,
+  VaultCore,
+  VaultGlue,
+} from './vault-glue.ts';
+export { hasPointer, POINTER_UNAVAILABLE_TEXT } from './vault-glue.ts';
 export { maskMatch } from '@akasecurity/detections';
 // The read-time token cost/rollup logic moved to `@akasecurity/schema` (pure, no
 // Node-API deps) so the OSS Activity surfaces + CLI/TUI can price tokens without

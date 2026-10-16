@@ -291,6 +291,7 @@ export function createPluginRuntime(
   // Whether each rule's match is code or a value, over the effective ruleset —
   // rebuilt only when that ruleset is.
   let evidenceOf = evidenceLookup(rules);
+  let nameOf = new Map<string, string>();
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
   // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
   // is known (see ensureInitialized).
@@ -375,6 +376,7 @@ export function createPluginRuntime(
     }
     rules = [...verified, ...unverified];
     evidenceOf = evidenceLookup(rules);
+    nameOf = new Map(rules.map((rule) => [rule.id, rule.name]));
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     // Raise-only, over the one enforcement ladder: an organization can tighten
@@ -480,6 +482,15 @@ export function createPluginRuntime(
       rewritable,
       ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
     });
+  }
+
+  function ruleNamesOf(findings: readonly MatchResult[]): Record<string, string> | undefined {
+    const names: Record<string, string> = {};
+    for (const { ruleId } of findings) {
+      const name = nameOf.get(ruleId);
+      if (name !== undefined && name !== '') names[ruleId] = name;
+    }
+    return Object.keys(names).length === 0 ? undefined : names;
   }
 
   function decide(
@@ -762,6 +773,8 @@ export function createPluginRuntime(
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted, rewritable);
+      const ruleNames = ruleNamesOf(findings);
+      if (ruleNames !== undefined) decision.ruleNames = ruleNames;
       const blockedReferences = await recordBlockedDetections(
         decision,
         excepted,
@@ -815,16 +828,23 @@ export function createPluginRuntime(
     //
     // What the sample can NOT correct for is the persistence policy above it: a
     // capture that is measured but never recorded (`persist: 'with-findings'`
-    // with nothing found — see the early return below) carries its measurement
-    // nowhere. The skew therefore follows that CONDITION — a live capture the
-    // caller passed 'with-findings' — and not any particular kind; enumerating
-    // kinds here is what went stale last time. Both 'tool_use' (the pre-tool-use
-    // hooks) and 'response' (the post-tool-use hooks, which see every Read file
-    // and Bash stream) are live and 'with-findings' today, so for each the
-    // recorded set is the findings-bearing subset, which does strictly more work
-    // than the clean captures it stands in for. Any reader aggregating this
-    // field inherits that skew.
-    const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
+    // with nothing found and nothing refused — see the early return below)
+    // carries its measurement nowhere. The skew therefore follows that
+    // CONDITION — a live capture the caller passed 'with-findings' — and not any
+    // particular kind; enumerating kinds here is what went stale last time. Both
+    // 'tool_use' (the pre-tool-use hooks) and 'response' (the post-tool-use
+    // hooks, which see every Read file and Bash stream) are live and
+    // 'with-findings' today, so for each the recorded set is the findings-bearing
+    // subset plus any refused field, whose reading includes the bounded scan's
+    // wait; both do more work than the clean captures they stand in for. Any
+    // reader aggregating this field inherits that skew.
+    //
+    // `persist: 'never'` is the other condition, and the stronger one: nothing
+    // it measures is ever recorded, so it is not timed at all. Its captures (a
+    // web chat on a machine that withholds them) are absent from the sample
+    // rather than skewing it.
+    const timingStartedAt =
+      input.occurredAt === undefined && opts.persist !== 'never' ? startTiming() : undefined;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
       { filePath: input.metadata?.filePath, eventKind: input.kind },
@@ -849,8 +869,11 @@ export function createPluginRuntime(
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
     // store with benign events. The live hook path keeps the default 'always'.
-    // A refused field has no findings either, and is not clean: it is recorded
-    // whatever the policy, so a refusal leaves the same trace a block does.
+    // 'never' records no event at all, found, clean or refused: the decision
+    // the caller holds is still returned and enforced.
+    if (opts.persist === 'never') return;
+    // A refused field has no findings either, and is not clean: 'with-findings'
+    // records it anyway, so a refusal leaves the same trace a block does.
     if (
       opts.persist === 'with-findings' &&
       decision.findings.length === 0 &&
@@ -1175,12 +1198,25 @@ export interface DecisionOptions {
 
 // Persistence policy for capture(): 'always' records an event for every call
 // (the live hook path, so the activity timeline is complete); 'with-findings'
-// records only when something was detected (the historical backfill).
+// records when something was detected or the field was refused (a bounded scan
+// that did not finish, `scanIncomplete`) and skips only a clean capture (the
+// historical backfill and the live tool hooks); 'never' records no event and
+// no finding, for text the caller may enforce on but must not keep (a web chat
+// on a machine that withholds them). The evaluation is the same under every
+// value, with the capture's own source tool and metadata: exceptions are
+// matched against them, a single-use grant is spent (under 'never', with no
+// event to name it), and a block or redact backed by findings writes the
+// short-lived, masked blocked-detection ledger row the approve flow reads,
+// carrying the capture's session id. A refused field is a block with no
+// findings: it matches no exception, spends no grant and writes no ledger row,
+// so under 'never' it leaves nothing at all. `processText` differs on exactly
+// that context: it evaluates with none, so its ledger rows carry no session id
+// and a grant conditioned on a source tool does not match there.
 // `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
 // gateway drops content it has already recorded (fresh event ids on a re-run
 // would otherwise duplicate rows). Never set it on the live hook path.
 export interface CaptureOptions extends DecisionOptions {
-  persist?: 'always' | 'with-findings';
+  persist?: 'always' | 'with-findings' | 'never';
   dedupe?: 'content-hash';
   // Grant ids already spent by this capture's own pointer crossing (see
   // ExceptionEvalContext.preAuthorizedGrantIds).
@@ -1193,7 +1229,11 @@ export interface CaptureOptions extends DecisionOptions {
 // What `captureDeferred` hands back: the decision, and the write held back.
 export interface DeferredCapture {
   result: CaptureResult;
-  /** Writes the event and findings. Idempotent; never throws (the write is best effort). */
+  /**
+   * Writes the event and findings as `opts.persist` allows ('never' writes
+   * nothing; 'with-findings' skips a clean capture). Idempotent; never throws
+   * (the write is best effort).
+   */
   record(): Promise<void>;
 }
 
@@ -1210,7 +1250,9 @@ export interface PluginRuntime {
   // short-lived approve-flow ledger, when a fingerprint key is available);
   // no event write.
   processText(text: string, context?: ScanContext, opts?: DecisionOptions): Promise<CaptureResult>;
-  // Decision + persist (event with masked content + N masked findings).
+  // Decision + persist (event with masked content + N masked findings), as
+  // `opts.persist` allows: 'with-findings' skips a clean capture, 'never' every
+  // one.
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // The same capture in two steps: the decision now (exceptions evaluated and
   // spent, the blocked-detections ledger written, as `capture` does), the event

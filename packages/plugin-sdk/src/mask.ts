@@ -6,7 +6,13 @@
 // crypto, …) would break that bundle. The rest of plugin-sdk (config, gateway,
 // fingerprint, …) stays Node-only and is consumed only by the CLI-hook plugins
 // and the native-messaging host, never by the content script directly.
-import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
+import {
+  getLoadedRules,
+  maskMatch,
+  redact,
+  scan,
+  withVariableNames,
+} from '@akasecurity/detections';
 import type { DetectionCategory, FindingLocation, Rule, Severity, Span } from '@akasecurity/schema';
 
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
@@ -63,11 +69,13 @@ export interface ScanFinding {
   confidence: number;
 }
 
-// A ScanFinding with where the hit sits in the scanned text and its masked
-// excerpt, for a caller that stores it (`scanText(…, { locate: true })`). Local
-// only: a forwarding caller drops it (see ToolCallInspectionInput).
+// A ScanFinding with where the hit sits in the scanned text, its masked
+// excerpt and the variable the secret is assigned to, for a caller that stores
+// it (`scanText(…, { locate: true })`). Local only: a forwarding caller drops
+// them (see ToolCallInspectionInput).
 export interface LocatedScanFinding extends ScanFinding {
   location: FindingLocation;
+  variableName?: string;
 }
 
 // Scan `text` with the bundled detection packs, returning BOTH the redacted string
@@ -113,8 +121,10 @@ export function scanText(
     // one — a pointer must never be re-detected as a secret (same-length
     // filler keeps every other offset valid against the original text).
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
-    if (matches.length === 0) return { masked: text, findings: [] };
+    const unshielded = dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
+    if (unshielded.length === 0) return { masked: text, findings: [] };
+    const matches =
+      options.locate === true ? withVariableNames(unshielded, shielded.text) : unshielded;
 
     const byId = new Map(rules.map((r) => [r.id, r]));
     // Spans are offsets into `text`: the shield keeps every offset valid.
@@ -140,6 +150,7 @@ export function scanText(
         maskedMatch: maskMatch(m.rawMatch),
         confidence: m.confidence,
         ...(locate === undefined ? {} : { location: locate(m) }),
+        ...(m.variableName === undefined ? {} : { variableName: m.variableName }),
       };
     });
     return { masked: redact(text, matches), findings };

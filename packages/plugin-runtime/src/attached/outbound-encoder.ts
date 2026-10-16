@@ -5,17 +5,24 @@ import type {
   SightingKeys,
 } from '@akasecurity/persistence';
 import {
-  captureWireId,
   createKeyProvider,
   dataDir as dataDirOf,
+  keyedCaptureWireId,
   keysDir,
+  loadOrCreateCaptureIdKey,
   openLocalDatabase,
   readSightingKeys,
+  readSightingSharing,
   readWorkspaceSettings,
   SecretVault,
   sightingToken,
 } from '@akasecurity/persistence';
-import type { GuardedScanPartition, SecretSpan, SecretSpanScanner } from '@akasecurity/plugin-sdk';
+import type {
+  BoundedScanRequest,
+  GuardedScanPartition,
+  SecretSpan,
+  SecretSpanScanner,
+} from '@akasecurity/plugin-sdk';
 import {
   bundledDetections,
   contentHashOf,
@@ -52,6 +59,17 @@ export interface OutboundEncoderDeps {
    */
   loadRules: () => Promise<readonly Rule[]>;
   createScanner?: (partition: GuardedScanPartition) => SecretSpanScanner;
+  /**
+   * Whether credential sightings may leave this machine now. Asked on every
+   * capture; while it answers false, or throws, every secret span is sent as
+   * {@link FAIL_CLOSED_MARKER} with no token and no sightings.
+   */
+  readSharing: () => boolean;
+  /**
+   * A secret that never leaves this machine, keying the wire id of a capture
+   * whose content was encoded. A throw holds the capture.
+   */
+  readIdKey: () => Buffer;
 }
 
 /** The inputs a capture's wire id is derived from, beside its content hash. */
@@ -69,12 +87,30 @@ export interface OutboundEncoder {
   /** Undefined when the capture must be held rather than sent. */
   encodeContent(content: string): Promise<EncodedContent | undefined>;
   /**
-   * The event to send: encoded content, its sightings, and a content hash and
-   * wire id derived from the encoded content and `identity` (by default the
-   * event's own session and file path). `event` itself when nothing changes;
-   * undefined when the capture must be held rather than sent.
+   * The event to send: encoded content, its sightings, the hash of the encoded
+   * content, and a wire id keyed over the stored row's identity: `identity`
+   * (by default the event's own session and file path) and the event's own
+   * content hash. `event` itself when nothing changes; undefined when the
+   * capture must be held rather than sent.
    */
   encodeEvent(event: IngestEvent, identity?: CaptureIdentity): Promise<IngestEvent | undefined>;
+  /** Releases the scan worker, if one was started. */
+  close(): Promise<void>;
+}
+
+/**
+ * The wire id of a capture whose content was encoded, from the stored row's
+ * identity: `contentHash` is the hash of the content as stored, not as sent.
+ * Two captures whose secrets encode alike, as every secret does while sharing
+ * is off, keep two ids, and a capture keeps its id however often it is sent.
+ */
+export function encodedWireId(
+  idKey: Buffer,
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null,
+): string {
+  return keyedCaptureWireId(idKey, sessionId, contentHash, filePath);
 }
 
 interface Replacement {
@@ -87,6 +123,7 @@ const failClosed = { text: FAIL_CLOSED_MARKER };
 
 function currentKey(deps: OutboundEncoderDeps): SightingKey | undefined {
   try {
+    if (!deps.readSharing()) return undefined;
     return deps.readKeys()?.current;
   } catch {
     return undefined;
@@ -115,44 +152,40 @@ function valueReplacement(span: SecretSpan, key: SightingKey | undefined): Repla
  * same way whichever path sends it. A secret vault pointer is resolved through
  * the vault's audited fingerprint path to the token of its value.
  *
- * Fails closed and never throws: with no key, or on any fault, a span becomes
- * {@link FAIL_CLOSED_MARKER}, and a failed scan replaces the whole content with
- * it. When the effective rules cannot be loaded the capture is held instead.
+ * Fails closed and never throws: with no key, or on a fault resolving one span,
+ * that span becomes {@link FAIL_CLOSED_MARKER}. When the effective rules cannot
+ * be loaded, or the scan cannot start or finish, the capture is held instead.
  */
 export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncoder {
   const createScanner = deps.createScanner ?? ((p) => createSecretSpanScanner(p));
-  let partition: GuardedScanPartition | undefined;
+  // One scanner, and so at most one worker, for the encoder's whole life.
+  let scanner: SecretSpanScanner | undefined;
 
-  async function loadPartition(): Promise<GuardedScanPartition | undefined> {
+  async function loadScanner(): Promise<SecretSpanScanner | undefined> {
     try {
-      partition ??= secretRulePartition(await deps.loadRules());
-      return partition;
+      scanner ??= createScanner(secretRulePartition(await deps.loadRules()));
+      return scanner;
     } catch {
       return undefined;
     }
   }
 
-  async function findSpans(rules: GuardedScanPartition, content: string): Promise<SecretSpan[]> {
-    const scanner = createScanner(rules);
+  async function findSpans(content: string): Promise<SecretSpan[] | undefined> {
+    const loaded = await loadScanner();
+    if (loaded === undefined) return undefined;
     try {
-      return await scanner.find(content);
-    } finally {
-      try {
-        await scanner.close();
-      } catch {
-        // Releasing the worker is cleanup; the spans stand.
-      }
+      return await loaded.find(content);
+    } catch {
+      return undefined;
     }
   }
 
   async function encodeContent(content: string): Promise<EncodedContent | undefined> {
-    const rules = await loadPartition();
-    if (rules === undefined) return undefined;
+    const spans = await findSpans(content);
+    if (spans === undefined) return undefined;
     try {
       const key = currentKey(deps);
-      const replacements: Replacement[] = (await findSpans(rules, content)).map((span) =>
-        valueReplacement(span, key),
-      );
+      const replacements: Replacement[] = spans.map((span) => valueReplacement(span, key));
 
       const pointers = [...content.matchAll(pointerTokenScanner())].filter((m) =>
         m[0].startsWith(SECRET_POINTER_PREFIX),
@@ -224,20 +257,33 @@ export function createOutboundEncoder(deps: OutboundEncoderDeps): OutboundEncode
 
   return {
     encodeContent,
+    async close() {
+      try {
+        await scanner?.close();
+      } catch {
+        // The worker is unreferenced; a failed release costs nothing further.
+      }
+    },
     async encodeEvent(event, identity) {
       const encoded = await encodeContent(event.content);
       if (encoded === undefined) return undefined;
       const { content, sightings } = encoded;
       const carried = event.metadata?.sightings !== undefined;
       if (content === event.content && sightings.length === 0 && !carried) return event;
-      // Encoded content carries its own hash, and the wire id is derived from
-      // that, so nothing sent is a function of the raw text.
+      let idKey: Buffer;
+      try {
+        idKey = deps.readIdKey();
+      } catch {
+        return undefined;
+      }
+      // The hash sent is of the encoded content; the id is keyed over the
+      // stored row's identity, so neither lets the receiver test a raw value.
       const contentHash = contentHashOf(content);
       const { sessionId, filePath } = identity ?? {
         sessionId: event.metadata?.sessionId ?? null,
         filePath: event.metadata?.filePath ?? null,
       };
-      const id = captureWireId(sessionId, contentHash, filePath);
+      const id = encodedWireId(idKey, sessionId, event.contentHash, filePath);
       const rest = { ...event.metadata };
       delete rest.sightings;
       const metadata = sightings.length === 0 ? rest : { ...rest, sightings };
@@ -269,12 +315,23 @@ export function storeVault(db: LocalDatabase, base: string): PointerFingerprinte
  */
 export function createStoreOutboundEncoder(
   base: string,
-  opts: { loadRules: () => Promise<readonly Rule[]>; db?: LocalDatabase | undefined },
+  opts: {
+    loadRules: () => Promise<readonly Rule[]>;
+    db?: LocalDatabase | undefined;
+    scanBound?: BoundedScanRequest | undefined;
+    readSharing?: (() => boolean) | undefined;
+  },
 ): OutboundEncoder {
-  const { db } = opts;
+  const { db, scanBound } = opts;
+  let idKey: Buffer | undefined;
   return createOutboundEncoder({
     loadRules: opts.loadRules,
+    ...(scanBound === undefined
+      ? {}
+      : { createScanner: (p: GuardedScanPartition) => createSecretSpanScanner(p, scanBound) }),
     readKeys: () => readSightingKeys(base),
+    readSharing: opts.readSharing ?? (() => readSightingSharing(base).sharing),
+    readIdKey: () => (idKey ??= loadOrCreateCaptureIdKey(dataDirOf(base))),
     openVault: () => {
       if (db !== undefined) return { vault: storeVault(db, base), close: () => undefined };
       const opened = openLocalDatabase(dataDirOf(base));

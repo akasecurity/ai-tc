@@ -123,14 +123,38 @@ describe('SightingKeyResponse', () => {
 });
 
 describe('StoredSightingKeys', () => {
-  it('is the response plus the instant it was fetched', () => {
-    const parsed = StoredSightingKeys.parse({ ...body(), fetchedAtMs: 1_766_000_000_000 });
+  const FINGERPRINT = 'a'.repeat(64);
+  const stored = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    ...body(),
+    fetchedAtMs: 1_766_000_000_000,
+    endpointFingerprint: FINGERPRINT,
+    ...overrides,
+  });
+
+  it('is the response plus the fetch instant and the issuing endpoint', () => {
+    const parsed = StoredSightingKeys.parse(stored());
     expect(parsed.fetchedAtMs).toBe(1_766_000_000_000);
+    expect(parsed.endpointFingerprint).toBe(FINGERPRINT);
     expect(parsed.keyVersion).toBe(2);
   });
 
   it('requires the fetch instant', () => {
-    expect(StoredSightingKeys.safeParse(body()).success).toBe(false);
-    expect(StoredSightingKeys.safeParse({ ...body(), fetchedAtMs: -1 }).success).toBe(false);
+    const withoutInstant = stored();
+    delete withoutInstant.fetchedAtMs;
+    expect(StoredSightingKeys.safeParse(withoutInstant).success).toBe(false);
+    expect(StoredSightingKeys.safeParse(stored({ fetchedAtMs: -1 })).success).toBe(false);
+  });
+
+  it('requires a sha256 hex endpoint fingerprint', () => {
+    const withoutFingerprint = stored();
+    delete withoutFingerprint.endpointFingerprint;
+    expect(StoredSightingKeys.safeParse(withoutFingerprint).success).toBe(false);
+    expect(
+      StoredSightingKeys.safeParse(stored({ endpointFingerprint: 'a'.repeat(63) })).success,
+    ).toBe(false);
+    expect(
+      StoredSightingKeys.safeParse(stored({ endpointFingerprint: 'https://aka.example.test' }))
+        .success,
+    ).toBe(false);
   });
 });

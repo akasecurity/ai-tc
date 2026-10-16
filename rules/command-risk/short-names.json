@@ -1,0 +1,9 @@
+{
+  "command-risk/pkill-broad": "Broad pkill",
+  "command-risk/rm-rf-home-or-shared": "Recursive rm of home",
+  "command-risk/git-force-push": "Git force push",
+  "command-risk/git-reset-hard": "Git reset --hard",
+  "command-risk/curl-pipe-shell": "Curl piped to shell",
+  "command-risk/credential-file-read": "Credential file read",
+  "command-risk/credential-file-access": "Credential file read"
+}

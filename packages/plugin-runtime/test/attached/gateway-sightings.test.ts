@@ -5,25 +5,26 @@ import { join } from 'node:path';
 import type { SightingKey } from '@akasecurity/persistence';
 import {
   captureWireId,
-  createSightingKeyStore,
   dataDir as dataDirOf,
-  keysDir as keysDirOf,
+  loadOrCreateCaptureIdKey,
 } from '@akasecurity/persistence';
 import type { CaptureRecord } from '@akasecurity/plugin-sdk';
 import { contentHashOf } from '@akasecurity/plugin-sdk';
 import type { IngestBatch, IngestEvent, PolicyBundle, Rule } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
+import { DECISION_PATH_BUDGET_MS } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
-import { FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
 import {
   emailShaped,
   expectedToken,
   keyOf,
-  materialOf,
   patShaped,
+  setSightingSharing,
+  storeSightingKey,
 } from '../helpers/sighting-fixtures.ts';
 
 const KEY = 'github.com/org/api';
@@ -60,6 +61,7 @@ function quietLocal(seen: Seen): AttachedDataGatewayDeps['local'] {
       seen.owed += 1;
     },
     getPolicyBundle: () => seen.bundle(),
+    close: () => Promise.resolve(),
   } as unknown as AttachedDataGatewayDeps['local'];
 }
 
@@ -80,13 +82,8 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function storeKey(key: SightingKey): void {
-  createSightingKeyStore('file', keysDirOf(base)).replace({
-    keyVersion: key.keyVersion,
-    algorithm: 'hmac-sha256',
-    key: materialOf(key),
-    fetchedAtMs: 1,
-  });
+function storeKey(key: SightingKey, opts: { issuedBy?: string } = {}): void {
+  storeSightingKey(base, key, opts);
 }
 
 function build(seen: Seen, overrides: Partial<AttachedDataGatewayDeps> = {}): AttachedDataGateway {
@@ -194,6 +191,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
       encoder: {
         encodeContent: () => Promise.reject(new Error('encoder fault')),
         encodeEvent: () => Promise.reject(new Error('encoder fault')),
+        close: () => Promise.resolve(),
       },
     });
     await expect(gateway.recordCapture(capture(`x ${value}`))).resolves.toBeUndefined();
@@ -217,7 +215,8 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies[0]).not.toContain(contentHashOf(value));
     expect(sent?.id).not.toBe(record.event.id);
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
-    expect(sent?.id).toBe(captureWireId('sess-9', contentHashOf(sent?.content ?? ''), null));
+    const idKey = loadOrCreateCaptureIdKey(dataDirOf(base));
+    expect(sent?.id).toBe(encodedWireId(idKey, 'sess-9', record.event.contentHash, null));
   });
 
   it('tokenises a value only an installed secret rule matches', async () => {
@@ -234,7 +233,7 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
             name: 'Internal token',
             category: 'secret',
             severity: 'high',
-            matcher: { type: 'regex', pattern: 'ACMETOK[0-9]{10}', flags: 'g' },
+            matcher: { type: 'keyword', keywords: [installedValue], caseSensitive: true },
           },
         ]),
       );
@@ -254,5 +253,122 @@ describe('attached gateway: secrets leave only as sighting tokens', () => {
     expect(seen.bodies).toEqual([]);
     expect(seen.forwards).toBe(0);
     expect(seen.owed).toBe(1);
+  });
+
+  it('holds the capture as owed when encoding outlasts the decision budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const seen = emptySeen();
+      const gateway = build(seen, {
+        forward: counting(seen),
+        encoder: {
+          encodeContent: () => new Promise(() => undefined),
+          encodeEvent: () => new Promise(() => undefined),
+          close: () => Promise.resolve(),
+        },
+      });
+      const pending = gateway.recordCapture(capture(`x ${value}`));
+      await vi.advanceTimersByTimeAsync(DECISION_PATH_BUDGET_MS);
+      await expect(pending).resolves.toBeUndefined();
+      expect(seen.bodies).toEqual([]);
+      expect(seen.forwards).toBe(0);
+      expect(seen.owed).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still tokenises a bundled secret when a cached rule reuses its id with another matcher', async () => {
+    const key = keyOf(6, 6);
+    storeKey(key);
+    const seen = emptySeen();
+    seen.bundle = () =>
+      Promise.resolve(
+        bundleOf([
+          {
+            specVersion: 1,
+            id: 'secrets/github-pat',
+            name: 'Shadow',
+            category: 'secret',
+            severity: 'low',
+            matcher: { type: 'keyword', keywords: ['never-present-keyword'], caseSensitive: true },
+          },
+        ]),
+      );
+    await build(seen).recordCapture(capture(`x ${value}`));
+    expect(seen.bodies[0]).not.toContain(value);
+    expect(seen.bodies[0]).toContain(expectedToken(key, value));
+  });
+
+  it('sends the marker when the stored key was issued by another endpoint', async () => {
+    storeKey(keyOf(2, 2), { issuedBy: 'https://other.example.test' });
+    const seen = emptySeen();
+    await build(seen).recordCapture(capture(`x ${value} y`));
+    expect(seen.bodies[0]).not.toContain(value);
+    const sent = (JSON.parse(seen.bodies[0] ?? '{}') as IngestBatch).events[0];
+    expect(sent?.content).toBe(`x ${FAIL_CLOSED_MARKER} y`);
+    expect(sent?.metadata?.sightings).toBeUndefined();
+  });
+
+  it('delivers a value only an installed regex rule matches through the real worker scan', async () => {
+    const key = keyOf(7, 7);
+    storeKey(key);
+    const seen = emptySeen();
+    const installedValue = ['ACME', 'RGX', '5'.repeat(10)].join('');
+    seen.bundle = () =>
+      Promise.resolve(
+        bundleOf([
+          {
+            specVersion: 1,
+            id: 'acme/internal-regex',
+            name: 'Internal token by pattern',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'ACMERGX[0-9]{10}', flags: 'g' },
+          },
+        ]),
+      );
+    // Generous bounds, so the assertion is about the worker path and never
+    // about how quickly a worker starts on this machine.
+    const gateway = build(seen, {
+      encodeBudgetMs: 60_000,
+      scanBound: { budgetMs: 30_000, startBudgetMs: 30_000 },
+    });
+    try {
+      await gateway.recordCapture(capture(`x ${installedValue} y`));
+    } finally {
+      await gateway.close();
+    }
+    expect(seen.owed).toBe(0);
+    expect(seen.bodies[0]).not.toContain(installedValue);
+    expect(seen.bodies[0]).toContain(expectedToken(key, installedValue));
+    expect(seen.bodies[0]).toContain('acme/internal-regex');
+  }, 90_000);
+
+  it('sends only markers, with no token or sightings anywhere in the body, while sharing is off', async () => {
+    storeSightingKey(base, keyOf(3, 3), { sharing: false });
+    const seen = emptySeen();
+    await build(seen).recordCapture(capture(`a ${value} b`));
+    const body = seen.bodies[0] ?? '';
+    expect(body).not.toContain(value);
+    expect(body).not.toContain('[[aka:fp:');
+    expect(body).not.toContain('sightings');
+    expect(body).toContain(FAIL_CLOSED_MARKER);
+  });
+
+  it('applies a change of the sharing answer to the next capture', async () => {
+    const key = keyOf(4, 1);
+    storeSightingKey(base, key);
+    const seen = emptySeen();
+    const gateway = build(seen);
+    await gateway.recordCapture(capture(`one ${value}`));
+    setSightingSharing(base, false);
+    await gateway.recordCapture(capture(`two ${value}`));
+    setSightingSharing(base, true);
+    await gateway.recordCapture(capture(`three ${value}`));
+    expect(seen.bodies[0]).toContain(expectedToken(key, value));
+    expect(seen.bodies[1]).not.toContain('[[aka:fp:');
+    expect(seen.bodies[1]).toContain(FAIL_CLOSED_MARKER);
+    expect(seen.bodies[2]).toContain(expectedToken(key, value));
   });
 });

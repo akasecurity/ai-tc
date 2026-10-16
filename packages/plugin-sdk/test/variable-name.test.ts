@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
 import { createPluginRuntime } from '../src/runtime.ts';
-import type { TokenizeValueMeta, VaultCore } from '../src/tokenize.ts';
 import { createVaultGlue } from '../src/tokenize.ts';
+import type { TokenizeValueMeta, VaultCore } from '../src/vault-glue.ts';
 
 registerRulePack('variable-name-pack', [
   {

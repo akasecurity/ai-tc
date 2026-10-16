@@ -277,6 +277,8 @@ export class SecretVault {
    * model. Every call that gets as far as an identified row writes an audit row.
    */
   async detokenize(token: string, opts: DetokenizeOptions): Promise<DetokenizeResult> {
+    // The type already excludes it; an untyped caller must not reach the value this way either.
+    if ((opts.target as string) === 'fingerprint') return UNAVAILABLE;
     return await this.#deref(token, opts);
   }
 

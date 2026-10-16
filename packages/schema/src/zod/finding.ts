@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { Harness } from './harness-map.ts';
 
@@ -250,6 +250,9 @@ export const FindingMatch = z
     // The masked lines around the match. Absent when the finding predates
     // context capture or none could be built safely.
     context: FindingContext.optional(),
+    // The variable the matched value is assigned to. Absent when the match is
+    // not the right-hand side of an assignment.
+    variableName: VariableName.optional(),
   })
   .meta({ id: 'FindingMatch' });
 export type FindingMatch = z.infer<typeof FindingMatch>;

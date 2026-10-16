@@ -367,8 +367,8 @@ export const CORROBORATION_FLOOR_MS = BUDGET_MS * CPU_CORROBORATION_SHARE;
 export const GROWTH_START_CHARS = 2_000;
 
 /**
- * The largest corpus size the growth tier climbs to. A pair over the ratio is
- * sampled one doubling further, so past this at the top.
+ * The largest corpus size the growth tier climbs to. `judgePair` may read one
+ * doubling past it, so the largest size the tier scans is twice this.
  */
 export const GROWTH_MAX_CHARS = 32_000;
 
@@ -387,9 +387,8 @@ export const GROWTH_FLOOR_MS = 5;
 // cannot decide it.
 export const GROWTH_SAMPLES = 5;
 
-// Rounds in the second pass, which a pair over the ratio in the first pass is
-// sampled in again together with the next doubling. The verdict on growth is
-// given on the fastest readings of this pass alone.
+// Rounds in the second pass `judgePair` runs on a pair over the ratio. The
+// verdict on growth is given on the fastest readings of this pass alone.
 export const GROWTH_CONFIRM_SAMPLES = 15;
 
 // Sampling stops once this many rounds have run and every reading so far at
@@ -584,16 +583,22 @@ function judgePair(
 }
 
 /**
- * The first corpus on which `rule`'s cost blows the budget, or grows faster
- * than its input over two consecutive doublings; `undefined` when every corpus
- * scales linearly up to `GROWTH_MAX_CHARS`.
+ * The first breach `judgePair` reports on `rule`, or `undefined` when it
+ * reports none. A breach is a pair whose larger reading is at or over the
+ * budget, or one whose cost grows by more than `MAX_GROWTH_RATIO` per doubling
+ * across two consecutive doublings, the larger reading of the pair at
+ * `GROWTH_FLOOR_MS` or more.
  *
  * Each corpus climbs from `GROWTH_START_CHARS` by doubling, one reading per
- * size, and stops climbing at the first size whose reading crosses the budget —
- * so a pattern that is cubic on a corpus is judged at the size where it first
- * gets expensive, not at the top. The pair below that point is then sampled
- * and judged; see `judgePair`. A size that pair was sampled at is not scanned
- * again on the way up: its fastest reading stands in for the single one.
+ * size, and judges the pair at the first size whose reading crosses the budget
+ * — so a pattern that is cubic on a corpus is judged at the size where it first
+ * gets expensive, not at the top — then keeps climbing while that pair clears.
+ * The top pair is judged whether or not any reading crossed the budget, and no
+ * pair sits above it: the budget is judged at `GROWTH_MAX_CHARS` and never at
+ * twice it, so a reading over the budget at twice it that grew by
+ * `MAX_GROWTH_RATIO` or less still returns `undefined`. A size a pair was
+ * sampled at is not scanned again on the way up: its fastest reading stands in
+ * for the single one. `judgePair` holds the second pass.
  *
  * Call this only on a rule that already passed `worstProbeMs`. A pattern that
  * backtracks exponentially does not return on a 2,000-char input, and the

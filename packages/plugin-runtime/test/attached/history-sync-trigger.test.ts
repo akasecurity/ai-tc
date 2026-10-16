@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  openLocalDatabase,
   readWorkspaceSettings,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
@@ -15,6 +16,7 @@ import { dbPath as dbPathOf } from '@akasecurity/plugin-sdk';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
   HISTORY_SYNC_MARKER_NAME,
   triggerHistorySync,
@@ -23,10 +25,9 @@ import { SYNC_MARKER_NAME } from '../../src/attached/sync-trigger.ts';
 
 // What forks a child, and — much more importantly — what does not.
 //
-// This job has one gate the policy pull does not: a GRANT. A machine whose user
-// never consented must not pay a process spawn to discover that, and must not
-// write a throttle marker either — a file appearing on disk because of a feature
-// that is off is the smallest version of the thing this feature is about.
+// This job has one gate the policy pull does not: a GRANT for history. Without
+// it a pass only delivers what the live path owes, so a machine that owes
+// nothing must not pay a process spawn or write a throttle marker.
 
 const ENDPOINT = 'https://plane.example.test';
 const OTHER_ENDPOINT = 'https://other.example.test';
@@ -87,7 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('triggerHistorySync — what it refuses to fork', () => {
@@ -96,8 +97,9 @@ describe('triggerHistorySync — what it refuses to fork', () => {
     expect(spawned).toEqual([]);
   });
 
-  // The gate that distinguishes this job from every other background one.
-  it('does nothing when the machine is attached but nothing was granted', () => {
+  // Without a grant only the live path's own debt can start a pass, so a
+  // machine that owes nothing pays no spawn and writes no marker.
+  it('does nothing without a grant when the live path owes nothing', () => {
     setup();
     triggerHistorySync(configFor(home), deps());
     expect(spawned).toEqual([]);
@@ -126,6 +128,57 @@ describe('triggerHistorySync — what it refuses to fork', () => {
 });
 
 describe('triggerHistorySync — when it does fork', () => {
+  it('forks without a grant when the live path owes a capture', () => {
+    setup();
+    const asked: number[] = [];
+    triggerHistorySync(configFor(home), {
+      ...deps(),
+      hasOwedLiveCaptures: (_dir: string, sinceMs: number) => {
+        asked.push(sinceMs);
+        return true;
+      },
+    });
+    expect(spawned).toHaveLength(1);
+    expect(asked).toEqual([Date.parse(ATTACHED_AT)]);
+  });
+
+  it('does not open the store without a grant while a pass ran inside the window', () => {
+    setup();
+    mkdirSync(dataDirOf(home), { recursive: true });
+    writeFileSync(join(dataDirOf(home), HISTORY_SYNC_MARKER_NAME), String(Date.now()));
+    let asked = 0;
+    triggerHistorySync(configFor(home), {
+      ...deps(),
+      hasOwedLiveCaptures: () => {
+        asked += 1;
+        return true;
+      },
+    });
+    expect(asked).toBe(0);
+    expect(spawned).toEqual([]);
+  });
+
+  it('reads the live debt from the store itself', () => {
+    setup();
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('s', ATTACHED_AT);
+      db.auditEvents.insertAuditEvent({
+        id: 's-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's',
+        parentId: 's',
+        startedAt: new Date(Date.parse(ATTACHED_AT) + 60_000).toISOString(),
+        content: 'owed text',
+      });
+      db.historySync.markCaptureOwed('s-prompt');
+    } finally {
+      db.close();
+    }
+    triggerHistorySync(configFor(home), deps());
+    expect(spawned).toHaveLength(1);
+  });
+
   it('forks the sibling script once every gate has passed', () => {
     setup({ grantFor: ENDPOINT });
     triggerHistorySync(configFor(home), deps());

@@ -12,7 +12,6 @@ import {
   ManagedSettings as ManagedSettingsSchema,
   MODEL_JUDGE_PAYLOAD_VERSION,
   NO_MANAGED_CONTEXT,
-  SIGHTING_SHARE_CONSENT_VERSION,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
 
@@ -246,13 +245,6 @@ export function overlayManagedSettings(
         settings.vaultConsent?.version === VAULT_CONSENT_VERSION
         ? settings.vaultConsent
         : { acknowledgedAt: now().toISOString(), version: VAULT_CONSENT_VERSION }
-      : undefined;
-  }
-  if (values.sightingShareConsent !== undefined) {
-    merged.sightingShareConsent = values.sightingShareConsent
-      ? settings.sightingShareConsent?.version === SIGHTING_SHARE_CONSENT_VERSION
-        ? settings.sightingShareConsent
-        : { acknowledgedAt: now().toISOString(), version: SIGHTING_SHARE_CONSENT_VERSION }
       : undefined;
   }
   if (values.modelJudgeConsent !== undefined) {

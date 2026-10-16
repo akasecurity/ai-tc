@@ -4,12 +4,12 @@ import { join } from 'node:path';
 
 import type { SightingKey } from '@akasecurity/persistence';
 import {
-  createSightingKeyStore,
   dataDir as dataDirOf,
   FileKeyProvider,
   keysDir as keysDirOf,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
+  rotateFingerprintKey,
   SecretVault,
   UNAVAILABLE,
 } from '@akasecurity/persistence';
@@ -28,6 +28,7 @@ import type {
 import {
   createOutboundEncoder,
   createStoreOutboundEncoder,
+  encodedWireId,
   FAIL_CLOSED_MARKER,
 } from '../../src/attached/outbound-encoder.ts';
 import {
@@ -35,8 +36,8 @@ import {
   expectedToken,
   keyOf,
   keysOf,
-  materialOf,
   patShaped,
+  storeSightingKey,
 } from '../helpers/sighting-fixtures.ts';
 
 const pointerOf = (category: string, fill: string): string =>
@@ -46,6 +47,8 @@ function must<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('expected the capture to be encoded, not held');
   return value;
 }
+
+const ID_KEY = Buffer.alloc(32, 7);
 
 const noInstalledRules = (): Promise<readonly Rule[]> => Promise.resolve([]);
 
@@ -59,6 +62,8 @@ function rawEncoderWith(
       throw new Error('no vault in this test');
     },
     loadRules: noInstalledRules,
+    readSharing: () => true,
+    readIdKey: () => ID_KEY,
     ...overrides,
   });
 }
@@ -139,11 +144,34 @@ describe('outbound encoder: values', () => {
     expect(result.content).toBe(`xx ${FAIL_CLOSED_MARKER} yy`);
   });
 
-  it('replaces the whole content with the marker when the scan fails', async () => {
-    const result = await encoderWith(keyOf(1, 8), {
+  it('holds the capture when the scan cannot start or finish', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 8), {
       createScanner: scannerOf(() => Promise.reject(new Error('scan fault'))),
-    }).encodeContent(`keep ${value} out`);
-    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
+    });
+    await expect(encoder.encodeContent(`keep ${value} out`)).resolves.toBeUndefined();
+  });
+
+  it('reuses one scanner across captures and closes it with the encoder', async () => {
+    let created = 0;
+    let closed = 0;
+    const encoder = rawEncoderWith(keyOf(1, 9), {
+      createScanner: () => {
+        created += 1;
+        return {
+          find: () => Promise.resolve([]),
+          close: () => {
+            closed += 1;
+            return Promise.resolve();
+          },
+        };
+      },
+    });
+    await encoder.encodeContent('one');
+    await encoder.encodeContent('two');
+    expect(created).toBe(1);
+    expect(closed).toBe(0);
+    await encoder.close();
+    expect(closed).toBe(1);
   });
 
   it('holds the capture when the effective rules cannot be loaded', async () => {
@@ -287,7 +315,8 @@ describe('outbound encoder: events', () => {
     expect(encoded.contentHash).not.toBe(contentHashOf(value));
     expect(encoded.contentHash).toBe(contentHashOf(encoded.content));
     expect(encoded.id).not.toBe(raw.id);
-    expect(encoded.id).toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
+    expect(encoded.id).toBe(encodedWireId(ID_KEY, 'sess-1', raw.contentHash, null));
+    expect(encoded.id).not.toBe(captureWireId('sess-1', contentHashOf(encoded.content), null));
     expect(JSON.stringify(encoded)).not.toContain(contentHashOf(value));
   });
 
@@ -298,7 +327,37 @@ describe('outbound encoder: events', () => {
     const first = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     const again = must(await encoder.encodeEvent(raw, { sessionId: 'sess-2', filePath: '' }));
     expect(again.id).toBe(first.id);
-    expect(first.id).toBe(captureWireId('sess-2', contentHashOf(first.content), ''));
+    expect(first.id).toBe(encodedWireId(ID_KEY, 'sess-2', raw.contentHash, ''));
+  });
+
+  it('keeps captures that differ only in their secret apart, with sharing on or off', async () => {
+    const identity = { sessionId: 's', filePath: '' };
+    for (const sharing of [false, true]) {
+      const encoder = rawEncoderWith(keyOf(1, 1), { readSharing: () => sharing });
+      const a = must(await encoder.encodeEvent(event(`deploy with ${patShaped(11)}`), identity));
+      const b = must(await encoder.encodeEvent(event(`deploy with ${patShaped(29)}`), identity));
+      if (!sharing) expect(a.content).toBe(b.content);
+      expect(a.id).not.toBe(b.id);
+    }
+  });
+
+  it('keys the wire id, so another machine derives a different one for the same row', async () => {
+    const raw = event(`p ${patShaped(47)}`, { sessionId: 'sess-3' });
+    const here = must(await rawEncoderWith(keyOf(1, 1)).encodeEvent(raw));
+    const elsewhere = must(
+      await rawEncoderWith(keyOf(1, 1), { readIdKey: () => Buffer.alloc(32, 8) }).encodeEvent(raw),
+    );
+    expect(elsewhere.content).toBe(here.content);
+    expect(elsewhere.id).not.toBe(here.id);
+  });
+
+  it('holds an encoded event when the id key cannot be read', async () => {
+    const encoder = rawEncoderWith(keyOf(1, 1), {
+      readIdKey: () => {
+        throw new Error('key unreadable');
+      },
+    });
+    await expect(encoder.encodeEvent(event(`p ${patShaped(53)}`))).resolves.toBeUndefined();
   });
 
   it('holds an event when the effective rules cannot be loaded', async () => {
@@ -351,14 +410,32 @@ describe('createStoreOutboundEncoder', () => {
     removeTree(base);
   });
 
+  it('keeps the wire id of an encoded capture when the exception key rotates', async () => {
+    storeSightingKey(base, keyOf(6, 5));
+    const content = `p ${patShaped(59)}`;
+    const raw: IngestEvent = {
+      id: captureWireId('sess-r', contentHashOf(content), null),
+      sourceTool: 'claude-code',
+      kind: 'prompt',
+      occurredAt: '2026-10-01T10:00:00.000Z',
+      contentHash: contentHashOf(content),
+      content,
+      metadata: { sessionId: 'sess-r' },
+    };
+    loadOrCreateFingerprintKey(dataDirOf(base));
+    const before = must(
+      await createStoreOutboundEncoder(base, { loadRules: noInstalledRules }).encodeEvent(raw),
+    );
+    rotateFingerprintKey(dataDirOf(base));
+    const after = must(
+      await createStoreOutboundEncoder(base, { loadRules: noInstalledRules }).encodeEvent(raw),
+    );
+    expect(after.id).toBe(before.id);
+  });
+
   it('resolves a vaulted secret through the audited path, never logging the value', async () => {
     const key = keyOf(6, 4);
-    createSightingKeyStore('file', keysDirOf(base)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(base, key);
     const value = patShaped(41);
     const db = openLocalDatabase(dataDirOf(base));
     try {
@@ -397,13 +474,49 @@ describe('createStoreOutboundEncoder', () => {
 
   it('sends the marker for a pointer the vault does not hold', async () => {
     const key = keyOf(1, 5);
-    createSightingKeyStore('file', keysDirOf(base)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(base, key);
     const result = await encoderOver(base).encodeContent(pointerOf('secret', 'D'));
     expect(result.content).toBe(FAIL_CLOSED_MARKER);
+  });
+});
+
+describe('outbound encoder: the sighting-sharing gate', () => {
+  const value = patShaped(101);
+  const pointer = pointerOf('secret', 'E');
+
+  it('sends only markers, no token and no sightings, while sharing is off', async () => {
+    let opened = 0;
+    const result = await encoderWith(keyOf(1, 1), {
+      readSharing: () => false,
+      openVault: () => {
+        opened += 1;
+        throw new Error('the vault is not opened while sharing is off');
+      },
+    }).encodeContent(`a ${value} b ${pointer}`);
+    expect(result).toEqual({
+      content: `a ${FAIL_CLOSED_MARKER} b ${FAIL_CLOSED_MARKER}`,
+      sightings: [],
+    });
+    expect(result.content).not.toContain('[[aka:fp:');
+    expect(opened).toBe(0);
+  });
+
+  it('asks the gate on every capture, so a change applies to the next one', async () => {
+    let sharing = true;
+    const encoder = encoderWith(keyOf(2, 2), { readSharing: () => sharing });
+    expect((await encoder.encodeContent(value)).content).toContain('[[aka:fp:v2.');
+    sharing = false;
+    expect((await encoder.encodeContent(value)).content).toBe(FAIL_CLOSED_MARKER);
+    sharing = true;
+    expect((await encoder.encodeContent(value)).content).toContain('[[aka:fp:v2.');
+  });
+
+  it('treats a gate that throws as sharing off', async () => {
+    const result = await encoderWith(keyOf(1, 3), {
+      readSharing: () => {
+        throw new Error('settings unreadable');
+      },
+    }).encodeContent(value);
+    expect(result).toEqual({ content: FAIL_CLOSED_MARKER, sightings: [] });
   });
 });

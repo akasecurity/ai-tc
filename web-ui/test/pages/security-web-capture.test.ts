@@ -297,6 +297,24 @@ describe('the security page will not recite a drift verdict nothing can supersed
     expect(captureCard(await renderSecurityPage())).toBeUndefined();
   });
 
+  it('says nothing on a machine that records nothing from a web chat', async () => {
+    // A stored scope is what a personal device carries. Such a machine stores
+    // no further status, so this verdict is superseded by nothing.
+    grantConsent();
+    seedStatus('claude-ai', DRIFTING);
+    applyOnboarding(
+      { attachmentScope: { endpoint: 'https://cp.example', entries: [] } },
+      join(home, '.aka'),
+    );
+
+    expect(captureCard(await renderSecurityPage())).toBeUndefined();
+
+    // The control: the same store with the scope gone renders the card.
+    applyOnboarding({ attachmentScope: undefined }, join(home, '.aka'));
+    resetSingleton();
+    expect(captureCard(await renderSecurityPage())).toBeDefined();
+  });
+
   it('says nothing when the verdict has aged out of the read window', async () => {
     grantConsent();
     seedStatus('claude-ai', DRIFTING, CAPTURE_STATUS_RECENCY_MS + 60_000);

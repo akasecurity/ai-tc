@@ -1,5 +1,5 @@
-// Worktree scanner: walk source files under a root directory and run each
-// through the detect→record path the live hooks use. Idempotent two ways:
+// Worktree scanner: walk source and secret-bearing files under a root, running
+// each through the detect→record path the live hooks use. Idempotent two ways:
 // findings are deduped by content hash, and a scan-ledger row (path + mtime +
 // hash, keyed to the ruleset fingerprint) is kept for EVERY processed file —
 // including clean ones, which `persist: 'with-findings'` never records as
@@ -10,8 +10,7 @@
 // scanAllRepos shares one gateway + runtime across all discovered repos so
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative } from 'node:path';
 
 import type {
@@ -41,23 +40,19 @@ import type {
   SourceTool,
 } from '@akasecurity/plugin-sdk';
 import {
-  canonicalizeScanPath,
   contentHashOf,
   createPluginRuntime,
   EGRESS_CODE_EXTENSIONS,
   EGRESS_VERSION_MATERIAL,
   extractEgress,
   extractManifestSdks,
-  isProtectedScanPath,
   isVendoredPath,
   manifestKindOf,
   openScanVault,
-  protectedScanRoots,
   resolveEgress,
   resolveNonGitProject,
   resolveRepoIdentity,
   resolveWorktreeRoot,
-  scanFileKind,
   toPosix,
 } from '@akasecurity/plugin-sdk';
 
@@ -66,14 +61,19 @@ import { discoverGitRepos } from './discover.ts';
 import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
 import { type FileRepository, type ScopeKeyLookup, scopeKeysUnder } from './scope-key.ts';
-import { type WalkedFileMeta, type WalkOptions, walkSourceFiles, walkTree } from './walk.ts';
+import {
+  resolveProtectedRoots,
+  type WalkedFileMeta,
+  type WalkOptions,
+  walkSourceFiles,
+} from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
 // findings originate from (required!).
 //
 // Without `onRepositoryRoot`: a scan listens for the repositories nested in its
 // root itself (see scanDir), so the walk's own option is not one a host sets.
-export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot'> {
+export interface ScanOptions extends Omit<WalkOptions, 'onRepositoryRoot' | 'protectedRoots'> {
   sourceTool: SourceTool;
   // Replaces the attached transport the scan's credential sightings take.
   sendSightings?: CredentialSightingsSend | undefined;
@@ -457,10 +457,6 @@ interface SightingRun {
   managedSettings: ManagedSettings | null | undefined;
 }
 
-// A dotenv file is read only for its sightings: its content is never recorded
-// or forwarded by this pass.
-const MAX_SECRET_FILE_BYTES = 512 * 1024;
-
 // The secret matches of one file as sighting tokens. A value that cannot be
 // reduced to a token is left out.
 function sightingsOf(
@@ -482,40 +478,6 @@ function sightingsOf(
       });
     } catch {
       // Left out; the scan goes on.
-    }
-  }
-  return found;
-}
-
-// The sightings in the dotenv files under `rootDir` that the source walk did
-// not read. Each is read into memory, matched, and dropped; nothing of it is
-// stored. The protected credential paths are never read.
-async function dotenvSightings(
-  runtime: PluginRuntime,
-  run: SightingRun,
-  rootDir: string,
-  opts: ScanOptions,
-  read: ReadonlySet<string>,
-  scopeKeyOf: ScopeKeyLookup,
-): Promise<ScanSighting[]> {
-  const found: ScanSighting[] = [];
-  let protectedRoots: readonly string[] | undefined;
-  for (const file of walkTree(rootDir, {
-    excludePatterns: opts.excludePatterns,
-    trackGitignore: true,
-  })) {
-    if (read.has(file.path) || scanFileKind(file.name) !== 'secret-bearing') continue;
-    try {
-      protectedRoots ??= protectedScanRoots(homedir(), run.base);
-      if (isProtectedScanPath(canonicalizeScanPath(file.path), protectedRoots)) continue;
-      if (statSync(file.path).size > MAX_SECRET_FILE_BYTES) continue;
-      const content = readFileSync(file.path, 'utf8');
-      const relativePath = toPosix(relative(rootDir, file.path));
-      found.push(
-        ...sightingsOf(run.key, await runtime.secretsIn(content), file, scopeKeyOf(relativePath)),
-      );
-    } catch {
-      // An unreadable file has no sightings.
     }
   }
   return found;
@@ -557,6 +519,11 @@ async function shareSightings(
 // register has any use for one.
 const NO_REPOSITORY: FileRepository = { root: undefined, key: undefined };
 
+// The config's data directory is `<akaHome>/data`.
+function akaHomeOf(config: PluginConfig): string | undefined {
+  return config.dataDir ? dirname(config.dataDir) : undefined;
+}
+
 async function scanDir(
   runtime: PluginRuntime,
   gateway: DataGateway,
@@ -568,10 +535,12 @@ async function scanDir(
   vault: AtRestVault | undefined,
   sightingRun: SightingRun | undefined,
 ): Promise<WorktreeScanSummary> {
+  // Resolved before anything is read, and shared by the source and manifest
+  // walks.
+  const protectedRoots = resolveProtectedRoots(opts.home, opts.akaHome ?? akaHomeOf(config));
   const byRule: Record<string, number> = {};
   const sightings: ScanSighting[] = [];
   // Every path the source walk read, and those of them that held a secret.
-  const readPaths = new Set<string>();
   const sightingPaths = new Set<string>();
   const bySeverity: Record<string, number> = {};
   const updates: ScanLedgerEntry[] = [];
@@ -650,6 +619,7 @@ async function scanDir(
   for (const file of walkSourceFiles({
     ...opts,
     rootDir,
+    protectedRoots,
     shouldRead: (meta) => (opts.shouldRead?.(meta) ?? true) && shouldRead(meta),
     onRepositoryRoot: egress === null ? undefined : noteNestedRoot,
   })) {
@@ -751,7 +721,6 @@ async function scanDir(
       { persist: 'with-findings', dedupe: 'content-hash', ...(vault ? { vault } : {}) },
     );
 
-    readPaths.add(file.path);
     if (sightingRun !== undefined) {
       const found = sightingsOf(sightingRun.key, result.findings, file, scopeKey);
       if (found.length > 0) sightingPaths.add(file.path);
@@ -779,7 +748,8 @@ async function scanDir(
   // Dependency manifests carry SDK evidence but no source extension, so the
   // source walk never yields them. They are ledgered exactly like walked files
   // and never go through capture — they are egress evidence, not code to scan.
-  if (egress) scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot);
+  if (egress)
+    scanManifests(egress, ledger, updates, rootDir, scopeKeyOf, noteNestedRoot, protectedRoots);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
   if (egress) {
@@ -793,9 +763,6 @@ async function scanDir(
 
   let sightingOutcome: CredentialSightingsOutcome | undefined;
   if (sightingRun !== undefined) {
-    sightings.push(
-      ...(await dotenvSightings(runtime, sightingRun, rootDir, opts, readPaths, scopeKeyOf)),
-    );
     sightingOutcome = await shareSightings(sightingRun, rootDir, sightings);
     if (sightingOutcome.status === 'sent' && sightingOutcome.failure !== undefined) {
       const unsent = updates.filter((entry) => !sightingPaths.has(entry.path));
@@ -871,12 +838,13 @@ function scanManifests(
   rootDir: string,
   scopeKeyOf: ScopeKeyLookup,
   onRepositoryRoot: (relativeDir: string) => void,
+  protectedRoots: readonly string[],
 ): void {
   // This walk lists directories whether or not anything under them changed, so a
   // nested repository is reported because the scan passed through it, not
   // because this run happened to re-read one of its files. `onRepositoryRoot` is
   // the collector the source walk reports to as well (see scanDir).
-  for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot)) {
+  for (const manifest of collectManifests(rootDir, undefined, onRepositoryRoot, protectedRoots)) {
     const prev = ledger.previous.get(manifest.path);
     // Recorded like a walked file's repository, decided the same way: the
     // repository the manifest is in, so a manifest in a nested clone is the

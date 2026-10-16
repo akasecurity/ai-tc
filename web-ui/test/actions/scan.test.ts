@@ -12,6 +12,7 @@ import {
   type LocalDatabase,
   openLocalDatabase,
   settingsDir,
+  sightingKeyEndpointFingerprint,
   sightingToken,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -617,6 +618,7 @@ describe('runScan — credential sightings', () => {
         sightingShareConsent: {
           acknowledgedAt: new Date().toISOString(),
           version: SIGHTING_SHARE_CONSENT_VERSION,
+          endpoint: endpoint,
         },
       },
       base,
@@ -628,6 +630,7 @@ describe('runScan — credential sightings', () => {
       algorithm: 'hmac-sha256',
       key: SIGHTING_KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
+      endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
     });
   }
 

@@ -90,3 +90,33 @@ describe('recordCapture — variable name', () => {
     expect(views.filter((v) => v !== undefined && !('variableName' in v))).toHaveLength(1);
   });
 });
+
+describe('the findings page reads — variable name', () => {
+  it('carries the name on the instance list match, and omits it when absent', async () => {
+    const named = record(NAME);
+    const bare = record(undefined);
+    const { items } = await db.findings.listFindingInstances({});
+    expect(items.find((i) => i.id === named)?.match.variableName).toBe(NAME);
+    expect(items.find((i) => i.id === bare)?.match).not.toHaveProperty('variableName');
+  });
+
+  it('carries the name on a single finding the drawer opens', async () => {
+    const named = record(NAME);
+    const detail = await db.findings.findingInstance(named);
+    expect(detail?.match.variableName).toBe(NAME);
+    expect(detail?.match.maskedValue).toBe('s*********2');
+  });
+
+  it('surfaces no name longer than the cap, even one written around the bound', async () => {
+    const id = record(NAME);
+    const recentId = record(NAME);
+    corpusConnection(db)
+      .prepare(`UPDATE inspection_findings SET variable_name = ?`)
+      .run('K'.repeat(MAX_VARIABLE_NAME_LENGTH + 1));
+    const detail = await db.findings.findingInstance(id);
+    expect(detail?.match).not.toHaveProperty('variableName');
+    const recent = await db.findings.recentFindings({ limit: 2 });
+    expect(recent.map((v) => v.id)).toContain(recentId);
+    expect(recent.filter((v) => 'variableName' in v)).toHaveLength(0);
+  });
+});

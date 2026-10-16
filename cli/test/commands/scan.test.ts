@@ -116,6 +116,7 @@ const FINDING_KEYS = [
   'maskedMatch',
   'actionTaken',
   'confidence',
+  'variableName',
 ];
 
 interface ScanFinding {
@@ -128,6 +129,7 @@ interface ScanFinding {
   maskedMatch: string;
   actionTaken: string;
   confidence: number;
+  variableName: string | null;
 }
 
 interface ScanPayload {
@@ -403,6 +405,20 @@ describe('runScan', () => {
       // instead of accusing the projection.
       expect(gitRootAbove(root)).toBeUndefined();
       expect(payload.inventory).toBeNull();
+    });
+
+    it('names the variable a secret is assigned to, and null where there is none', async () => {
+      writeSecretFile();
+      writeFileSync(join(root, 'notes.txt'), `${LOW_TEXT}\n`);
+
+      const payload = await scanJson(root);
+      const assigned = payload.findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+      const bare = payload.findings.find((f) => f.file === join(root, 'notes.txt'));
+
+      expect(assigned?.variableName).toBe('key');
+      expect(bare).toBeDefined();
+      expect(bare?.variableName).toBeNull();
+      expectNoEchoOf(out, RAW);
     });
 
     it('emits the same five keys on a clean scan, with findings as an empty array', async () => {
@@ -825,7 +841,7 @@ describe('runScan', () => {
       expect(events).not.toContain(join(root, 'skipped.ts'));
     });
 
-    it('lets an .akaignore negation beat the vendored-directory and dot-directory floor', async () => {
+    it('lets an .akaignore negation beat the vendored and generated-directory floor', async () => {
       writeFileSync(join(root, '.akaignore'), '!build/\n!.cache/\n');
       mkdirSync(join(root, 'build'));
       writeFileSync(join(root, 'build', 'gen.ts'), `const key = '${RAW}';\n`);

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   canonicalizeScanPath,
   isProtectedScanPath,
+  isSecretBearingFileSnapshot,
   protectedScanRoots,
   scanFileKind,
   SOURCE_EXTENSIONS,
@@ -25,6 +26,9 @@ describe('scanFileKind', () => {
     ['.env.local', 'secret-bearing'],
     ['.env.production', 'secret-bearing'],
     ['.env.example', 'secret-bearing'],
+    ['.env.sample', 'secret-bearing'],
+    ['.env.template', 'secret-bearing'],
+    ['.env.dist', 'secret-bearing'],
     ['.envrc', 'secret-bearing'],
     ['.ENV', 'secret-bearing'],
     ['.Env.Local', 'secret-bearing'],
@@ -34,6 +38,16 @@ describe('scanFileKind', () => {
     ['.environment', 'other'],
     ['foo.env', 'secret-bearing'],
     ['prod.ENV', 'secret-bearing'],
+    ['app.env.production', 'secret-bearing'],
+    ['config.env.local', 'secret-bearing'],
+    ['App.ENV.Production', 'secret-bearing'],
+    ['app.env.production.ts', 'source'],
+    ['app.environment.local', 'other'],
+    ['README.env.md', 'other'],
+    ['notes.env.txt', 'other'],
+    ['diagram.env.png', 'other'],
+    ['.env.production.local', 'secret-bearing'],
+    ['app.env.staging', 'secret-bearing'],
     ['env.example', 'other'],
     ['env', 'other'],
   ])('classifies %s as %s', (name, kind) => {
@@ -138,5 +152,20 @@ describe('protected scan roots', () => {
     if (!existsSync(mixed)) ctx.skip('case-sensitive filesystem: ...IDE/ names no file');
     expect(canonicalizeScanPath(mixed)).toBe(canonicalizeScanPath(lower));
     expect(canonicalizeScanPath(mixed).endsWith(join('ide', '1.lock'))).toBe(true);
+  });
+});
+
+describe('isSecretBearingFileSnapshot', () => {
+  it.each([
+    [{ filePath: '/repo/.env', wholeFile: true }, true],
+    [{ filePath: '/repo/config/.env.local', wholeFile: true }, true],
+    [{ filePath: '/repo/.env', wholeFile: false }, false],
+    [{ filePath: '/repo/.env' }, false],
+    [{ filePath: '/repo/.env.ts', wholeFile: true }, false],
+    [{ filePath: '/repo/app.ts', wholeFile: true }, false],
+    [{ wholeFile: true }, false],
+    [undefined, false],
+  ])('%j → %s', (metadata, expected) => {
+    expect(isSecretBearingFileSnapshot(metadata)).toBe(expected);
   });
 });

@@ -2,9 +2,8 @@
 // dotenv files secrets are kept in, and which paths are never read at all.
 //
 // `aka scan` (@akasecurity/local-ops fs-scan) reads every file that is not
-// protected, so it uses the protected-path half only. The worktree scanner
-// (@akasecurity/scanner walk) reads by `scanFileKind` and does not consult the
-// protected paths.
+// protected. The worktree scanner (@akasecurity/scanner walk) reads source and
+// secret-bearing files by `scanFileKind`, and also skips the protected paths.
 import { realpathSync } from 'node:fs';
 import { basename, extname, resolve, sep } from 'node:path';
 
@@ -26,14 +25,36 @@ export const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.rs',
 ]);
 
+// Document, image and log extensions that end a name such as `README.env.md`,
+// which is about a dotenv file rather than one.
+const NON_ENV_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.md',
+  '.markdown',
+  '.txt',
+  '.rst',
+  '.adoc',
+  '.html',
+  '.htm',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.log',
+]);
+
 export type ScanFileKind = 'source' | 'secret-bearing' | 'other';
 
 /**
  * Classifies a file by its basename; a full path is reduced to its basename
  * first. `extname` gives a dotfile such as `.env` an empty extension, so a
  * dotenv file is recognised by name, case-insensitively: `.env`, every
- * `.env.<variant>`, every `<name>.env`, and direnv's `.envrc`. A name with a
- * source extension is source first, so `.env.ts` is source.
+ * `.env.<variant>`, every `<name>.env` and `<name>.env.<variant>`, and direnv's
+ * `.envrc`. A name with a source extension is source first, so `.env.ts` is
+ * source. Template variants such as `.env.example` are included on purpose,
+ * because real keys get committed under those names; the command-risk rule that
+ * flags reading a credential file excludes them, since it judges the command.
  */
 export function scanFileKind(
   name: string,
@@ -42,7 +63,8 @@ export function scanFileKind(
   const base = basename(name);
   if (sourceExtensions.has(extname(base))) return 'source';
   const lower = base.toLowerCase();
-  if (lower === '.envrc' || lower.endsWith('.env') || lower.startsWith('.env.')) {
+  if (NON_ENV_EXTENSIONS.has(extname(lower))) return 'other';
+  if (lower === '.envrc' || lower.endsWith('.env') || lower.includes('.env.')) {
     return 'secret-bearing';
   }
   return 'other';
@@ -60,6 +82,20 @@ export const HOME_SECRET_FILES: readonly string[] = [
   '.gem/credentials',
   '.kube/config',
 ];
+
+/**
+ * Whether a capture is a whole-file snapshot of a secret-bearing file. Such a
+ * capture is recorded locally and never forwarded to a control plane. Decided
+ * from the two fields that persist with the stored row, so a row read back
+ * later is judged the same way as the live capture.
+ */
+export function isSecretBearingFileSnapshot(
+  metadata: { filePath?: string | undefined; wholeFile?: boolean | undefined } | undefined,
+): boolean {
+  const filePath = metadata?.filePath;
+  if (metadata?.wholeFile !== true || filePath === undefined) return false;
+  return scanFileKind(basename(filePath)) === 'secret-bearing';
+}
 
 /**
  * Paths a scan never reads, whatever it is pointed at: live credentials AKA or

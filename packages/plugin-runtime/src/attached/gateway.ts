@@ -4,6 +4,7 @@ import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persis
 import {
   canonicalRepoUrl,
   llmCallId,
+  readSightingSharing,
   scopeKeyOfProjectKey,
   toEgressIngestRequest,
   toolCallId,
@@ -18,7 +19,8 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
 } from '@akasecurity/plugin-sdk';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import type { BoundedScanRequest } from '@akasecurity/plugin-sdk';
+import { bundledDetections, isSecretBearingFileSnapshot } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventBatchAck,
   AuditEventInput,
@@ -63,6 +65,8 @@ import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
+import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
+import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
 import type { OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
@@ -178,6 +182,16 @@ export interface AttachedDataGatewayDeps {
    * gateway's own effective ruleset.
    */
   encoder?: OutboundEncoder;
+  /** How long the live path waits for an encode before holding the capture owed. */
+  encodeBudgetMs?: number;
+  /** The bound the default encoder's worker scan runs under. */
+  scanBound?: BoundedScanRequest;
+  /**
+   * The deployment's name as a terminal shows it, for the session-start line
+   * (`forwardingScope`). Optional: a gateway built without one offers no line,
+   * which is the answer a gateway that cannot name where it forwards should give.
+   */
+  deploymentName?: string;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -229,8 +243,8 @@ function bundledRulesFlat(): readonly Rule[] {
  * `Event.content` is raw prompt/tool text. What makes retaining it acceptable is
  * that the text is ALREADY at rest here — recordCapture writes it on every
  * machine, attached or not — so a queue changes how long delivery may be owed
- * rather than whether plaintext sits on disk, and the deferred send is behind
- * its own consent, whose copy says exactly that.
+ * rather than whether plaintext sits on disk. A capture the live path owes is
+ * delivered by the drain without the history grant, encoded as a live send is.
  *
  * There is still no SPOOL FILE: the queue is `synced_at` on the row that was
  * already written, so nothing is copied anywhere to enqueue it.
@@ -240,7 +254,9 @@ function bundledRulesFlat(): readonly Rule[] {
  * on either attachment mode. Where the organization's model policy applies is a
  * separate question, answered per event by `governanceAppliesTo`.
  */
-export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, GovernanceScope {
+export class AttachedDataGateway
+  implements DataGateway, LocalStoreMaintenance, GovernanceScope, ForwardingScopeReader
+{
   /**
    * The control plane's OWN resolution of this session's inventory, captured by
    * ensureInventory. Null until the first successful forward — and it stays
@@ -269,6 +285,9 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
       deps.encoder ??
       createStoreOutboundEncoder(dirname(deps.dataDir), {
         loadRules: async () => (await this.getPolicyBundle()).rules ?? [],
+        // Asked per capture, so a change of the sharing answer applies to the next send.
+        readSharing: () => readSightingSharing(dirname(deps.dataDir)).sharing,
+        ...(deps.scanBound === undefined ? {} : { scanBound: deps.scanBound }),
       });
   }
 
@@ -527,11 +546,29 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     }
   }
 
+  /**
+   * The encoded event, or undefined to hold the capture owed. Bounded by the
+   * decision-path budget on its own, before the forward and outside the breaker,
+   * so a slow scan holds the capture rather than delaying the hook or counting
+   * as a deployment failure.
+   */
   private async encodeForWire(event: IngestEvent): Promise<IngestEvent | undefined> {
     try {
-      return await this.encoder.encodeEvent(event);
+      return await withTimeout(
+        this.encoder.encodeEvent(event),
+        this.deps.encodeBudgetMs ?? DECISION_PATH_BUDGET_MS,
+      );
     } catch {
       return undefined;
+    }
+  }
+
+  /** TOTAL, like `verdictFor`: a record it cannot read stays local. */
+  private staysLocal(record: CaptureRecord): boolean {
+    try {
+      return isSecretBearingFileSnapshot(record.event.metadata);
+    } catch {
+      return true;
     }
   }
 
@@ -544,6 +581,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
     // it writes are what the device's own /health, /audit and exception flows
     // read, and what the posture channel measures.
     await this.deps.local.recordCapture(record);
+    // A whole-file snapshot of a secret-bearing file stays on this machine on
+    // every attachment. It returns before the owed branch, so it is never
+    // marked owed either.
+    if (this.staysLocal(record)) return;
     // THE SCOPE VERDICT, after the local write and before anything that could
     // stamp the row. A refused capture returns HERE, which keeps it out of the
     // owed branch below. That branch marks every non-delivery owed, and an owed
@@ -1242,6 +1283,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
   }
 
   async close(): Promise<void> {
+    await this.encoder.close();
     return this.deps.local.close();
   }
 
@@ -1402,6 +1444,35 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance, 
    */
   governanceAppliesTo(scopeKey: string | undefined): boolean {
     return this.verdictFor(() => scopeKey) === 'forward';
+  }
+
+  /**
+   * Where this gateway forwards, for the session-start line: the deployment's
+   * name, and on a scoped attachment the key the local store holds for root
+   * `rootId` with this gateway's verdict on it. Null when the gateway was built
+   * without a name. No credential, nothing sent.
+   *
+   * On a scoped attachment the verdict is the one this instance RECORDED when the
+   * root was written through it, and null when it recorded none. A session start
+   * whose pass stopped before the root has no answer to give: the history
+   * reconcile writes a missing root later, keyed the same way, and forwards the
+   * session's records under it, so saying local-only there would be wrong as
+   * often as right. Never recorded from here, so asking before the root is
+   * written cannot hold the root's records local either.
+   */
+  forwardingScope(rootId: string): ForwardingScope | null {
+    const { deploymentName, attachment } = this.deps;
+    if (deploymentName === undefined) return null;
+    if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const verdict = this.rootVerdicts.get(rootId);
+    if (verdict === undefined) return null;
+    let rootKey: string | undefined;
+    try {
+      rootKey = this.deps.local.readSessionScopeKey(rootId);
+    } catch {
+      rootKey = undefined;
+    }
+    return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
   }
 
   // ---------------------------------------------------------------------

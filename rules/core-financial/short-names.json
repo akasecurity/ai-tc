@@ -1,0 +1,10 @@
+{
+  "core-financial/credit-card": "Card number",
+  "core-financial/iban": "IBAN",
+  "core-financial/routing-number": "Bank routing number",
+  "core-financial/swift": "SWIFT code",
+  "core-financial/cvv": "Card CVV",
+  "core-financial/cusip": "CUSIP",
+  "core-financial/paypal": "PayPal ID",
+  "core-financial/salary": "Salary"
+}

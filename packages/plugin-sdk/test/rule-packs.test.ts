@@ -6,6 +6,7 @@ import { getLoadedRules, scan } from '@akasecurity/detections';
 import { PackManifest, Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { BUNDLED_PACKS } from '../src/bundled-packs.generated.ts';
 import { bundledDetections, registerBundledPacks, uniqueRuleIds } from '../src/rule-packs.ts';
 
 // The repo-root rules/ registry the bundle is generated from — resolved from this
@@ -46,6 +47,21 @@ describe('registerBundledPacks', () => {
     // A canonical AWS key is caught by the bundled secret pack.
     const findings = scan('export AWS_KEY=AKIAIOSFODNN7EXAMPLE');
     expect(findings.some((f) => f.category === 'secret')).toBe(true);
+  });
+
+  it('registers the rules bundledDetections() parsed rather than parsing them again', () => {
+    // Every hook both registers the packs and records the inventory, and the
+    // Rule schema's regex refinements compile each pattern, so a second parse
+    // is a per-call cost. Identity is what shows the engine holds the
+    // inventory's own parsed objects.
+    registerBundledPacks();
+    const parsed = bundledDetections().flatMap((pack) => pack.rules);
+    const loaded = getLoadedRules();
+    expect(loaded.length).toBe(parsed.length);
+    // The same objects, in the same order — not equal copies.
+    parsed.forEach((rule, i) => {
+      expect(loaded[i], rule.id).toBe(rule);
+    });
   });
 });
 
@@ -95,5 +111,44 @@ describe('uniqueRuleIds', () => {
   it('dedupes and joins rule ids for a one-line summary', () => {
     expect(uniqueRuleIds([{ ruleId: 'a' }, { ruleId: 'a' }, { ruleId: 'b' }])).toBe('a, b');
     expect(uniqueRuleIds([])).toBe('');
+  });
+});
+
+describe('short names', () => {
+  it('every bundled rule has a short name', () => {
+    const missing = BUNDLED_PACKS.flatMap((pack) =>
+      pack.rawRules
+        .map((raw) => (raw as { id: string }).id)
+        .filter(
+          (id) => typeof pack.shortNames[id] !== 'string' || pack.shortNames[id].trim() === '',
+        ),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('names no rule its pack does not have', () => {
+    const stray = BUNDLED_PACKS.flatMap((pack) => {
+      const ids = new Set(pack.rawRules.map((raw) => (raw as { id: string }).id));
+      return Object.keys(pack.shortNames).filter((id) => !ids.has(id));
+    });
+    expect(stray).toEqual([]);
+  });
+
+  it('keeps short names short', () => {
+    const long = BUNDLED_PACKS.flatMap((pack) =>
+      Object.entries(pack.shortNames)
+        .filter(([, name]) => name.length > 32)
+        .map(([id]) => id),
+    );
+    expect(long).toEqual([]);
+  });
+
+  it('leaves the rule objects without a short-name field', () => {
+    const carrying = BUNDLED_PACKS.flatMap((pack) =>
+      pack.rawRules
+        .filter((raw) => 'shortName' in (raw as object))
+        .map((raw) => (raw as { id: string }).id),
+    );
+    expect(carrying).toEqual([]);
   });
 });

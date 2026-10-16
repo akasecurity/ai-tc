@@ -88,9 +88,10 @@ import { refusalLine } from '../lib/refusal-line.ts';
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
 // envelope keys the parser does not recognise. The edits append an entry to the
-// stored `entries` array, take one out, mark one in place, or set or clear the
-// work-subscription opt-out, and keep everything else; they never write back a
-// parsed copy, which would drop what the parser cannot read.
+// stored `entries` array, take out every stored entry that matches, mark every
+// matching account entry in place, or set or clear the work-subscription
+// opt-out, and keep everything else; they never write back a parsed copy, which
+// would drop what the parser cannot read.
 //
 // BOUND TO THE ENDPOINT IN FORCE. The record names the deployment it is for, and
 // that is the EFFECTIVE endpoint, with any administrator's overlay applied: the
@@ -374,7 +375,7 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   io.out(
     (identity.kind === 'account'
       ? unenrolledAccountLine(identity.key, repository, name)
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder.\n`) +
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -1187,15 +1188,19 @@ const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
  * extension stamps, or a ChatGPT workspace, whose key the Codex login supplies.
  * For `unenroll`, a stored entry of either kind.
  *
- * `aka enroll --account` normalizes the key to the stored form
- * (normalizeWebAccountKey): lower-cased, with the whitespace around it dropped, so
- * a key copied in another case enrolls the same account. Anything that is not an
- * account key is refused, naming the text typed, and never stored.
+ * The text is trimmed first, and everything below is about the trimmed text. Text
+ * beginning `agent:`, in any case, never gets here: namedRepository refuses it for
+ * both verbs, in a message that does not repeat it.
  *
- * `aka unenroll --account` matches the normalized key and also the text exactly
- * as typed, the rule storedIdentity gives `--repo`, and takes text that is not an
- * account key as it stands: an entry stored under a different normalization form
- * must still be removable.
+ * `aka enroll --account` normalizes the key to the stored form
+ * (normalizeWebAccountKey), lower-cased, so a key copied in another case enrolls
+ * the same account. Anything that is not an account key is refused, naming the
+ * trimmed text, and never stored.
+ *
+ * `aka unenroll --account` matches the normalized key and also the trimmed text in
+ * the case typed, the rule storedIdentity gives `--repo`, and takes text that is
+ * not an account key as it stands: an entry stored under a different
+ * normalization form must still be removable.
  */
 function accountIdentity(verb: Verb, input: string): Identity {
   const typed = input.trim();
@@ -1227,9 +1232,9 @@ function accountIdentity(verb: Verb, input: string): Identity {
  * for byte, never a key enrollableRepoKey would accept. `[path]` stores the key
  * the checkout's attribution produced without re-judging it, and that may be one
  * the validator refuses (a single-segment `host:repo.git` remote keys as
- * `host/repo`), or one a newer build stored under another rule. Routed through
- * the validator, such an entry could be removed only from inside its checkout,
- * or by detaching. A clone URL also matches the key it canonicalises to.
+ * `host/repo`), or one stored under a different normalization form. Routed
+ * through the validator, such an entry could be removed only from inside its
+ * checkout, or by detaching. A clone URL also matches the key it canonicalises to.
  */
 function storedIdentity(input: string): Identity {
   const typed = input.trim();

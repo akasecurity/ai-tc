@@ -1309,7 +1309,7 @@ describe('aka enroll — a list this version cannot read', () => {
     const io = recorder();
     expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
     expect(io.output()).toBe(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder.\n` +
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n` +
         'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
         'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
         'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
@@ -1423,7 +1423,7 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder.`,
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n`,
     );
     // Said as far as it is true: a scan already running may have read the scope
     // before the edit, so nothing promises it stops; and what was waiting is
@@ -1453,6 +1453,16 @@ describe('aka unenroll', () => {
     expect(identities()).toEqual([]);
   });
 
+  it('removes every stored entry the typed clone URL stands for, and keeps the rest', async () => {
+    attach({
+      scope: fresh([enrolled(WORK_REMOTE_SCP, null), enrolled(), enrolled(SECOND_REPO, null)]),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REMOTE_SCP], deps(io))).toBe(0);
+    expect(identities()).toEqual([SECOND_REPO]);
+    expect(io.output()).toContain(`Unenrolled ${WORK_REMOTE_SCP}, ${WORK_REPO}. `);
+  });
+
   it('removes a key enrollableRepoKey refuses, as listed', async () => {
     attach({ scope: fresh() });
     // A single-segment scp remote keys as `host/repo`: a checkout stores that key
@@ -1473,8 +1483,8 @@ describe('aka unenroll', () => {
     expect(io.errors()).toBe('');
   });
 
-  // Matching is on the stored identity, byte for byte. A key a newer build
-  // stored under another rule is removable exactly as listed, and a different
+  // Matching is on the stored identity, byte for byte. A key stored under a
+  // different normalization form is removable exactly as listed, and a different
   // spelling of it is a different key.
   it('matches the stored identity exactly, and only that', async () => {
     const listed = 'GitHub.com/Acme/Payments';
@@ -1708,13 +1718,14 @@ describe('aka enroll --account', () => {
     ['a chatgpt id that is not a workspace id', 'chatgpt:payments'],
     ['an id that is not an organization id', 'claude:payments'],
     ['a bare organization id', ORG],
+    ['text with whitespace around it, which the refusal names without it', '  chatgpt:payments  '],
   ])('refuses %s, and writes nothing', async (_name, input) => {
     attach({ scope: fresh(), extra: webChat() });
     const before = stored();
     const io = recorder();
     expect(await runEnroll(['--account', input], deps(io))).toBe(1);
     expect(exits).toEqual([1]);
-    expect(io.errors()).toContain(`aka enroll: ${input} is not a web chat account key.\n`);
+    expect(io.errors()).toContain(`aka enroll: ${input.trim()} is not a web chat account key.\n`);
     expect(io.errors()).toContain('`aka enroll --list-detected`');
     expect(io.errors()).toContain('chatgpt:<workspace-id>');
     expect(stored()).toEqual(before);
@@ -1817,6 +1828,20 @@ describe('aka unenroll --account', () => {
           `Unenrolled ${stored}. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n`,
         ),
     ).toBe(true);
+  });
+
+  it.each([
+    ['a key stored in another case', `claude:${ORG.toUpperCase()}`],
+    ['text that is not an account key', 'claude:legacy-id'],
+  ])('matches %s as typed, without the whitespace around it', async (_name, listed) => {
+    attach({
+      scope: fresh([{ kind: 'account', identity: listed, enrolledAt: NOW }, enrolled()]),
+      extra: webChat(),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--account', `  ${listed}\t `], deps(io))).toBe(0);
+    expect(identities()).toEqual([WORK_REPO]);
+    expect(io.output().startsWith(`Unenrolled ${listed}. `)).toBe(true);
   });
 
   it('says so when the account is not enrolled', async () => {
@@ -1981,6 +2006,16 @@ describe('aka enroll --account — Claude Code sessions', () => {
     expect(seed.calls).toEqual([]);
   });
 
+  it('adds the marker in place to every stored entry of the account', async () => {
+    const first = enrolledAccount();
+    const second = { ...enrolledAccount(), enrolledAt: '2026-10-02T09:00:00.000Z' };
+    attach({ scope: fresh([first, enrolled(), second]), extra: webChat() });
+    expect(await runEnroll(['--account', ACCOUNT], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(
+      fresh([{ ...first, codingAgents: true }, enrolled(), { ...second, codingAgents: true }]),
+    );
+  });
+
   it('still enrolls while work subscriptions are off, and says the opt-out does not cover it', async () => {
     attach({ scope: { ...fresh(), workSubscriptions: 'off' }, extra: webChat() });
     const io = recorder();
@@ -2013,6 +2048,7 @@ describe('aka enroll --account — Claude Code sessions', () => {
     const run = verb === 'enroll' ? runEnroll : runUnenroll;
     expect(await run([flag, value], deps(io))).toBe(1);
     expect(io.errors()).toContain(`aka ${verb}: an agent: key is never enrolled`);
+    expect(`${io.errors()}${io.output()}`.includes(value.trim())).toBe(false);
     expect(stored()).toEqual(before);
     expect(settingsWrite.calls).toBe(0);
   });
@@ -2289,6 +2325,17 @@ describe('aka enroll --work-subscriptions', () => {
     attach({ scope: { ...fresh(), workSubscriptions: 'paused' } });
     expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
     expect(storedScope()).toEqual(fresh());
+  });
+
+  it('keeps every other key and entry of the record as found', async () => {
+    const newer = {
+      ...fresh([enrolled()]),
+      builtBy: 'a newer build',
+      entries: [enrolled(), { kind: 'org', identity: 'example-org', enrolledAt: NOW }],
+    };
+    attach({ scope: { ...newer, workSubscriptions: 'off' } });
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(newer);
   });
 
   it('says so when they are already on, and changes nothing', async () => {

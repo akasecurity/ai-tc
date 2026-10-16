@@ -24,6 +24,7 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { codexToolStamp, threadAccountKey } from './account-stamp.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
@@ -31,15 +32,8 @@ import {
   decidePreToolUse,
   SCANNABLE_FIELDS,
 } from './pre-tool-use-decision.ts';
-import {
-  baseMetadata,
-  captureScopeKey,
-  countFailOpen,
-  emit,
-  getString,
-  parseJson,
-  readStdin,
-} from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import { captureStamped } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -103,13 +97,24 @@ async function main(): Promise<void> {
   const metadata = baseMetadata(input) ?? {};
   if (toolName) metadata.toolName = toolName;
   // Bash is keyed by the session cwd: it names no file this hook reads. An
-  // apply_patch gets NO key. It is recorded whole (persist 'always') and names
-  // its files inside the patch body (`tool_input.command`), which this hook does
-  // not parse, so the cwd's key could name a checkout the patch never wrote. A
-  // scoped attachment keeps a keyless capture local (the gateway's verdict), so
-  // no key is a coverage gap and never a leak.
-  // Same rule as Copilot's apply_patch. Beside the metadata, never inside it.
-  const scopeKey = toolName === 'apply_patch' ? undefined : captureScopeKey(input);
+  // apply_patch gets no repository key. It is recorded whole (persist 'always')
+  // and names its files inside the patch body (`tool_input.command`), which this
+  // hook does not parse, so the cwd's key could name a checkout the patch never
+  // wrote. A scoped attachment keeps a keyless capture local (the gateway's
+  // verdict), so no key is a coverage gap and never a leak. In a work thread, a
+  // Bash call outside an enrolled repository and every apply_patch get the
+  // thread's agent key instead. Beside the metadata, never inside it.
+  const scopeKey = codexToolStamp(
+    gateway,
+    input,
+    toolName,
+    threadAccountKey(gateway, {
+      dataDir: config.dataDir,
+      sessionId: getString(input, 'session_id'),
+      transcriptPath: getString(input, 'transcript_path'),
+      nowMs: Date.now(),
+    }),
+  );
 
   const scanned: ScannedField[] = [];
   try {
@@ -117,8 +122,10 @@ async function main(): Promise<void> {
       const value = toolInput[spec.field];
       if (typeof value !== 'string' || value === '') continue;
 
-      const result = await runtime.capture(
-        { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata, scopeKey },
+      const result = await captureStamped(
+        runtime,
+        { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata },
+        scopeKey,
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because
@@ -126,8 +133,7 @@ async function main(): Promise<void> {
           // field can be, and keeps true redaction. A redact on the executable
           // one degrades to the configured `redactFallback` inside the runtime,
           // where the emitted decision, the recorded action and the ledger all
-          // read one answer — this hook used to escalate it and record it as
-          // `redact`, describing a masking that never happened.
+          // read one answer.
           rewritable: !spec.executable,
         },
       );

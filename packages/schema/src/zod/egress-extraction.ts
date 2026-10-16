@@ -2,7 +2,7 @@
 // produces and what the store writer consumes. The read-side Data Shares shapes
 // live in ./shares.ts; these are the write-side boundary between the extraction
 // module, both scan pipelines, and the persistence writer.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
 import { VariableName } from './finding.ts';

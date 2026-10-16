@@ -591,6 +591,21 @@ export function readKeychainItem(
   }
 }
 
+/** Deletes `item`. An item that does not exist is not an error. */
+export function deleteKeychainItem(
+  exec: SecurityExec,
+  item: KeychainItem,
+  target: readonly string[],
+): void {
+  try {
+    exec(['delete-generic-password', '-s', item.service, '-a', item.account, ...target]);
+  } catch (err) {
+    if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return;
+    // eslint-disable-next-line preserve-caught-error -- exit metadata only; see securityFailureMeta
+    throw new Error(`${item.label}: keychain delete failed (${securityFailureMeta(err)})`);
+  }
+}
+
 /** Runs one {@link keychainWriteLine}, reporting a failure by exit metadata only. */
 export function runKeychainWrite(exec: SecurityExec, item: KeychainItem, line: string): void {
   try {

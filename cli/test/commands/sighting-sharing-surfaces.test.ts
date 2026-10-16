@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import {
   applyOnboarding,
+  readWorkspaceSettings,
   settingsDir,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -13,7 +14,7 @@ import { SIGHTING_SHARE_CONSENT_VERSION, SIGHTING_SHARE_PAYLOAD_NOTE } from '@ak
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
-import { runStatus } from '../../src/commands/attach.ts';
+import { runDetach, runStatus } from '../../src/commands/attach.ts';
 import { runScan } from '../../src/commands/scan.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
@@ -64,6 +65,7 @@ function grant(): void {
       sightingShareConsent: {
         acknowledgedAt: new Date().toISOString(),
         version: SIGHTING_SHARE_CONSENT_VERSION,
+        endpoint: ENDPOINT,
       },
     },
     home,
@@ -166,5 +168,31 @@ describe('aka scan — credential sightings footer', () => {
     vi.restoreAllMocks();
     expect(out).not.toContain('Credential sightings');
     expect(() => JSON.parse(out) as unknown).not.toThrow();
+  });
+});
+
+describe('aka detach — credential sightings', () => {
+  it('clears the grant with the attachment it named', () => {
+    attach(SCOPED);
+    grant();
+    expect(readWorkspaceSettings(home).sightingShareConsent).toBeDefined();
+    const exits: number[] = [];
+    runDetach([], {
+      base: home,
+      prompter: {
+        out: () => undefined,
+        err: () => undefined,
+        isInteractive: false,
+        ask: () => Promise.reject(new Error('unscripted prompt')),
+        askHidden: () => Promise.reject(new Error('unscripted prompt')),
+        readAllStdin: () => Promise.resolve(''),
+      },
+      managedSettings: null,
+      uninstallBackgroundSync: () => undefined,
+      exit: (code) => exits.push(code),
+    });
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(home).runMode).toBe('standalone');
+    expect(readWorkspaceSettings(home).sightingShareConsent).toBeUndefined();
   });
 });

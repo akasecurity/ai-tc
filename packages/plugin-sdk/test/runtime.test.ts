@@ -358,6 +358,21 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
   });
 });
 
+describe('ruleNames — the name of each rule that matched', () => {
+  it('names a pulled rule by the name it declares', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    const result = await rt.processText('ship PULLED_MARKER today');
+    expect(result.ruleNames).toEqual({ 'pulled/secret-marker': 'Pulled secret marker' });
+    await rt.close();
+  });
+
+  it('carries no names when nothing matched', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    expect((await rt.processText('nothing here')).ruleNames).toBeUndefined();
+    await rt.close();
+  });
+});
+
 // The collapse across a capture's findings used to index a hand-listed
 // worst-first array private to the runtime; it now asks the one schema ladder.
 // The orderings are the same fact, so the only thing worth pinning is that the
@@ -632,6 +647,33 @@ describe('capture', () => {
     );
     expect(gw.records).toHaveLength(1); // a hit → recorded
     await rt.close();
+  });
+
+  it("persist 'never' records nothing, found or not, and enforces as the default does", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const benign = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'never' },
+    );
+    const hit = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'never' },
+    );
+    expect(gw.records).toHaveLength(0);
+    // The control: the same text under the default is recorded, and is given
+    // the same decision, so 'never' changed the write and nothing else.
+    const recorded = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+    });
+    await rt.close();
+    expect(gw.records).toHaveLength(1);
+    expect(benign.findings).toHaveLength(0);
+    expect(hit.findings.length).toBeGreaterThan(0);
+    expect(hit.action).toBe(recorded.action);
+    expect(hit.text).toBe(recorded.text);
   });
 });
 

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { EgressCredentialRefs, EgressReconcile } from './egress-extraction.ts';
 import { SIGHTING_TOKEN_ANCHORED } from './event.ts';
@@ -1122,11 +1122,15 @@ export const SightingKeyResponse = z
 export type SightingKeyResponse = z.infer<typeof SightingKeyResponse>;
 
 /**
- * The sighting key as this machine stores it: the response it was given, plus
- * the epoch-ms instant it was fetched. A local custody shape, never on a wire.
+ * The sighting key as this machine stores it: the response it was given, the
+ * epoch-ms instant it was fetched, and the sha256 hex of the endpoint it was
+ * fetched from. A local custody shape, never on a wire.
  */
 export const StoredSightingKeys = SightingKeyResponse.and(
-  z.object({ fetchedAtMs: z.number().int().nonnegative() }),
+  z.object({
+    fetchedAtMs: z.number().int().nonnegative(),
+    endpointFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
 );
 export type StoredSightingKeys = z.infer<typeof StoredSightingKeys>;
 

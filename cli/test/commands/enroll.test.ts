@@ -7,6 +7,7 @@ import {
   applyOnboarding,
   dataDir as dataDirOf,
   DB_FILENAME,
+  recordDetectedWebAccount,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
@@ -19,6 +20,9 @@ import {
   connectionRefusalMessage,
   HISTORY_SYNC_PAYLOAD_VERSION,
   ManagedSettings,
+  SOURCE_TOOL,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -275,6 +279,13 @@ describe('aka enroll — usage', () => {
     ['--repo with an empty value', ['--repo=']],
     ['--repo with only spaces', ['--repo', '   ']],
     ['an option it does not know', ['--everything']],
+    ['a path and --account together', ['payments-api', '--account', 'claude:x']],
+    ['--repo and --account together', ['--repo', WORK_REPO, '--account', 'claude:x']],
+    ['--account with an empty value', ['--account=']],
+    ['--account with only spaces', ['--account', '   ']],
+    ['--list with an account', ['--list', '--account', 'claude:x']],
+    ['--list-detected with a repository', ['--list-detected', '--repo', WORK_REPO]],
+    ['--list and --list-detected together', ['--list', '--list-detected']],
   ])('refuses %s as a usage error, before reading anything', async (_name, argv) => {
     const io = recorder();
     expect(await runEnroll(argv, deps(io))).toBe(2);
@@ -287,10 +298,10 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runEnroll(['--everything'], deps(io))).toBe(2);
     expect(io.errors()).toContain(
-      'activity is sent to the deployment\nonly from the repositories enrolled here',
+      'activity is sent to the deployment\nonly from the repositories and web chat accounts enrolled here',
     );
     expect(io.errors()).toContain(
-      "The policy pull and the device report are not limited to them: the\nreport's finding counts and dates are for everything recorded on the machine.",
+      "The policy pull and the device report are\nnot limited to them: the report's finding counts and dates are for everything\nrecorded on the machine.",
     );
     expect(io.errors()).not.toContain('across every repository');
     expect(io.errors()).not.toContain('only activity in');
@@ -300,7 +311,7 @@ describe('aka enroll — usage', () => {
     const io = recorder();
     expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
     expect(io.errors()).toContain(
-      'sessions and scans you\nstart afterwards keep its activity on this machine.',
+      'sessions, scans and chats started afterwards keep its activity on this machine.',
     );
     expect(io.errors()).not.toContain('from then on');
   });
@@ -308,6 +319,12 @@ describe('aka enroll — usage', () => {
   it('aka unenroll takes no --list', async () => {
     const io = recorder();
     expect(await runUnenroll(['--list'], deps(io))).toBe(2);
+    expect(io.errors()).toContain('Usage: aka unenroll');
+  });
+
+  it('aka unenroll takes no --list-detected', async () => {
+    const io = recorder();
+    expect(await runUnenroll(['--list-detected'], deps(io))).toBe(2);
     expect(io.errors()).toContain('Usage: aka unenroll');
   });
 
@@ -1547,6 +1564,220 @@ describe('aka enroll --list', () => {
       expect(io.output()).not.toContain(ESC);
       expect(identities()).toEqual([WORK_REPO]);
     });
+  });
+});
+
+// A claude.ai organization, as the browser extension keys it, and a second one.
+const ORG = '0a1b2c3d-0000-4000-8000-00000000000a';
+const ACCOUNT = `claude:${ORG}`;
+const OTHER_ACCOUNT = 'claude:0a1b2c3d-0000-4000-8000-00000000000b';
+
+function enrolledAccount(identity = ACCOUNT) {
+  return { kind: 'account', identity, label: 'claude.ai account', enrolledAt: NOW };
+}
+
+// The web-chat block: the capture consent, and the account grant when asked.
+function webChat(options: { consent?: boolean; grant?: boolean } = {}) {
+  return {
+    webChatCapture: {
+      responses: 'always' as const,
+      account: options.grant === true,
+      ...(options.grant === true
+        ? {
+            accountConsent: {
+              acknowledgedAt: '2026-10-01T09:00:00.000Z',
+              version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+            },
+          }
+        : {}),
+      ...(options.consent === false
+        ? {}
+        : {
+            consent: {
+              acknowledgedAt: '2026-10-01T09:00:00.000Z',
+              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+            },
+          }),
+    },
+  };
+}
+
+describe('aka enroll --account', () => {
+  it('enrolls the account as an account entry, echoing it before the write', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(storedScope()).toEqual(fresh([enrolledAccount()]));
+    const shown = io.output();
+    expect(shown).toContain(`Enrolling ${ACCOUNT} (claude.ai account) with Acme.\n`);
+    expect(shown).toContain(
+      "Enrolled. Replies in this account's chats, with their tool calls and token usage, are\nrecorded and sent to Acme from now on. Prompts typed in it are still checked, and not recorded.\n",
+    );
+    expect(shown.indexOf('Enrolling')).toBeLessThan(shown.indexOf('Enrolled.'));
+    // Not the repository wording, which would promise sessions and scans.
+    expect(shown).not.toContain('Activity in this repository');
+    expect(shown).not.toContain('Web-chat capture is off');
+  });
+
+  it('stores the key the extension stamps, however it was typed', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', `  CLAUDE:${ORG.toUpperCase()} `], deps(io))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT]);
+  });
+
+  it('says nothing is recorded yet while web-chat capture is off, and where to turn it on', async () => {
+    attach({ scope: fresh(), extra: webChat({ consent: false }) });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT]);
+    expect(io.output()).toContain(
+      'Web-chat capture is off on this machine, so nothing is recorded yet. Turn it on under\nSettings in `aka dashboard`.\n',
+    );
+  });
+
+  it.each([
+    ['a repository key', WORK_REPO],
+    ['a site with no account provider', `chatgpt:${ORG}`],
+    ['an id that is not an organization id', 'claude:payments'],
+    ['a bare organization id', ORG],
+  ])('refuses %s, and writes nothing', async (_name, input) => {
+    attach({ scope: fresh(), extra: webChat() });
+    const before = stored();
+    const io = recorder();
+    expect(await runEnroll(['--account', input], deps(io))).toBe(1);
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toContain('is not a web chat account key');
+    expect(io.errors()).toContain('`aka enroll --list-detected`');
+    expect(stored()).toEqual(before);
+    expect(settingsWrite.calls).toBe(0);
+  });
+
+  it('changes nothing for an account already enrolled', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(identities()).toEqual([ACCOUNT]);
+  });
+
+  it('is refused on a machine-wide attachment, like a repository', async () => {
+    attach({ mode: 'machine', extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(io.errors()).toContain('machine-wide');
+    expect(storedScope()).toBeUndefined();
+  });
+
+  it('sends nothing earlier without a history-sync grant, and says how to', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Nothing recorded in it before now is sent. To send its earlier replies as well,\nrun `aka sync-history --on`.\n',
+    );
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('queues its earlier captures under the grant, and promises nothing about its sessions', async () => {
+    attach({ scope: fresh(), extra: { ...webChat(), ...consent() } });
+    seed.answer = 3;
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(seed.calls).toEqual([{ dataDir: dataDirOf(base), keys: [ACCOUNT] }]);
+    expect(io.output()).toContain('Queued 3 earlier captured prompts, replies and tool results');
+    expect(io.output()).not.toContain('sessions, tool calls, token usage');
+  });
+
+  it('is listed with its label by aka enroll --list', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--list'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`${ACCOUNT} (claude.ai account), enrolled 2026-10-07`);
+  });
+});
+
+describe('aka unenroll --account', () => {
+  it('takes the account out, and says its chats are no longer recorded', async () => {
+    attach({ scope: fresh([enrolledAccount(), enrolled()]), extra: webChat() });
+    const io = recorder();
+    expect(await runUnenroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([WORK_REPO]);
+    expect(io.output()).toContain(
+      `Unenrolled ${ACCOUNT}. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n`,
+    );
+    expect(io.output()).not.toContain('sessions and scans you start');
+  });
+
+  it('matches the key however it was typed', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    const io = recorder();
+    expect(await runUnenroll(['--account', `claude:${ORG.toUpperCase()}`], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+  });
+
+  it('removes an entry stored under a key this build would not accept', async () => {
+    attach({
+      scope: fresh([{ kind: 'account', identity: 'claude:legacy-id', enrolledAt: NOW }]),
+      extra: webChat(),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--account', 'claude:legacy-id'], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+  });
+
+  it('says so when the account is not enrolled', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    const io = recorder();
+    expect(await runUnenroll(['--account', OTHER_ACCOUNT], deps(io))).toBe(0);
+    expect(io.output()).toContain(`${OTHER_ACCOUNT} is not enrolled with Acme; nothing changed.\n`);
+    expect(identities()).toEqual([WORK_REPO]);
+  });
+});
+
+describe('aka enroll --list-detected', () => {
+  it('says the record is off without the account grant, and how to turn it on', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    // A record left behind is not listed while the grant is off.
+    recordDetectedWebAccount(dataDirOf(base), ACCOUNT, SOURCE_TOOL.ClaudeAi);
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('does not record which web chat accounts it sees');
+    expect(io.output()).toContain('`aka extension account --on`');
+    expect(io.output()).not.toContain(ACCOUNT);
+  });
+
+  it('says none has been seen under the grant when the record is empty', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('No web chat account has been seen here yet.');
+  });
+
+  it('lists each account seen, newest first, marking what is enrolled and how to enroll the rest', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat({ grant: true }) });
+    recordDetectedWebAccount(
+      dataDirOf(base),
+      ACCOUNT,
+      SOURCE_TOOL.ClaudeAi,
+      new Date('2026-10-05T09:00:00.000Z'),
+    );
+    recordDetectedWebAccount(
+      dataDirOf(base),
+      OTHER_ACCOUNT,
+      SOURCE_TOOL.ClaudeAi,
+      new Date('2026-10-06T09:00:00.000Z'),
+    );
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toBe(
+      'Web chat accounts seen on this machine, for Acme:\n' +
+        `  ${OTHER_ACCOUNT}, last seen 2026-10-06 — not enrolled: \`aka enroll --account ${OTHER_ACCOUNT}\`\n` +
+        `  ${ACCOUNT}, last seen 2026-10-05 — enrolled\n`,
+    );
+    // Listing writes nothing.
+    expect(settingsWrite.calls).toBe(0);
   });
 });
 

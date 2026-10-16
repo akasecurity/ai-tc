@@ -9,7 +9,7 @@
  * findings recorded exactly once, in the shape the command hook writes; and the
  * UserPromptSubmit hook, shown the rewritten prompt, recording nothing again.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -82,6 +82,7 @@ interface Answer {
   v: number;
   text: string;
   note: string | null;
+  findings: { id: string; action: string; where: string; pointer?: string }[];
 }
 
 function answerOf(run: ReturnType<typeof runHook>): Answer {
@@ -313,6 +314,70 @@ describe('mod-tokenize helper', () => {
       expect(answer.note).toBeNull();
       expect(rows(home).findings).toHaveLength(1);
     }, 'aka-mod-tokenize-noconsent-');
+  });
+
+  it('answers the findings it acted on and writes the same ones to the findings file', () => {
+    const fileOf = (home: string): string =>
+      join(home, '.aka', 'data', 'mod-findings', `${SESSION_ID}.jsonl`);
+    withTempHome((home) => {
+      seedPolicy(home, 'vault');
+      settings(home, true);
+      const answer = answerOf(helper(home, PROMPT));
+
+      expect(answer.findings).toHaveLength(1);
+      expect(answer.findings[0]).toMatchObject({ action: 'vaulted', where: 'prompt' });
+      expect(answer.findings[0]?.pointer).toBe(/\[\[aka:[^\]]+\]\]/.exec(answer.text)?.[0]);
+      const text = readFileSync(fileOf(home), 'utf8');
+      const lines = text
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l) as { id: string });
+      expect(lines.map((l) => l.id)).toEqual(answer.findings.map((f) => f.id));
+      expect(text).not.toContain(SECRET);
+    }, 'aka-mod-tokenize-findings-vault-');
+
+    withTempHome((home) => {
+      seedPolicy(home, 'vault');
+      settings(home, false);
+      const answer = answerOf(helper(home, PROMPT));
+
+      expect(answer.findings).toHaveLength(1);
+      expect(answer.findings[0]).toMatchObject({ action: 'redacted', where: 'prompt' });
+      expect(answer.findings[0]).not.toHaveProperty('pointer');
+      expect(readFileSync(fileOf(home), 'utf8')).not.toContain(SECRET);
+    }, 'aka-mod-tokenize-findings-oneway-');
+  });
+
+  it('the hook shown the rewritten prompt adds no second record', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'vault');
+      settings(home, true);
+      const answer = answerOf(helper(home, PROMPT));
+      const file = join(home, '.aka', 'data', 'mod-findings', `${SESSION_ID}.jsonl`);
+      const before = readFileSync(file, 'utf8');
+      runHook(
+        'user-prompt-submit',
+        JSON.stringify({
+          prompt: answer.text,
+          session_id: SESSION_ID,
+          cwd: join(home, 'project'),
+          hook_event_name: 'UserPromptSubmit',
+        }),
+        { env: env(home) },
+      );
+      expect(readFileSync(file, 'utf8')).toBe(before);
+    }, 'aka-mod-tokenize-findings-hook-');
+  });
+
+  it('a verdict the helper declines writes no findings file', () => {
+    withTempHome((home) => {
+      seedPolicy(home, 'block');
+      settings(home, true);
+      expect(helper(home, PROMPT).status).toBe(1);
+      expect(existsSync(join(home, '.aka', 'data', 'mod-findings', `${SESSION_ID}.jsonl`))).toBe(
+        false,
+      );
+    }, 'aka-mod-tokenize-findings-block-');
   });
 
   it('a block verdict, a clean prompt and bad input give exit 1 and nothing on stdout', () => {

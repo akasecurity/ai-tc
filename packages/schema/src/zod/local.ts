@@ -6,7 +6,7 @@
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type {
   auditEvents,
@@ -96,6 +96,11 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // grant is invalidated and re-asked, for the same reason v1's was — declining
 // now changes what text can leave the machine for a set of rows it did not
 // before.
+//
+// Captures the live path itself marked owed are not under this grant: they are
+// delivery of activity the attachment already permits, sent later by the same
+// drain whether or not the grant is given. The grant covers the consent and
+// enroll seeds, which mark history the live path never offered.
 export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
 
 // How the plugin runs.
@@ -423,7 +428,8 @@ export function isAttachmentScopeBoundTo(
 // and the reply's own text under the stored `responses` mode — in which a
 // detected value is masked only where the detection that flagged it resolves to
 // redact or stronger, exactly as on every other capture path. Account and quota
-// snapshots are NOT in it.
+// snapshots are NOT in it; the account data the extension records is covered by
+// its own grant (WEB_CHAT_ACCOUNT_CONSENT_VERSION).
 export const WEB_CHAT_CAPTURE_CONSENT_VERSION = 1;
 
 // A recorded consent to that, carrying the version it was given against. Same
@@ -448,18 +454,32 @@ export type WebChatCaptureConsent = z.infer<typeof WebChatCaptureConsent>;
 export const WebChatResponseCapture = z.enum(['with-findings', 'always', 'never']);
 export type WebChatResponseCapture = z.infer<typeof WebChatResponseCapture>;
 
-// What the browser extension may record from a web chat, and the grant that
-// authorizes it.
+// The account data the user consented to the browser extension recording, with
+// its own version so it re-asks on its own. Separate from
+// WEB_CHAT_CAPTURE_CONSENT_VERSION because it authorizes a separate thing: a
+// capture grant given for v1 stays valid when this one is added.
 //
-// `account` covers account, plan and quota snapshots. It defaults to false
-// because nothing collects them yet; it is stored here so the answer has one
-// home rather than arriving as a second block later.
+// v1 covers the detected-account record: for each web chat account a site's own
+// requests named, its key (`claude:<organization-id>`), the site, and when it was
+// first and last seen. No account name, email, plan, quota, conversation or text.
+// It is written only on this machine, and the key is never sent to a deployment.
+export const WEB_CHAT_ACCOUNT_CONSENT_VERSION = 1;
+
+// What the browser extension may record from a web chat, and the grants that
+// authorize it.
+//
+// `account` is the user's switch for account data, and `accountConsent` the
+// grant behind it; both must agree (isWebChatAccountGrantValid). It defaults to
+// false.
 export const WebChatCapture = z.object({
   responses: WebChatResponseCapture.default('with-findings'),
   account: z.boolean().default(false),
   // Absent until granted. Presence alone does not authorize anything — see
   // isWebChatCaptureConsentValid.
   consent: WebChatCaptureConsent.optional(),
+  // Absent until granted — see isWebChatAccountGrantValid. The same two fields as
+  // `consent`, carrying WEB_CHAT_ACCOUNT_CONSENT_VERSION.
+  accountConsent: WebChatCaptureConsent.optional(),
 });
 export type WebChatCapture = z.infer<typeof WebChatCapture>;
 
@@ -472,6 +492,28 @@ export type WebChatCapture = z.infer<typeof WebChatCapture>;
 export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | undefined): boolean {
   return consent?.version === WEB_CHAT_CAPTURE_CONSENT_VERSION;
 }
+
+// The one definition of "the user has agreed to account data being recorded
+// TODAY": the switch is on AND the grant was given at the current version. Either
+// alone authorizes nothing, so a switch left on beside a revoked or stale grant
+// records nothing. Independent of the capture grant: neither implies the other.
+// Pure logic over the schema, no I/O.
+export function isWebChatAccountGrantValid(webChat: WebChatCapture | undefined): boolean {
+  return (
+    webChat?.account === true &&
+    webChat.accountConsent?.version === WEB_CHAT_ACCOUNT_CONSENT_VERSION
+  );
+}
+
+// Why a machine records less from a web chat than its consent says, or nothing.
+// 'personal-device': it is attached with `aka attach --scoped`, where a web chat
+// is in scope only in an account enrolled with `aka enroll --account`
+// (isScopeKeyEnrolled), and a typed prompt never is. 'unreadable-attachment': it
+// holds a control-plane credential this build cannot read, so what it was
+// attached as is unknown, the answer is the one that records less, and nothing
+// is recorded.
+export const WebChatWithholding = z.enum(['personal-device', 'unreadable-attachment']);
+export type WebChatWithholding = z.infer<typeof WebChatWithholding>;
 
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
 // Versioned and default-filled so future config steps are additive: a
@@ -569,12 +611,15 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
-  // Records that the user agreed to share credential sightings (hashes or
-  // ciphertext, never plaintext) with the organization this machine is
-  // attached to. Absent until granted. Whether sharing is actually on is
-  // resolveSightingSharing's answer, which also weighs the attachment mode and
-  // the managed settings.
-  sightingShareConsent: SightingShareConsent.optional(),
+  // Records that the user agreed to share credential sightings with the
+  // deployment the grant names. Absent until granted; `aka detach` clears it.
+  // Whether sharing is actually on is resolveSightingSharing's answer, which
+  // also weighs the attachment mode, the endpoint and the managed settings.
+  //
+  // `.catch` reads a grant this schema cannot parse, such as one recorded
+  // before grants named a deployment, as no grant. Without it the whole file
+  // fails to parse and every setting falls back to its default.
+  sightingShareConsent: SightingShareConsent.optional().catch(undefined),
   // The identities a SCOPED attachment forwards and the deployment they were
   // enrolled for (see AttachmentScope). Absent until something is enrolled.
   //
@@ -714,6 +759,32 @@ export function scopeVerdict(
     return resolved.keys.has(key) ? 'forward' : 'local';
   } catch {
     return 'local';
+  }
+}
+
+/**
+ * Whether `key` is enrolled on this machine's scoped attachment: one of the
+ * entries the stored scope record holds for the endpoint in force. A record for
+ * another endpoint, or none, enrolls nothing; so does an empty or missing key.
+ *
+ * Says nothing about the mode: a machine-wide attachment forwards whatever is
+ * enrolled, and a caller deciding what to SEND asks scopeVerdict instead. This
+ * answers "did the user enroll it here", which is what the browser extension's
+ * host decides an account's chats by on a personal device. Pure; never throws.
+ */
+export function isScopeKeyEnrolled(
+  settings: Pick<WorkspaceSettings, 'controlPlane' | 'attachmentScope'>,
+  key: string | undefined,
+): boolean {
+  try {
+    const resolved = resolveScope({
+      mode: 'scoped',
+      scope: settings.attachmentScope,
+      endpoint: settings.controlPlane?.endpoint,
+    });
+    return scopeVerdict(resolved, key) === 'forward';
+  } catch {
+    return false;
   }
 }
 

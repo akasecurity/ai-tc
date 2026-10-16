@@ -4,6 +4,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
@@ -104,6 +105,76 @@ describe('runModTokenize', () => {
     expect(row.note).toBeNull();
   });
 
+  it('places a finding from a subagent row in the subagent', async () => {
+    seed('redact', { vault: false });
+    const whereOf = async (row: object) =>
+      (
+        JSON.parse((await tokenize({ text: `key ${SECRET}`, row })).stdout) as {
+          findings: { where: string }[];
+        }
+      ).findings.map((f) => f.where);
+    expect(await whereOf({ door: 'attachment', agentId: 'agent-7' })).toEqual(['subagent']);
+    expect(await whereOf({ door: 'attachment' })).toEqual(['attachment']);
+  });
+
+  it('answers the rewrite when building the finding records throws', async () => {
+    seed('redact', { vault: false });
+    const toIso = Object.getOwnPropertyDescriptor(Date.prototype, 'toISOString')?.value as (
+      this: Date,
+    ) => string;
+    const fault = vi.spyOn(Date.prototype, 'toISOString').mockImplementation(function (this: Date) {
+      if (new Error().stack?.includes('modFindingsFrom') === true) throw new RangeError('fault');
+      return toIso.call(this);
+    });
+    try {
+      const run = await tokenize({ text: `key ${SECRET} now` });
+      expect(run.code).toBe(0);
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        text: 'key [REDACTED:SECRET] now',
+        findings: [],
+      });
+      expect(fault).toHaveBeenCalled();
+    } finally {
+      fault.mockRestore();
+    }
+  });
+
+  it('labels a custom rule with no short name by its full name', async () => {
+    seed('redact', { vault: false });
+    const raw = new DatabaseSync(join(home, '.aka', 'data', 'aka.db'));
+    try {
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, policy_id, created_at, updated_at)
+           VALUES ('custom-tickets', 'acme', 'tickets', '1.0.0', 'Acme tickets', :rules, 1, 'redact', 1, 1)`,
+        )
+        .run({
+          rules: JSON.stringify([
+            {
+              specVersion: 1,
+              id: 'acme/ticket',
+              name: 'Acme support ticket reference',
+              category: 'custom',
+              severity: 'high',
+              matcher: { type: 'regex', pattern: 'ACME-[0-9]{6}', flags: 'g' },
+              examples: ['ACME-123456'],
+            },
+          ]),
+        });
+    } finally {
+      raw.close();
+    }
+    const run = await tokenize({ text: 'see ACME-123456 today' });
+    expect(run.code).toBe(0);
+    const answer = JSON.parse(run.stdout) as { findings: { ruleId: string; shortName?: string }[] };
+    expect(answer.findings).toEqual([
+      expect.objectContaining({
+        ruleId: 'acme/ticket',
+        shortName: 'Acme support ticket reference',
+      }),
+    ]);
+  });
+
   it('answers nothing when the policy is not a redact', async () => {
     seed('monitor', { vault: true });
     expect(await tokenize({ text: `key ${SECRET}` })).toEqual({ code: 1, stdout: '' });
@@ -163,6 +234,51 @@ describe('runModReveal', () => {
     expect(run.stdout).not.toContain(SECRET);
     expect((JSON.parse(run.stdout) as { mode: string }).mode).toBe('masked');
   });
+
+  // The vault the SDK resolves through is opened once per module instance, under
+  // the home of the first case that reveals; a fresh instance per pane request
+  // opens it under this case's home.
+  const revealPane = async (items: unknown) => {
+    vi.resetModules();
+    const fresh = await import('../../src/mod/reveal-run.ts');
+    return fresh.runModReveal(JSON.stringify({ v: 1, pane: true, items }));
+  };
+
+  it.each(['masked', 'off'] as const)(
+    'a pane request reveals under valid consent with reveal %s',
+    async (setting) => {
+      seed('vault', { vault: true, reveal: setting });
+      const minted = JSON.parse((await tokenize({ text: `key ${SECRET}` })).stdout) as {
+        text: string;
+      };
+      const token = minted.text.slice('key '.length);
+      const answer = JSON.parse(
+        (
+          await revealPane([
+            { token, reveal: true },
+            { token, reveal: false },
+          ])
+        ).stdout,
+      ) as { mode: string; items: { revealed: string | null }[] };
+      expect(answer.mode).toBe('full');
+      expect(answer.items[0]?.revealed).toBe(`${SECRET} [scrubbed:secret]`);
+      expect(answer.items[1]?.revealed).toBeNull();
+    },
+  );
+
+  it('a pane request without consent answers off and reveals nothing', async () => {
+    seed('vault', { vault: false, reveal: 'full' });
+    expect(JSON.parse((await revealPane([{ token: UNBACKED, reveal: true }])).stdout)).toEqual({
+      v: 1,
+      mode: 'off',
+      items: [],
+    });
+  });
+
+  it('a pane request with no items answers the consent alone', async () => {
+    seed('vault', { vault: true, reveal: 'masked' });
+    expect(JSON.parse((await revealPane([])).stdout)).toEqual({ v: 1, mode: 'full', items: [] });
+  });
 });
 
 describe('runModToolCall', () => {
@@ -184,9 +300,16 @@ describe('runModToolCall', () => {
     const rewritten = JSON.parse(
       (await call({ tool: 'Write', input: { file_path: join(cwd, 'a.txt'), content: SECRET } }))
         .stdout,
-    ) as { deny: string | null; input: { content: string } | null };
+    ) as {
+      deny: string | null;
+      input: { content: string } | null;
+      message: string | null;
+      findings: unknown[];
+    };
     expect(rewritten.deny).toBeNull();
     expect(JSON.stringify(rewritten.input)).not.toContain(SECRET);
+    expect(rewritten.findings).toHaveLength(1);
+    expect(rewritten.message).toContain('aka exception approve');
     const dir = join(home, '.aka', 'data');
     const db = openLocalDatabase(dir);
     try {
@@ -198,6 +321,17 @@ describe('runModToolCall', () => {
       (await call({ tool: 'Bash', input: { command: `run ${SECRET}` } })).stdout,
     ) as { deny: string | null };
     expect(denied.deny).not.toBeNull();
+  });
+
+  it('leaves no message when it says only what the findings show', async () => {
+    seed('vault', { vault: true });
+    const answer = JSON.parse(
+      (await call({ tool: 'Write', input: { file_path: join(cwd, 'a.txt'), content: SECRET } }))
+        .stdout,
+    ) as { input: unknown; message: string | null; findings: unknown[] };
+    expect(JSON.stringify(answer.input)).not.toContain(SECRET);
+    expect(answer.findings).toHaveLength(1);
+    expect(answer.message).toBeNull();
   });
 
   it('answers a pass for a call with nothing in it', async () => {

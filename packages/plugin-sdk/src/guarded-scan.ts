@@ -90,6 +90,16 @@ export interface BoundedScanRequest {
    * add up past it. Zero or less answers `timeout` without starting a thread.
    */
   remainingMs?: number | undefined;
+  /**
+   * Whether the caller refuses a field whose scan does not finish. It changes
+   * only the stderr line, never the outcome. Omitted or true, a failed scan
+   * writes one line saying the field was refused — every caller that blocks,
+   * denies or withholds on `scanIncomplete`. False is for a caller with no
+   * channel to refuse on (a capture hook that observes, never stops): it tells
+   * the user itself that the field went through unscanned, so the SDK writes
+   * nothing rather than claim an enforcement that never took place.
+   */
+  refuses?: boolean | undefined;
 }
 
 export interface GuardedScanPartition {
@@ -279,7 +289,8 @@ export function createGuardedScanner(
         };
       }
     }
-    if (outcome.status !== 'ok' && !boundedWarned) {
+    // A caller that does not refuse reports the field itself (see `refuses`).
+    if (outcome.status !== 'ok' && bound.refuses !== false && !boundedWarned) {
       // Once per scanner: a hook can send many large fields, and one line says
       // what the rest would.
       boundedWarned = true;

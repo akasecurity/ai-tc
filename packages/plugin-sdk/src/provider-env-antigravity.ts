@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 // Default Gemini API host. GOOGLE_GEMINI_BASE_URL pointing anywhere else means
 // a gateway/proxy is in front of the model (LiteLLM, OpenRouter, a self-hosted

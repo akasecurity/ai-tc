@@ -5,8 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SIGHTING_SHARE_CHOICES,
+  SIGHTING_SHARE_SCOPE_NOTE,
+  SIGHTING_SHARE_STANDALONE_NOTE,
   SightingSharingView,
 } from '../../src/settings/SightingSharingView.tsx';
+import { HISTORY_SYNC_SECTION_LABEL } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
 const state = (over: Partial<SightingSharing> = {}): SightingSharing => ({
   mode: 'scoped',
@@ -28,13 +31,21 @@ const checkedChoice = (html: string): string | undefined =>
   SIGHTING_SHARE_CHOICES[radios(html).findIndex((i) => i.includes('checked'))]?.value;
 
 describe('SightingSharingView', () => {
-  it('states the mode, whether sharing is on and why, and the payload limit', () => {
+  it('states the mode, whether sharing is on and why, and what a sighting carries', () => {
     const html = render(state());
     expect(html).toContain('Credential sightings');
     expect(html).toContain('Off');
     expect(html).toContain('attached, scoped');
     expect(html).toContain('You have not opted in.');
     expect(html).toContain(SIGHTING_SHARE_PAYLOAD_NOTE);
+  });
+
+  it('scopes the payload sentence to sightings and points at the attached-mode disclosure', () => {
+    const html = render(state());
+    expect(html).toContain('data-slot="sighting-share-scope"');
+    expect(SIGHTING_SHARE_SCOPE_NOTE).toContain('credential sightings only');
+    expect(SIGHTING_SHARE_SCOPE_NOTE).toContain(HISTORY_SYNC_SECTION_LABEL);
+    expect(html).not.toContain('data-slot="sighting-share-standalone"');
   });
 
   it('offers an editable toggle that reflects the user own grant', () => {
@@ -74,11 +85,13 @@ describe('SightingSharingView', () => {
     expect(checkedChoice(html)).toBe('revoked');
   });
 
-  it('says a standalone machine shares nothing, and keeps the toggle', () => {
-    const html = render(state({ mode: 'standalone', reason: 'standalone', optedIn: true }));
+  it('says a standalone machine shares nothing, and takes no answer until attached', () => {
+    const html = render(state({ mode: 'standalone', reason: 'standalone' }));
     expect(html).toContain('This machine is not attached to an organization.');
-    expect(html).toContain('standalone');
-    expect(radios(html).some((i) => i.includes('disabled'))).toBe(false);
+    expect(html).toContain(SIGHTING_SHARE_STANDALONE_NOTE);
+    expect(html).not.toContain('data-slot="sighting-share-scope"');
+    for (const input of radios(html)) expect(input).toContain('disabled');
+    expect(checkedChoice(html)).toBe('revoked');
   });
 
   it('shows an error when one is given', () => {

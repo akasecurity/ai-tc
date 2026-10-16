@@ -155,6 +155,15 @@ describe('variable name of an assigned secret', () => {
     expect(nameOf('# api_key: ', VALUE)).toBeUndefined();
   });
 
+  it('still records an assignment inside a trailing comment, as documented', () => {
+    expect(nameOf('x = 1 # API_KEY', EQ, VALUE)).toBe('API_KEY');
+  });
+
+  it('records nothing behind a type annotation holding a comma or a brace, as documented', () => {
+    expect(nameOf('const x: Record<string, string> ', EQ, ' "', VALUE, '"')).toBeUndefined();
+    expect(nameOf('const x: { a: string } ', EQ, ' "', VALUE, '"')).toBeUndefined();
+  });
+
   it('never records a name longer than the cap', () => {
     expect(namesIn(['A'.repeat(200), EQ, VALUE].join(''))).toEqual([undefined]);
   });

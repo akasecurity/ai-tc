@@ -19,7 +19,7 @@ import {
   type WebCaptureSiteRow,
 } from '@akasecurity/dashboard-ui';
 import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
-import { readEffectiveSettings } from '@akasecurity/persistence';
+import { readEffectiveSettings, settingsDir, webChatWithholding } from '@akasecurity/persistence';
 import type { EnforcementActionKind, Severity } from '@akasecurity/schema';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
@@ -59,7 +59,14 @@ const BUCKET_LABEL: Intl.DateTimeFormatOptions = {
  * whenever there is nothing to act on, which is when the card is not rendered
  * at all.
  *
- * Two gates, and each answers a different way of being wrong:
+ * Three gates, and each answers a different way of being wrong:
+ *
+ *  - WITHHOLDING, the reading the native host, `aka extension status` and the
+ *    extension's popup make. A machine that records nothing from a web chat (a
+ *    personal device, or one whose credential cannot be read) stores no
+ *    further status, so a row it holds is from before it stopped and is
+ *    superseded by nothing. The card would ask the user to reload a tab whose
+ *    report is never kept.
  *
  *  - CONSENT, the same one `aka extension status` applies. A machine whose
  *    web-chat capture consent has been revoked — or invalidated wholesale by a
@@ -82,7 +89,9 @@ const BUCKET_LABEL: Intl.DateTimeFormatOptions = {
  * measured against the same instant every other age on the page is.
  */
 function webCaptureDriftRows(now: number): WebCaptureSiteRow[] {
-  const webChat = webChatCaptureOf(readEffectiveSettings().settings);
+  const { settings } = readEffectiveSettings();
+  if (webChatWithholding(settingsDir(), settings) !== null) return [];
+  const webChat = webChatCaptureOf(settings);
   if (!isWebChatCaptureConsentValid(webChat.consent)) return [];
   return webCaptureReport(db().captureStatus.latest(now))
     .filter((s) => s.drift)

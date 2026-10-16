@@ -41,7 +41,8 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // CI surface (both opt-in; the default text output and exit-0 behavior are
 // unchanged):
 //   --format json         machine-readable result on stdout (findings carry the
-//                         masked match + span, never the raw secret; `inventory`
+//                         masked match + span, never the raw secret, and the
+//                         variable the secret is assigned to or null; `inventory`
 //                         reports the project row + file tree recorded for the
 //                         repo containing the target, null outside a git repo;
 //                         `egress` reports the destinations/endpoints/call sites
@@ -351,6 +352,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
         maskedMatch: d.maskedMatch,
         actionTaken: d.actionTaken,
         confidence: d.confidence,
+        variableName: d.variableName ?? null,
       })),
     );
     const inventoryJson = inventory

@@ -188,6 +188,7 @@ function lockableKeysTouched(
   current: WorkspaceSettings,
   applied: Partial<WorkspaceSettings>,
   connection: ConnectionWrite,
+  pinnedSightingShare: boolean | undefined,
 ): ManagedSettingKey[] {
   const keys: ManagedSettingKey[] = [];
   const changed = (key: keyof WorkspaceSettings): boolean =>
@@ -229,10 +230,21 @@ function lockableKeysTouched(
   ) {
     keys.push('vaultConsent');
   }
+  // The overlay never materialises this grant, so the answer in force under a
+  // pin is the pin itself. With no deployment no grant is in force, so the
+  // recorded answer is compared instead. A write that also clears the deployment
+  // is a detach: the grant names that deployment, so dropping it changes no answer.
+  const sightingEndpoint = current.controlPlane?.endpoint;
+  const grants = (consent: WorkspaceSettings['sightingShareConsent']): boolean =>
+    sightingEndpoint === undefined
+      ? consent !== undefined
+      : isSightingShareConsentValid(consent, sightingEndpoint);
+  const detaching = 'controlPlane' in applied && applied.controlPlane === undefined;
   if (
     'sightingShareConsent' in applied &&
-    isSightingShareConsentValid(applied.sightingShareConsent) !==
-      isSightingShareConsentValid(current.sightingShareConsent)
+    !detaching &&
+    grants(applied.sightingShareConsent) !==
+      (pinnedSightingShare ?? grants(current.sightingShareConsent))
   ) {
     keys.push('sightingShareConsent');
   }
@@ -359,7 +371,11 @@ function withoutManagedKeys(
   if (strip('vaultKeyCustody')) delete out.vaultKeyCustody;
   if (strip('vaultInlineReveal')) delete out.vaultInlineReveal;
   if (strip('modelJudgeConsent')) delete out.modelJudgeConsent;
-  if (strip('sightingShareConsent')) delete out.sightingShareConsent;
+  // A removal is kept: it writes no administrator's answer into the user's file,
+  // and a detach has to drop the grant even where the key is governed.
+  if (strip('sightingShareConsent') && out.sightingShareConsent !== undefined) {
+    delete out.sightingShareConsent;
+  }
   if (strip('dataSharesInPlace')) delete out.dataSharesInPlace;
   if (strip('redactFallback')) delete out.redactFallback;
   if (strip('bodyRetention')) delete out.bodyRetention;
@@ -396,7 +412,12 @@ export function applyOnboarding(
     // file, counted as no change, and went through — the lock enforcing nothing.
     const effective = overlayManagedSettings(current, managedSettings);
     const connection = connectionWrite(effective, current, applied);
-    const touched = lockableKeysTouched(effective, applied, connection);
+    const touched = lockableKeysTouched(
+      effective,
+      applied,
+      connection,
+      managedSettings?.values.sightingShareConsent,
+    );
     const refused = lockedAmong(managed, touched);
     if (refused.length > 0) throw new ManagedFieldError(refused);
     const merged = WorkspaceSettingsSchema.parse({

@@ -8,6 +8,8 @@ import {
   type AttachModeDecision,
   captureBackfillScope,
   clearAttachmentDerivedState,
+  clearDetectedWebAccounts,
+  clearSightingKeys,
   controlPlaneCredentialPath,
   type CredentialFileRead,
   dataDir,
@@ -59,6 +61,7 @@ import {
   isModelJudgeConsentValid,
   isSightingShareConsentValid,
   isVaultConsentValid,
+  isWebChatAccountGrantValid,
   isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
@@ -68,7 +71,9 @@ import {
   SIGHTING_SHARE_CONSENT_VERSION,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
+  WEB_CHAT_ACCOUNT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  type WebChatAccountConsentChoice,
   type WebChatCapture,
   type WebChatCaptureConsentChoice,
   webChatCaptureOf,
@@ -98,6 +103,7 @@ import {
   SYNC_NOT_GRANTED,
   SYNC_PAUSED,
   SYNC_SPAWN_FAILED,
+  WEB_CHAT_ACCOUNTS_NOT_CLEARED,
 } from '../../lib/action-refusals';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
@@ -282,7 +288,11 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         // Deriving it from `current` inside the lock is what keeps both true at
         // once: the modes survive, and the grant is judged against the file this
         // write is about to land on rather than the one the page rendered.
-        webChatCapture: nextWebChatCapture(current, data.webChatCaptureConsent),
+        webChatCapture: nextWebChatCapture(
+          current,
+          data.webChatCaptureConsent,
+          data.webChatAccountConsent,
+        ),
       };
     });
   } catch (error) {
@@ -314,31 +324,53 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       );
     });
   }
+  // A revoked account grant takes the record it allowed with it, as
+  // `aka extension account --off` does. After the write, so the host stops
+  // adding to it first; a record that could not be deleted is reported rather
+  // than left for the user to find, though the grant itself is already off.
+  if (data.webChatAccountConsent === 'revoked' && !clearDetectedWebAccounts(dataDir())) {
+    revalidatePath('/settings');
+    return { ok: false, error: WEB_CHAT_ACCOUNTS_NOT_CLEARED };
+  }
   revalidatePath('/settings');
   return { ok: true };
 }
 
+const SIGHTING_SHARE_STANDALONE_ERROR =
+  'This machine is not attached to an organization, so there is nothing to share with yet.';
+
 /**
  * Grant or revoke sharing credential sightings with the organization. Refused
- * while the organization's managed settings decide the answer. A still-valid
- * grant is kept as-is so its acknowledgedAt survives a repeated grant.
+ * while the organization's managed settings decide the answer, and a grant is
+ * refused while standalone: it names the deployment it was given for. A
+ * still-valid grant is kept as-is so its acknowledgedAt survives a repeated
+ * grant.
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function setSightingShareConsent(input: unknown): Promise<SaveSettingsResult> {
   const parsed = parseActionInput(SetSightingShareConsentInput, input);
   if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
   const { choice } = parsed.data;
-  if (readSightingSharing().locked) {
+  const state = readSightingSharing();
+  if (state.locked) {
     return { ok: false, error: managedRefusal(['sightingShareConsent']) };
+  }
+  const { endpoint } = state;
+  if (choice === 'granted' && endpoint === undefined) {
+    return { ok: false, error: SIGHTING_SHARE_STANDALONE_ERROR };
   }
   try {
     applyOnboarding((current) => ({
       sightingShareConsent:
-        choice === 'revoked'
+        choice === 'revoked' || endpoint === undefined
           ? undefined
-          : isSightingShareConsentValid(current.sightingShareConsent)
+          : isSightingShareConsentValid(current.sightingShareConsent, endpoint)
             ? current.sightingShareConsent
-            : { acknowledgedAt: new Date().toISOString(), version: SIGHTING_SHARE_CONSENT_VERSION },
+            : {
+                acknowledgedAt: new Date().toISOString(),
+                version: SIGHTING_SHARE_CONSENT_VERSION,
+                endpoint,
+              },
     }));
   } catch (error) {
     if (error instanceof ManagedFieldError)
@@ -359,8 +391,10 @@ export async function setSightingShareConsent(input: unknown): Promise<SaveSetti
  * be CALLED from inside applyOnboarding's updater — `current` is the file under
  * the lock, and reading it out beforehand puts the read back outside.
  *
- * `responses` and `account` have no control on this page and are carried
- * forward. The grant is stamped here and never accepted from the client: the
+ * `responses` has no control on this page and is carried forward. The two
+ * grants, capture and account, are each answered on their own row and resolved
+ * on their own, so an answer to one never moves the other: a capture save keeps
+ * the account grant's record as it was, and the reverse. Each grant is stamped here and never accepted from the client: the
  * input is the bare answer, so a caller-supplied acknowledgedAt or version has
  * no path in. 'granted' records the current time at the current version, unless
  * a still-valid grant is already on file, which is kept as-is so its
@@ -378,6 +412,7 @@ export async function setSightingShareConsent(input: unknown): Promise<SaveSetti
 function nextWebChatCapture(
   current: WorkspaceSettings,
   choice: WebChatCaptureConsentChoice,
+  accountChoice: WebChatAccountConsentChoice,
 ): WebChatCapture | undefined {
   // 'unchanged' is what every UNRELATED save sends, and it is answered from the
   // file rather than from the defaults. `webChatCaptureOf` falls back to the
@@ -390,29 +425,49 @@ function nextWebChatCapture(
   //
   // Returning the file's own value also keeps the rebuild-whole property below
   // intact: there is nothing to rebuild when the answer is "no change".
-  if (choice === 'unchanged') return current.webChatCapture;
+  if (choice === 'unchanged' && accountChoice === 'unchanged') return current.webChatCapture;
   // The same holds for a revoke on a machine that never answered: there is no
   // grant to drop, and falling through would write that defaulted block with no
   // consent in it. The page sends 'revoked' for a row toggled on and back off
   // before saving, so this is reachable. Only 'granted' creates the block.
-  if (choice !== 'granted' && current.webChatCapture === undefined) return undefined;
+  if (choice !== 'granted' && accountChoice !== 'granted' && current.webChatCapture === undefined) {
+    return undefined;
+  }
   const block = webChatCaptureOf(current);
   const consent =
-    choice === 'granted'
-      ? isWebChatCaptureConsentValid(block.consent)
-        ? block.consent
-        : {
-            acknowledgedAt: new Date().toISOString(),
-            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
-          }
-      : undefined;
+    choice === 'unchanged'
+      ? block.consent
+      : choice === 'granted'
+        ? isWebChatCaptureConsentValid(block.consent)
+          ? block.consent
+          : {
+              acknowledgedAt: new Date().toISOString(),
+              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+            }
+        : undefined;
+  // The account grant, by the same rules: kept as it is for 'unchanged', a
+  // still-valid one kept as-is for 'granted' so its acknowledgedAt survives,
+  // stamped fresh otherwise, and dropped for anything else.
+  const accountConsent =
+    accountChoice === 'unchanged'
+      ? block.accountConsent
+      : accountChoice === 'granted'
+        ? isWebChatAccountGrantValid(block)
+          ? block.accountConsent
+          : {
+              acknowledgedAt: new Date().toISOString(),
+              version: WEB_CHAT_ACCOUNT_CONSENT_VERSION,
+            }
+        : undefined;
+  const account = accountChoice === 'unchanged' ? block.account : accountChoice === 'granted';
   // Spread conditionally rather than assigning `undefined`: an explicit
   // undefined is a present key under exactOptionalPropertyTypes, and the absence
   // of this key is what "not granted" means to every reader of the file.
   return {
     responses: block.responses,
-    account: block.account,
+    account,
     ...(consent === undefined ? {} : { consent }),
+    ...(accountConsent === undefined ? {} : { accountConsent }),
   };
 }
 
@@ -868,7 +923,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   closeHistoryWindow(readWorkspaceSettings().controlPlane?.attachedAt);
 
   try {
-    // The history grant goes with the attachment it named, spelled rather than
+    // The history and sighting-share grants go with the attachment they named, spelled rather than
     // omitted: this writer MERGES, so leaving the key out preserves a grant for
     // the deployment the machine is leaving — and a re-attach to that same
     // deployment would pick it straight back up without asking. The scope record
@@ -878,6 +933,7 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
       runMode: 'standalone',
       controlPlane: undefined,
       historySyncConsent: undefined,
+      sightingShareConsent: undefined,
       attachmentScope: undefined,
     });
   } catch (error) {
@@ -924,6 +980,8 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // detached by the two writes above, and a leftover cache is not worth
   // reporting a completed detach as a failure.
   clearAttachmentDerivedState(dataDir());
+  // The sighting key lives in the keys dir or the keychain, not the data dir.
+  clearSightingKeys();
   // Best-effort, macOS only, same as `aka detach`: without this, a machine
   // attached from the CLI and detached from here keeps a LaunchAgent that
   // re-invokes `aka sync-history --run` every 30 minutes, across reboots,

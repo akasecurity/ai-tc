@@ -1,5 +1,6 @@
 export type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
 export { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
+export { BUNDLED_PACKS } from './bundled-packs.generated.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
 export type { ResolveConfigInventoryInput } from './config-inventory.ts';
@@ -152,6 +153,8 @@ export type {
   ResolvedCodexProvider,
 } from './provider-codex.ts';
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
+export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
+export { resolveCopilotProvider } from './provider-copilot.ts';
 export type { EgressHit } from './raw-egress.ts';
 export {
   assertRawFree,
@@ -198,6 +201,7 @@ export {
   canonicalizeScanPath,
   HOME_SECRET_FILES,
   isProtectedScanPath,
+  isSecretBearingFileSnapshot,
   protectedScanRoots,
   scanFileKind,
   SOURCE_EXTENSIONS,
@@ -207,7 +211,7 @@ export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
-export { throttled } from './throttle.ts';
+export { throttled, throttledPerKey } from './throttle.ts';
 export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,

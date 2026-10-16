@@ -72,11 +72,18 @@ export function tooLargeToScanMessage(subject: string): string {
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when
 // the command would actually find the block.
+export const EXCEPTION_POINTER_LEAD =
+  'To allow this exact value intentionally, run: aka exception approve';
+
 export function exceptionPointer(references: readonly BlockedDetectionRef[] | undefined): string {
   const ref = references?.[0];
   if (ref === undefined) return '';
-  return ` To allow this exact value intentionally, run: aka exception approve ${ref.reference}.`;
+  return ` ${EXCEPTION_POINTER_LEAD} ${ref.reference}.`;
 }
+
+// How a tool call's disclosure opens when a reveal exception the user approved
+// put a granted vault value into the call.
+export const REVEAL_DISCLOSURE_LEAD = 'AKA revealed granted vault value(s)';
 
 export interface WithheldBannerInput {
   toolName: string;

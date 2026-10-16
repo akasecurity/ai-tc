@@ -72,10 +72,12 @@ here. The file appears only once vaulting is granted; without that consent there
 no key and no recoverable copy, and with it a detection on any other policy is
 still never vaulted.
 
-`sighting.key` exists only on an attached machine. It holds the HMAC key versions
-the attached deployment issues to the machine, and it follows the same custody
+`sighting.key` is written only on an attached machine. It holds the HMAC key
+versions the attached deployment issues to the machine, records which deployment
+issued them, and is not used for any other one. It follows the same custody
 setting as `vault.key`: under keychain custody it is an OS-keychain item rather
-than a file.
+than a file. `aka detach` and the dashboard's disconnect both remove it, file or
+keychain item.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots
@@ -194,7 +196,10 @@ disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`; activity in any other repository stays on the machine. Under the
+`aka enroll` and, from the browser extension, the replies in a claude.ai account
+enrolled with `aka enroll --account`, with their tool calls and token usage (a
+prompt typed into a web chat is not recorded there at all); activity in any
+other repository stays on the machine. Under the
 `aka sync-history` grant, enrolling a repository also queues the captures still
 kept for it, including those it recorded between attaching and enrolling. The
 policy pull, the command check and the device report are the exception: they go

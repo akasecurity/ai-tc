@@ -126,6 +126,9 @@ export function standingBrief(opts: {
  * replaced or removed, and whether they are recoverable. Returns null when
  * nothing was rewritten.
  */
+/** How the disclosure says a value was removed for good because the vault was down. */
+export const VAULT_UNAVAILABLE_DISCLOSURE = 'redacted irreversibly — the vault was unavailable';
+
 export function userDisclosure(opts: {
   surface: string;
   realized: RealizedRewrite;
@@ -144,7 +147,7 @@ export function userDisclosure(opts: {
   if (degraded.length > 0) {
     sentences.push(
       `AKA removed ${countOf(degraded.length, 'value')} (${uniqueCategories(degraded)}) from this ` +
-        `${opts.surface} — redacted irreversibly — the vault was unavailable.`,
+        `${opts.surface} — ${VAULT_UNAVAILABLE_DISCLOSURE}.`,
     );
   }
   return sentences.join(' ');

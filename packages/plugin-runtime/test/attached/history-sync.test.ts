@@ -8,21 +8,22 @@ import type { SightingKey } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   captureWireId,
-  createSightingKeyStore,
   dataDir as dataDirOf,
   dbPath as dbPathOf,
   FileKeyProvider,
   keysDir as keysDirOf,
+  loadOrCreateCaptureIdKey,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
   SecretVault,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { contentHashOf } from '@akasecurity/plugin-sdk';
+import { buildIngestEvent, contentHashOf } from '@akasecurity/plugin-sdk';
 import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type {
   AttachedCredentialV2,
+  IngestBatch,
   IngestEvent,
   ManagedSettingsValues,
   RecordAuditEventRequest,
@@ -32,10 +33,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
+import type { ForwardResult } from '../../src/attached/forward-policy.ts';
+import type { AttachedClient } from '../../src/attached/gateway.ts';
+import { AttachedDataGateway } from '../../src/attached/gateway.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
-import { FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
-import { expectedToken, keyOf, materialOf, patShaped } from '../helpers/sighting-fixtures.ts';
+import { encodedWireId, FAIL_CLOSED_MARKER } from '../../src/attached/outbound-encoder.ts';
+import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
+import {
+  expectedToken,
+  keyOf,
+  patShaped,
+  setSightingSharing,
+  storeSightingKey,
+} from '../helpers/sighting-fixtures.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 /**
@@ -284,16 +295,26 @@ describe('runHistorySync — passes that are never made', () => {
     await expect(run()).resolves.toEqual({ attempted: false, reason: 'not-attached' });
   });
 
-  it('makes no pass without a grant', async () => {
+  it('makes no history pass without a grant', async () => {
     attach();
     seedRows();
-    await expect(run()).resolves.toEqual({ attempted: false, reason: 'no-consent' });
+    const sendBatch = vi.fn(sendBatchOk);
+    await expect(run({ sendBatch })).resolves.toMatchObject({
+      attempted: false,
+      reason: 'no-consent',
+    });
+    expect(sendBatch).not.toHaveBeenCalled();
   });
 
-  it('makes no pass when the grant names another deployment', async () => {
+  it('makes no history pass when the grant names another deployment', async () => {
     attach({ grantFor: OTHER_ENDPOINT });
     seedRows();
-    await expect(run()).resolves.toEqual({ attempted: false, reason: 'no-consent' });
+    const sendBatch = vi.fn(sendBatchOk);
+    await expect(run({ sendBatch })).resolves.toMatchObject({
+      attempted: false,
+      reason: 'no-consent',
+    });
+    expect(sendBatch).not.toHaveBeenCalled();
   });
 
   it('makes no pass without a usable credential', async () => {
@@ -1623,20 +1644,35 @@ describe('runHistorySync — the capture lane', () => {
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-owed']);
   });
 
-  // The consent gate is the whole reason payload v2 exists: without a valid
-  // grant no pass is made at all, so no capture text leaves the machine.
-  it('sends no capture without a valid grant', async () => {
+  // Without a valid grant only what the live path itself owes is sent: no
+  // structural history, and no capture only a consent or enroll seed marked.
+  it('sends only live-owed captures without a valid grant', async () => {
     attach();
-    seedCaptures([{ id: 'cap-1' }]);
+    seedCaptures([{ id: 'cap-live' }, { id: 'cap-seeded', owed: false }]);
+    ledger((db) => db.historySync.markCaptureBacklogOwed(ALL));
     const l = lanes();
 
     await expect(run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures })).resolves.toEqual({
       attempted: false,
       reason: 'no-consent',
+      owedLive: { sent: 1, skipped: 0 },
     });
 
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-live']);
+    expect(l.structural).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
+      'cap-seeded',
+    ]);
+  });
+
+  it('sends no live-owed capture recorded before the current attachment', async () => {
+    attach();
+    seedCaptures([{ id: 'cap-before', atMs: Date.parse(AT) - 60_000 }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
     expect(l.captures).toEqual([]);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(1);
   });
 });
 
@@ -2269,12 +2305,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
   };
 
   const storeKey = (key: SightingKey): void => {
-    createSightingKeyStore('file', keysDirOf(home)).replace({
-      keyVersion: key.keyVersion,
-      algorithm: 'hmac-sha256',
-      key: materialOf(key),
-      fetchedAtMs: 1,
-    });
+    storeSightingKey(home, key, { attachedTo: ENDPOINT, onboard: false });
   };
 
   it('resends a stored secret only as its token, with its metadata', async () => {
@@ -2349,6 +2380,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
       encoder: {
         encodeContent: (content) => Promise.resolve({ content, sightings: [] }),
         encodeEvent: (event) => Promise.resolve({ ...event, content: 'encoded' }),
+        close: () => Promise.resolve(),
       },
     });
 
@@ -2372,7 +2404,8 @@ describe('runHistorySync — secrets on the capture lane', () => {
     expect(JSON.stringify(attempts)).not.toContain(contentHashOf(value));
     expect(sent?.contentHash).toBe(contentHashOf(sent?.content ?? ''));
     expect(sent?.id).not.toBe(captureWireId('cap-session', contentHashOf(value), null));
-    expect(sent?.id).toBe(captureWireId('cap-session', contentHashOf(sent?.content ?? ''), null));
+    const idKey = loadOrCreateCaptureIdKey(dataDirOf(home));
+    expect(sent?.id).toBe(encodedWireId(idKey, 'cap-session', 'b'.repeat(64), null));
     expect(resent?.id).toBe(sent?.id);
   });
 
@@ -2428,6 +2461,7 @@ describe('runHistorySync — secrets on the capture lane', () => {
           attempts += 1;
           return Promise.resolve(undefined);
         },
+        close: () => Promise.resolve(),
       },
     });
 
@@ -2440,3 +2474,99 @@ describe('runHistorySync — secrets on the capture lane', () => {
     ).toEqual(['cap-h1', 'cap-h2']);
   });
 });
+
+describe('runHistorySync — a held live capture on a default install', () => {
+  const value = patShaped(91);
+
+  it('delivers a capture held for a slow encode, encoded, without the history grant', async () => {
+    attach();
+    const key = keyOf(3, 9);
+    storeSightingKey(home, key, { attachedTo: ENDPOINT, onboard: false });
+    const local = new StandaloneDataGateway(dataDirOf(home));
+    const wire: string[] = [];
+    try {
+      const gateway = new AttachedDataGateway({
+        local,
+        client: {
+          ingestEvents: (batch: IngestBatch) => {
+            wire.push(JSON.stringify(batch));
+            return Promise.resolve({ accepted: 1, duplicates: 0 });
+          },
+        } as unknown as AttachedClient,
+        dataDir: dataDirOf(home),
+        readCachedBundle: () => Promise.resolve(null),
+        forward: {
+          run: async <T>(op: () => Promise<T>): Promise<ForwardResult<T>> => ({
+            ok: true,
+            value: await op(),
+          }),
+        },
+        attachment: { mode: 'machine', keys: new Set<string>() },
+        // An encode that cannot finish inside the live budget: the slow worker start.
+        encoder: {
+          encodeContent: () => new Promise(() => undefined),
+          encodeEvent: () => new Promise(() => undefined),
+          close: () => Promise.resolve(),
+        },
+        encodeBudgetMs: 1,
+      });
+      await gateway.recordCapture({
+        event: buildIngestEvent({
+          sourceTool: 'claude-code',
+          kind: 'prompt',
+          content: `deploy ${value}`,
+          occurredAt: new Date(T0 - 3_600_000).toISOString(),
+          metadata: { sessionId: 'held-session' },
+        }),
+        findings: [],
+      });
+    } finally {
+      await local.close();
+    }
+    expect(wire).toEqual([]);
+
+    const l = lanesFor();
+    const result = await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(result).toMatchObject({ attempted: false, reason: 'no-consent', owedLive: { sent: 1 } });
+    expect(JSON.stringify(l.captures)).not.toContain(value);
+    expect(l.captures.map((c) => c.content)).toEqual([`deploy ${expectedToken(key, value)}`]);
+    expect(l.structural).toEqual([]);
+  });
+});
+
+describe('runHistorySync — the sighting-sharing gate on resend', () => {
+  const value = patShaped(113);
+
+  it('resends with the current answer: a capture held while sharing was on goes as a marker once it is off', async () => {
+    attach();
+    storeSightingKey(home, keyOf(2, 4), { attachedTo: ENDPOINT, onboard: false });
+    seedCaptures([{ id: 'cap-held', content: `k ${value}` }]);
+    setSightingSharing(home, false, ENDPOINT);
+    const l = lanesFor();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    const body = JSON.stringify(l.captures);
+    expect(body).not.toContain(value);
+    expect(body).not.toContain('[[aka:fp:');
+    expect(l.captures.map((c) => c.content)).toEqual([`k ${FAIL_CLOSED_MARKER}`]);
+  });
+});
+
+function lanesFor() {
+  const structural: RecordAuditEventRequest[] = [];
+  const captures: IngestEvent[] = [];
+  return {
+    structural,
+    captures,
+    sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+      structural.push(...events);
+      return Promise.resolve({ settled: events.length });
+    },
+    sendCaptures: (events: readonly IngestEvent[]) => {
+      captures.push(...events);
+      return Promise.resolve({ settled: events.length });
+    },
+  };
+}

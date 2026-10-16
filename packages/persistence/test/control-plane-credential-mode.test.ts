@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   controlPlaneCredentialPath,
+  isScopedAttachment,
   readControlPlaneAttachmentMode,
   readControlPlaneCredentialFile,
   writeControlPlaneCredential,
@@ -221,5 +222,43 @@ describe('readControlPlaneAttachmentMode', () => {
 
     expect(() => readControlPlaneAttachmentMode(store.settingsDir, CONNECTION)).not.toThrow();
     expect(readControlPlaneAttachmentMode(store.settingsDir, CONNECTION)).toBeUndefined();
+  });
+});
+
+describe('isScopedAttachment', () => {
+  it('is true for a version-2 credential for this deployment', () => {
+    writeControlPlaneCredential(store.settingsDir, SCOPED);
+    expect(isScopedAttachment(store.settingsDir, CONNECTION)).toBe(true);
+  });
+
+  it('is false for a version-1 (machine) credential for this deployment', () => {
+    writeControlPlaneCredential(store.settingsDir, MACHINE);
+    expect(isScopedAttachment(store.settingsDir, CONNECTION)).toBe(false);
+  });
+
+  it('is false with no connection, whatever the file holds', () => {
+    writeControlPlaneCredential(store.settingsDir, SCOPED);
+    expect(isScopedAttachment(store.settingsDir, undefined)).toBe(false);
+  });
+
+  it('is false for a scoped credential bound to another deployment', () => {
+    writeControlPlaneCredential(store.settingsDir, SCOPED);
+    const elsewhere: ControlPlaneConnection = {
+      ...CONNECTION,
+      endpoint: 'https://cp.other.example',
+    };
+    expect(isScopedAttachment(store.settingsDir, elsewhere)).toBe(false);
+  });
+
+  it('is false with no credential file', () => {
+    expect(isScopedAttachment(store.settingsDir, CONNECTION)).toBe(false);
+  });
+
+  it('is false, and does not throw, where a regular file stands in for the settings directory', () => {
+    rmSync(store.settingsDir, { recursive: true, force: true });
+    writeFileSync(store.settingsDir, 'this is a file, not a directory');
+
+    expect(() => isScopedAttachment(store.settingsDir, CONNECTION)).not.toThrow();
+    expect(isScopedAttachment(store.settingsDir, CONNECTION)).toBe(false);
   });
 });

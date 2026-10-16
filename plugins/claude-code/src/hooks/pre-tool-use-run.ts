@@ -15,6 +15,9 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { REVEAL_DISCLOSURE_LEAD } from '../exception-guidance.ts';
+import type { PointersByText } from '../mod/findings-log.ts';
+import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
@@ -65,7 +68,7 @@ export interface PreToolUseRunOptions {
    * needs what was found beside what was decided (the mod's helper names the
    * detections it let through in a note). Never throws into the run.
    */
-  onScanned?: (scanned: readonly ScannedField[]) => void;
+  onScanned?: (scanned: readonly ScannedField[], vaulted: PointersByText) => void;
 }
 
 export async function runPreToolUse(
@@ -278,6 +281,7 @@ export async function runPreToolUse(
   const scopeKey = captureScopeKey(input, filePath);
 
   const scanned: ScannedField[] = [];
+  const vaulted: PointersByText = new Map();
   try {
     for (const spec of fields) {
       // A joined-keys chunk (see pre-tool-use-fields.ts) carries its own
@@ -326,7 +330,7 @@ export async function runPreToolUse(
     await runtime.close();
   }
   try {
-    options.onScanned?.(scanned);
+    options.onScanned?.(scanned, vaulted);
   } catch {
     // A note about what was found never changes what was decided.
   }
@@ -342,8 +346,8 @@ export async function runPreToolUse(
     effectiveInput,
     scanned,
     vaultGlue
-      ? (text, findings, reversible) =>
-          vaultGlue.tokenizeText(text, {
+      ? async (text, findings, reversible) => {
+          const tokenized = await vaultGlue.tokenizeText(text, {
             findings,
             // Which of those the assigned archetype said to KEEP. The glue
             // rewrites every span either way; this decides only which survive
@@ -352,10 +356,30 @@ export async function runPreToolUse(
             sighting: filePath
               ? { location: filePath, kind: 'file' }
               : { location: `${toolName} input`, kind: 'tool-input' },
-          })
+          });
+          try {
+            vaulted.set(text, pointersByFinding(findings, reversible, tokenized.pointers));
+          } catch {
+            // A record of the pointers never changes the rewrite.
+          }
+          return tokenized;
+        }
       : undefined,
   );
-  const revealNote = `AKA revealed granted vault value(s) to this ${toolName} call — the reveal exception you approved authorized it.`;
+  if (options.mode === 'hook' && sessionId !== undefined) {
+    for (const { text, result } of scanned) {
+      recordModFindings(config.dataDir, sessionId, {
+        sessionId,
+        kind,
+        text,
+        result,
+        where: 'tool-input',
+        action: toolFieldAction(result, vaulted.get(text)),
+        pointers: vaulted.get(text),
+      });
+    }
+  }
+  const revealNote = `${REVEAL_DISCLOSURE_LEAD} to this ${toolName} call — the reveal exception you approved authorized it.`;
   if (decision) {
     const output = withProtocolNotes(
       decision.output,

@@ -22,6 +22,7 @@ export {
   removeAttachmentScopeEntries,
   UnreadableAttachmentScopeError,
 } from './attachment-scope-edit.ts';
+export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
 export type {
   CredentialFileRead,
   CredentialState,
@@ -30,6 +31,7 @@ export type {
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
+  isScopedAttachment,
   readControlPlaneAttachmentMode,
   readControlPlaneCredential,
   readControlPlaneCredentialFile,
@@ -59,6 +61,13 @@ export type {
   VaultedValue,
 } from './database.ts';
 export { openLocalDatabase } from './database.ts';
+export {
+  clearDetectedWebAccounts,
+  DETECTED_WEB_ACCOUNT_RESIGHT_MS,
+  DETECTED_WEB_ACCOUNTS_FILENAME,
+  readDetectedWebAccounts,
+  recordDetectedWebAccount,
+} from './detected-web-accounts.ts';
 export {
   canonicalRepoUrl,
   enrollableRepoKey,
@@ -112,6 +121,7 @@ export {
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
+  keyedCaptureWireId,
   llmCallId,
   normalizeHost,
   promptId,
@@ -292,9 +302,11 @@ export {
 } from './vault/key-provider.ts';
 export type { SightingKey, SightingKeys, SightingKeyStore } from './vault/sighting-keys.ts';
 export {
+  clearSightingKeys,
   createSightingKeyStore,
   readSightingKeys,
   SIGHTING_KEY_FILENAME,
+  sightingKeyEndpointFingerprint,
 } from './vault/sighting-keys.ts';
 export { SIGHTING_DOMAIN, sightingToken } from './vault/sighting-token.ts';
 export type {
@@ -307,3 +319,4 @@ export type {
 } from './vault/vault.ts';
 export { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from './vault/vault.ts';
 export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';
+export { webChatWithholding } from './web-chat-withholding.ts';

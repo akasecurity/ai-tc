@@ -720,6 +720,14 @@ export const inspectionFindings = sqliteTable(
     index('idx_inspection_findings_context')
       .on(t.firstDetectedAt)
       .where(sql`context IS NOT NULL`),
+    // The expiry sweep's second pass: names on findings that never held an
+    // excerpt, which the index above cannot reach. Partial on
+    // `variable_name IS NOT NULL`, so the sweep seeks the old named findings
+    // by first detection; without it the pass scans every finding the store
+    // holds on each run.
+    index('idx_inspection_findings_variable_name')
+      .on(t.firstDetectedAt)
+      .where(sql`variable_name IS NOT NULL`),
   ],
 );
 

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import type { AttachmentMode, RemoteFailureKind } from './control-plane.ts';
 import type { WorkspaceSettings } from './local.ts';
@@ -7,23 +7,34 @@ import type { ManagedSettings } from './managed.ts';
 // The behaviour a user agrees to when they let this machine share credential
 // sightings with the organization it is attached to. A grant recorded against
 // an older version stops counting, so widening what is shared re-asks.
-export const SIGHTING_SHARE_CONSENT_VERSION = 1;
+export const SIGHTING_SHARE_CONSENT_VERSION = 2;
 
-// A recorded grant: when it was given, and the version it was given against.
+// A recorded grant: when it was given, the version it was given against, and
+// the deployment it was given for. Consent to share with one deployment is
+// never consent to share with another.
 export const SightingShareConsent = z.object({
   acknowledgedAt: z.iso.datetime(),
   version: z.number().int().positive(),
+  endpoint: z.string(),
 });
 export type SightingShareConsent = z.infer<typeof SightingShareConsent>;
 
-/** Whether a recorded grant is in force. Absent or another version → no. */
-export function isSightingShareConsentValid(consent: SightingShareConsent | undefined): boolean {
-  return consent?.version === SIGHTING_SHARE_CONSENT_VERSION;
+/**
+ * Whether a recorded grant is in force for the deployment this machine is
+ * attached to now. Absent, another version, another deployment, or no
+ * deployment at all → no.
+ */
+export function isSightingShareConsentValid(
+  consent: SightingShareConsent | undefined,
+  endpoint: string | undefined,
+): boolean {
+  if (consent === undefined || endpoint === undefined) return false;
+  return consent.version === SIGHTING_SHARE_CONSENT_VERSION && consent.endpoint === endpoint;
 }
 
-/** The sentence every surface attaches to a sharing state. */
+/** What a credential sighting carries. It describes this setting only. */
 export const SIGHTING_SHARE_PAYLOAD_NOTE =
-  'Only hashes or ciphertext are ever sent, never plaintext.';
+  'A credential sighting carries only a hash or ciphertext of the value, never the value itself.';
 
 /** How this machine is connected: not attached, or the credential's attachment mode. */
 export type SightingShareMode = 'standalone' | AttachmentMode;
@@ -52,6 +63,8 @@ export interface SightingSharing {
   locked: boolean;
   /** The organization named in the managed settings file, when it names one. */
   organization?: string;
+  /** The deployment a grant must name to count; absent while standalone. */
+  endpoint?: string;
 }
 
 export interface SightingSharingInput {
@@ -62,6 +75,8 @@ export interface SightingSharingInput {
    */
   settings: WorkspaceSettings;
   managed: ManagedSettings | null;
+  /** The deployment this machine is attached to, in force after the managed overlay. */
+  endpoint: string | undefined;
   /** The attach credential's mode, or undefined when no usable credential is held. */
   attachmentMode: AttachmentMode | undefined;
 }
@@ -77,13 +92,14 @@ export interface SightingSharingInput {
  *   standalone                       → never shares
  *   managed pin `false`              → never shares; locked
  *   `machine` AND managed pin `true` → shares without asking; locked
- *   otherwise                        → shares only on the user's own valid grant
+ *   otherwise                        → shares only on the user's own grant,
+ *                                      given for this deployment
  *
  * Pure; no I/O. Any throw resolves to not sharing.
  */
 export function resolveSightingSharing(input: SightingSharingInput): SightingSharing {
   try {
-    const { settings, managed, attachmentMode } = input;
+    const { settings, managed, attachmentMode, endpoint } = input;
     const pin = managed?.values.sightingShareConsent;
     const lockListed = managed?.lockedFields.includes('sightingShareConsent') ?? false;
     const organization =
@@ -91,8 +107,15 @@ export function resolveSightingSharing(input: SightingSharingInput): SightingSha
     const mode: SightingShareMode = attachmentMode ?? 'standalone';
     const isManaged = mode === 'machine' && pin === true;
     const locked = lockListed || pin === false || isManaged;
-    const optedIn = isSightingShareConsentValid(settings.sightingShareConsent);
-    const base = { mode, locked, optedIn, ...organization };
+    const bound = mode === 'standalone' ? undefined : endpoint;
+    const optedIn = isSightingShareConsentValid(settings.sightingShareConsent, bound);
+    const base = {
+      mode,
+      locked,
+      optedIn,
+      ...organization,
+      ...(bound === undefined ? {} : { endpoint: bound }),
+    };
 
     if (mode === 'standalone') {
       return { ...base, managed: false, sharing: false, reason: 'standalone' };
@@ -119,6 +142,14 @@ export function resolveSightingSharing(input: SightingSharingInput): SightingSha
       locked: false,
     };
   }
+}
+
+/**
+ * Whether the setup wizard asks the user about sharing: only on an attached
+ * machine whose managed settings do not decide the answer.
+ */
+export function shouldAskSightingShare(state: SightingSharing): boolean {
+  return state.mode !== 'standalone' && !state.locked;
 }
 
 /** The connection, in words. */
@@ -153,7 +184,8 @@ export function sightingShareReasonText(state: SightingSharing): string {
 /**
  * The one-line summary for terminal surfaces, e.g.
  * `Credential sightings: off (standalone) — this machine is not attached to an
- * organization. Only hashes or ciphertext are ever sent, never plaintext.`
+ * organization. A credential sighting carries only a hash or ciphertext of the
+ * value, never the value itself.`
  */
 export function sightingSharingLine(state: SightingSharing): string {
   return (

@@ -2258,6 +2258,18 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
   // idx_audit_outbox_owed itself is what the marked set then grows, which is
   // a write-cost property the migration comment on that index states, not
   // one an EXPLAIN QUERY PLAN of this statement can show.
+  it('finds live-owed captures on the same partial indexes', () => {
+    const machine = recordFor((ledger) => ledger.pendingLiveCaptureRows(1, ALL, T0));
+    expect(indexesIn(machine.details)).toEqual(['idx_audit_outbox_owed']);
+    expect(fullScans(machine.details)).toEqual([]);
+    const scoped = recordFor((ledger) => ledger.pendingLiveCaptureRows(1, ALL, T0, [WORK]));
+    expect(indexesIn(scoped.details)).toEqual(['idx_audit_scope_owed']);
+    expect(fullScans(scoped.details)).toEqual([]);
+    const probe = recordFor((ledger) => ledger.hasLiveOwedCaptures(T0));
+    expect(indexesIn(probe.details)).toEqual(['idx_audit_outbox_owed']);
+    expect(fullScans(probe.details)).toEqual([]);
+  });
+
   it('finds the capture backlog to mark on the index, not by scanning', () => {
     const plan = planFor((ledger) => {
       ledger.markCaptureBacklogOwed(ALL);
@@ -2441,5 +2453,48 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // still a walk in index order.
     expect(plan).not.toContain('TEMP B-TREE');
     expect(fullScans(scoped.details)).toEqual([]);
+  });
+});
+
+describe('SqliteHistorySyncRepository — captures the live path owes', () => {
+  it('offers only what a live forward marked, never a consent or enroll seed', () => {
+    const db = store.open();
+    seedKeyedCapture(db, 'live', 2 * MINUTE, WORK, true);
+    seedKeyedCapture(db, 'backlog', 3 * MINUTE, WORK, false);
+    seedKeyedCapture(db, 'enrolled', 4 * MINUTE, WORK, false);
+    db.historySync.markCaptureBacklogOwed(T0 + 3 * MINUTE + 1);
+    db.historySync.markScopeCapturesOwed([WORK]);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual([
+      'live',
+      'backlog',
+      'enrolled',
+    ]);
+    expect(db.historySync.pendingLiveCaptureRows(10, ALL, T0).map((r) => r.id)).toEqual(['live']);
+    expect(db.historySync.hasLiveOwedCaptures(T0)).toBe(true);
+  });
+
+  it('offers nothing a live forward marked before the attachment began', () => {
+    const db = store.open();
+    seedKeyedCapture(db, 'earlier', MINUTE, WORK, true);
+    seedKeyedCapture(db, 'current', 5 * MINUTE, WORK, true);
+    const since = T0 + 2 * MINUTE;
+
+    expect(db.historySync.pendingLiveCaptureRows(10, ALL, since).map((r) => r.id)).toEqual([
+      'current',
+    ]);
+    db.historySync.markSynced(['current'], T0);
+    expect(db.historySync.hasLiveOwedCaptures(since)).toBe(false);
+  });
+
+  it('keeps to the enrolled keys on a scoped attachment', () => {
+    const db = store.open();
+    seedKeyedCapture(db, 'personal', 2 * MINUTE, PERSONAL, true);
+    seedKeyedCapture(db, 'work', 3 * MINUTE, WORK, true);
+
+    expect(db.historySync.pendingLiveCaptureRows(10, ALL, T0, [WORK]).map((r) => r.id)).toEqual([
+      'work',
+    ]);
+    expect(db.historySync.pendingLiveCaptureRows(10, ALL, T0, [])).toEqual([]);
   });
 });

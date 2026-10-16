@@ -4,7 +4,7 @@ import {
   applyOnboarding,
   captureBackfillScope,
   dataDir as dataDirOf,
-  readControlPlaneAttachmentMode,
+  isScopedAttachment,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
   seedCaptureBacklogOwed,
@@ -85,13 +85,12 @@ grant covers, and turning it off does not stop it.`;
  * Whether the machine at `base` is attached as a personal device: the credential
  * it holds for the connection `settings` names is scoped.
  *
- * `readControlPlaneAttachmentMode` never throws. It answers `undefined` for no
- * connection, no usable credential, or a credential for another endpoint, and
- * each of those keeps the machine-wide wording, which says more is sent, never
- * less.
+ * `isScopedAttachment` never throws. It answers false for no connection, no
+ * usable credential, or a credential for another endpoint, and each of those
+ * keeps the machine-wide wording, which says more is sent, never less.
  */
 function isPersonalDevice(base: string, settings: WorkspaceSettings): boolean {
-  return readControlPlaneAttachmentMode(settingsDirOf(base), settings.controlPlane) === 'scoped';
+  return isScopedAttachment(settingsDirOf(base), settings.controlPlane);
 }
 
 /** The help, worded for the machine at `base`. `readWorkspaceSettings` is fail-open. */
@@ -236,7 +235,8 @@ const REPORT_LINES = {
   unreachable: 'This pass could not reach the deployment. Nothing was sent; it stays queued.',
   refused: 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.',
   'not-attached': 'This pass did nothing: there is no deployment to send to.',
-  'no-consent': 'This pass did nothing: sending existing activity is switched off.',
+  'no-consent':
+    'This pass sent only what live sends left undelivered: sending existing activity is switched off.',
   'credential-unusable':
     'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.',
   'breaker-open':
@@ -304,24 +304,24 @@ function grant(
       `Sending the unsent activity of the repositories enrolled here to ${where}.\n` +
         'No activity from any other repository, or from outside one, is sent, and with none enrolled\n' +
         'no activity is sent at all: `aka enroll --list` shows what is enrolled. What is sent is some\n' +
-        'of what an enrolled repository recorded here before you enrolled it and anything a live\n' +
-        'send from one could not deliver, alike: for a captured prompt, reply or tool result,\n' +
-        'either one includes its text. A value in that text is masked only where the policy\n' +
+        'of what an enrolled repository recorded here before you enrolled it: for a captured\n' +
+        'prompt, reply or tool result, that includes its text. A value in that text is masked only where the policy\n' +
         'assigned to the detection that flagged it is redact or block; under monitor or warn it\n' +
         'goes as it was seen, and no detection ships on redact or block. It goes in the\n' +
         'background, a little at a time, starting with your next session. Anything already sent\n' +
-        'cannot be recalled.\n',
+        'cannot be recalled. Anything a live send from one could not deliver is sent later\n' +
+        'whether or not this is on.\n',
     );
     return true;
   }
   io.out(
     `Sending this machine's unsent activity to ${where}.\n` +
-      'That is the activity recorded before it attached and anything a live send could not\n' +
-      'deliver, alike: for a captured prompt, reply or tool result, either one includes its\n' +
-      'text. A value in that text is masked only where the policy assigned to the detection\n' +
+      'That is the activity recorded before it attached: for a captured prompt, reply or tool\n' +
+      'result, that includes its text. A value in that text is masked only where the policy assigned to the detection\n' +
       'that flagged it is redact or block; under monitor or warn it goes as it was seen, and\n' +
       'no detection ships on redact or block. It goes in the background, a little at a time,\n' +
-      'starting with your next session. Anything already sent cannot be recalled.\n',
+      'starting with your next session. Anything already sent cannot be recalled. Anything a\n' +
+      'live send could not deliver is sent later whether or not this is on.\n',
   );
   return true;
 }
@@ -344,12 +344,12 @@ function revoke(
   io.out(
     scoped
       ? 'Not sending the unsent activity of the repositories enrolled here. Anything already\n' +
-          'sent stays sent — this stops what has not gone yet, and anything a live send cannot\n' +
-          'deliver is dropped rather than kept. Live sending from enrolled repositories is part\n' +
-          'of being attached and continues.\n'
+          'sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
+          'repositories is part of being attached and continues, and anything a live send from\n' +
+          'one could not deliver is still sent later.\n'
       : "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
-          'this stops what has not gone yet, and anything a live send cannot deliver is\n' +
-          'dropped rather than kept. Live sending is part of being attached and continues.\n',
+          'this stops what has not gone yet. Live sending is part of being attached and\n' +
+          'continues, and anything a live send could not deliver is still sent later.\n',
   );
   return true;
 }

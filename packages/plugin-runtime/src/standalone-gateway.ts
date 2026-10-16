@@ -208,6 +208,7 @@ export class StandaloneDataGateway
         ...(insp.line === undefined ? {} : { line: insp.line }),
         ...(insp.col === undefined ? {} : { col: insp.col }),
         ...(insp.context === undefined ? {} : { context: insp.context }),
+        ...(insp.variableName === undefined ? {} : { variableName: insp.variableName }),
       });
     }
   }

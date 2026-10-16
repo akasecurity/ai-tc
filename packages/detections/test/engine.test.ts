@@ -510,7 +510,13 @@ describe('rules tree hygiene', () => {
       expect(existsSync(manifestPath), `rules/${packDir} has no manifest.json`).toBe(true);
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { rules: string[] };
       const onDisk = readdirSync(resolve(RULES_DIR, packDir), { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith('.json') && e.name !== 'manifest.json')
+        .filter(
+          (e) =>
+            e.isFile() &&
+            e.name.endsWith('.json') &&
+            e.name !== 'manifest.json' &&
+            e.name !== 'short-names.json',
+        )
         .map((e) => e.name.replace(/\.json$/, ''))
         .sort();
       expect(onDisk, `rules/${packDir}: manifest.rules and *.json files must agree`).toEqual(

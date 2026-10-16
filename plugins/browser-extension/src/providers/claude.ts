@@ -30,8 +30,9 @@ const SEND_BUTTON_SELECTORS = ['button[aria-label*="send" i]', 'fieldset button[
 // instead of a row of surrogates while the two ids between them are still
 // replaced.
 //
-// Both ids are shape-matched rather than captured — nothing here reads them,
-// and the conversation id is not recoverable from the request body at all.
+// Both ids are shape-matched rather than captured by the pattern. Each is read
+// by segment where it is needed: the organization by `workspaceOf`, the
+// conversation by `conversationIdOf`, which the request body cannot supply at all.
 const SEGMENT_API = 'api';
 const SEGMENT_ORGANIZATIONS = 'organizations';
 const SEGMENT_CONVERSATIONS = 'chat_conversations';
@@ -72,6 +73,31 @@ const COMPLETION_PATH = new RegExp(
   `^/${SEGMENT_API}/${SEGMENT_ORGANIZATIONS}/${SEGMENT_ID}` +
     `/${SEGMENT_CONVERSATIONS}/${SEGMENT_ID}/${SEGMENT_COMPLETION}$`,
 );
+
+/**
+ * The organization a completion request names: the path segment after
+ * `organizations`, read off the matched URL itself.
+ *
+ * Per request rather than per page. The `lastActiveOrg` cookie is one value for
+ * the whole browser profile, so a second tab switching organization would
+ * relabel this one; the request path names the organization the turn was sent
+ * to, including on the first turn after an in-app switch. Returned raw: the
+ * native host turns it into the account key and refuses anything that is not an
+ * organization id.
+ */
+function workspaceOf(url: string): string | undefined {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return undefined;
+  }
+  if (!COMPLETION_PATH.test(path)) return undefined;
+  const segments = path.split('/');
+  const at = segments.indexOf(SEGMENT_ORGANIZATIONS);
+  const value = at === -1 ? undefined : segments[at + 1];
+  return value === undefined || value === '' ? undefined : value;
+}
 
 function findSendButton(): HTMLElement | null {
   return firstMatch(SEND_BUTTON_SELECTORS);
@@ -303,6 +329,9 @@ export const claudeAdapter: ProviderAdapter = {
   // signal, and it needs a captured tool-only turn to declare against, which
   // is the bar everything in this block is held to.
   endpoints: [{ host: 'claude.ai', path: COMPLETION_PATH, kind: 'conversation' }],
+  workspaceOf(exchange) {
+    return workspaceOf(exchange.url);
+  },
   requiredPaths: {
     request: ['model', 'prompt'],
     response: ['messageId', 'model'],

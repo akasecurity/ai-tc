@@ -157,7 +157,12 @@ describe('FindingDetailView — the matched content', () => {
   };
 
   function renderWith(
-    match: { maskedValue: string; context?: FindingContext; contextPrefix?: string },
+    match: {
+      maskedValue: string;
+      context?: FindingContext;
+      contextPrefix?: string;
+      variableName?: string;
+    },
     contextLoading = false,
     line?: number,
   ): void {
@@ -248,6 +253,22 @@ describe('FindingDetailView — the matched content', () => {
     expect(document.body.textContent).toContain('// src/config.ts:5');
     const marked = lineRows().find((row) => row.textContent.includes('▶'));
     expect(marked?.getAttribute('data-line')).toBe('5');
+  });
+
+  it('names the variable the matched value is assigned to, beside the location', () => {
+    renderWith({ maskedValue: 'AKIA****KEY', variableName: 'AWS_ACCESS_KEY_ID' });
+    const labels = [...document.querySelectorAll('div.text-label')];
+    const variable = labels.find((el) => el.textContent.trim() === 'Variable');
+    expect(variable?.nextElementSibling?.textContent).toBe('AWS_ACCESS_KEY_ID');
+    expect(labels.map((el) => el.textContent.trim())).toEqual([
+      'Source tool',
+      'Repository',
+      'Location',
+      'Variable',
+      'Action taken',
+      'Detected',
+      'Confidence',
+    ]);
   });
 
   it("still shows a host's line prefix before the masked value when there is no excerpt", () => {

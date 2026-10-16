@@ -9,6 +9,8 @@
 // DB→API translation still goes through the shared mappers, so no enum rule is
 // restated.
 
+import type { z } from 'zod';
+
 import type {
   FindingContext,
   FindingDelivery,
@@ -17,6 +19,7 @@ import type {
   FindingFacets,
   FindingInstanceDetail,
   FindingStatus,
+  VariableName,
 } from './finding.ts';
 import {
   type GroupableFindingRow,
@@ -74,6 +77,8 @@ export interface FlatFindingRow extends GroupableFindingRow {
   line?: number;
   col?: number;
   context?: FindingContext;
+  // The variable the matched value is assigned to, when there is one.
+  variableName?: NonNullable<z.infer<typeof VariableName>>;
 }
 
 export interface InstanceFilterOptions {
@@ -434,6 +439,7 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
       maskedValue: row.maskedMatch,
       contextPrefix: '',
       ...(row.context === undefined ? {} : { context: row.context }),
+      ...(row.variableName === undefined ? {} : { variableName: row.variableName }),
     },
     detection: { id: row.ruleId, name: null },
     policy: { id: `category:${category}`, name: category },

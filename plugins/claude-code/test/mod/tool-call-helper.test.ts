@@ -9,8 +9,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { exceptionPointer, REVEAL_DISCLOSURE_LEAD } from '../../src/exception-guidance.ts';
 import { consumeToolHandoff, HANDOFF_TTL_MS, recordToolHandoff } from '../../src/mod/handoff.ts';
-import { answerFromOutputs } from '../../src/mod/tool-call-answer.ts';
+import { answerFromOutputs, messageForUser } from '../../src/mod/tool-call-answer.ts';
+import { userDisclosure } from '../../src/protocol/notes.ts';
 
 // The built engine, as the mod loads it (the source entry needs the build's
 // generated rule data).
@@ -43,7 +45,14 @@ describe('answerFromOutputs', () => {
         },
       },
     ]);
-    expect(answer).toEqual({ v: 1, deny: 'no', input: null, context: null, message: null });
+    expect(answer).toEqual({
+      v: 1,
+      deny: 'no',
+      input: null,
+      context: null,
+      message: null,
+      findings: [],
+    });
   });
 
   it('reads an allow with updatedInput as the input to run, with its note and message', () => {
@@ -64,6 +73,7 @@ describe('answerFromOutputs', () => {
       input: { content: 'x' },
       context: 'note',
       message: 'AKA redacted',
+      findings: [],
     });
   });
 
@@ -74,6 +84,7 @@ describe('answerFromOutputs', () => {
       input: null,
       context: null,
       message: 'AKA flagged',
+      findings: [],
     });
   });
 
@@ -84,7 +95,51 @@ describe('answerFromOutputs', () => {
       input: null,
       context: null,
       message: null,
+      findings: [],
     });
+  });
+});
+
+describe('messageForUser', () => {
+  const summary = 'AKA redacted sensitive content in Write input — flagged secrets/x.';
+
+  it('drops a summary the findings already show', () => {
+    expect(messageForUser(summary, true)).toBeNull();
+    expect(
+      messageForUser(
+        userDisclosure({
+          surface: 'Write input',
+          realized: { pointers: [{ token: POINTER, category: 'secret' }], degraded: [] },
+        }),
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps every message when there are no findings to show', () => {
+    expect(messageForUser(summary, false)).toBe(summary);
+    expect(messageForUser(null, false)).toBeNull();
+    expect(messageForUser(null, true)).toBeNull();
+  });
+
+  it.each([
+    [
+      'a granted value revealed into the call',
+      `${summary} ${REVEAL_DISCLOSURE_LEAD} to this Bash call.`,
+    ],
+    [
+      'the command that allows a value',
+      `${summary}${exceptionPointer([{ reference: 'abc123', ruleId: 'secrets/x', maskedValue: 'x***' }])}`,
+    ],
+    [
+      'a value lost to an unavailable vault',
+      userDisclosure({
+        surface: 'Write input',
+        realized: { pointers: [], degraded: [{ category: 'secret' }] },
+      }) ?? '',
+    ],
+  ])('keeps the whole message when it carries %s', (_name, message) => {
+    expect(messageForUser(message, true)).toBe(message);
   });
 });
 

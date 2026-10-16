@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { ActionTaken, DetectionCategory } from './finding.ts';
 import { SourceTool } from './harness-map.ts';
@@ -24,7 +24,8 @@ export const CAPTURE_EVENT_TYPES_SQL = EventKind.options.map((k) => `'${k}'`).jo
 // A secret's sighting token: `[[aka:fp:v<keyVersion>.<fingerprint>]]`, where the
 // fingerprint is the unpadded base64url of a 32-byte HMAC-SHA256. It carries no
 // value, rule or category, and `fp` is not a DetectionCategory, so a sighting
-// token never parses as a vault pointer.
+// token never parses as a vault pointer. Whoever holds the key can test a
+// guessed value against a token.
 export const SIGHTING_TOKEN_PATTERN = /\[\[aka:fp:v[1-9][0-9]{0,15}\.[A-Za-z0-9_-]{43}\]\]/;
 
 export const SIGHTING_TOKEN_ANCHORED = new RegExp(`^${SIGHTING_TOKEN_PATTERN.source}$`);

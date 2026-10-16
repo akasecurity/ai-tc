@@ -12,7 +12,7 @@
 // reason WorkspaceSettings documents: an id registers the schema globally, and a
 // swagger setup would emit it as an OpenAPI component. Nothing about the vault
 // belongs on a public API surface.
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { DetectionCategory, VariableName } from './finding.ts';
 

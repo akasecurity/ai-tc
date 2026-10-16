@@ -10,7 +10,7 @@
 // Regenerate after adding/removing a rule or pack under rules/:
 //   pnpm --filter @akasecurity/plugin-sdk gen:bundled-packs
 //
-// 8 packs / 109 rules.
+// 8 packs / 111 rules.
 /* eslint-disable simple-import-sort/imports */
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
@@ -42,6 +42,7 @@ import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
 import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
 import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
 import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
+import commandRiskCredentialFileAccess from '../../../rules/command-risk/credential-file-access.json';
 import commandRiskCredentialFileRead from '../../../rules/command-risk/credential-file-read.json';
 import commandRiskCurlPipeShell from '../../../rules/command-risk/curl-pipe-shell.json';
 import commandRiskGitForcePush from '../../../rules/command-risk/git-force-push.json';
@@ -99,6 +100,7 @@ import secretsInfraJwtToken from '../../../rules/secrets-infra/jwt-token.json';
 import secretsInfraKubeconfigToken from '../../../rules/secrets-infra/kubeconfig-token.json';
 import secretsInfraPasswordField from '../../../rules/secrets-infra/password-field.json';
 import secretsInfraPgpPrivateKey from '../../../rules/secrets-infra/pgp-private-key.json';
+import secretsInfraSecretConfigValue from '../../../rules/secrets-infra/secret-config-value.json';
 import secretsInfraSshPrivateKey from '../../../rules/secrets-infra/ssh-private-key.json';
 import secretsAnthropicApiKey from '../../../rules/secrets/anthropic-api-key.json';
 import secretsAwsAccessKey from '../../../rules/secrets/aws-access-key.json';
@@ -130,6 +132,8 @@ export interface BundledPack {
   // The built-in policy a first install assigns; absent leaves the pack unassigned.
   defaultPolicy?: BuiltinPolicyId;
   rawRules: unknown[];
+  // Rule id to the short label a surface shows in place of the rule's full name.
+  shortNames: Readonly<Record<string, string>>;
 }
 
 export const BUNDLED_PACKS: readonly BundledPack[] = [
@@ -168,11 +172,42 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       codeFlawsSsrfUserUrl,
       codeFlawsRegexRedosBacktrack,
     ],
+    shortNames: {
+      'code-flaws/sql-inject-concat': 'SQL injection',
+      'code-flaws/sql-inject-concat-dot': 'SQL injection (PHP)',
+      'code-flaws/sql-inject-format': 'SQL injection (format string)',
+      'code-flaws/sql-inject-interp': 'SQL injection (interpolation)',
+      'code-flaws/cmd-inject-shell': 'Command injection (shell)',
+      'code-flaws/cmd-inject-exec': 'Command injection (Java exec)',
+      'code-flaws/cmd-inject-node-exec': 'Command injection (Node exec)',
+      'code-flaws/xss-inner-html': 'XSS via innerHTML',
+      'code-flaws/xss-dangerously-set': 'XSS via dangerouslySetInnerHTML',
+      'code-flaws/xss-unescaped-render': 'XSS via unescaped render',
+      'code-flaws/deser-pickle': 'Unsafe pickle load',
+      'code-flaws/deser-yaml-unsafe': 'Unsafe YAML load',
+      'code-flaws/deser-java-ois': 'Unsafe Java deserialization',
+      'code-flaws/hardcoded-password': 'Hardcoded password',
+      'code-flaws/hardcoded-secret-key': 'Hardcoded secret key',
+      'code-flaws/dev-debug-enabled': 'Debug mode on',
+      'code-flaws/dev-placeholder-secret': 'Placeholder secret',
+      'code-flaws/dev-wildcard-cors': 'Wildcard CORS',
+      'code-flaws/auth-ssl-verify-false': 'TLS verify off',
+      'code-flaws/auth-jwt-no-verify': 'JWT not verified',
+      'code-flaws/path-traversal-open': 'Path traversal (open)',
+      'code-flaws/path-traversal-join': 'Path traversal (join)',
+      'code-flaws/crypto-weak-hash-md5': 'Weak hash (MD5)',
+      'code-flaws/crypto-weak-hash-sha1': 'Weak hash (SHA-1)',
+      'code-flaws/crypto-insecure-random': 'Insecure random',
+      'code-flaws/prototype-pollution-merge': 'Prototype pollution',
+      'code-flaws/eval-dynamic-exec': 'Dynamic code execution',
+      'code-flaws/ssrf-user-url': 'SSRF',
+      'code-flaws/regex-redos-backtrack': 'ReDoS pattern',
+    },
   },
   {
     packId: 'command-risk',
     name: 'Risky agent commands',
-    version: '0.1.0',
+    version: '0.2.0',
     defaultPolicy: 'warn',
     rawRules: [
       commandRiskPkillBroad,
@@ -181,7 +216,17 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       commandRiskGitResetHard,
       commandRiskCurlPipeShell,
       commandRiskCredentialFileRead,
+      commandRiskCredentialFileAccess,
     ],
+    shortNames: {
+      'command-risk/pkill-broad': 'Broad pkill',
+      'command-risk/rm-rf-home-or-shared': 'Recursive rm of home',
+      'command-risk/git-force-push': 'Git force push',
+      'command-risk/git-reset-hard': 'Git reset --hard',
+      'command-risk/curl-pipe-shell': 'Curl piped to shell',
+      'command-risk/credential-file-read': 'Credential file read',
+      'command-risk/credential-file-access': 'Credential file read',
+    },
   },
   {
     packId: 'core-code-context',
@@ -198,6 +243,17 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       coreCodeContextDbTableName,
       coreCodeContextGcpServiceAccountEmail,
     ],
+    shortNames: {
+      'core-code-context/internal-ip': 'Internal IP',
+      'core-code-context/localhost-ref': 'Localhost reference',
+      'core-code-context/internal-domain': 'Internal domain',
+      'core-code-context/file-path': 'Home file path',
+      'core-code-context/stack-trace': 'Stack trace',
+      'core-code-context/internal-url': 'Internal URL',
+      'core-code-context/feature-flag': 'Feature flag',
+      'core-code-context/db-table-name': 'Database table name',
+      'core-code-context/gcp-service-account-email': 'GCP service account email',
+    },
   },
   {
     packId: 'core-financial',
@@ -213,6 +269,16 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       coreFinancialPaypal,
       coreFinancialSalary,
     ],
+    shortNames: {
+      'core-financial/credit-card': 'Card number',
+      'core-financial/iban': 'IBAN',
+      'core-financial/routing-number': 'Bank routing number',
+      'core-financial/swift': 'SWIFT code',
+      'core-financial/cvv': 'Card CVV',
+      'core-financial/cusip': 'CUSIP',
+      'core-financial/paypal': 'PayPal ID',
+      'core-financial/salary': 'Salary',
+    },
   },
   {
     packId: 'core-phi',
@@ -228,6 +294,16 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       corePhiGeneticData,
       corePhiBiometricRef,
     ],
+    shortNames: {
+      'core-phi/mrn': 'Medical record number',
+      'core-phi/hipaa-identifier': 'Health plan ID',
+      'core-phi/member-id': 'Health plan member ID',
+      'core-phi/group-id': 'Health plan group ID',
+      'core-phi/icd10-code': 'ICD-10 code',
+      'core-phi/ndc-code': 'NDC drug code',
+      'core-phi/genetic-data': 'Genetic data',
+      'core-phi/biometric-ref': 'Biometric data',
+    },
   },
   {
     packId: 'core-pii',
@@ -249,6 +325,22 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       corePiiNationalId,
       corePiiZip,
     ],
+    shortNames: {
+      'core-pii/email': 'Email',
+      'core-pii/ssn': 'US SSN',
+      'core-pii/phone-us': 'US phone number',
+      'core-pii/phone-intl': 'Phone number',
+      'core-pii/ip-address': 'IP address',
+      'core-pii/dob': 'Date of birth',
+      'core-pii/drivers-license-us': 'US driver license',
+      'core-pii/passport-us': 'US passport number',
+      'core-pii/home-address': 'Home address',
+      'core-pii/name': 'Personal name',
+      'core-pii/vin': 'Vehicle VIN',
+      'core-pii/mac-address': 'MAC address',
+      'core-pii/national-id': 'National ID',
+      'core-pii/zip': 'US ZIP code',
+    },
   },
   {
     packId: 'secrets',
@@ -279,11 +371,35 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       secretsGcpServiceAccountKey,
       secretsTailscaleKey,
     ],
+    shortNames: {
+      'secrets/aws-access-key': 'AWS access key',
+      'secrets/aws-secret-key': 'AWS secret key',
+      'secrets/azure-connection-string': 'Azure connection string',
+      'secrets/openai-api-key': 'OpenAI API key',
+      'secrets/anthropic-api-key': 'Anthropic API key',
+      'secrets/stripe-live-key': 'Stripe live key',
+      'secrets/slack-token': 'Slack token',
+      'secrets/discord-token': 'Discord token',
+      'secrets/sendgrid-key': 'SendGrid key',
+      'secrets/twilio-key': 'Twilio SID',
+      'secrets/gitlab-token': 'GitLab token',
+      'secrets/digitalocean-token': 'DigitalOcean token',
+      'secrets/datadog-key': 'Datadog key',
+      'secrets/npm-token': 'npm token',
+      'secrets/heroku-api-key': 'Heroku key',
+      'secrets/cloudflare-api-key': 'Cloudflare token',
+      'secrets/pulumi-access-token': 'Pulumi token',
+      'secrets/terraform-cloud-token': 'Terraform Cloud token',
+      'secrets/vault-token': 'Vault token',
+      'secrets/github-pat': 'GitHub token',
+      'secrets/gcp-service-account-key': 'GCP service account key',
+      'secrets/tailscale-key': 'Tailscale key',
+    },
   },
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '0.1.1',
+    version: '0.2.1',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,
@@ -294,10 +410,27 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
       secretsInfraBearerToken,
       secretsInfraEnvKeyValue,
       secretsInfraPasswordField,
+      secretsInfraSecretConfigValue,
       secretsInfraDockerConfigAuth,
       secretsInfraKubeconfigToken,
       secretsInfraApiKeyHeader,
       secretsInfraGenericHighEntropySecret,
     ],
+    shortNames: {
+      'secrets-infra/ssh-private-key': 'SSH private key',
+      'secrets-infra/db-connection-string': 'Database credentials',
+      'secrets-infra/jwt-token': 'JWT',
+      'secrets-infra/basic-auth-url': 'URL with credentials',
+      'secrets-infra/basic-auth-header': 'Basic auth header',
+      'secrets-infra/pgp-private-key': 'PGP private key',
+      'secrets-infra/bearer-token': 'Bearer token',
+      'secrets-infra/env-key-value': 'Secret env variable',
+      'secrets-infra/password-field': 'Password field',
+      'secrets-infra/docker-config-auth': 'Docker auth',
+      'secrets-infra/kubeconfig-token': 'Kubeconfig token',
+      'secrets-infra/api-key-header': 'API key header',
+      'secrets-infra/generic-high-entropy-secret': 'High-entropy secret',
+      'secrets-infra/secret-config-value': 'Secret config value',
+    },
   },
 ];

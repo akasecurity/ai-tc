@@ -631,7 +631,7 @@ describe('a scoped attach that will not keep the stored list writes the settings
 describe('what an attach whose credential was not saved after its settings says', () => {
   it('says what was saved, what a key already held still sends, that recognition may be back on, and to attach again before enrolling', () => {
     expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).toBe(
-      'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.',
+      'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code and Codex sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.',
     );
     // A key held for this deployment keeps sending, so the sentence claims no
     // silence, and enrolling an account sends under that key as a repository does.

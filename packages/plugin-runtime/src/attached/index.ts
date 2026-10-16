@@ -87,11 +87,15 @@ export type {
   ClaudeCodeLoginState,
   ClaudeCodeLoginView,
   ClaudeCodeLoginViewInput,
+  CodexLoginState,
+  CodexLoginView,
+  CodexLoginViewInput,
   RenderAttachedStatusDeps,
 } from './status.ts';
 export {
   attachmentScopeLines,
   claudeCodeLoginView,
+  codexLoginView,
   deploymentNameForTerminal,
   endpointForTerminal,
   printableForTerminal,

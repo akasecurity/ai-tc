@@ -215,10 +215,10 @@ export const HISTORY_SYNC_STALE_NOTICE =
 
 // The same row on a machine attached as a personal device, picked when the host
 // reports `attachmentMode: 'scoped'`. Such a machine sends activity only from
-// the repositories and accounts enrolled on it and from the Claude Code sessions
-// of a work subscription it recognises (the grant's seed marks the captures of
-// the enrolled repositories and accounts alone, and the drain reads with the
-// same scope), so every string here names them and none describes the whole
+// the repositories and accounts enrolled on it and from the Claude Code and
+// Codex sessions of a work subscription it recognises (the grant's seed marks
+// the captures of the enrolled repositories and accounts alone, and the drain
+// reads with the same scope), so every string here names them and none describes the whole
 // machine's backlog. Same payload, same masking rule, same two answers under
 // the same labels: only the subject narrows. The payload-version tripwire in packages/schema names the twins of
 // the three disclosure strings (the section description, the choices and the
@@ -240,9 +240,9 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION_SCOPED =
   'masked only where that policy is redact or block, and under monitor or warn the value is ' +
   'sent as it was seen, as is everything outside a flagged span. No detection ships on redact ' +
   'or block, so on a default install nothing in that text is masked. Live sending from ' +
-  'enrolled repositories and accounts, and from Claude Code sessions signed in to a work ' +
-  'subscription that this device recognises, is part of being attached and this setting does ' +
-  'not change it: anything a live send from any of them could not deliver is kept and sent ' +
+  'enrolled repositories and accounts, and from Claude Code and Codex sessions signed in to a ' +
+  'work subscription that this device recognises, is part of being attached and this setting ' +
+  'does not change it: anything a live send from any of them could not deliver is kept and sent ' +
   'later either way. With nothing enrolled and no work subscription recognised, no activity is ' +
   'sent. Sending happens in the background over later ' +
   'sessions. Revoking stops what has not been sent; it cannot recall what has.';
@@ -1342,18 +1342,19 @@ export const CONNECTION_FORWARDING_NOTICE =
 // or a line it does not cross:
 //
 //   - the plugin forwards activity only from repositories you enroll, from
-//     accounts you enroll (their Claude Code sessions from any folder and, from
-//     the browser extension, their claude.ai replies) and from the Claude Code
-//     sessions of a work subscription the device recognises (the forward paths
-//     decide by that scope before they send), and the notice names the command
-//     that stops the last, which leaves what is enrolled by hand. A session's
-//     organization is read from its own log, which names none until the first
-//     reply, so those sessions send from the first reply on;
-//   - the work-subscription check reads the login file, the settings files, the
-//     environment variables and the session's own log, and the notice names all
-//     four. It says the check sends none of it, not that the device sends none
-//     of what it reads: the session log is also read to record the token usage
-//     and tool calls a recognised session forwards;
+//     accounts you enroll (their Claude Code sessions and new Codex sessions
+//     from any folder and, from the browser extension, their claude.ai replies)
+//     and from the Claude Code and Codex sessions of a work subscription the
+//     device recognises (the forward paths decide by that scope before they
+//     send), and the notice names the command that stops the last, which leaves
+//     what is enrolled by hand. A Claude Code session's organization is read
+//     from its own log, which names none until the first reply, so those
+//     sessions send from the first reply on;
+//   - the work-subscription check reads the login file, the environment
+//     variables and the session's own log, and, for Claude Code, its settings
+//     files, and the notice names each. It says the check sends none of it, not
+//     that the device sends none of what it reads: the session log is also read
+//     to record the token usage and tool calls a recognised session forwards;
 //   - the policy pull, the device report and the check for device commands are
 //     made whenever a session starts anywhere on the machine, in a repository
 //     or not, a browser chat included, with no scope verdict, by design, so they
@@ -1371,15 +1372,21 @@ export const CONNECTION_FORWARDING_NOTICE_SCOPED =
   'While this machine is attached as a personal device, the plugin forwards activity only from ' +
   'repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll ' +
   '--account`, whose Claude Code sessions send everything they record from the first reply on, ' +
-  "from any folder, with that folder's project and branch names, and whose claude.ai chats, " +
-  'where web chat capture is granted, send their replies, with their tool calls and token ' +
-  'usage; and from Claude Code sessions signed in to a work subscription (a Claude Team or ' +
-  'Enterprise plan) under the same email as your AKA account, which send everything they ' +
-  "record from the first reply on, from any folder, with that folder's project and branch " +
-  'names. Activity anywhere else stays on this machine. The device checks a work subscription ' +
+  "from any folder, with that folder's project and branch names, whose new Codex sessions send " +
+  "everything they record, from any folder, with that folder's project and branch names, and " +
+  'whose claude.ai chats, where web chat capture is granted, send their replies, with their ' +
+  'tool calls and token usage; from Claude Code sessions signed in to a work subscription (a ' +
+  'Claude Team or Enterprise plan) under the same email as your AKA account, which send ' +
+  "everything they record from the first reply on, from any folder, with that folder's project " +
+  'and branch names; and from new Codex sessions signed in with ChatGPT to a work subscription ' +
+  '(a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, which send ' +
+  "everything they record, from any folder, with that folder's project and branch names. " +
+  'Activity anywhere else stays on this machine. The device checks a work subscription ' +
   "from Claude Code's own login file, its settings files (the project's own included), the " +
   "environment variables that choose the account or provider, and the session's own log, and " +
-  'the check sends none of it (no email, plan, organization id, setting or variable); run ' +
+  'the check sends none of it (no email, plan, organization id, setting or variable); for ' +
+  "Codex it reads Codex's own login file, the environment variables that choose its account or " +
+  "provider, and the session's own log, and sends none of it either; run " +
   '`aka unenroll --work-subscriptions` to send only from what you enroll. Whenever a session starts ' +
   'anywhere on this machine, in a repository or not (a browser chat included), the machine ' +
   "pulls that deployment's policy (at " +
@@ -1396,8 +1403,8 @@ export const CONNECTION_FORWARDING_NOTICE_SCOPED =
 // The mode line under an attached connection's name.
 export const CONNECTION_MODE_SCOPED =
   'Scoped — a personal device. Activity is sent only from repositories and accounts you enroll ' +
-  'with `aka enroll`, and from Claude Code sessions signed in to a work subscription under the ' +
-  'same email as your AKA account.';
+  'with `aka enroll`, and from Claude Code and Codex sessions signed in to a work subscription ' +
+  'under the same email as your AKA account.';
 export const CONNECTION_MODE_MACHINE =
   'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
 
@@ -1413,12 +1420,15 @@ export const ATTACH_MODE_CHOICES: Choice<AttachmentMode>[] = [
     label: 'Personal device',
     description:
       'Activity is sent only from repositories and accounts you enroll with `aka enroll`, and from ' +
-      'Claude Code sessions signed in to a work subscription (Claude Team or Enterprise) under the ' +
-      "same email as your AKA account, from any folder, with that folder's project and branch " +
-      'names; activity anywhere else stays on this machine. The device checks a work subscription ' +
-      "from Claude Code's own login file, its settings files (the project's own included), the " +
-      "environment variables that choose the account or provider, and the session's own log, and " +
-      'the check sends none of it (no email, plan, organization id, setting or variable). To send ' +
+      'Claude Code and Codex sessions signed in to a work subscription (Claude Team or ' +
+      'Enterprise, ChatGPT Business, Team, Enterprise or Edu) under the same email as your AKA ' +
+      "account, from any folder, with that folder's project and branch names; activity anywhere " +
+      "else stays on this machine. The device checks a work subscription from Claude Code's own " +
+      "login file, its settings files (the project's own included), the environment variables " +
+      "that choose the account or provider, and the session's own log, and the check sends none " +
+      "of it (no email, plan, organization id, setting or variable); for Codex it reads Codex's " +
+      'own login file, the environment variables that choose its account or provider, and the ' +
+      "session's own log, and sends none of it either. To send " +
       'only from what you enroll, run `aka unenroll --work-subscriptions` after attaching. ' +
       'Whenever a session starts ' +
       'anywhere on this machine, in a repository or not (a browser chat included), the ' +

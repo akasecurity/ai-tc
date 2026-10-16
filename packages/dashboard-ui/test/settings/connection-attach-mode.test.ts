@@ -22,8 +22,8 @@ import {
 // offers, the line an attached row shows, and the forwarding notice a scoped
 // machine gets instead of the machine-wide one. Copy on this section is a
 // consent surface, so each string is held to what a scoped machine actually
-// sends: activity from what is enrolled and from the Claude Code sessions of a
-// work subscription it recognises, and whenever a session starts
+// sends: activity from what is enrolled and from the Claude Code and Codex sessions
+// of a work subscription it recognises, and whenever a session starts
 // anywhere on the machine the policy pull and a device report whose finding counts
 // and dates are for everything recorded on it, which on a personal device also says
 // that it is one, plus the check for device commands where a scan is available.
@@ -65,6 +65,13 @@ const CHECK_READS =
   "(the project's own included), the environment variables that choose the account or provider, " +
   "and the session's own log, and the check sends none of it (no email, plan, organization id, " +
   'setting or variable)';
+
+// What the choice and the notice say the device reads for a Codex session, after the Claude Code
+// reads: its login file, the environment variables that choose its account or provider, and the
+// session's own log. The check sends none of it.
+const CODEX_CHECK_READS =
+  "for Codex it reads Codex's own login file, the environment variables that choose its account " +
+  "or provider, and the session's own log, and sends none of it either";
 
 // What the strings used to say, and must not again: a count "across every
 // repository" reads as a limit to repositories, and "every project" leaves out a
@@ -206,10 +213,10 @@ describe('attach-mode copy', () => {
     // deny a send that is made.
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
     expect(scoped).toContain(
-      "Activity is sent only from repositories and accounts you enroll with `aka enroll`, and from Claude Code sessions signed in to a work subscription (Claude Team or Enterprise) under the same email as your AKA account, from any folder, with that folder's project and branch names; activity anywhere else stays on this machine.",
+      "Activity is sent only from repositories and accounts you enroll with `aka enroll`, and from Claude Code and Codex sessions signed in to a work subscription (Claude Team or Enterprise, ChatGPT Business, Team, Enterprise or Edu) under the same email as your AKA account, from any folder, with that folder's project and branch names; activity anywhere else stays on this machine.",
     );
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
-      "the plugin forwards activity only from repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll --account`, whose Claude Code sessions send everything they record from the first reply on, from any folder, with that folder's project and branch names, and whose claude.ai chats, where web chat capture is granted, send their replies, with their tool calls and token usage; and from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, which send everything they record from the first reply on, from any folder, with that folder's project and branch names. Activity anywhere else stays on this machine.",
+      "the plugin forwards activity only from repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll --account`, whose Claude Code sessions send everything they record from the first reply on, from any folder, with that folder's project and branch names, whose new Codex sessions send everything they record, from any folder, with that folder's project and branch names, and whose claude.ai chats, where web chat capture is granted, send their replies, with their tool calls and token usage; from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, which send everything they record from the first reply on, from any folder, with that folder's project and branch names; and from new Codex sessions signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, which send everything they record, from any folder, with that folder's project and branch names. Activity anywhere else stays on this machine.",
     );
   });
 
@@ -222,6 +229,26 @@ describe('attach-mode copy', () => {
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).not.toContain(
       'everything they record from any folder',
     );
+  });
+
+  it('says a Codex session of an enrolled account and of a work subscription sends everything it records, from any folder', () => {
+    // The Codex clauses name no first reply: only the Claude Code clauses say a
+    // session sends from its first reply on.
+    const sends =
+      "send everything they record, from any folder, with that folder's project and branch names";
+    expect(
+      CONNECTION_FORWARDING_NOTICE_SCOPED.split(`whose new Codex sessions ${sends}`),
+    ).toHaveLength(2);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED.split(`which ${sends}`)).toHaveLength(2);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).not.toMatch(/Codex sessions[^;]*first reply/);
+  });
+
+  it('says a new Codex session wherever the notice speaks of Codex sessions alone', () => {
+    // A resumed Codex thread never counts, an account enrolled by hand included,
+    // so a clause about Codex alone cannot cover every session.
+    const notice = CONNECTION_FORWARDING_NOTICE_SCOPED;
+    expect(notice.match(/Codex sessions/g)).toHaveLength(2);
+    expect(notice.match(/new Codex sessions/g)).toHaveLength(2);
   });
 
   it('says on a governed machine that a personal-device attach is refused', () => {
@@ -254,19 +281,30 @@ describe('attach-mode copy', () => {
 
   it('names work subscriptions, how they are recognised and the opt-out wherever a personal device is described', () => {
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    expect(scoped).toContain('Claude Code and Codex sessions signed in to a work subscription');
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
+      'Claude Code sessions signed in to a work subscription',
+    );
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
+      'new Codex sessions signed in with ChatGPT to a work subscription',
+    );
     for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED]) {
-      expect(text).toContain('Claude Code sessions signed in to a work subscription');
       expect(text).toContain('under the same email as your AKA account');
       expect(text).toContain("with that folder's project and branch names");
-      expect(text).toContain(CHECK_READS);
+      expect(text).toContain(`${CHECK_READS}; ${CODEX_CHECK_READS}`);
       expect(text).toContain('`aka unenroll --work-subscriptions`');
       expect(text).toMatch(/to send only from what you enroll/i);
       expect(text).not.toContain('only from the repositories you enroll');
     }
-    expect(scoped).toContain('(Claude Team or Enterprise)');
+    expect(scoped).toContain(
+      '(Claude Team or Enterprise, ChatGPT Business, Team, Enterprise or Edu)',
+    );
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain('(a Claude Team or Enterprise plan)');
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
+      '(a ChatGPT Business, Team, Enterprise or Edu plan)',
+    );
     expect(CONNECTION_MODE_SCOPED).toContain(
-      'and from Claude Code sessions signed in to a work subscription under the same email as your AKA account.',
+      'and from Claude Code and Codex sessions signed in to a work subscription under the same email as your AKA account.',
     );
     // Nothing checks that a Claude plan belongs to this organization, only the
     // email, a company plan and its freshness, so no string says it does.
@@ -284,6 +322,14 @@ describe('attach-mode copy', () => {
     }
   });
 
+  it('never names a ChatGPT service account wherever a personal device is described', () => {
+    // Only the ChatGPT workspace plans count; a service account never does.
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED, CONNECTION_MODE_SCOPED]) {
+      expect(text).not.toMatch(/service account|enterprise_cbp_automation/i);
+    }
+  });
+
   it('names every reader of the work-subscription check, the environment included', () => {
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
     for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED]) {
@@ -291,6 +337,8 @@ describe('attach-mode copy', () => {
         "Claude Code's own login file",
         'its settings files',
         'the environment variables that choose the account or provider',
+        "Codex's own login file",
+        'the environment variables that choose its account or provider',
         "the session's own log",
       ]) {
         expect(text).toContain(reader);

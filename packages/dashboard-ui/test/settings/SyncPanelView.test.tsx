@@ -274,7 +274,7 @@ describe('SyncPanelView', () => {
     const html = render({ scoped: true, workSubscriptions: 'on' });
     expect(html).toContain('data-slot="sync-work-subscriptions"');
     expect(html).toContain(
-      'Work subscriptions are on: Claude Code sessions signed in with your AKA account’s email to a Claude Team or Enterprise plan are sent from any folder.',
+      'Work subscriptions are on: Claude Code sessions signed in with your AKA account’s email to a Claude Team or Enterprise plan, and new Codex sessions signed in with it to a ChatGPT Business, Team, Enterprise or Edu workspace, are sent from any folder.',
     );
     expect(html).not.toContain('of your organization');
     expect(html).toContain('aka unenroll --work-subscriptions</code>');

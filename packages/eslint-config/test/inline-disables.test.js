@@ -137,6 +137,21 @@ const EXPECTED_INLINE_DISABLES = {
   // status read that names no home finds an empty directory, not the developer's.
   'test/setup/no-host-claude-config.ts': [ENV_RULE],
 
+  // The same declaration for Codex: its home moved to an empty directory and the
+  // key, token and gateway variables cleared, so a status read that names no home
+  // finds no login and no veto from the developer's own environment.
+  'test/setup/no-host-codex-config.ts': [ENV_RULE],
+
+  // The guard's own test reads those variables back from the process, which no
+  // other seam shows: the account check reads an empty string as unset, so only
+  // the environment itself tells a cleared variable from a missing one.
+  'cli/test/codex-config-guard.test.ts': [ENV_RULE],
+
+  // The test that holds that guard's variable list to what the account check
+  // reads: it swaps the process environment for a recorder, since only the
+  // environment itself shows which names a lookup asks about.
+  'packages/plugin-sdk/test/account/codex-env-names.test.ts': [ENV_RULE],
+
   // The same boundary one step out: a harness that spawns a real shipped
   // SCRIPT rather than a real hook. install.sh needs the host PATH to find
   // curl, tar and shasum at all.

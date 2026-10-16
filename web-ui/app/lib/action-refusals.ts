@@ -153,9 +153,10 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
  * too. Beside them, the credential the machine already had is untouched, and so
  * is the identity record kept beside it, which is written only after both writes
  * land. A scoped credential for this deployment has no repository or account
- * enrolled, but it still sends its device report and the Claude Code sessions of
- * any work subscription it recognises, one first signed in after the failure
- * included, because the identity record beside it still matches that credential.
+ * enrolled, but it still sends its device report and the Claude Code and Codex
+ * sessions of any work subscription it recognises, one first signed in after the
+ * failure included, because the identity record beside it still matches that
+ * credential.
  * A file that cannot be used or a credential for another deployment sends
  * nothing, and with no credential file there is nothing to send with.
  *
@@ -176,7 +177,7 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
  * the way back for every machine.
  */
 export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
-  'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.';
+  'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code and Codex sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.';
 
 /**
  * Added to a failed attach's refusal when the credential file could not be put

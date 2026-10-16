@@ -26,15 +26,22 @@ import {
   turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
-import type { ClaudeCodeLoginState, ClaudeCodeLoginView } from '@akasecurity/plugin-runtime';
+import type {
+  ClaudeCodeLoginState,
+  ClaudeCodeLoginView,
+  CodexLoginState,
+  CodexLoginView,
+} from '@akasecurity/plugin-runtime';
 import {
   attachmentScopeLines,
   claudeCodeLoginView,
+  codexLoginView,
   deploymentNameForTerminal,
   printableForTerminal,
 } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
 import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import { codexHomeDir } from '@akasecurity/plugin-sdk/account';
 import type {
   AttachedIdentity,
   ControlPlaneConnection,
@@ -69,7 +76,7 @@ import { terminalPrompter } from '../lib/prompter.ts';
 import { refusalLine } from '../lib/refusal-line.ts';
 
 // `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories and
-// Claude accounts a SCOPED attachment sends.
+// Claude or ChatGPT accounts a SCOPED attachment sends.
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
@@ -80,9 +87,11 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // may have read the record before the edit, and nothing here says otherwise.
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
-// envelope keys a newer build wrote. The edits append to, or take out of, the
-// stored `entries` array and keep everything else; they never write back a
-// parsed copy, which would drop what this build cannot read.
+// envelope keys the parser does not recognise. The edits append an entry to the
+// stored `entries` array, take out every stored entry that matches, mark every
+// matching account entry in place, or set or clear the work-subscription
+// opt-out, and keep everything else; they never write back a parsed copy, which
+// would drop what the parser cannot read.
 //
 // BOUND TO THE ENDPOINT IN FORCE. The record names the deployment it is for, and
 // that is the EFFECTIVE endpoint, with any administrator's overlay applied: the
@@ -95,44 +104,47 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // command that attaches.
 const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --repo <clone-url | host/owner/repo>
-       aka enroll --account <claude:organization-id> [--yes]
+       aka enroll --account <claude:organization-id | chatgpt:workspace-id> [--yes]
        aka enroll --work-subscriptions
        aka enroll --list
        aka enroll --list-detected
 
 On a machine attached in the scoped mode, activity is sent to the deployment
 only from the repositories and Claude accounts enrolled here (an account's
-Claude Code sessions and its claude.ai chat replies), and from Claude Code
-sessions signed in to a work subscription (a Claude Team or Enterprise plan)
-that this device recognises; activity anywhere else stays on this machine.
+Claude Code sessions and its claude.ai chat replies), and from Claude Code and
+Codex sessions signed in to a work subscription (a Claude Team or Enterprise
+plan, or a ChatGPT Business, Team, Enterprise or Edu plan) that this device
+recognises; activity anywhere else stays on this machine.
 The policy pull, the sighting-key fetch, the command check and the device
 report are not limited to them: the report's finding counts and dates are for
 everything recorded on the machine.
 
   [path]                Enroll the repository this directory is in (default: .).
   --repo <repo>         Enroll by clone URL, or by key, as in github.com/acme/payments-api.
-  --account <key>       Enroll a Claude account by its key, as --list-detected shows it,
-                        for its Claude Code sessions and its claude.ai chats: the
-                        fallback for a work subscription this device does not recognise.
+  --account <key>       Enroll a Claude account or a ChatGPT workspace by its key, as
+                        --list-detected shows it. A Claude account covers its Claude Code
+                        sessions and its claude.ai chats, a ChatGPT workspace its new
+                        Codex threads: the fallback for a work subscription this device
+                        does not recognise.
   --yes                 With --account, enroll the login signed in now without asking,
                         even on a personal plan.
   --work-subscriptions  Recognise work subscriptions on this device again.
   --list                Show what is enrolled.
   --list-detected       Show the web chat accounts the browser extension has seen here,
-                        and the Claude Code login signed in now.
+                        and the Claude Code and Codex logins signed in now.
   --home <dir>          Use an alternate AKA home instead of ~/.aka.
 
 Enrolling changes this machine's settings and contacts nothing.`;
 
 const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --repo <clone-url | host/owner/repo>
-       aka unenroll --account <claude:organization-id>
+       aka unenroll --account <claude:organization-id | chatgpt:workspace-id>
        aka unenroll --work-subscriptions
 
 Stops sending a repository or a Claude account from a scoped attachment:
 sessions, scans and chats started afterwards keep its activity on this machine,
-except a Claude Code session signed in to a recognised work subscription or to
-another account enrolled by hand, which forwards from any folder.
+except a Claude Code or Codex session signed in to a recognised work subscription
+or to another account enrolled by hand, which forwards from any folder.
 
   [path]                The repository this directory is in (default: .).
   --repo <repo>         A clone URL, or a key, as in github.com/acme/payments-api.
@@ -166,6 +178,8 @@ export interface EnrollDeps {
    * the real home and the system managed-settings file.
    */
   claudePaths: ClaudeLoginPaths | undefined;
+  /** Codex's home directory. Leaving it out reads the one Codex itself resolves. */
+  codexHome?: string | undefined;
 }
 
 type Verb = 'enroll' | 'unenroll';
@@ -210,7 +224,8 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
   if (ready.args.listDetected) {
     io.out(
       detectedAccountLines(base, ready.settings, name) +
-        claudeCodeDetectedLines(claudeCodeLoginNow(ready), io.isInteractive),
+        claudeCodeDetectedLines(claudeCodeLoginNow(ready), io.isInteractive) +
+        codexDetectedLines(codexLoginNow(ready), io.isInteractive),
     );
     return 0;
   }
@@ -227,26 +242,28 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     );
     return fail(1);
   }
-  // An account entry written here covers the coding-agent sessions signed in to
-  // the account as well as its web chats.
+  // An account entry written here covers the coding-agent sessions signed in to the
+  // account: Claude Code for a claude key, Codex threads for a chatgpt key. A claude
+  // entry covers its claude.ai chats as well; a chatgpt entry covers no web chats,
+  // because ChatGPT's web chat carries no account key.
   const entry: AttachmentScopeEntry =
     built.kind === 'account' ? { ...built, codingAgents: true } : built;
-  const loginNow = entry.kind === 'account' ? claudeCodeLoginNow(ready) : undefined;
-  // An account the list already holds for Claude Code sessions is not written
+  const provider =
+    entry.kind === 'account' ? parseWebAccountKey(entry.identity)?.provider : undefined;
+  const loginNow = provider === WEB_ACCOUNT_PROVIDER.Claude ? claudeCodeLoginNow(ready) : undefined;
+  const codexNow = provider === WEB_ACCOUNT_PROVIDER.ChatGpt ? codexLoginNow(ready) : undefined;
+  // An account the list already holds for coding-agent sessions is not written
   // again, so there is nothing to confirm.
   const alreadyHeld = entry.kind === 'account' && holdsCodingAccount(ready, entry.identity);
-  if (
-    loginNow !== undefined &&
-    !alreadyHeld &&
-    !(await personalPlanGuard(ready, entry.identity, loginNow))
-  ) {
-    return fail(1);
+  if (!alreadyHeld) {
+    const notice = personalPlanNotice(ready, entry.identity, loginNow, codexNow);
+    if (notice !== undefined && !(await personalPlanGuard(ready, notice))) return fail(1);
   }
   // Echoed BEFORE the write, through the strip `aka status` uses, so what is
   // about to be enrolled is on screen whatever happens next.
   io.out(`Enrolling ${shown(identity)} with ${name}.\n`);
-  // Set by the updater when the account was already stored for its chats alone
-  // and gained the marker in place rather than being added.
+  // Set by the updater when the account was already stored without the
+  // coding-agent marker and gained it in place rather than being added.
   const marking = { inPlace: false };
   const edit = editScope(base, managed, connection.endpoint, (raw) => {
     const { next, added } = addAttachmentScopeEntries(raw, connection.endpoint, [entry]);
@@ -267,7 +284,7 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     io.out(`Already enrolled with ${name}; nothing changed.\n`);
     return 0;
   }
-  if (marking.inPlace) {
+  if (marking.inPlace && codexNow === undefined) {
     // Its chats, and the captures they had recorded, were enrolled when it was
     // first enrolled; only the coding-agent sessions are added.
     io.out(
@@ -277,10 +294,12 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
     return 0;
   }
   io.out(
-    identity.kind === 'account'
-      ? accountEnrolledLines(edit.committed, name) +
+    codexNow !== undefined
+      ? chatgptEnrolledLines(name) + (codexNow.key === entry.identity ? '' : CODEX_NEVER_SEEN)
+      : identity.kind === 'account'
+        ? accountEnrolledLines(edit.committed, name) +
           codingAgentLines(ready, entry.identity, loginNow)
-      : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
+        : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
   );
   const record = parseAttachmentScope(edit.committed.attachmentScope);
   if (record !== undefined && (!named(record.tenantName) || !named(record.userEmail))) {
@@ -289,11 +308,14 @@ async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promi
         'next `aka attach` starts it empty and what is enrolled would be enrolled again.\n',
     );
   }
-  io.out(
-    identity.kind === 'account'
-      ? earlierAccountActivity(base, edit.committed, edit.changed)
-      : earlierActivity(base, edit.committed, edit.changed),
-  );
+  // A ChatGPT workspace has no earlier captures to queue: its web chat carries no key.
+  if (codexNow === undefined) {
+    io.out(
+      identity.kind === 'account'
+        ? earlierAccountActivity(base, edit.committed, edit.changed)
+        : earlierActivity(base, edit.committed, edit.changed),
+    );
+  }
   return 0;
 }
 
@@ -353,8 +375,8 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   const unreadable = !isAttachmentScopeValid(edit.committed.attachmentScope, connection.endpoint);
   io.out(
     (identity.kind === 'account'
-      ? `Unenrolled ${repository}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
+      ? unenrolledAccountLine(identity.key, repository, name)
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -382,6 +404,8 @@ interface Prepared {
   cwd: () => string;
   /** Where Claude Code keeps its login and settings files. */
   claudePaths: ClaudeLoginPaths;
+  /** Codex's home directory, resolved once; undefined when the environment names none that is usable. */
+  codexHome: string | undefined;
 }
 
 /**
@@ -421,6 +445,7 @@ function preflight(
     name: deploymentNameForTerminal(connection),
     cwd: deps.cwd ?? (() => process.cwd()),
     claudePaths: deps.claudePaths ?? {},
+    codexHome: deps.codexHome ?? codexHomeDir(),
   };
 }
 
@@ -571,6 +596,20 @@ function claudeCodeLoginNow(ready: Prepared): ClaudeCodeLoginView {
   });
 }
 
+/**
+ * The Codex login signed in now, through the view `aka status` prints. Writes
+ * nothing. With no usable Codex home no login file is read, and the view is
+ * `absent`, or `veto` while a key, a token or a gateway is set for Codex.
+ */
+function codexLoginNow(ready: Prepared): CodexLoginView {
+  return codexLoginView({
+    identity: heldIdentityOf(ready),
+    scope: ready.settings.attachmentScope,
+    endpoint: ready.connection.endpoint,
+    codexHome: ready.codexHome,
+  });
+}
+
 /** A login's plan, in a few words, for the user's own terminal. */
 const PLAN_HINT: Record<AccountPlanState, string> = {
   company: 'Team or Enterprise plan',
@@ -599,7 +638,8 @@ const DETECTED_STATE_TEXT: Record<ClaudeCodeLoginState, string> = {
 };
 
 /**
- * Each state off a terminal, where no reason is printed: a coding agent's own
+ * Each state of a login that names an organization, as `--list-detected` says it
+ * off a terminal: only whether the login counts, never why. A coding agent's own
  * terminal output is recorded, and a reason can tell its reader that the user
  * has a personal plan.
  */
@@ -627,9 +667,12 @@ const DETECTED_STATE_WORD: Record<
 const NO_LOGIN = 'none (no login file)';
 
 /**
- * The `--list-detected` section for the Claude Code login signed in now: the key
- * and, on a terminal, its plan hint and state, or off one only whether it counts.
- * Never an email, a name, an organization name or a token.
+ * The `--list-detected` section for the Claude Code login signed in now. A login
+ * that names an organization is listed by its key, with its plan hint and state
+ * on a terminal and only whether it counts off one. With none named the section
+ * says `none (no login file)` for an absent login, on or off a terminal, and
+ * otherwise `none`, with the reason in brackets on a terminal. Never an email, a
+ * name, an organization name or a token.
  */
 function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean): string {
   const heading = 'Claude Code — signed in now:\n';
@@ -644,18 +687,121 @@ function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean
 }
 
 /**
- * Whether to go on enrolling `key` when it is the organization of the Claude Code
- * login signed in now and that login is on a personal plan: asks on a terminal,
- * refuses without one unless `--yes` was given. Says nothing about the plan off a
- * terminal, where a coding agent's own output is recorded.
+ * Each Codex state as `--list-detected` says it on a terminal. `absent` covers a
+ * Codex home that cannot be used as well as a missing login file. While a key, a
+ * token or a gateway is set, a login file that is missing or is not a ChatGPT
+ * login reads as `veto`.
  */
-async function personalPlanGuard(
+const CODEX_STATE_TEXT: Record<CodexLoginState, string> = {
+  manual: 'enrolled',
+  remembered: 'validated automatically',
+  'would-validate': 'would validate',
+  off: 'would validate, but work subscriptions are off on this device',
+  'cap-reached': 'would validate, but this device already recognises the most it keeps',
+  email: 'a different email than the AKA user who attached this device',
+  plan: 'not a workspace plan',
+  'plan-unconfirmed': 'plan not shown — enroll it by hand if this is a work subscription',
+  veto: 'an API key or another provider is in use',
+  'attached-user-unknown': 'not checked until this machine syncs',
+  absent: 'no login file',
+  unreadable: 'not a ChatGPT login this device can read',
+};
+
+/**
+ * Each Codex state of a login that names a workspace, as `--list-detected` says
+ * it off a terminal: only whether the login counts, never why. A coding agent's
+ * own terminal output is recorded, and a reason can say that a login is personal.
+ */
+const CODEX_STATE_WORD: Record<
+  CodexLoginState,
+  'enrolled' | 'validated' | 'would-validate' | 'off' | 'not-recognised'
+> = {
+  manual: 'enrolled',
+  remembered: 'validated',
+  'would-validate': 'would-validate',
+  off: 'off',
+  'cap-reached': 'not-recognised',
+  email: 'not-recognised',
+  plan: 'not-recognised',
+  'plan-unconfirmed': 'not-recognised',
+  veto: 'not-recognised',
+  'attached-user-unknown': 'not-recognised',
+  absent: 'not-recognised',
+  unreadable: 'not-recognised',
+};
+
+/** A Codex login's plan, in a few words, for the user's own terminal. */
+const CODEX_PLAN_HINT: Record<AccountPlanState, string> = {
+  company: 'workspace plan',
+  absent: 'plan not shown',
+  other: 'not a workspace plan',
+};
+
+/**
+ * The `--list-detected` section for the Codex login signed in now. A login that
+ * was read is listed by its key, with its plan hint and state on a terminal and
+ * only whether it counts off one; read while a key, a token or a gateway is set,
+ * it is listed the same way with the state `veto`. With no login read the section
+ * says `none (no login file)` for an absent login, on or off a terminal, and
+ * otherwise `none`, with the reason in brackets on a terminal. Never an email, a
+ * plan string or a token.
+ */
+function codexDetectedLines(view: CodexLoginView, interactive: boolean): string {
+  const heading = 'Codex — signed in now:\n';
+  if (view.key === undefined) {
+    if (view.state === 'absent') return `${heading}  ${NO_LOGIN}\n`;
+    return `${heading}  none${interactive ? ` (${CODEX_STATE_TEXT[view.state]})` : ''}\n`;
+  }
+  const key = printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return interactive
+    ? `${heading}  ${key}  ${CODEX_PLAN_HINT[view.planState ?? 'absent']}  ${CODEX_STATE_TEXT[view.state]}\n`
+    : `${heading}  ${key}  ${CODEX_STATE_WORD[view.state]}\n`;
+}
+
+/** Whether enrolling `key` would enroll the Claude Code login signed in now, which is on a personal plan. */
+function claudeKeyIsPersonalLogin(key: string, login: ClaudeCodeLoginView): boolean {
+  return login.key === key && login.planState === 'other';
+}
+
+/** Whether enrolling `key` would enroll the Codex login signed in now, on a plan that is not a workspace plan. */
+function codexKeyIsPersonalLogin(key: string, login: CodexLoginView): boolean {
+  return login.key === key && login.planState === 'other';
+}
+
+/**
+ * What to say before enrolling `key` when it is the account of the login signed
+ * in now and that login is on a personal plan, or undefined when it is not.
+ */
+function personalPlanNotice(
   ready: Prepared,
   key: string,
-  login: ClaudeCodeLoginView,
-): Promise<boolean> {
-  if (login.key !== key || login.planState !== 'other' || ready.args.yes) return true;
-  const { io, name } = ready;
+  claude: ClaudeCodeLoginView | undefined,
+  codex: CodexLoginView | undefined,
+): string | undefined {
+  const { name } = ready;
+  if (claude !== undefined && claudeKeyIsPersonalLogin(key, claude)) {
+    return (
+      'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
+      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n`
+    );
+  }
+  if (codex !== undefined && codexKeyIsPersonalLogin(key, codex)) {
+    return (
+      'The Codex login signed in now is on a plan that is not a ChatGPT workspace plan.\n' +
+      `Enrolling its workspace sends every new Codex thread signed in to it to ${name}, from any folder.\n`
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Whether to go on enrolling after `notice`: asks on a terminal, refuses without
+ * one unless `--yes` was given. Says nothing about the plan off a terminal, where
+ * a coding agent's own output is recorded.
+ */
+async function personalPlanGuard(ready: Prepared, notice: string): Promise<boolean> {
+  if (ready.args.yes) return true;
+  const { io } = ready;
   if (!io.isInteractive) {
     io.err(
       'aka enroll: that account needs confirming before it is enrolled.\n' +
@@ -663,10 +809,7 @@ async function personalPlanGuard(
     );
     return false;
   }
-  io.out(
-    'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
-      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n`,
-  );
+  io.out(notice);
   const answer = (await io.ask('Enroll it anyway? [y/N]: ')).trim().toLowerCase();
   if (answer === 'y' || answer === 'yes') return true;
   io.out('Nothing was enrolled.\n');
@@ -696,6 +839,20 @@ function codingAgentLines(
       : 'This machine has not seen Claude Code signed in to that organization; its sessions are sent once one is.\n')
   );
 }
+
+/** What a ChatGPT workspace entry written by `aka enroll --account` forwards, from when, and what it misses. */
+function chatgptEnrolledLines(name: string): string {
+  return (
+    'Enrolled. Everything new Codex threads started while signed in to it record is sent to\n' +
+    `${name}, from any folder, with its folder, project and branch names, from the next new thread\n` +
+    'on; nothing recorded before now is sent. A resumed thread, and a login Codex keeps outside\n' +
+    'its login file (in the system keychain, for one), are not sent.\n'
+  );
+}
+
+const CODEX_NEVER_SEEN =
+  'Note: this device has not seen Codex signed in to that workspace. It is sent from the first\n' +
+  'new thread that is.\n';
 
 /**
  * The refusal for a `--work-subscriptions` change where an administrator manages
@@ -758,7 +915,11 @@ const LEARNED_BUSY =
   'The work accounts this device had learned could not be cleared now because the record is busy; ' +
   'running this command again clears them.\n';
 
-/** Whether the stored list for this deployment holds `key` as an account entry that covers Claude Code sessions. */
+/**
+ * Whether the stored list for this deployment holds `key` as an account entry that
+ * covers the coding-agent sessions signed in to it: Claude Code for a claude key,
+ * Codex threads for a chatgpt key.
+ */
 function holdsCodingAccount(ready: Prepared, key: string): boolean {
   const { attachmentScope } = ready.settings;
   if (!isAttachmentScopeValid(attachmentScope, ready.connection.endpoint)) return false;
@@ -833,8 +994,19 @@ function onLines(name: string): string {
     'environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it ' +
     '(no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of ' +
     'the activity of a recognised session or of one signed in to an account you enroll by hand.\n' +
-    'A work account is recognised again the next time a session signed in to it runs. Rows recorded under it ' +
-    'before you turned recognition off, and not yet sent, are sent once it is recognised again.\n'
+    'A new Codex thread signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace, under the same email ' +
+    "as your AKA account, with its login saved in Codex's login file and OpenAI as the provider, sends everything it " +
+    'records, from any folder, with its folder, project and branch names. A resumed thread follows ' +
+    'the repository rule: it is sent only from an enrolled repository.\n' +
+    "For Codex the device checks the same way, locally: it reads Codex's login file, the first line of the thread's own log " +
+    'and the environment variables that choose the account or provider, and compares the signed-in email with your AKA ' +
+    'account. The check sends none of it (no email, plan or workspace id), though the token usage and tool calls read from ' +
+    "that thread's log are sent with the rest of the activity of a recognised thread or of one signed in to a workspace you " +
+    'enroll by hand.\n' +
+    'A Claude Code session signed in to a work account is recognised again at its next event. A Codex thread ' +
+    'signed in to a work account is recognised again at its next event if it started while recognition was on, ' +
+    'and not if it started while it was off. Rows recorded under a work account before you turned recognition ' +
+    'off, and not yet sent, are sent once it is recognised again.\n'
   );
 }
 
@@ -848,6 +1020,35 @@ function learnedHere(ready: Prepared): readonly string[] {
 function enrolledByHand(ready: Prepared, matches: readonly string[]): boolean {
   const record = parseAttachmentScope(ready.settings.attachmentScope);
   return record?.entries.some((entry) => matches.includes(entry.identity)) ?? false;
+}
+
+/**
+ * The first line of an unenroll result for an account, by the provider its key
+ * names. Only a claude key has claude.ai chats to check; a chatgpt entry covers
+ * Codex threads alone.
+ */
+const UNENROLLED_ACCOUNT_LINE: Record<
+  WebAccountProvider,
+  (removed: string, name: string) => string
+> = {
+  [WEB_ACCOUNT_PROVIDER.Claude]: (removed, name) =>
+    `Unenrolled ${removed}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`,
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: (removed, name) =>
+    `Unenrolled ${removed}. From now on, Codex threads signed in to it are not sent to ${name} by this entry.\n`,
+};
+
+/**
+ * `aka unenroll` also takes the text of an entry stored under something that is not
+ * an account key (`chatgpt:payments`, which `aka enroll` refuses): that text gets
+ * the Codex line when it begins `chatgpt:` and the Claude line otherwise.
+ */
+function unenrolledAccountLine(key: string, removed: string, name: string): string {
+  const provider =
+    parseWebAccountKey(key)?.provider ??
+    (key.startsWith(`${WEB_ACCOUNT_PROVIDER.ChatGpt}:`)
+      ? WEB_ACCOUNT_PROVIDER.ChatGpt
+      : WEB_ACCOUNT_PROVIDER.Claude);
+  return UNENROLLED_ACCOUNT_LINE[provider](removed, name);
 }
 
 /** What taking an account out of the list means for the sessions signed in to it. */
@@ -995,16 +1196,23 @@ const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
 };
 
 /**
- * The web chat account `--account` names.
+ * The account `--account` names: a Claude account, whose key the browser
+ * extension stamps, or a ChatGPT workspace, whose key the Codex login supplies.
+ * For `unenroll`, a stored entry of either kind.
  *
- * Normalized to the stored form (normalizeWebAccountKey): the id lower-cased and
- * the whitespace around it dropped, so a key copied in another case enrolls the
- * account the extension stamps. Anything that is not an account key is refused
- * by name, never stored: a key the host can never stamp would enroll nothing.
+ * The text is trimmed first, and everything below is about the trimmed text. Text
+ * beginning `agent:`, in any case, never gets here: namedRepository refuses it for
+ * both verbs, in a message that does not repeat it.
  *
- * `aka unenroll --account` also matches the text exactly as typed, the rule
- * storedIdentity gives `--repo`: an entry a newer build stored under another
- * rule must still be removable.
+ * `aka enroll --account` normalizes the key to the stored form
+ * (normalizeWebAccountKey), lower-cased, so a key copied in another case enrolls
+ * the same account. Anything that is not an account key is refused, naming the
+ * trimmed text, and never stored.
+ *
+ * `aka unenroll --account` matches the normalized key and also the trimmed text in
+ * the case typed, the rule storedIdentity gives `--repo`, and takes text that is
+ * not an account key as it stands: an entry stored under a different
+ * normalization form must still be removable.
  */
 function accountIdentity(verb: Verb, input: string): Identity {
   const typed = input.trim();
@@ -1017,8 +1225,9 @@ function accountIdentity(verb: Verb, input: string): Identity {
     return {
       kind: 'refused',
       line:
-        `aka ${verb}: ${shownInput} is not a web chat account key. A claude.ai account is keyed\n` +
-        '`claude:<organization id>`; `aka enroll --list-detected` lists the ones seen here.',
+        `aka ${verb}: ${shownInput} is not a web chat account key.\n` +
+        'An account key is `claude:<organization-id>` or `chatgpt:<workspace-id>`, as\n' +
+        '`aka enroll --list-detected` shows them.',
     };
   }
   const provider = parseWebAccountKey(key)?.provider;
@@ -1035,9 +1244,9 @@ function accountIdentity(verb: Verb, input: string): Identity {
  * for byte, never a key enrollableRepoKey would accept. `[path]` stores the key
  * the checkout's attribution produced without re-judging it, and that may be one
  * the validator refuses (a single-segment `host:repo.git` remote keys as
- * `host/repo`), or one a newer build stored under another rule. Routed through
- * the validator, such an entry could be removed only from inside its checkout,
- * or by detaching. A clone URL also matches the key it canonicalises to.
+ * `host/repo`), or one stored under a different normalization form. Routed
+ * through the validator, such an entry could be removed only from inside its
+ * checkout, or by detaching. A clone URL also matches the key it canonicalises to.
  */
 function storedIdentity(input: string): Identity {
   const typed = input.trim();
@@ -1420,9 +1629,9 @@ function earlierActivity(
     queuedLines(queued) +
     'The history sync also sends the rest of its activity recorded before this machine attached\n' +
     '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
-    'attaching and enrolling, other than those captures and what a Claude Code session of a\n' +
-    'recognised work subscription or of an account enrolled by hand there already sent, stays\n' +
-    'on this machine.\n'
+    'attaching and enrolling, other than those captures and what a Claude Code or Codex session\n' +
+    'of a recognised work subscription or of an account enrolled by hand there already sent,\n' +
+    'stays on this machine.\n'
   );
 }
 

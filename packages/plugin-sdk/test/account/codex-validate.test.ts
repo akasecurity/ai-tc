@@ -3,9 +3,17 @@ import type * as Fs from 'node:fs';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import {
+  bindingHashOf,
+  readBoundAttachedIdentity,
+  recordValidatedWorkAccount,
+  writeAttachedIdentity,
+} from '@akasecurity/persistence';
+import { ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AccountContext } from '../../src/account/account-check.ts';
+import { accountContextFor } from '../../src/account/account-check.ts';
 import type { CodexAccountEnv } from '../../src/account/account-env.ts';
 import { CODEX_ACCOUNT_ENV_NAMES } from '../../src/account/account-env.ts';
 import { readCodexHead } from '../../src/account/codex-head.ts';
@@ -43,6 +51,16 @@ vi.mock('node:fs', async (importOriginal) => {
     },
   };
 });
+
+const ENDPOINT = 'https://plane.example.com';
+const apiKey = `test-${randomUUID()}`;
+// `as const`: the credential readers take the version as the literal `2`.
+const CREDENTIAL = {
+  specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  mode: 'scoped',
+  endpoint: ENDPOINT,
+  apiKey,
+} as const;
 
 const COMPANY = [
   'team',
@@ -136,12 +154,52 @@ function later(ctx: AccountContext = machine.context(), at = T0 + 60_000): Codex
   });
 }
 
-/** A thread that started validated, as a caller that then learned its key sees it. */
+/**
+ * The context a hook reads for the attachment recorded in the machine's data
+ * directory: the bound identity record, built into a context the way the status
+ * view builds it.
+ */
+function recordedContext(): AccountContext {
+  const identity = readBoundAttachedIdentity(machine.dataDir, ENDPOINT, CREDENTIAL);
+  if (identity === undefined)
+    throw new Error('the identity record does not hold for the credential');
+  const ctx = accountContextFor({
+    identity,
+    scope: undefined,
+    bindingHash: bindingHashOf(ENDPOINT, identity.credentialDigest, identity.attachedUserDigest),
+    inScope: () => false,
+  });
+  if (ctx === undefined) throw new Error('no context was built from the identity record');
+  return ctx;
+}
+
+/**
+ * A thread that started validated under a recorded attachment, and the context a
+ * later hook reads once the record holds its key as a learned work account.
+ */
 function workThread(): AccountContext {
+  expect(
+    writeAttachedIdentity(machine.dataDir, {
+      endpoint: ENDPOINT,
+      apiKey,
+      tenantName: 'Acme',
+      userEmail: machine.email,
+    }),
+  ).toBe(true);
   machine.writeHead();
   machine.writeAuth();
-  expect(start('startup').check).toMatchObject({ key: workKey(), basis: 'validated' });
-  return machine.context({ learned: [workKey()] });
+  expect(start('startup', recordedContext()).check).toMatchObject({
+    key: workKey(),
+    basis: 'validated',
+  });
+  expect(
+    recordValidatedWorkAccount(machine.dataDir, {
+      endpoint: ENDPOINT,
+      credential: CREDENTIAL,
+      key: workKey(),
+    }),
+  ).toBe('written');
+  return recordedContext();
 }
 
 describe('codexSessionAccount', () => {
@@ -455,7 +513,7 @@ describe('a login file change mid-thread', () => {
         expect(later(ctx, T0 + 120_000).check).toMatchObject({ key: workKey() });
       } else {
         expect(result.check).toEqual(expected);
-        expect(lines().at(-1)).toMatchObject({ kind: 'sticky', bd: machine.bindingHash });
+        expect(lines().at(-1)).toMatchObject({ kind: 'sticky', bd: ctx.bindingHash });
         expect(later(ctx, T0 + 120_000).check).toEqual({ none: 'auth-changed' });
         const added = stateBytes().slice(before.length);
         expect(added).not.toContain('chatgpt');
@@ -494,12 +552,12 @@ describe('a login file change mid-thread', () => {
     const ctx = workThread();
     appendObservation(machine.stateDir, machine.sessionId, {
       t: T0 + 1,
-      bd: machine.bindingHash,
+      bd: ctx.bindingHash,
       s: 'none',
     });
     appendObservation(machine.stateDir, machine.sessionId, {
       t: T0 + 2,
-      bd: machine.bindingHash,
+      bd: ctx.bindingHash,
       s: sessionAccountHash(workKey()),
       fp: codexAuthFingerprint(machine.codexHome),
     });
@@ -508,10 +566,7 @@ describe('a login file change mid-thread', () => {
 
   it('ignores the lines of another binding', () => {
     const ctx = workThread();
-    const other = machine.context({
-      bindingHash: randomBytes(8).toString('hex'),
-      learned: [workKey()],
-    });
+    const other = { ...ctx, bindingHash: randomBytes(8).toString('hex') };
     expect(later(other).check).toEqual({ none: 'no-session-account' });
     expect(later(ctx).check).toMatchObject({ key: workKey() });
   });

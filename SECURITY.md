@@ -194,8 +194,9 @@ response finishes in a session that is already running, still at most hourly.
 The report carries no event content and names no repository. The deployment
 therefore learns when the tool is in use anywhere on this machine.
 
-On a personal device, one kind of session forwards beyond what is enrolled. A
-Claude Code session counts as a work subscription when it is signed in through
+On a personal device, Claude Code and Codex sessions signed in to a work
+subscription forward beyond what is enrolled. A Claude Code session counts
+as a work subscription when it is signed in through
 claude.ai to a Team or Enterprise plan under the same email as the AKA account
 that attached the device. Such a session sends everything it records from its
 first reply on, from any folder, with that folder's project and branch names,
@@ -224,12 +225,51 @@ your organization's model restrictions apply only to them. A machine whose
 connection an administrator manages attaches machine-wide only, so it has no
 personal-device mode and no such opt-out.
 
+A Codex thread counts as a work subscription when it is new and signed in with
+ChatGPT to a Business, Team, Enterprise or Edu workspace under the same email
+as the AKA account that attached the device, with its login saved in Codex's
+login file and OpenAI as the provider. Such a thread sends everything it
+records, from any folder, with that folder's project and branch names, and your
+organization's prohibited models are refused in any folder of it. To tell
+whether a thread is one, the device reads Codex's login file, the first line of
+the thread's own log and the environment variables that choose the account or
+provider, and compares the signed-in email with the account that attached the
+device and the login's workspace with the one that created the thread. The
+check sends none of what it reads, though the token usage and tool calls read
+from that thread's log are forwarded with the rest of the activity of a
+recognised thread or of one signed in to a workspace enrolled by hand. A token
+refresh keeps a recognised thread forwarding; a switch to another workspace or
+email, to a plan that does not count, or to another login mode ends it for the
+rest of that thread. A resumed thread, a personal plan, a service account,
+another email, an API key or access token (in the environment or as the login),
+another provider or a gateway, a thread whose log does not name the login's
+workspace as its creator, and a login Codex keeps outside its login file (in
+the system keychain, for one) follow the repository rule.
+A Codex thread whose first log line is not on disk when it starts is checked
+again at its next prompt or tool call: its session record and the token usage
+and tool calls read from its log follow the repository rule, and its prompts,
+tool calls and results forward from any folder from that check on if the
+workspace is then recognised or enrolled by hand; if the line is still missing
+then, it follows the repository rule for the rest of the thread.
+`aka enroll --account` enrolls by hand a workspace the device cannot recognise,
+and the Codex threads of a workspace enrolled that way then forward whatever
+the plan or email, though not a resumed thread, one under an API key or access
+token, one on another provider or a gateway, or one whose login Codex keeps
+outside its login file; a switch of workspace or login mode ends them.
+`aka unenroll --work-subscriptions` turns the recognition of Codex threads off
+too and `aka enroll --work-subscriptions` turns it back on; a workspace
+enrolled by hand still forwards while it is off (`aka unenroll --account` stops
+it). Recognising a Codex thread reads Codex's login token only in memory, for
+the claims that give its email, plan and workspace: the token is never kept,
+logged, printed or sent, and the recognition never copies the login file into
+the local store.
+
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll`, in Claude Code sessions signed in to a recognised work
+`aka enroll`, in Claude Code and Codex sessions signed in to a recognised work
 subscription (above) or to an account enrolled by hand with
 `aka enroll --account` and, from the browser extension, the replies in a
 claude.ai account enrolled with `aka enroll --account`, with their tool calls

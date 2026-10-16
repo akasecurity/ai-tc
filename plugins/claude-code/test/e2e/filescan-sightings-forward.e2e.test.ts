@@ -23,6 +23,7 @@ import { SIGHTING_SHARE_CONSENT_VERSION, SIGHTING_SHARE_PAYLOAD_NOTE } from '@ak
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { hostEnv, tempHomeEnv } from '../helpers/run-hook.ts';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'filescan.js');
@@ -78,7 +79,7 @@ describe('/aka:scan credential sightings', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).not.toContain(VALUE);
+    expectNoEchoOf(result.stdout, VALUE);
     const lines = result.stdout.trimEnd().split('\n');
     expect(lines.at(-2)).toBe(
       '  Credential sightings: not shared — control plane unreachable; the next scan sends ' +

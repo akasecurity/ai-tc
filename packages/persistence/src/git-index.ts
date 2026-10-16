@@ -35,31 +35,35 @@ export function parseGitIndex(buf: Buffer): Set<string> | undefined {
   const count = buf.readUInt32BE(8);
   const paths = new Set<string>();
   let at = HEADER_BYTES;
-  let previous = '';
+  let previous: Buffer = Buffer.alloc(0);
   for (let i = 0; i < count; i++) {
     if (at + FIXED_ENTRY_BYTES > buf.length) return undefined;
     const flags = buf.readUInt16BE(at + 60);
     const fixed =
       version >= 3 && (flags & EXTENDED_FLAG) !== 0 ? FIXED_ENTRY_BYTES + 2 : FIXED_ENTRY_BYTES;
     const nameStart = at + fixed;
-    let path: string;
+    let name: Buffer;
     if (version === 4) {
+      // The strip count is in bytes and can split a multi-byte character, so
+      // the prefix stays raw bytes until the whole path is assembled.
       const strip = readVarint(buf, nameStart);
       if (strip === undefined || strip.value > previous.length) return undefined;
       const end = buf.indexOf(0, strip.next);
       if (end === -1) return undefined;
-      path =
-        previous.slice(0, previous.length - strip.value) + buf.toString('utf8', strip.next, end);
+      name = Buffer.concat([
+        previous.subarray(0, previous.length - strip.value),
+        buf.subarray(strip.next, end),
+      ]);
       at = end + 1;
     } else {
       const end = buf.indexOf(0, nameStart);
       if (end === -1) return undefined;
-      path = buf.toString('utf8', nameStart, end);
+      name = buf.subarray(nameStart, end);
       at += (fixed + (end - nameStart) + 8) & ~7;
     }
     if (at > buf.length) return undefined;
-    paths.add(path);
-    previous = path;
+    paths.add(name.toString('utf8'));
+    previous = name;
   }
   return paths;
 }

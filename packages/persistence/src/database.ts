@@ -117,6 +117,12 @@ export const UNSAFE_TEST_ONLY_RAW_HANDLE: unique symbol = Symbol(
   'aka.persistence.unsafeTestOnlyRawHandle',
 );
 
+/** A value held in the vault, and the pointer stored in its place. */
+export interface VaultedValue {
+  raw: string;
+  pointer: string;
+}
+
 /**
  * The local SQLite store under <dir>/aka.db — the writer of events/findings
  * for the plugin/CLI. Uses the Node 24+ builtin node:sqlite (no native dep,
@@ -127,12 +133,6 @@ export const UNSAFE_TEST_ONLY_RAW_HANDLE: unique symbol = Symbol(
  * `dir` is the resolved data directory (e.g. ~/.aka/data, computed by the SDK's
  * layout helpers) — persistence is layout-agnostic and only needs the path.
  */
-/** A value held in the vault, and the pointer stored in its place. */
-export interface VaultedValue {
-  raw: string;
-  pointer: string;
-}
-
 export interface LocalDatabase {
   readonly events: SqliteEventsRepository;
   readonly findings: SqliteFindingsRepository;

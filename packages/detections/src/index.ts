@@ -1,9 +1,5 @@
 export type { TokenizedSecretSpan } from './egress/credential-refs.ts';
-export {
-  enclosingCall,
-  variableReadsIn,
-  withLiteralCredentialRefs,
-} from './egress/credential-refs.ts';
+export { withLiteralCredentialRefs } from './egress/credential-refs.ts';
 export type { RawEndpointHit } from './egress/extract.ts';
 export {
   EGRESS_CODE_EXTENSIONS,

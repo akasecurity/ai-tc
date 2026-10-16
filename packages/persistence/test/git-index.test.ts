@@ -22,6 +22,16 @@ describe('parseGitIndex', () => {
     expect(parseGitIndex(encodeIndex(paths, version))).toEqual(new Set(paths));
   });
 
+  it('reads a version 4 index whose shared prefixes cut through non-ASCII paths', () => {
+    const paths = ['café/menu.ts', 'café/zz.ts', 'x.ts', 'xé.ts', 'y.ts'];
+    expect(parseGitIndex(encodeIndex(paths, 4))).toEqual(new Set(paths));
+  });
+
+  it('reads a version 4 entry whose strip count spans more than one varint byte', () => {
+    const paths = [`${'a'.repeat(200)}.ts`, 'b.ts'];
+    expect(parseGitIndex(encodeIndex(paths, 4))).toEqual(new Set(paths));
+  });
+
   it('reads an entry carrying extended flags', () => {
     expect(parseGitIndex(encodeIndex(['a.ts', 'b.ts'], 3, true))).toEqual(
       new Set(['a.ts', 'b.ts']),

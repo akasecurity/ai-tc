@@ -18,7 +18,8 @@ const SIGHTING_SENDERS: readonly string[] = [];
 // Modules that only carry a sightings request they are handed. This package
 // cannot read the sharing settings, so the gate is read by the caller:
 // forwardCredentialSightings in @akasecurity/persistence, immediately before it
-// calls the sender.
+// calls the sender. Every caller outside this package hands the sender to that
+// forwarder, which persistence's sighting-send-path test pins.
 const SIGHTING_TRANSPORTS: readonly string[] = ['client.ts', 'index.ts', 'sightings-sender.ts'];
 
 // Modules that fetch or hold the sighting key and send no sightings. A module on
@@ -44,6 +45,12 @@ describe('credential-sighting senders under src/', () => {
 
   it('has every listed key reader send no sightings', () => {
     expect(keyReadersThatSend(sources, SIGHTING_KEY_READERS)).toEqual([]);
+  });
+
+  it('calls the sightings route only from the sender a forwarder is handed', () => {
+    expect(
+      sources.filter((s) => /\.recordCredentialSightings\s*\(/.test(s.text)).map((s) => s.path),
+    ).toEqual(['sightings-sender.ts']);
   });
 
   it('has every listed sender consult the sharing gate', () => {

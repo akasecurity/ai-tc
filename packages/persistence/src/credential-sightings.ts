@@ -30,7 +30,7 @@ import { settingsDir } from './local-layout.ts';
 import { readWorkspaceSettings } from './settings.ts';
 import { readSightingSharing } from './sighting-sharing.ts';
 import type { SightingKey } from './vault/sighting-keys.ts';
-import { readSightingKeys } from './vault/sighting-keys.ts';
+import { readSightingKeys, sightingKeyEndpointFingerprint } from './vault/sighting-keys.ts';
 
 /** One secret a scan found, already reduced to its token. */
 export interface ScanSighting {
@@ -73,7 +73,8 @@ export interface SightingShareOptions {
 }
 
 export type SightingSharePlan =
-  { ok: true; key: SightingKey } | { ok: false; outcome: CredentialSightingsOutcome };
+  | { ok: true; key: SightingKey; endpointFingerprint: string }
+  | { ok: false; outcome: CredentialSightingsOutcome };
 
 /**
  * Whether a scan about to run should compute sighting tokens, and the key to
@@ -95,12 +96,17 @@ export function planSightingShare(
       return { ok: false, outcome: { status: 'not-shared', reason: 'opt-out' } };
     }
     const keys = readSightingKeys(base);
-    if (keys === undefined) {
+    const endpoint = readWorkspaceSettings(base).controlPlane?.endpoint;
+    if (keys === undefined || endpoint === undefined) {
       return { ok: false, outcome: { status: 'not-shared', reason: 'no-key' } };
     }
-    return { ok: true, key: keys.current };
+    return {
+      ok: true,
+      key: keys.current,
+      endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
+    };
   } catch {
-    return { ok: false, outcome: { status: 'not-shared', reason: 'no-key' } };
+    return { ok: false, outcome: { status: 'not-shared', reason: 'local-error' } };
   }
 }
 
@@ -168,6 +174,20 @@ function inScope(
   );
 }
 
+// A sender that throws is read as a failed send, so the outer catch is left
+// with faults on this machine.
+async function sendBatch(
+  send: CredentialSightingsSend,
+  target: CredentialSightingsConnection,
+  request: CredentialSightingsRequest,
+): ReturnType<CredentialSightingsSend> {
+  try {
+    return await send(target, request);
+  } catch {
+    return { ok: false, kind: 'unreachable' };
+  }
+}
+
 /**
  * Send a scan's sightings for one project. Sharing is read again here,
  * immediately before sending, and nothing is sent unless it is on. A scoped
@@ -210,11 +230,12 @@ export async function forwardCredentialSightings(
     const isTracked = createTrackedFileLookup();
 
     const byKey = new Map<string, CredentialSighting>();
+    const keptKeys = new Set<string>();
     for (const sighting of input.sightings) {
       const locationClass = sightingLocationClass(sighting.file, project.root, home);
-      if (locationClass === undefined) continue;
-      if (!inScope(resolved, project.projectKey, sighting)) {
-        keptLocal++;
+      if (locationClass === undefined || !inScope(resolved, project.projectKey, sighting)) {
+        keptKeys.add(`${sighting.token}\u0000${locationClass ?? ''}`);
+        keptLocal = keptKeys.size;
         continue;
       }
       const gitTracked = isTracked(sighting.file);
@@ -245,7 +266,7 @@ export async function forwardCredentialSightings(
     const target = { endpoint: connection.endpoint, apiKey: credential.apiKey };
     for (let start = 0; start < wire.length; start += CREDENTIAL_SIGHTINGS_BATCH_MAX) {
       const batch = wire.slice(start, start + CREDENTIAL_SIGHTINGS_BATCH_MAX);
-      const result = await deps.send(target, { sightings: batch, scanId });
+      const result = await sendBatch(deps.send, target, { sightings: batch, scanId });
       if (!result.ok) {
         return { status: 'sent', shared, keptLocal, unsent: pending, failure: result.kind };
       }
@@ -254,6 +275,8 @@ export async function forwardCredentialSightings(
     }
     return { status: 'sent', shared, keptLocal, unsent: 0 };
   } catch {
-    return { status: 'sent', shared, keptLocal, unsent: pending, failure: 'unreachable' };
+    return shared === 0
+      ? { status: 'not-shared', reason: 'local-error' }
+      : { status: 'sent', shared, keptLocal, unsent: pending, failure: 'unreachable' };
   }
 }

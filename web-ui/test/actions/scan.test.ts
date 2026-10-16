@@ -663,7 +663,7 @@ describe('runScan — credential sightings', () => {
           variableName: 'AWS_ACCESS_KEY_ID',
           locationClass: 'project-file',
         });
-        expect(req?.body).not.toContain(VALUE);
+        expectNoEchoOf(req?.body, VALUE);
         // The directory's basename is the project's display name and crosses by
         // design; nothing above it does.
         expectNoEchoOf(req?.body ?? '', dirname(target));

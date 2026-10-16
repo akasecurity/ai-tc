@@ -62,17 +62,17 @@ afterEach(() => {
   removeTrees([home, repo]);
 });
 
-function attach(consent: boolean): PluginConfig {
+function attach(consent: boolean, endpoint = ENDPOINT): PluginConfig {
   applyOnboarding(
     {
       runMode: 'attached',
-      controlPlane: { endpoint: ENDPOINT, attachedAt: MINTED_AT },
+      controlPlane: { endpoint, attachedAt: MINTED_AT },
       ...(consent
         ? {
             sightingShareConsent: {
               acknowledgedAt: new Date().toISOString(),
               version: 2,
-              endpoint: ENDPOINT,
+              endpoint,
             },
           }
         : {}),
@@ -84,7 +84,7 @@ function attach(consent: boolean): PluginConfig {
     join(home, 'settings', 'control-plane-credential.json'),
     JSON.stringify({
       specVersion: 1,
-      endpoint: ENDPOINT,
+      endpoint,
       apiKey: ['test', 'plugin', 'key'].join('-'),
       mintedAt: MINTED_AT,
     }),
@@ -98,7 +98,7 @@ function attach(consent: boolean): PluginConfig {
       algorithm: 'hmac-sha256',
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
-      endpointFingerprint: createHash('sha256').update(ENDPOINT).digest('hex'),
+      endpointFingerprint: createHash('sha256').update(endpoint).digest('hex'),
     }),
     { mode: 0o600 },
   );
@@ -171,10 +171,22 @@ describe('scanWorktree — credential sightings', () => {
       sightingToken(KEY, SOURCE_VALUE),
     );
 
+    expect(delivered.requests.flatMap((r) => r.sightings.map((s) => s.token))).toContain(
+      sightingToken(KEY, DOTENV_VALUE),
+    );
+
     const again = recorder();
     await scanWorktree(config, options(again.send));
-    expect(again.requests.flatMap((r) => r.sightings.map((s) => s.token))).not.toContain(
-      sightingToken(KEY, SOURCE_VALUE),
+    expect(again.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual([]);
+  });
+
+  it('reads unchanged files again once attached to another deployment', async () => {
+    await scanWorktree(attach(true), options(recorder().send));
+
+    const elsewhere = recorder();
+    await scanWorktree(attach(true, 'https://other.example'), options(elsewhere.send));
+    expect(elsewhere.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual(
+      expect.arrayContaining([sightingToken(KEY, SOURCE_VALUE), sightingToken(KEY, DOTENV_VALUE)]),
     );
   });
 
@@ -190,7 +202,7 @@ describe('scanWorktree — credential sightings', () => {
     );
   });
 
-  it('sends nothing, and reads no dotenv file, on a machine that does not share', async () => {
+  it('sends nothing on a machine that does not share', async () => {
     const config = attach(false);
     const rec = recorder();
 

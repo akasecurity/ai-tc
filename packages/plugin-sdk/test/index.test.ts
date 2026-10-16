@@ -227,6 +227,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'scanText',
   'scopeKeyMemo',
   'secretRulePartition',
+  'secretSightingsOf',
   'sessionRootScopeKey',
   'settingsDir',
   'severityFloorPosture',

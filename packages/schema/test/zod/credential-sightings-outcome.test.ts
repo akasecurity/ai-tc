@@ -48,10 +48,10 @@ describe('credentialSightingsLine', () => {
 
   it('names the sightings a scoped attachment kept on the machine', () => {
     expect(credentialSightingsLine(sent(2, { keptLocal: 1 }))).toContain(
-      '2 shared with your organization; 1 kept on this machine (not enrolled).',
+      '2 shared with your organization; 1 kept on this machine (not enrolled, or outside the project).',
     );
     expect(credentialSightingsLine(sent(0, { keptLocal: 4 }))).toContain(
-      'not shared — the project is not enrolled for this attachment.',
+      'not shared — kept on this machine (not enrolled, or outside the project).',
     );
   });
 
@@ -77,6 +77,9 @@ describe('credentialSightingsLine', () => {
     );
     expect(credentialSightingsLine({ status: 'not-shared', reason: 'no-credential' })).toContain(
       're-attach with `aka attach`',
+    );
+    expect(credentialSightingsLine({ status: 'not-shared', reason: 'local-error' })).toContain(
+      'not shared — they could not be prepared on this machine; the next scan tries again.',
     );
   });
 

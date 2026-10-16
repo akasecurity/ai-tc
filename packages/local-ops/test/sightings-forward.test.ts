@@ -275,4 +275,22 @@ describe('forwardScanSightings', () => {
 
     expect(outcome).toMatchObject({ status: 'sent', shared: 0, failure: 'unreachable' });
   });
+
+  it('reports a target it cannot resolve as a local error, not an unreachable deployment', async () => {
+    writeFileSync(join(root, 'config.ts'), `const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
+    sharingAttachment('machine');
+    const result = await scan();
+    let sent = 0;
+
+    const outcome = await forwardScanSightings(base, join(root, 'gone'), result, {
+      send: () => {
+        sent += 1;
+        return Promise.resolve({ ok: true, accepted: 0 });
+      },
+      managedSettings: null,
+    });
+
+    expect(outcome).toEqual({ status: 'not-shared', reason: 'local-error' });
+    expect(sent).toBe(0);
+  });
 });

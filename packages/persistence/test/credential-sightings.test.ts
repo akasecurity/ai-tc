@@ -31,6 +31,7 @@ import {
   sightingKeysOf,
 } from '../src/vault/sighting-keys.ts';
 import { sightingToken } from '../src/vault/sighting-token.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const store = useTempStore('aka-credential-sightings-');
@@ -338,7 +339,9 @@ describe('forwardCredentialSightings', () => {
     expect(body?.scanId).toMatch(/^[0-9a-f-]{36}$/);
 
     const wire = JSON.stringify(rec.requests);
-    for (const forbidden of [VALUE_A, VALUE_B, root, 'config.ts', 'deploy.yml', REPO_URL]) {
+    expectNoEchoOf(wire, VALUE_A);
+    expectNoEchoOf(wire, VALUE_B);
+    for (const forbidden of [root, 'config.ts', 'deploy.yml', REPO_URL]) {
       expect(wire).not.toContain(forbidden);
     }
   });
@@ -441,7 +444,7 @@ describe('forwardCredentialSightings', () => {
     expect(JSON.stringify(rec.requests)).not.toContain(root);
   });
 
-  it('classes a home dotfile and drops a file it cannot class', async () => {
+  it('classes a home dotfile and keeps a file it cannot class', async () => {
     sharingMachine();
     const home = tempDir('aka-home-');
     mkdirSync(join(home, '.aws'));
@@ -459,7 +462,7 @@ describe('forwardCredentialSightings', () => {
       { ...deps(rec.send), home },
     );
 
-    expect(outcome).toMatchObject({ shared: 1, keptLocal: 0 });
+    expect(outcome).toMatchObject({ shared: 1, keptLocal: 1 });
     expect(rec.requests[0]?.sightings.map((s) => s.locationClass)).toEqual(['home-dotfile']);
   });
 
@@ -606,6 +609,29 @@ describe('forwardCredentialSightings', () => {
     expect(rec.requests[0]?.sightings.map((s) => s.token)).toEqual([
       sightingToken(independentKey, VALUE_A),
     ]);
+  });
+
+  it('counts a value kept local once however many files hold it', async () => {
+    attach('scoped', ['github.com/acme/other']);
+    consent();
+    holdKey();
+    const root = tempDir('aka-project-');
+    const rec = recorder();
+
+    const outcome = await forwardCredentialSightings(
+      store.home,
+      {
+        project: project(root),
+        sightings: [
+          sightingIn(join(root, 'a.ts'), VALUE_A),
+          sightingIn(join(root, 'b.ts'), VALUE_A),
+          sightingIn(join(root, 'c.ts'), VALUE_A),
+        ],
+      },
+      deps(rec.send),
+    );
+
+    expect(outcome).toEqual({ status: 'sent', shared: 0, keptLocal: 1, unsent: 0 });
   });
 
   it('keeps a path-keyed project on a scoped attachment', async () => {

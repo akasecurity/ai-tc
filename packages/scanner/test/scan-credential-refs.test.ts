@@ -136,11 +136,10 @@ describe('scanWorktree — credential references', () => {
     expect(JSON.stringify(chargeHit()?.credentialRefs)).not.toContain(INSIDE);
   });
 
-  it('computes no literal while this machine does not share sightings', async () => {
+  it('searches for no credential references while this machine does not share sightings', async () => {
     await scan(attach(false));
 
-    expect(chargeHit()?.credentialRefs).toEqual([
-      { kind: 'variable', variableName: 'STRIPE_SECRET_KEY' },
-    ]);
+    expect(chargeHit()).toBeDefined();
+    expect(chargeHit()?.credentialRefs).toBeUndefined();
   });
 });

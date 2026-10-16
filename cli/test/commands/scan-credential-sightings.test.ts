@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../src/commands/scan.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
 
 // Assembled at runtime so no key-shaped literal sits in this file.
@@ -140,7 +141,8 @@ describe('aka scan — credential sightings', () => {
       },
     ]);
     const wire = JSON.stringify(rec.requests);
-    for (const forbidden of [VALUE, root, 'deploy.ts', VALUE.slice(0, 4) + '*']) {
+    expectNoEchoOf(wire, VALUE);
+    for (const forbidden of [root, 'deploy.ts', VALUE.slice(0, 4) + '*']) {
       expect(wire).not.toContain(forbidden);
     }
     expect(out.trimEnd().split('\n').at(-1)).toBe(

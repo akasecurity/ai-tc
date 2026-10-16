@@ -372,11 +372,19 @@ export function redactSnippet(line: string, anchor = 0): string {
   return snippetWindow(redactedLineOf(line), anchor);
 }
 
+export interface ExtractEgressOptions {
+  /**
+   * Find each hit's enclosing call and the environment variables it reads.
+   * Only a scan that may send credential references has a use for them.
+   */
+  calls?: boolean;
+}
+
 /**
  * Pull every URL literal and bare public IPv4 reference out of one file's
  * text, sorted ascending by line, then by url (never by match order).
  */
-export function extractEgress(text: string): RawEndpointHit[] {
+export function extractEgress(text: string, opts: ExtractEgressOptions = {}): RawEndpointHit[] {
   const lineStarts = lineStartOffsets(text);
   const urlSpans: (readonly [number, number])[] = [];
   const hits: RawEndpointHit[] = [];
@@ -436,7 +444,9 @@ export function extractEgress(text: string): RawEndpointHit[] {
     hitEnds.push(start + match[0].length);
   }
 
-  return withCalls(text, hits, hitOffsets, hitEnds).sort(compareHits);
+  return (opts.calls === true ? withCalls(text, hits, hitOffsets, hitEnds) : hits).sort(
+    compareHits,
+  );
 }
 
 // Each hit with the call expression it sits in and the variables that call reads.

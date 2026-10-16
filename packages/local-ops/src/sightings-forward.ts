@@ -1,21 +1,15 @@
-import { statSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { sep } from 'node:path';
 
-import { manifestKindOf } from '@akasecurity/detections';
 import type {
   CredentialSightingsSend,
   ScanSighting,
   SightingScanProject,
 } from '@akasecurity/persistence';
 import { forwardCredentialSightings, scopeKeyOfProjectKey } from '@akasecurity/persistence';
-import {
-  resolveNonGitProject,
-  resolveRepoIdentity,
-  resolveWorktreeRoot,
-} from '@akasecurity/plugin-sdk';
 import type { CredentialSightingsOutcome, ManagedSettings } from '@akasecurity/schema';
 
 import type { ScanPathResult } from './fs-scan.ts';
+import { resolveScanProject } from './scan-project.ts';
 import { nestedRepositoryKey } from './shares-forward.ts';
 
 export interface ScanSightingsDeps {
@@ -26,25 +20,9 @@ export interface ScanSightingsDeps {
   enabled?: boolean | undefined;
 }
 
-/**
- * The project a scan of `target` belongs to, resolved the way the Data Shares
- * record resolves it: the git working tree and its remote identity, else the
- * nearest directory carrying a dependency manifest.
- */
 function scanProject(target: string): SightingScanProject {
-  const abs = resolve(target);
-  const identity = resolveRepoIdentity(abs);
-  const worktreeRoot = resolveWorktreeRoot(abs);
-  if (identity && worktreeRoot) {
-    return {
-      projectKey: `git:${identity.url}`,
-      name: identity.name,
-      root: worktreeRoot,
-    };
-  }
-  const dir = statSync(abs).isDirectory() ? abs : dirname(abs);
-  const { root, projectKey, project } = resolveNonGitProject(dir, manifestKindOf);
-  return { projectKey, name: project, root };
+  const { projectKey, name, root } = resolveScanProject(target);
+  return { projectKey, name, root };
 }
 
 /** Each sighting with the scope key of the repository holding its file. */
@@ -87,12 +65,6 @@ export async function forwardScanSightings(
       deps,
     );
   } catch {
-    return {
-      status: 'sent',
-      shared: 0,
-      keptLocal: 0,
-      unsent: result.sightings.length,
-      failure: 'unreachable',
-    };
+    return { status: 'not-shared', reason: 'local-error' };
   }
 }

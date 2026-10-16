@@ -199,14 +199,17 @@ export function sightingSharingLine(state: SightingSharing): string {
  * What a scan did with the credential sightings it found.
  *
  *   not-shared  nothing was sent: sharing is off, this run opted out, the
- *               machine holds no sighting key, or no usable credential
+ *               machine holds no sighting key, no usable credential, or the
+ *               sightings could not be prepared on this machine (`local-error`)
  *   sent        `shared` were delivered, `keptLocal` stayed on this machine
- *               because a scoped attachment does not enroll their repository,
- *               and `unsent` were not delivered because of `failure`
+ *               because a scoped attachment does not enroll their repository or
+ *               they lie outside the project, and `unsent` were not delivered
+ *               because of `failure`. All three count distinct values per
+ *               location class.
  */
 export type CredentialSightingsOutcome =
   | { status: 'not-shared'; reason: 'sharing-off'; sharing: SightingSharing }
-  | { status: 'not-shared'; reason: 'opt-out' | 'no-key' | 'no-credential' }
+  | { status: 'not-shared'; reason: 'opt-out' | 'no-key' | 'no-credential' | 'local-error' }
   | {
       status: 'sent';
       shared: number;
@@ -256,11 +259,11 @@ function sentText(outcome: Extract<CredentialSightingsOutcome, { status: 'sent' 
   if (shared === 0) {
     return keptLocal === 0
       ? 'none found to share'
-      : 'not shared — the project is not enrolled for this attachment';
+      : 'not shared — kept on this machine (not enrolled, or outside the project)';
   }
   return keptLocal === 0
     ? sharedText
-    : `${sharedText}; ${String(keptLocal)} kept on this machine (not enrolled)`;
+    : `${sharedText}; ${String(keptLocal)} kept on this machine (not enrolled, or outside the project)`;
 }
 
 /** The scan footer: what this scan shared, or why it shared nothing. */
@@ -279,6 +282,8 @@ export function credentialSightingsLine(outcome: CredentialSightingsOutcome): st
       return notShared(
         'no usable credential for the attached deployment; re-attach with `aka attach`',
       );
+    case 'local-error':
+      return notShared('they could not be prepared on this machine; the next scan tries again');
   }
 }
 

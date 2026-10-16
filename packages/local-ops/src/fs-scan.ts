@@ -3,7 +3,7 @@ import { type Dirent, lstatSync, readdirSync, readFileSync, statSync } from 'nod
 import { homedir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 
-import type { FileEgressHits, MatchResult, TokenizedSecretSpan } from '@akasecurity/detections';
+import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
 import {
   dropShieldedFindings,
   EGRESS_CODE_EXTENSIONS,
@@ -31,7 +31,6 @@ import {
   fingerprintValue,
   loadOrCreateFingerprintKey,
   readWorkspaceSettings,
-  sightingToken,
 } from '@akasecurity/persistence';
 import {
   assignedRulePolicies,
@@ -52,6 +51,7 @@ import {
   type PolicyResolver,
   protectedScanRoots,
   readIgnoreLayer,
+  secretSightingsOf,
   toPosix,
   type VaultGlue,
   withLayer,
@@ -569,7 +569,7 @@ export interface ScanPathResult {
 // manifests go through manifestKindOf, which returns null for lockfiles so
 // their registry URLs are never extracted; a file carrying a NUL byte is
 // treated as binary and yields nothing.
-function extractFileEgress(file: string, text: string): FileEgressHits | null {
+function extractFileEgress(file: string, text: string, calls: boolean): FileEgressHits | null {
   if (text.includes('\u0000')) return null;
 
   const name = basename(file);
@@ -587,7 +587,9 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
   // A manifest is never also scanned for URL literals: package.json's own
   // registry/repository URLs are packaging metadata, not egress.
   const endpoints =
-    kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file)) ? extractEgress(text) : [];
+    kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file))
+      ? extractEgress(text, { calls })
+      : [];
 
   if (endpoints.length === 0 && sdkHits.length === 0) return null;
   // isVendoredPath matches forward-slash segments, so the walked path is
@@ -711,7 +713,7 @@ export async function scanPathIntoStore(
     scanned++;
     // Egress rides every file whose content was read, before the finding
     // early-out below — a file with no detection match still has destinations.
-    const fileEgress = extractFileEgress(file, text);
+    const fileEgress = extractFileEgress(file, text, opts.sightingKey !== undefined);
     if (fileEgress) egressFiles.push(fileEgress);
 
     // Files legitimately contain vault pointers (the plugin's Write/Edit hook
@@ -727,12 +729,10 @@ export async function scanPathIntoStore(
     );
     if (matches.length === 0) continue;
     if (opts.sightingKey) {
-      sightings.push(...sightingsOf(opts.sightingKey, matches, file));
+      const found = secretSightingsOf(opts.sightingKey, matches, file);
+      sightings.push(...found.sightings);
       if (fileEgress) {
-        fileEgress.endpoints = withLiteralCredentialRefs(
-          fileEgress.endpoints,
-          secretTokenSpans(opts.sightingKey, matches),
-        );
+        fileEgress.endpoints = withLiteralCredentialRefs(fileEgress.endpoints, found.spans);
       }
     }
 
@@ -843,49 +843,4 @@ export async function scanPathIntoStore(
     nestedRepositories,
     sightings,
   };
-}
-
-// The secret matches in one file as token spans, for the call sites they sit in.
-function secretTokenSpans(
-  key: SightingKey,
-  matches: readonly MatchResult[],
-): TokenizedSecretSpan[] {
-  const spans: TokenizedSecretSpan[] = [];
-  for (const match of matches) {
-    if (match.category !== 'secret') continue;
-    try {
-      spans.push({
-        ...match.span,
-        ruleId: match.ruleId,
-        token: sightingToken(key, match.rawMatch),
-      });
-    } catch {
-      // Left out; the scan itself goes on.
-    }
-  }
-  return spans;
-}
-
-// The secret matches in one file, as sighting tokens. A value that cannot be
-// reduced to a token is left out.
-function sightingsOf(
-  key: SightingKey,
-  matches: readonly MatchResult[],
-  file: string,
-): ScanSighting[] {
-  const found: ScanSighting[] = [];
-  for (const match of matches) {
-    if (match.category !== 'secret') continue;
-    try {
-      found.push({
-        token: sightingToken(key, match.rawMatch),
-        ruleId: match.ruleId,
-        ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
-        file,
-      });
-    } catch {
-      // Left out; the scan itself goes on.
-    }
-  }
-  return found;
 }

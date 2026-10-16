@@ -123,15 +123,22 @@ function opensBlock(text: string, open: number): boolean {
 // when it does not close: on its own line for `'` and `"`, within a bound for
 // a backtick. An unclosed quote, such as an apostrophe in a comment, is then an
 // ordinary character and cannot swallow the rest of the file.
-function stringEnd(text: string, open: number): number {
+//
+// `resume` holds, per quote, where its last unclosed scan stopped. A later quote
+// of the same kind before that point was escaped in that scan, so a scan from it
+// reads the same characters and carries on from there: each quote's scans read
+// a character once, and a line of escaped quotes stays linear.
+function stringEnd(text: string, open: number, resume: Map<number, number>): number {
   const quote = text.charCodeAt(open);
   const limit = Math.min(text.length, open + STRING_SPAN_MAX);
-  for (let i = open + 1; i < limit; i += 1) {
+  let i = Math.max(open + 1, resume.get(quote) ?? 0);
+  for (; i < limit; i += 1) {
     const code = text.charCodeAt(i);
     if (code === BACKSLASH) i += 1;
     else if (code === quote) return i + 1;
     else if (code === NEWLINE && quote !== BACKTICK) break;
   }
+  resume.set(quote, i);
   return open + 1;
 }
 
@@ -176,6 +183,7 @@ export function enclosingCalls(text: string, offsets: readonly number[]): (Span 
   const spans: (Span | undefined)[] = offsets.map(() => undefined);
   const order = offsets.map((_, i) => i).sort((x, y) => (offsets[x] ?? 0) - (offsets[y] ?? 0));
   const stack: Frame[] = [];
+  const stringResume = new Map<number, number>();
   let next = 0;
   const assign = (upTo: number): void => {
     while (next < order.length && (offsets[order[next] ?? 0] ?? 0) <= upTo) {
@@ -193,7 +201,7 @@ export function enclosingCalls(text: string, offsets: readonly number[]): (Span 
     assign(i);
     const code = text.charCodeAt(i);
     if (isQuote(code)) {
-      const end = stringEnd(text, i);
+      const end = stringEnd(text, i, stringResume);
       assign(end - 1);
       i = end;
       continue;

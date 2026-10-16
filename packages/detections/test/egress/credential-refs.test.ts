@@ -14,7 +14,7 @@ const URL = 'https://api.stripe.com/v1/charges';
 const TOKEN = (n: number): string => `[[aka:fp:v1.${String(n).padStart(43, 'A')}]]`;
 
 function onlyHit(text: string) {
-  const hits = extractEgress(text);
+  const hits = extractEgress(text, { calls: true });
   expect(hits).toHaveLength(1);
   return hits[0];
 }
@@ -26,6 +26,15 @@ function variableNames(text: string): string[] {
 }
 
 describe('extractEgress credential references', () => {
+  it('searches for calls only when asked', () => {
+    const text =
+      "fetch('https://api.acme-corp.com/v1', { headers: { a: process.env.API_TOKEN } });";
+    const [plain] = extractEgress(text);
+    expect(plain?.call).toBeUndefined();
+    expect(plain?.credentialRefs).toBeUndefined();
+    expect(extractEgress(text, { calls: true })[0]?.credentialRefs).toBeDefined();
+  });
+
   it.each([
     ['process.env.X', `fetch('${URL}', { headers: { a: process.env.STRIPE_KEY } })`],
     ['process.env["X"]', `fetch('${URL}', { headers: { a: process.env["STRIPE_KEY"] } })`],
@@ -185,6 +194,16 @@ describe('enclosingCall', () => {
     expect(enclosingCall(text, start, start + URL.length)?.end).toBe(text.length);
   });
 
+  it('closes a string longer than one scan from an escaped quote inside it', () => {
+    // Read as code, the trailing `'` would open a string that swallows `fetch(`.
+    const text = `"${'\\"'.repeat(2_100)}'"; fetch('${URL}')`;
+    const start = text.indexOf('https');
+    expect(enclosingCall(text, start, start + URL.length)).toEqual({
+      start: text.indexOf('fetch(') + 5,
+      end: text.length,
+    });
+  });
+
   it('places many offsets in one pass, each in its own call', () => {
     const text = `a('${URL}'); b(c('${URL}'), 1);`;
     const first = text.indexOf('https');
@@ -232,7 +251,7 @@ describe('withLiteralCredentialRefs', () => {
   });
 
   it('attaches only the secrets whose span lies inside the call, before the variables', () => {
-    const [hit] = withLiteralCredentialRefs(extractEgress(text), [
+    const [hit] = withLiteralCredentialRefs(extractEgress(text, { calls: true }), [
       spanOf('SECRET-A', TOKEN(1)),
       spanOf('SECRET-B', TOKEN(2)),
       spanOf('SECRET-C', TOKEN(3)),
@@ -245,7 +264,7 @@ describe('withLiteralCredentialRefs', () => {
 
   it('does not attach a secret that straddles the call boundary', () => {
     const start = text.indexOf('fetch') - 2;
-    const [hit] = withLiteralCredentialRefs(extractEgress(text), [
+    const [hit] = withLiteralCredentialRefs(extractEgress(text, { calls: true }), [
       { start, end: start + 10, ruleId: 'test-rule', token: TOKEN(4) },
     ]);
     expect(hit?.credentialRefs).toEqual([{ kind: 'variable', variableName: 'K' }]);
@@ -253,7 +272,7 @@ describe('withLiteralCredentialRefs', () => {
 
   it('records one token once per call site', () => {
     const second = text.indexOf('process');
-    const [hit] = withLiteralCredentialRefs(extractEgress(text), [
+    const [hit] = withLiteralCredentialRefs(extractEgress(text, { calls: true }), [
       spanOf('SECRET-B', TOKEN(2)),
       { start: second, end: second + 3, ruleId: 'test-rule', token: TOKEN(2) },
     ]);
@@ -262,19 +281,19 @@ describe('withLiteralCredentialRefs', () => {
 
   it('keeps the cap with literals first', () => {
     const many = Array.from({ length: 10 }, (_, i) => spanOf('SECRET-B', TOKEN(i)));
-    const [hit] = withLiteralCredentialRefs(extractEgress(text), many);
+    const [hit] = withLiteralCredentialRefs(extractEgress(text, { calls: true }), many);
     expect(hit?.credentialRefs).toHaveLength(CREDENTIAL_REFS_PER_CALL_SITE_MAX);
     expect(hit?.credentialRefs?.every((ref) => ref.kind === 'literal')).toBe(true);
   });
 
   it('leaves a hit outside any call untouched', () => {
     const bare = `const BASE = '${URL}';`;
-    const hits = extractEgress(bare);
+    const hits = extractEgress(bare, { calls: true });
     expect(withLiteralCredentialRefs(hits, [spanOf('SECRET-B', TOKEN(1))])).toEqual(hits);
   });
 
   it('leaves the hits unchanged with no secrets', () => {
-    const hits = extractEgress(text);
+    const hits = extractEgress(text, { calls: true });
     expect(withLiteralCredentialRefs(hits, [])).toBe(hits);
   });
 });

@@ -10,8 +10,7 @@
 // scanAllRepos shares one gateway + runtime across all discovered repos so
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative } from 'node:path';
 
 import type {
@@ -26,11 +25,9 @@ import {
   planSightingShare,
   resolveDataGateway,
   sendScanSightings,
-  sightingToken,
 } from '@akasecurity/plugin-runtime';
 import type {
   AtRestVault,
-  CaptureResult,
   DataGateway,
   FileEgressHits,
   ManifestKind,
@@ -39,26 +36,22 @@ import type {
   ScanLedgerEntry,
   ScanLedgerState,
   SourceTool,
-  TokenizedSecretSpan,
 } from '@akasecurity/plugin-sdk';
 import {
-  canonicalizeScanPath,
   contentHashOf,
   createPluginRuntime,
   EGRESS_CODE_EXTENSIONS,
   EGRESS_VERSION_MATERIAL,
   extractEgress,
   extractManifestSdks,
-  isProtectedScanPath,
   isVendoredPath,
   manifestKindOf,
   openScanVault,
-  protectedScanRoots,
   resolveEgress,
   resolveNonGitProject,
   resolveRepoIdentity,
   resolveWorktreeRoot,
-  scanFileKind,
+  secretSightingsOf,
   toPosix,
   withLiteralCredentialRefs,
 } from '@akasecurity/plugin-sdk';
@@ -73,7 +66,6 @@ import {
   type WalkedFileMeta,
   type WalkOptions,
   walkSourceFiles,
-  walkTree,
 } from './walk.ts';
 
 // The scanner is host-agnostic: the hosting plugin declares which tool the
@@ -136,8 +128,9 @@ interface LedgerContext {
 // switched back on. Whether the scan vaults is folded in for the same reason:
 // files skipped as unchanged while vault consent was absent are re-read once
 // consent is granted, so their secrets are vaulted. So is whether the scan
-// shares credential sightings, and under which key version: files skipped while
-// sharing was off are re-read once it is on, so their sightings are sent.
+// shares credential sightings, to which deployment and under which key version:
+// files skipped while sharing was off, or while attached elsewhere, are re-read
+// once it is on, so their sightings are sent.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
@@ -148,7 +141,9 @@ async function loadLedger(
   const egressMaterial = `${dataSharesInPlace ? 'egress:on' : 'egress:off'}\n${EGRESS_VERSION_MATERIAL}`;
   const vaultMaterial = vaulting ? ':vault:on' : '';
   const sightingMaterial =
-    sightings === undefined ? '' : `:sightings:v${String(sightings.key.keyVersion)}`;
+    sightings === undefined
+      ? ''
+      : `:sightings:${sightings.endpointFingerprint}:v${String(sightings.key.keyVersion)}`;
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
@@ -207,6 +202,8 @@ function egressKey(root: string, absPath: string): string | null {
 // removed from a file gets cleared.
 interface EgressAccumulator {
   project: EgressProject;
+  // Whether code files are searched for the credentials each call site uses.
+  calls: boolean;
   files: FileEgressHits[];
   scannedFiles: string[];
   deletedFiles: string[];
@@ -227,11 +224,12 @@ interface EgressAccumulator {
 // Open an accumulator for this scan, or null when the project identity cannot
 // be resolved (a root that vanished mid-scan) — egress is a side benefit of a
 // scan and never breaks the scan that triggered it.
-function startEgress(rootDir: string): EgressAccumulator | null {
+function startEgress(rootDir: string, calls: boolean): EgressAccumulator | null {
   const project = resolveEgressProject(rootDir);
   if (project === null) return null;
   return {
     project,
+    calls,
     files: [],
     scannedFiles: [],
     deletedFiles: [],
@@ -262,7 +260,7 @@ function collectFileEgress(
     return undefined;
   }
   if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return undefined;
-  const endpoints = extractEgress(content);
+  const endpoints = extractEgress(content, { calls: acc.calls });
   if (endpoints.length === 0) return undefined;
   const entry: FileEgressHits = { file, vendored, endpoints, sdkHits: [] };
   acc.files.push(entry);
@@ -465,113 +463,19 @@ function repositoryDiffers(prev: ScanLedgerState, decided: FileRepository): bool
 interface SightingRun {
   base: string;
   key: SightingKey;
+  endpointFingerprint: string;
   send: CredentialSightingsSend | undefined;
   managedSettings: ManagedSettings | null | undefined;
 }
 
-// A dotenv file is read only for its sightings: its content is never recorded
-// or forwarded by this pass.
-const MAX_SECRET_FILE_BYTES = 512 * 1024;
-
-// The secret matches of one file as token spans, for the call sites they sit in.
-function secretTokenSpans(
-  key: SightingKey,
-  matches: CaptureResult['findings'],
-): TokenizedSecretSpan[] {
-  const spans: TokenizedSecretSpan[] = [];
-  for (const match of matches) {
-    if (match.category !== 'secret') continue;
-    try {
-      spans.push({
-        ...match.span,
-        ruleId: match.ruleId,
-        token: sightingToken(key, match.rawMatch),
-      });
-    } catch {
-      // Left out; the scan goes on.
-    }
-  }
-  return spans;
-}
-
-// The secret matches of one file as sighting tokens. A value that cannot be
-// reduced to a token is left out.
-function sightingsOf(
-  key: SightingKey,
-  matches: CaptureResult['findings'],
-  file: { path: string },
-  scopeKey: string | undefined,
-): ScanSighting[] {
-  const found: ScanSighting[] = [];
-  for (const match of matches) {
-    if (match.category !== 'secret') continue;
-    try {
-      found.push({
-        token: sightingToken(key, match.rawMatch),
-        ruleId: match.ruleId,
-        ...(match.variableName === undefined ? {} : { variableName: match.variableName }),
-        file: file.path,
-        scopeKey,
-      });
-    } catch {
-      // Left out; the scan goes on.
-    }
-  }
-  return found;
-}
-
-// The sightings in the dotenv files under `rootDir` that the source walk did
-// not read. Each is read into memory, matched, and dropped; nothing of it is
-// stored. The protected credential paths are never read.
-async function dotenvSightings(
-  runtime: PluginRuntime,
-  run: SightingRun,
-  rootDir: string,
-  opts: ScanOptions,
-  read: ReadonlySet<string>,
-  scopeKeyOf: ScopeKeyLookup,
-): Promise<ScanSighting[]> {
-  const found: ScanSighting[] = [];
-  let protectedRoots: readonly string[] | undefined;
-  for (const file of walkTree(rootDir, {
-    excludePatterns: opts.excludePatterns,
-    trackGitignore: true,
-  })) {
-    if (read.has(file.path) || scanFileKind(file.name) !== 'secret-bearing') continue;
-    try {
-      protectedRoots ??= protectedScanRoots(homedir(), run.base);
-      if (isProtectedScanPath(canonicalizeScanPath(file.path), protectedRoots)) continue;
-      if (statSync(file.path).size > MAX_SECRET_FILE_BYTES) continue;
-      const content = readFileSync(file.path, 'utf8');
-      const relativePath = toPosix(relative(rootDir, file.path));
-      found.push(
-        ...sightingsOf(run.key, await runtime.secretsIn(content), file, scopeKeyOf(relativePath)),
-      );
-    } catch {
-      // An unreadable file has no sightings.
-    }
-  }
-  return found;
-}
-
-// Send this root's sightings under its project. Returns the outcome and whether
-// the send failed, in which case the files that produced sightings are not
-// ledgered, so the next scan reads and sends them again.
+// Send this root's sightings under its project.
 async function shareSightings(
   run: SightingRun,
   rootDir: string,
   sightings: readonly ScanSighting[],
 ): Promise<CredentialSightingsOutcome> {
   const project = resolveEgressProject(rootDir);
-  if (project === null) {
-    return {
-      status: 'sent',
-      shared: 0,
-      keptLocal: 0,
-      unsent: sightings.length,
-      failure: 'unreachable',
-    };
-  }
+  if (project === null) return { status: 'not-shared', reason: 'local-error' };
   return sendScanSightings(
     run.base,
     {
@@ -583,6 +487,19 @@ async function shareSightings(
       sightings,
     },
     { send: run.send, managedSettings: run.managedSettings },
+  );
+}
+
+// Whether every sighting the scan found reached the deployment. When not, the
+// files that produced sightings are not ledgered, so the next scan reads them
+// again: a sighting kept local because its repository is not enrolled is sent
+// once it is.
+function deliveredAll(outcome: CredentialSightingsOutcome): boolean {
+  return (
+    outcome.status === 'sent' &&
+    outcome.failure === undefined &&
+    outcome.unsent === 0 &&
+    outcome.keptLocal === 0
   );
 }
 
@@ -611,8 +528,7 @@ async function scanDir(
   const protectedRoots = resolveProtectedRoots(opts.home, opts.akaHome ?? akaHomeOf(config));
   const byRule: Record<string, number> = {};
   const sightings: ScanSighting[] = [];
-  // Every path the source walk read, and those of them that held a secret.
-  const readPaths = new Set<string>();
+  // The paths whose files held a secret.
   const sightingPaths = new Set<string>();
   const bySeverity: Record<string, number> = {};
   const updates: ScanLedgerEntry[] = [];
@@ -625,7 +541,7 @@ async function scanDir(
   // plugin config already carries. Resolved once, up front, so a disabled
   // toggle skips extraction itself rather than extracting and discarding.
   const egress: EgressAccumulator | null = config.settings.dataSharesInPlace
-    ? startEgress(rootDir)
+    ? startEgress(rootDir, sightingRun !== undefined)
     : null;
 
   // The scope key lookups for this root (./scope-key.ts). One per call, so what
@@ -795,16 +711,12 @@ async function scanDir(
       { persist: 'with-findings', dedupe: 'content-hash', ...(vault ? { vault } : {}) },
     );
 
-    readPaths.add(file.path);
     if (sightingRun !== undefined) {
-      const found = sightingsOf(sightingRun.key, result.findings, file, scopeKey);
-      if (found.length > 0) sightingPaths.add(file.path);
-      sightings.push(...found);
+      const found = secretSightingsOf(sightingRun.key, result.findings, file.path, scopeKey);
+      if (found.sightings.length > 0) sightingPaths.add(file.path);
+      sightings.push(...found.sightings);
       if (fileEgress !== undefined) {
-        fileEgress.endpoints = withLiteralCredentialRefs(
-          fileEgress.endpoints,
-          secretTokenSpans(sightingRun.key, result.findings),
-        );
+        fileEgress.endpoints = withLiteralCredentialRefs(fileEgress.endpoints, found.spans);
       }
     }
 
@@ -844,11 +756,8 @@ async function scanDir(
 
   let sightingOutcome: CredentialSightingsOutcome | undefined;
   if (sightingRun !== undefined) {
-    sightings.push(
-      ...(await dotenvSightings(runtime, sightingRun, rootDir, opts, readPaths, scopeKeyOf)),
-    );
     sightingOutcome = await shareSightings(sightingRun, rootDir, sightings);
-    if (sightingOutcome.status === 'sent' && sightingOutcome.failure !== undefined) {
+    if (!deliveredAll(sightingOutcome)) {
       const unsent = updates.filter((entry) => !sightingPaths.has(entry.path));
       updates.length = 0;
       updates.push(...unsent);
@@ -1144,7 +1053,13 @@ function planSightings(
     const plan = planSightingShare(base, { managedSettings: opts.managedSettings });
     if (!plan.ok) return { run: undefined, outcome: plan.outcome };
     return {
-      run: { base, key: plan.key, send: opts.sendSightings, managedSettings: opts.managedSettings },
+      run: {
+        base,
+        key: plan.key,
+        endpointFingerprint: plan.endpointFingerprint,
+        send: opts.sendSightings,
+        managedSettings: opts.managedSettings,
+      },
       outcome: undefined,
     };
   } catch {

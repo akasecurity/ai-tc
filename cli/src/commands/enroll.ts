@@ -87,9 +87,9 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // may have read the record before the edit, and nothing here says otherwise.
 //
 // THE RECORD IS EDITED RAW. The stored `attachmentScope` may hold entries or
-// envelope keys a newer build wrote. The edits append to, or take out of, the
-// stored `entries` array and keep everything else; they never write back a
-// parsed copy, which would drop what this build cannot read.
+// envelope keys this version does not recognise. The edits append to, or take
+// out of, the stored `entries` array and keep everything else; they never write
+// back a parsed copy, which would drop what this version cannot read.
 //
 // BOUND TO THE ENDPOINT IN FORCE. The record names the deployment it is for, and
 // that is the EFFECTIVE endpoint, with any administrator's overlay applied: the
@@ -593,7 +593,11 @@ function claudeCodeLoginNow(ready: Prepared): ClaudeCodeLoginView {
   });
 }
 
-/** The Codex login signed in now, through the view `aka status` prints. Writes nothing. */
+/**
+ * The Codex login signed in now, through the view `aka status` prints. Writes
+ * nothing. With no usable Codex home no login file is read, and the view is
+ * `absent`, or `veto` while a key, a token or a gateway is set for Codex.
+ */
 function codexLoginNow(ready: Prepared): CodexLoginView {
   return codexLoginView({
     identity: heldIdentityOf(ready),
@@ -631,7 +635,8 @@ const DETECTED_STATE_TEXT: Record<ClaudeCodeLoginState, string> = {
 };
 
 /**
- * Each state off a terminal, where no reason is printed: a coding agent's own
+ * Each state of a login that names an organization, as `--list-detected` says it
+ * off a terminal: only whether the login counts, never why. A coding agent's own
  * terminal output is recorded, and a reason can tell its reader that the user
  * has a personal plan.
  */
@@ -659,9 +664,12 @@ const DETECTED_STATE_WORD: Record<
 const NO_LOGIN = 'none (no login file)';
 
 /**
- * The `--list-detected` section for the Claude Code login signed in now: the key
- * and, on a terminal, its plan hint and state, or off one only whether it counts.
- * Never an email, a name, an organization name or a token.
+ * The `--list-detected` section for the Claude Code login signed in now. A login
+ * that names an organization is listed by its key, with its plan hint and state
+ * on a terminal and only whether it counts off one. With none named the section
+ * says `none (no login file)` for an absent login, on or off a terminal, and
+ * otherwise `none`, with the reason in brackets on a terminal. Never an email, a
+ * name, an organization name or a token.
  */
 function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean): string {
   const heading = 'Claude Code — signed in now:\n';
@@ -675,7 +683,12 @@ function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean
     : `${heading}  ${key}  ${DETECTED_STATE_WORD[view.state]}\n`;
 }
 
-/** Each Codex state as `--list-detected` says it on a terminal. */
+/**
+ * Each Codex state as `--list-detected` says it on a terminal. `absent` covers a
+ * Codex home that cannot be used as well as a missing login file. While a key, a
+ * token or a gateway is set, a login file that is missing or is not a ChatGPT
+ * login reads as `veto`.
+ */
 const CODEX_STATE_TEXT: Record<CodexLoginState, string> = {
   manual: 'enrolled',
   remembered: 'validated automatically',
@@ -692,7 +705,8 @@ const CODEX_STATE_TEXT: Record<CodexLoginState, string> = {
 };
 
 /**
- * Each Codex state off a terminal, where no reason is printed: a coding agent's
+ * Each Codex state of a login that names a workspace, as `--list-detected` says
+ * it off a terminal: only whether the login counts, never why. A coding agent's
  * own terminal output is recorded, and a reason can say that a login is personal.
  */
 const CODEX_STATE_WORD: Record<
@@ -721,9 +735,13 @@ const CODEX_PLAN_HINT: Record<AccountPlanState, string> = {
 };
 
 /**
- * The `--list-detected` section for the Codex login signed in now: the key and,
- * on a terminal, its plan hint and state, or off one only whether it counts.
- * Never an email, a plan string or a token.
+ * The `--list-detected` section for the Codex login signed in now. A login that
+ * was read is listed by its key, with its plan hint and state on a terminal and
+ * only whether it counts off one; read while a key, a token or a gateway is set,
+ * it is listed the same way with the state `veto`. With no login read the section
+ * says `none (no login file)` for an absent login, on or off a terminal, and
+ * otherwise `none`, with the reason in brackets on a terminal. Never an email, a
+ * plan string or a token.
  */
 function codexDetectedLines(view: CodexLoginView, interactive: boolean): string {
   const heading = 'Codex — signed in now:\n';
@@ -987,13 +1005,32 @@ function enrolledByHand(ready: Prepared, matches: readonly string[]): boolean {
 }
 
 /**
- * The first line of an account's unenroll result. Only a claude key has claude.ai
- * chats to check; a chatgpt entry covers Codex threads alone.
+ * The first line of an unenroll result for an account, by the provider its key
+ * names. Only a claude key has claude.ai chats to check; a chatgpt entry covers
+ * Codex threads alone.
+ */
+const UNENROLLED_ACCOUNT_LINE: Record<
+  WebAccountProvider,
+  (removed: string, name: string) => string
+> = {
+  [WEB_ACCOUNT_PROVIDER.Claude]: (removed, name) =>
+    `Unenrolled ${removed}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`,
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: (removed, name) =>
+    `Unenrolled ${removed}. From now on, Codex threads signed in to it are not sent to ${name} by this entry.\n`,
+};
+
+/**
+ * `aka unenroll` also takes the text of an entry stored under a key that names no
+ * provider (`chatgpt:payments`, which `aka enroll` refuses): that text gets the
+ * Codex line when it begins `chatgpt:` and the Claude line otherwise.
  */
 function unenrolledAccountLine(key: string, removed: string, name: string): string {
-  return key.startsWith(`${WEB_ACCOUNT_PROVIDER.ChatGpt}:`)
-    ? `Unenrolled ${removed}. From now on, Codex threads signed in to it are not sent to ${name} by this entry.\n`
-    : `Unenrolled ${removed}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`;
+  const provider =
+    parseWebAccountKey(key)?.provider ??
+    (key.startsWith(`${WEB_ACCOUNT_PROVIDER.ChatGpt}:`)
+      ? WEB_ACCOUNT_PROVIDER.ChatGpt
+      : WEB_ACCOUNT_PROVIDER.Claude);
+  return UNENROLLED_ACCOUNT_LINE[provider](removed, name);
 }
 
 /** What taking an account out of the list means for the sessions signed in to it. */

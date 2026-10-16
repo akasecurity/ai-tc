@@ -21,8 +21,10 @@
 // it back to this one.
 //
 // Every other variable the account check reads is set to the empty string, which it
-// reads as unset. The names come from that check's own list, so one it starts to
-// read is cleared here too, and the guard test reads each back.
+// reads as unset. The names come from `CODEX_ACCOUNT_ENV_NAMES`, a list kept by
+// hand: a name added to that list is cleared here too, and the guard test reads
+// each back. A test in @akasecurity/plugin-sdk fails when the check reads a name
+// that list does not hold.
 //
 // It reaches as far as THIS PROCESS and no further: a spawned child inherits these
 // variables only if the case's env object carries them.

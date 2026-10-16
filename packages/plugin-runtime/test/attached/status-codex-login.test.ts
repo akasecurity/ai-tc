@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { writeCodexAuth } from '../../../plugin-sdk/test/helpers/fake-jwt.ts';
 import { fixtureEmail } from '../../../plugin-sdk/test/helpers/transcript-builder.ts';
-import type { CodexLoginState } from '../../src/attached/status.ts';
+import type { CodexLoginState, CodexLoginViewInput } from '../../src/attached/status.ts';
 import { codexLoginView, renderAttachedStatus } from '../../src/attached/status.ts';
 
 // What `aka status` says about the Codex login signed in now, and the view it
@@ -369,6 +369,26 @@ describe('codexLoginView', () => {
     });
     expect(read.state).toBe('unreadable');
     expect(read.key).toBeUndefined();
+    expect(read.planState).toBeUndefined();
+  });
+
+  it('answers unreadable, naming nothing, when the input cannot be read under a key, a token or a gateway', () => {
+    attachScoped();
+    signIn('business');
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const input = Object.defineProperty(
+      { identity: readAttachedIdentity(dataDirOf(base)), scope: SCOPE, endpoint: ENDPOINT },
+      'codexHome',
+      {
+        get: () => {
+          throw new Error('the home cannot be read');
+        },
+      },
+    ) as CodexLoginViewInput;
+    const read = codexLoginView(input);
+    expect(read.state).toBe('unreadable');
+    expect(read.key).toBeUndefined();
+    expect(read.planState).toBeUndefined();
   });
 
   describe('under a key, a token or a gateway in the Codex environment', () => {

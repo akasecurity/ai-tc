@@ -410,15 +410,16 @@ export interface CodexLoginViewInput {
  * read is named by its key and plan state under a key, a token or a gateway too,
  * and before the device knows who attached it, so `aka enroll` can ask about a
  * personal plan before the first sync. What each case reads as:
- * - no Codex home, or no login file under it: `absent`, naming nothing;
- * - a file that is not a ChatGPT login this device can read: `unreadable`, naming
- *   nothing;
- * - either of those while a key, a token or a gateway is set: `veto`, naming
- *   nothing;
- * - a login while a key, a token or a gateway is set: `veto`, naming its key and
- *   plan state;
- * - a login otherwise: the state the checks described next give, naming its key
- *   and plan state.
+ * - no usable Codex home, or no login file under it, with no key, token or gateway
+ *   set: `absent`, naming nothing;
+ * - a file that is not a ChatGPT login this device can read, with none set:
+ *   `unreadable`, naming nothing;
+ * - either of those with a key, a token or a gateway set: `veto`, naming nothing;
+ * - a login with a key, a token or a gateway set: `veto`, naming its key and plan
+ *   state;
+ * - a login with none set: the state the checks described next give, naming its
+ *   key and plan state;
+ * - a read that throws, whatever is set: `unreadable`, naming nothing.
  *
  * An account enrolled by hand counts before the address and the plan are
  * compared. Those two are compared before the opt-out, so a personal plan reads as

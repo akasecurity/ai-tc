@@ -1784,7 +1784,7 @@ describe('aka unenroll --account', () => {
     expect(identities()).toEqual([]);
   });
 
-  it('removes an entry stored under a key this build would not accept', async () => {
+  it('removes an entry stored under a key this build would not accept, and words it as a claude key', async () => {
     attach({
       scope: fresh([{ kind: 'account', identity: 'claude:legacy-id', enrolledAt: NOW }]),
       extra: webChat(),
@@ -1792,6 +1792,13 @@ describe('aka unenroll --account', () => {
     const io = recorder();
     expect(await runUnenroll(['--account', 'claude:legacy-id'], deps(io))).toBe(0);
     expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          'Unenrolled claude:legacy-id. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n',
+        ),
+    ).toBe(true);
   });
 
   it('removes an entry stored in another case when the key is typed as it is stored', async () => {
@@ -1803,6 +1810,13 @@ describe('aka unenroll --account', () => {
     const io = recorder();
     expect(await runUnenroll(['--account', stored], deps(io))).toBe(0);
     expect(identities()).toEqual([WORK_REPO]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          `Unenrolled ${stored}. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n`,
+        ),
+    ).toBe(true);
   });
 
   it('says so when the account is not enrolled', async () => {
@@ -2004,55 +2018,69 @@ describe('aka enroll --account — Claude Code sessions', () => {
   });
 });
 
-// The plan notices a terminal may show. Off one, where a coding agent's own
-// output is recorded, the command says nothing about the login's plan.
-const CLAUDE_PLAN_NOTICE = 'The Claude Code login signed in now is on a personal plan';
+// The plan notices a terminal shows, line for line. Off one, where a coding
+// agent's own output is recorded, the command says nothing about the login's plan.
+const CLAUDE_PLAN_NOTICE =
+  'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
+  'Enrolling its organization sends every Claude Code session signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n';
 const CODEX_PLAN_NOTICE =
-  'The Codex login signed in now is on a plan that is not a ChatGPT workspace plan';
+  'The Codex login signed in now is on a plan that is not a ChatGPT workspace plan.\n' +
+  'Enrolling its workspace sends every new Codex thread signed in to it to Acme, from any folder.\n';
+const CONFIRMATION = 'Enroll it anyway? [y/N]: ';
 
 function expectNoPlanNotice(io: ReturnType<typeof recorder>): void {
   for (const heard of [io.output(), io.errors()]) {
-    expect(heard.includes(CLAUDE_PLAN_NOTICE)).toBe(false);
-    expect(heard.includes(CODEX_PLAN_NOTICE)).toBe(false);
+    for (const notice of [CLAUDE_PLAN_NOTICE, CODEX_PLAN_NOTICE]) {
+      for (const line of notice.split('\n').filter((text) => text !== '')) {
+        expect(heard.includes(line)).toBe(false);
+      }
+    }
   }
 }
 
-describe('aka enroll --account — the login signed in now on a personal plan', () => {
-  function answering(answer: string) {
-    const asked: string[] = [];
-    const io = {
-      ...recorder(),
-      ask: (question: string): Promise<string> => {
-        asked.push(question);
-        return Promise.resolve(answer);
-      },
-    };
-    return { io, asked };
-  }
+/** A terminal that answers every question with `answer`, recording what had been printed when each was asked. */
+function answering(answer: string) {
+  const asked: string[] = [];
+  const printedBefore: string[] = [];
+  const io = {
+    ...recorder(),
+    ask: (question: string): Promise<string> => {
+      asked.push(question);
+      printedBefore.push(io.output());
+      return Promise.resolve(answer);
+    },
+  };
+  return { io, asked, printedBefore };
+}
 
+describe('aka enroll --account — the login signed in now on a personal plan', () => {
   it('asks on a terminal before enrolling it, and enrolls on yes', async () => {
     attach({ scope: fresh(), extra: webChat() });
     knownMember();
     claudeSignIn({ organizationType: 'claude_max' });
-    const { io, asked } = answering('y');
+    const { io, asked, printedBefore } = answering('y');
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
-    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+    expect(asked).toEqual([CONFIRMATION]);
+    expect(printedBefore).toEqual([CLAUDE_PLAN_NOTICE]);
     expect(identities()).toEqual([ACCOUNT]);
-    expect(flat(io.output())).toContain(
-      'Enrolling its organization sends every Claude Code session signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.',
-    );
   });
 
-  it('enrolls nothing when the answer is no', async () => {
-    attach({ scope: fresh(), extra: webChat() });
-    knownMember();
-    claudeSignIn({ organizationType: 'claude_max' });
-    const before = stored();
-    const { io } = answering('n');
-    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
-    expect(io.output()).toContain('Nothing was enrolled.\n');
-    expect(stored()).toEqual(before);
-  });
+  it.each(['claude_max', 'claude_pro'])(
+    'shows the whole notice for a %s login, then asks, and enrolls nothing when the answer is no',
+    async (organizationType) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      claudeSignIn({ organizationType });
+      const before = stored();
+      const { io, asked, printedBefore } = answering('n');
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CLAUDE_PLAN_NOTICE]);
+      expect(io.output()).toBe(`${CLAUDE_PLAN_NOTICE}Nothing was enrolled.\n`);
+      expect(io.errors()).toBe('');
+      expect(stored()).toEqual(before);
+    },
+  );
 
   it('refuses without a terminal unless --yes, and writes nothing', async () => {
     attach({ scope: fresh(), extra: webChat() });
@@ -2418,6 +2446,28 @@ describe('aka enroll --list-detected — the Claude Code login', () => {
     expect(io.output()).not.toContain('personal plan');
   });
 
+  it('says there is no login file off a terminal too', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('Claude Code — signed in now:\n  none (no login file)\n');
+  });
+
+  it('says why no organization is named on a terminal, and only that none is off one', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    writeFileSync(join(claudeHome, '.claude.json'), '{}');
+    const interactive = recorder();
+    expect(await runEnroll(['--list-detected'], deps(interactive))).toBe(0);
+    expect(interactive.output()).toContain(
+      'Claude Code — signed in now:\n  none (not signed in)\n',
+    );
+    const piped = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+    expect(piped.output()).toContain('Claude Code — signed in now:\n  none\n');
+  });
+
   it('--list-detected never prints the fixture email and writes nothing', async () => {
     attach({ scope: fresh(), extra: webChat({ grant: true }) });
     knownMember();
@@ -2679,23 +2729,16 @@ describe('aka enroll --account chatgpt:', () => {
   });
 
   describe('a key naming the current Codex login on a plan that is not a workspace plan', () => {
-    it('asks before enrolling on a terminal, and enrolls on yes', async () => {
+    it('shows the whole notice, then asks before enrolling on a terminal, and enrolls on yes', async () => {
       attach({ scope: fresh() });
       knownMember();
       codexSignIn('plus');
-      const asked: string[] = [];
-      const io = {
-        ...recorder(),
-        ask: (question: string): Promise<string> => {
-          asked.push(question);
-          return Promise.resolve('y');
-        },
-      };
+      const { io, asked, printedBefore } = answering('y');
       expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
-      expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
       expect(identities()).toEqual([CHATGPT_KEY]);
-      expect(io.output()).toContain('The Codex login signed in now');
-      expect(io.output()).not.toContain('Claude Code');
+      expect(io.output().includes('Claude Code')).toBe(false);
     });
 
     it('enrolls nothing when the answer is no', async () => {
@@ -2703,9 +2746,12 @@ describe('aka enroll --account chatgpt:', () => {
       knownMember();
       codexSignIn('plus');
       const before = stored();
-      const io = { ...recorder(), ask: (): Promise<string> => Promise.resolve('n') };
+      const { io, asked, printedBefore } = answering('n');
       expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(1);
-      expect(io.output()).toContain('Nothing was enrolled.\n');
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
+      expect(io.output()).toBe(`${CODEX_PLAN_NOTICE}Nothing was enrolled.\n`);
+      expect(io.errors()).toBe('');
       expect(stored()).toEqual(before);
     });
 
@@ -2769,18 +2815,11 @@ describe('aka enroll --account chatgpt:', () => {
           knownMember();
           codexSignIn('plus');
           vi.stubEnv(name, value);
-          const asked: string[] = [];
-          const io = {
-            ...recorder(),
-            ask: (question: string): Promise<string> => {
-              asked.push(question);
-              return Promise.resolve('y');
-            },
-          };
+          const { io, asked, printedBefore } = answering('y');
           expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
-          expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+          expect(asked).toEqual([CONFIRMATION]);
+          expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
           expect(identities()).toEqual([CHATGPT_KEY]);
-          expect(io.output().includes('The Codex login signed in now')).toBe(true);
         },
       );
 
@@ -2859,14 +2898,30 @@ describe('aka enroll --account chatgpt:', () => {
   it('is taken out by aka unenroll --account from an entry stored in another case, typed as stored', async () => {
     const stored = `chatgpt:${CODEX_WORKSPACE.toUpperCase()}`;
     attach({ scope: fresh([codexAccount(stored)]) });
-    expect(await runUnenroll(['--account', stored], deps(recorder()))).toBe(0);
+    const io = recorder();
+    expect(await runUnenroll(['--account', stored], deps(io))).toBe(0);
     expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          `Unenrolled ${stored}. From now on, Codex threads signed in to it are not sent to Acme by this entry.\n`,
+        ),
+    ).toBe(true);
   });
 
-  it('is taken out by aka unenroll --account from an entry stored under a key enroll refuses', async () => {
+  it('is taken out by aka unenroll --account from an entry stored under a key enroll refuses, and worded as Codex threads', async () => {
     attach({ scope: fresh([codexAccount('chatgpt:payments')]) });
-    expect(await runUnenroll(['--account', 'chatgpt:payments'], deps(recorder()))).toBe(0);
+    const io = recorder();
+    expect(await runUnenroll(['--account', 'chatgpt:payments'], deps(io))).toBe(0);
     expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          'Unenrolled chatgpt:payments. From now on, Codex threads signed in to it are not sent to Acme by this entry.\n',
+        ),
+    ).toBe(true);
   });
 
   it('names both key forms when it refuses a key', async () => {
@@ -2978,6 +3033,62 @@ describe('aka enroll --list-detected — the Codex login', () => {
     const piped = { ...recorder(), isInteractive: false };
     expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
     expect(piped.output()).toContain('Codex — signed in now:\n  none\n');
+  });
+
+  it('says there is no login file off a terminal too', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('Codex — signed in now:\n  none (no login file)\n');
+  });
+
+  it('says a login file that is not a ChatGPT login cannot be read on a terminal, and only that none is named off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    writeCodexAuth(codexHome, {
+      accountId: CODEX_WORKSPACE,
+      email: CLAUDE_MEMBER,
+      authMode: 'apikey',
+    });
+    const interactive = recorder();
+    expect(await runEnroll(['--list-detected'], deps(interactive))).toBe(0);
+    expect(interactive.output()).toContain(
+      'Codex — signed in now:\n  none (not a ChatGPT login this device can read)\n',
+    );
+    const piped = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+    expect(piped.output()).toContain('Codex — signed in now:\n  none\n');
+  });
+
+  it('reads a login file that is not a ChatGPT login as a veto while a key is set', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    writeCodexAuth(codexHome, {
+      accountId: CODEX_WORKSPACE,
+      email: CLAUDE_MEMBER,
+      authMode: 'apikey',
+    });
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Codex — signed in now:\n  none (an API key or another provider is in use)\n',
+    );
+  });
+
+  it('reads a Codex home that cannot be used as a veto, not as no login file, while a key is set', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const notADirectory = join(work, 'codex-home-is-a-file');
+    writeFileSync(notADirectory, '');
+    vi.stubEnv('CODEX_HOME', notADirectory);
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], { ...deps(io), codexHome: undefined })).toBe(0);
+    expect(io.output()).toContain(
+      'Codex — signed in now:\n  none (an API key or another provider is in use)\n',
+    );
   });
 });
 

@@ -128,10 +128,11 @@ interface LedgerContext {
 // switched back on. Whether the scan vaults is folded in for the same reason:
 // files skipped as unchanged while vault consent was absent are re-read once
 // consent is granted, so their secrets are vaulted. So is whether the scan
-// shares credential sightings, to which deployment, with which repositories
-// enrolled, and under which key version: files skipped while sharing was off,
-// while attached elsewhere or while their repository was not enrolled, are
-// re-read once that changes, so their sightings are sent.
+// shares credential sightings, to which deployment, in which attachment mode
+// and with which repositories enrolled, and under which key version: files
+// skipped while sharing was off, while attached elsewhere or while their
+// repository was not enrolled, are re-read once that changes, so their
+// sightings are sent.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
@@ -144,7 +145,7 @@ async function loadLedger(
   const sightingMaterial =
     sightings === undefined
       ? ''
-      : `:sightings:${sightings.endpointFingerprint}:${sightings.enrolledFingerprint}:v${String(sightings.key.keyVersion)}`;
+      : `:sightings:${sightings.endpointFingerprint}:${sightings.scopeFingerprint}:v${String(sightings.key.keyVersion)}`;
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
@@ -465,7 +466,7 @@ interface SightingRun {
   base: string;
   key: SightingKey;
   endpointFingerprint: string;
-  enrolledFingerprint: string;
+  scopeFingerprint: string;
   send: CredentialSightingsSend | undefined;
   managedSettings: ManagedSettings | null | undefined;
 }
@@ -1054,7 +1055,7 @@ function planSightings(
         base,
         key: plan.key,
         endpointFingerprint: plan.endpointFingerprint,
-        enrolledFingerprint: plan.enrolledFingerprint,
+        scopeFingerprint: plan.scopeFingerprint,
         send: opts.sendSightings,
         managedSettings: opts.managedSettings,
       },

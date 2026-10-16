@@ -209,6 +209,16 @@ describe('scanWorktree — credential sightings', () => {
     );
   });
 
+  it('reads files kept local by a scoped attachment again once attached machine-wide', async () => {
+    await scanWorktree(attach(true, ENDPOINT, []), options(recorder().send));
+
+    const machine = recorder();
+    await scanWorktree(attach(true, ENDPOINT), options(machine.send));
+    expect(machine.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual(
+      expect.arrayContaining([sightingToken(KEY, SOURCE_VALUE), sightingToken(KEY, DOTENV_VALUE)]),
+    );
+  });
+
   it('reads unchanged files again once attached to another deployment', async () => {
     await scanWorktree(attach(true), options(recorder().send));
 

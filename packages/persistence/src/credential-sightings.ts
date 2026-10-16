@@ -79,8 +79,11 @@ export type SightingSharePlan =
       key: SightingKey;
       /** The sha256 hex of the endpoint that issued the key. */
       endpointFingerprint: string;
-      /** The sha256 hex of the identities enrolled for that endpoint; changes when one is enrolled or removed. */
-      enrolledFingerprint: string;
+      /**
+       * The sha256 hex of the attachment mode and the identities enrolled for
+       * that endpoint; changes when one is enrolled or removed, or the mode does.
+       */
+      scopeFingerprint: string;
     }
   | { ok: false; outcome: CredentialSightingsOutcome };
 
@@ -109,6 +112,11 @@ export function planSightingShare(
     if (keys === undefined || endpoint === undefined) {
       return { ok: false, outcome: { status: 'not-shared', reason: 'no-key' } };
     }
+    const credential =
+      settings.controlPlane === undefined
+        ? null
+        : readControlPlaneCredential(settingsDir(base), settings.controlPlane);
+    const mode = credential === null ? 'none' : attachmentModeOf(credential);
     const scope = parseAttachmentScope(settings.attachmentScope);
     const enrolled =
       scope?.endpoint === endpoint
@@ -118,7 +126,9 @@ export function planSightingShare(
       ok: true,
       key: keys.current,
       endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
-      enrolledFingerprint: createHash('sha256').update(enrolled.join('\n')).digest('hex'),
+      scopeFingerprint: createHash('sha256')
+        .update([mode, ...enrolled].join('\n'))
+        .digest('hex'),
     };
   } catch {
     return { ok: false, outcome: { status: 'not-shared', reason: 'local-error' } };

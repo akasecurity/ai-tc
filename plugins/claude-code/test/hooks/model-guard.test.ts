@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,8 @@ import type { GovernanceScope } from '@akasecurity/plugin-runtime';
 import { recordSessionModel } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as Remote from '../../../../packages/remote/src/index.ts';
+import type { HookAccountInput } from '../../src/hooks/account-stamp.ts';
 import {
   decidePreModelSwitch,
   decideSubagentSpawn,
@@ -13,6 +16,21 @@ import {
   resolveSessionModel,
   resolveSpawnModel,
 } from '../../src/hooks/model-guard.ts';
+import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
+import type { Device } from '../helpers/account-fixture.ts';
+import { device, isAgentKeyFor } from '../helpers/account-fixture.ts';
+import type { Sent } from '../helpers/recording-client.ts';
+
+// The account cases open the gateway the plugin's factory builds; only its
+// transport is replaced, by one that records what it is handed and sends nothing.
+const sent = vi.hoisted((): Sent => ({ captures: [], audit: [], inventory: [] }));
+vi.mock('../../../../packages/remote/src/index.ts', async (importOriginal) => {
+  const { recordingClient } = await import('../helpers/recording-client.ts');
+  return {
+    ...(await importOriginal<typeof Remote>()),
+    createRemoteClient: () => recordingClient(sent),
+  };
+});
 
 let dir: string;
 
@@ -563,5 +581,86 @@ describe('handleSubagentSpawn', () => {
       expect(ask.mock.calls).toEqual([[WORK_KEY]]);
       expect(keysOf(refused)).toEqual([WORK_KEY]);
     });
+  });
+});
+
+// A work-subscription session on a scoped attachment, once the transcript names
+// the session's organization (after the first prompt): a spawn in a folder whose
+// repository is not enrolled is keyed by the session's agent key.
+describe('handleSubagentSpawn in a work-subscription session', () => {
+  let dev: Device;
+  beforeEach(async () => {
+    dev = device(sent);
+    dev.attach();
+    await dev.prohibit(['claude-opus-5']);
+  });
+  afterEach(() => {
+    dev.dispose();
+  });
+
+  const later = (n: number): string => new Date(Date.now() + (n + 1) * 1_000).toISOString();
+
+  async function spawnIn(
+    org: string,
+    organizationType: string,
+    model = 'opus',
+  ): Promise<{
+    refused: boolean;
+    keys: (string | null)[];
+    accountInput: ReturnType<typeof vi.fn<() => HookAccountInput>>;
+  }> {
+    dev.login({ org, organizationType });
+    const t = dev.transcript(randomUUID());
+    dev.boundary(t);
+    t.prompt(later(1));
+    t.org(org, later(2));
+    t.reply(later(3));
+    const config = dev.config();
+    const accountInput = vi.fn(() => ({
+      dataDir: config.dataDir,
+      sessionId: t.sessionId,
+      transcriptPath: t.path,
+      cwd: dev.personal,
+    }));
+    const refused = await handleSubagentSpawn(
+      () => openGatewayOrNull(config),
+      'Agent',
+      { model },
+      t.sessionId,
+      dev.personal,
+      () => Promise.resolve(),
+      accountInput,
+    );
+    const keys = dev
+      .storedRows()
+      .filter((row) => row.eventType === 'model_refusal')
+      .map((row) => row.scopeKey);
+    return { refused, keys, accountInput };
+  }
+
+  it('is refused in a personal folder, with the refusal row keyed to the session', async () => {
+    const { refused, keys } = await spawnIn(dev.workOrg, 'claude_team');
+    expect(refused).toBe(true);
+    expect(keys).toHaveLength(1);
+    expect(isAgentKeyFor(keys[0], dev.workOrg)).toBe(true);
+  });
+
+  it('is allowed in a personal folder of a personal session, with no row', async () => {
+    const { refused, keys } = await spawnIn(dev.personalOrg, 'claude_pro');
+    expect(refused).toBe(false);
+    expect(keys).toEqual([]);
+  });
+
+  it('asks for the session account once, for a spawn the list refuses', async () => {
+    const { refused, accountInput } = await spawnIn(dev.workOrg, 'claude_team');
+    expect(refused).toBe(true);
+    expect(accountInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('never asks for the session account for a spawn the list allows', async () => {
+    const { refused, keys, accountInput } = await spawnIn(dev.workOrg, 'claude_team', 'sonnet');
+    expect(refused).toBe(false);
+    expect(keys).toEqual([]);
+    expect(accountInput).not.toHaveBeenCalled();
   });
 });

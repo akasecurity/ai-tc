@@ -59,7 +59,7 @@ export async function scanResponseFields(
   toolName: string,
   response: unknown,
   fields: ScannableResponseField[],
-  capture: (text: string) => Promise<CaptureResult>,
+  captureField: (text: string) => Promise<CaptureResult>,
   tokenizeField?: FieldTokenizer,
   deadline?: ScanDeadline,
 ): Promise<ResponseScanOutcome> {
@@ -99,7 +99,7 @@ export async function scanResponseFields(
       outcome.unscannedFields = fields.length - index;
       break;
     }
-    const result = await capture(field.text);
+    const result = await captureField(field.text);
     // Checked before the no-findings skip: a refused field has no findings
     // because nothing finished, not because it is clean.
     if (result.scanIncomplete !== undefined) {

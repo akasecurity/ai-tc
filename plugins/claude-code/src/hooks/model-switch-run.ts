@@ -8,13 +8,14 @@
 // ordinary logic and is exercised directly.
 import { randomUUID } from 'node:crypto';
 
-import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
-import { buildModelRefusalEvent, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { recordSessionModel } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { resolveHookAccount, stampFor } from './account-stamp.ts';
 import { decidePreModelSwitch, type PreModelSwitchOutput } from './model-guard.ts';
 import { captureScopeKey } from './shared.ts';
+import { governedAt, modelRefusalAt } from './stamped-capture.ts';
 
 export interface PreModelSwitchDeps {
   config: PluginConfig;
@@ -23,6 +24,8 @@ export interface PreModelSwitchDeps {
   emit: (output: PreModelSwitchOutput) => Promise<void>;
   /** Surfaces a redirected (symlinked) home once per session, on stderr. */
   warnIfStoreRedirected: (config: PluginConfig, sessionId: string | undefined) => void;
+  /** The payload's transcript path; the switch's key is stamped for the session's account from it. */
+  transcriptPath?: string | undefined;
   /** Injected so a test can pin the recorded id and timestamp. */
   newId?: () => string;
   now?: () => Date;
@@ -33,16 +36,17 @@ export interface PreModelSwitchDeps {
  *
  * `cwd` is the payload's own, and only the refusal path reads it. It is keyed by
  * `captureScopeKey`, exactly as the session's path-less captures are keyed, and
- * that one key asks the gateway whether the organization's model policy governs
- * this switch (`governanceApplies`) and stamps the refusal row when it does. A
- * machine-wide attachment, a standalone store and any gateway that does not
- * answer the question are governed everywhere; a scoped attachment only in its
- * enrolled repositories. Where it is not governed, a switch the list would
- * refuse is allowed: no output, no row, and the session's model recorded as for
- * any allowed switch. A switch the list allows pays no `.git` walk and no
- * lookup. `cwd` is REQUIRED rather than optional: the hook entry is the only
- * production caller and no test can import an entry, so the compiler is the one
- * check that the entry passes it.
+ * stamped for the session's account, and that one key asks the gateway whether
+ * the organization's model policy governs this switch (`governedAt`) and stamps
+ * the refusal row when it does. A machine-wide attachment, a standalone store
+ * and any gateway that does not answer the question are governed everywhere; a
+ * scoped attachment in its enrolled repositories, and in any folder of a session
+ * whose key is its work subscription's agent key. Where it is not governed, a
+ * switch the list would refuse is allowed: no output, no row, and the session's
+ * model recorded as for any allowed switch. A switch the list allows pays no
+ * `.git` walk and no lookup. `cwd` is REQUIRED rather than optional: the hook
+ * entry is the only production caller and no test can import an entry, so the
+ * compiler is the one check that the entry passes it.
  *
  * Returns whether the switch was refused, purely so a test can assert on the
  * verdict without reading stdout; the entry ignores it.
@@ -79,22 +83,30 @@ export async function runPreModelSwitch(
     // Keyed ONCE, now that the list refuses, and the one key both asks and
     // stamps, so the verdict and the row can never disagree about where the
     // switch was requested.
-    const scopeKey = captureScopeKey({ cwd });
-    if (governanceApplies(gateway, scopeKey)) {
+    const account = resolveHookAccount(gateway, {
+      dataDir: config.dataDir,
+      sessionId,
+      transcriptPath: deps.transcriptPath,
+      cwd,
+    });
+    const scopeKey = stampFor(gateway, account, captureScopeKey({ cwd }));
+    if (governedAt(gateway, scopeKey)) {
       // Best-effort, and swallowed: a refusal that cannot be written down is
       // still a refusal, so a failed write must not reach the entry's outer
       // catch and turn this deny into a fail-open allow.
       try {
         await gateway.recordAuditEvent(
-          buildModelRefusalEvent({
-            id: (deps.newId ?? randomUUID)(),
-            sessionId,
-            model: toModel,
-            seam: 'switch',
-            sourceTool: SOURCE_TOOL.ClaudeCode,
-            occurredAt: (deps.now ?? (() => new Date()))().toISOString(),
+          modelRefusalAt(
+            {
+              id: (deps.newId ?? randomUUID)(),
+              sessionId,
+              model: toModel,
+              seam: 'switch',
+              sourceTool: SOURCE_TOOL.ClaudeCode,
+              occurredAt: (deps.now ?? (() => new Date()))().toISOString(),
+            },
             scopeKey,
-          }),
+          ),
         );
       } catch {
         // Swallowed on purpose — see above.

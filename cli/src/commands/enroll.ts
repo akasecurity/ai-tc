@@ -843,8 +843,10 @@ function onLines(name: string): string {
     'account. The check sends none of it (no email, plan or workspace id), though the token usage and tool calls read from ' +
     "that thread's log are sent with the rest of the activity of a recognised thread or of one signed in to a workspace you " +
     'enroll by hand.\n' +
-    'A work account is recognised again the next time a session signed in to it runs. Rows recorded under it ' +
-    'before you turned recognition off, and not yet sent, are sent once it is recognised again.\n'
+    'A Claude Code session signed in to a work account is recognised again at its next event. A Codex thread ' +
+    'signed in to a work account is recognised again at its next event if it started while recognition was on, ' +
+    'and not if it started while it was off. Rows recorded under a work account before you turned recognition ' +
+    'off, and not yet sent, are sent once it is recognised again.\n'
   );
 }
 

@@ -444,8 +444,9 @@ describe('Claude Code work-subscription claims', () => {
  * A new Codex thread signed in with ChatGPT to a company workspace forwards
  * everything it records, from any folder. Every page that describes a personal
  * device says so in the same words: what counts, how the device tells and what
- * that check sends, every case that keeps a thread to the repository rule, the
- * workspace enrolled by hand, and the opt-out.
+ * that check sends, every case that keeps a thread to the repository rule, a
+ * thread whose first log line is not on disk when it starts, the workspace
+ * enrolled by hand, and the opt-out.
  */
 const CODEX_WORK_SENTENCES = [
   'A Codex thread counts as a work subscription when it is new and signed in with ChatGPT to a ' +
@@ -466,6 +467,11 @@ const CODEX_WORK_SENTENCES = [
     'token (in the environment or as the login), another provider or a gateway, a thread whose ' +
     "log does not name the login's workspace as its creator, and a login Codex keeps outside " +
     'its login file (in the system keychain, for one) follow the repository rule.',
+  'A Codex thread whose first log line is not on disk when it starts is checked again at its next ' +
+    'prompt or tool call: its session record and the token usage and tool calls read from its log ' +
+    'follow the repository rule, and its prompts, tool calls and results forward from any folder ' +
+    'from that check on if the workspace is then recognised or enrolled by hand; if the line is ' +
+    'still missing then, it follows the repository rule for the rest of the thread.',
   '`aka enroll --account` enrolls by hand a workspace the device cannot recognise, and the Codex ' +
     'threads of a workspace enrolled that way then forward whatever the plan or email, though not ' +
     'a resumed thread, one under an API key or access token, one on another provider or a ' +

@@ -2209,14 +2209,18 @@ describe('aka enroll --work-subscriptions', () => {
       .output()
       .split('\n')
       .filter((line) => line.includes('Codex'));
-    expect(codexLines).toHaveLength(2);
+    expect(codexLines).toHaveLength(3);
     for (const line of codexLines) {
       expect(line).not.toContain('first reply');
       expect(line).not.toContain('settings');
       expect(line).not.toContain('chatgpt:');
     }
     expect(shown).toContain(
-      'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
+      'A Claude Code session signed in to a work account is recognised again at its next event. A Codex thread signed in to a work account is recognised again at its next event if it started while recognition was on, and not if it started while it was off.',
+    );
+    expect(shown).not.toContain('the next time a session signed in to it runs');
+    expect(shown).toContain(
+      'Rows recorded under a work account before you turned recognition off, and not yet sent, are sent once it is recognised again.',
     );
   });
 

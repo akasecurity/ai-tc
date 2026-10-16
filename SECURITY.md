@@ -245,6 +245,12 @@ another email, an API key or access token (in the environment or as the login),
 another provider or a gateway, a thread whose log does not name the login's
 workspace as its creator, and a login Codex keeps outside its login file (in
 the system keychain, for one) follow the repository rule.
+A Codex thread whose first log line is not on disk when it starts is checked
+again at its next prompt or tool call: its session record and the token usage
+and tool calls read from its log follow the repository rule, and its prompts,
+tool calls and results forward from any folder from that check on if the
+workspace is then recognised or enrolled by hand; if the line is still missing
+then, it follows the repository rule for the rest of the thread.
 `aka enroll --account` enrolls by hand a workspace the device cannot recognise,
 and the Codex threads of a workspace enrolled that way then forward whatever
 the plan or email, though not a resumed thread, one under an API key or access

@@ -161,6 +161,10 @@ const PENDING_LINE =
   'AKA: this session forwards to Acme once Claude confirms the work subscription, from its first reply.';
 const PENDING_BY_HAND =
   'AKA: this session forwards to Acme once Claude confirms it is signed in to an account you enrolled by hand, from its first reply.';
+const PENDING_UNKNOWN =
+  'AKA: this session forwards to Acme only if its first reply shows a work subscription or an account enrolled by hand; otherwise it stays local, apart from work in an enrolled repository.';
+const PENDING_UNKNOWN_BY_HAND =
+  'AKA: this session forwards to Acme only if its first reply shows an account enrolled by hand; otherwise it stays local, apart from work in an enrolled repository.';
 const OTHER_FOLDERS =
   'This session also sends its work in other folders, because it is signed in to a work subscription.';
 const OTHER_FOLDERS_MANUAL =
@@ -214,11 +218,14 @@ describe('forwardingLine — a work-subscription session', () => {
     },
   );
 
-  it('a root left to the reconcile names the deployment and the command that stops it', () => {
-    expect(forwardingLine(answering(pendingScope(undefined)), 's1')).toBe(
-      `${PENDING_LINE} ${OPT_OUT}`,
-    );
-  });
+  it.each(['validated', 'remembered'] as const)(
+    'a root left to the reconcile for a %s work login names the deployment and the command that stops it',
+    (basis) => {
+      expect(forwardingLine(answering(pendingScope(basis)), 's1')).toBe(
+        `${PENDING_LINE} ${OPT_OUT}`,
+      );
+    },
+  );
 
   it('a manual session names the account enrolled by hand and the command that stops it', () => {
     expect(forwardingLine(answering(accountScope('manual')), 's1')).toBe(
@@ -253,14 +260,51 @@ describe('forwardingLine — a work-subscription session', () => {
     ).toBe(`${WORK_LINE} ${OPT_OUT}`);
   });
 
-  it('a root left to the reconcile names the account enrolled by hand when work subscriptions are off', () => {
-    for (const basis of [undefined, 'manual'] as const) {
-      for (const managed of [false, true]) {
-        expect(forwardingLine(answering(pendingScope(basis, managed, false)), 's1')).toBe(
-          `${PENDING_BY_HAND} ${MANUAL_STOP}`,
-        );
-      }
+  it('a root left to the reconcile for an account enrolled by hand names it when work subscriptions are off', () => {
+    for (const managed of [false, true]) {
+      expect(forwardingLine(answering(pendingScope('manual', managed, false)), 's1')).toBe(
+        `${PENDING_BY_HAND} ${MANUAL_STOP}`,
+      );
     }
+  });
+
+  describe('a root left to the reconcile for a login the session start could not tell', () => {
+    const stopsAndClaims = [
+      '--work-subscriptions',
+      '--account',
+      'aka unenroll',
+      'signed in',
+      'once Claude confirms',
+    ];
+
+    it('forwards only if the first reply shows a work subscription or an account enrolled by hand, with work subscriptions on', () => {
+      for (const managed of [false, true]) {
+        const line = forwardingLine(answering(pendingScope(undefined, managed, true)), 's1');
+        expect(line).toBe(PENDING_UNKNOWN);
+        for (const needle of stopsAndClaims) expect(line).not.toContain(needle);
+      }
+    });
+
+    it('forwards only if the first reply shows an account enrolled by hand, with work subscriptions off', () => {
+      for (const managed of [false, true]) {
+        const line = forwardingLine(answering(pendingScope(undefined, managed, false)), 's1');
+        expect(line).toBe(PENDING_UNKNOWN_BY_HAND);
+        expect(line).not.toContain('work subscription');
+        for (const needle of stopsAndClaims) expect(line).not.toContain(needle);
+      }
+    });
+
+    it('says what stays local when the first reply shows neither', () => {
+      for (const workSubscriptionsOn of [true, false]) {
+        const line = forwardingLine(
+          answering(pendingScope(undefined, false, workSubscriptionsOn)),
+          's1',
+        );
+        expect(
+          line?.endsWith('otherwise it stays local, apart from work in an enrolled repository.'),
+        ).toBe(true);
+      }
+    });
   });
 
   it('a work session in a repository is told about its other folders', () => {
@@ -275,7 +319,7 @@ describe('forwardingLine — a work-subscription session', () => {
 
   it('no command the device refuses is offered', () => {
     expect(forwardingLine(answering(accountScope('validated', true)), 's1')).toBe(WORK_LINE);
-    expect(forwardingLine(answering(pendingScope(undefined, true)), 's1')).toBe(PENDING_LINE);
+    expect(forwardingLine(answering(pendingScope('validated', true)), 's1')).toBe(PENDING_LINE);
     expect(forwardingLine(answering(inWork({ basis: 'validated', managed: true })), 's1')).toBe(
       `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS}`,
     );
@@ -313,6 +357,8 @@ describe('forwardingLine — a work-subscription session', () => {
       [accountScope('validated'), `${WORK_LINE} ${OPT_OUT}`],
       [accountScope(undefined), KEYED_LINE],
       [forwardedAgentRoot, KEYED_LINE],
+      [pendingScope(undefined), PENDING_UNKNOWN],
+      [pendingScope(undefined, false, false), PENDING_UNKNOWN_BY_HAND],
     ] as const;
     for (const [scope, want] of expected) {
       const line = forwardingLine(answering(scope), 's1');
@@ -673,25 +719,38 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
     expect(await deferredLine('validated', false)).toBeNull();
   });
 
-  it('keeps the work-subscription line, with the opt-out, for an unreadable login while recognition is on', async () => {
+  it('claims neither a work subscription nor an account enrolled by hand, and offers no stop command, for an unreadable login while recognition is on', async () => {
     accountContext = { manual: [MANUAL_ACCOUNT] };
-    expect(await undeterminedLine()).toBe(`${PENDING_LINE} ${OPT_OUT}`);
+    const line = await undeterminedLine();
+    expect(line === PENDING_UNKNOWN).toBe(true);
+    expect(line?.includes('--work-subscriptions')).toBe(false);
+    expect(line?.includes('--account')).toBe(false);
+    expect(line?.includes('signed in')).toBe(false);
   });
 
-  it('names the account enrolled by hand, and no work subscription, when recognition is off and the login cannot be read', async () => {
+  it('claims no account enrolled by hand and offers no stop command when recognition is off and the login cannot be read', async () => {
     accountContext = { workSubscriptionsOn: false, manual: [MANUAL_ACCOUNT] };
     const line = await undeterminedLine();
-    expect(line === null).toBe(false);
+    expect(line === PENDING_UNKNOWN_BY_HAND).toBe(true);
     expect(line?.includes('work subscription')).toBe(false);
     expect(line?.includes('--work-subscriptions')).toBe(false);
-    expect(line?.includes('aka unenroll --account')).toBe(true);
-    expect(line === `${PENDING_BY_HAND} ${MANUAL_STOP}`).toBe(true);
+    expect(line?.includes('--account')).toBe(false);
+    expect(line?.includes('signed in')).toBe(false);
   });
 
-  it('names the account enrolled by hand where an administrator manages the connection too', async () => {
+  it('says the same where an administrator manages the connection', async () => {
     manage();
+    accountContext = { manual: [MANUAL_ACCOUNT] };
+    expect((await undeterminedLine()) === PENDING_UNKNOWN).toBe(true);
     accountContext = { workSubscriptionsOn: false, manual: [MANUAL_ACCOUNT] };
-    expect((await undeterminedLine()) === `${PENDING_BY_HAND} ${MANUAL_STOP}`).toBe(true);
+    expect((await undeterminedLine()) === PENDING_UNKNOWN_BY_HAND).toBe(true);
+  });
+
+  it('keeps the opt-out for a known work login while recognition is on, and drops it where an administrator manages the connection', async () => {
+    accountContext = { manual: [MANUAL_ACCOUNT] };
+    expect((await deferredLine('remembered')) === `${PENDING_LINE} ${OPT_OUT}`).toBe(true);
+    manage();
+    expect((await deferredLine('remembered')) === PENDING_LINE).toBe(true);
   });
 
   /** A resumed session: its root was keyed under an agent key by an earlier run, and its login now shows no work account. */

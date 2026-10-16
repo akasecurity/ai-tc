@@ -7,6 +7,7 @@ import {
   createSightingKeyStore,
   keysDir,
   settingsDir,
+  sightingKeyEndpointFingerprint,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { SIGHTING_SHARE_CONSENT_VERSION } from '@akasecurity/schema';
@@ -40,6 +41,7 @@ function sharingMachine(): void {
       sightingShareConsent: {
         acknowledgedAt: new Date().toISOString(),
         version: SIGHTING_SHARE_CONSENT_VERSION,
+        endpoint: CLOSED_ENDPOINT,
       },
     },
     home,
@@ -56,6 +58,7 @@ function sharingMachine(): void {
     algorithm: 'hmac-sha256',
     key: KEY_BYTES.toString('base64url'),
     fetchedAtMs: Date.now(),
+    endpointFingerprint: sightingKeyEndpointFingerprint(CLOSED_ENDPOINT),
   });
 }
 

@@ -11,6 +11,7 @@ import {
   keysDir,
   openLocalDatabase,
   settingsDir,
+  sightingKeyEndpointFingerprint,
   sightingToken,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -40,6 +41,7 @@ const STORED_KEY = {
   algorithm: 'hmac-sha256' as const,
   key: Buffer.alloc(32, 9).toString('base64url'),
   fetchedAtMs: 1,
+  endpointFingerprint: sightingKeyEndpointFingerprint(ENDPOINT),
 };
 // The same key, held independently of the custody read.
 const KEY = { keyVersion: 2, key: new Uint8Array(Buffer.alloc(32, 9)) };
@@ -102,6 +104,7 @@ function attach(opts: { consent: boolean; key: boolean }): void {
             sightingShareConsent: {
               acknowledgedAt: new Date().toISOString(),
               version: SIGHTING_SHARE_CONSENT_VERSION,
+              endpoint: ENDPOINT,
             },
           }
         : {}),

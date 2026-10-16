@@ -16,6 +16,7 @@ import {
   createSightingKeyStore,
   keysDir,
   settingsDir,
+  sightingKeyEndpointFingerprint,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { SIGHTING_SHARE_CONSENT_VERSION, SIGHTING_SHARE_PAYLOAD_NOTE } from '@akasecurity/schema';
@@ -49,6 +50,7 @@ describe('/aka:scan credential sightings', () => {
         sightingShareConsent: {
           acknowledgedAt: new Date().toISOString(),
           version: SIGHTING_SHARE_CONSENT_VERSION,
+          endpoint: CLOSED_ENDPOINT,
         },
       },
       base,
@@ -65,6 +67,7 @@ describe('/aka:scan credential sightings', () => {
       algorithm: 'hmac-sha256',
       key: Buffer.alloc(32, 8).toString('base64url'),
       fetchedAtMs: Date.now(),
+      endpointFingerprint: sightingKeyEndpointFingerprint(CLOSED_ENDPOINT),
     });
     writeFileSync(join(target, '.env'), `AWS_ACCESS_KEY_ID=${VALUE}\n`);
 

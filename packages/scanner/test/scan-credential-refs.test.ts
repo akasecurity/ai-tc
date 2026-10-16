@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -74,7 +75,13 @@ function attach(consent: boolean): PluginConfig {
       runMode: 'attached',
       controlPlane: { endpoint: ENDPOINT, attachedAt: MINTED_AT },
       ...(consent
-        ? { sightingShareConsent: { acknowledgedAt: new Date().toISOString(), version: 1 } }
+        ? {
+            sightingShareConsent: {
+              acknowledgedAt: new Date().toISOString(),
+              version: 2,
+              endpoint: ENDPOINT,
+            },
+          }
         : {}),
     },
     home,
@@ -98,6 +105,7 @@ function attach(consent: boolean): PluginConfig {
       algorithm: 'hmac-sha256',
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
+      endpointFingerprint: createHash('sha256').update(ENDPOINT).digest('hex'),
     }),
     { mode: 0o600 },
   );

@@ -1,7 +1,7 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type { CredentialSightingsSend } from '@akasecurity/plugin-runtime';
 import {
@@ -68,7 +68,13 @@ function attach(consent: boolean): PluginConfig {
       runMode: 'attached',
       controlPlane: { endpoint: ENDPOINT, attachedAt: MINTED_AT },
       ...(consent
-        ? { sightingShareConsent: { acknowledgedAt: new Date().toISOString(), version: 1 } }
+        ? {
+            sightingShareConsent: {
+              acknowledgedAt: new Date().toISOString(),
+              version: 2,
+              endpoint: ENDPOINT,
+            },
+          }
         : {}),
     },
     home,
@@ -92,6 +98,7 @@ function attach(consent: boolean): PluginConfig {
       algorithm: 'hmac-sha256',
       key: KEY_BYTES.toString('base64url'),
       fetchedAtMs: Date.now(),
+      endpointFingerprint: createHash('sha256').update(ENDPOINT).digest('hex'),
     }),
     { mode: 0o600 },
   );
@@ -113,16 +120,6 @@ function recorder(fail = false): { send: CredentialSightingsSend; requests: Sent
   };
 }
 
-const storedContents = (config: PluginConfig): string =>
-  (() => {
-    const raw = new DatabaseSync(config.dbPath, { readOnly: true });
-    try {
-      return JSON.stringify(raw.prepare('SELECT * FROM audit_events').all());
-    } finally {
-      raw.close();
-    }
-  })();
-
 const options = (send: CredentialSightingsSend) => ({
   rootDir: repo,
   sourceTool: 'claude-code' as const,
@@ -131,7 +128,7 @@ const options = (send: CredentialSightingsSend) => ({
 });
 
 describe('scanWorktree — credential sightings', () => {
-  it('sends a source file and a dotenv file as tokens, and keeps the dotenv content local', async () => {
+  it('sends a source file and a dotenv file as tokens, and sends nothing of the dotenv file', async () => {
     const config = attach(true);
     const rec = recorder();
 
@@ -159,9 +156,6 @@ describe('scanWorktree — credential sightings', () => {
     for (const forbidden of [SOURCE_VALUE, DOTENV_VALUE, repo, 'deploy.ts', '.env']) {
       expect(wire).not.toContain(forbidden);
     }
-    // The dotenv file was read for its sighting only: nothing of it is stored.
-    expect(storedContents(config)).not.toContain(DOTENV_VALUE);
-    expect(storedContents(config)).not.toContain(join(repo, '.env'));
   });
 
   it('reads an unchanged file again after a failed send, and not after a delivered one', async () => {

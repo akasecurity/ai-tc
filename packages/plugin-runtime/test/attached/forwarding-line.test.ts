@@ -838,7 +838,7 @@ describe('forwardingLine — a Codex thread on a work subscription', () => {
 
 describe('forwardingLine — a Codex thread whose ChatGPT account is not decided yet', () => {
   const PENDING =
-    "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on.";
+    "This thread's ChatGPT account is checked once more at its next prompt or tool call. If this device then recognises it as a work subscription, or it is a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on. Otherwise, including if the account still cannot be read, the thread follows the repository rule.";
   const pendingSession: ForwardingSession = {
     rootDeferred: false,
     basis: undefined,
@@ -887,5 +887,19 @@ describe('forwardingLine — a Codex thread whose ChatGPT account is not decided
   it('prints no key, workspace id or tag', () => {
     const line = forwardingLine(answering(localRoot), 's1', pendingSession) ?? '';
     for (const material of ['chatgpt:', 'agent:', SCOPE_TAG]) expect(line).not.toContain(material);
+  });
+
+  it('makes the forwarding conditional on the next check and names what happens otherwise', () => {
+    const line = forwardingLine(answering(localRoot), 's1', pendingSession) ?? '';
+    const sentence = line.slice(line.indexOf("This thread's"));
+    expect(sentence).toBe(PENDING);
+    expect(sentence.replace('recognises it as a work subscription', '')).not.toContain(
+      'work subscription',
+    );
+    expect(sentence.indexOf('If this device then recognises')).toBeGreaterThan(-1);
+    expect(sentence.indexOf('If this device then recognises')).toBeLessThan(
+      sentence.indexOf('are forwarded'),
+    );
+    expect(sentence.endsWith('the thread follows the repository rule.')).toBe(true);
   });
 });

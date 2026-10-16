@@ -123,7 +123,7 @@ const ACCOUNT_OPENING: Record<WebAccountProvider, AccountOpening> = {
 
 /** The sentence a Codex thread's line ends with while its ChatGPT account is not decided. */
 function pendingThreadAccount(name: string): string {
-  return `This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to ${name} from any folder from then on.`;
+  return `This thread's ChatGPT account is checked once more at its next prompt or tool call. If this device then recognises it as a work subscription, or it is a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to ${name} from any folder from then on. Otherwise, including if the account still cannot be read, the thread follows the repository rule.`;
 }
 
 /** `line`, then, for a thread whose account is not decided yet, what its next check can change. */
@@ -208,9 +208,10 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  *
  * A scoped line for a Codex thread whose ChatGPT account is not decided yet
  * (`session.threadAccountPending`) ends with a sentence saying the account is
- * checked once more at the thread's next prompt or tool call, and that a work
- * subscription or a workspace enrolled by hand then sends the thread's prompts,
- * tool calls and results from any folder.
+ * checked once more at the thread's next prompt or tool call. If the device then
+ * recognises a work subscription, or the workspace is enrolled by hand, the
+ * thread's prompts, tool calls and results are sent from any folder; otherwise
+ * the thread follows the repository rule.
  *
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled

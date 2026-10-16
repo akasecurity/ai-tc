@@ -62,7 +62,7 @@ const LOCAL_ONLY =
 const WORK_LINE =
   'AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; it stops if the thread is resumed or its login changes.';
 const PENDING_LINE =
-  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on.";
+  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If this device then recognises it as a work subscription, or it is a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on. Otherwise, including if the account still cannot be read, the thread follows the repository rule.";
 const RESUMED_LINE =
   'AKA: this thread first ran under a ChatGPT workspace forwarded to Acme; from here it follows the repository rule, so only work in an enrolled repository is forwarded.';
 
@@ -148,6 +148,8 @@ interface Device {
 
 interface DeviceOptions {
   manual?: boolean;
+  /** Work subscriptions are turned off on this device. */
+  optedOut?: boolean;
   signedIn?: { plan: string; email?: string } | undefined;
 }
 
@@ -190,6 +192,7 @@ function withDevice(
         endpoint,
         tenantName: 'Acme',
         userEmail: member,
+        ...(options.optedOut === true ? { workSubscriptions: 'off' } : {}),
         entries:
           options.manual === true
             ? [
@@ -543,6 +546,42 @@ describe('a Codex thread on a ChatGPT work subscription, through the built hooks
       expect(rows.filter((row) => row.kind === 'prompt').map((row) => row.key)).toEqual([
         device.agent,
       ]);
+    }));
+
+  it('forwards a late thread of a workspace enrolled by hand on a device opted out of work subscriptions', () =>
+    withDevice({ manual: true, optedOut: true, signedIn: { plan: 'business' } }, (device) => {
+      const thread = device.thread({ late: true });
+      const started = device.run('session-start', startPayload(thread, device.personal, 'startup'));
+      expect(started.status, started.stderr).toBe(0);
+      expect(systemMessage(started.stdout)).toContain(`${LOCAL_ONLY}. ${PENDING_LINE}`);
+      thread.writeHead();
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'a prompt')).status,
+      ).toBe(0);
+      expect(
+        device
+          .rows()
+          .filter((row) => row.kind === 'prompt')
+          .map((row) => row.key),
+      ).toEqual([device.agent]);
+    }));
+
+  it('says nothing of a next check on a device opted out with no workspace enrolled by hand', () =>
+    withDevice({ optedOut: true, signedIn: { plan: 'business' } }, (device) => {
+      const thread = device.thread({ late: true });
+      const started = device.run('session-start', startPayload(thread, device.personal, 'startup'));
+      expect(started.status, started.stderr).toBe(0);
+      expect(systemMessage(started.stdout)).toBe(LOCAL_ONLY);
+      thread.writeHead();
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'a prompt')).status,
+      ).toBe(0);
+      expect(
+        device
+          .rows()
+          .filter((row) => row.kind === 'prompt')
+          .map((row) => row.key),
+      ).toEqual([PERSONAL_KEY]);
     }));
 
   it('keeps the repository rule for good when the first record is still missing at the next prompt', () =>

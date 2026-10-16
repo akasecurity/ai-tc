@@ -93,9 +93,10 @@ const WORK_LINE =
   'AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; it stops if the ' +
   'thread is resumed or its login changes. `aka unenroll --work-subscriptions` stops this on this device.';
 const PENDING =
-  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a " +
-  "work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and " +
-  'results are forwarded to Acme from any folder from then on.';
+  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If this " +
+  'device then recognises it as a work subscription, or it is a workspace you enrolled by hand, the ' +
+  "thread's prompts, tool calls and results are forwarded to Acme from any folder from then on. " +
+  'Otherwise, including if the account still cannot be read, the thread follows the repository rule.';
 const RESUMED_LINE =
   'AKA: this thread first ran under a ChatGPT workspace forwarded to Acme; from here it follows the ' +
   'repository rule, so only work in an enrolled repository is forwarded.';
@@ -486,6 +487,77 @@ describe('a thread whose first rollout line is not on disk at session start', ()
       await gateway.close();
     }
     expect(rootKeys()).toEqual([null]);
+  });
+
+  describe('on a device opted out of work subscriptions', () => {
+    function optOut(enrolledByHand: string | undefined): void {
+      applyOnboarding(
+        {
+          attachmentScope: {
+            endpoint: server.origin,
+            tenantName: 'Acme',
+            userEmail: member,
+            workSubscriptions: 'off',
+            entries:
+              enrolledByHand === undefined
+                ? []
+                : [
+                    {
+                      kind: 'account',
+                      identity: `chatgpt:${enrolledByHand}`,
+                      enrolledAt: '2026-10-02T09:00:00.000Z',
+                      codingAgents: true,
+                    },
+                  ],
+          },
+        },
+        base,
+        null,
+      );
+    }
+
+    async function nextHook(
+      sessionId: string,
+      transcriptPath: string,
+    ): Promise<string | undefined> {
+      rollout(sessionId);
+      const gateway = resolveDataGateway(loadConfig(base, resolveCodexProvider));
+      try {
+        return threadAccountKey(gateway, {
+          dataDir: dataDirOf(base),
+          sessionId,
+          transcriptPath,
+          nowMs: Date.now(),
+          home,
+        });
+      } finally {
+        await gateway.close();
+      }
+    }
+
+    it('forwards a workspace enrolled by hand at the next check, as the line says', async () => {
+      optOut(workspace);
+      const { sessionId, transcriptPath, line } = await startWithoutHead();
+      expect(line).toBe(`${LOCAL_ONLY}. ${PENDING}`);
+      expect(await nextHook(sessionId, transcriptPath)).toBe(`chatgpt:${workspace}`);
+      expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+    });
+
+    it('recognises nothing at the next check when only another workspace is enrolled by hand', async () => {
+      optOut(randomUUID());
+      const { sessionId, transcriptPath, line } = await startWithoutHead();
+      expect(line).toBe(`${LOCAL_ONLY}. ${PENDING}`);
+      expect(await nextHook(sessionId, transcriptPath)).toBeUndefined();
+      expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+    });
+
+    it('leaves the thread undecided, and says nothing of a next check, with no workspace enrolled by hand', async () => {
+      optOut(undefined);
+      const { sessionId, transcriptPath, line } = await startWithoutHead();
+      expect(line).toBe(LOCAL_ONLY);
+      expect(await nextHook(sessionId, transcriptPath)).toBeUndefined();
+      expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+    });
   });
 });
 

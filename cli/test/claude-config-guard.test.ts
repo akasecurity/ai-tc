@@ -89,7 +89,13 @@ describe('aka status with no Claude Code home named', () => {
       askHidden: unscripted,
       readAllStdin: () => Promise.resolve(''),
     };
-    await runStatus([], { base, prompter: io, managedSettings: null });
+    // A Codex home that holds no login, so the scoped block reads none of the developer's.
+    await runStatus([], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      codexHome: join(base, 'codex'),
+    });
     expect(out.join('')).toContain('  this login Claude Code — login file not found\n');
   });
 });

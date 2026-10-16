@@ -23,13 +23,24 @@ const noManagedSettingsGuard = fileURLToPath(
 const noHostClaudeConfigGuard = fileURLToPath(
   new URL('../test/setup/no-host-claude-config.ts', import.meta.url),
 );
+// And with Codex's home pointed at an empty directory and no Codex key, token or
+// gateway address in the environment, for the same reason: the Codex line of
+// `aka status` reads the login under the real home unless a case names another.
+const noHostCodexConfigGuard = fileURLToPath(
+  new URL('../test/setup/no-host-codex-config.ts', import.meta.url),
+);
 
 // The CLI suite exercises real node:sqlite file I/O, which runs slowly under
 // Turbo's parallel task load, so raise the per-test AND per-hook timeouts above
 // vitest's 5s/10s defaults (mirrors packages/persistence/vitest.config.ts).
 export default defineConfig({
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noHostClaudeConfigGuard],
+    setupFiles: [
+      noNetworkGuard,
+      noManagedSettingsGuard,
+      noHostClaudeConfigGuard,
+      noHostCodexConfigGuard,
+    ],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
     testTimeout: 20_000,

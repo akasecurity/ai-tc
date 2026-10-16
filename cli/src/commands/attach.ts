@@ -46,6 +46,7 @@ import {
   readHostVersionCache,
 } from '@akasecurity/plugin-sdk';
 import type { ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import { codexHomeDir } from '@akasecurity/plugin-sdk/account';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
@@ -161,6 +162,8 @@ export interface AttachDeps {
   claudePaths?: ClaudeLoginPaths | undefined;
   /** The project whose Claude Code settings can veto its login. Defaults to the working directory. */
   cwd?: (() => string) | undefined;
+  /** Codex's home directory, for the status line about its login. Defaults to the one Codex resolves. */
+  codexHome?: string | undefined;
   base?: string;
   prompter?: Prompter;
   /** The transport, injectable so tests verify a credential without a network. */
@@ -1887,6 +1890,8 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
     isTTY: io.isInteractive,
     managedSettings: deps.managedSettings,
     claudePaths: deps.claudePaths ?? {},
+    // null: a CODEX_HOME that is no usable directory still asks for the line, which reads as no login file.
+    codexHome: deps.codexHome ?? codexHomeDir() ?? null,
     cwd: (deps.cwd ?? (() => process.cwd()))(),
   });
   // Only for an attached machine: a standalone one has no policy to be current.

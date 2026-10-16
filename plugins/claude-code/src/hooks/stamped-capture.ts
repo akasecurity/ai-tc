@@ -1,9 +1,9 @@
 // The one place a Claude Code hook or mod helper records a capture, asks whether
 // the organization's model policy governs an event, or builds a model-refusal
-// row. Each function takes the event's key as a StampedScopeKey: the key the
-// session's account scope stamped (see account-stamp.ts), never a bare
-// repository key. This plugin's eslint.config.mjs refuses those calls anywhere
-// else under src/hooks and src/mod.
+// row. Each function takes the event's key as a StampedScopeKey: what `stampFor`
+// (account-stamp.ts) returns, which is the repository key itself where no
+// account key applies. This plugin's eslint.config.mjs refuses those calls
+// anywhere else under src/hooks and src/mod.
 import type { StampedScopeKey } from '@akasecurity/plugin-runtime';
 import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type {

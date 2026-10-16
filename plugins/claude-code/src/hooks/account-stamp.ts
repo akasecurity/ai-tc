@@ -224,8 +224,9 @@ function sessionSourceOf(
  * What SessionStart records before the session start runs, on a scoped
  * attachment whose identity record holds: the boundary (none for a compaction)
  * and, on a resume, whether the session inherits the org it ran under; then,
- * unless the check is gated off, the login view. Prunes session state older
- * than thirty days on every call. Opens no store. Never throws.
+ * unless the check is gated off, the login view. On any attachment, scoped or
+ * not, prunes the session state files last written more than thirty days ago.
+ * Opens no store. Never throws.
  */
 export function recordSessionStartAccount(input: SessionStartAccountInput): SessionStartAccount {
   const nowMs = (input.now ?? Date.now)();

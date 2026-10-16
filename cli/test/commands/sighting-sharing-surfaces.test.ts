@@ -145,11 +145,12 @@ describe('aka scan — credential sightings footer', () => {
     );
   });
 
-  it('reports the managed state on a machine-wide attachment pinned on', async () => {
+  it('says a sharing machine skipped sharing for a --no-forward run', async () => {
     attach(MACHINE);
     const out = await scanText(pinned(true));
-    expect(out.trimEnd().split('\n').at(-1)).toContain(
-      'Credential sightings: on (attached, machine-wide) — required by Acme',
+    expect(out.trimEnd().split('\n').at(-1)).toBe(
+      'Credential sightings: not shared — forwarding was skipped for this scan. ' +
+        SIGHTING_SHARE_PAYLOAD_NOTE,
     );
   });
 

@@ -24,7 +24,8 @@ import {
   scanAllRepos,
   scanWorktree,
 } from '@akasecurity/scanner';
-import { sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
+import type { CredentialSightingsOutcome } from '@akasecurity/schema';
+import { credentialSightingsLine, sightingSharingLine, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
 
@@ -62,11 +63,17 @@ function parseFlags(argv: string[]): Flags {
 // injected here rather than baked into the shared renderer.
 const FOLLOW_UP = 'Run /aka:findings to review details.';
 
+// What the scan shared of the credential sightings it found, closing every
+// report. A scan that could not decide reports the sharing state instead.
+function sightingsFooter(outcome: CredentialSightingsOutcome | undefined): string {
+  return outcome === undefined
+    ? sightingSharingLine(readSightingSharing())
+    : credentialSightingsLine(outcome);
+}
+
 try {
   const { dir, discover, root, depth } = parseFlags(process.argv.slice(2));
   const cfg = loadConfig();
-  // Whether credential sightings leave this machine, closing every report.
-  const footer = sightingSharingLine(readSightingSharing());
 
   if (discover) {
     // Never the home directory implicitly: --discover without --root sweeps
@@ -76,6 +83,7 @@ try {
       searchRoots: [root ?? process.cwd()],
       ...(depth !== undefined ? { maxDepth: depth } : {}),
     });
+    const footer = sightingsFooter(summary.sightings);
     process.stdout.write(
       `${fenced(renderMultiRepoSummary(summary, { followUp: FOLLOW_UP, footer }))}\n`,
     );
@@ -84,6 +92,7 @@ try {
       sourceTool: SOURCE_TOOL.ClaudeCode,
       ...(dir !== undefined ? { rootDir: dir } : {}),
     });
+    const footer = sightingsFooter(summary.sightings);
     process.stdout.write(
       `${fenced(renderWorktreeSummary(summary, { followUp: FOLLOW_UP, footer }))}\n`,
     );

@@ -90,6 +90,12 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
 - **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
   start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
   dialects.
+- **Copilot userPromptSubmitted and postToolUse** (the same `largeInputBound` and the same
+  15 s deadline, inside the same 24 s watchdog): bounded, with **no refusal half**. Neither
+  event has a prompt-stop or result-withhold channel this package has confirmed, so a field
+  that comes back `scanIncomplete` is reported on the notice channel as too large to scan
+  (`unscannedTooLargeMessage` in `plugins/copilot/src/exception-guidance.ts`) — never
+  refused, and never treated as clean.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`
@@ -97,27 +103,31 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
   and the content script lets the original message through on an error.
 
 A field whose bounded scan times out or finds no worker comes back as a `block` with
-`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
-UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
-explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
-withholds the output, and the native host answers `action: 'block'` with
-`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
-exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
-interrupted (§5), so without the bound a large enough field keeps the hook busy past
-whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
-those passes the call through unscanned, except Antigravity's kill, which denies it with no
-reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
-nothing else in this section changes: a throw, bad stdin, an unopenable store and a
-PostToolUse field the loop deadline never reached all still pass (silently, or with
-Antigravity's explicit allow), and a native host that does not answer at all still lets the
-message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
-a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it wherever
+its host has a channel to refuse on: UserPromptSubmit blocks the prompt, PreToolUse denies
+the call — Antigravity with an explicit `{"decision":"deny"}`, Copilot in each dialect's own
+deny shape — PostToolUse withholds the output, and the native host answers `action: 'block'`
+with `CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner
+with no exception route, leaving the message unsent in the composer. Copilot's
+userPromptSubmitted and postToolUse are the exception named above: the host sends the prompt
+and delivers the result whatever the hook answers, so they REPORT the field as unscanned
+instead. Why: `scan()` cannot be interrupted (§5), so without the bound a large enough field
+keeps the hook busy past whatever answers for it — the host's timeout, a watchdog, the relay
+— and every one of those passes the call through unscanned, except Antigravity's kill, which
+denies it with no reason. Failing open there IS the gap. The refusal is a RETURNED decision,
+never a throw, so nothing else in this section changes: a throw, bad stdin, an unopenable
+store and a PostToolUse field the loop deadline never reached all still pass (silently, or
+with Antigravity's explicit allow), and a native host that does not answer at all still lets
+the message through on the relay's timeout. Anything that skips clean fields, or keys a deny
+on a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
 both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
 rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
 and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
-worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
-it through the built native host — so every bundle that runs this path also has to SHIP the
-worker, since a missing one refuses every large field.
+worker removed (Copilot's also drive the unscanned report on its two capture hooks), and the
+extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives it through the built
+native host — so every bundle that runs this path also has to SHIP the worker, since a
+missing one refuses every large field (or, on those two Copilot hooks, reports every one as
+unscanned).
 
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
@@ -954,8 +964,17 @@ changes. The gaps that exist today:
   selects the format by the event name's casing, so a manifest registering `preToolUse` and
   `PreToolUse` together spawns the hook twice per call — the second time with a payload whose
   `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
-  for. `plugins/copilot/hooks.json` therefore registers the camelCase event **alone**, and a
-  VS Code entry belongs in the file that host itself reads.
+  for. `plugins/copilot/hooks.json` therefore registers **camelCase events alone** — the four
+  it carries are `sessionStart`, `userPromptSubmitted`, `preToolUse` and `postToolUse`, each
+  once — and a VS Code entry belongs in the file that host itself reads. Of those four only
+  `preToolUse` ENFORCES. `userPromptSubmitted` and `postToolUse` capture, scan and record,
+  and pass `rewritable: false` because neither host has a prompt-stop or result-withhold
+  channel this repository has observed, so a `redact` resolves to `redactFallback` inside
+  the runtime rather than the hook claiming an enforcement the host would ignore.
+  `sessionStart` scans nothing: it opens the session root every later capture hangs off.
+  `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
+  payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records
+  every prompt twice.
   The VS Code half is built to the published contract and **confirmed against no live
   install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
   every capability it claims is marked unverified, and

@@ -463,6 +463,7 @@ describe('cli/README.md work-subscription disclosure', () => {
   const PHRASES = [
     "sends everything it records from its first reply on, from any folder, with that folder's project and branch names",
     "To tell whether a session is one, the device reads Claude Code's login file, the session's own log, and Claude Code's settings files (the project's own included) and environment variables that choose the account or provider, and compares the signed-in email with the account that attached the device. The check sends none of what it reads, though the token usage and tool calls read from that same log are forwarded with the rest of the activity of a recognised session or of one signed in to an account enrolled by hand.",
+    'an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule;',
     '`aka enroll --account` enrolls by hand an account the device cannot recognise, and the Claude Code sessions of an account enrolled that way then forward from their first reply on whatever the plan or email, though not under an API key or another provider.',
     '`aka unenroll --work-subscriptions` turns recognition off on this device',
     'it turns off only the automatic recognition, so while it is off, enrolled repositories and accounts enrolled by hand still forward (`aka unenroll --account` stops an account)',
@@ -474,6 +475,11 @@ describe('cli/README.md work-subscription disclosure', () => {
       expect(body).toContain(phrase);
       expect(footnote).toContain(phrase);
     }
+  });
+
+  it('says a reply waits for the device to confirm the account, not for the login file to show the plan or the account', () => {
+    expect(body).not.toMatch(/login file shows? the (?:plan|account)/);
+    expect(footnote).not.toMatch(/login file shows? the (?:plan|account)/);
   });
 
   it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {

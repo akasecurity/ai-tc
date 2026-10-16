@@ -584,8 +584,9 @@ describe('handleSubagentSpawn', () => {
   });
 });
 
-// A work-subscription session on a scoped attachment: the spawn is keyed by the
-// session's agent key, which is in scope in any folder.
+// A work-subscription session on a scoped attachment, once the transcript names
+// the session's organization (after the first prompt): a spawn in a folder whose
+// repository is not enrolled is keyed by the session's agent key.
 describe('handleSubagentSpawn in a work-subscription session', () => {
   let dev: Device;
   beforeEach(async () => {

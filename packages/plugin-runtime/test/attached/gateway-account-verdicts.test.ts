@@ -290,6 +290,51 @@ describe('the attached gateway forwards by account, repository first', () => {
   });
 });
 
+describe('a leaf is held to its session root', () => {
+  it('forwards the account-keyed reply under an account-keyed root, and under no other root', async () => {
+    attachScoped();
+    const gateway = resolveGatewayForConfig(configFor());
+    try {
+      const byAccount = stampScopeKey(gateway, PERSONAL_REPO, WORK_ACCOUNT);
+      const byRepository = stampScopeKey(gateway, PERSONAL_REPO);
+      expect(byAccount).toBe(agentKeyOf(record().scopeTag, WORK_ACCOUNT));
+      expect(byRepository).toBe(PERSONAL_REPO);
+      for (const [session, rootKey] of [
+        ['rooted-by-account', byAccount],
+        ['rooted-by-repository', byRepository],
+      ] as const) {
+        await gateway.recordAuditEvent({
+          id: session,
+          eventType: 'session',
+          startedAt: new Date().toISOString(),
+          attributes: { harness: 'claude-code', scope_key: rootKey },
+        });
+        await gateway.recordLlmCalls(
+          (
+            [
+              ['account', byAccount],
+              ['repository', byRepository],
+            ] as const
+          ).map(([name, key]) => ({
+            sessionId: session,
+            messageId: `${session}-${name}`,
+            parentId: session,
+            rootSessionId: session,
+            startedAt: new Date().toISOString(),
+            attributes: { model: 'example-model', scope_key: key },
+          })),
+        );
+      }
+    } finally {
+      await gateway.close();
+    }
+    expect(sent.audit.map((event) => event.id)).toEqual(['rooted-by-account']);
+    expect(sent.auditBatches.flat().map((event) => event.id)).toEqual([
+      llmCallId('rooted-by-account', 'rooted-by-account-account'),
+    ]);
+  });
+});
+
 describe('admit, on the gateway the factory builds', () => {
   it("names the identity record's binding", async () => {
     attachScoped();

@@ -79,9 +79,12 @@ export async function runSessionStart(
     // as a terminal session.
     harnessInterface: deps.harnessInterface,
     // A session whose login is a work subscription, or cannot be told yet, leaves
-    // its root to the reconcile, which keys it by the account its first reply ran
-    // under: the session start leaves a stub with no attributes, and the root is on
-    // disk only once a reconcile pass writes it. The session start still writes the
+    // its root to the reconcile: the session start leaves a stub with no attributes,
+    // and the root is on disk only once a reconcile pass writes it. The pass keys it
+    // by the account of the first reply it attributes to one; with none, by the
+    // account the session is in when the pass ends; with neither, or once its holds
+    // are spent, by the repository. While the session is in a work account whose key
+    // is not in scope yet, the pass holds for it. The session start still writes the
     // root at once where its repository is enrolled, and on a machine-wide
     // attachment.
     rootAwaitsAccount: account.basis !== undefined || account.undetermined,

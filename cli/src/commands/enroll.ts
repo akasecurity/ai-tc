@@ -9,9 +9,12 @@ import {
   dataDir as dataDirOf,
   DB_FILENAME,
   enrollableRepoKey,
+  forgetWorkAccounts,
   managedConnectionHold,
   managedScopedRefusal,
+  markCodingAgentEntries,
   overlayManagedSettings,
+  readBoundAttachedIdentity,
   readControlPlaneCredentialFile,
   readDetectedWebAccounts,
   readEffectiveSettings,
@@ -19,15 +22,21 @@ import {
   removeAttachmentScopeEntries,
   seedEnrolledCapturesOwed,
   settingsDir as settingsDirOf,
+  turnWorkSubscriptionsOff,
+  turnWorkSubscriptionsOn,
   UnreadableAttachmentScopeError,
 } from '@akasecurity/persistence';
+import type { ClaudeCodeLoginState, ClaudeCodeLoginView } from '@akasecurity/plugin-runtime';
 import {
   attachmentScopeLines,
+  claudeCodeLoginView,
   deploymentNameForTerminal,
   printableForTerminal,
 } from '@akasecurity/plugin-runtime';
 import { resolveRepoAttribution } from '@akasecurity/plugin-sdk';
+import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
 import type {
+  AttachedIdentity,
   ControlPlaneConnection,
   CredentialUnusableReason,
   ManagedSettings,
@@ -35,6 +44,7 @@ import type {
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
+  AGENT_KEY_PREFIX,
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   AttachmentScopeEntry,
@@ -50,6 +60,7 @@ import {
   unsafeEndpointReason,
   WEB_ACCOUNT_PROVIDER,
   webChatCaptureOf,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -58,7 +69,7 @@ import { terminalPrompter } from '../lib/prompter.ts';
 import { refusalLine } from '../lib/refusal-line.ts';
 
 // `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories and
-// web chat accounts a SCOPED attachment sends.
+// Claude accounts a SCOPED attachment sends.
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
@@ -84,36 +95,51 @@ import { refusalLine } from '../lib/refusal-line.ts';
 // command that attaches.
 const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --repo <clone-url | host/owner/repo>
-       aka enroll --account <claude:organization-id>
+       aka enroll --account <claude:organization-id> [--yes]
+       aka enroll --work-subscriptions
        aka enroll --list
        aka enroll --list-detected
 
 On a machine attached in the scoped mode, activity is sent to the deployment
-only from the repositories and web chat accounts enrolled here; activity
-anywhere else stays on this machine. The policy pull and the device report are
-not limited to them: the report's finding counts and dates are for everything
-recorded on the machine.
+only from the repositories and Claude accounts enrolled here (an account's
+Claude Code sessions and its claude.ai chat replies), and from Claude Code
+sessions signed in to a work subscription (a Claude Team or Enterprise plan)
+that this device recognises; activity anywhere else stays on this machine.
+The policy pull, the sighting-key fetch, the command check and the device
+report are not limited to them: the report's finding counts and dates are for
+everything recorded on the machine.
 
-  [path]           Enroll the repository this directory is in (default: .).
-  --repo <repo>    Enroll by clone URL, or by key, as in github.com/acme/payments-api.
-  --account <key>  Enroll a claude.ai account by its key, as --list-detected shows it.
-  --list           Show what is enrolled.
-  --list-detected  Show the web chat accounts the browser extension has seen here.
-  --home <dir>     Use an alternate AKA home instead of ~/.aka.
+  [path]                Enroll the repository this directory is in (default: .).
+  --repo <repo>         Enroll by clone URL, or by key, as in github.com/acme/payments-api.
+  --account <key>       Enroll a Claude account by its key, as --list-detected shows it,
+                        for its Claude Code sessions and its claude.ai chats: the
+                        fallback for a work subscription this device does not recognise.
+  --yes                 With --account, enroll the login signed in now without asking,
+                        even on a personal plan.
+  --work-subscriptions  Recognise work subscriptions on this device again.
+  --list                Show what is enrolled.
+  --list-detected       Show the web chat accounts the browser extension has seen here,
+                        and the Claude Code login signed in now.
+  --home <dir>          Use an alternate AKA home instead of ~/.aka.
 
 Enrolling changes this machine's settings and contacts nothing.`;
 
 const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --repo <clone-url | host/owner/repo>
        aka unenroll --account <claude:organization-id>
+       aka unenroll --work-subscriptions
 
-Stops sending a repository or a web chat account from a scoped attachment:
-sessions, scans and chats started afterwards keep its activity on this machine.
+Stops sending a repository or a Claude account from a scoped attachment:
+sessions, scans and chats started afterwards keep its activity on this machine,
+except a Claude Code session signed in to a recognised work subscription or to
+another account enrolled by hand, which forwards from any folder.
 
-  [path]           The repository this directory is in (default: .).
-  --repo <repo>    A clone URL, or a key, as in github.com/acme/payments-api.
-  --account <key>  A web chat account's key, as aka enroll --list shows it.
-  --home <dir>     Use an alternate AKA home instead of ~/.aka.
+  [path]                The repository this directory is in (default: .).
+  --repo <repo>         A clone URL, or a key, as in github.com/acme/payments-api.
+  --account <key>       An account's key, as aka enroll --list shows it.
+  --work-subscriptions  Stop recognising work subscriptions on this device; what you
+                        enrolled still forwards. aka enroll --work-subscriptions undoes it.
+  --home <dir>          Use an alternate AKA home instead of ~/.aka.
 
 Unenrolling changes this machine's settings and contacts nothing.`;
 
@@ -135,6 +161,11 @@ export interface EnrollDeps {
   cwd: () => string;
   /** The enrollment time. */
   now: () => Date;
+  /**
+   * Where Claude Code keeps its login and settings files. Leaving it out reads
+   * the real home and the system managed-settings file.
+   */
+  claudePaths: ClaudeLoginPaths | undefined;
 }
 
 type Verb = 'enroll' | 'unenroll';
@@ -145,7 +176,7 @@ type Verb = 'enroll' | 'unenroll';
  *
  * Resolves to the exit code — 0, 1 for a refusal or a failed write, 2 for a
  * usage error — and hands a non-zero one to `deps.exit` as well. Asynchronous
- * in signature only, like the other entries `main()` awaits.
+ * because `--account` may ask before it enrolls.
  */
 export function runEnroll(
   argv: readonly string[],
@@ -166,17 +197,21 @@ export function runUnenroll(
   });
 }
 
-function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
+async function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): Promise<number> {
   const ready = preflight('enroll', argv, deps);
   if (typeof ready === 'number') return ready;
   const { io, fail, base, managed, connection, name } = ready;
+  if (ready.args.workSubscriptions) return turnRecognitionOn(ready);
   if (ready.args.list) {
     const lines = attachmentScopeLines(ready.settings.attachmentScope, connection.endpoint);
     io.out(`Enrolled with ${name}:\n${lines.join('\n')}\n`);
     return 0;
   }
   if (ready.args.listDetected) {
-    io.out(detectedAccountLines(base, ready.settings, name));
+    io.out(
+      detectedAccountLines(base, ready.settings, name) +
+        claudeCodeDetectedLines(claudeCodeLoginNow(ready), io.isInteractive),
+    );
     return 0;
   }
   const identity = namedRepository('enroll', ready);
@@ -184,20 +219,41 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   // Checked here, before the settings lock is taken: the raw edit throws for an
   // entry the store would not read back, and a throw from inside the lock would
   // be reported as a failed write rather than as what was wrong with the entry.
-  const entry = enrollmentOf(identity, (deps.now ?? (() => new Date()))());
-  if (entry === undefined) {
+  const built = enrollmentOf(identity, (deps.now ?? (() => new Date()))());
+  if (built === undefined) {
     io.err(
       `aka enroll: could not record that ${NOUN[identity.kind]} (its key or the date was not valid),\n` +
         'so nothing was enrolled.\n',
     );
     return fail(1);
   }
+  // An account entry written here covers the coding-agent sessions signed in to
+  // the account as well as its web chats.
+  const entry: AttachmentScopeEntry =
+    built.kind === 'account' ? { ...built, codingAgents: true } : built;
+  const loginNow = entry.kind === 'account' ? claudeCodeLoginNow(ready) : undefined;
+  // An account the list already holds for Claude Code sessions is not written
+  // again, so there is nothing to confirm.
+  const alreadyHeld = entry.kind === 'account' && holdsCodingAccount(ready, entry.identity);
+  if (
+    loginNow !== undefined &&
+    !alreadyHeld &&
+    !(await personalPlanGuard(ready, entry.identity, loginNow))
+  ) {
+    return fail(1);
+  }
   // Echoed BEFORE the write, through the strip `aka status` uses, so what is
   // about to be enrolled is on screen whatever happens next.
   io.out(`Enrolling ${shown(identity)} with ${name}.\n`);
+  // Set by the updater when the account was already stored for its chats alone
+  // and gained the marker in place rather than being added.
+  const marking = { inPlace: false };
   const edit = editScope(base, managed, connection.endpoint, (raw) => {
     const { next, added } = addAttachmentScopeEntries(raw, connection.endpoint, [entry]);
-    return { next, changed: added };
+    if (added.length > 0 || entry.kind !== 'account') return { next, changed: added };
+    const marked = markCodingAgentEntries(next, connection.endpoint, [entry.identity]);
+    marking.inPlace = marked.marked.length > 0;
+    return { next: marked.next, changed: marked.marked };
   });
   if (edit.kind === 'unreadable') {
     io.err(unreadableListRefusal(base, managed, connection.endpoint, name));
@@ -211,9 +267,19 @@ function enroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     io.out(`Already enrolled with ${name}; nothing changed.\n`);
     return 0;
   }
+  if (marking.inPlace) {
+    // Its chats, and the captures they had recorded, were enrolled when it was
+    // first enrolled; only the coding-agent sessions are added.
+    io.out(
+      `${shown(identity)} was enrolled for its claude.ai chats; it now also covers Claude Code sessions.\n` +
+        codingAgentLines(ready, entry.identity, loginNow),
+    );
+    return 0;
+  }
   io.out(
     identity.kind === 'account'
-      ? accountEnrolledLines(edit.committed, name)
+      ? accountEnrolledLines(edit.committed, name) +
+          codingAgentLines(ready, entry.identity, loginNow)
       : `Enrolled. Activity in this repository is sent to ${name} from now on.\n`,
   );
   const record = parseAttachmentScope(edit.committed.attachmentScope);
@@ -235,8 +301,22 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   const ready = preflight('unenroll', argv, deps);
   if (typeof ready === 'number') return ready;
   const { io, fail, base, managed, connection, name } = ready;
+  if (ready.args.workSubscriptions) return turnRecognitionOff(ready);
   const identity = namedRepository('unenroll', ready);
   if (typeof identity === 'number') return identity;
+  const keyText = (key: string): string =>
+    printableForTerminal(key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  // A work account this device validated by itself is not an entry to take out:
+  // there is one opt-out for every work subscription, and none per organization.
+  const learned = identity.kind === 'account' && learnedHere(ready).includes(identity.key);
+  if (learned && !enrolledByHand(ready, identity.matches)) {
+    io.err(
+      `aka unenroll: ${keyText(identity.key)} was validated automatically for ${name} while this ` +
+        'device is attached as its account; `aka unenroll --work-subscriptions` stops recognising ' +
+        'work subscriptions on this device. Nothing was changed.\n',
+    );
+    return fail(1);
+  }
   const edit = editScope(base, managed, connection.endpoint, (raw) => {
     const { next, removed } = removeAttachmentScopeEntries(
       raw,
@@ -251,8 +331,6 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
     io.err(EDIT_FAILURES[edit.kind === 'unreadable' ? 'failed' : edit.kind]('unenrolled'));
     return fail(1);
   }
-  const keyText = (key: string): string =>
-    printableForTerminal(key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
   if (edit.changed.length === 0) {
     io.out(
       `${keyText(identity.key)} is not enrolled with ${name}; nothing changed.\n` +
@@ -276,14 +354,15 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   io.out(
     (identity.kind === 'account'
       ? `Unenrolled ${repository}. From now on, its chats are checked and nothing from them is recorded or sent to ${name}.\n`
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n`) +
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
           'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n'
         : 'Anything from it that was waiting to be sent stays unsent while it is not enrolled;\n' +
           'enrolling it again, or attaching this machine machine-wide to the same deployment,\n' +
-          'makes it sendable again.\n'),
+          'makes it sendable again.\n') +
+      (identity.kind === 'account' ? accountUnenrolledLines(learned) : ''),
   );
   return 0;
 }
@@ -301,6 +380,8 @@ interface Prepared {
   name: string;
   /** What a relative path is resolved against; read only when a path is named. */
   cwd: () => string;
+  /** Where Claude Code keeps its login and settings files. */
+  claudePaths: ClaudeLoginPaths;
 }
 
 /**
@@ -339,11 +420,22 @@ function preflight(
     settings,
     name: deploymentNameForTerminal(connection),
     cwd: deps.cwd ?? (() => process.cwd()),
+    claudePaths: deps.claudePaths ?? {},
   };
 }
 
 /** The repository or account the command names, or the exit code after saying why it names none. */
 function namedRepository(verb: Verb, ready: Prepared): NamedIdentity | number {
+  const typed = ready.args.account ?? ready.args.repo;
+  // An agent key is derived on this device for a coding agent's rows and is
+  // never stored in settings; the account key it ends with is what enrolls.
+  if (typed?.trim().toLowerCase().startsWith(`${AGENT_KEY_PREFIX}:`) === true) {
+    ready.io.err(
+      `aka ${verb}: an agent: key is never enrolled; enroll the account key it ends with, as ` +
+        '`aka enroll --list-detected` shows it. Nothing was changed.\n',
+    );
+    return ready.fail(1);
+  }
   const identity = identityOf(verb, ready.args, ready.cwd());
   if (identity.kind === 'refused') {
     ready.io.err(`${identity.line}\n`);
@@ -372,6 +464,10 @@ interface EnrollArgs {
   path?: string | undefined;
   list: boolean;
   listDetected: boolean;
+  /** Turn recognition of work subscriptions back on (enroll) or off (unenroll). */
+  workSubscriptions: boolean;
+  /** Enroll the login signed in now without asking, even on a personal plan. */
+  yes: boolean;
 }
 
 function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { error: string } {
@@ -381,6 +477,8 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
     account?: string | undefined;
     list?: boolean | undefined;
     'list-detected'?: boolean | undefined;
+    'work-subscriptions'?: boolean | undefined;
+    yes?: boolean | undefined;
   };
   let positionals: string[];
   try {
@@ -392,6 +490,8 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
         account: { type: 'string' },
         list: { type: 'boolean' },
         'list-detected': { type: 'boolean' },
+        'work-subscriptions': { type: 'boolean' },
+        yes: { type: 'boolean' },
       },
       allowPositionals: true,
     }));
@@ -403,6 +503,9 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
   }
   if (verb === 'unenroll' && values['list-detected'] !== undefined) {
     return { error: 'aka unenroll takes no --list-detected.' };
+  }
+  if (verb === 'unenroll' && values.yes !== undefined) {
+    return { error: 'aka unenroll takes no --yes.' };
   }
   if (positionals.length > 1) return { error: `aka ${verb} takes one path.` };
   const [path] = positionals;
@@ -424,6 +527,14 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
   if ((list || listDetected) && targets.length > 0) {
     return { error: `aka enroll ${list ? '--list' : '--list-detected'} takes nothing to enroll.` };
   }
+  const workSubscriptions = values['work-subscriptions'] === true;
+  if (workSubscriptions && (list || listDetected || targets.length > 0)) {
+    return { error: `aka ${verb} --work-subscriptions takes nothing else.` };
+  }
+  const yes = values.yes === true;
+  if (yes && values.account === undefined) {
+    return { error: 'aka enroll takes --yes only with --account.' };
+  }
   return {
     home: values.home,
     repo: values.repo,
@@ -431,7 +542,357 @@ function parseEnrollArgs(verb: Verb, argv: readonly string[]): EnrollArgs | { er
     path,
     list,
     listDetected,
+    workSubscriptions,
+    yes,
   };
+}
+
+/** What `changed` holds after a `--work-subscriptions` edit that changed the record. */
+const WORK_SUBSCRIPTIONS_SETTING = 'workSubscriptions';
+
+/** The identity record, only when it holds for the credential this machine holds for the connection. */
+function heldIdentityOf(ready: Prepared): AttachedIdentity | undefined {
+  const state = readControlPlaneCredentialFile(settingsDirOf(ready.base), ready.connection);
+  return readBoundAttachedIdentity(
+    dataDirOf(ready.base),
+    ready.connection.endpoint,
+    state.usable ? state.credential : undefined,
+  );
+}
+
+/** The Claude Code login signed in now, through the view `aka status` prints. Writes nothing. */
+function claudeCodeLoginNow(ready: Prepared): ClaudeCodeLoginView {
+  return claudeCodeLoginView({
+    identity: heldIdentityOf(ready),
+    scope: ready.settings.attachmentScope,
+    endpoint: ready.connection.endpoint,
+    cwd: ready.cwd(),
+    paths: ready.claudePaths,
+  });
+}
+
+/** A login's plan, in a few words, for the user's own terminal. */
+const PLAN_HINT: Record<AccountPlanState, string> = {
+  company: 'Team or Enterprise plan',
+  absent: 'plan not shown',
+  other: 'personal plan',
+};
+
+/** Each state as `--list-detected` says it on a terminal. */
+const DETECTED_STATE_TEXT: Record<ClaudeCodeLoginState, string> = {
+  manual: 'enrolled',
+  remembered: 'validated automatically',
+  'would-validate': 'would validate',
+  off: 'would validate, but work subscriptions are off on this device',
+  'cap-reached':
+    'would validate, but this device already recognises as many work accounts as it keeps',
+  email: 'a different email than the AKA user who attached this device',
+  plan: 'not a Team or Enterprise plan',
+  'plan-unconfirmed': 'plan not shown — `aka enroll --account` enrolls it by hand',
+  'plan-stale': 'plan not confirmed for this organization',
+  'env-mismatch': "the desktop app names another login than Claude Code's login file",
+  veto: 'an API key or another provider is in use',
+  'attached-user-unknown': 'not checked until this device knows which AKA user attached it',
+  'signed-out': 'not signed in',
+  absent: 'login file not found',
+  unreadable: 'login file could not be read',
+};
+
+/**
+ * Each state off a terminal, where no reason is printed: a coding agent's own
+ * terminal output is recorded, and a reason can tell its reader that the user
+ * has a personal plan.
+ */
+const DETECTED_STATE_WORD: Record<
+  ClaudeCodeLoginState,
+  'enrolled' | 'validated' | 'would-validate' | 'off' | 'not-recognised'
+> = {
+  manual: 'enrolled',
+  remembered: 'validated',
+  'would-validate': 'would-validate',
+  off: 'off',
+  'cap-reached': 'not-recognised',
+  email: 'not-recognised',
+  plan: 'not-recognised',
+  'plan-unconfirmed': 'not-recognised',
+  'plan-stale': 'not-recognised',
+  'env-mismatch': 'not-recognised',
+  veto: 'not-recognised',
+  'attached-user-unknown': 'not-recognised',
+  'signed-out': 'not-recognised',
+  absent: 'not-recognised',
+  unreadable: 'not-recognised',
+};
+
+const NO_LOGIN = 'none (no login file)';
+
+/**
+ * The `--list-detected` section for the Claude Code login signed in now: the key
+ * and, on a terminal, its plan hint and state, or off one only whether it counts.
+ * Never an email, a name, an organization name or a token.
+ */
+function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean): string {
+  const heading = 'Claude Code — signed in now:\n';
+  if (view.key === undefined) {
+    if (view.state === 'absent') return `${heading}  ${NO_LOGIN}\n`;
+    return `${heading}  none${interactive ? ` (${DETECTED_STATE_TEXT[view.state]})` : ''}\n`;
+  }
+  const key = printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return interactive
+    ? `${heading}  ${key}  ${PLAN_HINT[view.planState ?? 'absent']}  ${DETECTED_STATE_TEXT[view.state]}\n`
+    : `${heading}  ${key}  ${DETECTED_STATE_WORD[view.state]}\n`;
+}
+
+/** What a Claude Code session of an enrolled or recognised account still leaves to the repository rule. */
+const SESSIONS_ON_THE_REPOSITORY_RULE =
+  'The first prompt of a new session, a session that uses an API key or another provider, a reply written ' +
+  'before the device has confirmed the account, and the rest of a session whose organization changes ' +
+  'follow the repository rule.\n';
+
+const SESSIONS_UNTIL_USER_KNOWN =
+  'This device does not know yet which AKA user attached it, so a Claude Code session outside an ' +
+  'enrolled repository is not sent until it does; one inside an enrolled repository is sent under ' +
+  'the repository rule.\n';
+
+/** Whether an identity record holds for this connection: what tells the device which AKA user attached it. */
+function knowsAttachedUser(ready: Prepared): boolean {
+  return heldIdentityOf(ready) !== undefined;
+}
+
+/**
+ * Whether to go on enrolling `key` when it is the organization of the Claude Code
+ * login signed in now and that login is on a personal plan: asks on a terminal,
+ * refuses without one unless `--yes` was given. Says nothing about the plan off a
+ * terminal, where a coding agent's own output is recorded.
+ */
+async function personalPlanGuard(
+  ready: Prepared,
+  key: string,
+  login: ClaudeCodeLoginView,
+): Promise<boolean> {
+  if (login.key !== key || login.planState !== 'other' || ready.args.yes) return true;
+  const { io, name } = ready;
+  if (!io.isInteractive) {
+    io.err(
+      'aka enroll: that account needs confirming before it is enrolled.\n' +
+        'Run this on a terminal to confirm, or add --yes. Nothing was changed.\n',
+    );
+    return false;
+  }
+  io.out(
+    'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
+      `Enrolling its organization sends the Claude Code sessions signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n` +
+      SESSIONS_ON_THE_REPOSITORY_RULE +
+      (knowsAttachedUser(ready) ? '' : SESSIONS_UNTIL_USER_KNOWN),
+  );
+  const answer = (await io.ask('Enroll it anyway? [y/N]: ')).trim().toLowerCase();
+  if (answer === 'y' || answer === 'yes') return true;
+  io.out('Nothing was enrolled.\n');
+  return false;
+}
+
+/** What an account entry written by `aka enroll --account` forwards, and the fallback it is. */
+function codingAgentLines(
+  ready: Prepared,
+  key: string,
+  login: ClaudeCodeLoginView | undefined,
+): string {
+  const { name } = ready;
+  return (
+    `Claude Code sessions signed in to this organization are sent to ${name} too, from any folder, with their ` +
+    "folder, project and branch names, and this account's claude.ai chats when web chat capture is on.\n" +
+    'A session already running starts forwarding at its next event, and a new one from its first reply on. ' +
+    SESSIONS_ON_THE_REPOSITORY_RULE +
+    'Nothing a Claude Code session recorded before this enrollment is sent this way, apart from captured ' +
+    'prompts, replies and tool results a live send could not deliver since this machine attached.\n' +
+    'This is the fallback for a work subscription this device does not recognise, such as a login under another ' +
+    'email, a plan Claude Code does not show, or a device a colleague approved.\n' +
+    (workSubscriptionsOn(ready.settings.attachmentScope)
+      ? ''
+      : 'Work subscriptions are off on this device, and an account you enroll by hand still forwards, because ' +
+        'the opt-out covers only automatic recognition.\n') +
+    sessionsWaitLine(ready, key, login)
+  );
+}
+
+/** The first reason the account's Claude Code sessions are not sent yet, or nothing. */
+function sessionsWaitLine(
+  ready: Prepared,
+  key: string,
+  login: ClaudeCodeLoginView | undefined,
+): string {
+  if (!knowsAttachedUser(ready)) return SESSIONS_UNTIL_USER_KNOWN;
+  if (login?.state === 'unreadable') {
+    return "Claude Code's login file could not be read, so no session is sent this way until it can be.\n";
+  }
+  return login?.key === key
+    ? ''
+    : 'Claude Code is not signed in to that organization on this machine now; its sessions are sent when it is.\n';
+}
+
+/**
+ * The refusal for a `--work-subscriptions` change where an administrator manages
+ * the connection, or undefined. Checked before any write: a scoped credential
+ * outlives the administrator taking over, and neither verb may change its choice.
+ */
+function recognitionRefusal(ready: Prepared, verb: Verb): string | undefined {
+  if (managedScopedRefusal(ready.base, ready.managed) === null) return undefined;
+  return (
+    `aka ${verb}: work subscriptions on this device cannot be changed while an administrator manages its ` +
+    'connection; re-attaching makes it machine-wide. Nothing was changed.\n'
+  );
+}
+
+/** Write the opt-out, empty the learned work accounts, and say what still forwards. */
+function turnRecognitionOff(ready: Prepared): number {
+  const { io, fail, base, managed, connection, name } = ready;
+  const refusal = recognitionRefusal(ready, 'unenroll');
+  if (refusal !== undefined) {
+    io.err(refusal);
+    return fail(1);
+  }
+  const edit = editScope(base, managed, connection.endpoint, (raw) => {
+    const { next, changed } = turnWorkSubscriptionsOff(raw, connection.endpoint);
+    return { next, changed: changed ? [WORK_SUBSCRIPTIONS_SETTING] : [] };
+  });
+  if (edit.kind !== 'saved') {
+    io.err(EDIT_FAILURES[edit.kind === 'unreadable' ? 'failed' : edit.kind]('changed'));
+    return fail(1);
+  }
+  // Every run, so a forget that failed once is retried by the next.
+  const learned = heldIdentityOf(ready)?.workAccounts.length ?? 0;
+  const credential = readControlPlaneCredentialFile(settingsDirOf(base), connection);
+  const cleared =
+    credential.usable &&
+    forgetWorkAccounts(dataDirOf(base), {
+      endpoint: connection.endpoint,
+      credential: credential.credential,
+    });
+  const busy = learned > 0 && !cleared;
+  if (edit.changed.length > 0) {
+    io.out(offLines(edit.committed, connection.endpoint, name) + (busy ? LEARNED_BUSY : ''));
+  } else if (busy) {
+    io.out(`${alreadyOff(name)}. ${LEARNED_BUSY}`);
+  } else if (learned > 0) {
+    io.out(
+      `${alreadyOff(name)}. The work accounts it had learned were cleared again; nothing else changed.\n`,
+    );
+  } else {
+    io.out(`${alreadyOff(name)}; nothing changed.\n`);
+  }
+  return 0;
+}
+
+const alreadyOff = (name: string): string =>
+  `Recognition of work subscriptions is already off for ${name} on this device`;
+
+/** What follows when the record's lock could not be taken to empty the learned work accounts. */
+const LEARNED_BUSY =
+  'The work accounts this device had learned could not be cleared now because the record is busy; ' +
+  'running this command again clears them.\n';
+
+/** Whether the stored list for this deployment holds `key` as an account entry that covers Claude Code sessions. */
+function holdsCodingAccount(ready: Prepared, key: string): boolean {
+  const { attachmentScope } = ready.settings;
+  if (!isAttachmentScopeValid(attachmentScope, ready.connection.endpoint)) return false;
+  return (
+    parseAttachmentScope(attachmentScope)?.entries.some(
+      (entry) => entry.kind === 'account' && entry.identity === key && entry.codingAgents === true,
+    ) ?? false
+  );
+}
+
+/** Remove the opt-out. The identity record is not touched. */
+function turnRecognitionOn(ready: Prepared): number {
+  const { io, fail, base, managed, connection, name } = ready;
+  const refusal = recognitionRefusal(ready, 'enroll');
+  if (refusal !== undefined) {
+    io.err(refusal);
+    return fail(1);
+  }
+  const edit = editScope(base, managed, connection.endpoint, (raw) => {
+    const { next, changed } = turnWorkSubscriptionsOn(raw, connection.endpoint);
+    return { next, changed: changed ? [WORK_SUBSCRIPTIONS_SETTING] : [] };
+  });
+  if (edit.kind !== 'saved') {
+    io.err(EDIT_FAILURES[edit.kind === 'unreadable' ? 'failed' : edit.kind]('changed'));
+    return fail(1);
+  }
+  io.out(
+    edit.changed.length === 0
+      ? `Recognition of work subscriptions is already on for ${name} on this device; nothing changed.\n`
+      : onLines(name),
+  );
+  return 0;
+}
+
+/** What `aka unenroll --work-subscriptions` says: what stops, what still forwards, what is kept. */
+function offLines(committed: WorkspaceSettings, endpoint: string, name: string): string {
+  const stored = parseAttachmentScope(committed.attachmentScope);
+  const listed = new Set<string>();
+  const forwards: string[] = [];
+  for (const entry of isAttachmentScopeValid(committed.attachmentScope, endpoint)
+    ? (stored?.entries ?? [])
+    : []) {
+    if (listed.has(entry.identity)) continue;
+    listed.add(entry.identity);
+    const key = printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+    const flag = entry.kind === 'account' ? '--account' : '--repo';
+    forwards.push(`  ${key} — \`aka unenroll ${flag} ${key}\` removes it\n`);
+  }
+  return (
+    `Work subscriptions are off on this device for ${name}.\n` +
+    'Sessions signed in to a work subscription stop forwarding at their next event, from any folder outside ' +
+    'an enrolled repository.\n' +
+    (forwards.length === 0
+      ? 'Nothing is enrolled, so no activity is sent from this device.\n'
+      : `What still forwards:\n${forwards.join('')}`) +
+    "Your organization's model restrictions now apply only in enrolled repositories and to accounts " +
+    'enrolled by hand.\n' +
+    'Nothing already sent is recalled. Rows recorded but not yet sent stay on this device, and are sent if ' +
+    'you turn recognition back on and the same work account is recognised again.\n' +
+    '`aka enroll --work-subscriptions` turns recognition back on.\n'
+  );
+}
+
+/** What `aka enroll --work-subscriptions` says: what is forwarded, and how it is recognised. */
+function onLines(name: string): string {
+  return (
+    `Work subscriptions are on again on this device for ${name}.\n` +
+    'A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan), ' +
+    'under the same email as your AKA account, sends everything it records from its first reply on, from any folder, with its ' +
+    'folder, project and branch names.\n' +
+    "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and " +
+    'environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it ' +
+    '(no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of ' +
+    'the activity of a recognised session or of one signed in to an account you enroll by hand.\n' +
+    SESSIONS_ON_THE_REPOSITORY_RULE +
+    'A work account is recognised again the next time a session signed in to it runs. Rows recorded under it ' +
+    'before you turned recognition off, and not yet sent, are sent once it is recognised again.\n'
+  );
+}
+
+/** The work accounts this device validated by itself, while recognition is on. */
+function learnedHere(ready: Prepared): readonly string[] {
+  if (!workSubscriptionsOn(ready.settings.attachmentScope)) return [];
+  return heldIdentityOf(ready)?.workAccounts.map((account) => account.identity) ?? [];
+}
+
+/** Whether the stored list holds an entry for one of `matches`: the user enrolled it. */
+function enrolledByHand(ready: Prepared, matches: readonly string[]): boolean {
+  const record = parseAttachmentScope(ready.settings.attachmentScope);
+  return record?.entries.some((entry) => matches.includes(entry.identity)) ?? false;
+}
+
+/** What taking an account out of the list means for the sessions signed in to it. */
+function accountUnenrolledLines(learned: boolean): string {
+  return (
+    'Sessions signed in to it stop forwarding at their next event; anything already recorded under it stays ' +
+    'on this device, even inside enrolled repositories.\n' +
+    (learned
+      ? 'Automatic recognition of that account continues until `aka unenroll --work-subscriptions`.\n'
+      : '')
+  );
 }
 
 /**
@@ -525,7 +986,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `aka ${verb}: this machine is attached to ${name} machine-wide, so activity from\n` +
         'anywhere on this machine is sent and nothing is enrolled. ' +
         (governed === null
-          ? `To send activity only from the repositories you enroll, re-attach with\n${reattach}.`
+          ? `To send activity only from what you enroll and from recognised work subscriptions, re-attach with\n${reattach}.`
           : refusalLine(governed)),
     };
   }
@@ -563,7 +1024,7 @@ function identityOf(verb: Verb, args: EnrollArgs, cwd: string): Identity {
  * providers, so one added to the schema fails to compile here until it is named.
  */
 const ACCOUNT_LABELS: Record<WebAccountProvider, string> = {
-  [WEB_ACCOUNT_PROVIDER.Claude]: 'claude.ai account',
+  [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude account (Claude Code and claude.ai)',
 };
 
 /**
@@ -956,8 +1417,12 @@ function queuedLines(queued: number): string {
  * the instant this machine attached, so the repository's other activity from
  * before the attachment (sessions, tool calls, token usage) is sent too. What
  * it recorded between attaching and enrolling, other than those captures, was
- * judged local when it happened and stays local. Without a grant nothing
- * earlier is sent, and the line names the command that would change that.
+ * judged local when it happened and stays local, except what a session of a
+ * recognised work subscription or of an account enrolled by hand there already
+ * sent under that account's own key. Without a grant nothing earlier is sent
+ * but the captures a live send could not deliver since this machine attached,
+ * which are sent once the repository is enrolled, and the line names the
+ * command that would send the rest.
  * What has already aged out is gone, so no line promises everything.
  *
  * The enrollment is saved when this runs. A queue that could not be written is
@@ -972,8 +1437,9 @@ function earlierActivity(
 ): string {
   if (!isHistorySyncConsentValid(committed.historySyncConsent, committed.controlPlane?.endpoint)) {
     return (
-      'Nothing recorded in it before now is sent. To send its earlier history as well,\n' +
-      'run `aka sync-history --on`.\n'
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and\n' +
+      'tool results a live send could not deliver since this machine attached. To send its earlier\n' +
+      'history as well, run `aka sync-history --on`.\n'
     );
   }
   const queued = seedEnrolledCapturesOwed(dataDirOf(base), added);
@@ -990,7 +1456,9 @@ function earlierActivity(
     queuedLines(queued) +
     'The history sync also sends the rest of its activity recorded before this machine attached\n' +
     '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
-    'attaching and enrolling, other than those captures, stays on this machine.\n'
+    'attaching and enrolling, other than those captures and what a Claude Code session of a\n' +
+    'recognised work subscription or of an account enrolled by hand there already sent, stays\n' +
+    'on this machine.\n'
   );
 }
 
@@ -1019,12 +1487,15 @@ function accountEnrolledLines(committed: WorkspaceSettings, name: string): strin
 /**
  * What becomes of what was recorded in an account before it was enrolled.
  *
- * A personal device records nothing from an account that is not enrolled, so
- * anything earlier was recorded while this machine was not one. Under a
- * history-sync grant for this deployment, the captures still kept for the
- * account are marked to send, as a repository's are. Unlike a repository's, no
- * line here promises its sessions or other activity: an account's earlier
- * session was opened with no account on it, so only its captures carry the key.
+ * A personal device records nothing from an account while it is not enrolled,
+ * so anything recorded before this enrollment was recorded before this machine
+ * attached as a personal device, or while the account was enrolled before.
+ * Under a history-sync grant for this deployment, the captures still kept for
+ * the account are marked to send, as a repository's are. Without one, only the
+ * captures a live send could not deliver since this machine attached are sent.
+ * Unlike a repository's, no line here promises its sessions or other activity:
+ * an account's earlier session was opened with no account on it, so only its
+ * captures carry the key.
  */
 function earlierAccountActivity(
   base: string,
@@ -1033,8 +1504,9 @@ function earlierAccountActivity(
 ): string {
   if (!isHistorySyncConsentValid(committed.historySyncConsent, committed.controlPlane?.endpoint)) {
     return (
-      'Nothing recorded in it before now is sent. To send its earlier replies as well,\n' +
-      'run `aka sync-history --on`.\n'
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and\n' +
+      'tool results a live send could not deliver since this machine attached. To send its earlier\n' +
+      'replies as well, run `aka sync-history --on`.\n'
     );
   }
   const queued = seedEnrolledCapturesOwed(dataDirOf(base), added);

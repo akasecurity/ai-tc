@@ -374,6 +374,19 @@ describe('which gateways offer an account scope', () => {
     }
   });
 
+  it('a scoped credential with no identity record forwards a session in an enrolled repository only', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), SCOPED_CREDENTIAL);
+    const gateway = resolveGatewayForConfig(configFor());
+    try {
+      expect(await produce(gateway, 'enrolled', WORK_REPO, WORK_ACCOUNT)).toBe(WORK_REPO);
+      expect(await produce(gateway, 'elsewhere', PERSONAL_REPO, WORK_ACCOUNT)).toBe(PERSONAL_REPO);
+    } finally {
+      await gateway.close();
+    }
+    expect(forwarded('enrolled')).toEqual(ALL);
+    expect(forwarded('elsewhere')).toEqual(NONE);
+  });
+
   it('a machine credential offers none, and stamps the repository key whatever the account', async () => {
     attachScoped();
     writeControlPlaneCredential(settingsDirOf(home), {

@@ -207,12 +207,13 @@ check sends none of what it reads, though the token usage and tool calls read
 from that same log are forwarded with the rest of the activity of a recognised
 session or of one signed in to an account enrolled by hand. The first prompt of
 a new session, a personal plan, another email, an API key or another provider,
-and the rest of a session whose organization changes follow the repository
-rule; `aka enroll --account` enrolls by hand an account the device cannot
-recognise, and the Claude Code sessions of an account enrolled that way then
-forward from their first reply on whatever the plan or email, though not under
-an API key or another provider. An organization recognised this way never
-records or forwards a claude.ai chat. A personal device that attached before
+a reply written before the device has confirmed the account, and the rest of a
+session whose organization changes follow the repository rule;
+`aka enroll --account` enrolls by hand an account the device cannot recognise,
+and the Claude Code sessions of an account enrolled that way then forward from
+their first reply on whatever the plan or email, though not under an API key or
+another provider. An organization recognised this way never records or forwards
+a claude.ai chat. A personal device that attached before
 its plugin could recognise work subscriptions starts recognising them when the
 plugin updates, with no new prompt, so update `aka` first.
 `aka unenroll --work-subscriptions` turns recognition off on this device and

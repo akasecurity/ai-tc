@@ -151,6 +151,8 @@ export type {
   ResolvedCodexProvider,
 } from './provider-codex.ts';
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
+export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
+export { resolveCopilotProvider } from './provider-copilot.ts';
 export type { EgressHit } from './raw-egress.ts';
 export {
   assertRawFree,
@@ -195,6 +197,7 @@ export {
 export type { ScanFileKind } from './scan-files.ts';
 export {
   canonicalizeScanPath,
+  HOME_SECRET_FILES,
   isProtectedScanPath,
   isSecretBearingFileSnapshot,
   protectedScanRoots,
@@ -202,9 +205,11 @@ export {
   SOURCE_EXTENSIONS,
 } from './scan-files.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
+export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
+export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
-export { throttled } from './throttle.ts';
+export { throttled, throttledPerKey } from './throttle.ts';
 export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,

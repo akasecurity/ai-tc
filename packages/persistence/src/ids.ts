@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 import { canonicalIdentity } from '@akasecurity/schema';
 
@@ -200,6 +200,27 @@ export function captureWireId(
   filePath: string | null = null,
 ): string {
   return uuidFromDigest(captureId(sessionId, contentHash, filePath));
+}
+
+const KEYED_CAPTURE_DOMAIN = 'aka:capture-wire-id:v1';
+
+// The id a capture is sent under when its content was rewritten before sending.
+// Derived from the same tuple `captureId` keys the stored row on, so it is
+// distinct exactly when the stored rows are distinct, and keyed by a secret that
+// never leaves this machine, so the receiver cannot test a guessed value against
+// it.
+export function keyedCaptureWireId(
+  key: Buffer,
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null = null,
+): string {
+  return uuidFromDigest(
+    createHmac('sha256', key)
+      .update(KEYED_CAPTURE_DOMAIN, 'utf8')
+      .update(captureId(sessionId, contentHash, filePath), 'utf8')
+      .digest('hex'),
+  );
 }
 
 // Data Shares dimensions — id derivations for share destinations,

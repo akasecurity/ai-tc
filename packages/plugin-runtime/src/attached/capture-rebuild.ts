@@ -33,6 +33,18 @@ import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/
  * attribute — so reading `attributes.session_id` would silently derive every id
  * against `null` and duplicate the entire backlog.
  */
+/** The session and raw file path a stored capture's wire id is derived from. */
+export function captureIdentityOf(row: AuditEventRow): {
+  sessionId: string | null;
+  filePath: string | null;
+} {
+  const attributes = parseAttributes(row.attributes ?? null);
+  return {
+    sessionId: row.rootSessionId ?? null,
+    filePath: typeof attributes.file_path === 'string' ? attributes.file_path : null,
+  };
+}
+
 export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   // Only the capture grain belongs on this lane. A structural row reaching here
   // means a caller crossed the lanes, and sending it to /v1/events would file a

@@ -35,6 +35,7 @@ import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
+import { codexSessionStartAccount } from './account-stamp.ts';
 import { countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
@@ -72,6 +73,15 @@ async function main(): Promise<void> {
   // config.provider), but SessionStart is the one place that snapshots it
   // onto the session root, so it must pass the Codex resolver explicitly.
   const config = loadConfig(undefined, resolveCodexProvider);
+  // The thread's account, decided and written to the session log before
+  // handleSessionStart claims the session.
+  const account = await codexSessionStartAccount(config, {
+    sessionId,
+    source: input ? getString(input, 'source') : undefined,
+    transcriptPath,
+    cwd,
+    nowMs: Date.now(),
+  });
   // A symlinked store path redirects the corpus without failing anything; say
   // so once per session. Collected rather than written to stderr: on this hook
   // it rides the systemMessage below with the other notices.
@@ -90,6 +100,7 @@ async function main(): Promise<void> {
       harnessVersion: version,
       harnessInterface,
       pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
+      ...account,
     },
     config,
   );

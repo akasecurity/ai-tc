@@ -13,7 +13,9 @@
  * adds zero latency to the turn. It reads `session_id` + `transcript_path` STRAIGHT
  * from the payload (no path reconstruction), throttle-checks, and if not throttled
  * spawns `scripts/reconcile.js` detached + unref, forwarding both via argv, then
- * returns immediately. Fully fail-open: any error → no output, exit 0.
+ * returns immediately. Before the trigger it checks the thread's login against the
+ * session log, so a login change is on disk before the reconcile reads it.
+ * Fully fail-open: any error → no output, exit 0.
  */
 import {
   codexModelFromRecord,
@@ -23,6 +25,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
+import { noteThreadAccount } from './account-stamp.ts';
 import { countFailOpen, parseJson, readStdin } from './shared.ts';
 import { parseStopPayload } from './stop-payload.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
@@ -50,6 +53,7 @@ async function main(): Promise<void> {
     trigger.sessionId,
     modelFromTranscriptTail(trigger.transcriptPath, codexModelFromRecord),
   );
+  await noteThreadAccount(config, trigger.sessionId, trigger.transcriptPath);
   triggerReconcile(config.dataDir, trigger.sessionId, trigger.transcriptPath);
 }
 

@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import type { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
@@ -72,6 +73,35 @@ describe('terminalPrompter ask', () => {
     t.input.write('yes\n');
     t.input.end();
     expect(await settledWithin(pending)).toBe('yes');
+  });
+
+  it('answers a second question empty after the input ended during the first', async () => {
+    const t = closableTerminal();
+    const prompter = terminalPrompter(t.io);
+    const first = prompter.ask('First? [y/N] ');
+    t.input.end();
+    expect(await settledWithin(first)).toBe('');
+
+    expect(await settledWithin(prompter.ask('Second? [y/N] '))).toBe('');
+    expect(t.written().endsWith('Second? [y/N] \n')).toBe(true);
+  });
+
+  it('answers empty at once when the input had already ended', async () => {
+    const t = closableTerminal();
+    t.input.resume();
+    t.input.end();
+    await once(t.input, 'end');
+
+    expect(await settledWithin(terminalPrompter(t.io).ask('Proceed? [y/N] '))).toBe('');
+    expect(t.written()).toBe('Proceed? [y/N] \n');
+  });
+
+  it('answers empty at once when the input was destroyed', async () => {
+    const t = closableTerminal();
+    t.input.destroy();
+
+    expect(await settledWithin(terminalPrompter(t.io).ask('Proceed? [y/N] '))).toBe('');
+    expect(t.written()).toBe('Proceed? [y/N] \n');
   });
 
   it('asks again on the same input after an answer', async () => {

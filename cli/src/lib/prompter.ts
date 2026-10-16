@@ -113,6 +113,13 @@ export function terminalPrompter(io: TerminalIo = processIo()): Prompter {
 
     ask(question) {
       return new Promise((resolve) => {
+        // An interface opened on a stream that has already ended gets no 'end'
+        // to close on, so it would wait forever for an answer that cannot come.
+        if (io.input.readableEnded || io.input.destroyed) {
+          io.output.write(`${question}\n`);
+          resolve('');
+          return;
+        }
         const rl = createInterface({ input: io.input, output: io.output });
         // Closing the input (Ctrl-D, end of stream) never calls the question
         // callback, so without this the promise stays unsettled and Node exits

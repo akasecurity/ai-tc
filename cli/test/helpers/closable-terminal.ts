@@ -1,4 +1,4 @@
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 
 import type { TerminalIo } from '../../src/lib/prompter.ts';
 
@@ -17,11 +17,16 @@ export interface ClosableTerminal {
  */
 export function closableTerminal(): ClosableTerminal {
   const input = Object.assign(new PassThrough(), { isTTY: true });
-  const output = Object.assign(new PassThrough(), { isTTY: true });
   let written = '';
-  output.on('data', (chunk: Buffer) => {
-    written += chunk.toString('utf8');
-  });
+  const output = Object.assign(
+    new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        written += chunk.toString('utf8');
+        done();
+      },
+    }),
+    { isTTY: true },
+  );
   return {
     io: {
       input: input as unknown as NodeJS.ReadStream,

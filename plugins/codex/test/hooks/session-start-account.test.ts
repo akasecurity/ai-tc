@@ -20,7 +20,12 @@ import {
   resolveDataGateway,
   SYNC_MARKER_NAME,
 } from '@akasecurity/plugin-runtime';
-import { loadConfig, recordSessionModel, resolveCodexProvider } from '@akasecurity/plugin-sdk';
+import {
+  claimSessionStart,
+  loadConfig,
+  recordSessionModel,
+  resolveCodexProvider,
+} from '@akasecurity/plugin-sdk';
 import { readObservations } from '@akasecurity/plugin-sdk/account';
 import {
   agentKey,
@@ -87,6 +92,13 @@ const LOCAL_ONLY =
 const WORK_LINE =
   'AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; it stops if the ' +
   'thread is resumed or its login changes. `aka unenroll --work-subscriptions` stops this on this device.';
+const PENDING =
+  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a " +
+  "work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and " +
+  'results are forwarded to Acme from any folder from then on.';
+const RESUMED_LINE =
+  'AKA: this thread first ran under a ChatGPT workspace forwarded to Acme; from here it follows the ' +
+  'repository rule, so only work in an enrolled repository is forwarded.';
 
 let base: string;
 let home: string;
@@ -339,9 +351,56 @@ describe('what a recognised thread sends when its session starts', () => {
   });
 });
 
+describe('a work thread resumed once its session claim has lapsed', () => {
+  /** Claims enough other sessions that the recent-session window drops the thread. */
+  function lapseClaim(): void {
+    for (let i = 0; i < 40; i++) claimSessionStart(dataDirOf(base), randomUUID());
+  }
+
+  it('says the thread follows the repository rule, and stamps it by that rule', async () => {
+    const first = await start('startup', 'business');
+    expect(first.line).toBe(WORK_LINE);
+    lapseClaim();
+    const config = loadConfig(base, resolveCodexProvider);
+    const fields = await codexSessionStartAccount(config, {
+      sessionId: first.sessionId,
+      source: 'resume',
+      transcriptPath: first.transcriptPath,
+      cwd: personal,
+      nowMs: Date.now(),
+      home,
+    });
+    const resumed = await handleSessionStart(
+      {
+        sessionId: first.sessionId,
+        cwd: personal,
+        tool: SOURCE_TOOL.Codex,
+        homeDir: base,
+        ...fields,
+      },
+      config,
+    );
+    expect(resumed.forwardingLine).toBe(RESUMED_LINE);
+    const gateway = resolveDataGateway(config);
+    try {
+      expect(
+        threadAccountKey(gateway, {
+          dataDir: dataDirOf(base),
+          sessionId: first.sessionId,
+          transcriptPath: first.transcriptPath,
+          nowMs: Date.now(),
+          home,
+        }),
+      ).toBeUndefined();
+    } finally {
+      await gateway.close();
+    }
+  });
+});
+
 describe('a thread whose first rollout line is not on disk at session start', () => {
   /** A session start whose transcript path names a file Codex has not written yet. */
-  async function startWithoutHead(): Promise<{
+  async function startWithoutHead(cwd = personal): Promise<{
     sessionId: string;
     transcriptPath: string;
     line: string | null;
@@ -354,12 +413,12 @@ describe('a thread whose first rollout line is not on disk at session start', ()
       sessionId,
       source: 'startup',
       transcriptPath,
-      cwd: personal,
+      cwd,
       nowMs: Date.now(),
       home,
     });
     const result = await handleSessionStart(
-      { sessionId, cwd: personal, tool: SOURCE_TOOL.Codex, homeDir: base, ...fields },
+      { sessionId, cwd, tool: SOURCE_TOOL.Codex, homeDir: base, ...fields },
       config,
     );
     return { sessionId, transcriptPath, line: result.forwardingLine };
@@ -368,10 +427,45 @@ describe('a thread whose first rollout line is not on disk at session start', ()
   it('keeps the session root on its folder rule, and leaves a pending start line', async () => {
     const { sessionId, line } = await startWithoutHead();
     expect(rootKeys()).toEqual([null]);
-    expect(line).toBe(LOCAL_ONLY);
+    expect(line).toBe(`${LOCAL_ONLY}. ${PENDING}`);
     expect(startLines(sessionId)).toEqual([
       expect.objectContaining({ start: 'startup', s: 'pending' }),
     ]);
+  });
+
+  it('names the enrolled folder it starts in, then what the next check can change', async () => {
+    const project = `notes-${randomUUID().slice(0, 8)}`;
+    const enrolled = mkdtempSync(join(tmpdir(), 'aka-codex-start-enrolled-'));
+    try {
+      mkdirSync(join(enrolled, '.git'), { recursive: true });
+      writeFileSync(
+        join(enrolled, '.git', 'config'),
+        `[remote "origin"]\n\turl = https://github.com/me/${project}.git\n`,
+      );
+      applyOnboarding(
+        {
+          attachmentScope: {
+            endpoint: server.origin,
+            tenantName: 'Acme',
+            userEmail: member,
+            entries: [
+              {
+                kind: 'repo',
+                identity: `github.com/me/${project}`,
+                enrolledAt: '2026-10-02T09:00:00.000Z',
+              },
+            ],
+          },
+        },
+        base,
+        null,
+      );
+      const { line } = await startWithoutHead(enrolled);
+      expect(rootKeys()).toEqual([`github.com/me/${project}`]);
+      expect(line).toBe(`AKA: forwarding to Acme (github.com/me/${project}). ${PENDING}`);
+    } finally {
+      removeTree(enrolled);
+    }
   });
 
   it('still decides the thread at its next hook, though its root stays on the folder rule', async () => {

@@ -36,6 +36,8 @@ import { stampFor } from './stamped-capture.ts';
 export interface ThreadAccount {
   accountKey: string | undefined;
   basis: AccountBasis | undefined;
+  /** The thread's first rollout line was not on disk, so its account waits for its next hook. */
+  pending: boolean;
 }
 
 export interface StartThreadInput {
@@ -54,10 +56,10 @@ export type LeafStamper = (repoKey: string | undefined, occurredAt: string) => s
 
 export type CodexSessionStartFields = Pick<
   SessionStartInput,
-  'rootScopeKey' | 'accountBasis' | 'admitAccount'
+  'rootScopeKey' | 'accountBasis' | 'admitAccount' | 'threadAccountPending'
 >;
 
-const NO_ACCOUNT: ThreadAccount = { accountKey: undefined, basis: undefined };
+const NO_ACCOUNT: ThreadAccount = { accountKey: undefined, basis: undefined, pending: false };
 
 const SOURCES: ReadonlySet<string> = new Set<CodexSessionSource>([
   'startup',
@@ -104,7 +106,7 @@ function settle(scope: AccountScope, result: CodexHookResult): ThreadAccount {
     if (scope.learn(check.key) === 'refused') return NO_ACCOUNT;
     scope.admit(check.key, scope.bindingHash);
   }
-  return { accountKey: check.key, basis: check.basis };
+  return { accountKey: check.key, basis: check.basis, pending: false };
 }
 
 /** Whether the thread's latest start line says its first rollout line was not on disk yet. */
@@ -124,10 +126,11 @@ function fingerprintOf(home: string | undefined): string {
  * rollout line that is not on disk yet leaves a pending start line, which the
  * next hook resolves once. Until then the thread has no account, so its session
  * root is keyed by its folder, and the root is not re-keyed when the thread is
- * decided: the thread's captures carry its agent key from that hook on, but its
- * token and tool rows are held to the root's key and stay on the machine. A
- * payload that names no known source decides nothing, because the thread cannot
- * then be told from a resumed one. Total.
+ * decided: the thread's captures carry its agent key from that hook on, while its
+ * token and tool rows follow the root's verdict, sent when the folder is an
+ * enrolled repository and kept on the machine when it is not. A payload that
+ * names no known source decides nothing, because the thread cannot then be told
+ * from a resumed one. Total.
  */
 export function startThreadAccount(gateway: object, input: StartThreadInput): ThreadAccount {
   try {
@@ -136,7 +139,8 @@ export function startThreadAccount(gateway: object, input: StartThreadInput): Th
     const source = input.source;
     if (scope === undefined || sessionId === undefined || !isSource(source)) return NO_ACCOUNT;
     const result = startCodexSession({ ...hookInput(scope, input, sessionId), source });
-    if (result.pending && source !== 'resume' && source !== 'compact') {
+    const pending = result.pending && source !== 'resume' && source !== 'compact';
+    if (pending) {
       appendObservation(sessionAccountsDir(input.dataDir), sessionId, {
         t: input.nowMs,
         bd: scope.bindingHash,
@@ -145,7 +149,7 @@ export function startThreadAccount(gateway: object, input: StartThreadInput): Th
         fp: fingerprintOf(input.home),
       });
     }
-    return settle(scope, result);
+    return { ...settle(scope, result), pending };
   } catch {
     return NO_ACCOUNT;
   }
@@ -201,8 +205,10 @@ async function closeQuietly(gateway: DataGateway | undefined): Promise<void> {
  * What the SessionStart hook hands `handleSessionStart` about the thread's
  * account, after the start line is written: the root's stamped key, the basis the
  * session-start line names, and the admission the session start's own gateway
- * repeats. Also prunes old session state. Empty on a fault, with no account, and
- * on a machine that is not on a scoped attachment, where no gateway is opened.
+ * repeats. A thread left pending hands only that fact, for the line to name.
+ * Also prunes old session state. Empty on a fault, with no account and not
+ * pending, and on a machine that is not on a scoped attachment, where no gateway
+ * is opened.
  */
 export async function codexSessionStartAccount(
   config: PluginConfig,
@@ -214,7 +220,9 @@ export async function codexSessionStartAccount(
     gateway = resolveDataGateway(config);
     const scope = accountScopeOf(gateway);
     const account = startThreadAccount(gateway, { ...input, dataDir: config.dataDir });
-    if (scope === undefined || account.accountKey === undefined) return {};
+    if (scope === undefined) return {};
+    if (account.accountKey === undefined)
+      return account.pending ? { threadAccountPending: true } : {};
     const rootScopeKey = stampFor(gateway, sessionRootScopeKey(input.cwd), account.accountKey);
     return {
       ...(rootScopeKey === undefined ? {} : { rootScopeKey }),

@@ -740,7 +740,8 @@ describe('forwardingLine — a Codex thread on a work subscription', () => {
   const CODEX_WORK_LINE = `AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; ${STOPS}`;
   const CODEX_BY_HAND =
     'AKA: forwarding this thread to Acme — signed in to a ChatGPT workspace you enrolled by hand; it stops if the thread is resumed or switches to another workspace or login mode.';
-  const CODEX_KEYED = 'AKA: forwarding this thread to Acme — for the workspace it first ran under.';
+  const CODEX_KEYED =
+    'AKA: this thread first ran under a ChatGPT workspace forwarded to Acme; from here it follows the repository rule, so only work in an enrolled repository is forwarded.';
   const WORKSPACE = randomUUID();
 
   function codexRootKey(): string {
@@ -832,5 +833,59 @@ describe('forwardingLine — a Codex thread on a work subscription', () => {
       `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
     );
     expect(forwardingLine(answering(accountScope(undefined)), 's1')).toBe(KEYED_LINE);
+  });
+});
+
+describe('forwardingLine — a Codex thread whose ChatGPT account is not decided yet', () => {
+  const PENDING =
+    "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on.";
+  const pendingSession: ForwardingSession = {
+    rootDeferred: false,
+    basis: undefined,
+    managed: false,
+    threadAccountPending: true,
+  };
+  const localRoot: ForwardingScope = {
+    deploymentName: 'Acme',
+    mode: 'scoped',
+    rootKey: 'github.com/me/notes',
+    rootForwards: false,
+  };
+  const enrolledRoot: ForwardingScope = {
+    deploymentName: 'Acme',
+    mode: 'scoped',
+    rootKey: WORK_KEY,
+    rootForwards: true,
+  };
+
+  it('ends the local-only line with what the next check can change', () => {
+    expect(forwardingLine(answering(localRoot), 's1', pendingSession)).toBe(
+      `${LOCAL_ONLY}. ${PENDING}`,
+    );
+    expect(
+      forwardingLine(answering({ ...localRoot, rootKey: undefined }), 's1', pendingSession),
+    ).toBe(`${LOCAL_ONLY}. ${PENDING}`);
+  });
+
+  it('ends the line of an enrolled folder the same way', () => {
+    expect(forwardingLine(answering(enrolledRoot), 's1', pendingSession)).toBe(
+      `AKA: forwarding to Acme (${WORK_KEY}). ${PENDING}`,
+    );
+  });
+
+  it.each<[string, ForwardingSession | undefined]>([
+    ['no session', undefined],
+    ['a session that is not pending', { ...pendingSession, threadAccountPending: false }],
+    ['a session that does not say', { rootDeferred: false, basis: undefined, managed: false }],
+  ])('leaves the line as it is for %s', (_name, session) => {
+    expect(forwardingLine(answering(localRoot), 's1', session)).toBe(LOCAL_ONLY);
+    expect(forwardingLine(answering(enrolledRoot), 's1', session)).toBe(
+      `AKA: forwarding to Acme (${WORK_KEY})`,
+    );
+  });
+
+  it('prints no key, workspace id or tag', () => {
+    const line = forwardingLine(answering(localRoot), 's1', pendingSession) ?? '';
+    for (const material of ['chatgpt:', 'agent:', SCOPE_TAG]) expect(line).not.toContain(material);
   });
 });

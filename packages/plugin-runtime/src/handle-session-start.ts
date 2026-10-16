@@ -105,6 +105,10 @@ export interface SessionStartInput {
   // must be on), so a root keyed by it is honoured. It writes nothing to the
   // identity record.
   admitAccount?: { accountKey: string; bindingHash: string } | undefined;
+  // True for a Codex thread whose ChatGPT account the adapter could not decide
+  // because its first record was not on disk. The forwarding line then says what
+  // the thread's next check can change.
+  threadAccountPending?: boolean | undefined;
 }
 
 /**
@@ -350,6 +354,7 @@ export async function handleSessionStart(
           input.accountBasis !== undefined || rootDeferred
             ? !workSubscriptionOptOutOffered(config.settingsDir)
             : false,
+        threadAccountPending: input.threadAccountPending === true,
       });
       try {
         await gateway.close();

@@ -22,6 +22,11 @@ export interface ForwardingSession {
   readonly basis: AccountBasis | undefined;
   /** An administrator manages this machine's connection, so the opt-out command refuses. */
   readonly managed: boolean;
+  /**
+   * A Codex thread's ChatGPT account is not decided yet, because its first record
+   * was not on disk: the line says what the thread's next check can change.
+   */
+  readonly threadAccountPending?: boolean | undefined;
 }
 
 /** Where a forwarding gateway forwards, as the session-start line needs it. */
@@ -112,9 +117,23 @@ const ACCOUNT_OPENING: Record<WebAccountProvider, AccountOpening> = {
     byHand: (name) =>
       `AKA: forwarding this thread to ${name} — signed in to a ChatGPT workspace you enrolled by hand; it stops if the thread is resumed or switches to another workspace or login mode.`,
     keyed: (name) =>
-      `AKA: forwarding this thread to ${name} — for the workspace it first ran under.`,
+      `AKA: this thread first ran under a ChatGPT workspace forwarded to ${name}; from here it follows the repository rule, so only work in an enrolled repository is forwarded.`,
   },
 };
+
+/** The sentence a Codex thread's line ends with while its ChatGPT account is not decided. */
+function pendingThreadAccount(name: string): string {
+  return `This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to ${name} from any folder from then on.`;
+}
+
+/** `line`, then, for a thread whose account is not decided yet, what its next check can change. */
+function withPendingAccount(
+  line: string,
+  name: string,
+  session: ForwardingSession | undefined,
+): string {
+  return session?.threadAccountPending === true ? `${line}. ${pendingThreadAccount(name)}` : line;
+}
 
 /** The provider of the account an agent-keyed root names; Claude for any other key. */
 function accountProviderOf(rootKey: string): WebAccountProvider {
@@ -133,7 +152,9 @@ function accountProviderOf(rootKey: string): WebAccountProvider {
  * Without a basis the session's login shows no work account, while its stored
  * root is keyed by one (a resumed session). The root's key does not say whether
  * recognition or an enrollment by hand put it in scope, so the line claims
- * neither a work subscription nor the command that stops either.
+ * neither a work subscription nor the command that stops either. For a Codex
+ * thread it says the thread follows the repository rule from there, because a
+ * thread with no basis at its session start is on that rule.
  */
 function accountLine(
   name: string,
@@ -182,7 +203,14 @@ export function workSubscriptionOptOutOffered(settingsDir: string): boolean {
  * An account line whose root key names a ChatGPT workspace is worded for a Codex
  * thread: it says "thread", names the ChatGPT work subscription (or the workspace
  * enrolled by hand), and says the thread stops being sent when it is resumed or
- * its login changes.
+ * its login changes. With no login basis it says the thread first ran under a
+ * ChatGPT workspace and follows the repository rule from there.
+ *
+ * A scoped line for a Codex thread whose ChatGPT account is not decided yet
+ * (`session.threadAccountPending`) ends with a sentence saying the account is
+ * checked once more at the thread's next prompt or tool call, and that a work
+ * subscription or a workspace enrolled by hand then sends the thread's prompts,
+ * tool calls and results from any folder.
  *
  * Each work line ends with the command that stops it: the opt-out for a session
  * recognised automatically, or `aka unenroll --account` for an account enrolled
@@ -231,14 +259,16 @@ export function forwardingLine(
           scope.managed,
         );
       case 'scoped': {
-        if (!scope.rootForwards || scope.rootKey === undefined) return LOCAL_ONLY;
+        if (!scope.rootForwards || scope.rootKey === undefined) {
+          return withPendingAccount(LOCAL_ONLY, name, session);
+        }
         if (isAgentScopeKey(scope.rootKey)) {
           return accountLine(name, scope.rootKey, scope.work?.basis, scope.work?.managed ?? false);
         }
         const repository = isRepoShapedScopeKey(scope.rootKey)
           ? `AKA: forwarding to ${name} (${printableForTerminal(scope.rootKey, 200)})`
           : `AKA: forwarding to ${name}`;
-        if (scope.work === undefined) return repository;
+        if (scope.work === undefined) return withPendingAccount(repository, name, session);
         const because =
           scope.work.basis === 'manual'
             ? 'because it is signed in to an account you enrolled by hand.'

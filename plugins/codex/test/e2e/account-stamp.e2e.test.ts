@@ -36,7 +36,7 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { createPolicyStore, SYNC_MARKER_NAME } from '@akasecurity/plugin-runtime';
-import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { bundledDetections, claimSessionStart } from '@akasecurity/plugin-sdk';
 import { readObservations } from '@akasecurity/plugin-sdk/account';
 import {
   agentKey,
@@ -61,6 +61,10 @@ const LOCAL_ONLY =
   'AKA: local-only (not enrolled); work in an enrolled repository is still forwarded';
 const WORK_LINE =
   'AKA: forwarding this thread to Acme — signed in to a ChatGPT work subscription; it stops if the thread is resumed or its login changes.';
+const PENDING_LINE =
+  "This thread's ChatGPT account is checked once more at its next prompt or tool call. If it is a work subscription, or a workspace you enrolled by hand, the thread's prompts, tool calls and results are forwarded to Acme from any folder from then on.";
+const RESUMED_LINE =
+  'AKA: this thread first ran under a ChatGPT workspace forwarded to Acme; from here it follows the repository rule, so only work in an enrolled repository is forwarded.';
 
 function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; example: string } {
   const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
@@ -87,22 +91,29 @@ const PATCH_PRE = recorded('apply_patch.pre-tool-use.json');
 const PATCH_POST = recorded('apply_patch.post-tool-use.json');
 
 const MANAGED_FILENAME = '"managed-settings.json"';
+const ABSENT_FILENAME = '"managed-settings.absent.json"';
+const HOOKS_RUN = ['session-start', 'user-prompt-submit', 'pre-tool-use', 'post-tool-use', 'stop'];
 
 /**
  * Points every built script's administrator overlay at a file that does not
  * exist. A hook child reads the overlay from an absolute system path that a temp
  * home cannot redirect, so on a machine enrolled with an administrator it would
- * pin the attachment this case builds.
+ * pin the attachment this case builds. The filename is the only thing that
+ * differs from the shipped bundles, and every hook the cases run must hold it,
+ * so a bundle that spells it differently fails here rather than keeping the
+ * overlay.
  */
 function withoutAdministrator(scripts: string): void {
+  const rewritten: string[] = [];
   for (const name of readdirSync(scripts)) {
     if (!name.endsWith('.js')) continue;
     const file = join(scripts, name);
     const text = readFileSync(file, 'utf8');
-    const patched = text.replaceAll(MANAGED_FILENAME, '"managed-settings.absent.json"');
-    expect(patched, name).not.toContain(MANAGED_FILENAME);
-    if (patched !== text) writeFileSync(file, patched);
+    if (!text.includes(MANAGED_FILENAME)) continue;
+    writeFileSync(file, text.replaceAll(MANAGED_FILENAME, ABSENT_FILENAME));
+    rewritten.push(name);
   }
+  for (const hook of HOOKS_RUN) expect(rewritten, hook).toContain(`${hook}.js`);
 }
 
 interface Row {
@@ -113,6 +124,8 @@ interface Row {
 interface Thread {
   sessionId: string;
   transcriptPath: string;
+  /** Writes the thread's first rollout line, for a thread made `late`. */
+  writeHead(): void;
 }
 
 interface Device {
@@ -125,7 +138,8 @@ interface Device {
     payload: Record<string, unknown>,
     env?: Record<string, string>,
   ): ReturnType<typeof runHook>;
-  thread(options?: { provider?: string; model?: string }): Thread;
+  thread(options?: { provider?: string; model?: string; late?: boolean }): Thread;
+  lapseClaims(): void;
   signIn(plan: string, account?: string, email?: string): void;
   rows(): Row[];
   log(sessionId: string): SessionAccountObservation[];
@@ -225,7 +239,7 @@ function withDevice(
         env: { ...tempHomeEnv(home), ...env },
         scriptsDir: scripts,
       }),
-    thread: ({ provider = 'openai', model } = {}) => {
+    thread: ({ provider = 'openai', model, late = false } = {}) => {
       const sessionId = randomUUID();
       const sessions = join(home, '.codex', 'sessions');
       mkdirSync(sessions, { recursive: true });
@@ -251,8 +265,14 @@ function withDevice(
           payload: { turn_id: 'turn-1', cwd: personal, model },
         });
       }
-      writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
-      return { sessionId, transcriptPath };
+      const writeHead = (): void => {
+        writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+      };
+      if (!late) writeHead();
+      return { sessionId, transcriptPath, writeHead };
+    },
+    lapseClaims: () => {
+      for (let i = 0; i < 40; i++) claimSessionStart(dataDirOf(base), randomUUID());
     },
     signIn,
     rows: () => {
@@ -504,6 +524,63 @@ describe('a Codex thread on a ChatGPT work subscription, through the built hooks
       ).toBe(0);
       const prompts = device.rows().filter((row) => row.kind === 'prompt');
       expect(prompts.map((row) => row.key)).toEqual([device.agent, PERSONAL_KEY]);
+    }));
+
+  it('says a thread whose first record is not on disk yet is checked once more, and decides it at its next prompt', () =>
+    withDevice({ signedIn: { plan: 'business' } }, (device) => {
+      const thread = device.thread({ late: true });
+      const started = device.run('session-start', startPayload(thread, device.personal, 'startup'));
+      expect(started.status, started.stderr).toBe(0);
+      expect(systemMessage(started.stdout)).toContain(`${LOCAL_ONLY}. ${PENDING_LINE}`);
+      thread.writeHead();
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'a prompt')).status,
+      ).toBe(0);
+      const rows = device.rows();
+      expect(rows.filter((row) => row.kind === 'session').map((row) => row.key)).toEqual([
+        PERSONAL_KEY,
+      ]);
+      expect(rows.filter((row) => row.kind === 'prompt').map((row) => row.key)).toEqual([
+        device.agent,
+      ]);
+    }));
+
+  it('keeps the repository rule for good when the first record is still missing at the next prompt', () =>
+    withDevice({ signedIn: { plan: 'business' } }, (device) => {
+      const thread = device.thread({ late: true });
+      device.run('session-start', startPayload(thread, device.personal, 'startup'));
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'first')).status,
+      ).toBe(0);
+      thread.writeHead();
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'second')).status,
+      ).toBe(0);
+      expect(
+        device
+          .rows()
+          .filter((row) => row.kind === 'prompt')
+          .map((row) => row.key),
+      ).toEqual([PERSONAL_KEY, PERSONAL_KEY]);
+    }));
+
+  it('words a work thread resumed after its session claim lapsed as following the repository rule', () =>
+    withDevice({ signedIn: { plan: 'business' } }, (device) => {
+      const thread = device.thread();
+      const first = device.run('session-start', startPayload(thread, device.personal, 'startup'));
+      expect(systemMessage(first.stdout)).toContain(WORK_LINE);
+      device.lapseClaims();
+      const resumed = device.run('session-start', startPayload(thread, device.personal, 'resume'));
+      expect(systemMessage(resumed.stdout)).toContain(RESUMED_LINE);
+      expect(
+        device.run('user-prompt-submit', promptPayload(thread, device.personal, 'after')).status,
+      ).toBe(0);
+      expect(
+        device
+          .rows()
+          .filter((row) => row.kind === 'prompt')
+          .map((row) => row.key),
+      ).toEqual([PERSONAL_KEY]);
     }));
 
   it('refuses a prohibited model in a folder no enrolled repository covers, for a work thread only', () =>

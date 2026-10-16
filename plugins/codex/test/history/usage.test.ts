@@ -37,6 +37,7 @@ import { appendObservation, sessionAccountHash } from '@akasecurity/plugin-sdk/a
 import {
   agentKey,
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  type AttachmentScopeEntry,
   buildTokenReports,
   type CostModel,
   costOf,
@@ -1263,7 +1264,8 @@ describe('scope keys — the root from its project, every leaf from where it ran
     let base: string;
     let codexHome: string;
 
-    beforeEach(() => {
+    /** A device attached scoped with `entries` enrolled, and, when `learn` is set, the thread's workspace learned. */
+    function attach(entries: AttachmentScopeEntry[], learn: boolean): void {
       base = mkdtempSync(join(tmpdir(), 'aka-usage-account-'));
       codexHome = mkdtempSync(join(tmpdir(), 'aka-usage-account-codex-'));
       applyOnboarding(
@@ -1278,7 +1280,7 @@ describe('scope keys — the root from its project, every leaf from where it ran
             endpoint: server.origin,
             tenantName: 'Acme',
             userEmail: member,
-            entries: [],
+            entries,
           },
         },
         base,
@@ -1297,17 +1299,30 @@ describe('scope keys — the root from its project, every leaf from where it ran
         tenantName: 'Acme',
         userEmail: member,
       });
-      recordValidatedWorkAccount(dataDirOf(base), {
-        endpoint: server.origin,
-        credential,
-        key: chatgptKey,
-      });
+      if (learn) {
+        recordValidatedWorkAccount(dataDirOf(base), {
+          endpoint: server.origin,
+          credential,
+          key: chatgptKey,
+        });
+      }
       for (const name of ['CODEX_HOME', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL']) {
         vi.stubEnv(name, undefined);
       }
       writeFileSync(join(dataDirOf(base), SYNC_MARKER_NAME), String(Date.now()));
       server.received.length = 0;
       server.reply(acknowledge);
+    }
+
+    /** Replaces the device the enclosing case set up with one attached differently. */
+    function reattach(entries: AttachmentScopeEntry[], learn: boolean): void {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true });
+      attach(entries, learn);
+    }
+
+    beforeEach(() => {
+      attach([], true);
     });
 
     afterEach(() => {
@@ -1410,13 +1425,13 @@ describe('scope keys — the root from its project, every leaf from where it ran
       expect(keys(dataDirOf(base)).leaf.get('call-w')).toBe(WORK_KEY);
     });
 
-    /** A session start for the describe's thread, from a folder in no repository, with its head on disk or not. */
-    async function startSession(withHead: boolean): Promise<string> {
-      writeCodexAuth(join(codexHome, '.codex'), {
-        accountId: workspace,
-        email: member,
-        plan: 'business',
-      });
+    /** A session start for the describe's thread, with its head on disk or not, from a folder in no repository unless told. */
+    async function startSession(
+      withHead: boolean,
+      options: { plan?: string; email?: string; cwd?: string } = {},
+    ): Promise<string> {
+      const { plan = 'business', email = member, cwd = scratch } = options;
+      writeCodexAuth(join(codexHome, '.codex'), { accountId: workspace, email, plan });
       const transcriptPath = withHead
         ? workRollout()
         : join(transcripts, `rollout-${SESSION}.jsonl`);
@@ -1425,12 +1440,12 @@ describe('scope keys — the root from its project, every leaf from where it ran
         sessionId: SESSION,
         source: 'startup',
         transcriptPath,
-        cwd: scratch,
+        cwd,
         nowMs: startAt,
         home: codexHome,
       });
       await handleSessionStart(
-        { sessionId: SESSION, cwd: scratch, tool: SOURCE_TOOL.Codex, homeDir: base, ...fields },
+        { sessionId: SESSION, cwd, tool: SOURCE_TOOL.Codex, homeDir: base, ...fields },
         config,
       );
       return transcriptPath;
@@ -1515,6 +1530,75 @@ describe('scope keys — the root from its project, every leaf from where it ran
       expect(leaf.get('call-w')).toBe(agent());
       expect(sent('call-w')).toBe(false);
       expect(sent(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(false);
+    });
+
+    describe('when its session root is in an enrolled repository', () => {
+      beforeEach(() => {
+        reattach(
+          [{ kind: 'repo', identity: WORK_KEY, enrolledAt: '2026-10-02T09:00:00.000Z' }],
+          true,
+        );
+      });
+
+      it('sends the rows of a thread that was decided at its next hook', async () => {
+        const transcriptPath = await startSession(false, { cwd: workRepo });
+        expect(keys(dataDirOf(base)).root).toBe(WORK_KEY);
+        const gateway = resolveDataGateway(loadConfig(base));
+        try {
+          expect(
+            threadAccountKey(gateway, {
+              dataDir: dataDirOf(base),
+              sessionId: SESSION,
+              transcriptPath: workRollout(),
+              nowMs: startAt + 1_000,
+              home: codexHome,
+            }),
+          ).toBe(chatgptKey);
+        } finally {
+          await gateway.close();
+        }
+        server.received.length = 0;
+        await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+        const { leaf } = keys(dataDirOf(base));
+        expect(leaf.get('call-w')).toBe(WORK_KEY);
+        expect(leaf.get('call-s')).toBe(agent());
+        expect(sent('call-w')).toBe(true);
+        expect(sent('call-s')).toBe(true);
+      });
+    });
+
+    describe('of a workspace enrolled by hand', () => {
+      beforeEach(() => {
+        reattach(
+          [
+            {
+              kind: 'account',
+              identity: chatgptKey,
+              enrolledAt: '2026-10-02T09:00:00.000Z',
+              codingAgents: true,
+            },
+          ],
+          false,
+        );
+      });
+
+      it("sends the thread's token and tool rows whatever its plan or email", async () => {
+        const transcriptPath = await startSession(true, {
+          plan: 'plus',
+          email: 'other@example.test',
+        });
+        expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+        expect(keys(dataDirOf(base)).root).toBe(agent());
+        server.received.length = 0;
+        await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+        const { leaf } = keys(dataDirOf(base));
+        expect(leaf.get('call-w')).toBe(agent());
+        expect(leaf.get('call-s')).toBe(agent());
+        expect(sent(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(true);
+        expect(sent('call-w')).toBe(true);
+        expect(sent(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBe(true);
+        expect(sent('call-s')).toBe(true);
+      });
     });
   });
 });

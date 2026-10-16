@@ -271,7 +271,7 @@ describe('a Codex thread on a ChatGPT work subscription', () => {
     attachScoped();
     signIn('business');
     const thread = await startThread();
-    expect(thread.account).toEqual({ accountKey: chatgptKey, basis: 'validated' });
+    expect(thread.account).toEqual({ accountKey: chatgptKey, basis: 'validated', pending: false });
     expect(learned()).toEqual([chatgptKey]);
     const marker = `prompt-${randomUUID()}`;
     const gateway = gatewayNow();
@@ -412,7 +412,11 @@ describe('a Codex thread that keeps the repository rule', () => {
     expect(learned()).toEqual([]);
     attachScoped({ off: true, entries: [manual()] });
     const enrolledByHand = await startThread();
-    expect(enrolledByHand.account).toEqual({ accountKey: chatgptKey, basis: 'manual' });
+    expect(enrolledByHand.account).toEqual({
+      accountKey: chatgptKey,
+      basis: 'manual',
+      pending: false,
+    });
     expect(await hookAccount(enrolledByHand)).toBe(chatgptKey);
   });
 
@@ -529,7 +533,7 @@ describe('a thread whose first rollout line was not on disk at session start', (
     attachScoped();
     signIn('business');
     const thread = await startWithoutHead();
-    expect(thread.account.accountKey).toBeUndefined();
+    expect(thread.account).toEqual({ accountKey: undefined, basis: undefined, pending: true });
     expect(threadLog(thread.sessionId)).toEqual([
       expect.objectContaining({ start: 'startup', s: 'pending' }),
     ]);
@@ -537,6 +541,25 @@ describe('a thread whose first rollout line was not on disk at session start', (
     expect(await hookAccount(thread)).toBe(chatgptKey);
     expect(learned()).toEqual([chatgptKey]);
   });
+
+  it('decides a thread of a workspace enrolled by hand at its next hook, whatever the plan or email', async () => {
+    attachScoped({ entries: [manual()] });
+    signIn('plus', workspace, someoneElse);
+    const thread = await startWithoutHead();
+    expect(thread.account.pending).toBe(true);
+    rollout(thread.sessionId);
+    expect(await hookAccount(thread)).toBe(chatgptKey);
+    expect(learned()).toEqual([]);
+  });
+
+  it.each(['startup', 'resume'])(
+    'is not pending for a %s whose head is on disk',
+    async (source) => {
+      attachScoped();
+      signIn('business');
+      expect((await startThread(source)).account.pending).toBe(false);
+    },
+  );
 
   it('gives none for good when the head is still missing at the next hook', async () => {
     attachScoped();
@@ -568,7 +591,7 @@ describe('a validated workspace this device has not written down', () => {
         sessionId,
         transcriptPath,
         home,
-        account: { accountKey: undefined, basis: undefined },
+        account: { accountKey: undefined, basis: undefined, pending: false },
       };
     } finally {
       await gateway.close();
@@ -883,7 +906,7 @@ describe('a thread that is not a work thread when it starts', () => {
     attachScoped();
     signIn('business');
     const thread = await startThread(source);
-    expect(thread.account).toEqual({ accountKey: chatgptKey, basis: 'validated' });
+    expect(thread.account).toEqual({ accountKey: chatgptKey, basis: 'validated', pending: false });
     expect(threadLog(thread.sessionId)).toEqual([expect.objectContaining({ start: source })]);
   });
 
@@ -901,7 +924,7 @@ describe('a thread that is not a work thread when it starts', () => {
         nowMs: Date.now(),
         home,
       });
-      expect(compacted).toEqual({ accountKey: chatgptKey, basis: 'remembered' });
+      expect(compacted).toEqual({ accountKey: chatgptKey, basis: 'remembered', pending: false });
     } finally {
       await gateway.close();
     }
@@ -1045,6 +1068,7 @@ describe('every account function is total', () => {
     expect(startThreadAccount(gateway, { ...input, source: 'startup' })).toEqual({
       accountKey: undefined,
       basis: undefined,
+      pending: false,
     });
     expect(threadAccountKey(gateway, input)).toBeUndefined();
   });

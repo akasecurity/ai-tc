@@ -58,6 +58,7 @@ import {
 
 import { pluginBuild } from '../build-info.ts';
 import { platformRedactionScope } from '../remediation/redact.ts';
+import { planFollowUp, scheduleFollowUp } from './reconcile-trigger.ts';
 import type { UsageOffset } from './tail.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import { scrubTranscriptTail } from './tail-scrub.ts';
@@ -460,7 +461,11 @@ export async function reconcileHistory(
 // written yet, and while the session root is unwritten and the session is in a work
 // account whose key is not in scope yet, with work subscriptions on: a check at the
 // session's next prompt learns the key, and the root, first-write-wins, is then keyed
-// for the account instead of the repository.
+// for the account instead of the repository. A pass that holds spawns a follow-up
+// pass (see planFollowUp), so the hold is spent and the tail written within that
+// budget even when no hook of the session fires again. `followUpDue` names the
+// follow-up this pass is, by the due time its checkpoint recorded; a follow-up
+// whose hold was released or replaced meanwhile does nothing.
 //
 // Resolves its OWN gateway and always `close()`s it in a finally, so a
 // single worker invocation is self-contained. Fully fail-open.
@@ -469,8 +474,12 @@ export async function reconcileSessionTail(
   sessionId: string,
   transcriptPath: string,
   now: () => number = Date.now,
+  followUpDue?: number,
 ): Promise<{ llmCalls: number; skipped: number; toolCalls: number }> {
   const checkpoint = readOffset(config.dataDir, sessionId);
+  if (followUpDue !== undefined && checkpoint.pending?.followUpAt !== followUpDue) {
+    return { llmCalls: 0, skipped: 0, toolCalls: 0 };
+  }
   const { chunk, nextOffset, from } = readTail(transcriptPath, checkpoint.offset);
   // Nothing new (or only a half-written final line) → don't even open the store.
   // Still re-persist the offset in case a rotation reset it (nextOffset may differ).
@@ -541,23 +550,31 @@ export async function reconcileSessionTail(
       records,
       toolCallRecords,
     );
+    const passAt = now();
     const hold =
       waiting.length === 0
         ? undefined
-        : holdDecision({ pendingTimes: waiting, pending: checkpoint.pending, now: now() });
+        : holdDecision({ pendingTimes: waiting, pending: checkpoint.pending, now: passAt });
     if (hold?.hold === true) {
       // A record waits for its closing observation, or the session's account key is
       // not in scope yet: no root and no row is written, the transcript offset stays
       // where it is, and the next pass reads this tail again. The scrub of the
       // transcript file below does not run either, so a held pass strikes nothing: a
       // raw secret in these lines stays until the pass that writes.
+      const plan = planFollowUp({
+        held: hold.pending,
+        before: checkpoint.pending,
+        ownDue: followUpDue,
+        now: passAt,
+      });
       writeOffset(config.dataDir, sessionId, {
         ...checkpoint,
         ...(attribution?.logReset === true
           ? { logOffset: 0, logStartedAt: undefined, carried: undefined }
           : {}),
-        pending: hold.pending,
+        pending: plan.pending,
       });
+      if (plan.dueAt !== undefined) scheduleFollowUp(sessionId, transcriptPath, plan.dueAt);
       return { llmCalls: 0, skipped: 0, toolCalls: 0 };
     }
     const accountOf =

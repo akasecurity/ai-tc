@@ -128,9 +128,10 @@ interface LedgerContext {
 // switched back on. Whether the scan vaults is folded in for the same reason:
 // files skipped as unchanged while vault consent was absent are re-read once
 // consent is granted, so their secrets are vaulted. So is whether the scan
-// shares credential sightings, to which deployment and under which key version:
-// files skipped while sharing was off, or while attached elsewhere, are re-read
-// once it is on, so their sightings are sent.
+// shares credential sightings, to which deployment, with which repositories
+// enrolled, and under which key version: files skipped while sharing was off,
+// while attached elsewhere or while their repository was not enrolled, are
+// re-read once that changes, so their sightings are sent.
 async function loadLedger(
   gateway: DataGateway,
   runtime: PluginRuntime,
@@ -143,7 +144,7 @@ async function loadLedger(
   const sightingMaterial =
     sightings === undefined
       ? ''
-      : `:sightings:${sightings.endpointFingerprint}:v${String(sightings.key.keyVersion)}`;
+      : `:sightings:${sightings.endpointFingerprint}:${sightings.enrolledFingerprint}:v${String(sightings.key.keyVersion)}`;
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}${vaultMaterial}${sightingMaterial}`,
   );
@@ -464,6 +465,7 @@ interface SightingRun {
   base: string;
   key: SightingKey;
   endpointFingerprint: string;
+  enrolledFingerprint: string;
   send: CredentialSightingsSend | undefined;
   managedSettings: ManagedSettings | null | undefined;
 }
@@ -490,17 +492,12 @@ async function shareSightings(
   );
 }
 
-// Whether every sighting the scan found reached the deployment. When not, the
-// files that produced sightings are not ledgered, so the next scan reads them
-// again: a sighting kept local because its repository is not enrolled is sent
-// once it is.
+// Whether every sighting the scan could send reached the deployment. When not,
+// the files that produced sightings are not ledgered, so the next scan reads
+// them again. A sighting kept local is not owed: enrolling its repository
+// changes the ledger fingerprint, which reads it again then.
 function deliveredAll(outcome: CredentialSightingsOutcome): boolean {
-  return (
-    outcome.status === 'sent' &&
-    outcome.failure === undefined &&
-    outcome.unsent === 0 &&
-    outcome.keptLocal === 0
-  );
+  return outcome.status === 'sent' && outcome.failure === undefined && outcome.unsent === 0;
 }
 
 // What a scan without a register records: no repository. Only a scan with a
@@ -1057,6 +1054,7 @@ function planSightings(
         base,
         key: plan.key,
         endpointFingerprint: plan.endpointFingerprint,
+        enrolledFingerprint: plan.enrolledFingerprint,
         send: opts.sendSightings,
         managedSettings: opts.managedSettings,
       },

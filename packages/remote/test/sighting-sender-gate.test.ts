@@ -19,7 +19,7 @@ const SIGHTING_SENDERS: readonly string[] = [];
 // cannot read the sharing settings, so the gate is read by the caller:
 // forwardCredentialSightings in @akasecurity/persistence, immediately before it
 // calls the sender. Every caller outside this package hands the sender to that
-// forwarder, which persistence's sighting-send-path test pins.
+// forwarder, which eslint-config's sighting-send-path suite pins.
 const SIGHTING_TRANSPORTS: readonly string[] = ['client.ts', 'index.ts', 'sightings-sender.ts'];
 
 // Modules that fetch or hold the sighting key and send no sightings. A module on

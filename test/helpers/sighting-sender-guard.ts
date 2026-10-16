@@ -69,23 +69,6 @@ export function ungatedSightingSenders(
   });
 }
 
-// What builds the transport that puts sightings on the wire, and the forwarders that
-// read the sharing gate before they call it.
-const BUILDS_SIGHTINGS_TRANSPORT =
-  /\bcreateCredentialSightingsSender\b|\.recordCredentialSightings\s*\(/;
-const CALLS_GATED_FORWARDER =
-  /\b(?:forwardCredentialSightings|forwardScanSightings|sendScanSightings)\s*\(/;
-
-/**
- * Sources that build the sightings transport without handing it to a forwarder
- * that reads the sharing gate.
- */
-export function transportsOutsideTheGate(sources: readonly SourceFile[]): string[] {
-  return sources
-    .filter((s) => BUILDS_SIGHTINGS_TRANSPORT.test(s.text) && !CALLS_GATED_FORWARDER.test(s.text))
-    .map((s) => s.path);
-}
-
 /**
  * Listed key readers (modules that fetch or store the sighting key and send no
  * sightings) that are missing, or that reference sending sightings.

@@ -62,11 +62,24 @@ afterEach(() => {
   removeTrees([home, repo]);
 });
 
-function attach(consent: boolean, endpoint = ENDPOINT): PluginConfig {
+// `enrolled` makes the attachment scoped, enrolling those repositories.
+function attach(consent: boolean, endpoint = ENDPOINT, enrolled?: string[]): PluginConfig {
   applyOnboarding(
     {
       runMode: 'attached',
       controlPlane: { endpoint, attachedAt: MINTED_AT },
+      ...(enrolled === undefined
+        ? {}
+        : {
+            attachmentScope: {
+              endpoint,
+              entries: enrolled.map((identity) => ({
+                kind: 'repo' as const,
+                identity,
+                enrolledAt: MINTED_AT,
+              })),
+            },
+          }),
       ...(consent
         ? {
             sightingShareConsent: {
@@ -83,7 +96,7 @@ function attach(consent: boolean, endpoint = ENDPOINT): PluginConfig {
   writeFileSync(
     join(home, 'settings', 'control-plane-credential.json'),
     JSON.stringify({
-      specVersion: 1,
+      ...(enrolled === undefined ? { specVersion: 1 } : { specVersion: 2, mode: 'scoped' }),
       endpoint,
       apiKey: ['test', 'plugin', 'key'].join('-'),
       mintedAt: MINTED_AT,
@@ -178,6 +191,22 @@ describe('scanWorktree — credential sightings', () => {
     const again = recorder();
     await scanWorktree(config, options(again.send));
     expect(again.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual([]);
+  });
+
+  it('reads an unenrolled repository once, and again once it is enrolled', async () => {
+    const kept = recorder();
+    const first = await scanWorktree(attach(true, ENDPOINT, []), options(kept.send));
+    expect(first.sightings).toMatchObject({ status: 'sent', shared: 0, unsent: 0 });
+    expect(kept.requests).toEqual([]);
+
+    const unchanged = await scanWorktree(attach(true, ENDPOINT, []), options(recorder().send));
+    expect(unchanged.scanned).toBe(0);
+
+    const enrolled = recorder();
+    await scanWorktree(attach(true, ENDPOINT, ['github.com/acme/widgets']), options(enrolled.send));
+    expect(enrolled.requests.flatMap((r) => r.sightings.map((s) => s.token))).toEqual(
+      expect.arrayContaining([sightingToken(KEY, SOURCE_VALUE), sightingToken(KEY, DOTENV_VALUE)]),
+    );
   });
 
   it('reads unchanged files again once attached to another deployment', async () => {

@@ -2,7 +2,7 @@
 // machine is attached to. A scan computes each sighting token in memory, from
 // the value it just matched; everything here works on tokens and never sees a
 // value. The transport is a parameter: this package opens no socket.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, sep } from 'node:path';
 
@@ -19,6 +19,7 @@ import {
   attachmentModeOf,
   CREDENTIAL_SIGHTINGS_BATCH_MAX,
   isAttached,
+  parseAttachmentScope,
   resolveScope,
   scopeVerdict,
 } from '@akasecurity/schema';
@@ -73,7 +74,14 @@ export interface SightingShareOptions {
 }
 
 export type SightingSharePlan =
-  | { ok: true; key: SightingKey; endpointFingerprint: string }
+  | {
+      ok: true;
+      key: SightingKey;
+      /** The sha256 hex of the endpoint that issued the key. */
+      endpointFingerprint: string;
+      /** The sha256 hex of the identities enrolled for that endpoint; changes when one is enrolled or removed. */
+      enrolledFingerprint: string;
+    }
   | { ok: false; outcome: CredentialSightingsOutcome };
 
 /**
@@ -96,14 +104,21 @@ export function planSightingShare(
       return { ok: false, outcome: { status: 'not-shared', reason: 'opt-out' } };
     }
     const keys = readSightingKeys(base);
-    const endpoint = readWorkspaceSettings(base).controlPlane?.endpoint;
+    const settings = readWorkspaceSettings(base);
+    const endpoint = settings.controlPlane?.endpoint;
     if (keys === undefined || endpoint === undefined) {
       return { ok: false, outcome: { status: 'not-shared', reason: 'no-key' } };
     }
+    const scope = parseAttachmentScope(settings.attachmentScope);
+    const enrolled =
+      scope?.endpoint === endpoint
+        ? scope.entries.map((entry) => `${entry.kind}\u0000${entry.identity}`).sort()
+        : [];
     return {
       ok: true,
       key: keys.current,
       endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
+      enrolledFingerprint: createHash('sha256').update(enrolled.join('\n')).digest('hex'),
     };
   } catch {
     return { ok: false, outcome: { status: 'not-shared', reason: 'local-error' } };

@@ -1,6 +1,7 @@
+import type * as ChildProcess from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -52,6 +53,22 @@ vi.mock('../../../../packages/remote/src/index.ts', async (importOriginal) => {
   };
 });
 
+// A held pass asks for a follow-up by spawning the reconcile worker; nothing here
+// starts a process, and each test reads the requests off the spy.
+const spawnSpy = vi.hoisted(() =>
+  vi.fn<
+    (
+      command: string,
+      args: readonly string[],
+      options: object,
+    ) => { on: () => void; unref: () => void }
+  >(() => ({ on: vi.fn(), unref: vi.fn() })),
+);
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof ChildProcess>()),
+  spawn: spawnSpy,
+}));
+
 // Every instant is a second count from T0. The hooks, the session start and the
 // reconcile are each handed that clock, so a case orders its observations and
 // its transcript lines exactly.
@@ -61,6 +78,7 @@ const ms = (s: number): number => T0 + s * 1_000;
 
 let dev: Device;
 beforeEach(() => {
+  spawnSpy.mockReset();
   dev = device(sent);
 });
 afterEach(() => {
@@ -111,6 +129,46 @@ async function hookAt(t: Transcript, s: number): Promise<void> {
 /** One reconcile pass at second `s`. */
 const pass = (t: Transcript, s: number) =>
   reconcileSessionTail(dev.config(), t.sessionId, t.path, () => ms(s));
+
+interface FollowUp {
+  readonly sessionId: string;
+  readonly transcriptPath: string;
+  readonly dueAt: number;
+}
+
+/** The follow-up passes asked for so far: each spawn of the reconcile worker that names a due time. */
+function followUpsAsked(): FollowUp[] {
+  return spawnSpy.mock.calls.flatMap(([, args]) => {
+    const [script, sessionId, transcriptPath, dueAt] = args;
+    return basename(script ?? '') === 'reconcile.js' &&
+      sessionId !== undefined &&
+      transcriptPath !== undefined &&
+      dueAt !== undefined
+      ? [{ sessionId, transcriptPath, dueAt: Number(dueAt) }]
+      : [];
+  });
+}
+
+/** A follow-up waking at its due time: the pass the worker it was spawned as runs. */
+const wake = (followUp: FollowUp) =>
+  reconcileSessionTail(
+    dev.config(),
+    followUp.sessionId,
+    followUp.transcriptPath,
+    () => followUp.dueAt,
+    followUp.dueAt,
+  );
+
+/** Wakes the newest follow-up asked for, and the one that pass asks for, until a pass asks for none; the due times woken. */
+async function wakeUntilNoneIsAsked(): Promise<number[]> {
+  const woken: number[] = [];
+  for (let next = followUpsAsked().at(-1); next !== undefined; next = followUpsAsked().at(-1)) {
+    if (woken.includes(next.dueAt) || woken.length === 10) break;
+    woken.push(next.dueAt);
+    await wake(next);
+  }
+  return woken;
+}
 
 /** Stop at second `s`: its observation, then its reconcile pass. */
 async function stopAt(t: Transcript, s: number): Promise<void> {
@@ -463,6 +521,24 @@ describe('reconcileSessionTail — sessions that are not work subscriptions', ()
     expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
   });
 
+  it.each([
+    ['no attachment', undefined],
+    ['a machine-wide attachment', { mode: 'machine' }],
+  ] as const)('a device with %s asks for no follow-up', async (_name, attachment) => {
+    if (attachment !== undefined) dev.attach(attachment);
+    dev.login({ org: dev.workOrg });
+    const t = dev.transcript(randomUUID());
+    await start(t, 0);
+    await hookAt(t, 1);
+    t.prompt(at(1));
+    t.org(dev.workOrg, at(2));
+    t.reply(at(3), dev.personal);
+    await stopAt(t, 4);
+    expect(keysOf(t, 'llm_call')).toHaveLength(1);
+    expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+    expect(followUpsAsked()).toEqual([]);
+  });
+
   it('personal then work under one boundary attributes nothing', async () => {
     dev.attach();
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro' });
@@ -738,6 +814,8 @@ describe('reconcileSessionTail — the root of a session whose first reply is no
       expect(keysOf(t, 'llm_call')).toEqual([]);
       expect(dev.sent.audit).toEqual([]);
       expect(dev.sent.inventory).toEqual([]);
+      const [followUp, ...others] = followUpsAsked();
+      expect(others).toEqual([]);
       const second = await secondTurn(t, dev.personal);
       await stopAt(t, 12);
       expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
@@ -752,6 +830,13 @@ describe('reconcileSessionTail — the root of a session whose first reply is no
       expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, second)]);
       expect(sentRows('tool_call')).toHaveLength(1);
       expect(dev.sent.inventory).toHaveLength(1);
+      // The follow-up the first pass asked for wakes after the turn wrote, and finds nothing to do.
+      const rows = keysOf(t, 'llm_call');
+      const spawns = spawnSpy.mock.calls.length;
+      expect(followUp).toBeDefined();
+      if (followUp !== undefined) await wake(followUp);
+      expect(keysOf(t, 'llm_call')).toEqual(rows);
+      expect(spawnSpy).toHaveBeenCalledTimes(spawns);
     });
 
     it('holds a resumed session whose root is still unwritten the same way', async () => {
@@ -797,6 +882,167 @@ describe('reconcileSessionTail — the root of a session whose first reply is no
       expect(dev.sent.audit).toEqual([]);
     });
 
+    describe('a held pass releases itself', () => {
+      const FIRST = 30_000;
+      const SECOND = 120_000;
+      const THIRD = 360_000;
+
+      it('asks for one follow-up, thirty seconds on, and records when it is due', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        expect(followUpsAsked()).toEqual([
+          { sessionId: t.sessionId, transcriptPath: t.path, dueAt: ms(4) + FIRST },
+        ]);
+        expect(readOffset(dev.dataDir, t.sessionId)).toEqual({
+          offset: 0,
+          pending: { passes: 1, since: ms(4), followUpAt: ms(4) + FIRST },
+        });
+      });
+
+      it('asks for no second follow-up while the first is not due, and keeps its due time', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        await pass(t, 10);
+        expect(followUpsAsked()).toHaveLength(1);
+        expect(readOffset(dev.dataDir, t.sessionId).pending).toEqual({
+          passes: 2,
+          since: ms(4),
+          followUpAt: ms(4) + FIRST,
+        });
+      });
+
+      it('asks again when a pass holds after the follow-up it asked for was due, and the old one then does nothing', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        const [lost] = followUpsAsked();
+        await pass(t, 40);
+        expect(followUpsAsked().map((asked) => asked.dueAt)).toEqual([
+          ms(4) + FIRST,
+          ms(40) + SECOND,
+        ]);
+        const stored = readOffset(dev.dataDir, t.sessionId);
+        expect(stored.pending?.followUpAt).toBe(ms(40) + SECOND);
+        if (lost !== undefined) await wake(lost);
+        expect(readOffset(dev.dataDir, t.sessionId)).toEqual(stored);
+        expect(keysOf(t, 'llm_call')).toEqual([]);
+        expect(followUpsAsked()).toHaveLength(2);
+      });
+
+      it('writes the rows and a repository-keyed root, and sends nothing, when the session ends after one held pass', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        expect(rootAttributes(t)).toBeNull();
+        expect(keysOf(t, 'llm_call')).toEqual([]);
+        const woken = await wakeUntilNoneIsAsked();
+        expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+        expect(rootAttributes(t)?.cwd).toBe(dev.personal);
+        expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+        expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+        const stored = readOffset(dev.dataDir, t.sessionId);
+        expect(stored.pending).toBeUndefined();
+        expect(stored.offset).toBeGreaterThan(0);
+        expect(dev.learnedKeys()).toEqual([]);
+        expect(dev.sent.audit).toEqual([]);
+        expect(dev.sent.inventory).toEqual([]);
+        expect(woken).toEqual([
+          ms(4) + FIRST,
+          ms(4) + FIRST + SECOND,
+          ms(4) + FIRST + SECOND + THIRD,
+        ]);
+        expect(followUpsAsked()).toHaveLength(3);
+      });
+
+      it('writes the tool calls of the held tail as well, under the repository key', async () => {
+        const t = dev.transcript(randomUUID());
+        await start(t, 0);
+        await hookAt(t, 1);
+        t.prompt(at(1));
+        dev.login({ org: dev.workOrg });
+        t.org(dev.workOrg, at(2));
+        t.reply(at(3), dev.personal, { name: 'Bash', input: { command: 'ls' } });
+        await stopAt(t, 4);
+        expect(keysOf(t, 'tool_call')).toEqual([]);
+        await wakeUntilNoneIsAsked();
+        expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+        expect(keysOf(t, 'tool_call')).toEqual([PERSONAL_KEY]);
+        expect(dev.sent.audit).toEqual([]);
+      });
+
+      it('writes at once when the follow-up wakes more than fifteen minutes after the reply', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        const [asked] = followUpsAsked();
+        expect(asked).toBeDefined();
+        if (asked !== undefined) {
+          await reconcileSessionTail(
+            dev.config(),
+            asked.sessionId,
+            asked.transcriptPath,
+            () => ms(3 + 16 * 60),
+            asked.dueAt,
+          );
+        }
+        expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+        expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+        expect(followUpsAsked()).toHaveLength(1);
+        expect(dev.sent.audit).toEqual([]);
+      });
+
+      it('asks for no follow-up from a pass that writes', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await learnTheWorkOrg();
+        await stopAt(t, 4);
+        expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+        expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+        expect(followUpsAsked()).toEqual([]);
+      });
+
+      it('has a follow-up that wakes after a newer pass wrote do nothing at all', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await stopAt(t, 4);
+        const [followUp] = followUpsAsked();
+        await secondTurn(t, dev.personal);
+        await stopAt(t, 12);
+        const written = readOffset(dev.dataDir, t.sessionId);
+        expect(written.pending).toBeUndefined();
+        const rows = keysOf(t, 'llm_call');
+        const spawns = spawnSpy.mock.calls.length;
+        t.prompt(at(20));
+        t.reply(at(21), dev.personal);
+        expect(followUp).toBeDefined();
+        if (followUp !== undefined) await wake(followUp);
+        expect(readOffset(dev.dataDir, t.sessionId)).toEqual(written);
+        expect(keysOf(t, 'llm_call')).toEqual(rows);
+        expect(spawnSpy).toHaveBeenCalledTimes(spawns);
+      });
+
+      it('swallows a fault in asking for the follow-up, keeps the hold, and asks again once it is due', async () => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        spawnSpy.mockImplementationOnce(() => {
+          throw new Error('the worker cannot be started');
+        });
+        await stopAt(t, 4);
+        expect(spawnSpy.mock.results.map((result) => result.type)).toContain('throw');
+        expect(followUpsAsked()).toHaveLength(1);
+        expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+          offset: 0,
+          pending: { passes: 1 },
+        });
+        expect(keysOf(t, 'llm_call')).toEqual([]);
+        await pass(t, 40);
+        expect(followUpsAsked()).toHaveLength(2);
+        expect(readOffset(dev.dataDir, t.sessionId).pending?.passes).toBe(2);
+      });
+    });
+
     it('does not hold a pass whose read of the session root fails, and writes the root with the repository key', async () => {
       const t = dev.transcript(randomUUID());
       await untooledFirstTurn(t, dev.personal);
@@ -836,7 +1082,7 @@ describe('reconcileSessionTail — the root of a session whose first reply is no
       await untooledFirstTurn(t, dev.personal);
       await stopAt(t, 4);
       const held = readOffset(dev.dataDir, t.sessionId).pending;
-      expect(held).toEqual({ passes: 1, since: ms(4) });
+      expect(held).toEqual({ passes: 1, since: ms(4), followUpAt: ms(4) + 30_000 });
       await hookAt(t, 5);
       t.prompt(at(5));
       t.reply(at(7), dev.personal);
@@ -999,6 +1245,23 @@ describe('the first-pass hold', () => {
     const struck = readFileSync(t.path);
     expect(struck.includes('[REDACTED:')).toBe(true);
     expect(struck.includes(SECRET)).toBe(false);
+  });
+
+  it('a pass held for its closing observation releases itself the same way, and writes under the repository key', async () => {
+    const t = await pendingSession();
+    await pass(t, 104);
+    expect(followUpsAsked()).toEqual([
+      { sessionId: t.sessionId, transcriptPath: t.path, dueAt: ms(104) + 30_000 },
+    ]);
+    expect(keysOf(t, 'llm_call')).toEqual([]);
+    expect(rootAttributes(t)).toBeNull();
+    const woken = await wakeUntilNoneIsAsked();
+    expect(woken).toHaveLength(3);
+    expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+    expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+    expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+    expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+    expect(dev.sent.audit).toEqual([]);
   });
 
   it('a definitive none writes the root with its repository key at once', async () => {

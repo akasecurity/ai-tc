@@ -15,6 +15,10 @@
  * Exit 1 with nothing on stdout means "no decision": the mod passes the call on
  * unchanged and the PreToolUse command hook decides it as it always did.
  *
+ * The mod hands this process a session id and a directory and no transcript
+ * path, so it locates the session's transcript itself (locateSessionTranscript)
+ * and its captures are stamped for the session's account, as the hook's are.
+ *
  * Unless it denied, it leaves a note (src/mod/handoff.ts) naming the input the
  * tool will run with, so the command hook, shown that input next, does not
  * record the call a second time or ask for a grant already spent. The hook still
@@ -24,6 +28,7 @@
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import { locateSessionTranscript } from '../hooks/account-stamp.ts';
 import type { ScannedField } from '../hooks/pre-tool-use-decision.ts';
 import { inputEventKind } from '../hooks/pre-tool-use-fields.ts';
 import { runPreToolUse } from '../hooks/pre-tool-use-run.ts';
@@ -59,12 +64,14 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   let scanned: readonly ScannedField[] = [];
   let vaultedPointers: PointersByText = new Map();
   const sessionId = getString(input, 'sessionId');
+  const config = loadConfig();
   const run = await runPreToolUse(
     {
       tool_name: tool,
       tool_input: toolInput,
-      session_id: getString(input, 'sessionId'),
+      session_id: sessionId,
       cwd: getString(input, 'cwd'),
+      transcript_path: locateSessionTranscript(config, sessionId),
     },
     (output) => {
       outputs.push(output);
@@ -85,7 +92,7 @@ async function toolCall(stdin: string): Promise<HelperRun> {
   if (run !== 'finished') return { code: 1, stdout: '' };
 
   const answer = answerFromOutputs(outputs);
-  const { dataDir } = loadConfig();
+  const { dataDir } = config;
   if (sessionId !== undefined) {
     for (const { text, result } of scanned) {
       const pointers = vaultedPointers.get(text);

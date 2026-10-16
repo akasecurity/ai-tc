@@ -189,6 +189,33 @@ describe('readOffset / writeOffset — the account fields', () => {
     expect(readOffset(dir, 'sess-a')).toEqual(value);
   });
 
+  it('round-trips the time a held pass has its follow-up due', () => {
+    const value: UsageOffset = { offset: 0, pending: { passes: 2, since: 99, followUpAt: 4_000 } };
+    writeOffset(dir, 'sess-f', value);
+    expect(readOffset(dir, 'sess-f')).toEqual(value);
+  });
+
+  it.each([
+    ['is negative', -1],
+    ['is not a number', 'x'],
+    ['is null', null],
+  ])('drops a follow-up time that %s and keeps the hold', (_label, followUpAt) => {
+    mkdirSync(join(dir, 'usage-offsets'), { recursive: true });
+    writeFileSync(
+      join(dir, 'usage-offsets', 'sess-j'),
+      JSON.stringify({ offset: 0, pending: { passes: 1, since: 99, followUpAt } }),
+    );
+    expect(readOffset(dir, 'sess-j')).toEqual({ offset: 0, pending: { passes: 1, since: 99 } });
+  });
+
+  it('omits the follow-up time from the file when the hold has none', () => {
+    writeOffset(dir, 'sess-k', { offset: 0, pending: { passes: 1, since: 99 } });
+    expect(JSON.parse(readFileSync(join(dir, 'usage-offsets', 'sess-k'), 'utf8'))).toEqual({
+      offset: 0,
+      pending: { passes: 1, since: 99 },
+    });
+  });
+
   it('round-trips a carried state that names no boundary, anchor, change or last view', () => {
     const value: UsageOffset = { offset: 64, carried: { inherited: false } };
     writeOffset(dir, 'sess-b', value);

@@ -1,4 +1,5 @@
-// Throttled, detached spawn of the token-usage reconcile worker.
+// Detached spawns of the token-usage reconcile worker: the throttled one a hook
+// makes, and the follow-up a held pass asks for.
 //
 // Detached + unref + on-disk min-gap marker so the hook never waits on it. It
 // passes the session id + transcript path through to the worker via argv, so the
@@ -13,7 +14,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { throttledPerKey } from '@akasecurity/plugin-sdk';
+import type { PendingHold } from '@akasecurity/plugin-sdk/account';
 
+import type { HeldPass } from './tail.ts';
 import { safeSessionId } from './tail.ts';
 
 // Min gap between reconcile spawns. Stop fires once per turn; batching a few turns
@@ -45,13 +48,60 @@ export function triggerReconcile(dataDir: string, sessionId: string, transcriptP
     // marker filename so it can never name anything outside dataDir.
     const key = safeSessionId(sessionId);
     if (throttledPerKey(dataDir, RECONCILE_MARKER_PREFIX, key, RECONCILE_THROTTLE_MS)) return;
-    const here = dirname(fileURLToPath(import.meta.url));
-    const child = spawn(process.execPath, [join(here, 'reconcile.js'), sessionId, transcriptPath], {
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
+    spawnWorker([sessionId, transcriptPath]);
   } catch {
     // Fail-open: the next Stop or the SessionStart catch-up recovers the tail.
   }
+}
+
+/**
+ * Spawn a worker that waits until `dueAt` (epoch milliseconds) and then runs the
+ * follow-up pass of a held tail. It is not behind the reconcile throttle: that
+ * window batches a session's turns, and a follow-up is one pass the hold asked
+ * for. Fully fail-open: a spawn that fails leaves the hold to the next pass.
+ */
+export function scheduleFollowUp(sessionId: string, transcriptPath: string, dueAt: number): void {
+  try {
+    spawnWorker([sessionId, transcriptPath, String(dueAt)]);
+  } catch {
+    // Fail-open: a later pass finds the follow-up due and asks for another.
+  }
+}
+
+function spawnWorker(args: readonly string[]): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const child = spawn(process.execPath, [join(here, 'reconcile.js'), ...args], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  // A spawn that cannot start reports an 'error' event; unhandled, it ends the process.
+  child.on('error', () => undefined);
+  child.unref();
+}
+
+// How long after the first, second and third held pass of a tail its follow-up
+// is due. The pass after the third finds the hold budget spent and writes, 8.5
+// minutes after the first hold, inside the fifteen the budget allows.
+export const FOLLOW_UP_DELAYS_MS = [30_000, 120_000, 360_000] as const;
+
+/**
+ * The checkpoint's hold once a pass has held, and the due time of the follow-up
+ * to spawn, if any. A follow-up already asked for and not yet due is kept and
+ * none is asked for: one at most is outstanding. One that is due is spent or lost,
+ * and so is the one this pass is (`ownDue`), so the hold asks for the next.
+ */
+export function planFollowUp(input: {
+  readonly held: PendingHold;
+  readonly before: HeldPass | undefined;
+  readonly ownDue: number | undefined;
+  readonly now: number;
+}): { readonly pending: HeldPass; readonly dueAt: number | undefined } {
+  const queued = input.before?.followUpAt;
+  if (queued !== undefined && queued !== input.ownDue && queued > input.now) {
+    return { pending: { ...input.held, followUpAt: queued }, dueAt: undefined };
+  }
+  const delay = FOLLOW_UP_DELAYS_MS[input.held.passes - 1];
+  if (delay === undefined) return { pending: input.held, dueAt: undefined };
+  const dueAt = input.now + delay;
+  return { pending: { ...input.held, followUpAt: dueAt }, dueAt };
 }

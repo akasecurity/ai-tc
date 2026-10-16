@@ -22,6 +22,7 @@ import {
 } from '@akasecurity/plugin-sdk/account';
 import type { AccountBasis } from '@akasecurity/schema';
 
+import { findSessionTranscript } from './session-transcript.ts';
 import { countFailOpen } from './shared.ts';
 
 /** The account one hook's events are stamped for. */
@@ -65,6 +66,26 @@ export interface HookAccountInput {
 function storeFreeContext(config: PluginConfig): AccountContext | undefined {
   const read = readAccountScope(config);
   return read === undefined ? undefined : accountContextOf({ ...read, stamp: () => undefined });
+}
+
+/**
+ * The transcript of `sessionId`, for a mod helper, which the mod hands a session
+ * id and a directory and no transcript path. Looks only where the account check
+ * could read it: a scoped attachment whose Claude gate is open, so any other
+ * attachment reads no directory. Never throws.
+ */
+export function locateSessionTranscript(
+  config: PluginConfig,
+  sessionId: string | undefined,
+): string | undefined {
+  try {
+    const ctx = storeFreeContext(config);
+    if (ctx === undefined || !accountGateOpen(ctx, CLAUDE_ACCOUNT_PREFIX)) return undefined;
+    return findSessionTranscript(sessionId);
+  } catch {
+    countFailOpen();
+    return undefined;
+  }
 }
 
 // One check per gateway and session: a hook that asks twice (a turn's refusal,

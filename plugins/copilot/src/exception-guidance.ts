@@ -71,6 +71,49 @@ export function tooLargeToScanMessage(subject: string): string {
   return `This ${subject} is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.`;
 }
 
+// The same fact for a surface that CANNOT refuse: a capture-only event (a
+// prompt, a tool result) whose bounded scan did not finish. The field went
+// through anyway, so this must never say it was blocked — and it must never
+// read as clean either, because nothing in it was checked. `delivered` is the
+// clause saying where the content went, e.g. 'it was sent to the model
+// unchanged' or 'the output reached the model unchanged'. Like the refusal
+// above it names no rule and offers no exception.
+export function unscannedTooLargeMessage(subject: string, delivered: string): string {
+  return (
+    `AKA could not scan this ${subject} within the time limit because it is too large, ` +
+    `so nothing in it was checked and ${delivered}. ` +
+    'Shorten it or send it in smaller parts to have it scanned.'
+  );
+}
+
+// The same capture-only fact when the cause is not time but the scan worker:
+// it could not be started, died, or failed the job (`scanIncomplete:
+// 'unavailable'`). That is a fault in AKA rather than in the field — a missing
+// worker fails every field this large until the install is repaired — so the
+// sentence points at the install and never at the size of what was sent. Like
+// its siblings it never says blocked, names no rule and offers no exception.
+export function unscannedWorkerUnavailableMessage(subject: string, delivered: string): string {
+  return (
+    `AKA's scan worker could not run, so this ${subject} was not scanned: nothing in it ` +
+    `was checked and ${delivered}. This is a fault in AKA, not a limit on what was sent: ` +
+    'if it happens again, reinstall the AKA plugin to repair it.'
+  );
+}
+
+// The same capture-only fact when the cause is not time but the bounds a
+// structured result is read under: text past the depth, item-count or size
+// limits was never collected, so it was never scanned. Saying "within the time
+// limit" there would send the user looking for a slow scan that never ran. Like
+// its sibling above it never says blocked, names no rule and offers no
+// exception.
+export function unscannedPastWalkLimitsMessage(subject: string, delivered: string): string {
+  return (
+    `Part of this ${subject} lies past the depth, item-count or size limits AKA reads ` +
+    `a structured result to, so that part was not checked and ${delivered}. ` +
+    'Have the tool return less at once to have all of it scanned.'
+  );
+}
+
 // One trailing sentence for the redact/warn systemMessage branches: redacted
 // values land in the same ledger as blocked ones, so the same approve flow
 // applies. Empty when nothing was ledgered — the message is only extended when

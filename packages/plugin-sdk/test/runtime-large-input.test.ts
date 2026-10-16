@@ -366,6 +366,45 @@ describe('at or above the threshold', () => {
     }
   });
 
+  // The capture result is the same whether or not the caller refuses; what
+  // `refuses` changes is whether the SDK writes its "was refused" line.
+  it.each([
+    ['omitted', undefined, true],
+    ['false', false, false],
+  ] as const)(
+    'passes refuses %s through to the stderr line',
+    async (_label, refuses, writesLine) => {
+      const lines: string[] = [];
+      vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+        lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+        return true;
+      });
+      const { gateway } = fakeGateway();
+      const rt = createPluginRuntime(gateway, settings(), {
+        scanIsolation: { workerUrl: CRASHING_WORKER },
+        largeInput: largeInput({
+          remainingMs: () => 0,
+          ...(refuses === undefined ? {} : { refuses }),
+        }),
+      });
+      try {
+        const result = await rt.capture({
+          kind: 'prompt',
+          sourceTool: 'claude-code',
+          text: LARGE_TEXT,
+        });
+        expect(result).toMatchObject({ action: 'block', scanIncomplete: 'timeout' });
+        // The refusing default is the positive control: the same capture
+        // writes the line, so the empty stderr below is the option at work.
+        const written = lines.join('');
+        if (writesLine) expect(written).toContain('and was refused');
+        else expect(written).toBe('');
+      } finally {
+        await rt.close();
+      }
+    },
+  );
+
   // The callback is typed to return a number, but it is the caller's code: a
   // value that is not one is a limit nobody can read, and that is treated as
   // spent, never as no limit. `undefined` is the dangerous one — it is also

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,12 +7,15 @@ import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type * as Remote from '@akasecurity/remote';
 import type { ControlPlaneConnection } from '@akasecurity/schema';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { agentKey, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CommandScan } from '../../src/attached/command-sync.ts';
@@ -219,6 +223,45 @@ describe('runCommandSync — a scoped attachment', () => {
       reason: 'expired',
       projectsScanned: 0,
     });
+  });
+
+  // Device commands stay repository-only: a work account this device recognised
+  // never opens a server-requested scan of a folder nobody enrolled. The
+  // credential on disk is a real scoped one, bound to the identity record, so a
+  // path that derived the coding-agent keys from the files alone would find them.
+  it('never services a command from a root keyed for a learned work account', async () => {
+    attach(enrolled(WORK_REPO));
+    const scopedCredential = {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: CONNECTION.endpoint,
+      apiKey: TEST_KEY,
+    } as const;
+    writeControlPlaneCredential(settingsDirOf(base), scopedCredential);
+    const account = `claude:${randomUUID()}`;
+    writeAttachedIdentity(dataDirOf(base), {
+      endpoint: CONNECTION.endpoint,
+      apiKey: TEST_KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    recordValidatedWorkAccount(dataDirOf(base), {
+      endpoint: CONNECTION.endpoint,
+      credential: scopedCredential,
+      key: account,
+    });
+    const record = readAttachedIdentity(dataDirOf(base));
+    if (!record?.workAccounts.some((entry) => entry.identity === account)) {
+      throw new Error('the account was not learned');
+    }
+    const key = agentKey(record.scopeTag, account);
+    if (key === undefined) throw new Error('no agent key was built');
+    const { scan, run } = scanAt(() => key);
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan))).resolves.toBe('out-of-scope');
+    expect(run).not.toHaveBeenCalled();
+    expect(ackCommand).not.toHaveBeenCalled();
   });
 });
 

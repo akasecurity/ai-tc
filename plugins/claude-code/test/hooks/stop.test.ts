@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Remote from '../../../../packages/remote/src/index.ts';
 import type * as ReconcileTrigger from '../../src/history/reconcile-trigger.ts';
+import { recordStopObservation } from '../../src/hooks/account-stamp.ts';
 import type * as Shared from '../../src/hooks/shared.ts';
 import { parseStopPayload } from '../../src/hooks/stop-payload.ts';
 import type { Device } from '../helpers/account-fixture.ts';
@@ -103,5 +104,62 @@ describe('the Stop entry', () => {
     }
     expect(stop.logAtTrigger).toHaveLength(1);
     expect(stop.logAtTrigger[0]).toMatch(/"k":"w"/);
+  });
+});
+
+describe('recordStopObservation', () => {
+  let dev: Device;
+  beforeEach(() => {
+    dev = device(sent);
+    dev.login({ org: dev.workOrg });
+  });
+  afterEach(() => {
+    dev.dispose();
+  });
+
+  it.each<[string, boolean, () => void]>([
+    [
+      'work subscriptions on',
+      true,
+      () => {
+        dev.attach();
+      },
+    ],
+    [
+      'a Claude account enrolled by hand and work subscriptions off',
+      true,
+      () => {
+        dev.attach({ workSubscriptions: 'off', manual: [`claude:${dev.workOrg}`] });
+      },
+    ],
+    [
+      'work subscriptions off and no account enrolled by hand',
+      false,
+      () => {
+        dev.attach({ workSubscriptions: 'off' });
+      },
+    ],
+    [
+      'a machine-wide attachment',
+      false,
+      () => {
+        dev.attach({ mode: 'machine' });
+      },
+    ],
+    [
+      'no attached-identity record',
+      false,
+      () => {
+        dev.attach({ identity: false });
+      },
+    ],
+    ['no attachment', false, () => undefined],
+  ])('with %s, the login view is appended: %s', (_what, appended, setUp) => {
+    setUp();
+    const sessionId = randomUUID();
+    recordStopObservation(dev.config(), sessionId, dev.personal);
+    const { log } = dev.sessionState(sessionId);
+    expect(log === '').toBe(!appended);
+    expect(log.includes('"k":"w"')).toBe(appended);
   });
 });

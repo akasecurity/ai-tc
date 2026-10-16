@@ -9,8 +9,10 @@
  * adds zero latency to the turn. It reads `session_id` + `transcript_path` STRAIGHT
  * from the payload (no path reconstruction), throttle-checks, and if not throttled
  * spawns `scripts/reconcile.js` detached + unref, forwarding both via argv, then
- * returns immediately. Before the spawn it appends the session's login view to
- * the session's account log. Fully fail-open: any error → no output, exit 0.
+ * returns immediately. Before the spawn, on a scoped attachment whose identity
+ * record holds and whose Claude gate is open (work subscriptions on, or a Claude
+ * account enrolled by hand), it appends the session's login view to the
+ * session's account log. Fully fail-open: any error → no output, exit 0.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 

@@ -362,10 +362,10 @@ function revoke(
     scoped
       ? 'Not sending the unsent activity of the repositories and accounts enrolled here. Anything\n' +
           'already sent stays sent — this stops what has not gone yet. Live sending from enrolled\n' +
-          'repositories, from Claude Code and Codex sessions signed in to a recognised work subscription,\n' +
-          'and from an account enrolled by hand (its Claude Code or Codex sessions and claude.ai chat\n' +
-          'replies) is part of being attached and continues, and anything a live send from any of them could\n' +
-          'not deliver is still sent later.\n'
+          'repositories, from Claude Code and Codex sessions signed in to a recognised work\n' +
+          'subscription, and from an account enrolled by hand (its Claude Code or Codex sessions\n' +
+          'and claude.ai chat replies) is part of being attached and continues, and anything a\n' +
+          'live send from any of them could not deliver is still sent later.\n'
       : "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
           'this stops what has not gone yet. Live sending is part of being attached and\n' +
           'continues, and anything a live send could not deliver is still sent later.\n',

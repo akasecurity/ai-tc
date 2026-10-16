@@ -240,10 +240,10 @@ const SCOPED = {
   revoked: [
     'Not sending the unsent activity of the repositories and accounts enrolled here. Anything',
     'already sent stays sent — this stops what has not gone yet. Live sending from enrolled',
-    'repositories, from Claude Code and Codex sessions signed in to a recognised work subscription,',
-    'and from an account enrolled by hand (its Claude Code or Codex sessions and claude.ai chat',
-    'replies) is part of being attached and continues, and anything a live send from any of them could',
-    'not deliver is still sent later.',
+    'repositories, from Claude Code and Codex sessions signed in to a recognised work',
+    'subscription, and from an account enrolled by hand (its Claude Code or Codex sessions',
+    'and claude.ai chat replies) is part of being attached and continues, and anything a',
+    'live send from any of them could not deliver is still sent later.',
     '',
   ].join('\n'),
   inForce: [

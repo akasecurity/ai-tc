@@ -2199,6 +2199,23 @@ describe('aka enroll --work-subscriptions', () => {
     );
     expect(shown).not.toContain('own login file');
     expect(shown).toContain(
+      "A new Codex thread signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace, under the same email as your AKA account, with its login saved in Codex's login file and OpenAI as the provider, sends everything it records, from any folder, with its folder, project and branch names. A resumed thread follows the repository rule: it is sent only from an enrolled repository.",
+    );
+    expect(shown).toContain(
+      "For Codex the device checks the same way, locally: it reads Codex's login file, the first line of the thread's own log and the environment variables that choose the account or provider, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or workspace id), though the token usage and tool calls read from that thread's log are sent with the rest of the activity of a recognised thread or of one signed in to a workspace you enroll by hand.",
+    );
+    // The Codex check waits for no first reply and reads no settings file.
+    const codexLines = io
+      .output()
+      .split('\n')
+      .filter((line) => line.includes('Codex'));
+    expect(codexLines).toHaveLength(2);
+    for (const line of codexLines) {
+      expect(line).not.toContain('first reply');
+      expect(line).not.toContain('settings');
+      expect(line).not.toContain('chatgpt:');
+    }
+    expect(shown).toContain(
       'Rows recorded under it before you turned recognition off, and not yet sent, are sent once it is recognised again.',
     );
   });

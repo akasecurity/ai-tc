@@ -782,6 +782,23 @@ describe('the personal-device question', () => {
     expect(storedSettings().attachmentScope).toEqual(FRESH);
   });
 
+  it('prints the personal-device paragraph in lines of similar width', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    const lines = h.output().split('\n');
+    const first = lines.indexOf(
+      '  A personal device sends activity from the repositories you enroll with',
+    );
+    const last = lines.indexOf('  session start also checks it for device commands.');
+    expect(first).toBeGreaterThan(-1);
+    expect(last).toBeGreaterThan(first);
+    const paragraph = lines.slice(first, last + 1);
+    expect(paragraph.every((line) => line.length <= 80)).toBe(true);
+    expect(paragraph.slice(0, -1).every((line) => line.length >= 66)).toBe(true);
+  });
+
   it('is asked once, after the browser path has confirmed the organization', async () => {
     const h = harness({
       interactive: true,
@@ -993,13 +1010,11 @@ describe('widening a personal device with --machine', () => {
       `This machine is attached to ${ENDPOINT} as a personal device: activity is`,
     );
     expect(h.output()).toContain(
-      'sent only from the repositories enrolled on it, from Claude Code and Codex sessions signed in\n' +
-        'to a work subscription, and from an account enrolled by hand (its Claude Code or Codex\n' +
-        'sessions and claude.ai chat replies).\n' +
-        'With --machine, activity from',
-    );
-    expect(h.output()).toContain(
-      'anywhere on this machine is sent, and the enrolled list is cleared.',
+      'sent only from the repositories enrolled on it, from Claude Code and Codex\n' +
+        'sessions signed in to a work subscription, and from an account enrolled by\n' +
+        'hand (its Claude Code or Codex sessions and claude.ai chat replies). With\n' +
+        '--machine, activity from anywhere on this machine is sent, and the enrolled\n' +
+        'list is cleared.',
     );
     expect(h.output()).not.toContain('every project');
     expect(storedCredential()).toMatchObject({
@@ -3356,7 +3371,7 @@ describe('what an attach says', () => {
       "Activity anywhere else stays on this machine. A command you run inside an enrolled repository is sent as that repository's activity, even when it reads files elsewhere.",
     );
     expect(flat(said)).toContain(
-      "A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account also sends everything it records from its first reply on, from any folder, with that folder's project and branch names. The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand. A new Codex session signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email also sends everything it records, from any folder, with that folder's project and branch names. The device checks that the same way, from Codex's login file, the session's own log and the environment variables that choose the account or provider, and the check sends none of it either, though the token usage and tool calls read from that log are sent with the rest of the activity of a recognised session or of one signed in to a workspace you enroll by hand. `aka unenroll --work-subscriptions` stops that recognition on this device, and only that. A Claude Code session signed in to an account you enroll by hand with `aka enroll --account` is sent too, from its first reply on, and so are the replies in that account's claude.ai chats where web chat capture is on, and so is a new Codex session signed in to a ChatGPT workspace you enroll the same way; `aka unenroll --account` takes an account out. Activity anywhere else stays on this machine.",
+      "A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account also sends everything it records from its first reply on, from any folder, with that folder's project and branch names. The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand. A new Codex session signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email also sends everything it records, from any folder, with that folder's project and branch names. The device checks that the same way, from Codex's login file, the session's own log and the environment variables that choose the account or provider, and the check sends none of it either, though the token usage and tool calls read from that log are sent with the rest of the activity of a recognised session or of one signed in to a workspace you enroll by hand. `aka unenroll --work-subscriptions` stops that recognition on this device, and only that. A Claude Code session signed in to an account you enroll by hand with `aka enroll --account` is sent too, from its first reply on, and so are the replies in that account's claude.ai chats where web chat capture is on. A new Codex session signed in to a ChatGPT workspace you enroll the same way is sent too, from any folder; `aka unenroll --account` takes an account out. Activity anywhere else stays on this machine.",
     );
     // Only the ChatGPT workspace plans count, so the summary never names a service account.
     expect(said).not.toMatch(/service account|enterprise_cbp_automation/i);
@@ -3407,11 +3422,12 @@ describe('what an attach says', () => {
         '`aka unenroll --work-subscriptions` stops that recognition on this device, and',
         'only that. A Claude Code session signed in to an account you enroll by hand',
         'with `aka enroll --account` is sent too, from its first reply on, and so are',
-        "the replies in that account's claude.ai chats where web chat capture is on, and",
-        'so is a new Codex session signed in to a ChatGPT workspace you enroll the same',
-        'way; `aka unenroll --account` takes an account out. Activity anywhere else',
-        'stays on this machine. A command you run inside an enrolled repository is sent',
-        "as that repository's activity, even when it reads files elsewhere.",
+        "the replies in that account's claude.ai chats where web chat capture is on. A",
+        'new Codex session signed in to a ChatGPT workspace you enroll the same way is',
+        'sent too, from any folder; `aka unenroll --account` takes an account out.',
+        'Activity anywhere else stays on this machine. A command you run inside an',
+        "enrolled repository is sent as that repository's activity, even when it reads",
+        'files elsewhere.',
         'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
         '',
         'Whenever a session starts anywhere on this machine, in a repository or not',

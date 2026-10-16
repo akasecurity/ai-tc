@@ -645,8 +645,9 @@ function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean
 
 /** What a Claude Code session of an enrolled or recognised account still leaves to the repository rule. */
 const SESSIONS_ON_THE_REPOSITORY_RULE =
-  'The first prompt of a new session, a session that uses an API key or another provider, and the rest of a ' +
-  'session whose organization changes follow the repository rule.\n';
+  'The first prompt of a new session, a session that uses an API key or another provider, a reply written ' +
+  'before the device has confirmed the account, and the rest of a session whose organization changes ' +
+  'follow the repository rule.\n';
 
 const SESSIONS_UNTIL_USER_KNOWN =
   'This device does not know yet which AKA user attached it, so a Claude Code session outside an ' +

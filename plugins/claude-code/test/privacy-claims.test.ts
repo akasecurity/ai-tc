@@ -315,8 +315,9 @@ const CLAUDE_WORK_SENTENCE =
   'with the account that attached the device. The check sends none of what it reads, though the ' +
   'token usage and tool calls read from that same log are forwarded with the rest of the activity ' +
   'of a recognised session or of one signed in to an account enrolled by hand. The first prompt of a ' +
-  'new session, a personal plan, another email, an API key or another provider, and the rest of a ' +
-  'session whose organization changes follow the repository rule; `aka enroll --account` enrolls ' +
+  'new session, a personal plan, another email, an API key or another provider, a reply written ' +
+  'before the device has confirmed the account, and the rest of a session whose organization ' +
+  'changes follow the repository rule; `aka enroll --account` enrolls ' +
   'by hand an account the device cannot recognise, and the Claude Code sessions of an account ' +
   'enrolled that way then forward from their first reply on whatever the plan or email, though not ' +
   'under an API key or another provider. An organization recognised this way ' +
@@ -329,6 +330,9 @@ const CLAUDE_WORK_SENTENCE =
   "organization's model restrictions apply only to them. A machine whose connection an " +
   'administrator manages attaches machine-wide only, so it has no personal-device mode and no such ' +
   'opt-out.';
+
+// No page says a reply waits for Claude Code's login file to show the plan or the account.
+const LOGIN_FILE_WORDING = /login file shows? the (?:plan|account)/;
 
 // Every list of what a personal device sends names the Claude Code sessions of an account
 // enrolled by hand beside those of a recognised work subscription, because an account enrolled
@@ -355,6 +359,11 @@ describe('Claude Code work-subscription claims', () => {
       expect(flat(text)).not.toMatch(/sends? (?:the|your) (?:login )?(?:email|plan|account id)/i);
     });
 
+    it('says a reply waits for the device to confirm the account, not for the login file to show the plan or the account', () => {
+      expect(flat(text)).toContain('a reply written before the device has confirmed the account');
+      expect(flat(text)).not.toMatch(LOGIN_FILE_WORDING);
+    });
+
     it('does not say the device reads only part of the login file', () => {
       expect(flat(text)).not.toMatch(/reads only the email/i);
       expect(flat(text)).not.toContain('own login file');
@@ -377,6 +386,8 @@ describe('Claude Code work-subscription claims', () => {
   it('says it in SECURITY.md, and names the sessions where the scoped mode is introduced', () => {
     const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
     expect(section).toContain(CLAUDE_WORK_SENTENCE);
+    expect(section).toContain('a reply written before the device has confirmed the account');
+    expect(section).not.toMatch(LOGIN_FILE_WORDING);
     expect(section).toContain(
       'in Claude Code sessions signed in to a recognised work subscription (above) or to an account ' +
         'enrolled by hand with `aka enroll --account`',
@@ -418,10 +429,12 @@ describe('Claude Code work-subscription claims', () => {
         'by hand get (an API key or another provider keeps the session local-only), or the ' +
         'local-only line. A session that forwards sends everything it records from its first ' +
         'reply on, token usage and tool calls included; the first prompt of a new session ' +
-        'follows the repository rule. The line is a convenience, not the record',
+        'and a reply written before the device has confirmed the account follow the ' +
+        'repository rule. The line is a convenience, not the record',
     );
     expect(footnote).not.toContain('opens with that local-only line too');
     expect(footnote).not.toContain('its first prompt stays on the machine');
+    expect(footnote).not.toMatch(LOGIN_FILE_WORDING);
   });
 });
 

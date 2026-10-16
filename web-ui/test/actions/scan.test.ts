@@ -6,14 +6,24 @@ import {
   applyOnboarding,
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
+  createSightingKeyStore,
   dataDir,
+  keysDir,
   type LocalDatabase,
   openLocalDatabase,
   settingsDir,
+  sightingKeyEndpointFingerprint,
+  sightingToken,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
-import { EgressIngestRequest, type Rule } from '@akasecurity/schema';
+import {
+  CredentialSightingsRequest,
+  EgressIngestRequest,
+  type Rule,
+  SIGHTING_SHARE_CONSENT_VERSION,
+  SIGHTING_SHARE_PAYLOAD_NOTE,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runScan } from '../../app/(app)/scan/actions.ts';
@@ -587,6 +597,118 @@ describe('runScan — forwarding the register it just recorded', () => {
       } finally {
         await server.close();
       }
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
+
+describe('runScan — credential sightings', () => {
+  // Assembled at runtime so no key-shaped literal sits in this file.
+  const VALUE = ['AK', 'IA'].join('') + ['R7XM', '2QTB', '9KZP', '4HWN'].join('');
+  const SIGHTING_KEY_BYTES = Buffer.alloc(32, 3);
+  const PLUGIN_KEY = ['web', 'scan', 'plugin', 'key'].join('-');
+
+  function sharingHome(endpoint: string): void {
+    const base = join(home, '.aka');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint, attachedAt: '2026-09-01T10:00:00.000Z' },
+        dataSharesInPlace: false,
+        sightingShareConsent: {
+          acknowledgedAt: new Date().toISOString(),
+          version: SIGHTING_SHARE_CONSENT_VERSION,
+          endpoint,
+        },
+      },
+      base,
+      null,
+    );
+    writeControlPlaneCredential(settingsDir(), { specVersion: 1, endpoint, apiKey: PLUGIN_KEY });
+    createSightingKeyStore('file', keysDir(base)).replace({
+      keyVersion: 5,
+      algorithm: 'hmac-sha256',
+      key: SIGHTING_KEY_BYTES.toString('base64url'),
+      fetchedAtMs: Date.now(),
+      endpointFingerprint: sightingKeyEndpointFingerprint(endpoint),
+    });
+  }
+
+  it(
+    'sends each secret as its sighting token and reports what it shared',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeFileSync(join(target, 'deploy.ts'), `export const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
+        installPulled([]);
+        sharingHome(server.origin);
+        server.reply((req, res) => {
+          const body = JSON.parse(req.body) as CredentialSightingsRequest;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ accepted: body.sightings.length }));
+        });
+
+        const result = await runScan(target);
+
+        expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
+          'POST /v1/credential-sightings',
+        ]);
+        const req = server.received[0];
+        expect(req?.headers['x-api-key']).toBe(PLUGIN_KEY);
+        const parsed = CredentialSightingsRequest.parse(JSON.parse(req?.body ?? '{}'));
+        expect(parsed.sightings.map((s) => s.token)).toEqual([
+          sightingToken({ keyVersion: 5, key: new Uint8Array(SIGHTING_KEY_BYTES) }, VALUE),
+        ]);
+        expect(parsed.sightings[0]).toMatchObject({
+          variableName: 'AWS_ACCESS_KEY_ID',
+          locationClass: 'project-file',
+        });
+        expectNoEchoOf(req?.body, VALUE);
+        // The directory's basename is the project's display name and crosses by
+        // design; nothing above it does.
+        expectNoEchoOf(req?.body ?? '', dirname(target));
+        expect(req?.body).not.toContain('deploy.ts');
+        expect(result.sightingsLine).toBe(
+          `Credential sightings: 1 shared with your organization. ${SIGHTING_SHARE_PAYLOAD_NOTE}`,
+        );
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'sends nothing when the page keeps the scan local',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeFileSync(join(target, 'deploy.ts'), `export const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
+        installPulled([]);
+        sharingHome(server.origin);
+
+        const result = await runScan(target, { forward: false });
+
+        expect(server.received).toEqual([]);
+        expect(result.ok).toBe(true);
+        expect(result.sightingsLine).toContain('not shared — forwarding was skipped');
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'shows no sightings line on a standalone machine',
+    async () => {
+      writeFileSync(join(target, 'deploy.ts'), `export const AWS_ACCESS_KEY_ID = '${VALUE}';\n`);
+      installPulled([]);
+
+      const result = await runScan(target);
+
+      expect(result.ok).toBe(true);
+      expect(result.sightingsLine).toBeUndefined();
     },
     CASE_TIMEOUT_MS,
   );

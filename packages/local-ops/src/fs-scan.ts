@@ -13,23 +13,32 @@ import {
   LOCKFILE_BASENAMES,
   manifestKindOf,
   maskMatch,
-  redact,
   scan,
   shieldPointers,
+  withLiteralCredentialRefs,
   withVariableNames,
 } from '@akasecurity/detections';
-import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
+import type {
+  FingerprintKey,
+  LocalDatabase,
+  ScanSighting,
+  SightingKey,
+} from '@akasecurity/persistence';
 import {
   computeFindingKey,
+  dataDir as dataDirOf,
   defaultDataDir,
   fingerprintValue,
   loadOrCreateFingerprintKey,
+  readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import {
   assignedRulePolicies,
+  type AtRestVault,
   bundledMaskingRules,
   canonicalizeScanPath,
   childRel,
+  composeAtRestContent,
   createFindingLocator,
   createPolicyResolver,
   evaluateIgnore,
@@ -37,10 +46,14 @@ import {
   HOME_SECRET_FILES,
   type IgnoreLayer,
   isProtectedScanPath,
+  isScanVaultable,
+  openScanVault,
   type PolicyResolver,
   protectedScanRoots,
   readIgnoreLayer,
+  secretSightingsOf,
   toPosix,
+  type VaultGlue,
   withLayer,
 } from '@akasecurity/plugin-sdk';
 import type {
@@ -61,7 +74,9 @@ import { isActionAtLeast, SOURCE_TOOL } from '@akasecurity/schema';
 // file. The event's copy of the file text is rewritten only where enforcement
 // reaches: a span whose resolved action is redact-or-stronger is replaced, and
 // a span a Monitor/Warn pack merely logged is stored as it was read. See
-// scanPathIntoStore for why that floor is where it is.
+// scanPathIntoStore for why that floor is where it is. With a vault supplied,
+// a detected secret is held in the vault instead and its span stored as the
+// pointer, whatever its action.
 //
 // Ignore files follow the same two-tier semantics as the plugin's worktree
 // scanner (packages/scanner):
@@ -489,7 +504,8 @@ export interface ScanPathOptions {
   //
   // It decides more than the stamped `actionTaken`: the same resolution picks
   // which spans are masked in the stored file text, so a map that resolves every
-  // rule below `redact` leaves the event content byte-identical to the file.
+  // rule below `redact` leaves the event content byte-identical to the file
+  // (unless `vault` below holds a value).
   ruleActions?: ReadonlyMap<string, ActionTaken> | undefined;
   // installedRuleset().assignedRules: the rules whose pack carries an explicit
   // policy. Omitted, every entry in `ruleActions` is taken as assigned.
@@ -510,6 +526,14 @@ export interface ScanPathOptions {
   // helpers did not build. `--home` moves it (`homeBase`), so the CLI passes its
   // own; a caller on the default home may omit it.
   akaHome?: string | undefined;
+  // Holds each detected secret in the vault, with a `file` sighting, and stores
+  // its pointer in the event's copy of the file. The vault refuses every value
+  // without vault consent, and the scan then stores the file as it would with
+  // no vault at all. Omitted, nothing is vaulted.
+  vault?: AtRestVault | undefined;
+  // With a key, each secret found is also reduced to its sighting token, in
+  // memory, and listed in the result's `sightings`. Omitted, none is computed.
+  sightingKey?: SightingKey | undefined;
 }
 
 // Per-file detail for machine consumers (`aka scan --format json`, CI gates).
@@ -536,6 +560,8 @@ export interface ScanPathResult {
   // The Data Shares forward is handed this list so that a scoped attachment
   // can hold the register to each repository in it.
   nestedRepositories: string[];
+  // The secrets found, as sighting tokens; empty unless `sightingKey` was given.
+  sightings: ScanSighting[];
 }
 
 // What the egress pass extracts from one already-read file, or null when the
@@ -543,7 +569,7 @@ export interface ScanPathResult {
 // manifests go through manifestKindOf, which returns null for lockfiles so
 // their registry URLs are never extracted; a file carrying a NUL byte is
 // treated as binary and yields nothing.
-function extractFileEgress(file: string, text: string): FileEgressHits | null {
+function extractFileEgress(file: string, text: string, calls: boolean): FileEgressHits | null {
   if (text.includes('\u0000')) return null;
 
   const name = basename(file);
@@ -561,7 +587,9 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
   // A manifest is never also scanned for URL literals: package.json's own
   // registry/repository URLs are packaging metadata, not egress.
   const endpoints =
-    kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file)) ? extractEgress(text) : [];
+    kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file))
+      ? extractEgress(text, { calls })
+      : [];
 
   if (endpoints.length === 0 && sdkHits.length === 0) return null;
   // isVendoredPath matches forward-slash segments, so the walked path is
@@ -610,6 +638,22 @@ async function scanPolicyResolver(
   });
 }
 
+/**
+ * The vault a scan into `db` holds detected secrets in, for the AKA home
+ * `base`, or undefined without vault consent. Pass it as `vault` and close it
+ * after the scan.
+ */
+export function openScanStoreVault(
+  db: LocalDatabase,
+  base: string = defaultDataDir(),
+): VaultGlue | undefined {
+  try {
+    return openScanVault({ settings: readWorkspaceSettings(base), dataDir: dataDirOf(base) }, db);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function scanPathIntoStore(
   db: LocalDatabase,
   target: string,
@@ -644,6 +688,7 @@ export async function scanPathIntoStore(
 
   // Every nested repository the walk lists, for the Data Shares forward.
   const nestedRepositories: string[] = [];
+  const sightings: ScanSighting[] = [];
 
   // Absolutize the walk root before any path reaches computeFindingKey /
   // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
@@ -668,7 +713,7 @@ export async function scanPathIntoStore(
     scanned++;
     // Egress rides every file whose content was read, before the finding
     // early-out below — a file with no detection match still has destinations.
-    const fileEgress = extractFileEgress(file, text);
+    const fileEgress = extractFileEgress(file, text, opts.sightingKey !== undefined);
     if (fileEgress) egressFiles.push(fileEgress);
 
     // Files legitimately contain vault pointers (the plugin's Write/Edit hook
@@ -683,6 +728,13 @@ export async function scanPathIntoStore(
       shielded.text,
     );
     if (matches.length === 0) continue;
+    if (opts.sightingKey) {
+      const found = secretSightingsOf(opts.sightingKey, matches, file);
+      sightings.push(...found.sightings);
+      if (fileEgress) {
+        fileEgress.endpoints = withLiteralCredentialRefs(fileEgress.endpoints, found.spans);
+      }
+    }
 
     // Resolved through the same reading the live path uses (see
     // scanPolicyResolver), ONCE per match here because two things read it: the
@@ -702,6 +754,13 @@ export async function scanPathIntoStore(
     // and make the dashboard's two views of a file disagree.
     const enforced = resolved.filter(({ action }) => isActionAtLeast(action, 'redact'));
 
+    const vaulted = opts.vault
+      ? await opts.vault.vaultSpans(text, matches, {
+          selected: new Set(matches.filter((match) => isScanVaultable(match))),
+          sighting: { location: file, kind: 'file' },
+        })
+      : new Map<MatchResult, string>();
+
     const eventId = randomUUID();
     const metadata: EventMetadata = { filePath: file };
     // Provenance is presence-only: omitted (not false) for tracked files.
@@ -712,16 +771,17 @@ export async function scanPathIntoStore(
       kind: 'code_change',
       occurredAt: new Date().toISOString(),
       contentHash: createHash('sha256').update(text).digest('hex'),
-      // Only the enforced spans. `redact` folds overlapping findings into one
-      // disjoint region, so narrowing its input narrows those regions too —
-      // which is the intended reading rather than a hazard: an enforced span is
-      // still covered end to end, because a region always spans at least the
-      // finding that opened it. What goes away is the coverage a log-only
-      // neighbour used to contribute to a merged region, and that coverage was
-      // never enforcement the user asked for.
-      content: redact(
+      // Only the enforced spans are redacted. `redact` folds overlapping
+      // findings into one disjoint region, so narrowing its input narrows those
+      // regions too — which is the intended reading rather than a hazard: an
+      // enforced span is still covered end to end, because a region always
+      // spans at least the finding that opened it. What goes away is the
+      // coverage a log-only neighbour used to contribute to a merged region,
+      // and that coverage was never enforcement the user asked for.
+      content: composeAtRestContent(
         text,
         enforced.map(({ match }) => match),
+        vaulted,
       ),
       metadata,
     };
@@ -735,7 +795,7 @@ export async function scanPathIntoStore(
       hits: matches,
       evidenceOf: evidenceLookup(opts.rules ?? []),
       backstopRules: bundledMaskingRules(),
-      enforcedHits: new Set(enforced.map(({ match }) => match)),
+      enforcedHits: new Set([...enforced.map(({ match }) => match), ...vaulted.keys()]),
     });
     const findings: DetectedFindingWithKey[] = resolved.map(({ match: m, action }) => {
       const maskedMatch = maskMatch(m.rawMatch);
@@ -766,7 +826,12 @@ export async function scanPathIntoStore(
         location: locate(m),
       };
     });
-    db.recordCapture(event, findings);
+    db.recordCapture(
+      event,
+      findings,
+      undefined,
+      [...vaulted].map(([match, pointer]) => ({ raw: match.rawMatch, pointer })),
+    );
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;
   }
@@ -776,5 +841,6 @@ export async function scanPathIntoStore(
     files,
     egress: { files: egressFiles },
     nestedRepositories,
+    sightings,
   };
 }

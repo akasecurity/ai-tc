@@ -207,11 +207,11 @@ describe('matchMostSpecificEntry', () => {
 
 describe('EGRESS_VERSION_MATERIAL', () => {
   it(
-    'is EXTRACTOR_VERSION "3" plus the serialized registry and excluded-host list, ' +
+    'is EXTRACTOR_VERSION "4" plus the serialized registry and excluded-host list, ' +
       'and so changes with either of them',
     () => {
       expect(EGRESS_VERSION_MATERIAL).toBe(
-        `3\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`,
+        `4\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`,
       );
     },
   );

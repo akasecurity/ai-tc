@@ -129,7 +129,11 @@ export interface SessionStartResult {
  * `adapterNotices`, the adapter's own once-per-session notices (the
  * store-redirect warning), each with any trailing newline trimmed. Adapters put
  * it on the host's user-facing channel, never stderr, which a SessionStart
- * hook's host does not show.
+ * hook's host does not show — except where the host's session-start event
+ * offers no user-facing channel at all, where stderr is the only place left:
+ * the Copilot adapter writes this whole notice there, and the Antigravity
+ * adapter (whose session start rides PreInvocation) writes the stale-session
+ * and warn-era notices there.
  */
 export function sessionStartNotice(
   result: SessionStartResult,

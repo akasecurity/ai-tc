@@ -43,6 +43,7 @@ import type { EventMetadata } from '@akasecurity/schema';
 
 import type { Dialect, ToolCall } from './dialect.ts';
 import { readCwd, readSessionId } from './dialect.ts';
+import { readEventName } from './event-name.ts';
 
 /**
  * The watchdog `runHookFailOpen` races the hook body against.
@@ -358,6 +359,57 @@ export async function runHookFailOpen(
   process.exit(0);
 }
 
+// ─── The in-process handler seam ─────────────────────────────────────────────
+
+/**
+ * Where a hook handler reads the machine from, for a caller that is not the
+ * host. Every field defaults to the real machine, so the entry passes nothing.
+ */
+export interface HookHandlerOptions {
+  /** The AKA home the store and settings live under. Defaults to `~/.aka`. */
+  akaHome?: string | undefined;
+  /** The home directory host config is read under. Defaults to the OS home. */
+  homeDir?: string | undefined;
+  /**
+   * Where a bounded scan's worker script lives. Defaults to the one beside the
+   * running script. A location with no worker in it is an install that never
+   * shipped one, which is how a caller drives the large-input refusal without
+   * racing a slow scan.
+   */
+  scanWorkerUrl?: URL | undefined;
+}
+
+/**
+ * A hook's whole body, minus the process: the event token argv carried (see
+ * ./event-name.ts), the raw stdin text, and where to find the machine. It
+ * answers the one object to emit, or `undefined` for silence.
+ *
+ * A handler reads neither the event token nor stdin itself and never exits,
+ * so a test drives it in-process against a temp home. The entry script is
+ * `runHookEntry(handler)` and nothing else.
+ *
+ * Those two are the only process inputs lifted into parameters. A handler may
+ * still read the rest of argv: `runSessionStart` takes the plugin manifest path
+ * from argv[3] (`harnessVersionFromArgv`), and in-process that slot holds
+ * whatever the test runner was started with — so a handler test should not
+ * assert on anything derived from it.
+ */
+export type HookHandler = (
+  event: string | undefined,
+  stdin: string,
+  options?: HookHandlerOptions,
+) => Promise<HookOutput | undefined>;
+
+/**
+ * The entry-script form of a {@link HookHandler}: argv's event token and stdin
+ * feed it inside {@link runHookFailOpen}, so the stdin read races the same
+ * watchdog the body does and every fault still writes `failOpen` (or nothing)
+ * and exits 0.
+ */
+export async function runHookEntry(handler: HookHandler, failOpen?: HookOutput): Promise<never> {
+  return runHookFailOpen(async () => handler(readEventName(), await readStdin()), failOpen);
+}
+
 /**
  * Base event metadata every hook can derive from its stdin payload: the session
  * id and the repo slug.
@@ -418,8 +470,10 @@ export function baseMetadata(
  *   a row. A scoped attachment's verdict is decided by the key, so it must come
  *   from the event itself.
  * - Under VS Code the process cwd is the home directory anyway.
- * - This host never runs a session start, so there is no session-root key the
- *   fallback would need to match.
+ * - The session root is keyed from the same source: `sessionStart` declines a
+ *   payload with no cwd rather than reading the process's, so its root's key
+ *   comes only from a payload cwd too. A process-cwd fallback here could only
+ *   produce a key no root on this host carries.
  *
  * A VS Code payload that does carry a cwd (its hook entry declared one) is keyed
  * like a CLI one: the dialect is a payload format, not a host.
@@ -461,6 +515,24 @@ export const VSCODE_FILE_WRITERS: ReadonlySet<string> = new Set([
   'replace_string_in_file',
   'insert_edit_into_file',
 ]);
+
+/**
+ * A `code_change` is durable content the agent authors, recorded with the
+ * default persist. A command is text the host acts on, recorded at
+ * `with-findings`: the tool hooks see every command, and `always` would copy
+ * that whole stream into the store to trail the enforcement decisions that are
+ * the point of the kind.
+ *
+ * Shared by preToolUse and postToolUse, so a call and its result resolve the
+ * same kind and therefore the same `callScopeKey`.
+ */
+export function callKind(dialect: Dialect, toolName: string): 'code_change' | 'tool_use' {
+  const writers =
+    dialect === 'cli'
+      ? ['apply_patch']
+      : ['create_file', 'replace_string_in_file', 'insert_edit_into_file', 'apply_patch'];
+  return writers.includes(toolName) ? 'code_change' : 'tool_use';
+}
 
 /**
  * The scope key of one tool call's captures. It rides beside the metadata

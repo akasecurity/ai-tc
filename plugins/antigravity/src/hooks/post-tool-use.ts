@@ -16,14 +16,20 @@
  * ships no tool-response field table (the Codex sibling's tool-response.ts /
  * scan-response.ts have no counterpart here).
  *
- * What tool output IS still scanned, and how: the transcript at
- * `transcriptPath` records the results, so they are scanned AFTER THE FACT by
- * the same reconcile worker the Stop hook drives (../history/scan.ts). Firing
- * that trigger here as well as on Stop is the whole job of this hook — it moves
- * detection of a secret in tool output from end-of-turn to mid-turn on a long
- * multi-tool turn. It costs nothing on the hot path: `triggerReconcile` is
- * throttled to one spawn per 30s per session and the child is detached + unref,
- * so a burst of tool calls produces at most one background pass.
+ * Tool output is not scanned after the fact either. This hook fires the same
+ * detached reconcile worker the Stop hook drives (../reconcile.ts →
+ * ../history/usage.ts `reconcileSessionTail`), which reconciles the transcript
+ * tail into usage and tool-call records and never reads tool output for
+ * findings; even where it parses a tool call it keeps only the output's size.
+ * On this host the transcript parser (../history/transcripts.ts) matches no
+ * tool I/O at all: tool calls ride inline on a record as `{name, args}` with no
+ * begin/end pair. Scanning tool output on Antigravity needs a tool-result
+ * parser there first. Firing the trigger here as well as on Stop keeps the
+ * reconciled tail current mid-turn on a long multi-tool turn. It costs nothing
+ * on the hot path:
+ * `triggerReconcile` is throttled to one spawn per 30s per session and the
+ * child is detached + unref, so a burst of tool calls produces at most one
+ * background pass.
  *
  * Fail-open on a fail-closed host: `runHookFailOpen` always writes `{}` and
  * exits 0 — see shared.ts.

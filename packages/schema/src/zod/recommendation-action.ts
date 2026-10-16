@@ -31,7 +31,11 @@ export const DISMISS_CONFIRMATION = 'dismiss';
  * and the scanner, 'fixed-at-source' asserts a re-scan no longer finds the
  * value, and 'exception' asserts an approved grant covers it.
  */
-export const DismissMethod = ResolutionMethod.extract(['acknowledged', 'false-positive']).meta({
+export const DismissMethod = ResolutionMethod.extract([
+  'acknowledged',
+  'false-positive',
+  'test-or-example',
+]).meta({
   id: 'DismissMethod',
 });
 export type DismissMethod = z.infer<typeof DismissMethod>;

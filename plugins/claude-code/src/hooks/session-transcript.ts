@@ -8,7 +8,8 @@ import { transcriptsDir } from '../history/transcripts.ts';
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 // The host writes a session to `<projects>/<project>/<sessionId>.jsonl`, under
-// CLAUDE_CONFIG_DIR when that is set and under ~/.claude otherwise.
+// CLAUDE_CONFIG_DIR when that is set and under ~/.claude otherwise; with the
+// variable set, both directories are searched.
 function projectsDirs(): string[] {
   const { configDir } = readClaudeAccountEnv();
   return configDir === undefined

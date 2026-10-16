@@ -231,19 +231,40 @@ describe('recordSessionStartAccount', () => {
     expect(existsSync(join(dev.dataDir, 'session-accounts'))).toBe(false);
   });
 
-  it('prunes session state last written more than thirty days ago', () => {
-    dev.attach();
-    dev.login({ org: dev.workOrg });
+  /** A session state file last written thirty-one days ago. */
+  function staleState(): string {
     const dir = join(dev.dataDir, 'session-accounts');
     mkdirSync(dir, { recursive: true });
     const old = join(dir, 'an-old-session.log');
     writeFileSync(old, '');
     const longAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000);
     utimesSync(old, longAgo, longAgo);
+    return old;
+  }
+
+  it('prunes session state last written more than thirty days ago', () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    const old = staleState();
     const t = dev.transcript(randomUUID());
     start(t);
     expect(existsSync(old)).toBe(false);
     expect(lines(t.sessionId).length).toBeGreaterThan(0);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      'a machine-wide attachment',
+      () => {
+        dev.attach({ mode: 'machine' });
+      },
+    ],
+    ['no attachment', () => undefined],
+  ])('prunes session state last written more than thirty days ago with %s', (_what, setUp) => {
+    setUp();
+    const old = staleState();
+    start(dev.transcript(randomUUID()));
+    expect(existsSync(old)).toBe(false);
   });
 });
 

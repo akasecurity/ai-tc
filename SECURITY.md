@@ -241,10 +241,12 @@ recognised thread or of one signed in to a workspace enrolled by hand. A token
 refresh keeps a recognised thread forwarding; a switch to another workspace or
 email, to a plan that does not count, or to another login mode ends it for the
 rest of that thread. A resumed thread, a personal plan, a service account,
-another email, an API key or access token (in the environment or as the login),
-another provider or a gateway, a thread whose log does not name the login's
-workspace as its creator, and a login Codex keeps outside its login file (in
-the system keychain, for one) follow the repository rule.
+another email, a saved login that uses an API key or any login mode other than
+ChatGPT, a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` in the environment, an
+`OPENAI_BASE_URL` naming a host other than api.openai.com, a thread whose log
+does not name OpenAI as its provider or the login's workspace as its creator,
+and a login Codex keeps outside its login file (in the system keychain, for one)
+follow the repository rule.
 A Codex thread whose first log line is not on disk when it starts is checked
 again at its next prompt or tool call: its session record and the token usage
 and tool calls read from its log follow the repository rule, and its prompts,
@@ -252,10 +254,13 @@ tool calls and results forward from any folder from that check on if the
 workspace is then recognised or enrolled by hand; if the line is still missing
 then, it follows the repository rule for the rest of the thread.
 `aka enroll --account` enrolls by hand a workspace the device cannot recognise,
-and the Codex threads of a workspace enrolled that way then forward whatever
-the plan or email, though not a resumed thread, one under an API key or access
-token, one on another provider or a gateway, or one whose login Codex keeps
-outside its login file; a switch of workspace or login mode ends them.
+and the Codex threads of a workspace enrolled that way then forward whatever the
+plan or email, though not a resumed thread, one whose saved login uses an API
+key or any login mode other than ChatGPT, one with a `CODEX_API_KEY` or
+`CODEX_ACCESS_TOKEN` in the environment, one with an `OPENAI_BASE_URL` naming a
+host other than api.openai.com, one whose log does not name OpenAI as its
+provider, or one whose login Codex keeps outside its login file; a switch of
+workspace or login mode ends them.
 `aka unenroll --work-subscriptions` turns the recognition of Codex threads off
 too and `aka enroll --work-subscriptions` turns it back on; a workspace
 enrolled by hand still forwards while it is off (`aka unenroll --account` stops

@@ -254,7 +254,7 @@ export class SqliteSecurityRepository implements SecurityViews {
   // Only latest status 'resolved' counts as caught above. 'dismissed' is its
   // own bucket: a judgement rather than a fix, so it is neither caught nor
   // needing remediation, and stays countable. A further manual disposition
-  // (acknowledged, false-positive, test-or-example) must be placed deliberately — 'acknowledged'
+  // (any member of `DismissMethod`) must be placed deliberately — 'acknowledged'
   // is accepted risk, not a fix, and must NOT be bucketed as caught.
   //
   // Legacy at-rest findings from pre-branch scans carry finding_key = NULL —

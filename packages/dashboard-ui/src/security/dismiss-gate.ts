@@ -27,7 +27,9 @@ import type { Choice } from '../shared/ChoiceGroup.tsx';
  * differ in what they CLAIM, not merely in how a report groups them later.
  * 'Accepted risk' says the finding is real and this team has chosen to live
  * with it; 'Not a real finding' says the rule is wrong; 'Test or example data'
- * says the rule is right but the value is a fixture or a sample. A reader who
+ * says the rule is right but every value is a fixture or a sample. The dialog
+ * closes every open finding of the rule, so that last claim covers the whole
+ * set, not one value. A reader who
  * cannot see every description while choosing has no way to tell them apart
  * from the labels alone.
  */
@@ -40,13 +42,13 @@ export const DISMISS_METHODS: readonly Choice<DismissMethod>[] = [
   {
     value: 'false-positive',
     label: 'Not a real finding',
-    description: 'The rule matched something that is not actually sensitive.',
+    description: 'The rule is wrong: it matched something that is not sensitive.',
   },
   {
     value: 'test-or-example',
     label: 'Test or example data',
     description:
-      'The match is real, but the value is a test fixture or an example, not a live one.',
+      'Every match here is real, but every value is a test fixture or an example, not a live one.',
   },
 ];
 

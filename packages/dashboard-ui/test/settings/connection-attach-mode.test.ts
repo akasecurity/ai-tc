@@ -22,7 +22,8 @@ import {
 // offers, the line an attached row shows, and the forwarding notice a scoped
 // machine gets instead of the machine-wide one. Copy on this section is a
 // consent surface, so each string is held to what a scoped machine actually
-// sends: activity only from enrolled repositories, and whenever a session starts
+// sends: activity from what is enrolled and from the Claude Code sessions of a
+// work subscription it recognises, and whenever a session starts
 // anywhere on the machine the policy pull and a device report whose finding counts
 // and dates are for everything recorded on it, which on a personal device also says
 // that it is one, plus the check for device commands where a scan is available.
@@ -52,6 +53,18 @@ const PREVIOUS_POLICY_AND_REPORT =
   'identifier, host name, versions, detection packs, policy counts, and finding counts and ' +
   'dates for everything recorded on the machine. Where a scan is available (the coding-agent ' +
   'plugins, not a browser chat), the same session start also checks it for device commands.';
+
+// What the device reads to recognise a work subscription, said the same way in
+// the choice and the notice: the login file, the settings files, the environment
+// variables that choose the account or provider, and the session's own log. The
+// check sends none of it. The session log is also read to record a session's
+// token usage and tool calls, which a recognised session forwards, so no string
+// says the device sends none of what it reads.
+const CHECK_READS =
+  "The device checks a work subscription from Claude Code's own login file, its settings files " +
+  "(the project's own included), the environment variables that choose the account or provider, " +
+  "and the session's own log, and the check sends none of it (no email, plan, organization id, " +
+  'setting or variable)';
 
 // What the strings used to say, and must not again: a count "across every
 // repository" reads as a limit to repositories, and "every project" leaves out a
@@ -176,12 +189,39 @@ describe('attach-mode copy', () => {
     // The install report goes in both modes, so "only activity ... is sent"
     // would claim less than is sent. The activity is what is limited.
     const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped');
-    expect(scoped?.description).toMatch(/Activity is sent only from repositories you enroll/);
+    expect(scoped?.description).toMatch(
+      /Activity is sent only from repositories and accounts you enroll/,
+    );
     expect(CONNECTION_MODE_SCOPED).toMatch(
-      /Activity is sent only from repositories you enroll with `aka enroll`/,
+      /Activity is sent only from repositories and accounts you enroll with `aka enroll`/,
     );
     expect(scoped?.description).not.toMatch(/Only activity/);
     expect(CONNECTION_MODE_SCOPED).not.toMatch(/Only activity/);
+  });
+
+  it('names enrolled accounts, and what they send, beside enrolled repositories', () => {
+    // An account enrolled with `aka enroll --account` sends its Claude Code
+    // sessions from any folder and its claude.ai replies, so a string saying
+    // that only repositories are sent, or that anything else stays here, would
+    // deny a send that is made.
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    expect(scoped).toContain(
+      "Activity is sent only from repositories and accounts you enroll with `aka enroll`, and from Claude Code sessions signed in to a work subscription (Claude Team or Enterprise) under the same email as your AKA account, from any folder, with that folder's project and branch names; activity anywhere else stays on this machine.",
+    );
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain(
+      "the plugin forwards activity only from repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll --account`, whose Claude Code sessions send everything they record from the first reply on, from any folder, with that folder's project and branch names, and whose claude.ai chats, where web chat capture is granted, send their replies, with their tool calls and token usage; and from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, which send everything they record from the first reply on, from any folder, with that folder's project and branch names. Activity anywhere else stays on this machine.",
+    );
+  });
+
+  it('says the sessions of an enrolled account and of a work subscription send from the first reply on', () => {
+    // The session's organization is read from its own log, which names none until
+    // the first reply, so the first prompt of each new session stays here. A clause
+    // saying such a session sends everything it records has to say from when.
+    const sends = 'send everything they record from the first reply on, from any folder';
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED.split(sends)).toHaveLength(3);
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).not.toContain(
+      'everything they record from any folder',
+    );
   });
 
   it('says on a governed machine that a personal-device attach is refused', () => {
@@ -210,6 +250,53 @@ describe('attach-mode copy', () => {
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/never source text/i);
     // An older build re-attaching writes a machine-wide credential.
     expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toMatch(/older than this one/i);
+  });
+
+  it('names work subscriptions, how they are recognised and the opt-out wherever a personal device is described', () => {
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED]) {
+      expect(text).toContain('Claude Code sessions signed in to a work subscription');
+      expect(text).toContain('under the same email as your AKA account');
+      expect(text).toContain("with that folder's project and branch names");
+      expect(text).toContain(CHECK_READS);
+      expect(text).toContain('`aka unenroll --work-subscriptions`');
+      expect(text).toMatch(/to send only from what you enroll/i);
+      expect(text).not.toContain('only from the repositories you enroll');
+    }
+    expect(scoped).toContain('(Claude Team or Enterprise)');
+    expect(CONNECTION_FORWARDING_NOTICE_SCOPED).toContain('(a Claude Team or Enterprise plan)');
+    expect(CONNECTION_MODE_SCOPED).toContain(
+      'and from Claude Code sessions signed in to a work subscription under the same email as your AKA account.',
+    );
+    // Nothing checks that a Claude plan belongs to this organization, only the
+    // email, a company plan and its freshness, so no string says it does.
+    for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED, CONNECTION_MODE_SCOPED]) {
+      expect(text).not.toContain('of your organization');
+    }
+    // A machine-wide attachment sends everything already, and a managed machine
+    // can attach no other way, so neither is offered an opt-out.
+    for (const text of [
+      CONNECTION_FORWARDING_NOTICE,
+      CONNECTION_MODE_MACHINE,
+      ATTACH_MODE_MANAGED_NOTICE,
+    ]) {
+      expect(text).not.toContain('work subscription');
+    }
+  });
+
+  it('names every reader of the work-subscription check, the environment included', () => {
+    const scoped = ATTACH_MODE_CHOICES.find((c) => c.value === 'scoped')?.description ?? '';
+    for (const text of [scoped, CONNECTION_FORWARDING_NOTICE_SCOPED]) {
+      for (const reader of [
+        "Claude Code's own login file",
+        'its settings files',
+        'the environment variables that choose the account or provider',
+        "the session's own log",
+      ]) {
+        expect(text).toContain(reader);
+      }
+      expect(text).not.toMatch(/sends none of what it reads/i);
+    }
   });
 });
 

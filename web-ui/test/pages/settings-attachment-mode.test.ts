@@ -196,21 +196,34 @@ describe('SettingsClient and the mode', () => {
   // here and never imported from the view: a test that imports the sentence
   // cannot catch a change to it, and a change to one is made here too.
   const SCOPED_MODE_LINE =
-    'Scoped — a personal device. Activity is sent only from repositories you enroll with `aka enroll`.';
+    'Scoped — a personal device. Activity is sent only from repositories and accounts you enroll ' +
+    'with `aka enroll`, and from Claude Code sessions signed in to a work subscription under the ' +
+    'same email as your AKA account.';
   const MACHINE_MODE_LINE =
     'Machine-wide — an organization device. Activity from anywhere on this machine is sent.';
   const SCOPED_FORWARDING =
     'While this machine is attached as a personal device, the plugin forwards activity only from ' +
-    'repositories you enroll with `aka enroll`; activity anywhere else stays on this machine. ' +
-    'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
-    "included), the machine pulls that deployment's policy (at most every 15 minutes) and sends " +
-    'it a device report (at most hourly): a device identifier, host name, versions, detection ' +
-    'packs, policy counts, finding counts and dates for everything recorded on the machine, and, ' +
-    'when the machine is attached as a personal device, the fact that it is one. Where a scan is ' +
-    'available (the coding-agent plugins, not a browser chat), the same session start also ' +
-    'checks it for device commands. A scan you run from the Scan page sends the Data ' +
-    'Shares register only for an enrolled repository — destinations and call sites, never source ' +
-    'text. Re-attaching with a version of AKA older than this one would make the attachment ' +
+    'repositories you enroll with `aka enroll`; from accounts you enroll with `aka enroll ' +
+    '--account`, whose Claude Code sessions send everything they record from the first reply on, ' +
+    "from any folder, with that folder's project and branch names, and whose claude.ai chats, " +
+    'where web chat capture is granted, send their replies, with their tool calls and token ' +
+    'usage; and from Claude Code sessions signed in to a work subscription (a Claude Team or ' +
+    'Enterprise plan) under the same email as your AKA account, which send everything they ' +
+    "record from the first reply on, from any folder, with that folder's project and branch " +
+    'names. Activity anywhere else stays on this machine. The device checks a work subscription ' +
+    "from Claude Code's own login file, its settings files (the project's own included), the " +
+    "environment variables that choose the account or provider, and the session's own log, and " +
+    'the check sends none of it (no email, plan, organization id, setting or variable); run ' +
+    '`aka unenroll --work-subscriptions` to send only from what you enroll. Whenever a session starts ' +
+    'anywhere on this machine, in a ' +
+    "repository or not (a browser chat included), the machine pulls that deployment's policy (at " +
+    'most every 15 minutes) and sends it a device report (at most hourly): a device identifier, ' +
+    'host name, versions, detection packs, policy counts, finding counts and dates for everything ' +
+    'recorded on the machine, and, when the machine is attached as a personal device, the fact that ' +
+    'it is one. Where a scan is available (the coding-agent plugins, not a browser chat), the same ' +
+    'session start also checks it for device commands. A scan you run from the Scan page sends the ' +
+    'Data Shares register only for an enrolled repository — destinations and call sites, never ' +
+    'source text. Re-attaching with a version of AKA older than this one would make the attachment ' +
     'machine-wide. This page reads only your local store, so it cannot report what the deployment ' +
     'received. Detach to stop sending.';
   const MACHINE_FORWARDING =

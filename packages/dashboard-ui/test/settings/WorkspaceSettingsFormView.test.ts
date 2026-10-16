@@ -1377,6 +1377,17 @@ describe('WorkspaceSettingsFormView web-chat capture control', () => {
     expect(WEB_CHAT_SECTION_DESCRIPTION).not.toMatch(/nothing is sent anywhere/i);
   });
 
+  // A personal device, and a machine whose credential AKA cannot read, record a
+  // prompt nowhere, so a sentence saying a user's own messages are already
+  // recorded is false on exactly the machines that show a withheld notice above
+  // this one.
+  it('says a prompt is recorded only on a machine that records one', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toContain(
+      'Except on a personal device, or on a machine whose control-plane credential AKA cannot read, which never record them, your own messages are already recorded and this grant does not widen that;',
+    );
+    expect(WEB_CHAT_SECTION_DESCRIPTION).not.toContain('masked. Your own messages are already');
+  });
+
   it('defaults to the not-granted wording, never assuming the grant', () => {
     expect(revoked?.description).toMatch(/never assumed/i);
     expect(revoked?.label).toMatch(/not granted/i);
@@ -1776,5 +1787,54 @@ describe('the web chat account grant row', () => {
   it('emits only the choice string', () => {
     type Emitted = Parameters<WorkspaceSettingsFormViewProps['onSave']>[0]['webChatAccountConsent'];
     expectTypeOf<Emitted>().toEqualTypeOf<'granted' | 'revoked' | 'unchanged'>();
+  });
+});
+
+describe('work subscriptions on a personal device', () => {
+  const standaloneSettings: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+  };
+  const attachedSettings: WorkspaceSettings = {
+    ...standaloneSettings,
+    runMode: 'attached',
+    controlPlane: {
+      endpoint: 'https://plane.example.com',
+      label: 'Acme Prod',
+      attachedAt: '2026-02-02T00:00:00.000Z',
+    },
+  };
+  const page = (props: Partial<Parameters<typeof WorkspaceSettingsFormView>[0]>): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: attachedSettings,
+        onSave: () => undefined,
+        ...props,
+      }),
+    );
+
+  it('names the sessions it also sends, and the opt-out, on an attached personal device', () => {
+    const html = page({ onDetach: () => undefined, attachmentMode: 'scoped' });
+    expect(html).toContain('Claude Code sessions signed in to a work subscription');
+    expect(html).not.toContain('of your organization');
+    expect(html).toContain('aka unenroll --work-subscriptions');
+  });
+
+  it('names neither on a machine-wide attachment', () => {
+    const html = page({ onDetach: () => undefined, attachmentMode: 'machine' });
+    expect(html).not.toContain('work subscription');
+    expect(html).not.toContain('--work-subscriptions');
+  });
+
+  it('names the opt-out where a first attach is chosen', () => {
+    const html = page({ settings: standaloneSettings, onAttach: () => undefined });
+    expect(html).toContain('aka unenroll --work-subscriptions');
   });
 });

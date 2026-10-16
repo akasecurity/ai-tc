@@ -116,13 +116,14 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
-  // Windows reports LOWEST here and the floor belongs to it: three symlink
-  // cases in store-health.test.ts cannot run unprivileged there, costing 8
-  // covered lines. macOS reads 86.68 (306/353), the Windows executed set 84.41
-  // (298/353) — the latter measured by forcing those three to skip, a method
-  // whose earlier reading matched the real Windows leg's covered-line count
-  // exactly (208/353). Re-measure as the adapter grows — K5.
-  '@akasecurity/ai-tc-copilot': 83, //              84.41 (Windows), 86.68 (macOS)
+  // Windows reports LOWEST here and the floor belongs to it: four symlink
+  // cases — three in store-health.test.ts, one in user-prompt-submit-run.test.ts
+  // — cannot run unprivileged there, costing 6 covered lines. macOS / Node 24
+  // reads 89.20 (504/565); the Windows executed set is 88.14 (498/565), measured
+  // on macOS by forcing those four to skip. The hook entries and the detached
+  // children run only as child processes under the e2e suite, so none of their
+  // lines count here; the handlers they wrap are driven in-process and do.
+  '@akasecurity/ai-tc-copilot': 87, //              88.14 (Windows), 89.20 (macOS)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

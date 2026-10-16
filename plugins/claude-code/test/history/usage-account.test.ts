@@ -1,13 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { dbPath as dbPathOf } from '@akasecurity/persistence';
-import { handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
+import { applyOnboarding, dbPath as dbPathOf, sessionAccountsDir } from '@akasecurity/persistence';
+import {
+  createPolicyStore,
+  handleSessionStart,
+  resolveDataGateway,
+} from '@akasecurity/plugin-runtime';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import type { AuditEventInput, ToolCallInput } from '@akasecurity/schema';
-import { AccountCheckReason, SOURCE_TOOL } from '@akasecurity/schema';
+import { AccountCheckReason, SOURCE_TOOL, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as Remote from '../../../../packages/remote/src/index.ts';
@@ -133,6 +137,111 @@ function keysOf(t: Transcript, type: 'session' | 'llm_call' | 'tool_call'): (str
   }
 }
 
+/** One session's root attributes as stored: null while the root is the stub a session start leaves. */
+function rootAttributes(t: Transcript): Record<string, unknown> | null {
+  const db = new DatabaseSync(dbPathOf(dev.base), { readOnly: true });
+  try {
+    const row = db
+      .prepare("SELECT attributes FROM audit_events WHERE event_type = 'session' AND id = :id")
+      .get({ id: t.sessionId }) as { attributes: string | null } | undefined;
+    return row?.attributes == null ? null : (JSON.parse(row.attributes) as Record<string, unknown>);
+  } finally {
+    db.close();
+  }
+}
+
+/** Whether a root carries the provider, harness and folder a reconcile pass writes. */
+const isWrittenRoot = (root: Record<string, unknown> | null): boolean =>
+  root !== null &&
+  typeof root.provider === 'string' &&
+  typeof root.harness === 'string' &&
+  typeof root.cwd === 'string';
+
+/** The byte size of one session's observation log. */
+const logSize = (t: Transcript): number => Buffer.byteLength(dev.sessionState(t.sessionId).log);
+
+/** The time of the first line of one session's observation log. */
+const logStartTime = (t: Transcript): number =>
+  (JSON.parse(dev.sessionState(t.sessionId).log.split('\n')[0] ?? '') as { t: number }).t;
+
+/** An assistant line the host wrote at second `s`, with `model` and `usage` as given, calling `tool` when one is named. */
+function assistantLine(
+  t: Transcript,
+  s: number,
+  model: string,
+  usage: Record<string, number>,
+  tool?: { name: string; input: Record<string, unknown> },
+): string {
+  const uuid = randomUUID();
+  const content =
+    tool === undefined
+      ? [{ type: 'text', text: 'done' }]
+      : [
+          {
+            type: 'tool_use',
+            id: `toolu_${randomUUID().replaceAll('-', '')}`,
+            name: tool.name,
+            input: tool.input,
+          },
+        ];
+  appendFileSync(
+    t.path,
+    `${JSON.stringify({
+      type: 'assistant',
+      sessionId: t.sessionId,
+      uuid,
+      timestamp: at(s),
+      cwd: dev.personal,
+      message: { id: `msg_${uuid}`, model, content, usage },
+    })}\n`,
+  );
+  return uuid;
+}
+
+// A value the at-rest scrub strikes, composed at run time so the file commits no key-shaped literal.
+const SECRET = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+
+const AWS_RULE = 'secrets/aws-access-key';
+
+/** Vault consent and a pack policy that redacts AWS keys: what the scrub of the transcript file needs to strike one. */
+async function consentToStrikingAwsKeys(): Promise<void> {
+  applyOnboarding(
+    { vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION } },
+    dev.base,
+  );
+  await createPolicyStore(dev.dataDir).write({
+    version: 'test',
+    policies: [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: AWS_RULE },
+        action: 'redact',
+        enabled: true,
+      },
+    ],
+    rules: [],
+    customKeywords: [],
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
+/** A prompt line at second `s` holding a raw secret, as the host logs a prompt even when a hook blocked it. */
+function appendLeakingPrompt(t: Transcript, s: number): void {
+  appendFileSync(
+    t.path,
+    `${JSON.stringify({
+      type: 'user',
+      sessionId: t.sessionId,
+      uuid: randomUUID(),
+      promptId: randomUUID(),
+      timestamp: at(s),
+      cwd: dev.personal,
+      message: { role: 'user', content: `key ${SECRET}` },
+    })}\n`,
+  );
+}
+
 /** The audit rows of `type` the transport was handed. */
 const sentRows = (type: string) => dev.sent.audit.filter((event) => event.eventType === type);
 
@@ -154,9 +263,11 @@ describe('reconcileSessionTail — a work-subscription session', () => {
     const t = dev.transcript(randomUUID());
     await start(t, 0);
     expect(keysOf(t, 'session')).toEqual([null]);
+    expect(rootAttributes(t)).toBeNull();
     expect(dev.sent.inventory).toEqual([]);
     await turn(t, 1, dev.workOrg);
     await stopAt(t, 5);
+    expect(isWrittenRoot(rootAttributes(t))).toBe(true);
     expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
     for (const key of [...keysOf(t, 'llm_call'), ...keysOf(t, 'tool_call')]) {
       expect(isAgentKeyFor(key, dev.workOrg)).toBe(true);
@@ -313,6 +424,18 @@ describe('reconcileSessionTail — sessions that are not work subscriptions', ()
     expect(dev.sent.audit).toEqual([]);
   });
 
+  it('a login whose plan is not confirmed leaves the root to the reconcile pass, which writes it', async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg, organizationType: null });
+    const t = dev.transcript(randomUUID());
+    await start(t, 0);
+    expect(rootAttributes(t)).toBeNull();
+    await turn(t, 1, dev.workOrg);
+    await stopAt(t, 5);
+    expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+    expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+  });
+
   it('personal then work under one boundary attributes nothing', async () => {
     dev.attach();
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro' });
@@ -449,6 +572,25 @@ describe('the first-pass hold', () => {
     expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
   });
 
+  it('a held pass strikes no secret from the transcript file, and the pass that writes does', async () => {
+    const t = await pendingSession();
+    await consentToStrikingAwsKeys();
+    appendLeakingPrompt(t, 103);
+    const logged = readFileSync(t.path);
+    expect(logged.includes(SECRET)).toBe(true);
+
+    await pass(t, 104);
+    expect(readOffset(dev.dataDir, t.sessionId).pending?.passes).toBe(1);
+    expect(keysOf(t, 'llm_call')).toEqual([]);
+    expect(readFileSync(t.path).equals(logged)).toBe(true);
+
+    await stopAt(t, 105);
+    expect(keysOf(t, 'llm_call')).toHaveLength(1);
+    const struck = readFileSync(t.path);
+    expect(struck.includes('[REDACTED:')).toBe(true);
+    expect(struck.includes(SECRET)).toBe(false);
+  });
+
   it('a definitive none writes the root with its repository key at once', async () => {
     const t = await pendingSession();
     dev.login({ org: dev.personalOrg, organizationType: 'claude_pro' });
@@ -456,6 +598,439 @@ describe('the first-pass hold', () => {
     expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
     expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
     expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+  });
+});
+
+describe('the hold and the records that write no row', () => {
+  const NOT_BILLED: readonly [string, string, Record<string, number>][] = [
+    ['synthetic', '<synthetic>', { input_tokens: 5, output_tokens: 3 }],
+    ['zero-usage', 'claude-sonnet-4-5-20250929', { input_tokens: 0, output_tokens: 0 }],
+  ];
+
+  // A session on an org the device already learned, with a prompt and the host's
+  // org line, and no observation after them.
+  async function sessionAwaitingReply(): Promise<Transcript> {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+    await learnTheWorkOrg();
+    const t = dev.transcript(randomUUID());
+    await start(t, 100);
+    await hookAt(t, 101);
+    t.prompt(at(101));
+    t.org(dev.workOrg, at(102));
+    return t;
+  }
+
+  it.each(NOT_BILLED)(
+    'an unclosed %s reply does not hold the pass',
+    async (_name, model, usage) => {
+      const t = await sessionAwaitingReply();
+      assistantLine(t, 103, model, usage);
+      await pass(t, 104);
+      const stored = readOffset(dev.dataDir, t.sessionId);
+      expect(stored.pending).toBeUndefined();
+      expect(stored.offset).toBeGreaterThan(0);
+      expect(keysOf(t, 'llm_call')).toEqual([]);
+    },
+  );
+
+  it.each(NOT_BILLED)(
+    'a closed reply is written although an unclosed %s reply follows it',
+    async (_name, model, usage) => {
+      const t = await sessionAwaitingReply();
+      t.reply(at(103));
+      await hookAt(t, 104);
+      assistantLine(t, 105, model, usage);
+      await pass(t, 106);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      const keys = keysOf(t, 'llm_call');
+      expect(keys).toHaveLength(1);
+      expect(isAgentKeyFor(keys[0], dev.workOrg)).toBe(true);
+    },
+  );
+
+  it.each(NOT_BILLED)(
+    'an unclosed reply that becomes a row still holds the pass beside an unclosed %s reply',
+    async (_name, model, usage) => {
+      const t = await sessionAwaitingReply();
+      assistantLine(t, 103, model, usage);
+      t.reply(at(104));
+      await pass(t, 105);
+      expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+        offset: 0,
+        pending: { passes: 1 },
+      });
+      expect(keysOf(t, 'llm_call')).toEqual([]);
+    },
+  );
+
+  describe('a reply that calls a tool', () => {
+    const TOOL = { name: 'Bash', input: { command: 'ls' } };
+
+    // A closed reply, which writes the session root, then an unclosed `model`
+    // reply that calls a tool and writes no llm_call row.
+    async function sessionWithUnclosedToolReply(
+      model: string,
+      usage: Record<string, number>,
+    ): Promise<Transcript> {
+      const t = await sessionAwaitingReply();
+      t.reply(at(103));
+      await hookAt(t, 104);
+      assistantLine(t, 105, model, usage, TOOL);
+      return t;
+    }
+
+    it.each(NOT_BILLED)(
+      'an unclosed %s reply holds the pass, and its tool call row takes the agent key once the reply is closed',
+      async (_name, model, usage) => {
+        const t = await sessionWithUnclosedToolReply(model, usage);
+        await pass(t, 106);
+        expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+          offset: 0,
+          pending: { passes: 1 },
+        });
+        expect(keysOf(t, 'llm_call')).toEqual([]);
+        expect(keysOf(t, 'tool_call')).toEqual([]);
+
+        await stopAt(t, 107);
+        expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+        const replies = keysOf(t, 'llm_call');
+        expect(replies).toHaveLength(1);
+        expect(isAgentKeyFor(replies[0], dev.workOrg)).toBe(true);
+        const tools = keysOf(t, 'tool_call');
+        expect(tools).toHaveLength(1);
+        expect(isAgentKeyFor(tools[0], dev.workOrg)).toBe(true);
+      },
+    );
+
+    it.each(NOT_BILLED)(
+      'after three held passes the tool call row of an unclosed %s reply takes its repository key',
+      async (_name, model, usage) => {
+        const t = await sessionWithUnclosedToolReply(model, usage);
+        for (const s of [106, 107, 108]) await pass(t, s);
+        expect(readOffset(dev.dataDir, t.sessionId).pending?.passes).toBe(3);
+        expect(keysOf(t, 'tool_call')).toEqual([]);
+        await pass(t, 109);
+        expect(keysOf(t, 'tool_call')).toEqual([PERSONAL_KEY]);
+        expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      },
+    );
+  });
+});
+
+describe('reconcileSessionTail — an observation log that starts again', () => {
+  beforeEach(() => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+  });
+
+  // Four reconciled turns of a work session, so the stored log offset is long,
+  // then an identity write, which clears every session's log.
+  async function sessionWhoseLogWasCleared(): Promise<{
+    t: Transcript;
+    storedOffset: number;
+    storedLogOffset: number;
+  }> {
+    const t = dev.transcript(randomUUID());
+    await start(t, 0);
+    for (const s of [1, 6, 11, 16]) {
+      await turn(t, s, dev.workOrg);
+      await stopAt(t, s + 4);
+    }
+    const stored = readOffset(dev.dataDir, t.sessionId);
+    const storedLogOffset = stored.logOffset ?? 0;
+    expect(storedLogOffset).toBeGreaterThan(0);
+    expect(keysOf(t, 'llm_call')).toHaveLength(4);
+    dev.writeIdentity();
+    expect(dev.sessionState(t.sessionId).log).toBe('');
+    return { t, storedOffset: stored.offset, storedLogOffset };
+  }
+
+  it('attributes the replies after a new boundary to the agent key, although the new log is shorter than the stored offset', async () => {
+    const { t, storedLogOffset } = await sessionWhoseLogWasCleared();
+    await start(t, 30, 'clear');
+    await turn(t, 31, dev.workOrg);
+    await stopAt(t, 35);
+    expect(logSize(t)).toBeLessThan(storedLogOffset);
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(5);
+    for (const key of keys) expect(isAgentKeyFor(key, dev.workOrg)).toBe(true);
+    expect(readOffset(dev.dataDir, t.sessionId).logOffset).toBeLessThanOrEqual(logSize(t));
+  });
+
+  it('a pass that finds no log attributes nothing and stores the log offset from the start', async () => {
+    const { t } = await sessionWhoseLogWasCleared();
+    t.prompt(at(30));
+    t.org(dev.workOrg, at(31));
+    t.reply(at(32));
+    await pass(t, 33);
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(5);
+    expect(keys[4]).toBe(PERSONAL_KEY);
+    const stored = readOffset(dev.dataDir, t.sessionId);
+    expect(stored.logOffset).toBe(0);
+    expect(stored.carried?.boundaryAt).toBeUndefined();
+  });
+
+  it('a held pass after the clear stores the log offset from the start, and the next pass attributes the reply', async () => {
+    const { t, storedOffset, storedLogOffset } = await sessionWhoseLogWasCleared();
+    await start(t, 30, 'clear');
+    await hookAt(t, 31);
+    t.prompt(at(31));
+    t.org(dev.workOrg, at(32));
+    t.reply(at(33));
+    await pass(t, 34);
+    expect(logSize(t)).toBeLessThan(storedLogOffset);
+    const held = readOffset(dev.dataDir, t.sessionId);
+    expect(held.pending?.passes).toBe(1);
+    expect(held.offset).toBe(storedOffset);
+    expect(held.logOffset).toBe(0);
+    expect(held.carried).toBeUndefined();
+    expect(keysOf(t, 'llm_call')).toHaveLength(4);
+    await stopAt(t, 35);
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(5);
+    expect(isAgentKeyFor(keys[4], dev.workOrg)).toBe(true);
+    expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+  });
+
+  /** Turns from second `s`, with no pass between them, until the log is longer than `size`; returns the next free second. */
+  async function growLogPast(t: Transcript, size: number, org: string, s: number): Promise<number> {
+    let next = s;
+    while (logSize(t) <= size) {
+      await turn(t, next, org);
+      next += 5;
+    }
+    return next;
+  }
+
+  it('attributes the replies of a log that has grown back past the stored offset under that log, for another work organization', async () => {
+    const otherOrg = randomUUID();
+    dev.login({ org: otherOrg });
+    const earlier = dev.transcript(randomUUID());
+    await start(earlier, 0);
+    await turn(earlier, 1, otherOrg);
+    dev.login({ org: dev.workOrg });
+    const { t, storedLogOffset } = await sessionWhoseLogWasCleared();
+    dev.login({ org: otherOrg });
+    await start(t, 30, 'clear');
+    const next = await growLogPast(t, storedLogOffset, otherOrg, 31);
+    await stopAt(t, next);
+    expect(logSize(t)).toBeGreaterThan(storedLogOffset);
+    const fresh = keysOf(t, 'llm_call').slice(4);
+    expect(fresh.length).toBeGreaterThan(1);
+    expect(fresh.filter((key) => isAgentKeyFor(key, otherOrg)).length).toBe(fresh.length);
+    const stored = readOffset(dev.dataDir, t.sessionId);
+    expect(stored.logStartedAt).toBe(ms(30));
+    expect(stored.logOffset).toBeLessThanOrEqual(logSize(t));
+  });
+
+  it('attributes nothing from the state carried past the cleared log when the log that grew back holds no boundary', async () => {
+    const { t, storedLogOffset } = await sessionWhoseLogWasCleared();
+    const next = await growLogPast(t, storedLogOffset, dev.workOrg, 30);
+    await stopAt(t, next);
+    expect(logSize(t)).toBeGreaterThan(storedLogOffset);
+    expect(dev.sessionState(t.sessionId).log).not.toMatch(/"b":/);
+    const keys = keysOf(t, 'llm_call');
+    const fresh = keys.slice(4);
+    expect(fresh.length).toBeGreaterThan(1);
+    expect(fresh.filter((key) => key === PERSONAL_KEY).length).toBe(fresh.length);
+    expect(keys.slice(0, 4).filter((key) => isAgentKeyFor(key, dev.workOrg)).length).toBe(4);
+    const stored = readOffset(dev.dataDir, t.sessionId);
+    expect(stored.carried?.boundaryAt).toBeUndefined();
+    expect(stored.logStartedAt).toBe(logStartTime(t));
+  });
+
+  it('stores no log time on the held pass that restarts the log read', async () => {
+    const { t } = await sessionWhoseLogWasCleared();
+    await start(t, 30, 'clear');
+    await hookAt(t, 31);
+    t.prompt(at(31));
+    t.org(dev.workOrg, at(32));
+    t.reply(at(33));
+    await pass(t, 34);
+    const held = readOffset(dev.dataDir, t.sessionId);
+    expect(held.pending?.passes).toBe(1);
+    expect(held.logOffset).toBe(0);
+    expect(held.logStartedAt).toBeUndefined();
+  });
+});
+
+describe('reconcileSessionTail — the log a checkpoint indexes', () => {
+  beforeEach(() => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+  });
+
+  /** `count` reconciled work turns, so the checkpoint holds a log offset, a log time and a carried anchor. */
+  async function reconciledTurns(count: number): Promise<Transcript> {
+    const t = dev.transcript(randomUUID());
+    await start(t, 0);
+    for (let turnNo = 0; turnNo < count; turnNo += 1) {
+      await turn(t, 1 + turnNo * 5, dev.workOrg);
+      await stopAt(t, 5 + turnNo * 5);
+    }
+    expect(keysOf(t, 'llm_call').filter((key) => isAgentKeyFor(key, dev.workOrg))).toHaveLength(
+      count,
+    );
+    return t;
+  }
+
+  /** A reply whose chunk holds no org line, so only a carried anchor can attribute it; then its pass. */
+  async function replyWithoutOrgLine(t: Transcript, s: number): Promise<void> {
+    await hookAt(t, s);
+    t.prompt(at(s));
+    t.reply(at(s + 1));
+    await hookAt(t, s + 2);
+    await stopAt(t, s + 3);
+  }
+
+  const checkpointPath = (t: Transcript): string => join(dev.dataDir, 'usage-offsets', t.sessionId);
+
+  it('keeps reading the same log from the stored offset, with the carried state, when more lines are appended to it', async () => {
+    const t = await reconciledTurns(1);
+    const before = readOffset(dev.dataDir, t.sessionId);
+    await replyWithoutOrgLine(t, 10);
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(2);
+    expect(isAgentKeyFor(keys[1], dev.workOrg)).toBe(true);
+    const after = readOffset(dev.dataDir, t.sessionId);
+    expect(after.logOffset).toBeGreaterThan(before.logOffset ?? 0);
+    expect(after.carried?.anchorAt).toBe(before.carried?.anchorAt);
+  });
+
+  it('stores the time of the first line of the log it reads, and keeps it while that log grows', async () => {
+    const t = await reconciledTurns(1);
+    expect(readOffset(dev.dataDir, t.sessionId).logStartedAt).toBe(ms(0));
+    await replyWithoutOrgLine(t, 10);
+    expect(readOffset(dev.dataDir, t.sessionId).logStartedAt).toBe(ms(0));
+  });
+
+  it('restarts the read of a checkpoint that holds a log offset and no log time, and stores the time', async () => {
+    const t = await reconciledTurns(1);
+    const stored = JSON.parse(readFileSync(checkpointPath(t), 'utf8')) as Record<string, unknown>;
+    expect(typeof stored.logStartedAt).toBe('number');
+    delete stored.logStartedAt;
+    writeFileSync(checkpointPath(t), JSON.stringify(stored));
+    expect(readOffset(dev.dataDir, t.sessionId).logStartedAt).toBeUndefined();
+    await replyWithoutOrgLine(t, 10);
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(PERSONAL_KEY);
+    expect(readOffset(dev.dataDir, t.sessionId).logStartedAt).toBe(ms(0));
+  });
+
+  it('restarts the read of a log cut below the stored offset whose first line is unchanged', async () => {
+    const t = await reconciledTurns(4);
+    const { logOffset } = readOffset(dev.dataDir, t.sessionId);
+    const first = dev.sessionState(t.sessionId).log.split('\n')[0] ?? '';
+    writeFileSync(join(sessionAccountsDir(dev.dataDir), `${t.sessionId}.log`), `${first}\n`);
+    await turn(t, 30, dev.workOrg);
+    await stopAt(t, 35);
+    expect(logSize(t)).toBeLessThan(logOffset ?? 0);
+    expect(logStartTime(t)).toBe(ms(0));
+    const keys = keysOf(t, 'llm_call');
+    expect(keys).toHaveLength(5);
+    expect(isAgentKeyFor(keys[4], dev.workOrg)).toBe(true);
+  });
+});
+
+describe('reconcileSessionTail — a transcript read again from its start', () => {
+  beforeEach(() => {
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+  });
+
+  async function reconciledWorkSession(): Promise<Transcript> {
+    const t = dev.transcript(randomUUID());
+    await start(t, 0);
+    await turn(t, 1, dev.workOrg);
+    await stopAt(t, 5);
+    expect(isAgentKeyFor(keysOf(t, 'llm_call')[0], dev.workOrg)).toBe(true);
+    expect(isAgentKeyFor(keysOf(t, 'tool_call')[0], dev.workOrg)).toBe(true);
+    return t;
+  }
+
+  /** The transcript without its org line, so shorter than the stored offset, with the reply's output count set. */
+  function rewriteWithoutOrgLine(t: Transcript, outputTokens: number): void {
+    const kept = readFileSync(t.path, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '' && !line.includes('credential_org'));
+    const text = kept
+      .join('\n')
+      .replace('"output_tokens":7', `"output_tokens":${String(outputTokens)}`);
+    writeFileSync(t.path, `${text}\n`);
+    expect(statSync(t.path).size).toBeLessThan(readOffset(dev.dataDir, t.sessionId).offset);
+  }
+
+  it('moves a reply row to the fresh attribution when its output count grew, and keeps the tool call row', async () => {
+    const t = await reconciledWorkSession();
+    rewriteWithoutOrgLine(t, 9);
+    await pass(t, 10);
+    expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+    const tools = keysOf(t, 'tool_call');
+    expect(tools).toHaveLength(1);
+    expect(isAgentKeyFor(tools[0], dev.workOrg)).toBe(true);
+  });
+
+  it('keeps the first-written key of a reply row whose output count is equal', async () => {
+    const t = await reconciledWorkSession();
+    rewriteWithoutOrgLine(t, 7);
+    await pass(t, 10);
+    const replies = keysOf(t, 'llm_call');
+    expect(replies).toHaveLength(1);
+    expect(isAgentKeyFor(replies[0], dev.workOrg)).toBe(true);
+    expect(keysOf(t, 'tool_call')).toHaveLength(1);
+  });
+
+  it('does not notice a replaced transcript that is longer than the stored offset', async () => {
+    const t = await reconciledWorkSession();
+    const { offset } = readOffset(dev.dataDir, t.sessionId);
+    const replacement = dev.transcript(t.sessionId);
+    replacement.prompt(at(20));
+    replacement.reply(at(21));
+    while (statSync(t.path).size <= offset + 200) {
+      appendFileSync(t.path, `${JSON.stringify({ type: 'summary', summary: 'x'.repeat(100) })}\n`);
+    }
+    replacement.prompt(at(22));
+    replacement.reply(at(23));
+    await stopAt(t, 25);
+    expect(keysOf(t, 'llm_call')).toHaveLength(2);
+  });
+
+  describe('after the pass that strikes a secret', () => {
+    async function strickenSession(): Promise<Transcript> {
+      await consentToStrikingAwsKeys();
+      const t = dev.transcript(randomUUID());
+      await start(t, 0);
+      appendLeakingPrompt(t, 1);
+      await turn(t, 2, dev.workOrg);
+      await stopAt(t, 6);
+      const struck = readFileSync(t.path);
+      expect(struck.includes('[REDACTED:')).toBe(true);
+      expect(struck.includes(SECRET)).toBe(false);
+      expect(isAgentKeyFor(keysOf(t, 'llm_call')[0], dev.workOrg)).toBe(true);
+      return t;
+    }
+
+    it('stores offset 0 with no log offset and no carried state', async () => {
+      const t = await strickenSession();
+      const stored = readOffset(dev.dataDir, t.sessionId);
+      expect(stored.offset).toBe(0);
+      expect(stored.logOffset).toBeUndefined();
+      expect(stored.carried).toBeUndefined();
+    });
+
+    it('moves a reply row to the fresh attribution when its output count grew', async () => {
+      const t = await strickenSession();
+      dev.writeIdentity();
+      writeFileSync(
+        t.path,
+        readFileSync(t.path, 'utf8').replace('"output_tokens":7', '"output_tokens":9'),
+      );
+      await pass(t, 20);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+    });
   });
 });
 

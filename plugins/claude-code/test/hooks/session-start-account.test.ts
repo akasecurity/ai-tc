@@ -398,3 +398,65 @@ describe('the session root at session start', () => {
     expect(handed[0]?.accountBasis).toBe(basis);
   });
 });
+
+describe('the forwarding line at session start', () => {
+  async function shownAtSessionStart(): Promise<string> {
+    const shown: string[] = [];
+    await runSessionStart(
+      payload(dev.transcript(randomUUID()), 'startup'),
+      deps({
+        emit: (output) => {
+          if ('systemMessage' in output) shown.push(output.systemMessage);
+          return Promise.resolve();
+        },
+      }),
+    );
+    return shown.join('\n');
+  }
+
+  it('names the account enrolled by hand, not a work subscription, when work subscriptions are off and the login file does not parse', async () => {
+    dev.attach({ workSubscriptions: 'off', manual: [`claude:${dev.workOrg}`] });
+    dev.unreadableLogin();
+    const line = await shownAtSessionStart();
+    expect(line.includes('once Claude confirms')).toBe(true);
+    expect(line.includes('work subscription')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll --account')).toBe(true);
+  });
+
+  it('names the account enrolled by hand, not a work subscription, for a login on one while work subscriptions are on', async () => {
+    dev.attach({ manual: [`claude:${dev.workOrg}`] });
+    dev.login({ org: dev.workOrg });
+    const line = await shownAtSessionStart();
+    expect(line.includes('signed in to an account you enrolled by hand')).toBe(true);
+    expect(line.includes('work subscription')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll --account')).toBe(true);
+  });
+
+  it('names the work subscription and the opt-out when work subscriptions are on and the login file does not parse', async () => {
+    dev.attach({ manual: [`claude:${dev.workOrg}`] });
+    dev.unreadableLogin();
+    const line = await shownAtSessionStart();
+    expect(line.includes('once Claude confirms the work subscription')).toBe(true);
+    expect(line.includes('aka unenroll --work-subscriptions')).toBe(true);
+  });
+
+  it('names the account enrolled by hand, not a work subscription, when work subscriptions are off and the login shows no plan', async () => {
+    dev.attach({ workSubscriptions: 'off', manual: [`claude:${dev.workOrg}`] });
+    dev.login({ org: dev.workOrg, organizationType: null });
+    const line = await shownAtSessionStart();
+    expect(line.includes('once Claude confirms')).toBe(true);
+    expect(line.includes('work subscription')).toBe(false);
+    expect(line.includes('--work-subscriptions')).toBe(false);
+    expect(line.includes('aka unenroll --account')).toBe(true);
+  });
+
+  it('names the work subscription and the opt-out when work subscriptions are on and the login shows no plan', async () => {
+    dev.attach();
+    dev.login({ org: dev.workOrg, organizationType: null });
+    const line = await shownAtSessionStart();
+    expect(line.includes('once Claude confirms the work subscription')).toBe(true);
+    expect(line.includes('aka unenroll --work-subscriptions')).toBe(true);
+  });
+});

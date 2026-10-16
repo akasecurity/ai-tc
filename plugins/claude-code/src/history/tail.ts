@@ -18,8 +18,9 @@
 // was consumed in a prior pass still attributes its run_key from this seed.
 //
 // It also carries what account attribution needs across passes: where the next
-// pass resumes the session's observation log, the attribution state carried
-// past this tail, and how many passes have waited at this offset for a record's
+// pass resumes the session's observation log, the time of that log's first line
+// (which names the log the offset indexes), the attribution state carried past
+// this tail, and how many passes have waited at this offset for a record's
 // closing observation.
 import { createHash } from 'node:crypto';
 import {
@@ -50,10 +51,12 @@ export interface UsageOffset {
   // `exactOptionalPropertyTypes` a present-but-undefined value needs the union.
   // `writeOffset` still omits the key entirely when it's undefined.
   lastPromptId?: string | undefined;
-  // Where the next pass resumes the session's observation log, and the
-  // attribution state carried past this tail. Read back only past offset 0: a
-  // pass from offset 0 reads the log from its start.
+  // Where the next pass resumes the session's observation log, the time of the
+  // first line of the log that offset indexes, and the attribution state carried
+  // past this tail. Read back only past offset 0: a pass from offset 0 reads the
+  // log from its start. A log offset above 0 with no time names no log.
   logOffset?: number | undefined;
+  logStartedAt?: number | undefined;
   carried?: AttributionCarry | undefined;
   // How many passes have waited at this offset for a record's closing
   // observation, and when the first of them did.
@@ -108,6 +111,7 @@ export function readOffset(dataDir: string, sessionId: string): UsageOffset {
         offset,
         ...(lastPromptId !== undefined ? { lastPromptId } : {}),
         ...(offset > 0 && isCount(rec.logOffset) ? { logOffset: rec.logOffset } : {}),
+        ...(offset > 0 && isCount(rec.logStartedAt) ? { logStartedAt: rec.logStartedAt } : {}),
         ...(carried !== undefined ? { carried } : {}),
         ...(pending !== undefined ? { pending } : {}),
       };
@@ -129,6 +133,7 @@ export function writeOffset(dataDir: string, sessionId: string, value: UsageOffs
       offset: value.offset,
       ...(value.lastPromptId !== undefined ? { lastPromptId: value.lastPromptId } : {}),
       ...(value.logOffset !== undefined ? { logOffset: value.logOffset } : {}),
+      ...(value.logStartedAt !== undefined ? { logStartedAt: value.logStartedAt } : {}),
       ...(value.carried !== undefined ? { carried: carriedPayload(value.carried) } : {}),
       ...(value.pending !== undefined
         ? { pending: { passes: value.pending.passes, since: value.pending.since } }

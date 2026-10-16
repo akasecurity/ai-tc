@@ -180,7 +180,8 @@ export async function scanHistory(
       // The key rides on the capture input, never in the event's metadata (a
       // published wire shape). No sessionId is added to the metadata either: it
       // would change the capture's content-addressed id, and with it the dedup a
-      // re-run relies on.
+      // re-run relies on. The sweep resolves no session account, so a backfilled
+      // capture carries the repository key alone and never an agent key.
       const scopeKey = scopeKeyOf(message.cwd);
       const result = await runtime.capture(
         {

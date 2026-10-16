@@ -181,6 +181,7 @@ describe('readOffset / writeOffset — the account fields', () => {
       offset: 64,
       lastPromptId: 'p1',
       logOffset: 120,
+      logStartedAt: 1_700_000_000_000,
       carried,
       pending: { passes: 2, since: 99 },
     };
@@ -194,10 +195,11 @@ describe('readOffset / writeOffset — the account fields', () => {
     expect(readOffset(dir, 'sess-b')).toEqual(value);
   });
 
-  it('reads the log offset and the carried state back only past offset 0', () => {
+  it('reads the log offset, the log time and the carried state back only past offset 0', () => {
     writeOffset(dir, 'sess-c', {
       offset: 0,
       logOffset: 120,
+      logStartedAt: 1_700_000_000_000,
       carried,
       pending: { passes: 1, since: 99 },
     });
@@ -211,11 +213,42 @@ describe('readOffset / writeOffset — the account fields', () => {
       JSON.stringify({
         offset: 9,
         logOffset: -1,
+        logStartedAt: 'x',
         carried: { boundaryAt: 'x', inherited: true },
         pending: { passes: 1 },
       }),
     );
     expect(readOffset(dir, 'sess-d')).toEqual({ offset: 9 });
+  });
+
+  it('reads a checkpoint that holds a log offset and no log time, without the log time', () => {
+    mkdirSync(join(dir, 'usage-offsets'), { recursive: true });
+    writeFileSync(
+      join(dir, 'usage-offsets', 'sess-g'),
+      JSON.stringify({ offset: 9, logOffset: 120, carried }),
+    );
+    expect(readOffset(dir, 'sess-g')).toEqual({ offset: 9, logOffset: 120, carried });
+  });
+
+  it.each([
+    ['is negative', -1],
+    ['is not a number', 'x'],
+    ['is null', null],
+  ])('drops a log time that %s and keeps the log offset', (_label, logStartedAt) => {
+    mkdirSync(join(dir, 'usage-offsets'), { recursive: true });
+    writeFileSync(
+      join(dir, 'usage-offsets', 'sess-h'),
+      JSON.stringify({ offset: 9, logOffset: 120, logStartedAt }),
+    );
+    expect(readOffset(dir, 'sess-h')).toEqual({ offset: 9, logOffset: 120 });
+  });
+
+  it('omits the log time from the file when there is none', () => {
+    writeOffset(dir, 'sess-i', { offset: 9, logOffset: 120 });
+    expect(JSON.parse(readFileSync(join(dir, 'usage-offsets', 'sess-i'), 'utf8'))).toEqual({
+      offset: 9,
+      logOffset: 120,
+    });
   });
 
   it.each([

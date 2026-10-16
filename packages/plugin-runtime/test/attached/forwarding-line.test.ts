@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
+import type { AccountScopeContext } from '../../src/account-scope.ts';
 import { createAccountScope } from '../../src/account-scope.ts';
 import { createForwardPolicy } from '../../src/attached/forward-policy.ts';
 import type { ForwardingScope, ForwardingSession } from '../../src/attached/forwarding-line.ts';
@@ -153,8 +154,13 @@ const OPT_OUT = '`aka unenroll --work-subscriptions` stops this on this device.'
 const MANUAL_STOP =
   'Enrolled by hand; `aka unenroll --account` with its key stops this (`aka status` lists it).';
 const WORK_LINE = 'AKA: forwarding this session to Acme — signed in to a work subscription.';
+const WORK_LINE_BY_HAND =
+  'AKA: forwarding this session to Acme — signed in to an account you enrolled by hand.';
+const KEYED_LINE = 'AKA: forwarding this session to Acme — for the account it first ran under.';
 const PENDING_LINE =
   'AKA: this session forwards to Acme once Claude confirms the work subscription, from its first reply.';
+const PENDING_BY_HAND =
+  'AKA: this session forwards to Acme once Claude confirms it is signed in to an account you enrolled by hand, from its first reply.';
 const OTHER_FOLDERS =
   'This session also sends its work in other folders, because it is signed in to a work subscription.';
 const OTHER_FOLDERS_MANUAL =
@@ -169,6 +175,9 @@ function agentKeyForTest(): string {
   return key;
 }
 const AGENT = agentKeyForTest();
+const ORG = randomUUID();
+const ACCOUNT_KEY = `claude:${ORG}`;
+const MANUAL_ACCOUNT = `claude:${randomUUID()}`;
 
 type Basis = ForwardingSession['basis'];
 const accountScope = (basis: Basis, managed = false): ForwardingScope => ({
@@ -178,11 +187,16 @@ const accountScope = (basis: Basis, managed = false): ForwardingScope => ({
   basis,
   managed,
 });
-const pendingScope = (basis: Basis, managed = false): ForwardingScope => ({
+const pendingScope = (
+  basis: Basis,
+  managed = false,
+  workSubscriptionsOn = true,
+): ForwardingScope => ({
   deploymentName: 'Acme',
   mode: 'account-pending',
   basis,
   managed,
+  workSubscriptionsOn,
 });
 const inWork = (work?: { basis: NonNullable<Basis>; managed: boolean }): ForwardingScope => ({
   deploymentName: 'Acme',
@@ -206,11 +220,46 @@ describe('forwardingLine — a work-subscription session', () => {
     );
   });
 
-  it('a manual session names the command that stops it', () => {
+  it('a manual session names the account enrolled by hand and the command that stops it', () => {
+    expect(forwardingLine(answering(accountScope('manual')), 's1')).toBe(
+      `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
+    );
+    expect(forwardingLine(answering(pendingScope('manual')), 's1')).toBe(
+      `${PENDING_BY_HAND} ${MANUAL_STOP}`,
+    );
     for (const scope of [accountScope('manual'), pendingScope('manual')]) {
       const line = forwardingLine(answering(scope), 's1');
-      expect(line).toContain(MANUAL_STOP);
       expect(line).not.toContain('--work-subscriptions');
+      expect(line).not.toContain('work subscription');
+    }
+  });
+
+  it('a session in an agent-keyed root names the account enrolled by hand when that is its basis', () => {
+    const forwardedAgentRoot = (work: {
+      basis: NonNullable<Basis>;
+      managed: boolean;
+    }): ForwardingScope => ({
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: AGENT,
+      rootForwards: true,
+      work,
+    });
+    expect(
+      forwardingLine(answering(forwardedAgentRoot({ basis: 'manual', managed: false })), 's1'),
+    ).toBe(`${WORK_LINE_BY_HAND} ${MANUAL_STOP}`);
+    expect(
+      forwardingLine(answering(forwardedAgentRoot({ basis: 'validated', managed: false })), 's1'),
+    ).toBe(`${WORK_LINE} ${OPT_OUT}`);
+  });
+
+  it('a root left to the reconcile names the account enrolled by hand when work subscriptions are off', () => {
+    for (const basis of [undefined, 'manual'] as const) {
+      for (const managed of [false, true]) {
+        expect(forwardingLine(answering(pendingScope(basis, managed, false)), 's1')).toBe(
+          `${PENDING_BY_HAND} ${MANUAL_STOP}`,
+        );
+      }
     }
   });
 
@@ -231,8 +280,25 @@ describe('forwardingLine — a work-subscription session', () => {
       `AKA: forwarding to Acme (${WORK_KEY}). ${OTHER_FOLDERS}`,
     );
     expect(forwardingLine(answering(accountScope('manual', true)), 's1')).toBe(
-      `${WORK_LINE} ${MANUAL_STOP}`,
+      `${WORK_LINE_BY_HAND} ${MANUAL_STOP}`,
     );
+  });
+
+  it('a session forwarded under an agent key, with no login basis, claims no work subscription and offers no stop command', () => {
+    const forwardedAgentRoot: ForwardingScope = {
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: AGENT,
+      rootForwards: true,
+    };
+    const scopes = [accountScope(undefined), accountScope(undefined, true), forwardedAgentRoot];
+    for (const scope of scopes) {
+      const line = forwardingLine(answering(scope), 's1');
+      expect(line).toBe(KEYED_LINE);
+      expect(line).not.toContain('work subscription');
+      expect(line).not.toContain('--work-subscriptions');
+      expect(line).not.toContain('--account');
+    }
   });
 
   it('never prints an agent key, an account key or an org id', () => {
@@ -243,11 +309,43 @@ describe('forwardingLine — a work-subscription session', () => {
       rootKey: AGENT,
       rootForwards: true,
     };
-    for (const scope of [accountScope('validated'), forwardedAgentRoot]) {
+    const expected = [
+      [accountScope('validated'), `${WORK_LINE} ${OPT_OUT}`],
+      [accountScope(undefined), KEYED_LINE],
+      [forwardedAgentRoot, KEYED_LINE],
+    ] as const;
+    for (const [scope, want] of expected) {
       const line = forwardingLine(answering(scope), 's1');
-      expect(line).toBe(`${WORK_LINE} ${OPT_OUT}`);
+      expect(line).toBe(want);
       for (const needle of ['agent:', 'claude:', org]) expect(line).not.toContain(needle);
     }
+  });
+
+  it('prints no key for a root key that names neither a repository nor an agent', () => {
+    for (const rootKey of [ACCOUNT_KEY, 'not-a-repository']) {
+      const scope: ForwardingScope = {
+        deploymentName: 'Acme',
+        mode: 'scoped',
+        rootKey,
+        rootForwards: true,
+      };
+      const line = forwardingLine(answering(scope), 's1');
+      expect(line === 'AKA: forwarding to Acme').toBe(true);
+      expect(line?.includes(rootKey)).toBe(false);
+    }
+  });
+
+  it('a root key that names no repository keeps the sentence about other folders for a work login', () => {
+    const scope: ForwardingScope = {
+      deploymentName: 'Acme',
+      mode: 'scoped',
+      rootKey: ACCOUNT_KEY,
+      rootForwards: true,
+      work: { basis: 'validated', managed: false },
+    };
+    const line = forwardingLine(answering(scope), 's1');
+    expect(line === `AKA: forwarding to Acme. ${OTHER_FOLDERS} ${OPT_OUT}`).toBe(true);
+    expect(line?.includes(ORG)).toBe(false);
   });
 
   it('a personal session and an opted-out one keep the local-only line', () => {
@@ -306,6 +404,7 @@ function attachedOver(
   mode: 'scoped' | 'machine',
   keys: readonly string[],
   withAccount = false,
+  context: Partial<AccountScopeContext> = {},
 ): AttachedDataGateway {
   const keySet = new Set(keys);
   const account = createAccountScope({
@@ -317,6 +416,7 @@ function attachedOver(
       workSubscriptionsOn: true,
       learned: [],
       manual: [],
+      ...context,
     },
     learn: () => 'refused',
   });
@@ -363,6 +463,17 @@ describe('AttachedDataGateway.forwardingScope — a work-subscription session', 
     }
   });
 
+  it('says the account a root forwards under, and no work subscription, when the session has no login basis', async () => {
+    const gateway = attachedOver(dataDir, 'scoped', [AGENT]);
+    try {
+      await gateway.recordAuditEvent(root('s8', AGENT));
+      expect(forwardingLine(gateway, 's8', { ...work, basis: undefined })).toBe(KEYED_LINE);
+      expect(forwardingLine(gateway, 's8', work)).toBe(`${WORK_LINE} ${OPT_OUT}`);
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it('answers account-pending for a root the session start left to the reconcile, and null when it did not', async () => {
     const gateway = attachedOver(dataDir, 'scoped', [AGENT]);
     try {
@@ -372,6 +483,20 @@ describe('AttachedDataGateway.forwardingScope — a work-subscription session', 
       expect(gateway.forwardingScope('s2', work)).toBeNull();
     } finally {
       await gateway.close();
+    }
+  });
+
+  it('reports in an account-pending answer whether its account scope has work subscriptions on', async () => {
+    const deferred: ForwardingSession = { ...work, rootDeferred: true, basis: undefined };
+    for (const workSubscriptionsOn of [true, false]) {
+      const gateway = attachedOver(dataDir, 'scoped', [WORK_KEY], true, { workSubscriptionsOn });
+      try {
+        expect(gateway.forwardingScope('s6', deferred)).toEqual(
+          pendingScope(undefined, false, workSubscriptionsOn),
+        );
+      } finally {
+        await gateway.close();
+      }
     }
   });
 
@@ -385,6 +510,19 @@ describe('AttachedDataGateway.forwardingScope — a work-subscription session', 
         rootForwards: false,
       });
       expect(forwardingLine(gateway, 's5', work)).toBe(LOCAL_ONLY);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('prints no key for a forwarded root whose stored key names neither a repository nor an agent', async () => {
+    const gateway = attachedOver(dataDir, 'scoped', [ACCOUNT_KEY]);
+    try {
+      await gateway.recordAuditEvent(root('s7', ACCOUNT_KEY));
+      const scope = gateway.forwardingScope('s7');
+      expect(scope?.mode === 'scoped' && scope.rootForwards).toBe(true);
+      const line = forwardingLine(gateway, 's7');
+      expect(line === 'AKA: forwarding to Acme').toBe(true);
     } finally {
       await gateway.close();
     }
@@ -417,14 +555,18 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
   let tmp: string;
   let home: string;
   let restore: () => void;
+  let accountContext: Partial<AccountScopeContext>;
+  let enrolledKeys: readonly string[];
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), 'aka-forwarding-session-'));
     home = join(tmp, 'home');
     mkdirSync(join(tmp, 'scratch'), { recursive: true });
     migratedStore.seed(join(home, 'data'));
+    accountContext = {};
+    enrolledKeys = [WORK_KEY];
     // The session start defers a root only on a gateway that offers an account scope.
     restore = setDefaultGatewayFactory((config) =>
-      attachedOver(config.dataDir, 'scoped', [WORK_KEY], true),
+      attachedOver(config.dataDir, 'scoped', enrolledKeys, true, accountContext),
     );
   });
   afterEach(() => {
@@ -481,6 +623,22 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
     return result.forwardingLine;
   }
 
+  /** A session start whose login cannot be read, in a folder outside every enrolled repository. */
+  async function undeterminedLine(): Promise<string | null> {
+    const result = await handleSessionStart(
+      {
+        sessionId: randomUUID(),
+        cwd: join(tmp, 'scratch'),
+        tool: SOURCE_TOOL.ClaudeCode,
+        homeDir: home,
+        rootAwaitsAccount: true,
+        accountBasis: undefined,
+      },
+      config(),
+    );
+    return result.forwardingLine;
+  }
+
   it('offers the opt-out on an unmanaged device, and not where an administrator manages the connection', () => {
     expect(workSubscriptionOptOutOffered(join(home, 'settings'))).toBe(true);
     manage();
@@ -508,10 +666,71 @@ describe('workSubscriptionOptOutOffered and handleSessionStart', () => {
   });
 
   it('names the command that stops an account enrolled by hand, for a root left to the reconcile', async () => {
-    expect(await deferredLine('manual')).toBe(`${PENDING_LINE} ${MANUAL_STOP}`);
+    expect(await deferredLine('manual')).toBe(`${PENDING_BY_HAND} ${MANUAL_STOP}`);
   });
 
   it('prints no line for a session the device does not record', async () => {
     expect(await deferredLine('validated', false)).toBeNull();
+  });
+
+  it('keeps the work-subscription line, with the opt-out, for an unreadable login while recognition is on', async () => {
+    accountContext = { manual: [MANUAL_ACCOUNT] };
+    expect(await undeterminedLine()).toBe(`${PENDING_LINE} ${OPT_OUT}`);
+  });
+
+  it('names the account enrolled by hand, and no work subscription, when recognition is off and the login cannot be read', async () => {
+    accountContext = { workSubscriptionsOn: false, manual: [MANUAL_ACCOUNT] };
+    const line = await undeterminedLine();
+    expect(line === null).toBe(false);
+    expect(line?.includes('work subscription')).toBe(false);
+    expect(line?.includes('--work-subscriptions')).toBe(false);
+    expect(line?.includes('aka unenroll --account')).toBe(true);
+    expect(line === `${PENDING_BY_HAND} ${MANUAL_STOP}`).toBe(true);
+  });
+
+  it('names the account enrolled by hand where an administrator manages the connection too', async () => {
+    manage();
+    accountContext = { workSubscriptionsOn: false, manual: [MANUAL_ACCOUNT] };
+    expect((await undeterminedLine()) === `${PENDING_BY_HAND} ${MANUAL_STOP}`).toBe(true);
+  });
+
+  /** A resumed session: its root was keyed under an agent key by an earlier run, and its login now shows no work account. */
+  async function resumedLine(): Promise<string | null> {
+    const sessionId = randomUUID();
+    enrolledKeys = [AGENT];
+    const earlier = attachedOver(join(home, 'data'), 'scoped', [AGENT], true);
+    try {
+      await earlier.recordAuditEvent({
+        id: sessionId,
+        eventType: 'session',
+        startedAt: new Date().toISOString(),
+        attributes: { scope_key: AGENT },
+      });
+    } finally {
+      await earlier.close();
+    }
+    const result = await handleSessionStart(
+      {
+        sessionId,
+        cwd: join(tmp, 'scratch'),
+        tool: SOURCE_TOOL.ClaudeCode,
+        homeDir: home,
+        accountBasis: undefined,
+      },
+      config(),
+    );
+    return result.forwardingLine;
+  }
+
+  it('says the account a resumed session was keyed under, and no work subscription, when its login shows none', async () => {
+    expect(await resumedLine()).toBe(KEYED_LINE);
+  });
+
+  it('says that too where an administrator manages the connection, and offers no stop command', async () => {
+    manage();
+    const line = await resumedLine();
+    expect(line).toBe(KEYED_LINE);
+    expect(line).not.toContain('--work-subscriptions');
+    expect(line).not.toContain('--account');
   });
 });

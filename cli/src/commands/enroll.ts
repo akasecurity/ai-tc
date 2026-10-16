@@ -76,7 +76,7 @@ import { terminalPrompter } from '../lib/prompter.ts';
 import { refusalLine } from '../lib/refusal-line.ts';
 
 // `aka enroll` / `aka unenroll` / `aka enroll --list` — which repositories and
-// web chat accounts a SCOPED attachment sends.
+// Claude accounts a SCOPED attachment sends.
 //
 // LOCAL ONLY. These verbs edit this machine's settings and contact nothing: no
 // deployment is asked and nothing is sent by the command itself. What they
@@ -108,11 +108,13 @@ const ENROLL_USAGE = `Usage: aka enroll [path]
        aka enroll --list-detected
 
 On a machine attached in the scoped mode, activity is sent to the deployment
-only from the repositories and web chat accounts enrolled here, and from
-Claude Code sessions signed in to a work subscription of your organization
+only from the repositories and Claude accounts enrolled here (an account's
+Claude Code sessions and its claude.ai chat replies), and from Claude Code
+sessions signed in to a work subscription (a Claude Team or Enterprise plan)
 that this device recognises; activity anywhere else stays on this machine.
-The policy pull and the device report are not limited to them: the report's
-finding counts and dates are for everything recorded on the machine.
+The policy pull, the sighting-key fetch, the command check and the device
+report are not limited to them: the report's finding counts and dates are for
+everything recorded on the machine.
 
   [path]                Enroll the repository this directory is in (default: .).
   --repo <repo>         Enroll by clone URL, or by key, as in github.com/acme/payments-api.
@@ -136,8 +138,10 @@ const UNENROLL_USAGE = `Usage: aka unenroll [path]
        aka unenroll --account <claude:organization-id | chatgpt:workspace-id>
        aka unenroll --work-subscriptions
 
-Stops sending a repository or a web chat account from a scoped attachment:
-sessions, scans and chats started afterwards keep its activity on this machine.
+Stops sending a repository or a Claude account from a scoped attachment:
+sessions, scans and chats started afterwards keep its activity on this machine,
+except a Claude Code session signed in to a recognised work subscription or to
+another account enrolled by hand, which forwards from any folder.
 
   [path]                The repository this directory is in (default: .).
   --repo <repo>         A clone URL, or a key, as in github.com/acme/payments-api.
@@ -369,7 +373,7 @@ function unenroll(argv: readonly string[], deps: Partial<EnrollDeps>): number {
   io.out(
     (identity.kind === 'account'
       ? unenrolledAccountLine(identity.key, repository, name)
-      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}.\n`) +
+      : `Unenrolled ${repository}. From now on, sessions and scans you start do not send its activity to ${name}, except a Claude Code session signed in to a recognised work subscription or to an account enrolled by hand, which forwards from any folder.\n`) +
       (unreadable
         ? 'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
           'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
@@ -757,7 +761,7 @@ function personalPlanNotice(
   if (claude !== undefined && claudeKeyIsPersonalLogin(key, claude)) {
     return (
       'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
-      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder.\n`
+      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n`
     );
   }
   if (codex !== undefined && codexKeyIsPersonalLogin(key, codex)) {
@@ -802,7 +806,7 @@ function codingAgentLines(
     `Claude Code sessions are sent to ${name} too: every session signed in to this organization, from any folder, ` +
     'with its folder, project and branch names, and its claude.ai chats when web chat capture is on.\n' +
     'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of ' +
-    'each new session stays on this machine.\n' +
+    'each new session follows the repository rule: it is sent only from an enrolled repository.\n' +
     'This is the fallback for a work subscription this device does not recognise, such as a login under another ' +
     'email, a plan Claude Code does not show, or a device a colleague approved.\n' +
     (workSubscriptionsOn(ready.settings.attachmentScope)
@@ -958,10 +962,13 @@ function offLines(committed: WorkspaceSettings, endpoint: string, name: string):
 function onLines(name: string): string {
   return (
     `Work subscriptions are on again on this device for ${name}.\n` +
-    'A Claude Code session signed in to a work subscription of your organization (Claude Team or Enterprise), ' +
-    'under the same email as your AKA account, sends everything it records, from any folder, with its ' +
+    'A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan), ' +
+    'under the same email as your AKA account, sends everything it records from its first reply on, from any folder, with its ' +
     'folder, project and branch names.\n' +
-    "This device checks that from Claude Code's own login file and sends no email, plan or account id.\n" +
+    "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and " +
+    'environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it ' +
+    '(no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of ' +
+    'the activity of a recognised session or of one signed in to an account you enroll by hand.\n' +
     'A work account is recognised again the next time a session signed in to it runs. Rows recorded under it ' +
     'before you turned recognition off, and not yet sent, are sent once it is recognised again.\n'
   );
@@ -1091,7 +1098,7 @@ function scopedAttachment(verb: Verb, base: string, managed: ManagedSettings | n
         `aka ${verb}: this machine is attached to ${name} machine-wide, so activity from\n` +
         'anywhere on this machine is sent and nothing is enrolled. ' +
         (governed === null
-          ? `To send activity only from the repositories you enroll, re-attach with\n${reattach}.`
+          ? `To send activity only from what you enroll and from recognised work subscriptions, re-attach with\n${reattach}.`
           : refusalLine(governed)),
     };
   }
@@ -1527,7 +1534,9 @@ function queuedLines(queued: number): string {
  * the instant this machine attached, so the repository's other activity from
  * before the attachment (sessions, tool calls, token usage) is sent too. What
  * it recorded between attaching and enrolling, other than those captures, was
- * judged local when it happened and stays local. Without a grant nothing
+ * judged local when it happened and stays local, except what a session of a
+ * recognised work subscription or of an account enrolled by hand there already
+ * sent under that account's own key. Without a grant nothing
  * earlier is sent, and the line names the command that would change that.
  * What has already aged out is gone, so no line promises everything.
  *
@@ -1561,7 +1570,9 @@ function earlierActivity(
     queuedLines(queued) +
     'The history sync also sends the rest of its activity recorded before this machine attached\n' +
     '(sessions, tool calls, token usage), in the background. Activity it recorded between\n' +
-    'attaching and enrolling, other than those captures, stays on this machine.\n'
+    'attaching and enrolling, other than those captures and what a Claude Code session of a\n' +
+    'recognised work subscription or of an account enrolled by hand there already sent, stays\n' +
+    'on this machine.\n'
   );
 }
 

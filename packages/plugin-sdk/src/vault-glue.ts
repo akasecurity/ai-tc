@@ -28,6 +28,7 @@ import type {
 } from '@akasecurity/schema';
 import { isActionAtLeast, POINTER_TOKEN_ANCHORED, pointerTokenScanner } from '@akasecurity/schema';
 
+import type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
 import { bundledMaskingRules } from './mask.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import type { PolicyResolver } from './policy-resolver.ts';
@@ -149,7 +150,7 @@ export interface TokenizeSighting {
   kind: VaultSightingKind;
 }
 
-export interface VaultGlue {
+export interface VaultGlue extends AtRestVault {
   tokenizeText(
     text: string,
     opts?: {
@@ -399,20 +400,63 @@ export class SecretVaultGlue implements VaultGlue {
       // Where these pointers just landed — the ledger that makes pointer
       // correlation visible to the owner. Best-effort: a bookkeeping fault
       // never affects the rewrite.
-      if (opts?.sighting && pointers.length > 0) {
-        for (const pointer of pointers) {
-          try {
-            const id = pointer.split('.')[1];
-            if (id !== undefined) this.#vault.recordSighting?.(id, opts.sighting);
-          } catch {
-            // best-effort only
-          }
-        }
-      }
+      if (opts?.sighting) this.#recordSightings(pointers, opts.sighting);
       return { text: out, pointers, degraded, redacted };
     } catch {
       // The unknown failure could have left raw spans in place; destroy them.
       return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
+    }
+  }
+
+  async vaultSpans(
+    text: string,
+    findings: readonly MatchResult[],
+    opts: VaultSpansOptions,
+  ): Promise<Map<MatchResult, PointerToken>> {
+    const vaulted = new Map<MatchResult, PointerToken>();
+    try {
+      // Grouped over every finding, so a span another finding overlaps is never
+      // vaulted: its characters belong to more than one value.
+      for (const group of groupSpans(text, [...findings])) {
+        const finding = group.finding;
+        if (finding === undefined || !opts.selected.has(finding)) continue;
+        if (text.slice(group.start, group.end) !== finding.rawMatch) continue;
+        let token: string | symbol;
+        try {
+          token = await this.#vault.tokenize(finding.rawMatch, {
+            ruleId: finding.ruleId,
+            category: finding.category,
+            maskedMatch: maskMatch(finding.rawMatch),
+            ...(finding.variableName === undefined ? {} : { variableName: finding.variableName }),
+          });
+        } catch {
+          continue;
+        }
+        // Anything but a well-formed pointer (a sentinel such as consent absent,
+        // or a string a core should not have returned) leaves the span as it was.
+        if (typeof token === 'string' && POINTER_TOKEN_ANCHORED.test(token)) {
+          vaulted.set(finding, token);
+        }
+      }
+    } catch {
+      // Every entry already in the map is a minted pointer; a later fault only
+      // leaves the remaining spans unvaulted.
+    }
+    this.#recordSightings([...new Set(vaulted.values())], opts.sighting);
+    return vaulted;
+  }
+
+  // Where these pointers just landed — the ledger that makes pointer
+  // correlation visible to the owner. Best-effort: a bookkeeping fault never
+  // affects the rewrite.
+  #recordSightings(pointers: readonly PointerToken[], sighting: TokenizeSighting): void {
+    for (const pointer of pointers) {
+      try {
+        const id = pointer.split('.')[1];
+        if (id !== undefined) this.#vault.recordSighting?.(id, sighting);
+      } catch {
+        // best-effort only
+      }
     }
   }
 

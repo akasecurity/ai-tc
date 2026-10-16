@@ -767,6 +767,9 @@ describe('the personal-device question', () => {
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
     );
+    expect(flat(h.output())).toContain(
+      'A personal device also asks the deployment once, from the background sync, which account its key belongs to, when the device does not know it yet.',
+    );
     expect(h.output()).not.toContain('Nothing is sent');
     expect(h.output()).not.toContain('schedule');
     expect(h.output()).not.toContain('every project');
@@ -3403,6 +3406,8 @@ describe('what an attach says', () => {
         'attached as a personal device, the fact that it is one. Where a scan is',
         'available (the coding-agent plugins, not a browser chat), the same session',
         'start also checks it for device commands.',
+        'The background sync also asks that deployment once which account this',
+        "machine's key belongs to, when the machine does not know it yet.",
         'Re-attaching with an aka older than this one, from its command line or its',
         'dashboard, makes this machine machine-wide.',
         '',

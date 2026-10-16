@@ -185,7 +185,8 @@ identifier, host name, versions, detection packs, policy counts, finding counts
 and dates for everything recorded on the machine, and, when the machine is
 attached as a personal device, the fact that it is one. Where a scan is
 available (the coding-agent plugins, not a browser chat), the same session
-start also checks it for device commands. The finding count is the number of findings
+start also checks it for device commands. On a personal device, the background sync also asks the deployment
+once which account its key belongs to, when the device does not know it yet. The finding count is the number of findings
 detected in captured prompts, responses, code changes and tool uses, from every
 session, with the dates of the first and latest one. A report can also go when a
 response finishes in a session that is already running, still at most hourly.

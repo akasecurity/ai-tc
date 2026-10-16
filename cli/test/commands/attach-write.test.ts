@@ -198,8 +198,8 @@ const flat = (text: string): string => text.replace(/\s+/g, ' ');
 const REPORT_SENTENCE = (policy: string): string =>
   'Whenever a session starts anywhere on this machine, in a repository or not ' +
   `(a browser chat included), the machine pulls ${policy} policy (at most every 15 minutes) ` +
-  'and its sighting key (at most daily) and sends it a device report (at most hourly): a ' +
-  'device identifier, host name, ' +
+  'and its sighting key (when none is stored or the stored one is a day old) and sends it a ' +
+  'device report (at most hourly): a device identifier, host name, ' +
   'versions, detection packs, policy counts, finding counts and dates for everything ' +
   'recorded on the machine, and, when the machine is attached as a personal device, the ' +
   'fact that it is one. Where a scan is available (the coding-agent plugins, not a ' +
@@ -3399,13 +3399,13 @@ describe('what an attach says', () => {
         '',
         'Whenever a session starts anywhere on this machine, in a repository or not',
         "(a browser chat included), the machine pulls that deployment's policy (at",
-        'most every 15 minutes) and its sighting key (at most daily) and sends it a',
-        'device report (at most hourly): a device identifier, host name, versions,',
-        'detection packs, policy counts, finding counts and dates for everything',
-        'recorded on the machine, and, when the machine is attached as a personal',
-        'device, the fact that it is one. Where a scan is available (the coding-agent',
-        'plugins, not a browser chat), the same session start also checks it for',
-        'device commands.',
+        'most every 15 minutes) and its sighting key (when none is stored or the stored',
+        'one is a day old) and sends it a device report (at most hourly): a device',
+        'identifier, host name, versions, detection packs, policy counts, finding counts',
+        'and dates for everything recorded on the machine, and, when the machine is',
+        'attached as a personal device, the fact that it is one. Where a scan is',
+        'available (the coding-agent plugins, not a browser chat), the same session',
+        'start also checks it for device commands.',
         'The background sync also asks that deployment once which account this',
         "machine's key belongs to, when the machine does not know it yet.",
         'Re-attaching with an aka older than this one, from its command line or its',
@@ -3508,8 +3508,10 @@ describe('what an attach says', () => {
       'It can also send some of what an enrolled repository or account recorded here before you enrolled it.',
     );
     expect(flat(said)).toContain(
-      'Saying no does not stop live sending from what you enroll or from recognised work subscriptions — that is part of being attached. It means nothing an enrolled repository or account recorded before you enrolled it is sent. Anything a live send from any of them could not deliver is kept and sent later either way, encoded as a live send is.',
+      'Saying no does not stop live sending from what you enroll or from recognised work subscriptions — that is part of being attached. It means nothing an enrolled repository or account recorded before you enrolled it is sent, apart from what Claude Code sessions of a recognised work subscription or of an account you enroll by hand have already sent: they send everything they record from their first reply on (the first prompt of a new session and a reply written before the device has confirmed the account follow the repository rule), whatever you answer here. Anything a live send from any of them could not deliver is kept and sent later either way, encoded as a live send is.',
     );
+    expect(flat(said)).not.toMatch(/login file shows? the (?:plan|account)/);
+    expect(flat(said)).not.toContain('as they happen');
     expect(said).not.toContain('12 days');
     expect(said).not.toContain('40 sessions');
     expect(said).toContain(

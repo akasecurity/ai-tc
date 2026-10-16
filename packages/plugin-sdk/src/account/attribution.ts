@@ -55,6 +55,20 @@ export interface AttributionResult {
   readonly carry: AttributionCarry;
   /** Consumed only through the chunk's last record, so later views stay for the next pass. */
   readonly logOffset: number;
+  /**
+   * The key of the account the session is in once the chunk's last record is written, whether
+   * or not any record is attributed to it: the key of the org the credential_org lines name
+   * since the last boundary, when the chunk ran under one boundary and that key is in scope,
+   * and the latest view at or after the last record, before the next boundary, is a work view
+   * for it. A record keeps its own attribution; this only names the account the session is in.
+   */
+  readonly closingAccount: string | undefined;
+  /**
+   * The key of the account the session is in by every test of `closingAccount` but the scope one:
+   * its key is not in scope yet, so a check that learns the key makes this the closing account.
+   * Undefined when `closingAccount` is named.
+   */
+  readonly unscopedAccount: string | undefined;
 }
 
 interface Boundary {
@@ -85,7 +99,13 @@ function viewOf(
  */
 export function attributeRecords(input: AttributionInput): AttributionResult {
   if (input.marks.length === 0) {
-    return { records: new Map(), carry: input.carry, logOffset: input.logOffset };
+    return {
+      records: new Map(),
+      carry: input.carry,
+      logOffset: input.logOffset,
+      closingAccount: undefined,
+      unscopedAccount: undefined,
+    };
   }
   const views: AttributionView[] = input.carry.lastObs === undefined ? [] : [input.carry.lastObs];
   const boundaries: Boundary[] = [];
@@ -113,8 +133,10 @@ export function attributeRecords(input: AttributionInput): AttributionResult {
   let lastOrgAt = input.carry.lastOrgAt;
   let lastOrg = lastOrgAt === undefined ? undefined : input.lastOrg;
   let next = 0;
+  let segment = 0;
 
   const apply = (boundary: Boundary): void => {
+    segment += 1;
     boundaryAt = boundary.t;
     inherited = boundary.kind === 'resume' && boundary.inherited;
     changedAt = undefined;
@@ -132,12 +154,20 @@ export function attributeRecords(input: AttributionInput): AttributionResult {
       next += 1;
     }
   };
-  const attribute = (t: number): RecordAttribution => {
+  const anchored = (
+    inScopeOnly: boolean,
+  ): { readonly accountKey: string; readonly floor: number } | undefined => {
     if (boundaryAt === undefined || lost || changedAt !== undefined || anchorOrg === undefined)
-      return NONE;
+      return undefined;
     const accountKey = claudeKey(anchorOrg);
-    if (!input.inScope(accountKey)) return NONE;
-    const floor = boundaryAt;
+    return !inScopeOnly || input.inScope(accountKey)
+      ? { accountKey, floor: boundaryAt }
+      : undefined;
+  };
+  const attribute = (t: number): RecordAttribution => {
+    const anchor = anchored(true);
+    if (anchor === undefined) return NONE;
+    const { accountKey, floor } = anchor;
     const ceiling = boundaries[next]?.t;
     let before: AttributionView | undefined;
     let after: AttributionView | undefined;
@@ -162,10 +192,14 @@ export function attributeRecords(input: AttributionInput): AttributionResult {
 
   const records = new Map<string, RecordAttribution>();
   let maxT = Number.NEGATIVE_INFINITY;
+  let lastRecordT = Number.NEGATIVE_INFINITY;
+  let firstRecordSegment: number | undefined;
   for (const mark of input.marks) {
     maxT = Math.max(maxT, mark.t);
     applyThrough(mark.t);
     if (mark.kind === 'record') {
+      firstRecordSegment ??= segment;
+      lastRecordT = Math.max(lastRecordT, mark.t);
       records.set(mark.id, attribute(mark.t));
       continue;
     }
@@ -184,6 +218,26 @@ export function attributeRecords(input: AttributionInput): AttributionResult {
   }
   applyThrough(maxT);
 
+  const closing = (inScopeOnly: boolean): string | undefined => {
+    const anchor = anchored(inScopeOnly);
+    if (anchor === undefined || firstRecordSegment !== segment) return undefined;
+    const { accountKey } = anchor;
+    const ceiling = boundaries[next]?.t;
+    let latest: AttributionView | undefined;
+    for (const view of views) {
+      if (
+        view.t >= lastRecordT &&
+        (ceiling === undefined || view.t < ceiling) &&
+        (latest === undefined || view.t >= latest.t)
+      ) {
+        latest = view;
+      }
+    }
+    return latest?.k === 'w' && latest.h === sessionAccountHash(accountKey)
+      ? accountKey
+      : undefined;
+  };
+
   let logOffset = input.logOffset;
   let lastObs = input.carry.lastObs;
   for (const entry of input.observations) {
@@ -192,10 +246,13 @@ export function attributeRecords(input: AttributionInput): AttributionResult {
     logOffset = entry.end;
     lastObs = viewOf(entry.observation, input.bindingHash) ?? lastObs;
   }
+  const closingAccount = closing(true);
   return {
     records,
     carry: { anchorAt, changedAt, lastOrgAt, boundaryAt, inherited, lastObs },
     logOffset,
+    closingAccount,
+    unscopedAccount: closingAccount === undefined ? closing(false) : undefined,
   };
 }
 

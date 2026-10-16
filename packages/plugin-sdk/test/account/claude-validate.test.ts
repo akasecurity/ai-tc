@@ -277,6 +277,13 @@ describe('anything that bills the session elsewhere vetoes it', () => {
     vi.stubEnv('ANTHROPIC_BASE_URL', `https://${otherHost()}`);
     expect(hook(machine.context(), T0 + 11 * SECOND).check).toEqual({ none: 'veto' });
   });
+
+  it('vetoes an account the user enrolled by hand as well', () => {
+    const enrolled = machine.context({ manual: [key()] });
+    expect(hook(enrolled).check).toEqual({ key: key(), basis: 'manual' });
+    vi.stubEnv(CLAUDE_CREDENTIAL_ENV[0], randomUUID());
+    expect(hook(enrolled, T0 + 11 * SECOND).check).toEqual({ none: 'veto' });
+  });
 });
 
 describe('the env can confirm or veto the login file', () => {
@@ -342,6 +349,44 @@ describe('the gate', () => {
       key: key(),
       basis: 'manual',
     });
+  });
+});
+
+describe('an account enrolled by hand', () => {
+  const enrolled = (): AccountContext => machine.context({ manual: [key()] });
+  const manual = (): { key: string; basis: 'manual' } => ({ key: key(), basis: 'manual' });
+
+  beforeEach(() => {
+    workLogin({ organizationType: 'claude_max' });
+    repliedUnder();
+  });
+
+  it('is checked at the next hook of a session already running, with no new boundary', () => {
+    expect(hook().check).toEqual({ none: 'plan' });
+    expect(lastLogLine()).toMatchObject({ kind: 'view', k: 'n' });
+    expect(hook(enrolled(), T0 + 11 * SECOND).check).toEqual(manual());
+    expect(lastLogLine()).toMatchObject({ kind: 'view', k: 'w', bd: machine.bindingHash });
+    const boundaries = readObservations(machine.stateDir, sid).entries.filter(
+      (entry) => classifyObservation(entry.observation).kind === 'boundary',
+    );
+    expect(boundaries).toHaveLength(1);
+  });
+
+  it('keeps the first prompt of a new session local', () => {
+    writeLines(machine.transcript, [userPromptLine(sid, 'hello', T0 + SECOND)]);
+    expect(hook(enrolled()).check).toEqual({ none: 'no-session-account' });
+  });
+
+  it('ends when a different org appears under the same boundary', () => {
+    expect(hook(enrolled()).check).toEqual(manual());
+    appendLines(machine.transcript, [credentialOrgLine(sid, randomUUID(), T0 + 4 * SECOND)]);
+    expect(hook(enrolled(), T0 + 11 * SECOND).check).toEqual({ none: 'org-changed' });
+  });
+
+  it('is refused while the login file cannot be read', () => {
+    expect(hook(enrolled()).check).toEqual(manual());
+    machine.writeConfig('not a login file');
+    expect(hook(enrolled(), T0 + 11 * SECOND).check).toEqual({ none: 'unreadable' });
   });
 });
 

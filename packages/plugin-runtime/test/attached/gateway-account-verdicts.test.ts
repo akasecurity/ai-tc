@@ -290,6 +290,51 @@ describe('the attached gateway forwards by account, repository first', () => {
   });
 });
 
+describe('a leaf is held to its session root', () => {
+  it('forwards the account-keyed reply under an account-keyed root, and under no other root', async () => {
+    attachScoped();
+    const gateway = resolveGatewayForConfig(configFor());
+    try {
+      const byAccount = stampScopeKey(gateway, PERSONAL_REPO, WORK_ACCOUNT);
+      const byRepository = stampScopeKey(gateway, PERSONAL_REPO);
+      expect(byAccount).toBe(agentKeyOf(record().scopeTag, WORK_ACCOUNT));
+      expect(byRepository).toBe(PERSONAL_REPO);
+      for (const [session, rootKey] of [
+        ['rooted-by-account', byAccount],
+        ['rooted-by-repository', byRepository],
+      ] as const) {
+        await gateway.recordAuditEvent({
+          id: session,
+          eventType: 'session',
+          startedAt: new Date().toISOString(),
+          attributes: { harness: 'claude-code', scope_key: rootKey },
+        });
+        await gateway.recordLlmCalls(
+          (
+            [
+              ['account', byAccount],
+              ['repository', byRepository],
+            ] as const
+          ).map(([name, key]) => ({
+            sessionId: session,
+            messageId: `${session}-${name}`,
+            parentId: session,
+            rootSessionId: session,
+            startedAt: new Date().toISOString(),
+            attributes: { model: 'example-model', scope_key: key },
+          })),
+        );
+      }
+    } finally {
+      await gateway.close();
+    }
+    expect(sent.audit.map((event) => event.id)).toEqual(['rooted-by-account']);
+    expect(sent.auditBatches.flat().map((event) => event.id)).toEqual([
+      llmCallId('rooted-by-account', 'rooted-by-account-account'),
+    ]);
+  });
+});
+
 describe('admit, on the gateway the factory builds', () => {
   it("names the identity record's binding", async () => {
     attachScoped();
@@ -372,6 +417,19 @@ describe('which gateways offer an account scope', () => {
     } finally {
       await gateway.close();
     }
+  });
+
+  it('a scoped credential with no identity record forwards a session in an enrolled repository only', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), SCOPED_CREDENTIAL);
+    const gateway = resolveGatewayForConfig(configFor());
+    try {
+      expect(await produce(gateway, 'enrolled', WORK_REPO, WORK_ACCOUNT)).toBe(WORK_REPO);
+      expect(await produce(gateway, 'elsewhere', PERSONAL_REPO, WORK_ACCOUNT)).toBe(PERSONAL_REPO);
+    } finally {
+      await gateway.close();
+    }
+    expect(forwarded('enrolled')).toEqual(ALL);
+    expect(forwarded('elsewhere')).toEqual(NONE);
   });
 
   it('a machine credential offers none, and stamps the repository key whatever the account', async () => {

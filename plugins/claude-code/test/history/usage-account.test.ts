@@ -3,7 +3,13 @@ import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { applyOnboarding, dbPath as dbPathOf, sessionAccountsDir } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  dbPath as dbPathOf,
+  llmCallId,
+  sessionAccountsDir,
+  SqliteAuditEventsRepository,
+} from '@akasecurity/persistence';
 import {
   createPolicyStore,
   handleSessionStart,
@@ -25,8 +31,14 @@ import {
 } from '../../src/history/usage.ts';
 import { recordStopObservation, resolveHookAccount } from '../../src/hooks/account-stamp.ts';
 import { runSessionStart } from '../../src/hooks/session-start-run.ts';
-import type { Device, Transcript } from '../helpers/account-fixture.ts';
-import { device, isAgentKeyFor, PERSONAL_KEY, WORK_KEY } from '../helpers/account-fixture.ts';
+import type { Device, LoginOptions, Transcript } from '../helpers/account-fixture.ts';
+import {
+  device,
+  isAgentKeyFor,
+  OTHER_EMAIL,
+  PERSONAL_KEY,
+  WORK_KEY,
+} from '../helpers/account-fixture.ts';
 import type { Sent } from '../helpers/recording-client.ts';
 
 // The hooks and the reconcile open the gateway the plugin's factory builds; only
@@ -145,6 +157,21 @@ function rootAttributes(t: Transcript): Record<string, unknown> | null {
       .prepare("SELECT attributes FROM audit_events WHERE event_type = 'session' AND id = :id")
       .get({ id: t.sessionId }) as { attributes: string | null } | undefined;
     return row?.attributes == null ? null : (JSON.parse(row.attributes) as Record<string, unknown>);
+  } finally {
+    db.close();
+  }
+}
+
+/** The time one session's root is stored with. */
+function rootStartedAt(t: Transcript): number | undefined {
+  const db = new DatabaseSync(dbPathOf(dev.base), { readOnly: true });
+  try {
+    const row = db
+      .prepare(
+        "SELECT started_at AS startedAt FROM audit_events WHERE event_type = 'session' AND id = :id",
+      )
+      .get({ id: t.sessionId }) as { startedAt: number } | undefined;
+    return row?.startedAt;
   } finally {
     db.close();
   }
@@ -521,6 +548,389 @@ describe('reconcileSessionTail — sessions that are not work subscriptions', ()
     await stopAt(next, 25);
     expect(isAgentKeyFor(keysOf(next, 'session')[0], dev.workOrg)).toBe(true);
     expect(isAgentKeyFor(keysOf(next, 'llm_call')[0], dev.workOrg)).toBe(true);
+  });
+});
+
+describe('reconcileSessionTail — the root of a session whose first reply is not attributed', () => {
+  const TOOL = { name: 'Bash', input: { command: 'ls' } };
+
+  // The login file shows no plan when the session starts, so the root is left to
+  // the reconcile. The first prompt's hook still sees no plan; the plan then
+  // appears and the first reply is written with no hook between, so no account is
+  // attributed to it. The hook that follows it, and the whole second turn, are.
+  async function firstTurn(t: Transcript, cwd: string, planAppears = true): Promise<string> {
+    await start(t, 0);
+    await hookAt(t, 1);
+    t.prompt(at(1));
+    if (planAppears) dev.login({ org: dev.workOrg });
+    t.org(dev.workOrg, at(2));
+    const reply = t.reply(at(3), cwd, TOOL);
+    await hookAt(t, 4);
+    return reply;
+  }
+
+  async function secondTurn(t: Transcript, cwd: string, s = 5): Promise<string> {
+    await hookAt(t, s);
+    t.prompt(at(s));
+    const reply = t.reply(at(s + 2), cwd, TOOL);
+    await hookAt(t, s + 3);
+    return reply;
+  }
+
+  const messageOf = (t: Transcript, reply: string): string =>
+    llmCallId(t.sessionId, `msg_${reply}`);
+
+  beforeEach(() => {
+    dev.attach();
+    dev.login({ org: dev.workOrg, organizationType: null });
+  });
+
+  it('keys the root by the account of the first reply attributed to one, so the later replies forward', async () => {
+    const t = dev.transcript(randomUUID());
+    await firstTurn(t, dev.personal);
+    expect(rootAttributes(t)).toBeNull();
+    const second = await secondTurn(t, dev.personal);
+    await stopAt(t, 12);
+    expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    const [early, late] = keysOf(t, 'llm_call');
+    expect(early).toBe(PERSONAL_KEY);
+    expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+    const [earlyTool, lateTool] = keysOf(t, 'tool_call');
+    expect(earlyTool).toBe(PERSONAL_KEY);
+    expect(isAgentKeyFor(lateTool, dev.workOrg)).toBe(true);
+    expect(sentRows('session')).toHaveLength(1);
+    expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, second)]);
+    expect(sentRows('tool_call')).toHaveLength(1);
+    expect(dev.sent.inventory).toHaveLength(1);
+  });
+
+  it('keeps the root on the repository key of the first reply when no reply is attributed', async () => {
+    const t = dev.transcript(randomUUID());
+    await firstTurn(t, dev.personal, false);
+    await secondTurn(t, dev.work);
+    await stopAt(t, 12);
+    expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+    expect(rootAttributes(t)?.cwd).toBe(dev.personal);
+    expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY, WORK_KEY]);
+    expect(keysOf(t, 'tool_call')).toEqual([PERSONAL_KEY, WORK_KEY]);
+    expect(dev.sent.audit).toEqual([]);
+  });
+
+  it('keys the root by the first reply when that reply is attributed, whatever the later replies are', async () => {
+    dev.login({ org: dev.workOrg });
+    const t = dev.transcript(randomUUID());
+    await firstTurn(t, dev.personal);
+    await secondTurn(t, dev.work);
+    await stopAt(t, 12);
+    expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    expect(rootAttributes(t)?.cwd).toBe(dev.personal);
+    const replies = keysOf(t, 'llm_call');
+    expect(isAgentKeyFor(replies[0], dev.workOrg)).toBe(true);
+    expect(replies[1]).toBe(WORK_KEY);
+    expect(sentRows('llm_call')).toHaveLength(2);
+  });
+
+  it('forwards an unattributed first reply run in an enrolled repository under its repository key', async () => {
+    const t = dev.transcript(randomUUID());
+    const first = await firstTurn(t, dev.work);
+    const second = await secondTurn(t, dev.personal);
+    await stopAt(t, 12);
+    expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    const [early, late] = keysOf(t, 'llm_call');
+    expect(early).toBe(WORK_KEY);
+    expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+    expect(sentRows('llm_call').map((row) => row.id)).toEqual(
+      expect.arrayContaining([messageOf(t, first), messageOf(t, second)]),
+    );
+    expect(sentRows('llm_call')).toHaveLength(2);
+    expect(sentRows('tool_call')).toHaveLength(2);
+  });
+
+  it('describes the root by the reply it is keyed from, and starts it at the first reply', async () => {
+    const t = dev.transcript(randomUUID());
+    await firstTurn(t, dev.work);
+    await secondTurn(t, dev.personal);
+    await stopAt(t, 12);
+    const root = rootAttributes(t);
+    expect(root?.cwd).toBe(dev.personal);
+    expect(root?.repo).toBe('example-dev/notes');
+    expect(root?.project).toBe('notes');
+    expect(rootStartedAt(t)).toBe(ms(3));
+  });
+
+  it('writes no root while the first reply waits for its closing observation, then keys it from the first attributed reply', async () => {
+    dev.login({ org: dev.workOrg });
+    await learnTheWorkOrg();
+    dev.unreadableLogin();
+    const t = dev.transcript(randomUUID());
+    await start(t, 100);
+    await hookAt(t, 101);
+    t.prompt(at(101));
+    dev.login({ org: dev.workOrg });
+    t.org(dev.workOrg, at(102));
+    t.reply(at(103), dev.personal, TOOL);
+    await pass(t, 104);
+    expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+      offset: 0,
+      pending: { passes: 1 },
+    });
+    expect(rootAttributes(t)).toBeNull();
+    expect(keysOf(t, 'llm_call')).toEqual([]);
+    await secondTurn(t, dev.personal, 106);
+    await stopAt(t, 112);
+    expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    const [early, late] = keysOf(t, 'llm_call');
+    expect(early).toBe(PERSONAL_KEY);
+    expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+    expect(sentRows('llm_call')).toHaveLength(1);
+  });
+
+  describe('when the first reply calls no tool', () => {
+    // The login file shows no plan at the first prompt's hook and the work login at
+    // Stop, and no hook follows the reply, so Stop's login view is the only view
+    // after it.
+    async function untooledFirstTurn(
+      t: Transcript,
+      cwd: string,
+      replyOrg = dev.workOrg,
+    ): Promise<string> {
+      await start(t, 0);
+      await hookAt(t, 1);
+      t.prompt(at(1));
+      dev.login({ org: dev.workOrg });
+      t.org(replyOrg, at(2));
+      return t.reply(at(3), cwd);
+    }
+
+    it('keys the root by the account the session is in at Stop, so the replies of the next turn forward', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      await learnTheWorkOrg();
+      await stopAt(t, 4);
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+      expect(rootAttributes(t)?.cwd).toBe(dev.personal);
+      expect(rootStartedAt(t)).toBe(ms(3));
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+      expect(sentRows('session').map((row) => row.id)).toEqual([t.sessionId]);
+      expect(dev.sent.inventory).toHaveLength(1);
+      expect(sentRows('llm_call')).toEqual([]);
+      const second = await secondTurn(t, dev.personal);
+      await stopAt(t, 12);
+      const [early, late] = keysOf(t, 'llm_call');
+      expect(early).toBe(PERSONAL_KEY);
+      expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+      expect(keysOf(t, 'session')).toHaveLength(1);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, second)]);
+      expect(sentRows('tool_call')).toHaveLength(1);
+    });
+
+    it('holds the pass while no check has put the account key in scope, then keys the root by the account of the next turn', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      await stopAt(t, 4);
+      expect(dev.learnedKeys()).toEqual([]);
+      expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+        offset: 0,
+        pending: { passes: 1 },
+      });
+      expect(rootAttributes(t)).toBeNull();
+      expect(keysOf(t, 'llm_call')).toEqual([]);
+      expect(dev.sent.audit).toEqual([]);
+      expect(dev.sent.inventory).toEqual([]);
+      const second = await secondTurn(t, dev.personal);
+      await stopAt(t, 12);
+      expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+      expect(rootAttributes(t)?.cwd).toBe(dev.personal);
+      const [early, late] = keysOf(t, 'llm_call');
+      expect(early).toBe(PERSONAL_KEY);
+      expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+      expect(sentRows('session').map((row) => row.id)).toEqual([t.sessionId]);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, second)]);
+      expect(sentRows('tool_call')).toHaveLength(1);
+      expect(dev.sent.inventory).toHaveLength(1);
+    });
+
+    it('holds a resumed session whose root is still unwritten the same way', async () => {
+      const t = dev.transcript(randomUUID());
+      await start(t, 0);
+      await start(t, 1, 'resume');
+      await hookAt(t, 2);
+      t.prompt(at(2));
+      dev.login({ org: dev.workOrg });
+      t.org(dev.workOrg, at(3));
+      t.reply(at(4), dev.personal);
+      await stopAt(t, 5);
+      expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+        offset: 0,
+        pending: { passes: 1 },
+      });
+      expect(rootAttributes(t)).toBeNull();
+      const second = await secondTurn(t, dev.personal, 6);
+      await stopAt(t, 13);
+      expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, second)]);
+    });
+
+    it('writes the root with the repository key once three passes have held, and holds no later pass', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      await stopAt(t, 4);
+      for (const s of [5, 6]) await pass(t, s);
+      expect(readOffset(dev.dataDir, t.sessionId).pending?.passes).toBe(3);
+      expect(keysOf(t, 'llm_call')).toEqual([]);
+      await pass(t, 7);
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(dev.sent.audit).toEqual([]);
+      t.prompt(at(8));
+      t.reply(at(9), dev.personal);
+      await stopAt(t, 10);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY, PERSONAL_KEY]);
+      expect(dev.sent.audit).toEqual([]);
+    });
+
+    it('does not hold a pass whose read of the session root fails, and writes the root with the repository key', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      const read = vi
+        .spyOn(SqliteAuditEventsRepository.prototype, 'sessionProvider')
+        .mockImplementationOnce(() => {
+          throw new Error('the store cannot be read');
+        });
+      try {
+        await stopAt(t, 4);
+        expect(read.mock.results[0]?.type).toBe('throw');
+      } finally {
+        read.mockRestore();
+      }
+      expect(dev.learnedKeys()).toEqual([]);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(readOffset(dev.dataDir, t.sessionId).offset).toBeGreaterThan(0);
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+      expect(dev.sent.audit).toEqual([]);
+    });
+
+    it('writes the root with the repository key when the reply is more than fifteen minutes old', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      recordStopObservation(dev.config(), t.sessionId, dev.personal, () => ms(4));
+      await pass(t, 3 + 16 * 60);
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+      expect(dev.sent.audit).toEqual([]);
+    });
+
+    it('counts a pass held for the key and a pass held for a closing observation against the same three', async () => {
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal);
+      await stopAt(t, 4);
+      const held = readOffset(dev.dataDir, t.sessionId).pending;
+      expect(held).toEqual({ passes: 1, since: ms(4) });
+      await hookAt(t, 5);
+      t.prompt(at(5));
+      t.reply(at(7), dev.personal);
+      await pass(t, 8);
+      expect(dev.learnedKeys()).toEqual([`claude:${dev.workOrg}`]);
+      expect(readOffset(dev.dataDir, t.sessionId)).toMatchObject({
+        offset: 0,
+        pending: { passes: 2, since: ms(4) },
+      });
+      expect(rootAttributes(t)).toBeNull();
+      await hookAt(t, 9);
+      await pass(t, 10);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(isAgentKeyFor(keysOf(t, 'session')[0], dev.workOrg)).toBe(true);
+    });
+
+    it('does not hold a session whose root the session start wrote in an enrolled repository', async () => {
+      const t = dev.transcript(randomUUID());
+      await start(t, 0, 'startup', dev.work);
+      expect(keysOf(t, 'session')).toEqual([WORK_KEY]);
+      await hookAt(t, 1);
+      t.prompt(at(1));
+      dev.login({ org: dev.workOrg });
+      t.org(dev.workOrg, at(2));
+      const first = t.reply(at(3), dev.work);
+      await stopAt(t, 4);
+      expect(dev.learnedKeys()).toEqual([]);
+      expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+      expect(keysOf(t, 'session')).toEqual([WORK_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([WORK_KEY]);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, first)]);
+    });
+
+    const NOT_THE_WORK_LOGIN: readonly (readonly [string, (org: string) => LoginOptions])[] = [
+      ['another email', (org) => ({ org, email: OTHER_EMAIL })],
+      ['a personal plan', (org) => ({ org, organizationType: 'claude_pro' })],
+    ];
+
+    it.each(NOT_THE_WORK_LOGIN)(
+      'keeps the repository key on the root when the login at Stop shows %s, and a later turn does not re-key it',
+      async (_name, loginAtStop) => {
+        const t = dev.transcript(randomUUID());
+        await untooledFirstTurn(t, dev.personal);
+        await learnTheWorkOrg();
+        dev.login(loginAtStop(dev.workOrg));
+        await stopAt(t, 4);
+        expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+        expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+        expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+        expect(dev.sent.audit).toEqual([]);
+        expect(dev.sent.inventory).toEqual([]);
+        dev.login({ org: dev.workOrg });
+        await secondTurn(t, dev.personal);
+        await stopAt(t, 12);
+        expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      },
+    );
+
+    it('keeps the repository key on the root when the latest work view is for another org than the one the reply ran under', async () => {
+      const otherWorkOrg = randomUUID();
+      const t = dev.transcript(randomUUID());
+      await untooledFirstTurn(t, dev.personal, otherWorkOrg);
+      await learnTheWorkOrg();
+      dev.login({ org: otherWorkOrg });
+      const earlier = dev.transcript(randomUUID());
+      await start(earlier, 0);
+      await turn(earlier, 1, otherWorkOrg);
+      expect(dev.learnedKeys()).toHaveLength(2);
+      dev.login({ org: dev.workOrg });
+      await stopAt(t, 4);
+      expect(isWrittenRoot(rootAttributes(t))).toBe(true);
+      expect(keysOf(t, 'session')).toEqual([PERSONAL_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+      expect(dev.sent.audit).toEqual([]);
+    });
+
+    it('keeps the repository key on the leaf and the root of a reply run in an enrolled repository', async () => {
+      const t = dev.transcript(randomUUID());
+      const first = await untooledFirstTurn(t, dev.work);
+      await learnTheWorkOrg();
+      await stopAt(t, 4);
+      expect(keysOf(t, 'session')).toEqual([WORK_KEY]);
+      expect(keysOf(t, 'llm_call')).toEqual([WORK_KEY]);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([messageOf(t, first)]);
+      const second = await secondTurn(t, dev.personal);
+      await stopAt(t, 12);
+      const [early, late] = keysOf(t, 'llm_call');
+      expect(early).toBe(WORK_KEY);
+      expect(isAgentKeyFor(late, dev.workOrg)).toBe(true);
+      expect(sentRows('llm_call').map((row) => row.id)).toEqual([
+        messageOf(t, first),
+        messageOf(t, second),
+      ]);
+    });
   });
 });
 
@@ -1090,5 +1500,116 @@ describe('reconcile rows when a stamp fails', () => {
     );
     expect(roots.map((root) => root.attributes?.scope_key)).toEqual([PERSONAL_KEY]);
     expect(leaves.map((leaf) => leaf.attributes?.scope_key)).toEqual([PERSONAL_KEY, PERSONAL_KEY]);
+  });
+});
+
+describe('reconcile root key from the accounts of the replies and of the session', () => {
+  const lines = (sessionId: string): string =>
+    [dev.personal, dev.work]
+      .map((cwd, index) =>
+        JSON.stringify({
+          type: 'assistant',
+          sessionId,
+          uuid: `reply-${String(index)}`,
+          timestamp: at(index + 1),
+          cwd,
+          message: {
+            id: `msg_${String(index)}`,
+            model: 'claude-sonnet-4-5',
+            content: [{ type: 'text', text: 'done' }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        }),
+      )
+      .join('\n');
+
+  async function rootKeyOf(
+    scope: object,
+    accountOf: ((uuid: string) => string | undefined) | undefined,
+    closingAccount?: string,
+  ): Promise<unknown> {
+    const sessionId = randomUUID();
+    const roots: AuditEventInput[] = [];
+    const gateway = {
+      ...scope,
+      ensureInventory: () => Promise.resolve({}),
+      recordAuditEvent: (event: AuditEventInput) => {
+        roots.push(event);
+        return Promise.resolve();
+      },
+      readSessionProvider: () => Promise.resolve(undefined),
+      recordLlmCalls: () => Promise.resolve(),
+    } as unknown as DataGateway;
+    const records = parseTranscriptUsage(lines(sessionId));
+    await reconcileSession(gateway, sessionId, records, { accountOf, closingAccount });
+    return roots[0]?.attributes?.scope_key;
+  }
+
+  // An agent key names the repository it was stamped from, so a case sees which
+  // reply a root is anchored on.
+  const agentKeyOf = (accountKey: string, repoKey: string | undefined): string =>
+    `agent-for-${accountKey}@${String(repoKey)}`;
+  const stampsAccounts = {
+    accountScope: () => ({
+      stamp: (repoKey: string | undefined, accountKey?: string) =>
+        accountKey === undefined ? repoKey : agentKeyOf(accountKey, repoKey),
+      admit: () => false,
+      bindingHash: 'unused',
+    }),
+  };
+  const secondReplyOnly = (uuid: string): string | undefined =>
+    uuid === 'reply-1' ? `claude:${dev.workOrg}` : undefined;
+
+  it('keys the root from the first reply when the gateway offers no account scope', async () => {
+    expect(await rootKeyOf({}, secondReplyOnly)).toBe(PERSONAL_KEY);
+  });
+
+  it('keys the root from the first reply when naming the account of a reply throws', async () => {
+    const throwing = (): string => {
+      throw new Error('the account lookup failed');
+    };
+    expect(await rootKeyOf(stampsAccounts, throwing)).toBe(PERSONAL_KEY);
+  });
+
+  it('keys the root from the first reply attributed to an account when the gateway offers a scope', async () => {
+    expect(await rootKeyOf(stampsAccounts, secondReplyOnly)).toBe(
+      agentKeyOf(`claude:${dev.workOrg}`, WORK_KEY),
+    );
+  });
+
+  describe('with no reply attributed to an account', () => {
+    const closing = `claude:${randomUUID()}`;
+    const noReply = (): undefined => undefined;
+
+    it('keys the root from the first reply, for the account the session is in', async () => {
+      expect(await rootKeyOf(stampsAccounts, noReply, closing)).toBe(
+        agentKeyOf(closing, PERSONAL_KEY),
+      );
+    });
+
+    it('leaves the root on the repository key when the session is in no account', async () => {
+      expect(await rootKeyOf(stampsAccounts, noReply)).toBe(PERSONAL_KEY);
+    });
+
+    it('keys the root for the account of the first reply attributed to one, not the account the session is in', async () => {
+      expect(await rootKeyOf(stampsAccounts, secondReplyOnly, closing)).toBe(
+        agentKeyOf(`claude:${dev.workOrg}`, WORK_KEY),
+      );
+    });
+
+    it('leaves the root on the repository key when the gateway offers no account scope', async () => {
+      expect(await rootKeyOf({}, noReply, closing)).toBe(PERSONAL_KEY);
+    });
+
+    it('leaves the root on the repository key when no reply lookup is given', async () => {
+      expect(await rootKeyOf(stampsAccounts, undefined, closing)).toBe(PERSONAL_KEY);
+    });
+
+    it('leaves the root on the repository key when the reply lookup throws', async () => {
+      const throwing = (): string => {
+        throw new Error('the account lookup failed');
+      };
+      expect(await rootKeyOf(stampsAccounts, throwing, closing)).toBe(PERSONAL_KEY);
+    });
   });
 });

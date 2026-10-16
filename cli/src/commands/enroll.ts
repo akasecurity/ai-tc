@@ -686,6 +686,22 @@ function claudeCodeDetectedLines(view: ClaudeCodeLoginView, interactive: boolean
     : `${heading}  ${key}  ${DETECTED_STATE_WORD[view.state]}\n`;
 }
 
+/** What a Claude Code session of an enrolled or recognised account still leaves to the repository rule. */
+const SESSIONS_ON_THE_REPOSITORY_RULE =
+  'The first prompt of a new session, a session that uses an API key or another provider, a reply written ' +
+  'before the device has confirmed the account, and the rest of a session whose organization changes ' +
+  'follow the repository rule.\n';
+
+const SESSIONS_UNTIL_USER_KNOWN =
+  'This device does not know yet which AKA user attached it, so a Claude Code session outside an ' +
+  'enrolled repository is not sent until it does; one inside an enrolled repository is sent under ' +
+  'the repository rule.\n';
+
+/** Whether an identity record holds for this connection: what tells the device which AKA user attached it. */
+function knowsAttachedUser(ready: Prepared): boolean {
+  return heldIdentityOf(ready) !== undefined;
+}
+
 /**
  * Each Codex state as `--list-detected` says it on a terminal. `absent` covers a
  * Codex home that cannot be used as well as a missing login file. While a key, a
@@ -782,7 +798,9 @@ function personalPlanNotice(
   if (claude !== undefined && claudeKeyIsPersonalLogin(key, claude)) {
     return (
       'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
-      `Enrolling its organization sends every Claude Code session signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n`
+      `Enrolling its organization sends the Claude Code sessions signed in to it to ${name}, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n` +
+      SESSIONS_ON_THE_REPOSITORY_RULE +
+      (knowsAttachedUser(ready) ? '' : SESSIONS_UNTIL_USER_KNOWN)
     );
   }
   if (codex !== undefined && codexKeyIsPersonalLogin(key, codex)) {
@@ -824,19 +842,19 @@ function codingAgentLines(
 ): string {
   const { name } = ready;
   return (
-    `Claude Code sessions are sent to ${name} too: every session signed in to this organization, from any folder, ` +
-    'with its folder, project and branch names, and its claude.ai chats when web chat capture is on.\n' +
-    'That starts with the next session; nothing recorded before now is sent this way, and the first prompt of ' +
-    'each new session follows the repository rule: it is sent only from an enrolled repository.\n' +
+    `Claude Code sessions signed in to this organization are sent to ${name} too, from any folder, with their ` +
+    "folder, project and branch names, and this account's claude.ai chats when web chat capture is on.\n" +
+    'A session already running starts forwarding at its next event, and a new one from its first reply on. ' +
+    SESSIONS_ON_THE_REPOSITORY_RULE +
+    'Nothing a Claude Code session recorded before this enrollment is sent this way, apart from captured ' +
+    'prompts, replies and tool results a live send could not deliver since this machine attached.\n' +
     'This is the fallback for a work subscription this device does not recognise, such as a login under another ' +
     'email, a plan Claude Code does not show, or a device a colleague approved.\n' +
     (workSubscriptionsOn(ready.settings.attachmentScope)
       ? ''
       : 'Work subscriptions are off on this device, and an account you enroll by hand still forwards, because ' +
         'the opt-out covers only automatic recognition.\n') +
-    (login?.key === key
-      ? ''
-      : 'This machine has not seen Claude Code signed in to that organization; its sessions are sent once one is.\n')
+    sessionsWaitLine(ready, key, login)
   );
 }
 
@@ -853,6 +871,21 @@ function chatgptEnrolledLines(name: string): string {
 const CODEX_NEVER_SEEN =
   'Note: this device has not seen Codex signed in to that workspace. It is sent from the first\n' +
   'new thread that is.\n';
+
+/** The first reason the account's Claude Code sessions are not sent yet, or nothing. */
+function sessionsWaitLine(
+  ready: Prepared,
+  key: string,
+  login: ClaudeCodeLoginView | undefined,
+): string {
+  if (!knowsAttachedUser(ready)) return SESSIONS_UNTIL_USER_KNOWN;
+  if (login?.state === 'unreadable') {
+    return "Claude Code's login file could not be read, so no session is sent this way until it can be.\n";
+  }
+  return login?.key === key
+    ? ''
+    : 'Claude Code is not signed in to that organization on this machine now; its sessions are sent when it is.\n';
+}
 
 /**
  * The refusal for a `--work-subscriptions` change where an administrator manages
@@ -994,6 +1027,7 @@ function onLines(name: string): string {
     'environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it ' +
     '(no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of ' +
     'the activity of a recognised session or of one signed in to an account you enroll by hand.\n' +
+    SESSIONS_ON_THE_REPOSITORY_RULE +
     'A new Codex thread signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace, under the same email ' +
     "as your AKA account, with its login saved in Codex's login file and OpenAI as the provider, sends everything it " +
     'records, from any folder, with its folder, project and branch names. A resumed thread follows ' +
@@ -1595,8 +1629,10 @@ function queuedLines(queued: number): string {
  * it recorded between attaching and enrolling, other than those captures, was
  * judged local when it happened and stays local, except what a session of a
  * recognised work subscription or of an account enrolled by hand there already
- * sent under that account's own key. Without a grant nothing
- * earlier is sent, and the line names the command that would change that.
+ * sent under that account's own key. Without a grant nothing earlier is sent
+ * but the captures a live send could not deliver since this machine attached,
+ * which are sent once the repository is enrolled, and the line names the
+ * command that would send the rest.
  * What has already aged out is gone, so no line promises everything.
  *
  * The enrollment is saved when this runs. A queue that could not be written is
@@ -1611,8 +1647,9 @@ function earlierActivity(
 ): string {
   if (!isHistorySyncConsentValid(committed.historySyncConsent, committed.controlPlane?.endpoint)) {
     return (
-      'Nothing recorded in it before now is sent. To send its earlier history as well,\n' +
-      'run `aka sync-history --on`.\n'
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and\n' +
+      'tool results a live send could not deliver since this machine attached. To send its earlier\n' +
+      'history as well, run `aka sync-history --on`.\n'
     );
   }
   const queued = seedEnrolledCapturesOwed(dataDirOf(base), added);
@@ -1660,12 +1697,15 @@ function accountEnrolledLines(committed: WorkspaceSettings, name: string): strin
 /**
  * What becomes of what was recorded in an account before it was enrolled.
  *
- * A personal device records nothing from an account that is not enrolled, so
- * anything earlier was recorded while this machine was not one. Under a
- * history-sync grant for this deployment, the captures still kept for the
- * account are marked to send, as a repository's are. Unlike a repository's, no
- * line here promises its sessions or other activity: an account's earlier
- * session was opened with no account on it, so only its captures carry the key.
+ * A personal device records nothing from an account while it is not enrolled,
+ * so anything recorded before this enrollment was recorded before this machine
+ * attached as a personal device, or while the account was enrolled before.
+ * Under a history-sync grant for this deployment, the captures still kept for
+ * the account are marked to send, as a repository's are. Without one, only the
+ * captures a live send could not deliver since this machine attached are sent.
+ * Unlike a repository's, no line here promises its sessions or other activity:
+ * an account's earlier session was opened with no account on it, so only its
+ * captures carry the key.
  */
 function earlierAccountActivity(
   base: string,
@@ -1674,8 +1714,9 @@ function earlierAccountActivity(
 ): string {
   if (!isHistorySyncConsentValid(committed.historySyncConsent, committed.controlPlane?.endpoint)) {
     return (
-      'Nothing recorded in it before now is sent. To send its earlier replies as well,\n' +
-      'run `aka sync-history --on`.\n'
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and\n' +
+      'tool results a live send could not deliver since this machine attached. To send its earlier\n' +
+      'replies as well, run `aka sync-history --on`.\n'
     );
   }
   const queued = seedEnrolledCapturesOwed(dataDirOf(base), added);

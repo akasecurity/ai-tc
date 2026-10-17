@@ -59,7 +59,10 @@ is asserted by the adapter beyond "if it is present and a string, scan it".
   this adapter's (documented: **last hook wins**), is unverified too.
 - **`tool_response`** — documented as a **string**, not an object. The value here
   is the CLI recording's own `textResultForLlm`, reused so the two surfaces'
-  fixtures describe the same command; VS Code's real wording is unknown.
+  fixtures describe the same command; VS Code's real wording is unknown. An
+  object- or array-shaped `tool_response` is not recorded either; the adapter
+  scans its string leaves through a bounded walk (`src/hooks/tool-response.ts`)
+  rather than dropping it, and reports any leaf the bounds leave out as unscanned.
 - **`source` on `SessionStart`** — the set of values it can take was not observed.
   `startup` here is a placeholder.
 - **`SubagentStart` / `SubagentStop` / `PreCompact`** carry nothing beyond the

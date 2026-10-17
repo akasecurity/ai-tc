@@ -9,6 +9,9 @@ import {
   blockMessage,
   exceptionPointer,
   tooLargeToScanMessage,
+  unscannedPastWalkLimitsMessage,
+  unscannedTooLargeMessage,
+  unscannedWorkerUnavailableMessage,
   withheldBanner,
   withheldToolText,
 } from '../src/exception-guidance.ts';
@@ -190,5 +193,59 @@ describe('tooLargeToScanMessage', () => {
       'This bash call is too large for AKA to scan within the time limit, so it was blocked. Shorten it or send it in smaller parts.',
     );
     expect(tooLargeToScanMessage('bash call')).not.toContain('aka exception');
+  });
+});
+
+// The capture-only counterpart: the field went through, so the sentence must
+// say it was not checked without claiming a block it could not carry out.
+describe('unscannedTooLargeMessage', () => {
+  it('says the content was not checked and where it went, and claims no block', () => {
+    const message = unscannedTooLargeMessage('prompt', 'it was sent to the model unchanged');
+    expect(message).toBe(
+      'AKA could not scan this prompt within the time limit because it is too large, so ' +
+        'nothing in it was checked and it was sent to the model unchanged. Shorten it or ' +
+        'send it in smaller parts to have it scanned.',
+    );
+    expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
+    expect(message).not.toContain('aka exception');
+  });
+});
+
+// The install-fault counterpart: the worker could not run, so the advice is
+// about AKA, not about the size of what was sent.
+describe('unscannedWorkerUnavailableMessage', () => {
+  it('says the worker could not run, where the content went, and to repair the install', () => {
+    const message = unscannedWorkerUnavailableMessage(
+      'prompt',
+      'it was sent to the model unchanged',
+    );
+    expect(message).toBe(
+      "AKA's scan worker could not run, so this prompt was not scanned: nothing in it was " +
+        'checked and it was sent to the model unchanged. This is a fault in AKA, not a limit ' +
+        'on what was sent: if it happens again, reinstall the AKA plugin to repair it.',
+    );
+    expect(message).not.toMatch(/shorten|smaller parts|time limit/iu);
+    expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
+    expect(message).not.toContain('aka exception');
+  });
+});
+
+// The walk-cap counterpart: the text was never collected, so the sentence must
+// not blame a time limit, and like its sibling it claims no block.
+describe('unscannedPastWalkLimitsMessage', () => {
+  it('says part of the result was past the read limits and where it went', () => {
+    const message = unscannedPastWalkLimitsMessage(
+      'bash result',
+      'the output already reached the model unchanged',
+    );
+    expect(message).toBe(
+      'Part of this bash result lies past the depth, item-count or size limits AKA reads ' +
+        'a structured result to, so that part was not checked and the output already ' +
+        'reached the model unchanged. Have the tool return less at once to have all of it ' +
+        'scanned.',
+    );
+    expect(message).not.toContain('time limit');
+    expect(message).not.toMatch(/\bblocked\b|withheld|never reached/iu);
+    expect(message).not.toContain('aka exception');
   });
 });

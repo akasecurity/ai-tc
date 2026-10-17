@@ -117,6 +117,12 @@ export const UNSAFE_TEST_ONLY_RAW_HANDLE: unique symbol = Symbol(
   'aka.persistence.unsafeTestOnlyRawHandle',
 );
 
+/** A value held in the vault, and the pointer stored in its place. */
+export interface VaultedValue {
+  raw: string;
+  pointer: string;
+}
+
 /**
  * The local SQLite store under <dir>/aka.db — the writer of events/findings
  * for the plugin/CLI. Uses the Node 24+ builtin node:sqlite (no native dep,
@@ -207,7 +213,16 @@ export interface LocalDatabase {
   // event field because the event is the wire shape, and the mapper is a
   // shared, published function whose every key is stored by whoever calls it:
   // this write is the one place the key may reach a row.
-  recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[], scopeKey?: string): void;
+  //
+  // `vaulted` names the values this capture's content holds as vault pointers.
+  // A row for the same capture written before the vault held them still
+  // carries them verbatim, so each is replaced with its pointer there too.
+  recordCapture(
+    event: IngestEvent,
+    findings: DetectedFindingWithKey[],
+    scopeKey?: string,
+    vaulted?: readonly VaultedValue[],
+  ): void;
   // Close every open at-rest finding of one rule with a `dismissed`
   // disposition, and return how many finding keys that wrote. The keys are
   // selected and their rows inserted under one `BEGIN IMMEDIATE`, which takes
@@ -756,6 +771,7 @@ export function openLocalDatabase(
     event: IngestEvent,
     detected: DetectedFindingWithKey[],
     scopeKey?: string,
+    vaulted?: readonly VaultedValue[],
   ): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
@@ -787,6 +803,15 @@ export function openLocalDatabase(
         contentHash: event.contentHash,
         attributes: captureAttributesOf(event, scopeKey),
       });
+      const values = (vaulted ?? []).filter(({ raw }) => raw !== '');
+      if (values.length > 0) {
+        const replaceValue = db.prepare(
+          'UPDATE audit_events SET content = replace(content, :raw, :pointer) WHERE id = :id',
+        );
+        for (const { raw, pointer } of values) {
+          replaceValue.run({ id: auditEventId, raw, pointer });
+        }
+      }
 
       // Definitions first, keyed by (ruleId, version) — mirrors
       // recordConfigScan's structure — so each finding resolves its

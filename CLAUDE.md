@@ -90,6 +90,12 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
 - **Copilot preToolUse** (`plugins/copilot/src/hooks/large-input.ts`): 15 s from process
   start, inside its 24 s watchdog, which resolves with silence — the no-opinion on both
   dialects.
+- **Copilot userPromptSubmitted and postToolUse** (the same `largeInputBound` and the same
+  15 s deadline, inside the same 24 s watchdog): bounded, with **no refusal half**. Neither
+  event has a prompt-stop or result-withhold channel this package has confirmed, so a field
+  that comes back `scanIncomplete` is reported on the notice channel as too large to scan
+  (`unscannedTooLargeMessage` in `plugins/copilot/src/exception-guidance.ts`) — never
+  refused, and never treated as clean.
 - **The browser extension's native host** (`captureLargeInput` in
   `plugins/browser-extension/src/native-host/host.ts`): 2 s from when it receives a prompt
   capture, with a 500 ms worker start budget drawn from it, because `background.ts`
@@ -97,27 +103,31 @@ deadline. Each sits inside whatever would otherwise answer for that path first:
   and the content script lets the original message through on an error.
 
 A field whose bounded scan times out or finds no worker comes back as a `block` with
-`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it:
-UserPromptSubmit blocks the prompt, PreToolUse denies the call — Antigravity with an
-explicit `{"decision":"deny"}`, Copilot in each dialect's own deny shape — PostToolUse
-withholds the output, and the native host answers `action: 'block'` with
-`CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner with no
-exception route, leaving the message unsent in the composer. Why: `scan()` cannot be
-interrupted (§5), so without the bound a large enough field keeps the hook busy past
-whatever answers for it — the host's timeout, a watchdog, the relay — and every one of
-those passes the call through unscanned, except Antigravity's kill, which denies it with no
-reason. Failing open there IS the gap. The refusal is a RETURNED decision, never a throw, so
-nothing else in this section changes: a throw, bad stdin, an unopenable store and a
-PostToolUse field the loop deadline never reached all still pass (silently, or with
-Antigravity's explicit allow), and a native host that does not answer at all still lets the
-message through on the relay's timeout. Anything that skips clean fields, or keys a deny on
-a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
+`CaptureResult.scanIncomplete` set and empty `findings`, and the caller REFUSES it wherever
+its host has a channel to refuse on: UserPromptSubmit blocks the prompt, PreToolUse denies
+the call — Antigravity with an explicit `{"decision":"deny"}`, Copilot in each dialect's own
+deny shape — PostToolUse withholds the output, and the native host answers `action: 'block'`
+with `CaptureResponse.scanIncomplete`, which the interceptor shows as a too-large banner
+with no exception route, leaving the message unsent in the composer. Copilot's
+userPromptSubmitted and postToolUse are the exception named above: the host sends the prompt
+and delivers the result whatever the hook answers, so they REPORT the field as unscanned
+instead. Why: `scan()` cannot be interrupted (§5), so without the bound a large enough field
+keeps the hook busy past whatever answers for it — the host's timeout, a watchdog, the relay
+— and every one of those passes the call through unscanned, except Antigravity's kill, which
+denies it with no reason. Failing open there IS the gap. The refusal is a RETURNED decision,
+never a throw, so nothing else in this section changes: a throw, bad stdin, an unopenable
+store and a PostToolUse field the loop deadline never reached all still pass (silently, or
+with Antigravity's explicit allow), and a native host that does not answer at all still lets
+the message through on the relay's timeout. Anything that skips clean fields, or keys a deny
+on a flagged rule, must read `scanIncomplete` first, because a refused field and a clean one
 both have no findings — Antigravity's and Copilot's decisions keyed their deny on a flagged
 rule, and read a refused field as clean until they did. The Claude Code, Codex, Antigravity
 and Copilot `fail-open.e2e.test.ts` drive the refusal through the built hooks with the scan
-worker removed, and the extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives
-it through the built native host — so every bundle that runs this path also has to SHIP the
-worker, since a missing one refuses every large field.
+worker removed (Copilot's also drive the unscanned report on its two capture hooks), and the
+extension's `test/native-host/scan-worker-bundle.e2e.test.ts` drives it through the built
+native host — so every bundle that runs this path also has to SHIP the worker, since a
+missing one refuses every large field (or, on those two Copilot hooks, reports every one as
+unscanned).
 
 **What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
 and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
@@ -354,7 +364,7 @@ Network access happens through child processes in every path but ONE. In all but
 
 6. The Antigravity `aka-setup` wizard's judge subprocess (`plugins/antigravity/src/triage/judge.ts`), which sends the same minimized `toJudgePayload` projection to the model API as the other two judges — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit. **This host is still weaker than the other two, and the consent copy must say so.** Its CLI documents no `exec` subcommand and no ephemeral mode, so every judge run **persists** a conversation under `~/.gemini/antigravity/brain/<conversationId>/` — the same store AKA's own backfill sweeps — which this module then deletes itself in a `finally`, best effort only (a killed process leaves it). Deletion is a local-write cleanup, **not** network isolation. Attribution for that deletion is deliberately conservative — the reported `conversation_id`, else a newly-appeared conversation only when exactly one appeared — because deleting a conversation the user started is unrecoverable while leaving a judge conversation merely re-surfaces their own known secrets. The prompt does **not** ride argv: the entrypoint is `agy --input-format stream-json --output-format stream-json` with one NDJSON `user` event on stdin, closed to end the session, so the raw values are off `ps`, off any echoed command line and off `ARG_MAX` entirely — the same stdin shape the other two judges use. The two `stream-json` formats are paired because the host documents that pairing (a streaming input against a non-streaming output emits its one envelope only as the process exits), and the consequence for `parseEnvelope` is that the verdict is one line of NDJSON rather than the whole of stdout. The same consent-copy honesty rules apply (`plugins/antigravity/skills/setup/SKILL.md`).
 
-7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, the detached `sync.js` child pulls policy, and both manual scan surfaces — `aka scan` and the dashboard's Scan page — forward the Data Shares register they just recorded (destinations and call sites, no source text; `--no-forward` skips the CLI's for one invocation). It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
+7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, the detached `sync.js` child pulls policy, and both manual scan surfaces — `aka scan` and the dashboard's Scan page — forward the Data Shares register they just recorded (destinations and call sites, no source text, and while credential sightings are shared each call site's credential references as variable names and sighting tokens; `--no-forward` skips the CLI's for one invocation). While credential sightings are shared, those two surfaces and `/aka:scan` also send `POST /v1/credential-sightings`: each secret the scan found, `.env` files included, as a sighting token (a keyed hash under the key the deployment issues) with its rule, the variable it is assigned to, its location class (a project file or a home dotfile), whether git tracks the file, and the project's digest and display name — never the value or a path; `--no-forward`, and an unticked forward on the Scan page, skip it too. It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -808,13 +818,15 @@ web-ui            → @akasecurity/persistence, @akasecurity/dashboard-ui, @akas
                      remote (the attach verb, and the Scan page's forward of the Data
                      Shares register while attached) (Next.js dashboard; reads the local
                      store in Server Components, mutates via Server Actions — no auth.
-                     The TWO network calls are the settings page verifying an access key
-                     against the deployment before it writes an attachment, and the Scan
-                     page forwarding the register it just recorded; everything else on
-                     every page is the local store)
+                     The THREE network calls are the settings page verifying an access key
+                     against the deployment before it writes an attachment, the Scan page
+                     forwarding the register it just recorded, and the Scan page sending
+                     the credential sightings it found while they are shared; everything
+                     else on every page is the local store)
 cli               → @akasecurity/schema, persistence, local-ops, detections,
                      plugin-runtime + remote (the attach verbs, and `aka scan`'s forward
-                     of the Data Shares register while attached) (the `aka` command;
+                     of the Data Shares register and of its credential sightings while
+                     attached) (the `aka` command;
                      ships the web-ui as a spawned Next server)
 
 # Plugin
@@ -854,7 +866,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      is the one module inside it that sends; everything else
                      builds requests and parses answers.
                      TWO clients, split by whether the caller holds a credential.
-                     `createRemoteClient` speaks the eleven routes an ATTACHED
+                     `createRemoteClient` speaks the twelve routes an ATTACHED
                      machine is scoped to and requires a key. `createAttachClient`
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
@@ -887,7 +899,8 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      subpath rather than off the index so the plugins' dashboard
                      launcher can reach it without inlining the bundled packs. It
                      imports node:child_process/os/path and nothing else.
-@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
+@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env;
+                     the credential sightings it finds leave through plugin-runtime)
 @akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
                      (the harness-agnostic core of the /aka:setup calibration →
                      triage → remediation flow: pure logic plus dependency-injected
@@ -954,8 +967,17 @@ changes. The gaps that exist today:
   selects the format by the event name's casing, so a manifest registering `preToolUse` and
   `PreToolUse` together spawns the hook twice per call — the second time with a payload whose
   `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
-  for. `plugins/copilot/hooks.json` therefore registers the camelCase event **alone**, and a
-  VS Code entry belongs in the file that host itself reads.
+  for. `plugins/copilot/hooks.json` therefore registers **camelCase events alone** — the four
+  it carries are `sessionStart`, `userPromptSubmitted`, `preToolUse` and `postToolUse`, each
+  once — and a VS Code entry belongs in the file that host itself reads. Of those four only
+  `preToolUse` ENFORCES. `userPromptSubmitted` and `postToolUse` capture, scan and record,
+  and pass `rewritable: false` because neither host has a prompt-stop or result-withhold
+  channel this repository has observed, so a `redact` resolves to `redactFallback` inside
+  the runtime rather than the hook claiming an enforcement the host would ignore.
+  `sessionStart` scans nothing: it opens the session root every later capture hangs off.
+  `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
+  payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records
+  every prompt twice.
   The VS Code half is built to the published contract and **confirmed against no live
   install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
   every capability it claims is marked unverified, and
@@ -973,7 +995,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote`: both for the attach verb, and both for forwarding the Data Shares register a manual scan just recorded — `aka scan` and the dashboard's Scan page — on a machine that is already attached. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote`: both for the attach verb, and both for forwarding the Data Shares register a manual scan just recorded — `aka scan` and the dashboard's Scan page — on a machine that is already attached, and both for sending that scan's credential sightings while they are shared. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 

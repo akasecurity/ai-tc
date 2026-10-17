@@ -121,6 +121,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'claudeCodeModelFromRecord',
   'codexModelFromRecord',
   'codexProviderFromModelId',
+  'composeAtRestContent',
   'computeFindingKey',
   'configPostureDefinitions',
   'contentHashOf',
@@ -168,6 +169,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'isCurrentKeyVersion',
   'isModelProhibited',
   'isProtectedScanPath',
+  'isScanVaultable',
   'isSecretBearingFileSnapshot',
   'isVendoredPath',
   'loadConfig',
@@ -183,6 +185,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'normalizeModelId',
   'offersCaptureStatusReader',
   'offersMaintenance',
+  'openScanVault',
   'prohibitedModelMessage',
   'promptRedactionLines',
   'promptRedactionMode',
@@ -204,6 +207,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'resolveAntigravityProvider',
   'resolveCodexProvider',
   'resolveConfigInventory',
+  'resolveCopilotProvider',
   'resolveEgress',
   'resolveGitBranch',
   'resolveHeadRoot',
@@ -223,6 +227,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'scanText',
   'scopeKeyMemo',
   'secretRulePartition',
+  'secretSightingsOf',
   'sessionRootScopeKey',
   'settingsDir',
   'severityFloorPosture',
@@ -239,6 +244,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'uniqueRuleIds',
   'webCaptureReport',
   'withLayer',
+  'withLiteralCredentialRefs',
 ];
 
 describe('package barrel', () => {

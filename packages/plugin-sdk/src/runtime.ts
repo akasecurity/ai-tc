@@ -18,6 +18,8 @@ import {
   strongerRedactFallback,
 } from '@akasecurity/schema';
 
+import type { AtRestVault } from './at-rest-vault.ts';
+import { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
 import { createFindingLocator, evidenceLookup } from './finding-context.ts';
@@ -194,6 +196,14 @@ export interface LargeInputScanOptions {
    * more.
    */
   remainingMs?: (() => number) | undefined;
+  /**
+   * Whether the caller refuses a field that comes back with `scanIncomplete`.
+   * The capture result is the same either way; this decides only whether the
+   * SDK writes its stderr line saying the field was refused. A hook with no
+   * channel to stop the text it observes passes `false` and reports the field
+   * as unscanned itself, so the SDK says nothing. Omitted, the line is written.
+   */
+  refuses?: boolean | undefined;
 }
 
 /**
@@ -750,6 +760,7 @@ export function createPluginRuntime(
           budgetMs: largeInput.budgetMs,
           startBudgetMs: largeInput.startBudgetMs,
           remainingMs: readRemainingMs(largeInput),
+          refuses: largeInput.refuses,
         });
         // RETURNED, never thrown: the catch below fails open, and a field that
         // could not be scanned is exactly the one the caller asked to refuse.
@@ -914,12 +925,26 @@ export function createPluginRuntime(
       // land in the store verbatim, and an attached machine would forward it.
       // `Event.content` is a required string, so the row carries '' and keeps
       // `contentHash` of the original, which is what correlates it.
+      //
+      // A whole-file capture handed a vault holds each detected secret there and
+      // stores its pointer in place of the value, whatever the action, an
+      // exception's allow included; without vault consent the vault holds
+      // nothing and the content is as above.
+      const vaulted =
+        opts.vault !== undefined &&
+        decision.scanIncomplete === undefined &&
+        input.kind === 'code_change' &&
+        filePath !== undefined &&
+        input.metadata?.wholeFile === true
+          ? await opts.vault.vaultSpans(input.text, decision.findings, {
+              selected: new Set(decision.findings.filter((match) => isScanVaultable(match))),
+              sighting: { location: filePath, kind: 'file' },
+            })
+          : new Map<MatchResult, string>();
       const storedContent =
         decision.scanIncomplete !== undefined
           ? ''
-          : maskedFindings.length > 0
-            ? redact(input.text, maskedFindings)
-            : input.text;
+          : composeAtRestContent(input.text, maskedFindings, vaulted);
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,
@@ -981,7 +1006,7 @@ export function createPluginRuntime(
         hits: decision.findings,
         evidenceOf,
         backstopRules: bundledMaskingRules(),
-        enforcedHits: new Set(maskedFindings),
+        enforcedHits: new Set([...maskedFindings, ...vaulted.keys()]),
       });
       // Mask the real secret here — no finding row ever carries the raw value,
       // whatever the action resolved to and whatever the stored content shows.
@@ -1033,6 +1058,11 @@ export function createPluginRuntime(
         findings,
         dedupe: opts.dedupe,
         ...(input.scopeKey !== undefined ? { scopeKey: input.scopeKey } : {}),
+        ...(vaulted.size > 0
+          ? {
+              vaulted: [...vaulted].map(([match, pointer]) => ({ raw: match.rawMatch, pointer })),
+            }
+          : {}),
       });
       // Thread the produced at-rest finding_keys back onto the decision (the
       // scanner's re-scan resolver diffs these against a path's previously-open
@@ -1063,6 +1093,20 @@ export function createPluginRuntime(
         const action = resolveAction(finding.ruleId, finding.category);
         return action === 'block' || action === 'redact';
       });
+    } catch {
+      return [];
+    }
+  }
+
+  async function secretsIn(text: string, context?: ScanContext): Promise<MatchResult[]> {
+    try {
+      await ensureInitialized();
+      if (!scanner) return [];
+      const shielded = shieldPointers(text);
+      const matched = await scanner.scan(shielded.text, context);
+      return withVariableNames(dropShieldedFindings(matched, shielded.spans), shielded.text).filter(
+        (finding) => finding.category === 'secret',
+      );
     } catch {
       return [];
     }
@@ -1132,6 +1176,7 @@ export function createPluginRuntime(
     capture,
     captureDeferred,
     enforcedIn,
+    secretsIn,
     rulesetFingerprint,
     scanIsolationDegraded,
     close,
@@ -1185,6 +1230,9 @@ export interface CaptureOptions extends DecisionOptions {
   // Grant ids already spent by this capture's own pointer crossing (see
   // ExceptionEvalContext.preAuthorizedGrantIds).
   preAuthorizedGrantIds?: readonly string[];
+  // For a whole-file `code_change` capture: holds each detected secret in the
+  // vault, with a `file` sighting, and stores its pointer in the event content.
+  vault?: AtRestVault | undefined;
 }
 
 // What `captureDeferred` hands back: the decision, and the write held back.
@@ -1224,6 +1272,9 @@ export interface PluginRuntime {
   // The detections in `text` whose policy resolves to block or redact, with
   // nothing spent or written (no exception consumed, no ledger row, no event).
   enforcedIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
+  // The secret-category detections in `text`, each with the variable it is
+  // assigned to, with nothing spent or written.
+  secretsIn(text: string, context?: ScanContext): Promise<MatchResult[]>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
   // True once the pulled/custom-pack regex rules were dropped mid-process

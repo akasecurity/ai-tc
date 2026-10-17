@@ -10,16 +10,21 @@ import { WATCHDOG_MS } from '../../src/hooks/shared.ts';
 
 describe('largeInputBound', () => {
   it('passes the SDK defaults through', () => {
-    expect(largeInputBound(HOOK_SCAN_DEADLINE_MS)).toMatchObject({
+    expect(largeInputBound(HOOK_SCAN_DEADLINE_MS, true)).toMatchObject({
       thresholdChars: LARGE_INPUT_THRESHOLD_CHARS,
       budgetMs: LARGE_INPUT_SCAN_BUDGET_MS,
       startBudgetMs: LARGE_INPUT_START_BUDGET_MS,
     });
   });
 
+  it('carries whether the hook refuses a field it could not scan', () => {
+    expect(largeInputBound(HOOK_SCAN_DEADLINE_MS, true).refuses).toBe(true);
+    expect(largeInputBound(HOOK_SCAN_DEADLINE_MS, false).refuses).toBe(false);
+  });
+
   it('reads what is left of one fixed deadline on every call', () => {
     let clock = 1_000;
-    const bound = largeInputBound(15_000, () => clock);
+    const bound = largeInputBound(15_000, true, () => clock);
     expect(bound.remainingMs?.()).toBe(14_000);
     // A second large field gets what the first one left, not a fresh budget.
     clock = 13_500;

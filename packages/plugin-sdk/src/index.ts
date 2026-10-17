@@ -1,3 +1,5 @@
+export type { AtRestVault, VaultSpansOptions } from './at-rest-vault.ts';
+export { composeAtRestContent, isScanVaultable } from './at-rest-vault.ts';
 export { BUNDLED_PACKS } from './bundled-packs.generated.ts';
 export type { PluginConfig } from './config.ts';
 export { applyOnboarding, loadConfig } from './config.ts';
@@ -151,6 +153,8 @@ export type {
   ResolvedCodexProvider,
 } from './provider-codex.ts';
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
+export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
+export { resolveCopilotProvider } from './provider-copilot.ts';
 export type { EgressHit } from './raw-egress.ts';
 export {
   assertRawFree,
@@ -203,6 +207,8 @@ export {
   SOURCE_EXTENSIONS,
 } from './scan-files.ts';
 export { scopeKeyMemo, sessionRootScopeKey, toolCallScopeKey } from './scope-key.ts';
+export type { SecretSightings } from './secret-sightings.ts';
+export { secretSightingsOf } from './secret-sightings.ts';
 export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
@@ -213,6 +219,7 @@ export {
   createVaultGlue,
   describePointerSafe,
   detokenizeText,
+  openScanVault,
   substituteModelPointers,
   tokenizeText,
   tokenizeValue,
@@ -283,6 +290,7 @@ export type {
   ManifestKind,
   ManifestSdkHit,
   RawEndpointHit,
+  TokenizedSecretSpan,
 } from '@akasecurity/detections';
 export {
   EGRESS_CODE_EXTENSIONS,
@@ -293,6 +301,7 @@ export {
   LOCKFILE_BASENAMES,
   manifestKindOf,
   resolveEgress,
+  withLiteralCredentialRefs,
 } from '@akasecurity/detections';
 export type { RecordProjectEgressInput } from '@akasecurity/schema';
 // Read-projection DTOs now live in @akasecurity/schema; re-exported so the SDK's public

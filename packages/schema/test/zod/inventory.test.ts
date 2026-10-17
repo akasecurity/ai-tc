@@ -6,6 +6,7 @@ import {
   AssetGroup,
   AssetSummary,
   AssetType,
+  AssetVariant,
   ConnectProjectBody,
   FileDetail,
   FileSummary,
@@ -200,6 +201,55 @@ describe('AssetSummary', () => {
 
   it('requires the type-specific meta record', () => {
     expect(AssetSummary.safeParse({ ...validAsset, meta: undefined }).success).toBe(false);
+  });
+
+  it('carries the reporting counts when a store has them, and parses without them', () => {
+    expect(AssetSummary.safeParse(validAsset).success).toBe(true);
+    const counted = AssetSummary.parse({ ...validAsset, machines: 12, variants: 2 });
+    expect(counted).toMatchObject({ machines: 12, variants: 2 });
+  });
+
+  it('refuses a negative or fractional count', () => {
+    for (const bad of [-1, 1.5]) {
+      expect(AssetSummary.safeParse({ ...validAsset, machines: bad }).success).toBe(false);
+      expect(AssetSummary.safeParse({ ...validAsset, variants: bad }).success).toBe(false);
+    }
+  });
+});
+
+// ─── AssetVariant ─────────────────────────────────────────────────────────────
+
+describe('AssetVariant', () => {
+  const variant = {
+    machines: 3,
+    sub: 'MCP server · http · api.example.test',
+    description: null,
+    flags: [],
+    meta: { url: 'https://api.example.test/mcp' },
+  };
+
+  it('parses a variant with and without hostnames', () => {
+    expect(AssetVariant.safeParse(variant).success).toBe(true);
+    expect(AssetVariant.parse({ ...variant, hosts: ['alice-mbp', 'bob-mbp'] }).hosts).toEqual([
+      'alice-mbp',
+      'bob-mbp',
+    ]);
+  });
+
+  it('names at most five hostnames', () => {
+    const hosts = (n: number) => Array.from({ length: n }, (_, i) => `host-${String(i)}`);
+
+    expect(AssetVariant.safeParse({ ...variant, hosts: hosts(5) }).success).toBe(true);
+    expect(AssetVariant.safeParse({ ...variant, hosts: hosts(6) }).success).toBe(false);
+  });
+
+  it('needs at least one machine behind it', () => {
+    expect(AssetVariant.safeParse({ ...variant, machines: 0 }).success).toBe(false);
+  });
+
+  it('keeps a flag to the Flag vocabulary', () => {
+    expect(AssetVariant.safeParse({ ...variant, flags: ['risk'] }).success).toBe(true);
+    expect(AssetVariant.safeParse({ ...variant, flags: ['nope'] }).success).toBe(false);
   });
 });
 
@@ -489,6 +539,20 @@ describe('AssetDetail (trust/tools omitted for non-mcp)', () => {
       expect(result.data.trust).toBe('unapproved');
       expect(result.data.tools).toHaveLength(1);
     }
+  });
+
+  it('carries the reporting counts and the variants an asset is seen as, all optional', () => {
+    expect(AssetDetail.safeParse(validMcpDetail).success).toBe(true);
+    const seen = AssetDetail.parse({
+      ...validMcpDetail,
+      machines: 12,
+      variants: 2,
+      seenOn: [
+        { machines: 10, sub: 'a', description: null, flags: [], meta: {}, hosts: ['alice-mbp'] },
+        { machines: 2, sub: 'b', description: null, flags: ['risk'], meta: {} },
+      ],
+    });
+    expect(seen.seenOn?.map((v) => v.machines)).toEqual([10, 2]);
   });
 
   it('parses a skill asset with trust null and no tools — non-MCP assets carry trust null', () => {

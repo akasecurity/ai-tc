@@ -1,11 +1,8 @@
 'use client';
 
-// Right pane shown when a non-project asset (skill / MCP server / hook / config)
-// is selected: status chips, description, MCP trust classifier + exposed tools,
-// related finding, metadata grid and context-specific actions. Takes the
-// `AssetDetail` as a prop and reports a trust change through its callback — the
-// host owns both the load and the write. The per-type action buttons are visual
-// affordances only — no update/approve/disable operations exist.
+// Right pane for one skill / MCP server / hook / config file: status, description,
+// the type's own detail fields, the MCP trust classifier and exposed tools, and
+// per-type actions. The per-type action buttons are visual affordances only.
 import type {
   AssetDetail as AssetDetailShape,
   AssetType,
@@ -15,83 +12,171 @@ import type {
 import { Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode, useId, useState } from 'react';
 
-import { FlagChips, RadioCardList, Section, TrustPill } from './chips.tsx';
-import { assetTile, TRUST, TRUST_ORDER } from './data.ts';
+import { BackButton, FlagChips, RadioCardList, Section, TrustPill } from './chips.tsx';
+import { assetTile, fmtDateTime, metaText, TRUST, TRUST_ORDER, typeMeta } from './data.ts';
 import { Ico } from './Ico.tsx';
 import { type IconName } from './icons.ts';
 
-const TYPE_LABEL: Record<Exclude<AssetType, 'project'>, string> = {
-  skill: 'Skill',
-  mcp: 'MCP server',
-  hook: 'Hook',
-  config: 'Configuration file',
+type AssetKind = Exclude<AssetType, 'project'>;
+
+/** The labelled `meta` fields each type shows, in order. */
+const DETAIL_FIELDS: Record<AssetKind, [key: string, label: string][]> = {
+  skill: [
+    ['source', 'Source'],
+    ['scope', 'Scope'],
+    ['installedVersion', 'Installed'],
+    ['latestVersion', 'Latest'],
+    ['updatedAt', 'Updated'],
+    ['pluginName', 'Plugin'],
+  ],
+  mcp: [
+    ['transport', 'Transport'],
+    ['url', 'URL'],
+    ['command', 'Command'],
+    ['scope', 'Scope'],
+    ['envKeys', 'Environment keys'],
+    ['pluginName', 'Plugin'],
+    ['marketplace', 'Marketplace'],
+    ['project', 'Project'],
+  ],
+  hook: [
+    ['event', 'Event'],
+    ['matcher', 'Matcher'],
+    ['scope', 'Scope'],
+    ['status', 'State'],
+    ['pluginName', 'Plugin'],
+  ],
+  config: [
+    ['kind', 'Kind'],
+    ['scope', 'Scope'],
+    ['path', 'Path'],
+    ['entryCount', 'Entries'],
+    ['updatedAt', 'Changed'],
+  ],
 };
+
+/** `meta` keys a type renders outside the details grid (code block, description). */
+const SHOWN_ELSEWHERE: Record<AssetKind, string[]> = {
+  skill: [],
+  mcp: [],
+  hook: ['command', 'warnings'],
+  config: ['detail'],
+};
+
+const DATE_KEYS = new Set(['updatedAt']);
+
+/** "entryCount" → "Entry count". */
+function humanize(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function detailFields(
+  asset: AssetDetailShape,
+  locale: string,
+): [key: string, label: string, value: string][] {
+  const known = asset.type === 'project' ? [] : DETAIL_FIELDS[asset.type];
+  const elsewhere = asset.type === 'project' ? [] : SHOWN_ELSEWHERE[asset.type];
+  const skip = new Set([...known.map(([k]) => k), ...elsewhere]);
+  const format = (key: string): string | null => {
+    const text = metaText(asset.meta, key);
+    if (text === null || !DATE_KEYS.has(key) || Number.isNaN(Date.parse(text))) return text;
+    return fmtDateTime(text, locale);
+  };
+  const out: [string, string, string][] = [];
+  for (const [key, label] of known) {
+    const value = format(key);
+    if (value !== null) out.push([key, label, value]);
+  }
+  for (const key of Object.keys(asset.meta)) {
+    if (skip.has(key)) continue;
+    const value = format(key);
+    if (value !== null) out.push([key, humanize(key), value]);
+  }
+  return out;
+}
 
 export function AssetDetail({
   asset,
   onTrust,
-  onClose,
+  onBack,
+  backLabel,
+  locale,
   trustRefusal,
 }: {
   asset: AssetDetailShape;
   onTrust: (v: TrustLevel) => void;
-  // Present only when the asset was opened from a harness — closes back to that
-  // harness's overview. Omitted in the by-type view, where there's no harness.
-  onClose?: (() => void) | undefined;
+  /** Returns to the table this asset was opened from. */
+  onBack: () => void;
+  /** What the back button returns to, e.g. "Claude Code" or "Skills". */
+  backLabel: string;
+  /** The locale dates are formatted in. */
+  locale: string;
   /**
-   * Set when the MCP trust control cannot be operated by the host: the
-   * picker renders offered-and-disabled with this text as the reason, and
-   * `onTrust` is never called. Absent ⇒ identical to today. Meaningful
-   * only for an MCP asset — there is no trust picker to refuse for any
-   * other asset type, and every other button this view renders
-   * (`actionsFor` below) is a visual affordance with no operation behind
-   * it, so it stays untouched either way.
+   * Set when the MCP trust control cannot be operated by the host: the picker
+   * renders offered-and-disabled with this text as the reason, and `onTrust` is
+   * never called. Only an MCP asset has a trust picker.
    */
   trustRefusal?: string | undefined;
 }) {
   const isMcp = asset.type === 'mcp';
   const trust = asset.trust; // null for non-MCP assets
   const tile = assetTile(asset.type);
-  const typeLabel = TYPE_LABEL[asset.type as Exclude<AssetType, 'project'>];
   const trustReasonId = useId();
+  const command = asset.type === 'hook' ? metaText(asset.meta, 'command') : null;
+  const fields = detailFields(asset, locale);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* header */}
       <div className="flex items-center gap-3 border-b border-border px-5 py-3.5">
+        <BackButton onBack={onBack} backLabel={backLabel} />
         <span
-          className={cn('grid size-8.5 shrink-0 place-items-center rounded-lg', tile.bg, tile.fg)}
+          className={cn('grid size-10 shrink-0 place-items-center rounded-lg', tile.bg, tile.fg)}
         >
-          <Ico name={tile.icon} className="size-4.5" />
+          <Ico name={tile.icon} className="size-5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-sm font-semibold text-text" title={asset.name}>
+          <div className="truncate font-mono text-base font-semibold text-text" title={asset.name}>
             {asset.name}
           </div>
-          <div className="mt-px text-xs text-text-3">{typeLabel}</div>
+          <div className="mt-px text-xs text-text-3">{typeMeta(asset.type).one}</div>
         </div>
-        {onClose && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Back to harness"
-            title="Back to harness"
-            onClick={onClose}
-          >
-            <Ico name="x" />
-          </Button>
-        )}
       </div>
 
-      {/* body */}
-      <div className="flex min-h-0 flex-1 flex-col gap-4.5 overflow-y-auto p-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
         <div className="flex flex-wrap items-center gap-2">
           {isMcp && trust && <TrustPill value={trust} />}
-          <FlagChips flags={asset.flags} />
+          {(asset.flags.length > 0 || !isMcp) && <FlagChips flags={asset.flags} />}
         </div>
 
         {asset.description && (
-          <div className="text-sm leading-relaxed text-text-2">{asset.description}</div>
+          <div className="max-w-prose text-sm leading-relaxed text-text-2">{asset.description}</div>
+        )}
+
+        {command && (
+          <pre className="whitespace-pre-wrap break-all rounded-lg border border-border bg-surface-2 px-3.5 py-3 font-mono text-xs leading-relaxed text-text">
+            {command}
+          </pre>
+        )}
+
+        {fields.length > 0 && (
+          <Section label="Details">
+            <dl className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-x-6 gap-y-4">
+              {fields.map(([key, label, value]) => (
+                <div key={key}>
+                  <dt className="mb-1 text-label font-semibold uppercase tracking-wider text-text-3">
+                    {label}
+                  </dt>
+                  <dd className="wrap-break-word font-mono text-xs font-medium text-text">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </Section>
         )}
 
         {isMcp && trust && (
@@ -111,10 +196,7 @@ export function AssetDetail({
 
         {asset.finding && (
           <Section label="Related finding">
-            <button
-              type="button"
-              className="flex w-full items-center gap-2.5 rounded-lg border border-border bg-sev-critical-fill px-3 py-2.5 text-left"
-            >
+            <div className="flex w-full items-center gap-2.5 rounded-lg border border-border bg-sev-critical-fill px-3 py-2.5">
               <Ico name="alert" className="size-4 shrink-0 text-sev-critical-ink" />
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-semibold text-text">{asset.finding.title}</div>
@@ -122,23 +204,9 @@ export function AssetDetail({
                   <div className="mt-0.5 font-mono text-xs text-text-3">{asset.finding.note}</div>
                 )}
               </div>
-              <Ico name="chevron-right" className="size-4 shrink-0 text-text-3" />
-            </button>
+            </div>
           </Section>
         )}
-
-        <Section label="Details">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">
-            {Object.entries(asset.meta).map(([k, v]) => (
-              <div key={k}>
-                <div className="mb-1 text-label font-semibold uppercase tracking-wider text-text-3">
-                  {k}
-                </div>
-                <div className="wrap-break-word font-mono text-xs font-medium">{String(v)}</div>
-              </div>
-            ))}
-          </div>
-        </Section>
 
         {isMcp && asset.tools && (
           <ToolsSection tools={asset.tools} blocked={trust === 'unapproved'} />
@@ -238,7 +306,7 @@ interface Action {
 function actionsFor(asset: AssetDetailShape, trust: TrustLevel | null): ReactNode {
   let actions: Action[];
   if (asset.type === 'skill') {
-    const latest = typeof asset.meta.Latest === 'string' ? asset.meta.Latest : '';
+    const latest = metaText(asset.meta, 'latestVersion') ?? '';
     actions = asset.flags.includes('update')
       ? [
           { key: 'u', primary: true, icon: 'arrow-up', label: `Update to ${latest}`.trim() },

@@ -1,5 +1,5 @@
 // Shared detail-pane primitives used across the findings / detections /
-// data-shares drawers and the inventory file drawer. Generic (no domain
+// data-shares drawers and the inventory details pages. Generic (no domain
 // imports) so any detail view can compose them — kept here at the package root
 // rather than inside a single domain view.
 import { cn } from '@akasecurity/ui-kit';

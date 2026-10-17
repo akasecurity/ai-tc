@@ -303,7 +303,7 @@ export interface SharesReadPort {
  * (the route/page maps that to a not-found).
  *
  * There is no harness-events read here: the local model has no enforcement-event
- * source yet, so the HarnessOverview "recent blocks" list is a fixed empty
+ * source yet, so the HarnessInventory "recent blocks" list is a fixed empty
  * constant the page passes directly (no port method pretending to be a live
  * query). Add it back when a real scanner records events.
  */

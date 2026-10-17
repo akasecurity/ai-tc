@@ -20,7 +20,7 @@
 // would pass every case below; the first case drives a component formatted
 // with a bare toLocaleString() through the same harness and requires the
 // mismatch to be reported.
-import { HarnessOverview, PolicyStatsView, SyncPanelView } from '@akasecurity/dashboard-ui';
+import { HarnessInventory, PolicyStatsView, SyncPanelView } from '@akasecurity/dashboard-ui';
 import type {
   ActivitySession,
   ActivitySessionSummary,
@@ -316,7 +316,7 @@ describe('a de-DE reader on an en-US server', () => {
 
   it('hydrates the inventory event times without a mismatch', () => {
     const result = hydrate(() =>
-      createElement(HarnessOverview, {
+      createElement(HarnessInventory, {
         harness: {
           id: 'claudecode',
           label: 'Claude Code',
@@ -339,8 +339,7 @@ describe('a de-DE reader on an en-US server', () => {
             },
           ],
         },
-        onSelect: () => undefined,
-        onSelectProject: () => undefined,
+        onOpen: () => undefined,
         renderedAt: RENDERED_AT,
         locale: READER,
       }),

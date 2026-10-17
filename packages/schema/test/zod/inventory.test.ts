@@ -230,6 +230,13 @@ describe('AssetVariant', () => {
     ]);
   });
 
+  it('names at most five hostnames', () => {
+    const hosts = (n: number) => Array.from({ length: n }, (_, i) => `host-${String(i)}`);
+
+    expect(AssetVariant.safeParse({ ...variant, hosts: hosts(5) }).success).toBe(true);
+    expect(AssetVariant.safeParse({ ...variant, hosts: hosts(6) }).success).toBe(false);
+  });
+
   it('needs at least one machine behind it', () => {
     expect(AssetVariant.safeParse({ ...variant, machines: 0 }).success).toBe(false);
   });

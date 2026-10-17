@@ -79,16 +79,15 @@ export const AssetSummary = z
     /**
      * The endpoints currently reporting the asset. Omitted by a store that does
      * not record who reports what. In a list the count stops at 100, so 100
-     * means "100 or more", and an endpoint reporting under two harnesses counts
-     * twice; an asset detail carries the exact number.
+     * means "100 or more"; an asset detail carries the exact number.
      */
     machines: z.number().int().nonnegative().optional(),
     /**
      * How many distinct sets of display fields those reports carry. More than
      * one means the endpoints disagree about the asset (a server pointed at two
-     * different URLs, a skill at two versions). Omitted with `machines`. In a
-     * list it is counted over the first 100 reports, so it can undercount on a
-     * larger fleet; an asset detail carries the exact number.
+     * different URLs, a skill at two versions). Omitted with `machines`. A list
+     * may count only a bounded sample of the reports, so it can undercount; an
+     * asset detail carries the exact number.
      */
     variants: z.number().int().nonnegative().optional(),
   })
@@ -236,7 +235,7 @@ export const AssetVariant = z
     /** Type-specific raw key/values, as in `AssetDetail.meta`. */
     meta: z.record(z.string(), z.unknown()),
     /** Up to five hostnames of the endpoints reporting this variant, when they are known. */
-    hosts: z.array(z.string()).optional(),
+    hosts: z.array(z.string()).max(5).optional(),
   })
   .meta({ id: 'AssetVariant' });
 export type AssetVariant = z.infer<typeof AssetVariant>;

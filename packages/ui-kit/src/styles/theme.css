@@ -54,7 +54,7 @@
      Which fill a field takes follows from a second rule: A FIELD'S FILL IS ALWAYS
      A STEP OFF THE FILL UNDER IT. Card, DialogContent and SheetContent are all
      --color-surface, so a field inside one is bg-surface-2 — Input, SelectTrigger,
-     and the Detections / Inventory / ProjectPane / Sessions search inputs and the
+     and the Detections / Inventory / Sessions search inputs and the
      Activity harness filter. A field on the page CANVAS is bg-surface instead,
      because in light the canvas and --color-surface-2 are the same hex.
 

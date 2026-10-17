@@ -76,6 +76,8 @@ export const AssetSummary = z
     flags: z.array(Flag),
     /** MCP servers only — omitted for all other types. */
     trust: TrustLevel.optional(),
+    /** Type-specific raw key/values (source, versions, event, transport, path, …). */
+    meta: z.record(z.string(), z.unknown()),
   })
   .meta({ id: 'AssetSummary' });
 export type AssetSummary = z.infer<typeof AssetSummary>;
@@ -216,8 +218,6 @@ export const AssetDetail = AssetSummary.extend({
   description: z.string().nullable(),
   /** trustLevel | null — null for non-MCP assets. */
   trust: TrustLevel.nullable(),
-  /** Type-specific raw key/values — FE renders the grid. */
-  meta: z.record(z.string(), z.unknown()),
   /** always present — object when there is an active finding, null when absent. */
   finding: AssetFindingRef.nullable(),
   /** MCP exposed-tools list — omitted for non-mcp. */
@@ -307,7 +307,7 @@ export type ProjectTreeResponse = z.infer<typeof ProjectTreeResponse>;
 // ─── Shape 14: FileDetail ────────────────────────────────────────────────────
 
 /**
- * Powers the per-file detail drawer.
+ * One file's detail, as the per-file read returns it.
  * Extends FileSummary with project context and findingsRefs.
  */
 export const FileDetail = FileSummary.extend({

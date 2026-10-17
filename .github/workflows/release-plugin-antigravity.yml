@@ -4,9 +4,11 @@ name: Release plugin (Antigravity)
 # repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
 # Release. The plugin's hook scripts are a build artifact
 # (plugins/antigravity/scripts/, git-ignored) — they are generated here and shipped
-# inside the package, never committed. End users install via the `ai-tc` marketplace,
-# whose source resolves this package from public npm (GitHub Packages requires auth
-# even for public reads, so it is a secondary artifact, not the marketplace source).
+# inside the package, never committed. Antigravity has no marketplace: end users
+# unpack the public npm package (`npm pack @akasecurity/ai-tc-antigravity`) and
+# install it from that local directory with `agy plugin install ./package`. GitHub
+# Packages requires auth even for public reads, so it is a secondary artifact, not
+# the install source.
 #
 # Release flow: bump version in package.json + plugin.json (Antigravity reads its
 # manifest from the plugin ROOT, not a dotted dir), then

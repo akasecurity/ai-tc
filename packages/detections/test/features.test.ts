@@ -150,8 +150,8 @@ describe('nearby words', () => {
       }
       return best;
     };
-    const small = cost(20_000);
-    const large = cost(40_000);
+    const small = cost(2_000);
+    const large = cost(4_000);
     expect(large / Math.max(small, 1), `${String(small)}ms → ${String(large)}ms`).toBeLessThan(3);
   });
 

@@ -167,7 +167,8 @@ export interface AttachedDataGatewayDeps {
   dataDir: string;
   /**
    * The key a forwarded variable name is hashed under: the deployment's current
-   * sighting key. Defaults to reading it from `dataDir`; `undefined` (not attached,
+   * sighting key. Defaults to reading it from the ~/.aka base above `dataDir`
+   * (`dirname(dataDir)`); `undefined` (not attached,
    * no key yet, unreadable custody) forwards the inspection without a name hash.
    */
   readNameKey?: () => SightingKey | undefined;

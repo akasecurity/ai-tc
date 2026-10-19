@@ -1157,11 +1157,8 @@ export class AttachedDataGateway
   // The scan is forwarded in two requests: the `config_scan` audit event, then
   // the inventory `items` to the config-items route (`forwardConfigInventory`).
   //
-  // The posture `definitions`/`findings` stay on the device. The plane does not
-  // need them: it runs the same posture rules over the hooks the items carry.
-  // `RecordAuditEventRequest.inspections` is documented as tool-call findings,
-  // and a posture finding's `maskedMatch` holds the matched command, so carrying
-  // them would widen what crosses the wire rather than fix a gap.
+  // The posture `definitions`/`findings` stay on the device; only the event and
+  // the items are sent.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
     // NO KEY, BY DESIGN, so a scoped attachment keeps every config scan local.

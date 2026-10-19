@@ -1,6 +1,7 @@
 import type { ConfigScanRecord, InventoryInput } from '@akasecurity/schema';
 import {
   CONFIG_INVENTORY_BATCH_MAX,
+  CONFIG_INVENTORY_BATCH_MAX_BYTES,
   CONFIG_INVENTORY_ITEM_MAX_CHARS,
   ConfigInventoryRequest,
 } from '@akasecurity/schema';
@@ -122,6 +123,26 @@ describe('configInventoryRequests', () => {
       expect(request).not.toHaveProperty('complete');
       expect(request.projectKey).toBe(PROJECT_KEY);
       expect(ConfigInventoryRequest.safeParse(request).success).toBe(true);
+    }
+  });
+
+  it('splits a scan over the byte cap, and marks none of the parts complete', () => {
+    const description = 'd'.repeat(CONFIG_INVENTORY_ITEM_MAX_CHARS - 200);
+    const items = Array.from({ length: 300 }, (_, i) => ({
+      ...skill,
+      identityKey: `local|big-${String(i)}`,
+      attributes: { ...skill.attributes, description },
+    }));
+
+    const requests = configInventoryRequests(record({ items }));
+
+    expect(requests.length).toBeGreaterThan(1);
+    expect(requests.flatMap((request) => request.items)).toEqual(items);
+    for (const request of requests) {
+      expect(Buffer.byteLength(JSON.stringify(request.items), 'utf8')).toBeLessThanOrEqual(
+        CONFIG_INVENTORY_BATCH_MAX_BYTES,
+      );
+      expect(request).not.toHaveProperty('complete');
     }
   });
 

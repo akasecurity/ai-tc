@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveConfigInventory } from '../src/config-inventory.ts';
@@ -101,6 +102,7 @@ describe('resolveConfigInventory — project key', () => {
     writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
 
     const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.sourceTool).toBe(SOURCE_TOOL.ClaudeCode);
     expect(scan.projectKey).toBe(project);
     expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
   });
@@ -116,6 +118,49 @@ describe('resolveConfigInventory — project key', () => {
     const scan = resolveConfigInventory({ cwd: project, homeDir: home });
     expect(scan.projectKey).toBe('https://github.com/acme/app.git');
     expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+  });
+});
+
+describe('resolveConfigInventory — sources it could not read', () => {
+  it('records nothing for sources that are absent', () => {
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toEqual([]);
+  });
+
+  it('records a malformed marketplace manifest', () => {
+    const manifest = join(home, '.claude', 'plugins', 'known_marketplaces.json');
+    write(manifest, '{ "acme": { "installLocation": ');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.errors.map((e) => e.source)).toEqual([manifest]);
+  });
+
+  it('records a settings file it cannot read, once', () => {
+    // A directory where the file should be: reading it fails with EISDIR.
+    const settings = join(home, '.claude', 'settings.json');
+    mkdirSync(settings, { recursive: true });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.errors.filter((e) => e.source === settings)).toHaveLength(1);
+  });
+
+  it('records a skills directory it cannot list', (ctx) => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) {
+      ctx.skip('directory permissions are not enforced here');
+    }
+    const skills = join(home, '.claude', 'skills');
+    write(join(skills, 'pdf', 'SKILL.md'), '---\nname: pdf\n---\n');
+    chmodSync(skills, 0o000);
+    try {
+      const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+      expect(scan.skills).toEqual([]);
+      expect(scan.errors.map((e) => e.source)).toEqual([skills]);
+    } finally {
+      chmodSync(skills, 0o755);
+    }
   });
 });
 

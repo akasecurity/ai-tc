@@ -378,9 +378,9 @@ export async function handleSessionStart(
 // were seen by, hung off the session root. Fail-open like everything on this
 // path.
 //
-// The record names the session's harness only for a Claude Code session, the
-// harness whose configuration the scan reads; an attached gateway reports the
-// items under that harness and sends none for a record without one.
+// The record names the session's harness only when the scan read that harness's
+// configuration; an attached gateway reports the items under that harness and
+// sends none for a record without one.
 async function recordConfigInventory(
   gateway: DataGateway,
   input: SessionStartInput,
@@ -399,7 +399,7 @@ async function recordConfigInventory(
       scanEvent: buildConfigScanEvent(input.sessionId, scan),
       definitions: configPostureDefinitions(),
       findings,
-      ...(input.tool === SOURCE_TOOL.ClaudeCode && ctx.harness !== undefined
+      ...(scan.sourceTool === input.tool && ctx.harness !== undefined
         ? { harness: ctx.harness }
         : {}),
       ...(scan.projectKey === undefined ? {} : { projectKey: scan.projectKey }),

@@ -199,12 +199,13 @@ server and configuration file, with its name, scope, file path and the plugin or
 marketplace it came from; a skill's description, version and modification time;
 a hook's event, matcher, command and timeout, and an MCP server's transport and
 command or URL, each command and URL with any secret the bundled detection rules
-find masked and a URL's credentials and query values removed; the names of an
-MCP server's environment variables, never their values; a configuration file's
-kind, modification time and a summary of its shape (key names, line and entry
-counts), never its contents; and the repository's remote URL, or the working
-directory where it has none, that the project's own items belong to. A machine
-attached with `--scoped` keeps this configuration on the machine.
+find masked, and an MCP server's URL also stripped of its credentials and query
+values; the names of an MCP server's environment variables, never their values;
+a configuration file's kind, modification time and a summary of its shape (key
+names, line and entry counts), never its contents; and the repository's remote
+URL, or the working directory where it has none, that the project's own items
+belong to. A machine attached with `--scoped` keeps this configuration on the
+machine.
 
 On a personal device, Claude Code and Codex sessions signed in to a work
 subscription forward beyond what is enrolled. A Claude Code session counts

@@ -16,6 +16,7 @@
 import * as z from 'zod';
 
 import { ActionTaken, Span } from './finding.ts';
+import { SourceTool } from './harness-map.ts';
 import type { TrustLevel } from './inventory.ts';
 import {
   AuditEventInput,
@@ -123,7 +124,8 @@ export type ConfigFileScanEntry = z.infer<typeof ConfigFileScanEntry>;
 // source file becomes an entry here (and a note in the scan event's attributes),
 // never a throw out of the scanner. `projectKey` is the repository identity the
 // scan folded into its project and local scope entries: the repository's remote
-// url, else the working directory.
+// url, else the working directory. `sourceTool` is the harness whose
+// configuration the scan read.
 export const ConfigScanResult = z.object({
   scannedAt: z.iso.datetime(),
   skills: z.array(SkillScanEntry),
@@ -132,6 +134,7 @@ export const ConfigScanResult = z.object({
   configFiles: z.array(ConfigFileScanEntry),
   errors: z.array(z.object({ source: z.string(), reason: z.string() })),
   projectKey: z.string().min(1).optional(),
+  sourceTool: SourceTool.optional(),
 });
 export type ConfigScanResult = z.infer<typeof ConfigScanResult>;
 
@@ -397,6 +400,10 @@ export const CONFIG_INVENTORY_BATCH_MAX = 2000;
 
 // The longest one item may be, as JSON.
 export const CONFIG_INVENTORY_ITEM_MAX_CHARS = 16_384;
+
+// The most UTF-8 bytes one request's items may take as JSON; a larger scan is
+// sent in several requests.
+export const CONFIG_INVENTORY_BATCH_MAX_BYTES = 4 * 1024 * 1024;
 
 export const ConfigInventoryItemType = z.enum(['skill', 'hook', 'mcp_server', 'config_file']);
 export type ConfigInventoryItemType = z.infer<typeof ConfigInventoryItemType>;

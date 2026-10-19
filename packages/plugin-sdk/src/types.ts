@@ -27,7 +27,10 @@ export interface CaptureInput {
   occurredAt?: string | undefined;
   metadata?: EventMetadata | undefined;
   // The event's scope key: the canonical `host/owner/repo` of the repository
-  // the text came from (see resolveRepoAttribution). It is absent when there is
+  // the text came from (see resolveRepoAttribution), or, for a coding-agent
+  // session signed in to a recognised work account outside any enrolled
+  // repository, that account's agent key (`agent:<scopeTag>:<account key>`),
+  // which the plugin runtime's account scope stamps. It is absent when there is
   // none: a scratch directory, a repo with no forge remote, or a producer that
   // knows no working directory. `''` counts as absent.
   //

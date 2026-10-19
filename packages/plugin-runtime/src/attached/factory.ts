@@ -1,11 +1,28 @@
 import { hostname } from 'node:os';
 
-import { readControlPlaneCredential } from '@akasecurity/persistence';
+import {
+  bindingHashOf,
+  codingScopeExtras,
+  readBoundAttachedIdentity,
+  readControlPlaneCredential,
+  recordValidatedWorkAccount,
+} from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
-import { attachmentModeOf, isAttached, resolveScope } from '@akasecurity/schema';
+import type { AttachedIdentity, ResolvedAttachmentScope } from '@akasecurity/schema';
+import {
+  attachmentModeOf,
+  isAttached,
+  isAttachmentScopeValid,
+  isWebAccountKey,
+  parseAttachmentScope,
+  resolveScope,
+  workSubscriptionsOn,
+} from '@akasecurity/schema';
 
+import type { AccountScope, AccountScopeContext } from '../account-scope.ts';
+import { createAccountScope } from '../account-scope.ts';
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
 import { AttachedDataGateway } from './gateway.ts';
@@ -80,14 +97,29 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     // valid only for the endpoint the connection names. Resolved per gateway
     // and never cached, so an enrollment change reaches the next resolve.
     //
+    // A scoped attachment's scope also holds the coding-agent keys derived from
+    // the identity record bound to this credential (`codingScopeExtras`): one per
+    // work account the device recognised, while work subscriptions are on, and
+    // one per account enrolled by hand for coding sessions. A machine attachment
+    // reads no identity record. The account scope, when the identity record
+    // holds, is built over the same keys.
+    //
     // Inside the `try` on purpose: a throw while resolving lands in the catch
     // below and returns the LOCAL gateway, which forwards nothing. That is the
     // safe direction for a scoping fault, and no client has been built yet.
-    const attachment = resolveScope({
-      mode: attachmentModeOf(credential),
-      scope: config.settings.attachmentScope,
-      endpoint: connection.endpoint,
-    });
+    const mode = attachmentModeOf(credential);
+    const resolved = resolveScope(
+      { mode, scope: config.settings.attachmentScope, endpoint: connection.endpoint },
+      mode === 'machine' ? [] : codingScopeExtras(config.dataDir, config.settings, credential),
+    );
+    // The gateway's own copy of the keys. `admit` adds to it, for this process
+    // only, the account it is given, and every verdict reads it.
+    const keys = new Set(resolved.keys);
+    const attachment: ResolvedAttachmentScope = { mode: resolved.mode, keys };
+    const account =
+      resolved.mode === 'scoped'
+        ? accountScopeFor(config, connection.endpoint, credential, keys)
+        : undefined;
 
     const client = createRemoteClient({
       endpoint: connection.endpoint,
@@ -111,6 +143,7 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
       forward,
       attachment,
+      ...(account === undefined ? {} : { account }),
       // What the session-start line names the deployment, read from the
       // connection this gateway forwards to, never from the credential.
       deploymentName: deploymentNameForTerminal(connection),
@@ -159,5 +192,94 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     // breaking the session. `local` is already built and is exactly what this
     // returns, so no credential reached a client that was not constructed.
     return local;
+  }
+}
+
+/** The credential the factory reads, as `readControlPlaneCredential` returns it. */
+type HeldCredential = NonNullable<ReturnType<typeof readControlPlaneCredential>>;
+
+/**
+ * What a scoped attachment's identity record says for the credential in force:
+ * the record, its binding hash, and the context the account scope exposes.
+ * Undefined when no record holds for this credential: without one there is no
+ * attached user and no scope tag, so no coding-agent key to stamp.
+ */
+function boundAccountOf(
+  config: PluginConfig,
+  endpoint: string,
+  credential: HeldCredential,
+):
+  | {
+      readonly record: AttachedIdentity;
+      readonly bindingHash: string;
+      readonly context: AccountScopeContext;
+    }
+  | undefined {
+  const record = readBoundAttachedIdentity(config.dataDir, endpoint, credential);
+  if (record === undefined) return undefined;
+  const scope = config.settings.attachmentScope;
+  const stored = isAttachmentScopeValid(scope, endpoint) ? parseAttachmentScope(scope) : undefined;
+  return {
+    record,
+    bindingHash: bindingHashOf(record.endpoint, record.credentialDigest, record.attachedUserDigest),
+    context: {
+      attachedUserDigest: record.attachedUserDigest,
+      workSubscriptionsOn: workSubscriptionsOn(scope),
+      learned: record.workAccounts,
+      manual: (stored?.entries ?? [])
+        .filter((entry) => entry.kind === 'account' && entry.codingAgents === true)
+        .map((entry) => entry.identity),
+    },
+  };
+}
+
+/**
+ * The account scope of a scoped attachment, over `keys`, or undefined when no
+ * identity record holds. It carries the record's context, and writes a learned
+ * account with this gateway's own credential, which callers of the scope do not
+ * hold.
+ */
+function accountScopeFor(
+  config: PluginConfig,
+  endpoint: string,
+  credential: HeldCredential,
+  keys: Set<string>,
+): AccountScope | undefined {
+  const bound = boundAccountOf(config, endpoint, credential);
+  if (bound === undefined) return undefined;
+  const { record, bindingHash, context } = bound;
+  return createAccountScope({
+    keys,
+    scopeTag: record.scopeTag,
+    bindingHash,
+    context,
+    learn: (accountKey) =>
+      context.workSubscriptionsOn && isWebAccountKey(accountKey)
+        ? recordValidatedWorkAccount(config.dataDir, { endpoint, credential, key: accountKey })
+        : 'refused',
+  });
+}
+
+/**
+ * The account context and binding hash the account scope would carry, read
+ * without opening a gateway. The same credential and identity record the
+ * factory reads; undefined unless this machine is attached scoped and the record
+ * holds. Total.
+ */
+export function readAccountScope(
+  config: PluginConfig,
+): { readonly context: AccountScopeContext; readonly bindingHash: string } | undefined {
+  try {
+    if (!isAttached(config.settings)) return undefined;
+    const connection = config.settings.controlPlane;
+    if (connection === undefined) return undefined;
+    const credential = readControlPlaneCredential(config.settingsDir, connection);
+    if (credential === null || attachmentModeOf(credential) !== 'scoped') return undefined;
+    const bound = boundAccountOf(config, connection.endpoint, credential);
+    return bound === undefined
+      ? undefined
+      : { context: bound.context, bindingHash: bound.bindingHash };
+  } catch {
+    return undefined;
   }
 }

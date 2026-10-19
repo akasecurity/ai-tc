@@ -183,37 +183,98 @@ describe('bundled rules survive adversarial input', () => {
     },
   );
 
-  it('measures a breach again on a fresh thread at its interpreted cost', async () => {
-    // The re-measurement is only worth having if it still pays what a hook
-    // pays: the pattern's first, interpreted run. So the fresh-thread reading
-    // is compared with what the SAME probe costs on this thread once the
-    // pattern is compiled, rather than with the budget — a ratio of two runs of
-    // one probe on one machine, which faster hardware moves on both sides.
-    //
-    // The pattern is walked on this thread first, which is the state every
-    // rule is in when its in-process walk has just breached. A worker that
-    // measured the compiled tier, or a re-measurement taken on this thread,
-    // reads the compiled cost and a ratio near 1. Measured on an arm64 Mac at
-    // 7.4-7.8x (122-130ms against 16.5-16.8ms), against a bound of 3.
+  // The re-measurement is only worth having if it still pays what a hook
+  // pays: the pattern's first, interpreted run. So the fresh-thread reading is
+  // compared with what the SAME probe costs on this thread once the pattern is
+  // compiled, rather than with the budget — a ratio of two runs of one probe
+  // on one machine, which faster hardware moves on both sides.
+  //
+  // The pattern is walked on this thread first, which is the state every rule
+  // is in when its in-process walk has just breached. A worker that measured
+  // the compiled tier, or a re-measurement taken on this thread, reads the
+  // compiled cost and a ratio near 1. Measured on an arm64 Mac at 7.4-7.8x
+  // (122-130ms against 16.5-16.8ms), against a bound of 3.
+  //
+  // On a clock that advances in whole steps the compiled cost can read 0, and
+  // three times 0 is a bound any reading clears. So the compiled reading is
+  // floored at one step before it is multiplied. A fresh-thread reading under
+  // that bound fails when the compiled reading was itself at least a step,
+  // since both were then measured; when it was under a step, the clock is too
+  // coarse to tell the two tiers apart, and the case is skipped saying so.
+  const FRESH_THREAD_RATIO = 3;
+
+  function freshThreadVerdict(
+    isolatedMs: number,
+    compiledMs: number,
+    stepMs: number,
+  ): { verdict: 'cold' | 'compiled' | 'unmeasurable'; boundMs: number } {
+    const boundMs = Math.max(compiledMs, stepMs) * FRESH_THREAD_RATIO;
+    if (isolatedMs > boundMs) return { verdict: 'cold', boundMs };
+    return { verdict: compiledMs < stepMs ? 'unmeasurable' : 'compiled', boundMs };
+  }
+
+  it.each([
+    ['cold against a compiled reading of one step', 125, 16, 16, 'cold'],
+    ['cold against a compiled reading of zero, floored at the step', 125, 0, 16, 'cold'],
+    ['compiled against a compiled reading of zero', 40, 0, 16, 'unmeasurable'],
+    ['compiled against a measured compiled reading', 64, 48, 16, 'compiled'],
+    ['compiled on a fine clock', 70, 65, 0.001, 'compiled'],
+  ] as const)(
+    'the fresh-thread verdict reads %s',
+    (_label, isolatedMs, compiledMs, stepMs, verdict) => {
+      expect(freshThreadVerdict(isolatedMs, compiledMs, stepMs).verdict).toBe(verdict);
+    },
+  );
+
+  async function checkFreshThread(
+    skip: (reason: string) => void,
+    stepMs: number,
+    clockName: string,
+  ): Promise<void> {
     const parsed = parseRegexRule('^(a+)+bc');
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    worstProbeMs(parsed.data, threadCpuMs);
-    const isolated = await walkInIsolation(parsed.data);
+    const stepped: ProbeClock = () =>
+      stepMs > 0 ? Math.floor(threadCpuMs() / stepMs) * stepMs : threadCpuMs();
+    worstProbeMs(parsed.data, stepped);
+    // A fixed step of zero means the clock as it is, measured at its own
+    // resolution; a forced step is the resolution by construction.
+    const isolated = await walkInIsolation(parsed.data, stepMs);
     expect(isolated.probe.length, 'the fresh-thread walk attributed no probe').toBeGreaterThan(0);
     let compiledMs = Infinity;
     for (let i = 0; i < 5; i++) {
-      const start = threadCpuMs();
+      const start = stepped();
       scan(isolated.probe, [parsed.data]);
-      compiledMs = Math.min(compiledMs, threadCpuMs() - start);
+      compiledMs = Math.min(compiledMs, stepped() - start);
+    }
+    const resolutionMs = stepMs > 0 ? stepMs : THREAD_CPU_RESOLUTION_MS;
+    const { verdict, boundMs } = freshThreadVerdict(isolated.ms, compiledMs, resolutionMs);
+    const readings =
+      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on its ` +
+      `${String(isolated.probeLength)}-char probe, which reads ${compiledMs.toFixed(1)}ms on this ` +
+      `thread compiled, on ${clockName} (step ${resolutionMs.toFixed(3)}ms, bound ` +
+      `${boundMs.toFixed(1)}ms)`;
+    if (verdict === 'unmeasurable') {
+      skip(
+        `${readings}: the compiled run read under one clock step, so this clock cannot tell it apart from the interpreted one`,
+      );
+      return;
     }
     expect(
-      isolated.ms,
-      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on its ` +
-        `${String(isolated.probeLength)}-char probe, which costs ${compiledMs.toFixed(1)}ms on ` +
-        `this thread compiled; a re-measurement that is not paying the interpreted cost clears ` +
-        `every breach the in-process walk finds.`,
-    ).toBeGreaterThan(compiledMs * 3);
+      verdict,
+      `${readings}; a re-measurement that is not paying the interpreted cost clears every ` +
+        `breach the in-process walk finds.`,
+    ).toBe('cold');
+  }
+
+  it('measures a breach again on a fresh thread at its interpreted cost', async (ctx) => {
+    await checkFreshThread((reason) => ctx.skip(reason), 0, 'thread CPU time');
+  });
+
+  it('measures it so on a CPU clock that advances in 16ms steps', async (ctx) => {
+    // The Windows runner's clock, imposed on both threads, so this case runs
+    // on every machine rather than only where that clock is native.
+    await checkFreshThread((reason) => ctx.skip(reason), 16, 'a 16ms-step thread CPU clock');
   });
 });
 

@@ -337,6 +337,10 @@ describe('mergeOverlappingSameRule', () => {
       // and then compared plain numbers would read two uses per finding and
       // pass any ratio. Counted: 4,997 uses for 1,000 findings and 49,997 for
       // 10,000 (10.0x), against exactly two per finding for that conversion.
+      // The honest merge uses ~5 per finding on this already-sorted input, so a
+      // legitimate change that uses fewer — skipping the sort for sorted input,
+      // a comparator that reads only `start` — can approach this floor; revisit
+      // the floor then rather than deleting the case.
       expect(usesToMerge(SMALL)).toBeGreaterThanOrEqual(SMALL * 3);
       expect(usesToMerge(LARGE)).toBeGreaterThanOrEqual(LARGE * 3);
     });

@@ -25,10 +25,14 @@ export interface IsolatedWalk {
  *
  * The thread's CPU clock is not charged with the GC and compiler threads, nor
  * with whatever the test's own thread did, and nothing else runs on it.
+ *
+ * `stepMs` makes that clock read in whole steps of that size, which is how a
+ * caller exercises what a tick-credited CPU clock (16ms on Windows) would
+ * report. Zero, the default, reads it as it is.
  */
-export function walkInIsolation(rule: Rule): Promise<IsolatedWalk> {
+export function walkInIsolation(rule: Rule, stepMs = 0): Promise<IsolatedWalk> {
   const worker = new Worker(new URL('./isolated-walk-worker.ts', import.meta.url), {
-    workerData: rule,
+    workerData: { rule, stepMs },
   });
   return new Promise<IsolatedWalk>((resolve, reject) => {
     worker.once('message', (walk: IsolatedWalk) => {

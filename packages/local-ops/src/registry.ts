@@ -94,7 +94,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     name: 'GitHub Copilot',
     sourceTool: SOURCE_TOOL.Copilot,
     description:
-      'Hooks GitHub Copilot CLI sessions to detect sensitive data in shell commands and file writes.',
+      'Hooks GitHub Copilot CLI sessions to record and scan prompts, tool calls, and tool results, and to block shell commands.',
     npmPackage: '@akasecurity/ai-tc-copilot',
     // NO pluginName/marketplace/cliBin, for the same reason as Antigravity:
     // `copilot plugin install` is given a LOCAL DIRECTORY here, and an entry

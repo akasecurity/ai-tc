@@ -205,27 +205,32 @@ export {
 // Components, depending on the host.
 export { PolicyDetailView, PolicyListView, PolicyStatsView } from './policies/PoliciesView.tsx';
 
-// Inventory views — props-driven register of every locally-governed asset
-// (harnesses → skills/MCP/hooks/config, projects → files with per-file LLM
-// access). The nav + panes take data + callbacks; the apps supply data (via
-// client hooks or Server Components + Server Actions, depending on the host) and
-// own the selection/file-browser state. Icon identity is data-driven
-// via the local Ico registry (./inventory/icons.ts).
-// Only the view components + EmptyState + the data-driven <Ico> and the shared
-// selection resolver are public; the data descriptors, chips and icon registry
-// stay module-internal so a future rename is a private refactor, not a break.
+// Inventory views — props-driven register of every locally-governed asset: a
+// left nav of harnesses or asset types, a table per harness or type, and a
+// details page per project or asset. The apps supply the data and own the
+// selection. Icon identity is data-driven via the local Ico registry
+// (./inventory/icons.ts). Only the views, EmptyState, the data-driven <Ico>, the
+// selection model and the row helpers a host needs are public; the descriptors,
+// chips and icon registry stay module-internal.
 export { AssetDetail } from './inventory/AssetDetail.tsx';
-export { EmptyState } from './inventory/chips.tsx';
+export { EmptyState, DetailFallback as InventoryDetailFallback } from './inventory/chips.tsx';
 export {
+  DEFAULT_SELECTION as DEFAULT_INVENTORY_SELECTION,
+  type InventoryItem,
   type InventoryNavData,
+  type InventoryRow,
   type Selection as InventorySelection,
+  typeMeta as inventoryTypeMeta,
+  type InventoryView,
   resolveInventorySelection,
+  rowType,
+  typeRows,
 } from './inventory/data.ts';
-export { FileDetailDrawer } from './inventory/FileDetailDrawer.tsx';
-export { HarnessOverview } from './inventory/HarnessOverview.tsx';
+export { HarnessInventory } from './inventory/HarnessInventory.tsx';
 export { Ico } from './inventory/Ico.tsx';
 export { InventoryNav } from './inventory/InventoryNav.tsx';
-export { ProjectPane } from './inventory/ProjectPane.tsx';
+export { ProjectDetail } from './inventory/ProjectDetail.tsx';
+export { TypeInventory } from './inventory/TypeInventory.tsx';
 
 // Security widget views — props-driven (no data fetching); the apps supply data.
 export {

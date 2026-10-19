@@ -32,9 +32,10 @@ decides what AKA can do in it.
 against a live install.** One agent-mode session on VS Code 1.141.0 with Copilot
 Chat 0.69.0 loaded this plugin and ran all four of its hooks; the payloads are in
 `test/fixtures/vscode/plugin-load-1.141/`. That session confirmed the session
-start, the prompt capture, the tool-call capture with a warn finding, the
-file-write capture and the tool-result capture, and those rows below are marked
-verified. A deny, an input rewrite, a large-input refusal and a flagged tool
+start, the prompt capture and the tool-result capture, and those three rows
+below are marked verified. It also recorded a tool-call capture with a warn
+finding and a file-write capture, but the block and rewrite rows those events
+feed stay unverified. A deny, an input rewrite, a large-input refusal and a flagged tool
 result were never driven, so the block and rewrite rows stay unverified. Treat
 an unverified row as what the vendor documents, not as what was seen to happen.
 The doc-derived fixtures the half was first written from still sit in

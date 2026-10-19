@@ -113,6 +113,32 @@ describe('fixtures/vscode-provisional — doc-derived, and saying so', () => {
   });
 });
 
+describe('fixtures/vscode — only described session directories', () => {
+  const VSCODE_DIR = new URL('./fixtures/vscode/', import.meta.url);
+  const entries = readdirSync(VSCODE_DIR, { withFileTypes: true });
+  const sessions = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+
+  it('holds nothing but session directories', () => {
+    expect(entries.filter((e) => !e.isDirectory()).map((e) => e.name)).toEqual([]);
+  });
+
+  it('holds exactly the pinned sessions', () => {
+    expect(sessions.sort()).toEqual(['plugin-load-1.141']);
+  });
+
+  it('gives every session a README that names each of its files', () => {
+    for (const session of sessions) {
+      const dir = new URL(`./fixtures/vscode/${session}/`, import.meta.url);
+      const readme = readmeOf(dir);
+      expect(readme.length, session).toBeGreaterThan(0);
+      const undescribed = readdirSync(dir)
+        .filter((name) => name !== 'README.md')
+        .filter((name) => !readme.includes(name));
+      expect(undescribed, session).toEqual([]);
+    }
+  });
+});
+
 describe('fixtures/vscode/plugin-load-1.141 — recordings from a loaded plugin', () => {
   const README = readmeOf(VSCODE_PLUGIN_LOAD_DIR);
 

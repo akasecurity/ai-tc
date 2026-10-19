@@ -13,8 +13,9 @@ package's packed plugin from a local directory. The next section says which
 claims below they confirm and which they contradict. Where the two disagree, the
 recording is right and the specimen here is not.
 
-`../../fixture-provenance.test.ts` is what keeps the kinds apart — a file under
-`cli/` or `vscode/` with no README describing its capture fails there.
+`../../fixture-provenance.test.ts` is what keeps the kinds apart — a loose file
+under `vscode/`, or a `cli/` file or `vscode/` session directory with no README
+describing its capture, fails there.
 
 ## What the recordings settled
 

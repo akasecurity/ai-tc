@@ -114,6 +114,10 @@ describe('classifyPath', () => {
     ['deploy/app.yaml', 'config'],
     ['src/billing/client.ts', 'source'],
     ['C:\\repo\\tests\\unit\\a.ts', 'test'],
+    // No path segment says anything, so the bucket is unknown, not source.
+    ['', 'unknown'],
+    ['///', 'unknown'],
+    ['C:\\', 'unknown'],
   ])('%s is %s', (path, cls) => {
     expect(classifyPath(path)).toBe(cls);
   });
@@ -128,6 +132,15 @@ describe('nameBucket', () => {
     ['dbPassword', 'secret_like'],
     ['auth_token', 'secret_like'],
     ['customer_id', 'other'],
+    // Whole words, not substrings: the letters of a list word inside an
+    // ordinary word must not bucket it.
+    ['attestation', 'other'],
+    ['latestToken', 'secret_like'],
+    ['monkeyPass', 'other'],
+    ['author', 'other'],
+    ['authorName', 'other'],
+    ['testingKey', 'test_like'],
+    ['API_KEYS', 'secret_like'],
   ])('%s is %s', (name, bucket) => {
     expect(nameBucket(name)).toBe(bucket);
   });
@@ -159,15 +172,23 @@ const VOCABULARY = new Set<string>([
   'other',
 ]);
 
-function strings(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.flatMap(strings);
-  if (value !== null && typeof value === 'object') return Object.values(value).flatMap(strings);
-  return [];
+/**
+ * Every leaf of a feature set, split by kind. A leaf of any other type fails the
+ * walk, so a new field of an unexpected type is a red test rather than one the
+ * proof silently skips.
+ */
+function leaves(value: unknown, into = { strings: [] as string[], numbers: [] as number[] }) {
+  if (typeof value === 'string') into.strings.push(value);
+  else if (typeof value === 'number') into.numbers.push(value);
+  else if (typeof value === 'boolean' || value === null) return into;
+  else if (Array.isArray(value)) for (const v of value) leaves(v, into);
+  else if (typeof value === 'object') for (const v of Object.values(value)) leaves(v, into);
+  else throw new Error(`a feature leaf of type ${typeof value}`);
+  return into;
 }
 
 describe('matchFeatures over every bundled rule', () => {
-  it('holds only fixed-vocabulary strings, for every positive fixture of every rule', () => {
+  it('holds only fixed-vocabulary strings and bounded counts, for every positive fixture of every rule', () => {
     let checked = 0;
     for (const file of discoverBundledRuleFiles()) {
       const ruleDef = loadRule(file.packDirAbs, file.ruleFile);
@@ -179,8 +200,17 @@ describe('matchFeatures over every bundled rule', () => {
           // The rule id is public and names the rule, not the content.
           const { ruleId, ...rest } = matchFeatures(m, ruleDef, { filePath: 'src/app.ts' });
           expect(ruleId).toBe(ruleDef.id);
-          for (const str of strings(rest))
+          const { strings, numbers } = leaves(rest);
+          for (const str of strings)
             expect(VOCABULARY.has(str), `${ruleDef.id}: ${str}`).toBe(true);
+          // A count is the only number, and it counts the match: an integer no
+          // larger than the value. Content smuggled into a number fails here.
+          for (const n of numbers) {
+            expect(
+              Number.isInteger(n) && n >= 0 && n <= m.rawMatch.length,
+              `${ruleDef.id}: ${String(n)}`,
+            ).toBe(true);
+          }
           checked += 1;
         }
       }

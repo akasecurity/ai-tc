@@ -15,6 +15,39 @@ wizard lands, use the `aka` CLI directly (`aka init`, `aka detections`,
 `aka scan`) and read the dashboard with `aka dashboard`. Do not describe a
 calibration step to the user as though it exists here.
 
+## Install — Copilot CLI
+
+The plugin is installed from an unpacked copy of its npm package. There is no
+marketplace entry for it yet.
+
+```sh
+npm pack @akasecurity/ai-tc-copilot
+tar -xzf akasecurity-ai-tc-copilot-*.tgz
+copilot plugin install ./package
+copilot plugin list
+aka init
+```
+
+`copilot plugin list` shows `aka-copilot` once the install has landed. The
+plugin is placed under `~/.copilot/installed-plugins/_direct/`. To remove it,
+run `copilot plugin uninstall aka-copilot`.
+
+These steps were recorded against Copilot CLI 1.0.98.
+
+- **The CLI warns that this install route is deprecated.** It says direct
+  installs from a path are being replaced by `plugin@marketplace` installs.
+  A marketplace install of this plugin has not been measured.
+- **Hook notices do not reach the screen.** AKA's messages appear only in the
+  CLI's debug log; start the CLI with `--log-level debug` to read them.
+- **Windows is unconfirmed.** The plugin has not been installed and run against
+  a real Copilot CLI on Windows, so whether its hook commands survive that
+  platform's shell is untested.
+- **Updating is unconfirmed.** How an installed copy is moved to a newer
+  package version, including whether `copilot plugin update` works on a
+  directory install, has not been measured. Do not tell the user it does.
+- **The cloud coding agent is not covered by this install.** It does not load
+  installed plugins; it reads only the repository's `.github/hooks/*.json`.
+
 ## Known limitations
 
 This section is the authority on what AKA can actually do on this host. It is
@@ -76,16 +109,6 @@ reported as unscanned in the same way.
 **There is still no history backfill.** Nothing reads the sessions that
 happened before AKA was installed, or any session's own transcript on disk.
 `aka scan` and the dashboard cover the working tree after the fact.
-
-**Windows is unconfirmed.** The plugin has not been installed and run against
-a real Copilot CLI on Windows, so whether its hook commands survive that
-platform's shell is untested.
-
-**The install is a local-directory install, which Copilot calls deprecated.**
-The plugin is installed from an unpacked copy of its npm package with
-`copilot plugin install ./package`, and the Copilot CLI warns that direct
-local-path installs are deprecated. There is no marketplace install for this
-plugin yet.
 
 **Command text is never masked in place.** Rewriting a shell command changes
 what runs, so a `redact` policy on command text follows this workspace's

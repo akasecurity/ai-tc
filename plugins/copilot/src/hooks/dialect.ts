@@ -80,10 +80,13 @@ export function readSessionId(
 /**
  * The working directory the event happened in.
  *
- * Both dialects spell it `cwd`, but VS Code sends it **only when the hook entry
- * declared one** — the spawn's own cwd defaults to the home directory there, so
- * the hook process's `process.cwd()` is not a usable fallback on that host and
- * the caller gets `undefined` rather than a repo resolved from `~`.
+ * Both dialects spell it `cwd`. VS Code's documentation says it is sent only
+ * when the hook entry declares one, and that the spawn's own cwd otherwise
+ * defaults to the home directory. In the recorded VS Code 1.141 session it was
+ * sent on every event, though no entry declared one, and the hooks ran in the
+ * workspace. The hook process's `process.cwd()` is still not used as a
+ * fallback on that host, so a payload without `cwd` gives the caller
+ * `undefined` rather than a repo resolved from wherever the hook was spawned.
  */
 export function readCwd(_dialect: Dialect, input: Record<string, unknown>): string | undefined {
   return str(input, 'cwd');

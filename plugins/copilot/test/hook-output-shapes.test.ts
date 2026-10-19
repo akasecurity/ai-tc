@@ -29,7 +29,7 @@
  * hook-contract bullet that drifted is the same defect one level up, and the
  * drift the sibling file exists to catch was exactly that.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
@@ -305,8 +305,12 @@ describe("CLAUDE.md's hook-contract bullet for this host", () => {
     expect(SOURCE).toMatch(/if \(output !== undefined\) \{/u);
   });
 
-  it('says the VS Code half is confirmed against no live install', () => {
-    expect(BULLET).toMatch(/confirmed against no live install/u);
+  it('says the VS Code half is only partly confirmed against a live install', () => {
+    expect(BULLET).toMatch(/partly confirmed against a live\s+install/u);
+    expect(BULLET).toContain('test/fixtures/vscode/plugin-load-1.141/');
+    expect(readdirSync(new URL('./fixtures/vscode/plugin-load-1.141/', import.meta.url))).toContain(
+      'README.md',
+    );
     expect(BULLET).toContain('test/fixtures/vscode-provisional/');
     // And the directory it names is really there, with the README that carries
     // the disclaimer — a bullet pointing at a path nobody created would read

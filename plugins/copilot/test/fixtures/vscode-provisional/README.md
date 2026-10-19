@@ -2,26 +2,77 @@
 
 **No live VS Code session produced any file in this directory.** Every one of
 them was written from vendor documentation and from the Copilot Chat extension's
-published behaviour, and is a statement of what the payload is _believed_ to look
-like. That is why this directory sits beside `../cli/` rather than inside it:
-those eight files are recordings from a real session on Copilot CLI 1.0.83, and a
-doc-derived specimen filed among them would be read as one.
+published behaviour, and is a statement of what the payload was _believed_ to
+look like before anything was recorded. That is why this directory sits beside
+`../cli/` and `../vscode/` rather than inside either: those are recordings, and
+a doc-derived specimen filed among them would be read as one.
 
-`../../fixture-provenance.test.ts` is what keeps the two apart — a file under
-`cli/` with no paragraph in that directory's README describing its capture fails
-there.
+The recordings for this host are in `../vscode/plugin-load-1.141/`: seven
+payloads from VS Code 1.141.0 with Copilot Chat 0.69.0, which loaded this
+package's packed plugin from a local directory. The next section says which
+claims below they confirm and which they contradict. Where the two disagree, the
+recording is right and the specimen here is not.
+
+`../../fixture-provenance.test.ts` is what keeps the kinds apart — a file under
+`cli/` or `vscode/` with no README describing its capture fails there.
+
+## What the recordings settled
+
+Confirmed by `../vscode/plugin-load-1.141/`:
+
+- **The event names** `SessionStart`, `UserPromptSubmit`, `PreToolUse` and
+  `PostToolUse`. The other four (`PreCompact`, `SubagentStart`, `SubagentStop`,
+  `Stop`) were not registered, so nothing was recorded for them.
+- **The common envelope.** `hook_event_name`, `session_id`, `transcript_path`,
+  `timestamp` and `cwd` arrived on every event. `session_id` was sent on
+  every event, `SessionStart` included.
+- **`transcript_path`'s layout**,
+  `workspaceStorage/<hash>/GitHub.copilot-chat/transcripts/<session id>.jsonl`.
+- **The tool ids.** `run_in_terminal` and `create_file` reach the hook as
+  `tool_name` under exactly those names. VS Code did not substitute a Claude
+  spelling the way the CLI's PascalCase payloads do.
+- **The `tool_input` keys** `command` and `explanation` for `run_in_terminal`,
+  and `filePath` and `content` for `create_file`, in camelCase.
+- **`tool_response` is a string.** It was the terminal's text for
+  `run_in_terminal` and `""` for `create_file`.
+
+Contradicted by the same recordings:
+
+- **`timestamp` is an ISO-8601 string** such as `2026-10-19T10:42:00.538Z`,
+  not the epoch-millisecond number every file here carries.
+- **`SessionStart` fired first**, 151 ms before `UserPromptSubmit`. The
+  timestamps here put the prompt first, copied from the CLI's order.
+- **`source` was `"new"`**, not the `"startup"` placeholder in
+  `SessionStart.json`. `SessionStart` also carried `model` (`"auto"`), which no
+  file here has.
+- **`run_in_terminal` sent no `isBackground`.** Its input was
+  `{ command, explanation, goal, mode }`, with `mode` set to `"sync"`.
+- **Both tool events carry `tool_use_id`**, which no file here has.
+- **`cwd` was sent although no hook entry declared one,** and the hook's
+  working directory was the workspace folder, not the home directory. The
+  `cwd` entry below describes the documented behaviour, which this build did
+  not show.
+- **No VS Code-specific hooks file was needed.** VS Code read the plugin's own
+  CLI-format `hooks.json` and dispatched its camelCase keys as the PascalCase
+  events above, with the snake_case payloads.
+
+Still unmeasured: the `replace_string_in_file`, `insert_edit_into_file` and
+`apply_patch` ids, an object-shaped `tool_response`, whether `updatedInput` or
+a deny is honoured, the `UserPromptSubmit` block channels, and whether matchers
+are ignored.
 
 ## What these are for
 
-They are the shape the VS Code half of this adapter is written against: the
-dialect sniff (`src/hooks/dialect.ts`) and the VS Code `SCANNABLE_FIELDS` table
-(`src/hooks/pre-tool-use-decision.ts`) are both built **from these files**, not
-the other way round. Writing the fixtures to match a table already in the tree
-would prove nothing at all.
+They are the shape the VS Code half of this adapter was first written against:
+the dialect sniff (`src/hooks/dialect.ts`) and the VS Code `SCANNABLE_FIELDS`
+table (`src/hooks/pre-tool-use-decision.ts`) were both built **from these
+files**, not the other way round. Writing the fixtures to match a table already
+in the tree would prove nothing at all.
 
-Every capability the adapter claims on this surface is marked `verified: false`
-in `src/capabilities.ts` and is stated as unconfirmed in `skills/setup/SKILL.md`.
-Replacing a file here with a recording is what earns a `verified: true`.
+A VS Code row in `src/capabilities.ts` is `verified: true` only where the
+recordings in `../vscode/` back it, and every other row stays `verified: false`.
+The unit suites still drive these files where they need an event the
+recordings do not cover.
 
 ## Sources
 
@@ -102,8 +153,14 @@ individually here, and a recording is what replaces the citation.
 | `insert_edit_into_file`  | `code`                   | Same tool list; the older insert-edit tool, whose input carries the edit as `code` plus an `explanation`.         |
 | `apply_patch`            | `input`                  | Shared with the Copilot CLI's own `apply_patch`, where the argument name is likewise unverified.                  |
 
-Two caveats that apply to every row and are the reason all of them are
-`verified: false` in `src/capabilities.ts`:
+The `run_in_terminal` and `create_file` rows are now confirmed by
+`../vscode/plugin-load-1.141/`: both ids arrived as `tool_name`, and every field
+those two rows scan was present under that name. The recorded `run_in_terminal`
+input also carried a `goal` field of model-authored prose that this table does
+not scan. The other three rows are still citations only.
+
+Two caveats applied to every row before the recordings, and still apply to the
+three that have none:
 
 - **The id is the tool-registry name, not necessarily the hook's `tool_name`.**
   The CLI's own reference notes that its PascalCase payloads report `tool_name`
@@ -114,6 +171,6 @@ Two caveats that apply to every row and are the reason all of them are
   payload.** Whether the hook receives them under those names, and in camelCase,
   is unverified — see the `tool_input` entry above.
 
-Until a recording lands, a missed id fails **safe for the session and unsafe for
+For an id with no recording, a missed id fails **safe for the session and unsafe for
 the finding**: nothing is blocked that should not be, and nothing is scanned
 either.

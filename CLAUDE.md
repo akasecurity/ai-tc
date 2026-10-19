@@ -970,7 +970,10 @@ changes. The gaps that exist today:
   `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
   for. `plugins/copilot/hooks.json` therefore registers **camelCase events alone** — the four
   it carries are `sessionStart`, `userPromptSubmitted`, `preToolUse` and `postToolUse`, each
-  once — and a VS Code entry belongs in the file that host itself reads. Of those four only
+  once. VS Code loads that same camelCase `hooks.json` through its plugin location
+  (`chat.pluginLocations`) and dispatches the four events in its own PascalCase/snake_case
+  dialect, which the recording in `plugins/copilot/test/fixtures/vscode/plugin-load-1.141/`
+  shows running all four hooks. Of those four only
   `preToolUse` ENFORCES. `userPromptSubmitted` and `postToolUse` capture, scan and record,
   and pass `rewritable: false` because neither host has a prompt-stop or result-withhold
   channel this repository has observed, so a `redact` resolves to `redactFallback` inside
@@ -979,9 +982,13 @@ changes. The gaps that exist today:
   `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
   payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records
   every prompt twice.
-  The VS Code half is built to the published contract and **confirmed against no live
-  install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
-  every capability it claims is marked unverified, and
+  The VS Code half is built to the published contract and **partly confirmed against a live
+  install**: one agent-mode session on VS Code 1.141.0 recorded the session start, prompt,
+  tool-call and tool-result captures and a warn, in `test/fixtures/vscode/plugin-load-1.141/`,
+  and those capability rows are verified. A deny, an `updatedInput` rewrite, a large-input
+  refusal and a flagged tool result were never driven, so those rows stay unverified, and the
+  warn's `systemMessage` reached only the hooks output channel, never the chat. The doc-derived
+  fixtures sit in a separate `test/fixtures/vscode-provisional/` directory, and
   `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a doc-derived specimen from
   being filed among the recordings.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a

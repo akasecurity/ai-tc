@@ -264,34 +264,32 @@ describe('mergeOverlappingSameRule', () => {
     // the artificial best case of no overlaps at all — the shape a
     // cross-pass duplicate from scan() actually produces), does.
     //
-    // The cost is COUNTED rather than timed: every read of a `start` or `end`
-    // on an input finding's span is one unit of work. Comparing two findings
-    // means reading their spans, so this counts the comparisons the merge
-    // makes, whatever machine runs it and however busy that machine is — the
-    // timed form of this check went red on a loaded runner with the merge
-    // unchanged. Sorting reads each span a bounded number of times per
-    // comparison and the sweep reads it a bounded number of times per
-    // finding, so 10x the findings costs ~10x the reads; a pairwise merge
-    // reads the candidate's span once per finding it is compared with, so
-    // 10x the findings costs ~100x. Counted: 4,497 then 44,997 reads (10.0x),
-    // and 503,000 then 50,030,000 (99.5x) with the pairwise merge put back, so
-    // 30x sits with margin on both sides.
+    // The cost is COUNTED rather than timed, so it is the same number on any
+    // machine however busy it is — the timed form of this check went red on a
+    // loaded runner with the merge unchanged. Every span bound is a number
+    // that counts each time it is USED as one: compared, subtracted, passed to
+    // Math.max or to slice. Copying a span, or the bound itself, into an object
+    // of the merge's own carries the counter along, so what is counted is the
+    // comparisons the merge makes on whatever it compares. Sorting uses each
+    // bound a bounded number of times per comparison and the sweep a bounded
+    // number of times per finding, so 10x the findings costs ~10x the uses; a
+    // pairwise merge uses the candidate's bounds once per finding it is
+    // compared with, so 10x the findings costs ~100x. 30x sits with margin on
+    // both sides (counts in the cases below).
     //
-    // What it does not see is a merge that copies every span into objects of
-    // its own and then compares the copies, since only the input spans count
-    // their reads. The pairwise merge this guards against compared the
-    // candidate's own span inside its loop.
-    function countedPairs(n: number, text: string, reads: { count: number }): MatchResult[] {
-      const span = (start: number, end: number): MatchResult['span'] => ({
-        get start() {
-          reads.count += 1;
-          return start;
-        },
-        get end() {
-          reads.count += 1;
-          return end;
-        },
-      });
+    // What the counter cannot follow is a bound converted to a plain number
+    // (`Number(x)`, `+x`) and worked on from there. A merge that did that reads
+    // each bound about once, and that is what the floor case refuses: the
+    // merge has to compare the values it was given, at least a few uses per
+    // finding, or this guard cannot see what it does after converting them.
+    function countedPairs(n: number, text: string, uses: { count: number }): MatchResult[] {
+      const counted = (value: number): number =>
+        ({
+          valueOf: () => {
+            uses.count += 1;
+            return value;
+          },
+        }) as unknown as number;
       const findings: MatchResult[] = [];
       for (let i = 0; i < n; i += 2) {
         // Pair i occupies [3i, 3i+6); the next pair starts exactly where
@@ -306,7 +304,7 @@ describe('mergeOverlappingSameRule', () => {
             ruleId: 'r',
             category: 'secret',
             severity: 'high',
-            span: span(start, end),
+            span: { start: counted(start), end: counted(end) },
             rawMatch: text.slice(start, end),
             confidence: 1,
           });
@@ -315,33 +313,42 @@ describe('mergeOverlappingSameRule', () => {
       return findings;
     }
 
-    // The span reads one merge of n findings makes.
-    function readsToMerge(n: number): number {
+    // The uses of span bounds one merge of n findings makes.
+    function usesToMerge(n: number): number {
       const text = 'x'.repeat(n * 3 + 10);
-      const reads = { count: 0 };
-      const findings = countedPairs(n, text, reads);
-      reads.count = 0;
+      const uses = { count: 0 };
+      const findings = countedPairs(n, text, uses);
+      uses.count = 0;
       const merged = mergeOverlappingSameRule(findings, text);
+      const counted = uses.count;
       expect(merged).toHaveLength(n / 2);
-      expect(merged[0]?.span).toEqual({ start: 0, end: 6 });
-      return reads.count;
+      const first = merged[0]?.span;
+      expect([Number(first?.start), Number(first?.end)]).toEqual([0, 6]);
+      expect(merged[0]?.rawMatch).toBe('xxxxxx');
+      return counted;
     }
 
     const SMALL = 1_000;
     const LARGE = 10_000; // 10x the input
 
-    it('reads the spans it merges', () => {
-      // The positive control: a counter that never moves would make the
-      // ratio below 0/0. Every finding's span has to be read at least once.
-      expect(readsToMerge(SMALL)).toBeGreaterThanOrEqual(SMALL);
+    it('compares the bounds it was given, a few times per finding', () => {
+      // The positive control and the floor. A counter that never moved would
+      // make the ratio below 0/0, and a merge that converted every bound once
+      // and then compared plain numbers would read two uses per finding and
+      // pass any ratio. Counted: 4,997 uses for 1,000 findings and 49,997 for
+      // 10,000 (10.0x), against exactly two per finding for that conversion.
+      expect(usesToMerge(SMALL)).toBeGreaterThanOrEqual(SMALL * 3);
+      expect(usesToMerge(LARGE)).toBeGreaterThanOrEqual(LARGE * 3);
     });
 
-    it('reads ten times the findings about ten times as often', () => {
-      const small = readsToMerge(SMALL);
-      const large = readsToMerge(LARGE);
+    it('uses ten times the findings about ten times as often', () => {
+      // Counted with the pairwise merge put back: 503,000 then 50,030,000
+      // (99.5x), the same whether it compares the input spans or copies of them.
+      const small = usesToMerge(SMALL);
+      const large = usesToMerge(LARGE);
       expect(
         large,
-        `${String(small)} span reads to merge ${String(SMALL)} findings, ${String(large)} to merge ${String(LARGE)}`,
+        `${String(small)} uses of span bounds to merge ${String(SMALL)} findings, ${String(large)} to merge ${String(LARGE)}`,
       ).toBeLessThan(small * 30);
     });
   });

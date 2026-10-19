@@ -2,6 +2,7 @@ import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
 import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
+import { runConfigInventorySync } from './config-inventory-sync.ts';
 import { refreshAttachedIdentity } from './identity-refresh.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
@@ -98,4 +99,8 @@ export async function runAttachedSync(
     // expected path — and the response to a bug in a detached child is still to
     // exit quietly rather than to take the sync down with it.
   }
+
+  // The config inventory reports session starts staged. `runConfigInventorySync`
+  // never throws.
+  await runConfigInventorySync({ base, settingsDir: settingsDir(base), dataDir: dataDir(base) });
 }

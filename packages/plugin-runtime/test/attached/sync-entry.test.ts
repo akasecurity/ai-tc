@@ -13,19 +13,27 @@ import type * as Remote from '@akasecurity/remote';
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { stageConfigInventory } from '../../src/attached/config-inventory-sync.ts';
 import { SYNC_STATE_FILENAME } from '../../src/attached/sync-state.ts';
 
 const getPolicyBundle = vi.fn();
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
 const getSightingKey = vi.fn();
+const recordConfigInventory = vi.fn();
 
 // Only the client is faked; the rest of the package — the failure classifier
 // the attached code reads verdicts through — stays real, so a fake that
 // throws a status is classified the way production classifies it.
 vi.mock('@akasecurity/remote', async (importActual) => ({
   ...(await importActual<typeof Remote>()),
-  createRemoteClient: () => ({ getPolicyBundle, pollCommand, ackCommand, getSightingKey }),
+  createRemoteClient: () => ({
+    getPolicyBundle,
+    pollCommand,
+    ackCommand,
+    getSightingKey,
+    recordConfigInventory,
+  }),
 }));
 
 /** What the two jobs did, in the order they did it. */
@@ -62,6 +70,8 @@ beforeEach(() => {
   ackCommand.mockResolvedValue(undefined);
   getSightingKey.mockReset();
   getSightingKey.mockRejectedValue(new Error('ECONNREFUSED'));
+  recordConfigInventory.mockReset();
+  recordConfigInventory.mockResolvedValue({ accepted: 1 });
   order = [];
   base = mkdtempSync(join(tmpdir(), 'aka-entry-home-'));
   mkdirSync(dataDirOf(base), { recursive: true });
@@ -327,5 +337,64 @@ describe('runAttachedSync — the sighting-key pass', () => {
     await runAttachedSync(base);
 
     expect(getSightingKey).not.toHaveBeenCalled();
+  });
+});
+
+describe('runAttachedSync — the config inventory pass', () => {
+  const stage = (): void => {
+    stageConfigInventory(dataDirOf(base), {
+      items: [
+        {
+          objectType: 'mcp_server',
+          identityKey: 'linear|user',
+          title: 'linear',
+          attributes: { scope: 'user', transport: 'http' },
+        },
+      ],
+      scanEvent: {
+        id: 'scan-1',
+        eventType: 'config_scan',
+        startedAt: '2026-10-19T09:00:00.000Z',
+        attributes: {},
+      },
+      harness: { objectType: 'harness', identityKey: 'claude-code', attributes: {} },
+      projectKey: 'https://github.com/acme/widgets.git',
+      complete: true,
+    });
+  };
+
+  it('sends the report a session start staged, even when the policy pull failed', async () => {
+    attach();
+    stage();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(recordConfigInventory).toHaveBeenCalledTimes(1);
+    expect(recordConfigInventory.mock.calls[0]?.[0]).toMatchObject({
+      projectKey: 'https://github.com/acme/widgets.git',
+      complete: true,
+    });
+  });
+
+  it('does not send after the policy pull learned the key is revoked', async () => {
+    attach();
+    stage();
+    getPolicyBundle.mockRejectedValue(Object.assign(new Error('refused'), { status: 401 }));
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(recordConfigInventory).not.toHaveBeenCalled();
+  });
+
+  it('does not send on a standalone machine', async () => {
+    stage();
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base);
+
+    expect(recordConfigInventory).not.toHaveBeenCalled();
   });
 });

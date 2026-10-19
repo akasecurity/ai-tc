@@ -193,9 +193,11 @@ response finishes in a session that is already running, still at most hourly.
 The report carries no event content and names no repository. The deployment
 therefore learns when the tool is in use anywhere on this machine.
 
-On a machine attached machine-wide, a Claude Code session start also sends the
-Claude Code configuration that session's scan found: each skill, hook, MCP
-server and configuration file, with its name, scope, file path and the plugin or
+A machine attached machine-wide also sends the Claude Code configuration a
+Claude Code session start's scan found, with the next policy pull rather than
+during the session start, and only when it differs from what was last sent or
+was last sent an hour or more ago: each skill, hook, MCP server and
+configuration file, with its name, scope, file path and the plugin or
 marketplace it came from; a skill's description, version and modification time;
 a hook's event, matcher, command and timeout, and an MCP server's transport and
 command or URL, each description, command and URL with any secret the bundled

@@ -206,10 +206,13 @@ const REPORT_SENTENCE =
   'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
   '(the coding-agent plugins, not a browser chat), the same session start also checks it for ' +
   'device commands.';
-// What an attached machine-wide session start sends of the Claude Code configuration it scanned.
+// What a machine attached machine-wide sends of the Claude Code configuration a session start
+// scanned, and when.
 const CONFIG_INVENTORY_SENTENCE =
-  'On a machine attached machine-wide, a Claude Code session start also sends the Claude ' +
-  "Code configuration that session's scan found: each skill, hook, MCP server and " +
+  'A machine attached machine-wide also sends the Claude Code configuration a Claude Code ' +
+  "session start's scan found, with the next policy pull rather than during the session " +
+  'start, and only when it differs from what was last sent or was last sent an hour or more ' +
+  'ago: each skill, hook, MCP server and ' +
   'configuration file, with its name, scope, file path and the plugin or marketplace it ' +
   "came from; a skill's description, version and modification time; a hook's event, " +
   "matcher, command and timeout, and an MCP server's transport and command or URL, each " +
@@ -687,7 +690,7 @@ describe('config inventory disclosure', () => {
   });
 
   it.each(CLAUDE_CODE_READMES)(
-    '$name names what a session start sends of the scanned configuration',
+    '$name names what is sent of the scanned configuration, and when',
     ({ text }) => {
       expect(flat(footnoteOf(text))).toContain(CONFIG_INVENTORY_SENTENCE);
     },

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,10 +13,8 @@ import type {
   ProjectEgressContext,
 } from '@akasecurity/plugin-sdk';
 import { bundledDetections, hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
-import { RemoteRouteAbsent, RemoteTransportError } from '@akasecurity/remote';
 import type {
   AuditEventInput,
-  ConfigInventoryRequest,
   ConfigScanRecord,
   DetectionCategory,
   EgressIngestRequest,
@@ -35,13 +33,10 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { stagedConfigInventoryPath } from '../../src/attached/config-inventory-sync.ts';
 import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
-import {
-  createForwardPolicy,
-  FORWARD_STATE_FILENAME,
-  readForwardHealth,
-} from '../../src/attached/forward-policy.ts';
+import { createForwardPolicy, FORWARD_STATE_FILENAME } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
 import type { StoredRootKeyReader } from '../../src/session-root-key.ts';
@@ -120,8 +115,6 @@ interface Calls {
   delivered: string[];
   /** Length of each array handed to `client.recordAuditEvents`, in order. */
   batchSizes: number[];
-  /** Each request handed to `client.recordConfigInventory`, in order. */
-  configInventory: ConfigInventoryRequest[];
 }
 
 /**
@@ -257,11 +250,6 @@ function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): Atta
       calls.order.push('client.recordProjectEgress');
       return Promise.resolve({ ok: true });
     }),
-    recordConfigInventory: vi.fn((request: ConfigInventoryRequest) => {
-      calls.order.push('client.recordConfigInventory');
-      calls.configInventory.push(request);
-      return Promise.resolve({ accepted: request.items.length });
-    }),
     ...overrides,
   };
 }
@@ -393,7 +381,7 @@ afterEach(() => {
 });
 
 function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
-  const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+  const calls: Calls = { order: [], delivered: [], batchSizes: [] };
   const local = overrides.local ?? makeLocal(calls);
   const client = overrides.client ?? makeClient(calls);
   const gateway = new AttachedDataGateway({
@@ -448,7 +436,7 @@ const wireRule = (id: string, category: DetectionCategory) =>
 describe('the repository a ledgered file was in', () => {
   it('is the answer of the inner local gateway, unchanged', async () => {
     const keys = new Map<string, string | undefined>([['/repo/a.ts', IN]]);
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({
       local: makeLocal(calls, { scanLedgerPathKeys: () => Promise.resolve(keys) }),
     });
@@ -460,7 +448,7 @@ describe('the repository a ledgered file was in', () => {
     // The method is optional on the port, for implementers outside this
     // repository. An inner gateway without it gives every deleted path no key,
     // which a scoped attachment reads as "do not send".
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls);
     Reflect.deleteProperty(local, 'scanLedgerPathKeys');
     const { gateway } = build({ local });
@@ -552,7 +540,7 @@ describe('writes are local-FIRST, then forwarded', () => {
   });
 
   it('a forward that never runs still returns the local result and does not throw', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({ forward: deadForward(calls) });
     await expect(
       gateway.recordCapture({ event: event('e'), findings: [] }),
@@ -582,7 +570,7 @@ describe('writes are local-FIRST, then forwarded', () => {
     // stamp would show up on the second. Both are asserted for the reason the
     // {0,0} case below spells out — a stamp that is missing because nothing was
     // forwarded proves nothing, so the forward is pinned as having been reached.
-    const forwardCalls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const forwardCalls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway, calls } = build({ forward: deadForward(forwardCalls) });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
     expect(forwardCalls.order).toContain('forward.skipped');
@@ -604,7 +592,7 @@ describe('writes are local-FIRST, then forwarded', () => {
     // outstanding for ever, resent on every pass and deduped every time.
     const { gateway, calls } = build({
       client: makeClient(
-        { order: [], delivered: [], batchSizes: [], configInventory: [] },
+        { order: [], delivered: [], batchSizes: [] },
         {
           ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 1 })),
         },
@@ -625,7 +613,7 @@ describe('writes are local-FIRST, then forwarded', () => {
     // the direction the whole "queued is what is owed" invariant rests on.
     const { gateway, calls } = build({
       client: makeClient(
-        { order: [], delivered: [], batchSizes: [], configInventory: [] },
+        { order: [], delivered: [], batchSizes: [] },
         {
           ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 0 })),
         },
@@ -646,7 +634,7 @@ describe('writes are local-FIRST, then forwarded', () => {
   });
 
   it('a forward that REJECTS is contained — the local write still stands', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = makeClient(calls, {
       ingestEvents: vi.fn(() => Promise.reject(new Error('backend down'))),
     });
@@ -677,7 +665,7 @@ describe('writes are local-FIRST, then forwarded', () => {
   });
 
   it('recordProjectEgress forward failure still returns the LOCAL summary and does not throw', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = makeClient(calls, {
       recordProjectEgress: vi.fn(() => Promise.reject(new Error('backend down'))),
     });
@@ -760,7 +748,7 @@ describe('the scope key is a local-only carrier', () => {
     // A GUARD rather than a red test: the gateway already hands `record` to the
     // local write whole and sends only `record.event`. What it pins is that both
     // stay true now that the record carries something the event must not.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordCapture = vi.fn<(record: CaptureRecord) => Promise<void>>(() => Promise.resolve());
     const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
     const { gateway } = build({
@@ -780,7 +768,7 @@ describe('the scope key is a local-only carrier', () => {
   it('lands on the real row while the forwarded body is byte-identical to a keyless capture', async () => {
     migratedStore.seed(dataDir);
     const local = new StandaloneDataGateway(dataDir);
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const ingestEvents = vi.fn<(batch: IngestBatch) => Promise<IngestAck>>(ack);
     const { gateway } = build({ local, client: makeClient(calls, { ingestEvents }) });
 
@@ -816,7 +804,7 @@ describe('consumeException is a fail-secure boundary', () => {
   });
 
   it('does NOT convert a local rejection into a granted bypass', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       consumeException: vi.fn(() => Promise.reject(new Error('store unreadable'))),
     });
@@ -831,7 +819,7 @@ describe('consumeException is a fail-secure boundary', () => {
 
 describe('ensureInventory and the two id spaces', () => {
   it('returns the LOCAL resolution, not the backend one', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       ensureInventory: vi.fn(() => Promise.resolve({ hostId: 'local-host' })),
     });
@@ -843,7 +831,7 @@ describe('ensureInventory and the two id spaces', () => {
   });
 
   it('re-keys a forwarded audit event into the BACKEND id space', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       ensureInventory: vi.fn(() => Promise.resolve({ hostId: 'local-host' })),
     });
@@ -868,7 +856,7 @@ describe('ensureInventory and the two id spaces', () => {
     // assert about — the point is only that the local write still ran and
     // nothing threw. The id-space cases below use a LIVE forward with a failing
     // inventory call, which is the state that actually reaches the wire.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
       Promise.resolve(),
     );
@@ -886,7 +874,7 @@ describe('ensureInventory and the two id spaces', () => {
     // insert is rejected, forward.run swallows it, and the session root plus
     // every descendant silently never reaches the tenant copy. Omitting the
     // field costs one degraded join instead.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
       Promise.resolve(),
     );
@@ -920,7 +908,7 @@ describe('ensureInventory and the two id spaces', () => {
     // would stamp B's events with A's host/harness/project — an insert that
     // SUCCEEDS while attributing a whole session to the wrong repository, which
     // is worse than not forwarding it.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
       Promise.resolve(),
     );
@@ -995,7 +983,7 @@ describe('the batch budget records what it discards', () => {
 
     const seen: unknown[] = [];
     const client = {
-      ...makeClient({ order: [], delivered: [], batchSizes: [], configInventory: [] }),
+      ...makeClient({ order: [], delivered: [], batchSizes: [] }),
       recordAuditEvents: vi.fn((events: readonly unknown[]) => {
         seen.push(...events);
         return Promise.resolve({ accepted: events.length });
@@ -1037,7 +1025,7 @@ describe('the batch budget records what it discards', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     try {
       const { gateway, dataDir: dir } = build({ forward, local: makeLocal(calls) });
@@ -1055,7 +1043,7 @@ describe('the batch budget records what it discards', () => {
     // AUDIT_EVENT_BATCH_MAX is not a convention here: the client REFUSES a
     // longer array client-side, so a chunk that grew past it would fail every
     // send with `invalid-request` rather than overflow anything.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({ client: makeClient(calls), local: makeLocal(calls) });
     await gateway.recordToolCalls(
       Array.from({ length: 125 }, (_, i) => toolCallInput(`call-${String(i)}`)),
@@ -1090,7 +1078,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({ forward, client: makeClient(calls), local: makeLocal(calls) });
     // Three chunks: 50 land, 50 do not, 20 land.
     await gateway.recordToolCalls(
@@ -1120,7 +1108,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       // Refuses any array containing the bad event — the client-side validation
@@ -1169,7 +1157,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const singles: string[] = [];
     const client = {
       ...makeClient(calls),
@@ -1205,7 +1193,7 @@ describe('the live forward stamps what it delivered', () => {
     } as unknown as ForwardPolicy;
 
     const singles: string[] = [];
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       // Claims only 7 of the 10 sent — which seven is not knowable from the
@@ -1249,7 +1237,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       recordAuditEvents: vi.fn((events: readonly { id: string }[]) =>
@@ -1293,7 +1281,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
       Promise.resolve(),
     );
@@ -1341,7 +1329,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       recordAuditEvents: vi.fn(() =>
@@ -1393,7 +1381,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const singles: string[] = [];
     const client = {
       ...makeClient(calls),
@@ -1455,7 +1443,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       recordAuditEvents: vi.fn(() =>
@@ -1509,7 +1497,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = {
       ...makeClient(calls),
       // The first chunk lands whole; the second finds no batch route and falls
@@ -1577,7 +1565,7 @@ describe('the live forward stamps what it delivered', () => {
     // The bucket has to stay honest in the direction that matters: a row the
     // deployment never received must keep reading as owed, or the outbox forgets
     // it. This is the assertion that stops the stamp becoming unconditional.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({ forward: deadForward(calls), local: makeLocal(calls) });
     await gateway.recordLlmCall(llmCallInput('m1'));
     expect(calls.delivered).toEqual([]);
@@ -1597,7 +1585,7 @@ describe('the live forward stamps what it delivered', () => {
       },
     } as unknown as ForwardPolicy;
 
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const seen: unknown[] = [];
     const client = {
       ...makeClient(calls),
@@ -1646,7 +1634,7 @@ describe('the local scope key never reaches the client', () => {
   it('is absent from every body, on every route and both re-key branches', async () => {
     const KEY = 'github.com/org/api';
     const sent: string[] = [];
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = makeClient(calls, {
       ingestEvents: (batch) => {
         sent.push(JSON.stringify(batch));
@@ -1713,7 +1701,7 @@ const REFUSED_KEYS = [OUT, undefined, ''] as const;
 describe("a finding's location never reaches the client", () => {
   it('forwards each inspection without its line, column, excerpt or variable name, and stores them locally', async () => {
     const seen: unknown[] = [];
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls);
     const localCalls: ToolCallInput[][] = [];
     const recordLocally = local.recordToolCalls.bind(local);
@@ -1877,12 +1865,12 @@ describe('the scope verdict, method by method', () => {
     expect(scoped.calls.order).toContain('local.recordConfigScan');
     expect(scoped.calls.order).not.toContain('forward.run');
     expect(scoped.calls.delivered).toEqual([]);
-    expect(scoped.calls.configInventory).toEqual([]);
-    // The contrast: a machine attachment forwards the same scan and its items.
+    expect(existsSync(stagedConfigInventoryPath(dataDir))).toBe(false);
+    // The contrast: a machine attachment forwards the same scan and stages its items.
     const machine = build();
     await machine.gateway.recordConfigScan(scan);
     expect(machine.calls.delivered).toEqual(['scan-1']);
-    expect(machine.calls.configInventory).toHaveLength(1);
+    expect(stagedRequests()).toHaveLength(1);
   });
 
   it('recordProjectEgress forwards a scan of an enrolled remote, keyed before hashing', async () => {
@@ -1931,7 +1919,7 @@ describe('the scope verdict, method by method', () => {
   it.each([SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi])(
     'ensureInventory sends no inventory for a %s session, though its project is enrolled',
     async (tool) => {
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const posture = {
         prepare: vi.fn(() => {
           calls.order.push('posture.prepare');
@@ -1978,7 +1966,7 @@ describe('the scope verdict, method by method', () => {
   it.each(['https://github.com/me/personal.git', '/home/me/scratch', undefined])(
     'ensureInventory sends no inventory for project %s, and still reports posture',
     async (url) => {
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const posture = {
         prepare: vi.fn(() => {
           calls.order.push('posture.prepare');
@@ -2004,7 +1992,7 @@ describe('the scope verdict, method by method', () => {
   );
 
   it("a refused inventory CLEARS the previous session's resolution, as a failed one does", async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
       Promise.resolve(),
     );
@@ -2034,7 +2022,7 @@ describe('a scoped attachment with nothing enrolled', () => {
   // is sent, while the posture report, the device's liveness channel, still
   // goes out.
   it('writes every row locally, sends none of them, and still reports posture', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const posture = {
       prepare: vi.fn(() => {
         calls.order.push('posture.prepare');
@@ -2155,7 +2143,7 @@ describe('a child row forwards only beside an in-scope root', () => {
   // The root's verdict comes from the row the store keeps for it, read back once
   // after the local write, and never from the key on the event just written.
   it('judges a root by the key the store holds, not by the key on the event', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, { readSessionScopeKey: () => OUT });
     const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
     // The event says enrolled; the store says personal.
@@ -2175,7 +2163,7 @@ describe('a child row forwards only beside an in-scope root', () => {
   it.each([OUT, undefined])(
     'does not send a root event keyed %s under an enrolled stored root, and still forwards its enrolled leaves',
     async (eventKey) => {
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const local = makeLocal(calls, { readSessionScopeKey: () => IN });
       const { gateway } = build({
         attachment: SCOPED,
@@ -2195,7 +2183,7 @@ describe('a child row forwards only beside an in-scope root', () => {
   );
 
   it('keeps a root and its leaves local when the store holds no key for it', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, { readSessionScopeKey: () => undefined });
     const { gateway } = build({ attachment: SCOPED, local, forward: passthroughForward(calls) });
     await gateway.recordAuditEvent(rootRow('s1', IN));
@@ -2205,7 +2193,7 @@ describe('a child row forwards only beside an in-scope root', () => {
   });
 
   it('reads the stored root once per root per instance', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
     const local = makeLocal(calls, { readSessionScopeKey: read });
     const { gateway } = build({
@@ -2231,7 +2219,7 @@ describe('a child row forwards only beside an in-scope root', () => {
   // The read costs a store hit, and machine mode owes none: it answers before
   // any root is looked at.
   it('never reads the store in machine mode', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
     const local = makeLocal(calls, { readSessionScopeKey: read });
     const { gateway } = build({ attachment: MACHINE, local, forward: passthroughForward(calls) });
@@ -2243,7 +2231,7 @@ describe('a child row forwards only beside an in-scope root', () => {
 
   // The verdict is total: a store that cannot answer is an answer of local.
   it('keeps a root and its leaves local, and rejects nothing, when the read throws', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       readSessionScopeKey: () => {
         throw new Error('store unreadable');
@@ -2411,7 +2399,7 @@ describe('the verdict is total: a throw means local, never a rejection', () => {
 
 describe('a refusal never reaches the forward policy', () => {
   it('leaves no breaker state after repeated refusals, against a plane that is down', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const down = (): Promise<never> => Promise.reject(new Error('backend down'));
     const client = makeClient(calls, {
       ingestEvents: down,
@@ -2445,7 +2433,7 @@ describe('a refusal never reaches the forward policy', () => {
 describe('a refused capture is never marked owed, on a real store', () => {
   it('leaves outbox_owed NULL on the refused row, and sets it on the undelivered in-scope one', async () => {
     migratedStore.seed(dataDir);
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const gateway = new AttachedDataGateway({
       dataDir,
       local: new StandaloneDataGateway(dataDir, bundledDetections()),
@@ -2506,7 +2494,7 @@ describe('a leaf is held to the stored session root, on a real store', () => {
   } {
     migratedStore.seed(dataDir);
     const instance = () => {
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const gateway = new AttachedDataGateway({
         dataDir,
         local: new StandaloneDataGateway(dataDir, bundledDetections()),
@@ -2607,7 +2595,7 @@ describe('the verdict decides whether a row is sent, never what is sent', () => 
   it('an in-scope row reaches the client byte-identical to machine mode, with no scope key', async () => {
     const sentBy = async (attachment: ResolvedAttachmentScope): Promise<string[]> => {
       const sent: string[] = [];
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const client = makeClient(calls, {
         ingestEvents: (batch) => {
           sent.push(JSON.stringify(batch));
@@ -2687,7 +2675,7 @@ describe("a scoped capture forwards its key's repository name", () => {
   ) => {
     const sent: IngestEvent[] = [];
     const stamped: IngestEvent[] = [];
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const client = makeClient(calls, {
       ingestEvents: (batch) => {
         sent.push(...batch.events);
@@ -2866,7 +2854,7 @@ describe('recordProjectEgress holds a register to every repository nested in it'
       const recordProjectEgress = vi.fn<AttachedClient['recordProjectEgress']>(() =>
         Promise.resolve({}),
       );
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const { gateway } = build({ client: makeClient(calls, { recordProjectEgress }) });
       await gateway.recordProjectEgress(enrolledScan(), context);
       const request = recordProjectEgress.mock.calls[0]?.[0];
@@ -2897,7 +2885,7 @@ describe('recordProjectEgress holds a register to every repository nested in it'
       const recordProjectEgress = vi.fn<DataGateway['recordProjectEgress']>(() =>
         Promise.resolve(LOCAL_SUMMARY),
       );
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const { gateway } = build({ attachment, local: makeLocal(calls, { recordProjectEgress }) });
 
       await gateway.recordProjectEgress(enrolledScan(), { nestedScopeKeys: [SHARED] });
@@ -2948,7 +2936,7 @@ describe('recordProjectEgress sends a deleted path only when its repository is i
     const localWrite = vi.fn<DataGateway['recordProjectEgress']>(() =>
       Promise.resolve(LOCAL_SUMMARY),
     );
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const { gateway } = build({
       attachment,
       client: makeClient(calls, { recordProjectEgress }),
@@ -3133,7 +3121,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('lets the tenant RAISE enforcement above the local policy', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'secret' }, 'warn')], { version: 'local' })),
@@ -3166,7 +3154,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
    */
   it('keeps one rule per id, and the local copy is the one that survives', async () => {
     const CONTESTED = 'marketplace/installed-secret';
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const localRule = wireRule(CONTESTED, 'secret');
     const remoteRule = { ...wireRule(CONTESTED, 'secret'), name: 'from-the-plane' };
     const local = makeLocal(calls, {
@@ -3189,7 +3177,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('still carries a rule only one side declares', async () => {
     // The positive control: dedup must not become "drop whatever the plane
     // adds", which would pass the case above while disabling the whole feature.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3215,7 +3203,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // floor-only clamp while silently downgrading real enforcement. This is the
   // one merge bug that looks correct and disables protection.
   it('a WEAKER tenant policy can never win under first-write-wins', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'secret' }, 'block')], { version: 'local' })),
@@ -3247,7 +3235,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // cache-writer. What it could do is block the user's own sessions, which
     // anyone able to write into that directory can already do far more cheaply
     // by deleting the plugin.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3262,7 +3250,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {
     // The control: a standalone bundle carries no prohibitions, so the merge
     // must not invent an empty list that reads as an enforced decision.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3280,7 +3268,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // RAISE-ONLY against the device's own `WorkspaceSettings.redactFallback` by
     // the runtime, where both are in hand — this seam has the bundle and not
     // the setting, so a merge here could only ever be half of one.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3296,7 +3284,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // The control: absent must stay absent, so the device's own setting is what
     // the runtime merges against. An invented value here would read as an
     // organizational decision nobody made.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3306,7 +3294,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('never takes rulesComplete from the cache — that would be a detection kill-switch', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3335,7 +3323,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // the organization authored away quietly comes back.
 
   it('keeps the authored marker on a tenant-only policy that passes through', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3357,7 +3345,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // The first rebuild site: a tenant-only policy below the compiled-in floor
     // is re-emitted as `{ ...policy, action: floor }`. DEFAULT_ACTIONS.secret is
     // 'warn', so 'log' is rebuilt and the marker has to ride the spread.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3381,7 +3369,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // either, since a device that forgets which of its policies were authored
     // has lost the lock for all of them.
     const RULE = 'marketplace/authored-secret';
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3405,7 +3393,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('keeps it on the STRONGER side when both sides contend for one target', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'pii' }, 'warn')], { version: 'local' })),
@@ -3431,7 +3419,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // The control. Every assertion above would also pass if the merge stamped
     // `provenance: 'authored'` onto everything it touched — which would lock a device
     // out of re-assigning packs no one ever authored a policy for.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'secret' }, 'warn')], { version: 'local' })),
@@ -3447,7 +3435,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('carries disabled policies through rather than dropping them', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'pii' }, 'warn', false)], { version: 'local' })),
@@ -3465,7 +3453,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // thing standing between an unsigned bundle and reduced enforcement.
 
   it('clamps a tenant-only policy UP to the compiled-in floor for its category', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3481,7 +3469,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('leaves a tenant policy already AT or ABOVE the floor exactly as sent', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3502,7 +3490,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // policy slips a real AWS key past at log-only. The bundled packs are seeded
   // LAST for exactly this reason, so they win every id collision.
   it("a tampered wire category cannot weaken a COMPILED-IN rule's clamp floor", async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3522,7 +3510,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('a wire rule DOES supply a floor for a ruleId the plugin does not compile in', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3542,7 +3530,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('leaves a policy for an UNRESOLVABLE ruleId unclamped rather than guessing', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
     });
@@ -3560,7 +3548,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it('keeps ruleId- and category-targeted policies in SEPARATE namespaces', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       // The user's own category-wide rule for secrets.
       getPolicyBundle: vi.fn(() =>
@@ -3594,7 +3582,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // ── the local bundle's OWN rules are a category source ─────────────────────
 
   it('a LOCALLY INSTALLED rule supplies a floor the plugin does not compile in', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       // A marketplace pack the user installed on this device: present in the
       // LOCAL bundle's rules, absent from the tenant's, absent from
@@ -3621,7 +3609,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   it("the WIRE cannot redeclare a locally installed rule's category either", async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3658,7 +3646,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // so the tenant's ruleId policy overrides the user's category policy. The
   // compiled-in floor cannot catch it — DEFAULT_ACTIONS tops out at 'warn'.
   it('a tenant ruleId policy cannot undercut the local CATEGORY policy', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'secret' }, 'block')], { version: 'local' })),
@@ -3677,7 +3665,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('…including for a rule only the LOCAL bundle declares', async () => {
     // Needs both halves: the category map must resolve the installed rule at
     // all before the local category policy can floor a policy targeting it.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3708,7 +3696,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // tenant's `secret -> block` to log-only — the fleet-wide failure this merge
   // exists to prevent, reached from the local side instead of the wire.
   it('a LOCAL ruleId policy cannot undercut the TENANT category policy', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3727,7 +3715,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('…including for a rule only the LOCAL bundle declares', async () => {
     // Same two halves as the tenant-side case: the category map has to resolve
     // a locally installed rule before any category policy can floor it.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3751,7 +3739,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // tenant's category-wide setting is raising enforcement, which is always
     // allowed — clamping it down to the tenant's action would be the same bug
     // in the opposite direction.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3771,7 +3759,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // The clamp is a floor, not an equalisation — the tenant tightening one
     // rule beyond the user's category-wide setting is the whole point of
     // attached mode and must survive.
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(bundle([policy({ category: 'secret' }, 'warn')], { version: 'local' })),
@@ -3797,7 +3785,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
       // guarantee and make the result depend on array order — the exact
       // property this merge exists to remove. With no local policy for
       // 'secret', the only floor is the compiled-in 'warn'.
-      const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+      const calls: Calls = { order: [], delivered: [], batchSizes: [] };
       const local = makeLocal(calls, {
         getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
       });
@@ -3816,7 +3804,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   );
 
   it('resolves duplicate LOCAL targets first-write-wins, matching the runtime', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
@@ -3837,7 +3825,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // ── the local store is the trusted side ───────────────────────────────────
 
   it("a CORRUPT local bundle read propagates — it never degrades to the tenant's", async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() => Promise.reject(new Error('local store corrupt'))),
     });
@@ -3860,7 +3848,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
 
 describe('posture reporting stays strictly after inventory settles', () => {
   it('runs prepare and send after the inventory call, never before', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const posture = {
       prepare: vi.fn(() => {
         calls.order.push('posture.prepare');
@@ -3902,7 +3890,7 @@ describe('forwardingScope', () => {
   });
 
   it('answers machine without reading the store', () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const read = vi.fn<(sessionId: string) => string | undefined>(() => IN);
     const local = makeLocal(calls, { readSessionScopeKey: read });
     const { gateway } = build({ attachment: MACHINE, local, deploymentName: 'Acme' });
@@ -3946,7 +3934,7 @@ describe('forwardingScope', () => {
   });
 
   it('answers local-only when the store cannot answer', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {
       readSessionScopeKey: () => {
         throw new Error('store unreadable');
@@ -3966,7 +3954,7 @@ describe('forwardingScope', () => {
   // A root this instance did not write has no verdict here, whatever the store
   // holds for it: the session start that asks has to have written it.
   it('offers no scope for a root this instance never recorded', () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, { readSessionScopeKey: () => IN });
     const { gateway } = build({ attachment: SCOPED, local, deploymentName: 'Acme' });
     expect(gateway.forwardingScope('s1')).toBeNull();
@@ -3975,7 +3963,7 @@ describe('forwardingScope', () => {
   // Asking before the root exists answers nothing, and must not record an
   // answer as the root's verdict: the root's records would then never forward.
   it('asking before the root is written does not hold the root local', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls);
     const { gateway } = build({
       attachment: SCOPED,
@@ -3995,7 +3983,7 @@ describe('forwardingScope', () => {
   });
 });
 
-// ── the config inventory forward ───────────────────────────────────────────
+// ── the config inventory report ────────────────────────────────────────────
 
 const CONFIG_HARNESS = {
   objectType: 'harness' as const,
@@ -4030,9 +4018,24 @@ function configScan(overrides: Partial<ConfigScanRecord> = {}): ConfigScanRecord
   };
 }
 
-describe('recordConfigScan reports the scanned items', () => {
-  it('writes locally, forwards the scan event, then sends the items under the harness', async () => {
-    const { gateway, calls } = build();
+/** The requests of each staged report, or undefined when nothing is staged. */
+function stagedRequests(): unknown[] | undefined {
+  const path = stagedConfigInventoryPath(dataDir);
+  if (!existsSync(path)) return undefined;
+  const staged = JSON.parse(readFileSync(path, 'utf8')) as { reports: { requests: unknown }[] };
+  return staged.reports.map((report) => report.requests);
+}
+
+describe('recordConfigScan stages the scanned items for the sync child', () => {
+  it('writes locally, stages the items, forwards the event, and sends no items itself', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordConfigInventory = vi.fn(() => Promise.resolve({ accepted: 0 }));
+    const client = Object.assign(makeClient(calls), { recordConfigInventory });
+    const { gateway } = build({
+      client,
+      local: makeLocal(calls),
+      forward: passthroughForward(calls),
+    });
     const scan = configScan();
 
     await gateway.recordConfigScan(scan);
@@ -4042,20 +4045,31 @@ describe('recordConfigScan reports the scanned items', () => {
       'forward.run',
       'client.recordAuditEvent',
       'local.markAuditEventsDelivered',
-      'forward.run',
-      'client.recordConfigInventory',
     ]);
-    expect(calls.configInventory).toEqual([
-      {
-        harness: CONFIG_HARNESS,
-        items: scan.items,
-        projectKey: CONFIG_PROJECT_KEY,
-        complete: true,
-      },
+    expect(recordConfigInventory).not.toHaveBeenCalled();
+    expect(stagedRequests()).toEqual([
+      [
+        {
+          harness: CONFIG_HARNESS,
+          items: scan.items,
+          projectKey: CONFIG_PROJECT_KEY,
+          complete: true,
+        },
+      ],
     ]);
   });
 
-  it('sends no items for a record that names no harness, and still forwards the event', async () => {
+  it('stages the items when the forward is skipped', async () => {
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const { gateway } = build({ forward: deadForward(calls), local: makeLocal(calls) });
+
+    await gateway.recordConfigScan(configScan());
+
+    expect(calls.order).toContain('forward.skipped');
+    expect(stagedRequests()).toHaveLength(1);
+  });
+
+  it('stages nothing for a record that names no harness, and still forwards the event', async () => {
     const { gateway, calls } = build();
     const withoutHarness = configScan();
     delete withoutHarness.harness;
@@ -4063,81 +4077,18 @@ describe('recordConfigScan reports the scanned items', () => {
     await gateway.recordConfigScan(withoutHarness);
 
     expect(calls.delivered).toEqual(['scan-1']);
-    expect(calls.order).not.toContain('client.recordConfigInventory');
+    expect(stagedRequests()).toBeUndefined();
   });
 
-  it('does not reject when the deployment refuses the items, so the session never notices', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
-    const client = makeClient(calls, {
-      recordConfigInventory: vi.fn(() => Promise.reject(new Error('boom'))),
-    });
-    const { gateway } = build({ client, local: makeLocal(calls) });
+  it('does not reject when the report cannot be staged, and still forwards the event', async () => {
+    const blocked = stagedConfigInventoryPath(dataDir);
+    mkdirSync(blocked);
+    writeFileSync(join(blocked, 'occupied'), '');
+    const { gateway, calls } = build();
 
     await expect(gateway.recordConfigScan(configScan())).resolves.toBeUndefined();
+
     expect(calls.order).toContain('local.recordConfigScan');
     expect(calls.delivered).toEqual(['scan-1']);
-  });
-
-  it('stops at the first part the deployment did not take', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
-    const sent: number[] = [];
-    const client = makeClient(calls, {
-      recordConfigInventory: vi.fn((request: ConfigInventoryRequest) => {
-        sent.push(request.items.length);
-        return Promise.reject(new RemoteTransportError('reset'));
-      }),
-    });
-    const { gateway } = build({ client, local: makeLocal(calls) });
-    const items = Array.from({ length: 2001 }, (_, i) => configItem(`server-${String(i)}`));
-
-    await gateway.recordConfigScan(configScan({ items }));
-
-    expect(sent).toEqual([2000]);
-  });
-
-  it('sends every part of a scan over the batch cap when each is taken', async () => {
-    const { gateway, calls } = build();
-    const items = Array.from({ length: 2001 }, (_, i) => configItem(`server-${String(i)}`));
-
-    await gateway.recordConfigScan(configScan({ items }));
-
-    expect(calls.configInventory.map((request) => request.items.length)).toEqual([2000, 1]);
-    expect(calls.configInventory.some((request) => request.complete === true)).toBe(false);
-  });
-
-  it('does not count a deployment that predates the route against the breaker', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [], configInventory: [] };
-    const sendConfigInventory = vi.fn(() =>
-      Promise.reject(new RemoteRouteAbsent('/v1/inventory/config-items')),
-    );
-    const absent = makeClient(calls, { recordConfigInventory: sendConfigInventory });
-    const gateway = new AttachedDataGateway({
-      dataDir,
-      local: makeLocal(calls),
-      client: absent,
-      readCachedBundle: () => Promise.resolve(null),
-      forward: createForwardPolicy({ dir: dataDir }),
-      attachment: MACHINE,
-    });
-
-    await gateway.recordConfigScan(configScan());
-
-    expect(sendConfigInventory).toHaveBeenCalledTimes(1);
-    expect(readForwardHealth(dataDir, Date.now())?.consecutiveFailures ?? 0).toBe(0);
-
-    // Positive control: a transport failure on the same route IS counted.
-    const down = makeClient(calls, {
-      recordConfigInventory: vi.fn(() => Promise.reject(new RemoteTransportError('reset'))),
-    });
-    const downGateway = new AttachedDataGateway({
-      dataDir,
-      local: makeLocal(calls),
-      client: down,
-      readCachedBundle: () => Promise.resolve(null),
-      forward: createForwardPolicy({ dir: dataDir }),
-      attachment: MACHINE,
-    });
-    await downGateway.recordConfigScan(configScan());
-    expect(readForwardHealth(dataDir, Date.now())?.consecutiveFailures).toBe(1);
   });
 });

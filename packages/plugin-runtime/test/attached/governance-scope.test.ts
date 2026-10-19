@@ -177,7 +177,6 @@ function recordingClient(sent: string[]): AttachedClient {
     recordAuditEvents: (events) => record('recordAuditEvents', { accepted: events.length }),
     reportStorePosture: () => record('reportStorePosture', {}),
     recordProjectEgress: () => record('recordProjectEgress', {}),
-    recordConfigInventory: () => record('recordConfigInventory', { accepted: 0 }),
   };
 }
 

@@ -6,6 +6,8 @@ import * as barrel from '../src/index.ts';
 // change during internal restructuring. Type-only exports are invisible at
 // runtime; this snapshot pins the value exports.
 const PUBLIC_VALUE_EXPORTS = [
+  'ATTACHED_CONFIG_INVENTORY_FILENAME',
+  'ATTACHED_CONFIG_INVENTORY_STATE_FILENAME',
   'ATTACHED_DERIVED_FILENAMES',
   'ATTACHED_FORWARD_DROPS_FILENAME',
   'ATTACHED_FORWARD_STATE_FILENAME',

@@ -1,10 +1,11 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * Six of these are written by the attached runtime rather than by the attach
+ * Eight of these are written by the attached runtime rather than by the attach
  * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
- * its drop tally, the posture self-report's last outcome, and the history
- * drain's progress. The seventh, the record of who attached the machine, is
+ * its drop tally, the posture self-report's last outcome, the history drain's
+ * progress, and the config inventory reports staged for the sync child with
+ * what it last delivered of them. The ninth, the record of who attached the machine, is
  * written by the attach and kept current by the sync child and by the hooks that
  * validate a work account, all through attached-identity.ts in this package.
  * None of them is the attachment; all of them describe one. Each session's
@@ -58,6 +59,12 @@ export const ATTACHED_HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json'
 /** Who attached this machine, as digests beside its credential (attached-identity.ts). */
 export const ATTACHED_IDENTITY_FILENAME = 'attached-identity.json';
 
+/** The config inventory reports session starts staged for the sync child to send. */
+export const ATTACHED_CONFIG_INVENTORY_FILENAME = 'attached-config-inventory.json';
+
+/** What the sync child last delivered of each staged config inventory report. */
+export const ATTACHED_CONFIG_INVENTORY_STATE_FILENAME = 'attached-config-inventory-state.json';
+
 /**
  * Every file above, so a caller iterates the list rather than restating it.
  *
@@ -72,6 +79,8 @@ export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
   ATTACHED_IDENTITY_FILENAME,
+  ATTACHED_CONFIG_INVENTORY_FILENAME,
+  ATTACHED_CONFIG_INVENTORY_STATE_FILENAME,
 ];
 
 /**

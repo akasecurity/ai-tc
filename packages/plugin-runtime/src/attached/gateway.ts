@@ -26,7 +26,6 @@ import type {
   AuditEventBatchAck,
   AuditEventInput,
   ConfigInventoryReport,
-  ConfigInventoryRequest,
   ConfigScanRecord,
   DayActivity,
   EgressIngestRequest,
@@ -68,7 +67,7 @@ import type { AccountScope, AccountScopeReader } from '../account-scope.ts';
 import type { GovernanceScope } from '../governance-scope.ts';
 import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
-import { configInventoryRequests } from './config-inventory-wire.ts';
+import { stageConfigInventory } from './config-inventory-sync.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
@@ -122,9 +121,6 @@ export interface AttachedClient {
   // wire-boundary-safe shape by `toEgressIngestRequest`. The response is
   // unused — see recordProjectEgress below for why.
   recordProjectEgress(request: EgressIngestRequest): Promise<unknown>;
-  // The skills, hooks, MCP servers and config files one config scan found,
-  // built by `configInventoryRequests`. The response is unused.
-  recordConfigInventory(request: ConfigInventoryRequest): Promise<unknown>;
 }
 
 export interface AttachedDataGatewayDeps {
@@ -1154,11 +1150,10 @@ export class AttachedDataGateway
     await this.forwardBatch(this.forwardableLeaves(inputs), (input) => toolAuditEvent(input));
   }
 
-  // The scan is forwarded in two requests: the `config_scan` audit event, then
-  // the inventory `items` to the config-items route (`forwardConfigInventory`).
-  //
-  // The posture `definitions`/`findings` stay on the device; only the event and
-  // the items are sent.
+  // The `config_scan` audit event is forwarded here. The inventory `items` are
+  // staged for the detached sync child, which sends them to the config-items
+  // route (`runConfigInventorySync`). The posture `definitions`/`findings` stay
+  // on the device.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
     // NO KEY, BY DESIGN, so a scoped attachment keeps every config scan local.
@@ -1167,6 +1162,7 @@ export class AttachedDataGateway
     // owns. The key is passed as absent rather than read off the event, so a
     // scan event that ever did carry one would still stay local.
     if (this.verdictFor(() => undefined) === 'local') return;
+    stageConfigInventory(this.deps.dataDir, record);
     const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(record.scanEvent, this.remoteInventory)),
     );
@@ -1177,30 +1173,6 @@ export class AttachedDataGateway
     // call site exempted because it happens to be inert is the one that reads as
     // owed for ever on the day its type joins a lane.
     if (forwarded.ok) this.deps.local.markAuditEventsDelivered([record.scanEvent], Date.now());
-    await this.forwardConfigInventory(record);
-  }
-
-  /**
-   * The scan's items, sent to the config-items route under the harness the
-   * record names. A record with no harness sends nothing. Each request goes
-   * through `forward.run`, so a slow or refusing deployment costs the budget
-   * and the breaker what any forward does, and a deployment that predates the
-   * route answers `route-absent`, which the breaker does not count. Stops at
-   * the first request that is not delivered. Never throws: the items are
-   * already in the local store, and nothing is queued to resend them; the next
-   * session start reports the configuration as it then is.
-   */
-  private async forwardConfigInventory(record: ConfigScanRecord): Promise<void> {
-    try {
-      for (const request of configInventoryRequests(record)) {
-        const sent = await this.deps.forward.run(() =>
-          this.deps.client.recordConfigInventory(request),
-        );
-        if (!sent.ok) return;
-      }
-    } catch {
-      // The local write already succeeded; a report that cannot be built is not sent.
-    }
   }
 
   async recordBlockedDetection(entry: BlockedDetectionInput): Promise<void> {

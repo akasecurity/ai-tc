@@ -101,7 +101,6 @@ function recordingClient(): AttachedClient {
       registers.push(request);
       return Promise.resolve({});
     },
-    recordConfigInventory: () => Promise.reject(new Error('a scan sends no config inventory')),
   };
 }
 

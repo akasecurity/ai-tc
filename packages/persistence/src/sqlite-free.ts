@@ -10,6 +10,13 @@
 // Everything here is also exported from the root entry. Only add a module
 // whose own imports, followed all the way down, load no `node:sqlite`; the
 // plugin-sdk suite `sdk-import-graph.test.ts` fails if one does.
+export type {
+  AssetRow,
+  ConfigAssetContext,
+  ConfigInventoryRow,
+  PostureFindingRow,
+} from './config-assets.ts';
+export { configAssetRow } from './config-assets.ts';
 export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';

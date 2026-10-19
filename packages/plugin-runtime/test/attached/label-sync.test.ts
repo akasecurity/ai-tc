@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,7 @@ import type { ControlPlaneConnection, LabelReportRequest } from '@akasecurity/sc
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runLabelSync } from '../../src/attached/label-sync.ts';
 
 const reportLabels = vi.fn();
@@ -116,7 +117,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeTree(base);
 });
 
 describe('runLabelSync', () => {

@@ -158,8 +158,8 @@ const ENROLL_HINT =
  * The `user` line when no identity record counts for this credential. What a
  * work subscription is recognised against is then unknown, so none is. Never
  * the user's address: the record holds only a digest of it. The plugin's
- * background sync asks the deployment once which account the key belongs to,
- * which is what both lines wait for.
+ * background sync asks the deployment which account the key belongs to, and asks
+ * again at later syncs until it has an answer, which is what both lines wait for.
  */
 const USER_LINES = {
   unknown:

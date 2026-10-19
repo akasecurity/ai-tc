@@ -530,10 +530,13 @@ export async function reconcileSessionTail(
     // than the stored offset is read from 0, and the scrub rewrite below stores
     // offset 0. A replaced transcript longer than the stored offset is not noticed.
     // A call already written can be read again in either case. In the local store
-    // its llm_call row takes the fresh scope key only when its output count has
-    // grown; an equal count keeps the first-written key even if the fresh
-    // attribution differs. A tool_call row there keeps its first key. Row counts
-    // do not change.
+    // its llm_call row has its attributes bag and ended_at replaced, and every other
+    // column keeps its first write, when its output count has grown (or, for a row
+    // with a usage source and no output count, when its bag differs): the fresh scope
+    // key arrives with the fresh run_key, uuid and parent_uuid of the re-read, not
+    // alone. An equal count keeps the first-written bag, scope key included, even if
+    // the fresh attribution differs. A tool_call row there keeps its first key. Row
+    // counts do not change.
     const attribution = attributeTail(
       gateway,
       config.dataDir,
@@ -560,7 +563,16 @@ export async function reconcileSessionTail(
       // not in scope yet: no root and no row is written, the transcript offset stays
       // where it is, and the next pass reads this tail again. The scrub of the
       // transcript file below does not run either, so a held pass strikes nothing: a
-      // raw secret in these lines stays until the pass that writes.
+      // raw secret in these lines stays until the pass that writes, and is struck
+      // there only under vault consent. That wait is bounded: while no earlier
+      // follow-up is outstanding, a held pass asks for one 30 s, 2 min or 6 min after
+      // the first, second or third hold, and the pass that finds the budget spent
+      // writes within about 8.5 minutes; a pass once every waiting record is fifteen
+      // minutes old writes regardless (holdDecision). If a follow-up never runs (the
+      // spawn fails, or the host goes down mid-hold) the lines wait for a later pass
+      // of the session, which writes once the budget is spent or the records are
+      // fifteen minutes old, so only a session that never runs a pass again leaves
+      // its rows unwritten.
       const plan = planFollowUp({
         held: hold.pending,
         before: checkpoint.pending,

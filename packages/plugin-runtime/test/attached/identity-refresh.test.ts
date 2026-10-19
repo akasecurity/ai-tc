@@ -217,6 +217,36 @@ describe('refreshAttachedIdentity — when it asks', () => {
     expect(calls).toBe(2);
   });
 
+  it('lets two runs that overlap each ask, since nothing serialises them', async () => {
+    attach('scoped');
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held: typeof createRemoteClient = () =>
+      ({
+        whoami: async () => {
+          calls += 1;
+          await gate;
+          return {
+            ...ACME,
+            role: 'member',
+            keyKind: 'plugin',
+            serverTime: '2026-10-14T09:00:00.000Z',
+          };
+        },
+      }) as unknown as RemoteClient;
+    const runs = [refresh(held), refresh(held)];
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+    release();
+    expect(await Promise.all(runs)).toEqual(['written', 'written']);
+    expect(calls).toBe(2);
+    expect(await refresh(answering(ACME))).toBe('current');
+    expect(calls).toBe(2);
+  });
+
   it('answers failed rather than throwing when the client cannot be built', async () => {
     attach('scoped');
     const broken: typeof createRemoteClient = () => {

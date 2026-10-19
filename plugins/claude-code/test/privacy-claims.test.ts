@@ -296,10 +296,14 @@ describe('scoped attachment claims', () => {
 });
 
 // The one request a personal device makes beyond the policy pull, the device
-// report and the command check, said beside them.
+// report and the command check, said beside them. It is repeated until the
+// device has an answer, and syncs that overlap can each send it, so the page
+// never says it is made once.
 const WHOAMI_SENTENCE =
-  'On a personal device, the background sync also asks the deployment once which account its key ' +
-  'belongs to, when the device does not know it yet.';
+  'On a personal device, the background sync also asks the deployment which account its key ' +
+  'belongs to, and asks again at later syncs until the device has an answer; syncs that ' +
+  'overlap can each send one.';
+const WHOAMI_ONCE = /asks (?:the|that) deployment once\b|\bonce which account\b/i;
 
 describe('the identity request on a personal device', () => {
   describe.each(SCOPED_READMES)('$name', ({ text }) => {
@@ -308,17 +312,25 @@ describe('the identity request on a personal device', () => {
     const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
     const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
 
-    it('says the background sync asks once which account the key belongs to', () => {
+    it('says the background sync asks until the device has an answer, and that syncs can overlap', () => {
       expect(claim).toContain(`device commands. ${WHOAMI_SENTENCE}`);
     });
 
     it('says the same in the egress footnote', () => {
       expect(flat(footnoteOf(text))).toContain(WHOAMI_SENTENCE);
     });
+
+    it('does not say the request is made once', () => {
+      expect(flat(text)).not.toMatch(WHOAMI_ONCE);
+    });
   });
 
   it('says it in SECURITY.md, beside the policy pull and the device report', () => {
     expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+  });
+
+  it('does not say it in SECURITY.md as a request made once', () => {
+    expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).not.toMatch(WHOAMI_ONCE);
   });
 });
 

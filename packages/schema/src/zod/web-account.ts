@@ -1,5 +1,6 @@
 import * as z from 'zod';
 
+import type { SourceTool } from './harness-map.ts';
 import { SOURCE_TOOL, WebSourceTool } from './harness-map.ts';
 
 // The account a web chat is signed in to, as a scope key: `<provider>:<workspace-id>`.
@@ -7,7 +8,8 @@ import { SOURCE_TOOL, WebSourceTool } from './harness-map.ts';
 // It is what `aka enroll --account` stores in a scoped attachment's entries, what
 // the browser extension's host stamps on what it records from that account, and
 // what the detected-account record lists. One grammar for all three, so a key the
-// host stamps is always one a user can enroll, and the reverse.
+// host stamps is always one a user can enroll, and the reverse. A coding agent's
+// agent key carries one as its account part (agent-scope.ts).
 //
 // Pure, with no I/O, and never throws.
 
@@ -27,6 +29,27 @@ export type WebAccountProvider = (typeof WEB_ACCOUNT_PROVIDER)[keyof typeof WEB_
 export const WEB_ACCOUNT_PROVIDER_OF: Record<WebSourceTool, WebAccountProvider | undefined> = {
   [SOURCE_TOOL.ClaudeAi]: WEB_ACCOUNT_PROVIDER.Claude,
   [SOURCE_TOOL.ChatGpt]: undefined,
+};
+
+/**
+ * The provider whose accounts each coding agent signs in with, or `undefined`
+ * for a tool whose sessions are not attributed to an account. Annotated over the
+ * whole source-tool vocabulary, so a tool added there is a compile error here
+ * until someone decides. The web chat sites map to `undefined`: an account key on
+ * their rows is the chat's (WEB_ACCOUNT_PROVIDER_OF), never a coding session's.
+ */
+export const AGENT_ACCOUNT_PROVIDER_OF: Record<SourceTool, WebAccountProvider | undefined> = {
+  [SOURCE_TOOL.ClaudeCode]: WEB_ACCOUNT_PROVIDER.Claude,
+  [SOURCE_TOOL.ClaudeDesktop]: undefined,
+  [SOURCE_TOOL.Cursor]: undefined,
+  [SOURCE_TOOL.ChatGpt]: undefined,
+  [SOURCE_TOOL.ClaudeAi]: undefined,
+  [SOURCE_TOOL.Copilot]: undefined,
+  [SOURCE_TOOL.Codex]: undefined,
+  [SOURCE_TOOL.Antigravity]: undefined,
+  [SOURCE_TOOL.Cli]: undefined,
+  [SOURCE_TOOL.Unknown]: undefined,
+  [SOURCE_TOOL.AiTcSdk]: undefined,
 };
 
 // A claude.ai organization id: a UUID, lower-cased in the key so the same

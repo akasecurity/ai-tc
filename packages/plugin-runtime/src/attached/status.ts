@@ -1,13 +1,22 @@
-import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
+import {
+  codingScopeExtras,
+  credentialDigestOf,
+  readAttachedIdentity,
+  readControlPlaneCredentialFile,
+  readWorkspaceSettings,
+} from '@akasecurity/persistence';
 import { readHookFailOpens } from '@akasecurity/plugin-sdk';
 import type {
   AttachmentMode,
   AttachmentScope,
   AttachmentScopeEntry,
   ControlPlaneConnection,
+  WebAccountProvider,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
+  agentKey,
+  attachedIdentityHolds,
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   controlPlaneName,
@@ -17,7 +26,10 @@ import {
   isHistorySyncConsentValid,
   originOnly,
   parseAttachmentScope,
+  parseWebAccountKey,
   resolveScope,
+  WEB_ACCOUNT_PROVIDER,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
@@ -120,6 +132,25 @@ const MODE_LINES: Record<AttachmentMode, string> = {
 const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
 
 /**
+ * The `user` line when no identity record counts for this credential. What a
+ * work subscription is recognised against is then unknown, so none is. Never
+ * the user's address: the record holds only a digest of it.
+ */
+const USER_LINES = {
+  unknown: '  user       not known on this device — work subscriptions are not recognised',
+  untied: '  user       not tied to this key — work subscriptions are not recognised',
+} as const;
+
+/**
+ * What a learned work account forwards, by the provider its key names. An
+ * exhaustive Record, so a provider added later fails typecheck here until its
+ * coding agent's line is written.
+ */
+const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
+  [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
+};
+
+/**
  * The last line of every scope block: what the record does not limit. A scoped
  * attachment's record decides which activity is forwarded, not whether the
  * machine pulls its deployment's policy or sends it a device report.
@@ -208,6 +239,24 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ? attachmentModeOf(state.credential)
       : undefined;
     const plane = deploymentNameForTerminal(connection);
+    // The coding-agent keys a scoped attachment forwards beside its stored
+    // entries, from the identity record bound to this credential, and what the
+    // block says about them. Read only for a scoped credential: a machine-wide
+    // attachment consults no identity record.
+    const extras =
+      state.usable && mode === 'scoped'
+        ? codingScopeExtras(deps.dataDir, settings, state.credential)
+        : [];
+    const work =
+      state.usable && mode === 'scoped'
+        ? workSubscriptionLines(
+            deps.dataDir,
+            settings,
+            connection.endpoint,
+            credentialDigestOf(state.credential.apiKey),
+            extras,
+          )
+        : undefined;
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -255,14 +304,25 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ...lines,
       // Only a scoped attachment is filtered by its scope. A machine-wide one
       // never reads the record, so listing it there would describe a filter
-      // that is not applied.
-      ...(mode === 'scoped'
-        ? attachmentScopeLines(settings.attachmentScope, connection.endpoint)
-        : []),
+      // that is not applied. The work lines come first, so the scope block
+      // still ends with what the record does not limit.
+      ...(work === undefined
+        ? []
+        : [
+            ...work.lines,
+            ...attachmentScopeLines(settings.attachmentScope, connection.endpoint, work.recognised),
+          ]),
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
-      ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs, mode === 'scoped'),
+      ...historyLines(
+        deps.dataDir,
+        settings,
+        connection.endpoint,
+        nowMs,
+        mode === 'scoped',
+        extras,
+      ),
       ...failOpenLines(deps.dataDir, nowMs),
     ].join('\n');
   } catch {
@@ -284,12 +344,14 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * its identity. So the block lists what a forward path forwards, once per
  * identity however often it is stored.
  *
- * ONE INPUT IT CANNOT SEE. The block reads the stored record alone. resolveScope
- * can also merge extra entries, identities that never live in settings.json, into
- * the key set it returns, and this block is not given them. It matches what is
- * forwarded because no caller adds extra entries to the key set today. A caller
- * that ever does must give this block the same entries, or a forward path would
- * send an identity the block does not list.
+ * WHAT IT DOES NOT LIST. The block reads the stored record alone. The forward
+ * paths also add coding-agent keys to the key set (`codingScopeExtras`), which
+ * never live in settings.json: one per work account the device recognised, and
+ * one per account enrolled by hand for coding sessions. `aka status` lists the
+ * recognised ones above this block. `recognised` is how many there are, and
+ * only the headlines read it, so a block that enrolls nothing does not call
+ * local the sessions a recognised work subscription forwards. An account
+ * enrolled by hand is a stored entry, and is listed here like any other.
  *
  * Each state that forwards no activity has its own line, because each has its own
  * cause: no list stored (an older settings writer dropped it, or an attach
@@ -315,18 +377,25 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  *
  * `endpoint` is the deployment the machine is attached to now. Pure; no I/O.
  */
-export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
-  return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
+export function attachmentScopeLines(raw: unknown, endpoint: string, recognised = 0): string[] {
+  return [...scopeStateLines(raw, endpoint, recognised), NOT_LIMITED_LINE];
+}
+
+/** What a scope that enrolls nothing still sends: nothing, or a recognised work subscription's sessions. */
+function nothingEnrolledSends(recognised: number): string {
+  return recognised > 0
+    ? 'only sessions signed in to a recognised work subscription are sent'
+    : 'no activity is sent';
 }
 
 /** The lines for the record's state, before the line every block ends with. */
-function scopeStateLines(raw: unknown, endpoint: string): string[] {
+function scopeStateLines(raw: unknown, endpoint: string, recognised: number): string[] {
   // No list at all and a list this build cannot read are told apart before
   // anything is parsed: parseAttachmentScope answers undefined for both, and
   // what to do about one is not what to do about the other.
   if (raw === undefined || raw === null) {
     return [
-      '  scope      no enrolled list is stored — no activity is sent',
+      `  scope      no enrolled list is stored — ${nothingEnrolledSends(recognised)}`,
       '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
       '             drops the list when it saves settings)',
     ];
@@ -341,7 +410,7 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
       `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
-      '             — no activity is sent here (run `aka enroll` to enroll for this one)',
+      `             — ${nothingEnrolledSends(recognised)} here (run \`aka enroll\` to enroll for this one)`,
     ];
   }
   const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;
@@ -351,16 +420,18 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
     // The filter is redundant while resolveScope keeps every parsed entry. It stays
     // as the literal form of "listed only when the verdict's key set holds the
     // identity", so this block stays honest if resolveScope ever filters. It sees
-    // the stored record only, not extra entries (see the note above).
+    // the stored record only, not the coding-agent keys (see the note above).
     if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
     listed.add(entry.identity);
     rows.push(`             ${entryLine(entry)}`);
   }
   const lines =
     rows.length === 0
-      ? ['  scope      nothing enrolled yet — no activity is sent', ENROLL_HINT]
+      ? [`  scope      nothing enrolled yet — ${nothingEnrolledSends(recognised)}`, ENROLL_HINT]
       : [
-          `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
+          recognised > 0
+            ? `  scope      ${count(rows.length)} enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription`
+            : `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
           ...rows,
         ];
   const unread = unreadEntries(raw, record);
@@ -394,6 +465,76 @@ function unreadEntries(raw: unknown, read: AttachmentScope): number {
 /** A binding field that names someone: present and not empty. */
 function named(value: string | undefined): boolean {
   return value !== undefined && value !== '';
+}
+
+/**
+ * What a SCOPED attachment says about work subscriptions, above its enrolled
+ * list: whether it knows the AKA user who attached it, whether recognition is
+ * on, and each work account it recognised whose sessions it forwards.
+ *
+ * The user is known only from an identity record bound to the credential in
+ * force (`attachedIdentityHolds`), the check every reader of the record makes,
+ * so this line cannot call a record known that the forward paths ignore. A
+ * record bound to another key is said to be one, apart from no record at all.
+ *
+ * Recognition is on unless the scope record turns it off (`workSubscriptionsOn`):
+ * no field is on, and any stored value is off.
+ *
+ * A learned account is listed only while its agent key is among `extras`, the
+ * keys the forward paths add to the scope, so the list is what is forwarded, and
+ * `recognised` counts it for the scope block's headlines. Its key prints the way
+ * `aka enroll --account` takes it. The agent key, the scope tag and the record's
+ * digests never print.
+ *
+ * Reads the identity record; never throws.
+ */
+function workSubscriptionLines(
+  dataDir: string,
+  settings: WorkspaceSettings,
+  endpoint: string,
+  credentialDigest: string,
+  extras: readonly AttachmentScopeEntry[],
+): { lines: string[]; recognised: number } {
+  try {
+    const record = readAttachedIdentity(dataDir);
+    const bound =
+      record !== undefined &&
+      attachedIdentityHolds(record, { endpoint, credentialDigest, mode: 'scoped' })
+        ? record
+        : undefined;
+    const on = workSubscriptionsOn(settings.attachmentScope);
+    const lines = [
+      bound !== undefined
+        ? `  user       the AKA user who attached this device is known (checked ${printableForTerminal(bound.checkedAt.slice(0, 10))})`
+        : record === undefined
+          ? USER_LINES.unknown
+          : USER_LINES.untied,
+      on
+        ? '  work       subscriptions on'
+        : '  work       subscriptions off — turned off on this device',
+    ];
+    if (bound === undefined || !on) return { lines, recognised: 0 };
+    const forwarded = new Set(extras.map((entry) => entry.identity));
+    const learned = bound.workAccounts.filter((entry) => {
+      const key = agentKey(bound.scopeTag, entry.identity);
+      return key !== undefined && forwarded.has(key);
+    });
+    if (learned.length > 0) {
+      const noun = learned.length === 1 ? 'account' : 'accounts';
+      lines.push(`             ${count(learned.length)} work ${noun} validated automatically:`);
+      for (const entry of learned) {
+        const provider = parseWebAccountKey(entry.identity)?.provider;
+        const reach = provider === undefined ? '' : ` — ${WORK_ACCOUNT_REACH[provider]}`;
+        lines.push(
+          `             ${printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH)}` +
+            ` (validated ${printableForTerminal(entry.enrolledAt.slice(0, 10))})${reach}`,
+        );
+      }
+    }
+    return { lines, recognised: learned.length };
+  } catch {
+    return { lines: [USER_LINES.unknown], recognised: 0 };
+  }
 }
 
 /**
@@ -504,14 +645,16 @@ function dropLines(dataDir: string, nowMs: number): string[] {
  * through the scope writes it again. While an older plugin's drain still runs
  * beside a newer one, each pass leaves a line that is true of that pass.
  *
- * A scoped attachment with nothing enrolled for this deployment sends no
- * history at all, and says so instead of any number. That is read from the
- * scope in force now, through the settings this block already read and the
- * endpoint the drain resolves the scope against, not from the file: a pass over
- * an empty scope records "complete" with nothing sent, which would read as a
- * finished drain rather than one with nothing it may send. A refusal the last
- * pass recorded still comes first: while the deployment refuses this machine's
- * key, enrolling resumes nothing, and re-attaching is the step that does.
+ * A scoped attachment with nothing in its scope for this deployment (no stored
+ * entry, and no coding-agent key the forward paths add from the identity record)
+ * sends no history at all, and says so instead of any number. That is read from
+ * the scope in force now, through the settings this block already read, the keys
+ * `renderAttachedStatus` derived from them and the endpoint the drain resolves
+ * the scope against, not from the file: a pass over an empty scope records
+ * "complete" with nothing sent, which would read as a finished drain rather than
+ * one with nothing it may send. A refusal the last pass recorded still comes
+ * first: while the deployment refuses this machine's key, enrolling resumes
+ * nothing, and re-attaching is the step that does.
  *
  * A machine-wide attachment prints none of this, with one exception: a file
  * marked as counted through a scope, which a re-attach that made the machine
@@ -527,6 +670,7 @@ function historyLines(
   endpoint: string,
   nowMs: number,
   scoped: boolean,
+  extras: readonly AttachmentScopeEntry[],
 ): string[] {
   // A grant PAUSED by a widening is not the same news as no grant, and the third
   // surface to say so. After a payload bump every machine that opted in holds a
@@ -555,11 +699,13 @@ function historyLines(
       '             re-attach to resume',
     ];
   }
-  // Nothing enrolled for this deployment: no history is sent, whatever the file
-  // says. See the docblock for why this is read from the scope, not the file.
+  // Nothing in scope for this deployment, stored or added: no history is sent,
+  // whatever the file says. See the docblock for why this is read from the
+  // scope, not the file.
   if (
     scoped &&
-    resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }).keys.size === 0
+    resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }, extras).keys
+      .size === 0
   ) {
     return ['  history    nothing to send — the scope above forwards no activity'];
   }

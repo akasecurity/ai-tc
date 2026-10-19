@@ -1,17 +1,22 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * These six are written by the attached runtime rather than by the attach
+ * Six of these are written by the attached runtime rather than by the attach
  * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
  * its drop tally, the posture self-report's last outcome, and the history
- * drain's progress. None of them is the attachment; all of them describe one.
+ * drain's progress. The seventh, the record of who attached the machine, is
+ * written by the attach and kept current by the sync child and by the hooks that
+ * validate a work account, all through attached-identity.ts in this package.
+ * None of them is the attachment; all of them describe one. Each session's
+ * account state, a directory beside them (session-accounts.ts), is cleared with
+ * them.
  *
  * They live HERE rather than beside the code that writes them because clearing
  * them is a detach concern, and there are two detach surfaces: `aka detach` and
- * the dashboard's settings action. @akasecurity/plugin-runtime owns the writers
- * and re-exports these names, but it sits ABOVE both callers in the graph — the
- * dashboard cannot import it — so a shared list has to sit below, which is this
- * package.
+ * the dashboard's settings action. The attached runtime
+ * (@akasecurity/plugin-runtime) writes most of them and sits ABOVE both callers
+ * in the graph — the dashboard cannot import it — so a shared list has to sit
+ * below, which is this package.
  *
  * WHY A DETACH THAT STOPS AT THE CREDENTIAL IS NOT A DETACH. Two of these go on
  * acting after the attachment is gone:
@@ -29,6 +34,8 @@
  */
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { clearSessionAccountState } from './session-accounts.ts';
 
 /** The policy bundle the sync child caches. */
 export const POLICY_CACHE_FILENAME = 'policy-cache.json';
@@ -48,6 +55,9 @@ export const ATTACHED_POSTURE_REPORT_FILENAME = 'attached-posture-report.json';
 /** How far the background drain of already-recorded activity has got. */
 export const ATTACHED_HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json';
 
+/** Who attached this machine, as digests beside its credential (attached-identity.ts). */
+export const ATTACHED_IDENTITY_FILENAME = 'attached-identity.json';
+
 /**
  * Every file above, so a caller iterates the list rather than restating it.
  *
@@ -61,10 +71,13 @@ export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_IDENTITY_FILENAME,
 ];
 
 /**
- * Remove everything an attachment left behind, in the DATA dir.
+ * Remove everything an attachment left behind, in the DATA dir: every file on
+ * the list, and each session's account state, a directory the per-file removal
+ * cannot take (clearSessionAccountState).
  *
  * `force: true` on each, so a file that was never written is not an error — a
  * machine that attached and never synced has none of these, and that is the
@@ -83,4 +96,5 @@ export function clearAttachmentDerivedState(dataDir: string): void {
       // See above: a leftover is not worth failing a completed detach over.
     }
   }
+  clearSessionAccountState(dataDir);
 }

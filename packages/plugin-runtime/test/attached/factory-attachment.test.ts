@@ -1,19 +1,25 @@
-import { mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type * as PersistenceModule from '@akasecurity/persistence';
 import {
   dataDir as dataDirOf,
   dbPath as dbPathOf,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type * as SchemaModule from '@akasecurity/schema';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import { agentKey, defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { accountScopeOf } from '../../src/account-scope.ts';
 import { resolveGatewayForConfig } from '../../src/attached/factory.ts';
 import type * as GatewayModule from '../../src/attached/gateway.ts';
 import { StandaloneDataGateway } from '../../src/standalone-gateway.ts';
@@ -22,18 +28,36 @@ import { migratedStore } from '../helpers/store-templates.ts';
 /**
  * What the factory hands the attached gateway as its `attachment`.
  *
- * Two seams, both file-scoped `vi.mock`s and so both hoisted:
+ * Three seams, all file-scoped `vi.mock`s and so all hoisted:
  * - the gateway class is subclassed to record the deps it was built with;
- * - the scope resolver is wrapped to record what it was asked.
+ * - the scope resolver is wrapped to record what it was asked, and the extra
+ *   entries it was given beside that;
+ * - the identity-record reader behind those extra entries is wrapped to count
+ *   its calls.
  *
  * The second pins the WIRING (the settings scope and the connection endpoint
  * reach the resolver), which a machine credential cannot show from the outside:
- * machine mode ignores both.
+ * machine mode ignores both. The third is what shows a machine attachment never
+ * reads the identity record: the reader answers none for a machine credential
+ * either way, so only a count of its calls can tell the two apart.
  */
 const seen = vi.hoisted(() => ({
   attachments: [] as unknown[],
   resolveScopeInputs: [] as unknown[],
+  resolveScopeExtras: [] as unknown[],
+  extrasReads: 0,
 }));
+
+vi.mock('@akasecurity/persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof PersistenceModule>();
+  return {
+    ...actual,
+    codingScopeExtras: (...args: Parameters<typeof actual.codingScopeExtras>) => {
+      seen.extrasReads += 1;
+      return actual.codingScopeExtras(...args);
+    },
+  };
+});
 
 vi.mock('@akasecurity/schema', async (importOriginal) => {
   const actual = await importOriginal<typeof SchemaModule>();
@@ -41,6 +65,7 @@ vi.mock('@akasecurity/schema', async (importOriginal) => {
     ...actual,
     resolveScope: (...args: Parameters<typeof actual.resolveScope>) => {
       seen.resolveScopeInputs.push(args[0]);
+      seen.resolveScopeExtras.push(args[1]);
       return actual.resolveScope(...args);
     },
   };
@@ -73,6 +98,8 @@ beforeEach(() => {
   migratedStore.seed(dataDirOf(home));
   seen.attachments.length = 0;
   seen.resolveScopeInputs.length = 0;
+  seen.resolveScopeExtras.length = 0;
+  seen.extrasReads = 0;
 });
 
 afterEach(() => {
@@ -149,5 +176,138 @@ describe('the attachment the factory builds', () => {
     } finally {
       await gateway.close();
     }
+  });
+});
+
+describe('the attachment the factory builds — work accounts', () => {
+  const WORK_KEY = 'github.com/org/api';
+  const LEARNED = `claude:${randomUUID()}`;
+  const MANUAL = `claude:${randomUUID()}`;
+  const EMAIL = ['member', 'example.test'].join('@');
+
+  const scopedCredential = (apiKey = TEST_KEY) =>
+    ({ specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey, mintedAt: AT }) as const;
+
+  // The identity record a scoped attach writes for the credential holding `apiKey`.
+  function writeIdentity(apiKey = TEST_KEY): void {
+    writeAttachedIdentity(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      apiKey,
+      tenantName: 'Acme',
+      userEmail: EMAIL,
+    });
+  }
+
+  // The identity record for `apiKey`, and one work account a hook validated under it.
+  function learn(account: string, apiKey = TEST_KEY): void {
+    writeIdentity(apiKey);
+    recordValidatedWorkAccount(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      credential: scopedCredential(apiKey),
+      key: account,
+    });
+  }
+
+  function agentKeyOf(account: string): string {
+    const record = readAttachedIdentity(dataDirOf(home));
+    if (record === undefined) throw new Error('no identity record was written');
+    const key = agentKey(record.scopeTag, account);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  // The extra entries each resolve for `mode` was given; an absent argument is none.
+  function extrasGivenFor(mode: 'machine' | 'scoped'): unknown[][] {
+    return seen.resolveScopeInputs.flatMap((input, i) =>
+      (input as { mode?: string }).mode === mode
+        ? [(seen.resolveScopeExtras[i] ?? []) as unknown[]]
+        : [],
+    );
+  }
+
+  async function keysFor(settings: SchemaModule.WorkspaceSettings): Promise<string[]> {
+    const gateway = resolveGatewayForConfig(configFor(settings));
+    try {
+      expect(seen.attachments).toHaveLength(1);
+      return [...(seen.attachments[0] as SchemaModule.ResolvedAttachmentScope).keys].sort();
+    } finally {
+      await gateway.close();
+    }
+  }
+
+  it('adds the agent key of each work account the identity record learned', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED);
+    // The precondition, so the case cannot pass on a record that learned nothing.
+    expect(readAttachedIdentity(dataDirOf(home))?.workAccounts.map((e) => e.identity)).toEqual([
+      LEARNED,
+    ]);
+
+    expect(await keysFor(attachedSettings())).toEqual([WORK_KEY, agentKeyOf(LEARNED)].sort());
+    // The keys came through the extra entries, not from the stored scope.
+    expect(seen.extrasReads).toBeGreaterThan(0);
+    expect(extrasGivenFor('scoped').some((extras) => extras.length > 0)).toBe(true);
+  });
+
+  it('adds nothing from an identity record bound to another key', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED, 'another-key-entirely');
+
+    expect(await keysFor(attachedSettings())).toEqual([WORK_KEY]);
+  });
+
+  it('leaves a learned account out once work subscriptions are off, and keeps one enrolled by hand for coding sessions', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    learn(LEARNED);
+    const settings: SchemaModule.WorkspaceSettings = {
+      ...attachedSettings(),
+      attachmentScope: {
+        ...SCOPE,
+        workSubscriptions: 'off',
+        entries: [
+          ...SCOPE.entries,
+          { kind: 'account', identity: MANUAL, enrolledAt: AT, codingAgents: true },
+        ],
+      },
+    };
+
+    // The manual entry's bare key is there for its claude.ai chats, and its
+    // agent key for its coding sessions; the learned account is in neither form.
+    expect(await keysFor(settings)).toEqual([WORK_KEY, MANUAL, agentKeyOf(MANUAL)].sort());
+  });
+
+  it('adds nothing on a machine credential, whatever the identity record learned', async () => {
+    writeMachineCredential();
+    learn(LEARNED);
+
+    expect(await keysFor(attachedSettings())).toEqual([]);
+    // The identity record is never read on a machine attachment, and the resolve
+    // is given no extra entries.
+    expect(seen.extrasReads).toBe(0);
+    const given = extrasGivenFor('machine');
+    expect(given.length).toBeGreaterThan(0);
+    expect(given.every((extras) => extras.length === 0)).toBe(true);
+  });
+
+  // A lock that cannot be taken because the data directory is gone is not one a
+  // later call cures, so the scope answers refused and leaves a caller no retry.
+  // The gateway is closed before the directory is removed, so nothing holds a
+  // file in it open; the scope learns through the directory path alone.
+  it('answers refused, not timeout, when the identity record lock cannot be taken', async () => {
+    writeControlPlaneCredential(settingsDirOf(home), scopedCredential());
+    writeIdentity();
+    const gateway = resolveGatewayForConfig(configFor(attachedSettings()));
+    const scope = accountScopeOf(gateway);
+    try {
+      // The precondition, so the case cannot pass on a scope that refuses for another reason.
+      expect(scope?.learn(LEARNED)).toBe('written');
+    } finally {
+      await gateway.close();
+    }
+
+    removeTree(dataDirOf(home));
+    expect(existsSync(dataDirOf(home))).toBe(false);
+
+    expect(scope?.learn(`claude:${randomUUID()}`)).toBe('refused');
   });
 });

@@ -30,10 +30,13 @@ import {
   readForwardHealth,
   readSightingSharing,
   readWorkspaceSettings,
+  removeAttachedIdentity,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir,
   settledDecisionHolds,
+  turnWorkSubscriptionsOff,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeOwnerOnlyFileSync,
   writesSettingsFirst,
@@ -57,6 +60,7 @@ import {
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
   isAttachmentScopeBoundTo,
+  isAttachmentScopeValid,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isSightingShareConsentValid,
@@ -77,6 +81,7 @@ import {
   type WebChatCapture,
   type WebChatCaptureConsentChoice,
   webChatCaptureOf,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -839,6 +844,22 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // Why a settings write failed: an administrator's lock, or a write that did not land.
   const settingsRefusal = (error: unknown): string =>
     error instanceof ManagedFieldError ? managedRefusal(error.fields) : SETTINGS_WRITE_ERROR;
+  // Who the key belongs to, as digests beside the credential, once both writes
+  // have landed: recorded for a scoped attach, removed for a machine-wide one,
+  // with every session's account state cleared either way. A record that cannot
+  // be written leaves none, and the attach stands.
+  const recordAttachedAccount = (): void => {
+    if (mode === 'scoped') {
+      writeAttachedIdentity(dataDir(), {
+        endpoint,
+        apiKey: accessKey,
+        tenantName: identity.tenantName,
+        userEmail: identity.userEmail,
+      });
+    } else {
+      removeAttachedIdentity(dataDir());
+    }
+  };
 
   if (settingsFirst) {
     // The first write: when it fails nothing has changed and there is nothing to
@@ -858,6 +879,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       revalidatePath('/settings');
       return { ok: false, error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS };
     }
+    recordAttachedAccount();
     revalidatePath('/settings');
     return { ok: true };
   }
@@ -888,6 +910,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     const reason = settingsRefusal(error);
     return { ok: false, error: note === undefined ? reason : `${reason} ${note}` };
   }
+  recordAttachedAccount();
   revalidatePath('/settings');
   return { ok: true };
 }
@@ -1190,7 +1213,9 @@ function replacesPersonalDevice(mode: AttachmentMode, ...reads: CredentialFileRe
  * record bound to them: a record for another endpoint, for someone else, or with
  * no binding at all cannot be checked, and one left beside a machine-wide
  * credential (or none) belongs to an attachment that ended, so it does not carry
- * over.
+ * over. The one thing the fresh record takes from the replaced one is its opt-out
+ * of work-subscription recognition, and only when that record is readable and
+ * names this endpoint.
  *
  * `endpoint` is the effective one: a scoped attach happens only where no
  * administrator governs the connection, so nothing overlays it.
@@ -1205,7 +1230,11 @@ function scopeRecordFor(
   keepsList: (stored: unknown) => boolean,
 ): unknown {
   if (who === undefined) return undefined;
-  return keepsList(raw) ? raw : freshAttachmentScope(endpoint, who);
+  if (keepsList(raw)) return raw;
+  const fresh = freshAttachmentScope(endpoint, who);
+  return isAttachmentScopeValid(raw, endpoint) && !workSubscriptionsOn(raw)
+    ? turnWorkSubscriptionsOff(fresh, endpoint).next
+    : fresh;
 }
 
 /**

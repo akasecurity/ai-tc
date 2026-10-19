@@ -5,6 +5,7 @@
  * it never throws — it runs with stdio ignored and nobody watching, so a
  * rejection would be an unhandled rejection that reaches no one.
  */
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,9 +18,13 @@ import {
   dataDir,
   dbPath,
   openLocalDatabase,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   settingsDir,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { agentKey } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -310,6 +315,104 @@ describe('runContentRetentionPass', () => {
         done: true,
       });
       expect(bodyOf('enrolled')).toBe('w'.repeat(100));
+    });
+
+    // A learned work account: the identity record a scoped attach writes for the
+    // credential holding `apiKey`, and one account a hook validated under it.
+    // Returns the account's agent key.
+    function learn(apiKey = API_KEY): string {
+      const account = `claude:${randomUUID()}`;
+      writeAttachedIdentity(dataDir(base), {
+        endpoint: ENDPOINT,
+        apiKey,
+        tenantName: 'Acme',
+        userEmail: ['member', 'example.test'].join('@'),
+      });
+      recordValidatedWorkAccount(dataDir(base), {
+        endpoint: ENDPOINT,
+        credential: { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey, mintedAt: AT },
+        key: account,
+      });
+      const record = readAttachedIdentity(dataDir(base));
+      if (record === undefined) throw new Error('no identity record was written');
+      const key = agentKey(record.scopeTag, account);
+      if (key === undefined) throw new Error('no agent key was built');
+      return key;
+    }
+
+    // An unsent body stamped with `scopeKey`, past the horizon and NOT marked owed:
+    // an owed body is held whatever its key, so only an unowed one shows the key
+    // test.
+    function seedAgentBody(scopeKey: string): void {
+      const raw = new DatabaseSync(dbPath(base));
+      try {
+        raw
+          .prepare(
+            `INSERT INTO audit_events (id, event_type, started_at, content, content_hash, attributes)
+             VALUES ('agent', 'prompt', ?, ?, 'hash-agent', ?)`,
+          )
+          .run(Date.now() - 60 * DAY, 'a'.repeat(100), JSON.stringify({ scope_key: scopeKey }));
+      } finally {
+        raw.close();
+      }
+    }
+
+    it('holds an unsent body stamped for a learned work account while work subscriptions are on', () => {
+      reader.mode = 'scoped';
+      attach('v1');
+      seedLane();
+      seedAgentBody(learn());
+
+      expect(runContentRetentionPass({ base })).toEqual({
+        ran: true,
+        rowsExpired: 2,
+        bytesFreed: 200,
+        done: true,
+      });
+      expect(bodyOf('agent')).toBe('a'.repeat(100));
+      expect(bodyOf('enrolled')).toBe('w'.repeat(100));
+    });
+
+    it('expires that body once work subscriptions are off', () => {
+      reader.mode = 'scoped';
+      attach('v1');
+      applyOnboarding(
+        {
+          attachmentScope: {
+            endpoint: ENDPOINT,
+            workSubscriptions: 'off',
+            entries: [{ kind: 'repo', identity: WORK, enrolledAt: AT }],
+          },
+        },
+        base,
+        null,
+      );
+      seedLane();
+      seedAgentBody(learn());
+
+      expect(runContentRetentionPass({ base })).toEqual({
+        ran: true,
+        rowsExpired: 3,
+        bytesFreed: 300,
+        done: true,
+      });
+      expect(bodyOf('agent')).toBeNull();
+      expect(bodyOf('enrolled')).toBe('w'.repeat(100));
+    });
+
+    it('expires that body when the identity record belongs to another key', () => {
+      reader.mode = 'scoped';
+      attach('v1');
+      seedLane();
+      seedAgentBody(learn('another-key-entirely'));
+
+      expect(runContentRetentionPass({ base })).toEqual({
+        ran: true,
+        rowsExpired: 3,
+        bytesFreed: 300,
+        done: true,
+      });
+      expect(bodyOf('agent')).toBeNull();
     });
   });
 });

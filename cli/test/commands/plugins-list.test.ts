@@ -119,3 +119,13 @@ describe('aka plugins list — an install an organization manages', () => {
     expect(out).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });
+
+describe('aka plugins list — a hint-only agent', () => {
+  it('lists GitHub Copilot as available', async () => {
+    const out = await list();
+
+    const row = out.split('\n').find((line) => line.startsWith('  copilot '));
+    expect(row).toBeDefined();
+    expect(row ?? '').toContain('GitHub Copilot');
+  });
+});

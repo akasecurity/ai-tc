@@ -2,7 +2,7 @@ import type { HarnessEventsResponse, HarnessSummary } from '@akasecurity/schema'
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HarnessOverview } from '../../src/inventory/HarnessOverview.tsx';
+import { HarnessInventory } from '../../src/inventory/HarnessInventory.tsx';
 
 // The enforcement-event rows bucket each event as "Today" / "Yesterday" / a
 // date, and that bucket is relative to an instant. It is the same hydration
@@ -43,7 +43,7 @@ function events(occurredAt: string): HarnessEventsResponse {
   };
 }
 
-describe('HarnessOverview buckets its event rows against the instant it is given', () => {
+describe('HarnessInventory buckets its event rows against the instant it is given', () => {
   // A clock a long way from either fixture instant, so a helper that reached for
   // it would bucket every row as a bare date and fail both cases below.
   beforeEach(() => {
@@ -56,11 +56,10 @@ describe('HarnessOverview buckets its event rows against the instant it is given
 
   function render(occurredAt: string, renderedAt: number): string {
     return renderToStaticMarkup(
-      <HarnessOverview
+      <HarnessInventory
         harness={harness()}
         events={events(occurredAt)}
-        onSelect={noop}
-        onSelectProject={noop}
+        onOpen={noop}
         renderedAt={renderedAt}
         locale="en-US"
       />,

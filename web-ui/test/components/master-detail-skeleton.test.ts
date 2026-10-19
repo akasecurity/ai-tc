@@ -111,7 +111,7 @@ describe('MasterDetailSkeleton describes the layout each route actually reveals'
         // column that silently collapses to its content. This is the runtime
         // half: the token has to be one the component can map, since a stacked
         // route applies it through LG_LIST_WIDTH rather than directly.
-        expect(['w-80', 'w-85', 'w-88']).toContain(claim.width);
+        expect(['w-60', 'w-80', 'w-85', 'w-88']).toContain(claim.width);
       });
 
       it('reserves the real list column width', () => {

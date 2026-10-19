@@ -229,8 +229,10 @@ interface ScopeReasonFlags {
 
 // Scope and reason, from flags or (on a terminal) interactive prompts. Scope
 // is an explicit choice — no flag and no TTY is an error, never a default.
-// The label is optional and never prompted for; a bad one is refused before
-// any prompt, so nothing is asked for a grant that will not be written.
+// The label is optional and never prompted for. A bad one is refused before
+// the scope and reason prompts, so a reason is never typed for a grant that
+// will not be written — though a value or ledger row may already have been
+// asked for by then.
 async function resolveScopeAndReason(
   flags: ScopeReasonFlags,
   io: Prompter,

@@ -353,7 +353,7 @@ describe('ConfigInventoryRequest', () => {
     expect(isProjectScopedConfigItem(items[2] ?? { attributes: {} })).toBe(true);
     const result = ConfigInventoryRequest.safeParse({ harness, items });
     expect(result.success).toBe(false);
-    expect(result.error?.issues.map((issue) => issue.path.join('.'))).toEqual(['projectKey']);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([['projectKey']]);
   });
 
   it('accepts machine scoped items without a projectKey', () => {

@@ -32,9 +32,10 @@ export interface HookAccount {
   readonly basis: AccountBasis | undefined;
   /**
    * What this hook's check answered, when one ran. A matched key the identity record refuses
-   * to learn gives no account and is answered `cap-reached`, whatever the cause: for example the
-   * learned account cap, a record that does not hold for the gateway's credential, or a record
-   * lock that cannot be taken for a reason other than a timeout.
+   * to learn gives no account. Three causes can refuse it: the learned account cap is full, the
+   * record does not hold for the gateway's credential, or the record cannot be locked or written
+   * for a reason other than a lock timeout. The view names the cap for all three, so it does not
+   * tell them apart.
    */
   readonly view: AccountCheck | undefined;
   /** The binding hash, set when this invocation's own full check validated the key. */
@@ -137,10 +138,12 @@ function checkSession(gateway: object, sessionId: string, input: HookAccountInpu
     const { check } = result;
     if (!isAccountMatch(check)) return { ...NO_ACCOUNT, view: check };
     // The write re-checks the record inside its lock, so it can refuse a key the
-    // check passed. A refused write, whatever the cause (see `HookAccount.view`),
-    // is reported as the cap and the key is not stamped, so it is not admitted
-    // either. A write that times out leaves the key unwritten; the admit below
-    // still forwards this invocation, and the next full check writes it.
+    // check passed: the cap is full, or the record does not hold for the gateway's
+    // credential. It also refuses when the record cannot be locked or written for
+    // a reason other than a timeout. Each is reported as the cap (see
+    // `HookAccount.view`) and the key is not stamped, so it is not admitted either.
+    // A write that times out leaves the key unwritten; the admit below still
+    // forwards this invocation, and the next full check writes it.
     if (result.mayAdmit && scope.learn(check.key) === 'refused') {
       return { ...NO_ACCOUNT, view: { none: 'cap-reached' } };
     }

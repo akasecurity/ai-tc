@@ -12,6 +12,7 @@ import { ESLint, Linter } from 'eslint';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FileLock from '../../../../packages/persistence/src/file-lock.ts';
+import type * as Paths from '../../../../packages/persistence/src/paths.ts';
 import type * as Remote from '../../../../packages/remote/src/index.ts';
 import { scanHistory } from '../../src/history/scan.ts';
 import {
@@ -91,6 +92,20 @@ vi.mock('../../../../packages/persistence/src/file-lock.ts', async (importOrigin
   };
 });
 
+// A write to the identity record that fails once its lock is held, which
+// `recordValidatedWorkAccount` also answers as refused. Every other write is the real one.
+const unwritable = vi.hoisted((): { file: string | undefined } => ({ file: undefined }));
+vi.mock('../../../../packages/persistence/src/paths.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof Paths>();
+  return {
+    ...real,
+    writeOwnerOnlyFileSync: (file: string, data: string): void => {
+      if (file === unwritable.file) throw new Error('refused by the test');
+      real.writeOwnerOnlyFileSync(file, data);
+    },
+  };
+});
+
 // The UserPromptSubmit and PostToolUse cases drive their entries (runEntry):
 // stdin is the payload this holds, and what the entry would print is dropped.
 // Every other case calls an importable run. The fail-open count is a spy so a
@@ -113,6 +128,7 @@ afterEach(() => {
   lock.held = false;
   cap.filledBy = [];
   unavailable.file = undefined;
+  unwritable.file = undefined;
   dev.dispose();
 });
 
@@ -686,6 +702,12 @@ describe('a work session whose key the identity record refuses to learn', () => 
         unavailable.file = join(dev.dataDir, ATTACHED_IDENTITY_FILENAME);
       },
     ],
+    [
+      'the record cannot be written once its lock is taken',
+      () => {
+        unwritable.file = join(dev.dataDir, ATTACHED_IDENTITY_FILENAME);
+      },
+    ],
   ])('gives no account and answers the cap when %s', async (_cause, refuse) => {
     const t = startedSession(dev.workOrg);
     const gateway = gatewayFor();
@@ -792,6 +814,26 @@ describe('an opted-out attachment', () => {
     const state = dev.sessionState(t.sessionId);
     expect(state.log.trim().split('\n')).toEqual([expect.stringMatching(/"b":"startup"/)]);
     expect(state.scanCache).toBe(false);
+  });
+
+  it('answers opted-out, not the cap, for a work org that is not the one enrolled by hand', async () => {
+    dev.attach({ workSubscriptions: 'off', manual: [`claude:${randomUUID()}`] });
+    dev.login({ org: dev.workOrg });
+    const t = startedSession(dev.workOrg);
+    const gateway = gatewayFor();
+    try {
+      const account = resolveHookAccount(gateway, {
+        dataDir: dev.dataDir,
+        sessionId: t.sessionId,
+        transcriptPath: t.path,
+        cwd: dev.personal,
+      });
+      expect(account.accountKey).toBeUndefined();
+      expect(account.view).toEqual({ none: 'opted-out' });
+    } finally {
+      await gateway.close();
+    }
+    expect(dev.learnedKeys()).toEqual([]);
   });
 
   it('still forwards a Claude account enrolled by hand', async () => {

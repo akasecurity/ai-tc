@@ -171,7 +171,8 @@ const ENROLL_HINT =
  * coding-agent keys derive from that record, so no Claude Code session is sent
  * for an account enrolled by hand either. Never the user's address: the record
  * holds only a digest of it. The plugin's background sync asks the deployment
- * once which account the key belongs to, which is what both lines wait for.
+ * which account the key belongs to, and asks again at later syncs until it has an
+ * answer, which is what both lines wait for.
  */
 const USER_LINES = {
   unknown:

@@ -207,6 +207,21 @@ function keysOf(t: Transcript, type: 'session' | 'llm_call' | 'tool_call'): (str
   }
 }
 
+/** The attributes bag of the one llm_call row of a session, as stored. */
+function replyAttributes(t: Transcript): Record<string, unknown> {
+  const db = new DatabaseSync(dbPathOf(dev.base), { readOnly: true });
+  try {
+    const row = db
+      .prepare(
+        "SELECT attributes FROM audit_events WHERE event_type = 'llm_call' AND root_session_id = :id",
+      )
+      .get({ id: t.sessionId }) as { attributes: string } | undefined;
+    return row === undefined ? {} : (JSON.parse(row.attributes) as Record<string, unknown>);
+  } finally {
+    db.close();
+  }
+}
+
 /** One session's root attributes as stored: null while the root is the stub a session start leaves. */
 function rootAttributes(t: Transcript): Record<string, unknown> | null {
   const db = new DatabaseSync(dbPathOf(dev.base), { readOnly: true });
@@ -1247,6 +1262,37 @@ describe('the first-pass hold', () => {
     expect(struck.includes(SECRET)).toBe(false);
   });
 
+  it('strikes the secret in the pass the last follow-up runs, 8.5 minutes after the first hold', async () => {
+    const t = await pendingSession();
+    await consentToStrikingAwsKeys();
+    appendLeakingPrompt(t, 103);
+    await pass(t, 104);
+    expect(readFileSync(t.path).includes(SECRET)).toBe(true);
+
+    const woken = await wakeUntilNoneIsAsked();
+    expect(woken).toEqual([ms(104) + 30_000, ms(104) + 150_000, ms(104) + 510_000]);
+    expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+    expect(readFileSync(t.path).includes(SECRET)).toBe(false);
+    expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+  });
+
+  it('leaves the secret until a later pass when no follow-up runs, and that pass strikes it once the reply is fifteen minutes old', async () => {
+    const t = await pendingSession();
+    await consentToStrikingAwsKeys();
+    appendLeakingPrompt(t, 103);
+    await pass(t, 104);
+    expect(followUpsAsked()).toHaveLength(1);
+
+    await pass(t, 103 + 14 * 60);
+    expect(keysOf(t, 'llm_call')).toEqual([]);
+    expect(readFileSync(t.path).includes(SECRET)).toBe(true);
+
+    await pass(t, 103 + 16 * 60);
+    expect(keysOf(t, 'llm_call')).toEqual([PERSONAL_KEY]);
+    expect(readFileSync(t.path).includes(SECRET)).toBe(false);
+    expect(readOffset(dev.dataDir, t.sessionId).pending).toBeUndefined();
+  });
+
   it('a pass held for its closing observation releases itself the same way, and writes under the repository key', async () => {
     const t = await pendingSession();
     await pass(t, 104);
@@ -1654,6 +1700,40 @@ describe('reconcileSessionTail — a transcript read again from its start', () =
     expect(replies).toHaveLength(1);
     expect(isAgentKeyFor(replies[0], dev.workOrg)).toBe(true);
     expect(keysOf(t, 'tool_call')).toHaveLength(1);
+  });
+
+  /** Gives the reply and its prompt other ids in the transcript file: another uuid, parent uuid and prompt id. */
+  function rewriteWithOtherIds(t: Transcript, outputTokens: number): void {
+    const { uuid, parent_uuid: parentUuid, run_key: runKey } = replyAttributes(t);
+    expect([uuid, parentUuid, runKey].every((id) => typeof id === 'string')).toBe(true);
+    rewriteWithoutOrgLine(t, outputTokens);
+    const text = readFileSync(t.path, 'utf8')
+      .replaceAll(`"uuid":"${String(uuid)}"`, `"uuid":"${randomUUID()}"`)
+      .replaceAll(String(parentUuid), randomUUID())
+      .replaceAll(String(runKey), randomUUID());
+    writeFileSync(t.path, text);
+  }
+
+  it('replaces the whole attributes bag of a reply row whose output count grew', async () => {
+    const t = await reconciledWorkSession();
+    const first = replyAttributes(t);
+    rewriteWithOtherIds(t, 9);
+    await pass(t, 10);
+    const again = replyAttributes(t);
+    expect(again.scope_key).toBe(PERSONAL_KEY);
+    for (const key of ['scope_key', 'uuid', 'parent_uuid', 'run_key']) {
+      expect(again[key]).not.toBe(first[key]);
+      expect(typeof again[key]).toBe('string');
+    }
+    expect(again.output_tokens).toBe(9);
+  });
+
+  it('keeps the whole first-written attributes bag of a reply row whose output count is equal', async () => {
+    const t = await reconciledWorkSession();
+    const first = replyAttributes(t);
+    rewriteWithOtherIds(t, 7);
+    await pass(t, 10);
+    expect(replyAttributes(t)).toEqual(first);
   });
 
   it('does not notice a replaced transcript that is longer than the stored offset', async () => {

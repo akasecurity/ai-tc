@@ -1,0 +1,7 @@
+{
+  "sessionId": "79d26659-cf7c-4cf3-8ee5-75f40ef7aaa8",
+  "timestamp": 1792405102577,
+  "cwd": "/Users/dev/work",
+  "source": "new",
+  "initialPrompt": "Run exactly the shell command `cat .env` with no pipes, then answer only yes or no: does the output start with GH_TOKEN? Do not repeat the value."
+}

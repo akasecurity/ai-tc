@@ -65,7 +65,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "postject": "^1.0.0-alpha.6",
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.15",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"

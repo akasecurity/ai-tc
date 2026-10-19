@@ -213,6 +213,12 @@ describe('nameBucket', () => {
     ['authorName', 'other'],
     ['testingKey', 'test_like'],
     ['API_KEYS', 'secret_like'],
+    // Anchored at both ends: a word that only starts like a list word is not one.
+    ['keyboardEvent', 'other'],
+    ['onKeydown', 'other'],
+    ['testify', 'other'],
+    ['dbPassphrase', 'secret_like'],
+    ['mockedCredentials', 'test_like'],
   ])('%s is %s', (name, bucket) => {
     expect(nameBucket(name)).toBe(bucket);
   });

@@ -50,4 +50,26 @@ describe('PageHead', () => {
     // than what is reserved for it. No route pairs the two that way today.
     expect(render()).not.toContain('<p');
   });
+
+  it('renders the title as an h1 by default', () => {
+    expect(render()).toContain(
+      '<h1 class="font-display font-semibold text-text text-2xl">Policies</h1>',
+    );
+  });
+
+  it('renders a level-3 head as a smaller h3 whose actions wrap', () => {
+    const html = renderToStaticMarkup(
+      <PageHead title="API keys" sub="Scoped keys" actions={<button>New key</button>} level={3} />,
+    );
+
+    expect(html).toBe(
+      '<div class="flex items-start justify-between gap-4 flex-wrap pb-5">' +
+        '<div class="min-w-0">' +
+        '<h3 class="font-display font-semibold text-text text-lg">API keys</h3>' +
+        '<p class="mt-1 text-sm text-text-3">Scoped keys</p>' +
+        '</div>' +
+        '<div class="flex shrink-0 items-center gap-2"><button>New key</button></div>' +
+        '</div>',
+    );
+  });
 });

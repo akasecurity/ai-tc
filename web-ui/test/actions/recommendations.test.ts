@@ -10,7 +10,7 @@ import {
   type SqliteResolutionsRepository,
 } from '@akasecurity/persistence';
 import type { DetectedFindingWithKey, IngestEvent } from '@akasecurity/schema';
-import { DISMISS_CONFIRMATION } from '@akasecurity/schema';
+import { DISMISS_CONFIRMATION, DismissMethod } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { dismissRecommendation } from '../../app/(app)/security/actions.ts';
@@ -196,19 +196,22 @@ describe('dismissRecommendation — what it writes', () => {
     expect(autocommitRead).not.toHaveBeenCalled();
   });
 
-  it('records the method the caller chose, not a fixed one', async () => {
+  // Every reason the dialog offers, so a method-keyed predicate, a column
+  // constraint or an allowlist that drops one of them fails here.
+  it.each(DismissMethod.options)('accepts and records the %s reason', async (method) => {
     const db = store();
     const key = seed(db);
     db.close();
     resetSingleton();
 
-    await expectNoRejection(() => dismissRecommendation({ ...valid, method: 'false-positive' }));
+    const res = await expectNoRejection(() => dismissRecommendation({ ...valid, method }));
+    expect(res).toEqual({ ok: true, dismissed: 1 });
 
     resetSingleton();
     const after = store();
     // Asserted as the exact value: a hardcoded 'acknowledged' would satisfy a
     // "some method was written" check while discarding the reader's answer.
-    expect(latest(after.resolutions, key)?.method).toBe('false-positive');
+    expect(latest(after.resolutions, key)).toMatchObject({ status: 'dismissed', method });
     after.close();
   });
 

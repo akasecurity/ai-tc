@@ -61,6 +61,10 @@ export default defineConfig({
     sync: 'src/sync.ts',
     'history-sync': 'src/history-sync.ts',
     'content-retention': 'src/content-retention.ts',
+    // The detached fail-open counting child, started by runHookFailOpen once a
+    // hook body has thrown or outrun its watchdog. Lands flat in scripts/
+    // beside the hooks, because that is where the wrapper resolves it from.
+    'fail-open-count': 'src/fail-open-count.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

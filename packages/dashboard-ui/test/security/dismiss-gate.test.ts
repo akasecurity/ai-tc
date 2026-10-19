@@ -56,6 +56,26 @@ describe('DISMISS_METHODS', () => {
     expect(DISMISS_METHODS.map((m) => m.value).sort()).toEqual([...DismissMethod.options].sort());
   });
 
+  it('lets a person mark a match as test or example data, apart from a false positive', () => {
+    // Test fixtures and example values are real matches of a correct rule, so
+    // they are neither 'the rule is wrong' nor 'accepted risk'.
+    expect(DismissMethod.options).toContain('test-or-example');
+    const offered = DISMISS_METHODS.find((m) => m.value === 'test-or-example');
+    expect(offered?.label).toBe('Test or example data');
+    // The description is what separates it from 'Not a real finding': the match
+    // is real and the rule is right, only the value is a fixture or a sample.
+    // Pinned as exact strings: each states a different claim, and a loose match
+    // would pass a flipped one. The dialog closes every open finding of the rule,
+    // so this one attests to the whole set, not to one value.
+    expect(offered?.description).toBe(
+      'Every match here is real, but every value is a test fixture or an example, not a live one.',
+    );
+    const falsePositive = DISMISS_METHODS.find((m) => m.value === 'false-positive');
+    expect(falsePositive?.description).toBe(
+      'The rule is wrong: it matched something that is not sensitive.',
+    );
+  });
+
   it('labels each one in plain words, without naming the enum member', () => {
     for (const m of DISMISS_METHODS) {
       expect(m.label).not.toBe(m.value);

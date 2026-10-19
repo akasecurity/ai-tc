@@ -221,17 +221,20 @@ describe('FindingUser', () => {
 });
 
 describe('ResolutionMethod enum', () => {
-  it('accepts all 6 resolution methods', () => {
-    for (const v of [
+  it('accepts every resolution method, and no member goes unlisted here', () => {
+    const methods = [
       'enforced-in-flight',
       'fixed-at-source',
       'exception',
       'acknowledged',
       'false-positive',
+      'test-or-example',
       'redetected',
-    ]) {
+    ];
+    for (const v of methods) {
       expect(ResolutionMethod.safeParse(v).success).toBe(true);
     }
+    expect([...ResolutionMethod.options].sort()).toEqual([...methods].sort());
   });
 
   it('rejects unknown values', () => {

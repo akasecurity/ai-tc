@@ -395,6 +395,22 @@ export const GROWTH_CONFIRM_SAMPLES = 15;
 // the largest size being sampled is at or over the budget.
 export const OVER_BUDGET_READINGS = 3;
 
+// With a corroborating clock, an over-budget pair is a breach only if that
+// clock's fastest reading of the larger size is at least this much.
+//
+// A growth reading is one whole scan rather than a walk cut short at its first
+// slow probe, so a scan that really does a budget's worth of work reads close
+// to the full budget on a work clock whatever the machine is doing. On a clock
+// that advances in whole scheduler ticks (16ms on the Windows runner) it reads
+// at most one tick under, so at least 84ms. A scan that only took that long
+// because its thread waited for a core reads what it executed. Measured on an
+// arm64 Mac with coverage instrumentation on, the bundled rules' worst scan at
+// the top size burns 6.4ms of thread CPU quiet and 8.6ms under 30 CPU burners
+// on 10 cores, where its wall reading was 34ms; loaded CI runners have read
+// rules like it at 104-142ms on the wall. Half the budget sits above any
+// benign scan plus a tick and below any breach minus one.
+export const GROWTH_CORROBORATION_FLOOR_MS = BUDGET_MS / 2;
+
 /** A named generator of adversarial text of an exact length. */
 export interface GrowthCorpus {
   name: string;
@@ -485,6 +501,11 @@ export interface GrowthBreach {
   largeMs: number;
   nextChars?: number;
   nextMs?: number;
+  /**
+   * The corroborating clock's fastest reading at `largeChars`, on an
+   * `over-budget` breach found with one.
+   */
+  largeWorkMs?: number;
 }
 
 // The fastest reading of each text, in the order given. Each round scans every
@@ -501,23 +522,36 @@ export interface GrowthBreach {
 // Sampling stops short of `rounds` once OVER_BUDGET_READINGS rounds have run
 // and every reading of the last text was at or over the budget, which bounds
 // what an expensive pattern costs to measure.
+//
+// `work` is the corroborating clock's fastest reading of each text over the
+// same windows, or `undefined` when no corroborating clock was given.
 function fastestReadings<const T extends readonly string[]>(
   rule: Rule,
   texts: T,
   rounds: number,
   now: ProbeClock,
-): { [K in keyof T]: number } {
+  corroborate: ProbeClock | undefined,
+): { ms: { [K in keyof T]: number }; work: { [K in keyof T]: number } | undefined } {
   const context = scanContextFor(rule);
   const fastest = texts.map(() => Infinity);
+  const fastestWork = texts.map(() => Infinity);
   for (let round = 0; round < rounds; round++) {
     texts.forEach((text, i) => {
       const start = now();
+      const workStart = corroborate?.();
       scan(text, [rule], context);
       fastest[i] = Math.min(fastest[i] ?? Infinity, now() - start);
+      const workEnd = corroborate?.();
+      if (workStart !== undefined && workEnd !== undefined) {
+        fastestWork[i] = Math.min(fastestWork[i] ?? Infinity, workEnd - workStart);
+      }
     });
     if (round + 1 >= OVER_BUDGET_READINGS && (fastest.at(-1) ?? 0) >= BUDGET_MS) break;
   }
-  return fastest as { [K in keyof T]: number };
+  return {
+    ms: fastest as { [K in keyof T]: number },
+    work: corroborate ? (fastestWork as { [K in keyof T]: number }) : undefined,
+  };
 }
 
 function ratio(smallerMs: number, largerMs: number): number {
@@ -533,8 +567,10 @@ function isSuperlinear(smallMs: number, largeMs: number): boolean {
 //
 // The first pass samples the pair alone. A larger reading at or over the
 // budget is an `over-budget` breach; the budget is judged at this size and at
-// no other. A pair at or under the ratio is cleared without scanning anything
-// larger.
+// no other. With a corroborating clock, the breach also needs that clock's
+// fastest larger reading at GROWTH_CORROBORATION_FLOOR_MS or more; a pair that
+// read over the budget without it is judged on its ratio like any other. A
+// pair at or under the ratio is cleared without scanning anything larger.
 //
 // A pair over the ratio is sampled again in a second pass, together with the
 // doubling after it, and is a `superlinear` breach only if both ratios read
@@ -559,22 +595,40 @@ function judgePair(
   corpus: GrowthCorpus,
   small: number,
   now: ProbeClock,
+  corroborate: ProbeClock | undefined,
 ): { breach?: GrowthBreach; nextMs?: number } {
   const pair = { corpus: corpus.name, smallChars: small, largeChars: small * 2 };
   const smallText = corpus.build(pair.smallChars);
   const largeText = corpus.build(pair.largeChars);
-  const first = fastestReadings(rule, [smallText, largeText], GROWTH_SAMPLES, now);
-  if (first[1] >= BUDGET_MS) {
-    return { breach: { reason: 'over-budget', ...pair, smallMs: first[0], largeMs: first[1] } };
+  const { ms: first, work } = fastestReadings(
+    rule,
+    [smallText, largeText],
+    GROWTH_SAMPLES,
+    now,
+    corroborate,
+  );
+  if (first[1] >= BUDGET_MS && (work === undefined || work[1] >= GROWTH_CORROBORATION_FLOOR_MS)) {
+    return {
+      breach: {
+        reason: 'over-budget',
+        ...pair,
+        smallMs: first[0],
+        largeMs: first[1],
+        ...(work === undefined ? {} : { largeWorkMs: work[1] }),
+      },
+    };
   }
   if (!isSuperlinear(first[0], first[1])) return {};
 
   const nextChars = pair.largeChars * 2;
-  const [smallMs, largeMs, nextMs] = fastestReadings(
+  const {
+    ms: [smallMs, largeMs, nextMs],
+  } = fastestReadings(
     rule,
     [smallText, largeText, corpus.build(nextChars)],
     GROWTH_CONFIRM_SAMPLES,
     now,
+    undefined,
   );
   if (ratio(largeMs, nextMs) <= MAX_GROWTH_RATIO || !isSuperlinear(smallMs, largeMs)) {
     return { nextMs };
@@ -600,6 +654,10 @@ function judgePair(
  * sampled at is not scanned again on the way up: its fastest reading stands in
  * for the single one. `judgePair` holds the second pass.
  *
+ * `now` takes every reading the verdicts are given on. `corroborate`, when
+ * given, is read over the same windows and only gates the `over-budget`
+ * breach; see `judgePair`.
+ *
  * Call this only on a rule that already passed `worstProbeMs`. A pattern that
  * backtracks exponentially does not return on a 2,000-char input, and the
  * short probes are what catch it cheaply.
@@ -607,6 +665,7 @@ function judgePair(
 export function superlinearGrowth(
   rule: Rule,
   now: ProbeClock = wallClock,
+  corroborate?: ProbeClock,
 ): GrowthBreach | undefined {
   const context = scanContextFor(rule);
   for (const corpus of [...GROWTH_CORPORA, ...derivedCorpora(rule)]) {
@@ -622,7 +681,7 @@ export function superlinearGrowth(
         reading = now() - start;
       }
       if (reading < BUDGET_MS && large < GROWTH_MAX_CHARS) continue;
-      const { breach, nextMs } = judgePair(rule, corpus, small, now);
+      const { breach, nextMs } = judgePair(rule, corpus, small, now, corroborate);
       if (breach) return breach;
       measuredMs = nextMs;
     }

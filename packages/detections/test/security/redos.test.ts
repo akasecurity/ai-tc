@@ -13,6 +13,7 @@ import {
   EXPONENTIAL_PROBES,
   GROWTH_CONFIRM_SAMPLES,
   GROWTH_CORPORA,
+  GROWTH_CORROBORATION_FLOOR_MS,
   GROWTH_MAX_CHARS,
   GROWTH_SAMPLES,
   GROWTH_START_CHARS,
@@ -22,6 +23,15 @@ import {
   superlinearGrowth,
   worstProbeMs,
 } from '../../src/security/redos-probe.ts';
+import {
+  clockResolutionMs,
+  processCpuMs,
+  RATIO_CLOCK,
+  RATIO_RESOLUTION_MS,
+  THREAD_CPU_RESOLUTION_MS,
+  threadCpuMs,
+} from '../helpers/clocks.ts';
+import { walkInIsolation } from '../helpers/isolated-walk.ts';
 import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
 
 // CPU time consumed by this process, in ms, as a monotonic clock for the probe
@@ -68,10 +78,48 @@ import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
 // clear. It is the direction that matters — a coarse clock rounds a benign rule
 // toward a tick it can afford, and the catastrophic-pattern case below is what
 // keeps the clock proven live rather than merely quiet.
-const cpuMs: ProbeClock = () => {
-  const { user, system } = process.cpuUsage();
-  return (user + system) / 1000;
-};
+const cpuMs: ProbeClock = processCpuMs;
+
+// The per-rule budget, judged so that only a breach that reproduces fails.
+//
+// The in-process walk above is the screen. A walk that crosses the budget is
+// measured again on a fresh worker thread (`walkInIsolation`): a new isolate,
+// so every pattern runs interpreted again exactly as it did the first time,
+// charged with that thread's own CPU, so neither the GC and compiler threads
+// nor anything else in this process is in the reading. Only that second
+// reading decides. A rule that really backtracks burns the same CPU on any
+// thread and fails both. A first reading that was inflated by work the rule
+// did not do is cleared by the second; benign rules have crossed the budget
+// in-process on the loaded Windows runner, where that clock also advances in
+// whole 16ms ticks.
+//
+// Measuring again on the SAME thread is not an option and is not what this
+// does: the regex would run natively compiled the second time, at a fraction
+// of the interpreted cost a hook process pays (see `worstProbeMs`).
+async function probeBudgetBreach(
+  rule: Rule,
+): Promise<{ firstMs: number; isolatedMs: number; probeLength: number } | undefined> {
+  const first = worstProbeMs(rule, cpuMs);
+  if (first.ms < BUDGET_MS) return undefined;
+  const isolated = await walkInIsolation(rule);
+  if (isolated.ms < BUDGET_MS) return undefined;
+  return { firstMs: first.ms, isolatedMs: isolated.ms, probeLength: isolated.probeLength };
+}
+
+function describeProbeBreach(
+  id: string,
+  breach: { firstMs: number; isolatedMs: number; probeLength: number },
+): string {
+  return (
+    `Rule "${id}" burned ${breach.firstMs.toFixed(1)}ms of CPU on its worst probe here, and ` +
+    `${breach.isolatedMs.toFixed(1)}ms on a ${String(breach.probeLength)}-char probe measured ` +
+    `again on a fresh thread (budget ${String(BUDGET_MS)}ms). A rule this slow can exhaust the ` +
+    `hook's 10s timeout, which fails open and lets the call through unscanned. Rewrite the ` +
+    `pattern to remove the ambiguity — usually a quantified group whose body can match the same ` +
+    `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. Both readings are CPU time on a cold ` +
+    `regex, so a busy runner cannot produce them: the pattern really did this much work.`
+  );
+}
 
 // scan() is synchronous and runs on the hook path. A rule that backtracks
 // catastrophically cannot be interrupted — the fail-open catch in the plugin
@@ -126,21 +174,45 @@ describe('bundled rules survive adversarial input', () => {
 
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s stays within the scan budget',
-    (id, rule) => {
-      // CPU time, not wall time — see `cpuMs`. The budget is unchanged and so is
-      // the walk; only the resource being charged for is.
-      const { ms, probe } = worstProbeMs(rule, cpuMs);
-      expect(
-        ms,
-        `Rule "${id}" burned ${ms.toFixed(1)}ms of CPU on a ${String(probe.length)}-char probe ` +
-          `(budget ${String(BUDGET_MS)}ms). A rule this slow can exhaust the hook's 10s timeout, ` +
-          `which fails open and lets the call through unscanned. Rewrite the pattern to ` +
-          `remove the ambiguity — usually a quantified group whose body can match the same ` +
-          `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. This is CPU time, so a busy ` +
-          `runner cannot inflate it: the pattern really did this much work.`,
-      ).toBeLessThan(BUDGET_MS);
+    async (id, rule) => {
+      // CPU time, not wall time — see `cpuMs` — and a breach must reproduce on
+      // a fresh thread — see `probeBudgetBreach`. The budget is unchanged and
+      // so is the walk.
+      const breach = await probeBudgetBreach(rule);
+      expect(breach, breach && describeProbeBreach(id, breach)).toBeUndefined();
     },
   );
+
+  it('measures a breach again on a fresh thread at its interpreted cost', async () => {
+    // The re-measurement is only worth having if it still pays what a hook
+    // pays. `^(a+)+bc` is the pattern that separates the two tiers: measured on
+    // an arm64 Mac, its walk burns 130-136ms on a cold isolate and 74ms once
+    // this thread has compiled it natively, so a re-measurement taken on this
+    // thread would clear it and one taken on a fresh thread condemns it. It is
+    // walked here first, which is the state every rule is in when its
+    // in-process walk has just breached. Slower hardware widens the gap, so a
+    // CI runner is the safe direction; a machine ~1.3x faster than that Mac
+    // would bring the cold walk inside the budget and fail the first assertion
+    // with the second still holding, which reads as hardware, not as a defect.
+    const parsed = parseRegexRule('^(a+)+bc');
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    worstProbeMs(parsed.data, threadCpuMs);
+    const warm = worstProbeMs(parsed.data, threadCpuMs);
+    const isolated = await walkInIsolation(parsed.data);
+    expect(
+      isolated.ms,
+      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on a ` +
+        `${String(isolated.probeLength)}-char probe (${warm.ms.toFixed(1)}ms on this thread, ` +
+        `compiled); a pattern that backtracks must cross the budget there, or every breach the ` +
+        `in-process walk finds is cleared by it.`,
+    ).toBeGreaterThanOrEqual(BUDGET_MS);
+    expect(
+      isolated.ms,
+      'the fresh-thread walk cost no more than the compiled walk on this thread, so it is not ' +
+        'measuring a cold regex',
+    ).toBeGreaterThan(warm.ms);
+  });
 });
 
 function describeBreach(breach: GrowthBreach): string {
@@ -164,15 +236,38 @@ function describeBreach(breach: GrowthBreach): string {
 // quadratic with a small constant passes every 40KB probe and still costs
 // seconds at the engine's 200,000-char input cap.
 //
-// Wall time, not the CPU clock the walk above uses: a coarse CPU clock (16ms
-// ticks on the Windows runner) would quantize a 5-30ms reading into a
-// meaningless ratio. What keeps a busy runner out of the verdict is the
-// statistic instead. Each side of a ratio is the FASTEST of its readings, which
-// a stall can only leave alone or miss, and the readings a ratio compares are
-// taken in the same rounds, so a slow stretch lands on both sides. One doubling
-// over the ratio is not a breach by itself: the growth has to persist over the
-// next doubling, which is what separates a quadratic curve from a linear one
-// with a step in it. The scripted-clock suites below pin each of these.
+// The readings are this thread's CPU time wherever that clock is fine enough
+// to give a ratio, and wall time where it is not (the Windows runner credits
+// CPU in whole 16ms ticks, which would quantize a 5-30ms reading into a
+// meaningless ratio). The choice is made by measuring the clock, not by
+// naming a platform; see `RATIO_CLOCK`.
+//
+// Wall time alone cannot keep a busy runner out of the verdict, and that was
+// measured rather than assumed. The tier takes the FASTEST of several readings
+// on each side, in the same rounds, which survives a stall that misses one
+// reading; it does not survive a machine with no free core for the length of
+// a whole pass. Under 30 CPU burners on 10 cores, the quadratic control
+// `"[^"\n]*"\s+[^\n]*?\.` read its pair at 8.7ms / 23.5ms on the wall (2.7x)
+// and was cleared, against 5.1ms / 20.4ms quiet. The same load runs the other
+// way on a linear rule: it put `secrets-infra/jwt-token` over the ratio on two
+// doublings, and loaded CI runners have read benign rules at 104-142ms on the
+// wall for a scan that burns under 10ms of CPU. On the thread's CPU clock the
+// control read 5.1-5.2ms / 20.3-21.7ms / 82-108ms in all sixteen runs under
+// the same burners, because a thread waiting for a core accrues none of it.
+//
+// One doubling over the ratio is not a breach by itself: the growth has to
+// persist over the next doubling, which is what separates a quadratic curve
+// from a linear one with a step in it. The scripted-clock suites below pin
+// each of these.
+//
+// Where the readings are wall time, the over-budget breach is corroborated by
+// the thread's CPU clock, which a 16ms tick does not stop from telling a scan
+// that did 100ms of work from one that did 6; see
+// GROWTH_CORROBORATION_FLOOR_MS. And on every clock, a breach fails the run
+// only if it reproduces: the tier is run again from the start, and a rule
+// fails only if every run breaches (`GROWTH_RUNS`). A real superlinear or
+// over-budget pattern breaches on every run, because its readings are its
+// cost; a reading that was the machine's does not come back three times.
 
 // What a failing bundled rule is told. An `over-budget` breach is a statement
 // about cost at one size and says nothing about the shape of the curve; a
@@ -182,9 +277,14 @@ function describeFailure(id: string, breach: GrowthBreach): string {
     `scan() runs each rule on up to ${String(MAX_REGEX_INPUT_LENGTH)} chars per field, and a ` +
     `hook that outlives its timeout fails open.`;
   if (breach.reason === 'over-budget') {
+    const work =
+      breach.largeWorkMs === undefined
+        ? ''
+        : ` (${breach.largeWorkMs.toFixed(1)}ms of it on this thread's CPU)`;
     return (
-      `Rule "${id}" takes ${breach.largeMs.toFixed(1)}ms to scan ${String(breach.largeChars)} ` +
-      `chars of one corpus, over the ${String(BUDGET_MS)}ms budget for a single scan. ` +
+      `Rule "${id}" takes ${breach.largeMs.toFixed(1)}ms${work} to scan ` +
+      `${String(breach.largeChars)} chars of one corpus, over the ${String(BUDGET_MS)}ms budget ` +
+      `for a single scan. ` +
       `${consequence} Make the pattern cheaper on this text; a rule this expensive usually ` +
       `starts a long scan at every position of a run.`
     );
@@ -199,20 +299,59 @@ function describeFailure(id: string, breach: GrowthBreach): string {
   );
 }
 
+// The clock the growth tier's readings are taken on, chosen by measuring it.
+const GROWTH_CLOCK = RATIO_CLOCK;
+
+// How many times the tier is run before a verdict that fails the run stands:
+// a breach for a rule that must be linear, a miss for a pattern that must be
+// caught. A verdict that does not fail the run stops it at once.
+const GROWTH_RUNS = 3;
+
+// Every run's verdict, up to and including the first that would not fail the
+// run. The run fails only if all GROWTH_RUNS of them would have.
+function repeatedVerdicts(
+  run: () => GrowthBreach | undefined,
+  fails: (breach: GrowthBreach | undefined) => boolean,
+): { verdicts: (GrowthBreach | undefined)[]; failed: boolean } {
+  const verdicts: (GrowthBreach | undefined)[] = [];
+  for (let attempt = 0; attempt < GROWTH_RUNS; attempt++) {
+    const breach = run();
+    verdicts.push(breach);
+    if (!fails(breach)) break;
+  }
+  return { verdicts, failed: verdicts.length === GROWTH_RUNS && verdicts.every(fails) };
+}
+
+function growthRuns(rule: Rule, fails: (breach: GrowthBreach | undefined) => boolean) {
+  return repeatedVerdicts(
+    () => superlinearGrowth(rule, GROWTH_CLOCK.now, GROWTH_CLOCK.corroborate),
+    fails,
+  );
+}
+
+// The breach a rule that must grow linearly is reported for: undefined unless
+// every run breached, in which case the last run's breach.
+function reproducedBreach(rule: Rule): GrowthBreach | undefined {
+  const { verdicts, failed } = growthRuns(rule, (breach) => breach !== undefined);
+  return failed ? verdicts.at(-1) : undefined;
+}
+
 describe('bundled rules scale linearly on adversarial corpora', () => {
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s grows linearly with its input',
-    (id, rule) => {
+    async (id, rule) => {
       // The growth tier scans thousands of characters per reading, so a pattern
       // that backtracks exponentially would never return from it. The short
       // probes catch that case cheaply, and must pass first.
+      const probeBreach = await probeBudgetBreach(rule);
       expect(
-        worstProbeMs(rule, cpuMs).ms,
-        `Rule "${id}" fails the short-probe walk; the growth tier is not run on it.`,
-      ).toBeLessThan(BUDGET_MS);
-      const breach = superlinearGrowth(rule);
+        probeBreach,
+        probeBreach && `${describeProbeBreach(id, probeBreach)} The growth tier is not run on it.`,
+      ).toBeUndefined();
+      const breach = reproducedBreach(rule);
       expect(
-        breach && describeBreach(breach),
+        breach &&
+          `${describeBreach(breach)}, on ${GROWTH_CLOCK.name}, in each of ${String(GROWTH_RUNS)} runs`,
         breach && describeFailure(id, breach),
       ).toBeUndefined();
     },
@@ -510,8 +649,15 @@ describe('the probe battery itself', () => {
     ];
 
     it.each(superlinear)('catches %s', (_label, rule) => {
-      const breach = superlinearGrowth(rule);
-      expect(breach, 'the growth tier passed a pattern that is superlinear at scale').toBeDefined();
+      // Run the way the bundled rules are run, on the same clock. The miss is
+      // the verdict that fails here, so it is the one that has to reproduce.
+      const { verdicts, failed } = growthRuns(rule, (found) => found === undefined);
+      const breach = verdicts.at(-1);
+      expect(
+        failed ? undefined : breach,
+        `the growth tier passed a pattern that is superlinear at scale, on ${GROWTH_CLOCK.name}, ` +
+          `in each of ${String(GROWTH_RUNS)} runs`,
+      ).toBeDefined();
       if (!breach) return;
       expect(
         breach.reason === 'over-budget' ||
@@ -520,11 +666,12 @@ describe('the probe battery itself', () => {
       ).toBe(true);
     });
 
-    it.each(superlinear)('the absolute-budget walk alone would miss %s', (_label, rule) => {
+    it.each(superlinear)('the absolute-budget walk alone would miss %s', async (_label, rule) => {
       // Pins why the growth tier exists: every one of these clears the
       // single-probe walk. If that stops being true, the walk has grown a
       // probe that covers this class and the tier can be reconsidered.
-      expect(worstProbeMs(rule, cpuMs).ms).toBeLessThan(BUDGET_MS);
+      const breach = await probeBudgetBreach(rule);
+      expect(breach && describeProbeBreach('test-pack/growth', breach)).toBeUndefined();
     });
 
     it.each([
@@ -535,7 +682,7 @@ describe('the probe battery itself', () => {
         regexRule('\\byaml\\.load\\(', 'g', ['data = yaml.load(user_input)']),
       ],
     ])('passes a linear pattern: %s', (_label, rule) => {
-      const breach = superlinearGrowth(rule);
+      const breach = reproducedBreach(rule);
       expect(breach && describeBreach(breach)).toBeUndefined();
     });
   });
@@ -832,6 +979,151 @@ describe('the probe battery itself', () => {
         ...later.slice(1).map(() => 1),
         ...firstPass(3, 6),
       ]);
+    });
+  });
+
+  describe('the growth tier asks a corroborating clock before it reports a pair over the budget', () => {
+    const OVER_BUDGET_MS = BUDGET_MS + 20;
+
+    // A corroborating clock that reads `perScan` over every window it is
+    // asked about. It is read twice per scan, and only on the first pass of a
+    // pair: the scouts and the second pass give their verdicts on `now` alone.
+    function steadyWork(perScan: number): ProbeClock {
+      let reads = 0;
+      return () => {
+        const read = reads++;
+        return Math.floor(read / 2) * perScan + (read % 2) * perScan;
+      };
+    }
+
+    // An over-budget pair at a ratio of two, so a pair the corroborating clock
+    // turns away is cleared on its ratio rather than sampled again.
+    const overBudgetPair = (): number[] => [
+      ...cheapClimb(),
+      ...firstPass(OVER_BUDGET_MS / 2, OVER_BUDGET_MS, OVER_BUDGET_READINGS),
+    ];
+
+    it('a pair over the budget on the wall that did no work is judged on its ratio', () => {
+      const { clock, unread } = scripted(GROWTH_CORPORA.flatMap(overBudgetPair));
+      const breach = superlinearGrowth(scriptedRule, clock, steadyWork(6.4));
+      expect(breach && describeBreach(breach)).toBeUndefined();
+      expect(unread(), 'scripted scans the tier did not make').toBe(0);
+    });
+
+    it('a reading just under the floor is not corroboration', () => {
+      const { clock } = scripted(GROWTH_CORPORA.flatMap(overBudgetPair));
+      const breach = superlinearGrowth(
+        scriptedRule,
+        clock,
+        steadyWork(GROWTH_CORROBORATION_FLOOR_MS - 0.001),
+      );
+      expect(breach && describeBreach(breach)).toBeUndefined();
+    });
+
+    it('a pair the corroborating clock confirms is a breach, and says what it read', () => {
+      const { clock, unread } = scripted(overBudgetPair());
+      const breach = superlinearGrowth(
+        scriptedRule,
+        clock,
+        steadyWork(GROWTH_CORROBORATION_FLOOR_MS),
+      );
+      expect(unread(), 'scripted scans the tier did not make').toBe(0);
+      expect(breach).toMatchObject({
+        reason: 'over-budget',
+        ...TOP,
+        largeMs: OVER_BUDGET_MS,
+        largeWorkMs: GROWTH_CORROBORATION_FLOOR_MS,
+      });
+      if (!breach) throw new Error('expected a breach');
+      expect(describeFailure('pack/rule', breach)).toContain(
+        `${String(OVER_BUDGET_MS)}.0ms (${GROWTH_CORROBORATION_FLOOR_MS.toFixed(1)}ms of it`,
+      );
+    });
+
+    it('without a corroborating clock, the wall reading decides alone', () => {
+      const { clock } = scripted(overBudgetPair());
+      expect(superlinearGrowth(scriptedRule, clock)).toMatchObject({
+        reason: 'over-budget',
+        largeMs: OVER_BUDGET_MS,
+      });
+    });
+  });
+
+  describe('a verdict that fails the run has to reproduce', () => {
+    const breach: GrowthBreach = {
+      reason: 'superlinear',
+      corpus: 'space run',
+      ...TOP,
+      smallMs: 3,
+      largeMs: 12,
+      nextChars: NEXT_CHARS,
+      nextMs: 48,
+    };
+    const fails = (found: GrowthBreach | undefined): boolean => found !== undefined;
+
+    function sequence(verdicts: (GrowthBreach | undefined)[]): () => GrowthBreach | undefined {
+      let at = 0;
+      return () => {
+        if (at >= verdicts.length) throw new Error('run past the scripted verdicts');
+        return verdicts[at++];
+      };
+    }
+
+    it('fails only when every run gives it', () => {
+      const runs = Array.from({ length: GROWTH_RUNS }, () => breach);
+      expect(repeatedVerdicts(sequence(runs), fails)).toEqual({ verdicts: runs, failed: true });
+    });
+
+    it('a single run that does not give it clears the rule, and stops there', () => {
+      const runs = [breach, undefined];
+      expect(repeatedVerdicts(sequence(runs), fails)).toEqual({ verdicts: runs, failed: false });
+    });
+
+    it('a first run that does not give it is the only run', () => {
+      expect(repeatedVerdicts(sequence([undefined]), fails)).toEqual({
+        verdicts: [undefined],
+        failed: false,
+      });
+    });
+  });
+
+  describe('the clock the growth tier reads', () => {
+    it('reads clocks that advance', () => {
+      // A clock stuck at a constant reads every scan as free. As the reading
+      // clock that clears every rule and misses every control; as the
+      // corroborating clock it turns away every over-budget pair. The thread
+      // CPU clock is one or the other on every platform, and a dead one would
+      // also measure as infinitely coarse and quietly move the readings to the
+      // wall, so it is checked by name.
+      const clocks = [GROWTH_CLOCK.now, GROWTH_CLOCK.corroborate, threadCpuMs].filter(
+        (clock): clock is ProbeClock => clock !== undefined,
+      );
+      const starts = clocks.map((clock) => clock());
+      let spun = 0;
+      // Enough work to cross a 16ms tick several times over.
+      for (let i = 0; i < 100_000_000; i++) spun += i % 7;
+      expect(spun).toBeGreaterThan(0);
+      clocks.forEach((clock, i) => {
+        expect(clock(), `clock ${String(i)} of the growth tier did not advance`).toBeGreaterThan(
+          starts[i] ?? Infinity,
+        );
+      });
+      expect(Number.isFinite(THREAD_CPU_RESOLUTION_MS)).toBe(true);
+    });
+
+    it('is not one that advances in scheduler ticks', () => {
+      // The resolution measurement is what keeps a tick-credited CPU clock off
+      // the ratio. Driven with a scripted 16ms tick: the step it reports is
+      // the tick, which is far past what a ratio of 5ms readings can use.
+      let reads = 0;
+      const ticking: ProbeClock = () => Math.floor(reads++ / 3) * 16;
+      expect(clockResolutionMs(ticking)).toBe(16);
+      expect(clockResolutionMs(ticking)).toBeGreaterThan(RATIO_RESOLUTION_MS);
+      if (GROWTH_CLOCK.now === threadCpuMs) {
+        expect(THREAD_CPU_RESOLUTION_MS).toBeLessThanOrEqual(RATIO_RESOLUTION_MS);
+      } else {
+        expect(THREAD_CPU_RESOLUTION_MS).toBeGreaterThan(RATIO_RESOLUTION_MS);
+      }
     });
   });
 

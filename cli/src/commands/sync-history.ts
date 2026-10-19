@@ -146,6 +146,9 @@ function deploymentName(connection: ControlPlaneConnection): string {
     : printableForTerminal(connection.label, 200);
 }
 
+/** The payload version that added the backlog's captured text (see local.ts). */
+const BACKLOG_TEXT_PAYLOAD_VERSION = 3;
+
 export interface SyncHistoryDeps {
   base?: string;
   prompter?: Prompter;
@@ -338,7 +341,9 @@ function grant(
       'that flagged it is redact or block; under monitor or warn it goes as it was seen, and\n' +
       'no detection ships on redact or block. It goes in the background, a little at a time,\n' +
       'starting with your next session. Anything already sent cannot be recalled. Anything a\n' +
-      'live send could not deliver is sent later whether or not this is on.\n',
+      'live send could not deliver is sent later whether or not this is on.\n' +
+      'It also sends the exceptions you grant and the findings you dismiss on this machine,\n' +
+      'each with the reason you picked from the list — never the reason you type.\n',
   );
   return true;
 }
@@ -402,17 +407,29 @@ function describe(settings: WorkspaceSettings, scoped: boolean): string {
   if (settings.historySyncConsent === undefined) {
     return `Not sending ${subject} to ${where}.\n` + 'Run `aka sync-history --on` to send it.';
   }
+  // What widened since THIS grant, not since the last version: a grant from
+  // before the backlog text (v3) missed that change too, and a personal device
+  // is not sent labels (v4), so a v3 grant there lost nothing it would now send.
+  const grantedAt = settings.historySyncConsent.payloadVersion;
+  const missedBacklogText = grantedAt < BACKLOG_TEXT_PAYLOAD_VERSION;
   return isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane.endpoint)
     ? `Not sending ${subject} to ${where}: your grant predates a change.\n` +
         (scoped
-          ? 'It now also covers the text of what an enrolled repository or account recorded before you\n' +
-            'enrolled it — not just what a live send from one failed to deliver afterward — in\n' +
-            'which a value is masked only where the detection that flagged it is set to redact or\n' +
-            'block, and no detection ships on redact or block.\n'
-          : 'It now also covers the text of the activity recorded before this machine attached —\n' +
-            'not just what a live send failed to deliver afterward — in which a value is masked\n' +
-            'only where the detection that flagged it is set to redact or block, and no\n' +
-            'detection ships on redact or block.\n') +
+          ? missedBacklogText
+            ? 'It now also covers the text of what an enrolled repository or account recorded before you\n' +
+              'enrolled it — not just what a live send from one failed to deliver afterward — in\n' +
+              'which a value is masked only where the detection that flagged it is set to redact or\n' +
+              'block, and no detection ships on redact or block.\n'
+            : 'The change does not widen what this personal device sends; granting again keeps it\n' +
+              'as it was.\n'
+          : (missedBacklogText
+              ? 'It now also covers the text of the activity recorded before this machine attached —\n' +
+                'not just what a live send failed to deliver afterward — in which a value is masked\n' +
+                'only where the detection that flagged it is set to redact or block, and no\n' +
+                'detection ships on redact or block.\n'
+              : '') +
+            'It now also covers the exceptions you grant and the findings you dismiss on this\n' +
+            'machine, each with the reason you picked from the list — never the reason you type.\n') +
         'Run `aka sync-history --on` to grant it again.'
     : `Not sending ${subject} to ${where}: the earlier grant no longer\n` +
         'applies. Run `aka sync-history --on` to grant it again.';

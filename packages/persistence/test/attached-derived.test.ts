@@ -9,6 +9,7 @@ import {
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
   ATTACHED_IDENTITY_FILENAME,
+  ATTACHED_LABEL_SYNC_FILENAME,
   ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   clearAttachmentDerivedState,
@@ -23,8 +24,8 @@ describe('ATTACHED_DERIVED_FILENAMES', () => {
   // the clear, never the membership. This pins the membership, EXACTLY: an
   // entry dropped would leave a file describing a deployment the machine has
   // left, and an entry added would clear something detach must leave alone.
-  it('names exactly the seven files an attachment leaves behind', () => {
-    expect(ATTACHED_DERIVED_FILENAMES).toHaveLength(7);
+  it('names exactly the eight files an attachment leaves behind', () => {
+    expect(ATTACHED_DERIVED_FILENAMES).toHaveLength(8);
     expect(new Set(ATTACHED_DERIVED_FILENAMES)).toEqual(
       new Set([
         POLICY_CACHE_FILENAME,
@@ -33,6 +34,7 @@ describe('ATTACHED_DERIVED_FILENAMES', () => {
         ATTACHED_FORWARD_DROPS_FILENAME,
         ATTACHED_POSTURE_REPORT_FILENAME,
         ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+        ATTACHED_LABEL_SYNC_FILENAME,
         ATTACHED_IDENTITY_FILENAME,
       ]),
     );

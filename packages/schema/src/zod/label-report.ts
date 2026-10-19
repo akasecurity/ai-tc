@@ -16,6 +16,12 @@ import { ConfirmedBy, DismissMethod } from './recommendation-action.ts';
 
 export const LABEL_REPORT_BATCH_MAX = 500;
 
+// Sized to what the producers emit, not to typical values: a masked match keeps
+// the whole of an email-shaped value's domain and a long connection string's
+// host, and an at-rest finding key falls back to the masked match when no
+// fingerprint key exists. A row still over it is counted locally, never sent.
+const LABEL_TEXT_MAX = 4096;
+
 /** One exception grant, as the deployment may know it. Keyed by the grant's own id. */
 export const ReportedGrant = z
   .object({
@@ -23,7 +29,7 @@ export const ReportedGrant = z
     ruleId: z.string().min(1).max(200),
     category: DetectionCategory,
     keyVersion: z.number().int().positive(),
-    maskedValue: z.string().max(200),
+    maskedValue: z.string().max(LABEL_TEXT_MAX),
     capability: DetectionException.shape.capability.unwrap(),
     scope: DetectionException.shape.scope,
     expiresAt: z.iso.datetime().nullable(),
@@ -47,7 +53,7 @@ export type ReportedGrant = z.infer<typeof ReportedGrant>;
 export const ReportedDismissal = z
   .object({
     id: z.guid(),
-    findingKey: z.string().min(1).max(200),
+    findingKey: z.string().min(1).max(LABEL_TEXT_MAX),
     method: DismissMethod,
     confirmedBy: ConfirmedBy,
     resolvedAt: z.number().int().nonnegative(),

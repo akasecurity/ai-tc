@@ -20,6 +20,7 @@ import {
   ReportedGrant as ReportedGrantSchema,
 } from '@akasecurity/schema';
 
+import { recordUnsendableLabels } from './label-drops.ts';
 import { withTimeout } from './with-timeout.ts';
 
 export const LABEL_REQUEST_TIMEOUT_MS = 30_000;
@@ -71,18 +72,32 @@ function toReportedGrant(g: DetectionException): ReportedGrant | null {
   return parsed.success ? parsed.data : null;
 }
 
-async function readBatch(
-  db: LocalDatabase,
-): Promise<{ grants: ReportedGrant[]; dismissals: ReportedDismissal[] }> {
-  const grants = (await db.exceptions.unreportedLabels(LABEL_REPORT_BATCH_MAX)).flatMap((g) => {
+interface Batch {
+  grants: ReportedGrant[];
+  dismissals: ReportedDismissal[];
+  /** Rows the wire contract refuses: stamped reported and counted, never sent. */
+  unsendableGrantIds: string[];
+  unsendableDismissalIds: string[];
+}
+
+async function readBatch(db: LocalDatabase): Promise<Batch> {
+  const batch: Batch = {
+    grants: [],
+    dismissals: [],
+    unsendableGrantIds: [],
+    unsendableDismissalIds: [],
+  };
+  for (const g of await db.exceptions.unreportedLabels(LABEL_REPORT_BATCH_MAX)) {
     const wire = toReportedGrant(g);
-    return wire === null ? [] : [wire];
-  });
-  const dismissals = db.resolutions.unreportedDismissals(LABEL_REPORT_BATCH_MAX).flatMap((d) => {
+    if (wire === null) batch.unsendableGrantIds.push(g.id);
+    else batch.grants.push(wire);
+  }
+  for (const d of db.resolutions.unreportedDismissals(LABEL_REPORT_BATCH_MAX)) {
     const parsed = ReportedDismissalSchema.safeParse(d);
-    return parsed.success ? [parsed.data] : [];
-  });
-  return { grants, dismissals };
+    if (parsed.success) batch.dismissals.push(parsed.data);
+    else batch.unsendableDismissalIds.push(d.id);
+  }
+  return batch;
 }
 
 /**
@@ -114,6 +129,15 @@ export async function runLabelSync(deps: RunLabelSyncDeps): Promise<LabelSyncOut
     const startedAt = (deps.now ?? Date.now)();
     db = openLocalDatabase(dataDir(deps.base));
     const batch = await readBatch(db);
+    // Before the send, and whatever becomes of it: a row that cannot be sent
+    // now cannot be sent later either, and left unstamped it would hold the
+    // head of the queue on every run.
+    const unsendable = batch.unsendableGrantIds.length + batch.unsendableDismissalIds.length;
+    if (unsendable > 0) {
+      await db.exceptions.markLabelsReported(batch.unsendableGrantIds, startedAt);
+      db.resolutions.markDismissalsReported(batch.unsendableDismissalIds, startedAt);
+      recordUnsendableLabels(dataDir(deps.base), unsendable, startedAt);
+    }
     if (batch.grants.length === 0 && batch.dismissals.length === 0) return 'nothing';
 
     const { apiKey } = state.credential;
@@ -122,7 +146,10 @@ export async function runLabelSync(deps: RunLabelSyncDeps): Promise<LabelSyncOut
       apiKey,
       timeoutMs: LABEL_REQUEST_TIMEOUT_MS,
     });
-    await withTimeout(client.reportLabels(batch), LABEL_REQUEST_TIMEOUT_MS);
+    await withTimeout(
+      client.reportLabels({ grants: batch.grants, dismissals: batch.dismissals }),
+      LABEL_REQUEST_TIMEOUT_MS,
+    );
 
     await db.exceptions.markLabelsReported(
       batch.grants.map((g) => g.id),

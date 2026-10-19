@@ -165,16 +165,21 @@ Promoting a detection to redact or block masks its matches at rest and in transi
 together, from then on — it does not reach what has already been sent, and what
 has been sent cannot be recalled.
 
-The separate `aka sync-history` grant covers two things, and the rule reaches
-both of them. The backfill of activity recorded before you attached marks that
+The separate `aka sync-history` grant covers three things, and the rule reaches
+the first two of them. The backfill of activity recorded before you attached marks that
 activity for delivery the same way a live send would have; for a prompt, an
 assistant reply or a tool result, what it sends is that text, not just the
-record that the activity happened. The other is the drain of anything a live
+record that the activity happened. The second is the drain of anything a live
 send could not deliver, which sends the capture as the store holds it. Both
 send the same content a live forward would have, so the rule applies exactly
 as it does there: **under monitor or warn the matched value is drained as it
 was seen**, and no detection ships on redact or block, so on a default install that
-is what a backfill or a drain sends.
+is what a backfill or a drain sends. The third, on a machine attached
+machine-wide only, is the labels a person gives there: the exceptions they
+grant and the findings they dismiss, each with the reason picked from the list —
+a grant's rule, category, masked preview, scope and use count, a dismissal's
+finding key — and never the reason typed or the local account name. A label
+carries no captured text, so the masking rule does not come into it.
 
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository

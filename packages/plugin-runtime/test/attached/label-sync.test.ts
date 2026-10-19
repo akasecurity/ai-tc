@@ -17,6 +17,7 @@ import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { readUnsendableLabels } from '../../src/attached/label-drops.ts';
 import { runLabelSync } from '../../src/attached/label-sync.ts';
 
 const reportLabels = vi.fn();
@@ -139,6 +140,37 @@ describe('runLabelSync', () => {
     expect(wire).not.toContain('typed by');
     expect(wire).not.toContain('local-os-user');
     expect(wire).not.toContain('fk-machine');
+  });
+
+  it('sends a label whose masked value is longer than a short field', async () => {
+    attach();
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      await db.exceptions.create(grantInput({ maskedValue: `A${'•'.repeat(300)}Q` }));
+    } finally {
+      db.close();
+    }
+    await expect(run()).resolves.toBe('reported');
+    const sent = reportLabels.mock.calls[0]?.[0] as LabelReportRequest;
+    expect(sent.grants).toHaveLength(1);
+  });
+
+  // A row the wire contract still refuses would otherwise sit at the head of
+  // the queue on every run, never sent and never counted.
+  it('counts a label too large to send, and stops offering it', async () => {
+    attach();
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      await db.exceptions.create(grantInput({ maskedValue: `A${'•'.repeat(5000)}Q` }));
+    } finally {
+      db.close();
+    }
+    await expect(run()).resolves.toBe('nothing');
+    expect(reportLabels).not.toHaveBeenCalled();
+    expect(readUnsendableLabels(dataDirOf(base))?.unsendable).toBe(1);
+
+    await expect(run()).resolves.toBe('nothing');
+    expect(readUnsendableLabels(dataDirOf(base))?.unsendable).toBe(1);
   });
 
   it('does not report the same labels twice', async () => {

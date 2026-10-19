@@ -323,9 +323,10 @@ describe('Copilot CLI 1.0.98 plugin-install hook payload fixtures', () => {
         false,
       );
       // The recorder's temp directory was rewritten as well as the home, in
-      // any of the macOS and Linux spellings a re-recording could leave.
+      // any of the macOS and Linux spellings a re-recording could leave, including
+      // macOS's per-user `/var/folders/…` temp root that `TMPDIR` and `mkdtemp` use.
       expect(JSON.stringify(payload), `${name} leaks a temp path`).not.toMatch(
-        /\/(?:private\/)?(?:var\/)?tmp\//u,
+        /\/(?:private\/)?(?:tmp\/|var\/(?:tmp|folders)\/)/u,
       );
     }
   });

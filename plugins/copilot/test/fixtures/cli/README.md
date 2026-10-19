@@ -284,8 +284,8 @@ files were re-indented; their content was not.
   prompt finding `secrets/github-pat` from a session whose prompt carried the
   value. The project was recorded with no scope key, as expected for a
   repository with no remote.
-- **A successful hook's stderr is not shown by the CLI.** Every notice the
-  hooks wrote appeared in none of the CLI's own output in `-p` mode. It appeared
+- **In `-p` mode, a successful hook's stderr was not shown by the CLI.** Every
+  notice the hooks wrote appeared in none of the CLI's own output in `-p` mode. It appeared
   only in the debug log (`--log-level debug --log-dir <dir>`), one line per
   write, in this form:
 

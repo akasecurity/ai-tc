@@ -64,11 +64,13 @@ export const KNOWN_PREFIXES = [
   'npm_',
 ] as const;
 
-// Matched at the START of a word, never inside one: `attestation` holds the
-// letters of "test" and `monkey` those of "key", and neither says anything.
-// `auth` is a whole word only, so `author` is not a credential.
-const TEST_WORDS = /^(test|spec|mock|fake|dummy|stub|sample|example|placeholder|fixture)/;
-const SECRET_WORDS = /^(secret|token|passw|pwd|apikey|auth$|credential|private|key)/;
+// A whole word from the list, with the inflections that mean the same thing:
+// anchored at both ends, so `attestation`, `keyboard` and `testify` say
+// nothing, while `tests`, `mocked` and `passwords` still do.
+const TEST_WORDS =
+  /^(tests?|testing|testdata|specs?|mocks?|mocked|fakes?|dummy|dummies|stubs?|samples?|examples?|placeholders?|fixtures?)$/;
+const SECRET_WORDS =
+  /^(secrets?|tokens?|passwords?|passwd|passphrase|pwd|apikeys?|auth|credentials?|private|privkey|keys?)$/;
 
 /** A name's words: split on separators and at each lower-to-upper camelCase step. */
 function wordsOf(name: string): string[] {

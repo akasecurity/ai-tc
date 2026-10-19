@@ -13,6 +13,7 @@ import type {
   ProjectSummary,
   TrustLevel,
 } from '@akasecurity/schema';
+import { INVENTORY_LIST_COUNT_CAP } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 import { formatDateTime } from '../lib/dateFormat.ts';
@@ -269,6 +270,18 @@ export function typeRows(
 ): InventoryRow[] {
   if (type === 'project') return projects;
   return assetGroups.find((g) => g.type === type)?.items ?? [];
+}
+
+/** An endpoint count as display text. A list stops counting at the cap, so a list count there reads "100+". */
+export function endpointCountText(count: number, fromList: boolean): string {
+  return fromList && count >= INVENTORY_LIST_COUNT_CAP
+    ? `${String(INVENTORY_LIST_COUNT_CAP)}+`
+    : String(count);
+}
+
+/** "1 endpoint", "12 endpoints", "100+ endpoints". */
+export function endpointsText(count: number, fromList: boolean): string {
+  return `${endpointCountText(count, fromList)} ${count === 1 ? 'endpoint' : 'endpoints'}`;
 }
 
 /** A `meta` value as display text: scalars as-is, string lists comma-joined, anything else null. */

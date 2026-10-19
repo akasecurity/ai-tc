@@ -5,13 +5,23 @@ import type { AssetSummary, AssetType, ProjectSummary } from '@akasecurity/schem
 import { PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
 
 import { relativeTime } from '../lib/relativeTime.ts';
-import { type InventoryRow, isProjectRow, metaText, rowType, TRUST, typeMeta } from './data.ts';
+import {
+  endpointCountText,
+  type InventoryRow,
+  isProjectRow,
+  metaText,
+  rowType,
+  TRUST,
+  typeMeta,
+} from './data.ts';
 
 export interface Column {
   key: string;
   label: string;
   value: (row: InventoryRow) => string | number | null;
   display?: (row: InventoryRow, now: number) => string;
+  /** A short tag shown after the cell's text, e.g. "2 versions". */
+  chip?: (row: InventoryRow) => string | null;
   mono?: boolean;
   num?: boolean;
   wide?: boolean;
@@ -114,3 +124,25 @@ export const MIXED_COLUMNS: Column[] = [
 ];
 
 export const NAME_COLUMN: Column = { key: 'name', label: 'Name', value: (row) => row.name };
+
+/**
+ * How many endpoints report the row. A table shows it only when its rows carry
+ * the count, which a store that records who reports what does.
+ */
+export const ENDPOINTS_COLUMN: Column = {
+  key: 'machines',
+  label: 'Endpoints',
+  value: (row) => row.machines ?? null,
+  display: (row) => (row.machines === undefined ? '' : endpointCountText(row.machines, true)),
+  chip: (row) =>
+    !isProjectRow(row) && row.variants !== undefined && row.variants > 1
+      ? `${String(row.variants)} versions`
+      : null,
+  num: true,
+};
+
+/** The row columns a table shows: the type's own, then Endpoints when the rows carry it. */
+export function tableColumns(type: AssetType | null, rows: readonly InventoryRow[]): Column[] {
+  const own = type === null ? MIXED_COLUMNS : TYPE_COLUMNS[type];
+  return rows.some((r) => r.machines !== undefined) ? [...own, ENDPOINTS_COLUMN] : own;
+}

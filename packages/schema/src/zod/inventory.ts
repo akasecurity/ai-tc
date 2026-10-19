@@ -67,6 +67,12 @@ export type AccessCounts = z.infer<typeof AccessCounts>;
 
 // ─── Shape 1: AssetSummary ────────────────────────────────────────────────────
 
+/**
+ * Where a list stops counting endpoints: a list count at the cap means at least
+ * that many. A detail read counts them all.
+ */
+export const INVENTORY_LIST_COUNT_CAP = 100;
+
 /** Shared by harness categories and asset group lists. */
 export const AssetSummary = z
   .object({
@@ -80,9 +86,11 @@ export const AssetSummary = z
     /** Type-specific raw key/values (source, versions, event, transport, path, …). */
     meta: z.record(z.string(), z.unknown()),
     /**
-     * The endpoints currently reporting the asset. Omitted by a store that does
-     * not record who reports what. In a list the count stops at 100, so 100
-     * means "100 or more"; an asset detail carries the exact number.
+     * The distinct endpoints currently reporting the asset, each counted once
+     * however many harnesses it reports the asset under. Omitted by a store that
+     * does not record who reports what. In a list the count stops at
+     * `INVENTORY_LIST_COUNT_CAP`, so 100 means "100 or more"; an asset detail
+     * carries the exact number.
      */
     machines: z.number().int().nonnegative().optional(),
     /**
@@ -120,6 +128,12 @@ export const ProjectSummary = z
      * `PROJECT_FINDINGS_WINDOW_DAYS` (30) days.
      */
     findingsCount: z.number().int().nonnegative(),
+    /**
+     * The distinct endpoints that have recently run a session in the project.
+     * Omitted by a store that does not record who reports what, and for a reader
+     * who may not see endpoints. A list stops at `INVENTORY_LIST_COUNT_CAP`.
+     */
+    machines: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'ProjectSummary' });
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
@@ -143,6 +157,11 @@ export const HarnessSummary = z
     kind: z.string(),
     version: z.string(),
     sessions: z.number().int().nonnegative(),
+    /**
+     * The distinct endpoints that have recently run a session under the harness.
+     * Omitted by a store that does not record who reports what.
+     */
+    machines: z.number().int().nonnegative().optional(),
     assetCount: z.number().int().nonnegative(),
     flagCount: z.number().int().nonnegative(),
     projects: z.array(ProjectSummary),

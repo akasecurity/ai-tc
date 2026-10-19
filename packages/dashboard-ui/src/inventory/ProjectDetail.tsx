@@ -16,7 +16,7 @@ import { CATEGORY_LABEL } from '../detections/meta.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { Provider } from '../shared/Provider.tsx';
 import { BackButton, Section, VisBadge } from './chips.tsx';
-import { assetTile, fmtDateTime, SENSITIVE_CATEGORY } from './data.ts';
+import { assetTile, endpointCountText, fmtDateTime, SENSITIVE_CATEGORY } from './data.ts';
 import { Ico } from './Ico.tsx';
 
 export function ProjectDetail({
@@ -88,11 +88,24 @@ export function ProjectDetail({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 border-b border-border">
+      <div
+        className={cn(
+          'grid border-b border-border',
+          project.machines === undefined ? 'grid-cols-2' : 'grid-cols-3',
+        )}
+      >
+        {project.machines !== undefined && (
+          <Stat
+            value={endpointCountText(project.machines, true)}
+            label="Endpoints seen on"
+            tone="text-text"
+          />
+        )}
         <Stat
           value={project.findingsCount}
           label={`Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`}
           tone={project.findingsCount > 0 ? 'text-sev-high-ink' : 'text-ok-ink'}
+          className={cn(project.machines !== undefined && 'border-l border-border')}
         />
         <Stat
           value={withheld}
@@ -216,10 +229,10 @@ function Stat({
   tone,
   className,
 }: {
-  value: number;
+  value: number | string;
   label: string;
   tone: string;
-  className?: string;
+  className?: string | undefined;
 }) {
   return (
     <div className={cn('px-5 py-4', className)}>

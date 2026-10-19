@@ -125,3 +125,26 @@ describe('legacy sample purge over the inventory fixtures', () => {
     expect((await inv.listHarnesses()).items).toEqual([]);
   });
 });
+
+describe('endpoint counts', () => {
+  it('carries none: the local store is one machine, so the views hide them', async () => {
+    const { items: harnesses } = await inv.listHarnesses();
+    const { groups } = await inv.listAssets({});
+    const { items: projects } = await inv.listProjects();
+    const assets = [
+      ...groups.flatMap((g) => g.items),
+      ...harnesses.flatMap((h) => h.categories.flatMap((c) => c.assets)),
+    ];
+    const detail = await inv.getAsset('sample:asset:shell-runner-mcp');
+
+    expect(assets.length).toBeGreaterThan(0);
+    expect(projects.length).toBeGreaterThan(0);
+    for (const row of [...assets, ...projects, ...harnesses.flatMap((h) => h.projects)]) {
+      expect(row).not.toHaveProperty('machines');
+    }
+    for (const row of assets) expect(row).not.toHaveProperty('variants');
+    for (const harness of harnesses) expect(harness).not.toHaveProperty('machines');
+    expect(detail).not.toHaveProperty('machines');
+    expect(detail).not.toHaveProperty('seenOn');
+  });
+});

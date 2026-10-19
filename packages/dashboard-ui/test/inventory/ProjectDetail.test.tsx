@@ -60,10 +60,11 @@ function render(
   blocked: FileSummary[],
   blockedError?: string,
   sensitive: { items?: SensitiveDataClass[]; error?: string } = {},
+  machines?: number,
 ): string {
   return renderToStaticMarkup(
     <ProjectDetail
-      project={project(blockedCount)}
+      project={{ ...project(blockedCount), ...(machines === undefined ? {} : { machines }) }}
       blocked={blocked}
       blockedError={blockedError}
       sensitiveData={sensitive.items ?? []}
@@ -123,6 +124,17 @@ describe('ProjectDetail', () => {
     const html = render(0, [], undefined, { error: 'Request failed (500)' });
     expect(html).toContain('Couldn&#x27;t load the sensitive data: Request failed (500)');
     expect(html).not.toContain('No sensitive data found');
+  });
+
+  it('shows the endpoints the project was seen on when the store records them', () => {
+    const html = render(0, [], undefined, {}, 7);
+    expect(html).toContain('Endpoints seen on');
+    expect(html).toMatch(/>7<\/div><div[^>]*>Endpoints seen on/);
+    expect(render(0, [], undefined, {}, 100)).toMatch(/>100\+<\/div><div[^>]*>Endpoints seen on/);
+  });
+
+  it('shows no endpoint figure when the store or the reader has none', () => {
+    expect(render(0, [])).not.toContain('Endpoints seen on');
   });
 
   it('says every file is available when none are withheld', () => {

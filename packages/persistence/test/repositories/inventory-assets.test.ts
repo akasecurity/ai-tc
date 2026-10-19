@@ -30,8 +30,9 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
     expect(stats.byType).toEqual({ project: 3, skill: 3, mcp: 3, hook: 2, config: 2 });
     expect(stats.harnesses).toBe(2);
     expect(stats.mcpTrust).toEqual({ 'known-good': 1, risky: 1, unapproved: 1 });
-    // 6 flagged assets + 2 projects with findings.
-    expect(stats.attention).toBe(8);
+    // 6 flagged assets. The sample projects' per-file counts are not findings
+    // in the window, so no project adds to it.
+    expect(stats.attention).toBe(6);
   });
 
   it('groups harnesses by resolved id with their assets + projects', async () => {

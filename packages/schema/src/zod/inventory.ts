@@ -1,5 +1,6 @@
 import * as z from 'zod';
 
+import { DetectionCategory, Severity } from './finding.ts';
 import { Harness } from './harness-map.ts';
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -98,6 +99,9 @@ export type AssetSummary = z.infer<typeof AssetSummary>;
 
 // ─── Shape 2: ProjectSummary ──────────────────────────────────────────────────
 
+/** How many days back a project's findings are counted. */
+export const PROJECT_FINDINGS_WINDOW_DAYS = 30;
+
 /**
  * Embedded in harness summaries, project lists, and connect-project responses.
  */
@@ -111,6 +115,10 @@ export const ProjectSummary = z
     policyDefault: AccessLevel,
     updatedAt: z.iso.datetime(),
     accessCounts: AccessCounts,
+    /**
+     * Findings recorded in the project's sessions over the last
+     * `PROJECT_FINDINGS_WINDOW_DAYS` (30) days.
+     */
     findingsCount: z.number().int().nonnegative(),
   })
   .meta({ id: 'ProjectSummary' });
@@ -260,6 +268,31 @@ export const AssetDetail = AssetSummary.extend({
 }).meta({ id: 'AssetDetail' });
 export type AssetDetail = z.infer<typeof AssetDetail>;
 
+// ─── Shape 8b: ProjectSensitiveData ──────────────────────────────────────────
+
+/** One category of finding a project's sessions recorded. */
+export const SensitiveDataClass = z
+  .object({
+    category: DetectionCategory,
+    /** Distinct files the findings were in. A finding in a prompt or tool output is in none. */
+    files: z.number().int().nonnegative(),
+    /** The severity of the most severe finding. */
+    severity: Severity,
+    /** When the newest finding was recorded. */
+    lastDetectedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'SensitiveDataClass' });
+export type SensitiveDataClass = z.infer<typeof SensitiveDataClass>;
+
+/**
+ * The categories of finding a project's sessions recorded over the last
+ * `PROJECT_FINDINGS_WINDOW_DAYS` days, most severe first.
+ */
+export const ProjectSensitiveData = z
+  .object({ items: z.array(SensitiveDataClass) })
+  .meta({ id: 'ProjectSensitiveData' });
+export type ProjectSensitiveData = z.infer<typeof ProjectSensitiveData>;
+
 // ─── Shape 9: ListProjectsResponse ───────────────────────────────────────────
 
 export const ListProjectsResponse = z
@@ -271,7 +304,10 @@ export type ListProjectsResponse = z.infer<typeof ListProjectsResponse>;
 
 export const InventoryStats = z
   .object({
-    /** Total assets/projects with ≥1 flag or finding (drives the attention header chip). */
+    /**
+     * Assets with a flag, plus projects with a finding in the last
+     * `PROJECT_FINDINGS_WINDOW_DAYS` days (drives the attention header chip).
+     */
     attention: z.number().int().nonnegative(),
     byType: z.object({
       project: z.number().int().nonnegative(),

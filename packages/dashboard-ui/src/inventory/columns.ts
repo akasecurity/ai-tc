@@ -2,6 +2,7 @@
 // harness's table uses. Each column reads one value for sorting and searching and
 // may format it differently for display.
 import type { AssetSummary, AssetType, ProjectSummary } from '@akasecurity/schema';
+import { PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { type InventoryRow, isProjectRow, metaText, rowType, TRUST, typeMeta } from './data.ts';
@@ -62,7 +63,12 @@ export const TYPE_COLUMNS: Record<AssetType, Column[]> = {
     projectColumn('repo', 'Repository', (p) => p.repo, { mono: true, wide: true }),
     projectColumn('language', 'Language', (p) => p.language || null),
     projectColumn('visibility', 'Visibility', (p) => p.visibility),
-    projectColumn('findings', 'Findings', (p) => p.findingsCount, { num: true }),
+    projectColumn(
+      'findings',
+      `Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`,
+      (p) => p.findingsCount,
+      { num: true },
+    ),
     projectColumn('updatedAt', 'Updated', (p) => p.updatedAt, { display: relative }),
   ],
   skill: [

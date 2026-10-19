@@ -29,6 +29,7 @@ import {
   FolderIcon,
   GlobeIcon,
   InfoIcon,
+  KeyIcon,
   LayersIcon,
   ListIcon,
   LockIcon,
@@ -46,6 +47,7 @@ import {
   SparklesIcon,
   SwapIcon,
   TerminalIcon,
+  UserIcon,
   XIcon,
 } from '../shared/icons.tsx';
 
@@ -76,6 +78,7 @@ const ICONS = {
   globe: GlobeIcon,
   help: InfoIcon,
   info: InfoIcon,
+  key: KeyIcon,
   layers: LayersIcon,
   list: ListIcon,
   lock: LockIcon,
@@ -93,6 +96,7 @@ const ICONS = {
   sparkles: SparklesIcon,
   swap: SwapIcon,
   terminal: TerminalIcon,
+  user: UserIcon,
   x: XIcon,
   'x-circle': SlashCircleIcon,
 } satisfies Record<string, IconComponent>;

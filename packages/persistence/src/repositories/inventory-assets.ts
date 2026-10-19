@@ -21,12 +21,21 @@ import type {
   ListProjectsResponse,
   McpTool,
   Origin,
+  ProjectSensitiveData,
   ProjectSummary,
   ProjectTreeResponse,
+  SensitiveDataClass,
   TrustLevel,
   Visibility,
 } from '@akasecurity/schema';
-import { HARNESS, HarnessId as HarnessIdSchema, SOURCE_TOOL } from '@akasecurity/schema';
+import {
+  DetectionCategory,
+  HARNESS,
+  HarnessId as HarnessIdSchema,
+  PROJECT_FINDINGS_WINDOW_DAYS,
+  Severity,
+  SOURCE_TOOL,
+} from '@akasecurity/schema';
 
 import {
   type AssetRow,
@@ -112,6 +121,33 @@ const HARNESS_LABELS: Record<HarnessId, string> = {
 // last_seen is frozen at seed time, so the window would otherwise blank a demo/eval
 // store's harness cards after 30 days while its sample assets still render.
 const HARNESS_LIVENESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+const PROJECT_FINDINGS_WINDOW_MS = PROJECT_FINDINGS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+// A capture names its session and only the session root names the project, so a
+// project's findings are reached project → its sessions → their events in the
+// window → the events' findings. CROSS JOIN keeps SQLite from reordering the
+// three, so the read starts from the project's sessions (idx_audit_project_t)
+// and seeks each session's events in the window (idx_audit_session).
+const PROJECT_FINDINGS_FROM = `audit_events s
+  CROSS JOIN audit_events e
+  CROSS JOIN inspection_findings f`;
+const PROJECT_FINDINGS_JOIN = `e.root_session_id = s.id
+  AND e.started_at >= ?
+  AND f.audit_event_id = e.id`;
+
+// A stored category outside the enum reads as `custom`, and severities are
+// ranked so the worst one is the max: critical is the highest.
+const CATEGORY_OF_DEFINITION = `CASE WHEN d.category IN (${DetectionCategory.options
+  .map((c) => `'${c}'`)
+  .join(', ')}) THEN d.category ELSE 'custom' END`;
+const SEVERITY_RANK_OF_DEFINITION = `CASE d.severity ${Severity.options
+  .map((sev, i) => `WHEN '${sev}' THEN ${String(Severity.options.length - i)}`)
+  .join(' ')} END`;
+
+function severityOfRank(rank: number | null): SensitiveDataClass['severity'] {
+  return Severity.options[Severity.options.length - (rank ?? 1)] ?? 'low';
+}
 
 // Per-project file rollup (effective access counts + findings), assembled once by
 // projectAggregates and shared by listHarnesses/listProjects.
@@ -305,7 +341,11 @@ function accessCountsFromFiles(files: ProjectFileRow[]): AccessCounts {
  * Writes (file access / MCP trust / connect / rescan) surface errors to the caller.
  */
 export class SqliteInventoryAssetsRepository implements InventoryReadPort {
-  constructor(private readonly db: DatabaseSync) {}
+  /** `now` is the clock the liveness and findings windows are measured from. */
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   // Projected config rows (skills/hooks) cached by the config_scan id that produced
   // them — see liveConfigAssetRows. Instance-scoped; safe because a new scan mints a
@@ -352,17 +392,21 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       `SELECT count(*) AS n FROM inventory
            WHERE object_type = 'harness'
              AND (last_seen >= :liveSince OR json_extract(attributes, '$.provenance') = 'sample')`,
-      { liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS },
+      { liveSince: this.now() - HARNESS_LIVENESS_WINDOW_MS },
     );
 
-    // Attention: assets with ≥1 flag + projects with ≥1 finding.
+    // Attention: assets with ≥1 flag + listed projects with a finding in the window.
     const flaggedAssets = countScalar(
       this.db,
       "SELECT count(*) AS n FROM inventory_asset WHERE flags_json <> '[]'",
     );
     const flaggedProjects = countScalar(
       this.db,
-      `SELECT count(DISTINCT project_id) AS n FROM project_file WHERE findings_count > 0`,
+      `SELECT count(*) AS n FROM source_project p
+        WHERE ${WORKTREE_CHECKOUT_FILTER}
+          AND EXISTS (SELECT 1 FROM ${PROJECT_FINDINGS_FROM}
+                       WHERE s.source_project_id = p.id AND ${PROJECT_FINDINGS_JOIN})`,
+      [this.findingsSince()],
     );
 
     // Fold in the real scanned skills/hooks/MCP servers (meta table) — byType
@@ -622,6 +666,48 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     });
   }
 
+  getProjectSensitiveData(projectId: string): Promise<ProjectSensitiveData | null> {
+    if (!this.fetchProjectById(projectId)) return Promise.resolve(null);
+    const rows = allRows<{
+      category: SensitiveDataClass['category'];
+      files: number;
+      severityRank: number | null;
+      lastAt: number;
+    }>(
+      this.db.prepare(
+        `SELECT ${CATEGORY_OF_DEFINITION} AS category,
+                count(DISTINCT e.file_path) AS files,
+                max(${SEVERITY_RANK_OF_DEFINITION}) AS severityRank,
+                max(e.started_at) AS lastAt
+         FROM ${PROJECT_FINDINGS_FROM}
+         CROSS JOIN inspection_definitions d
+         WHERE s.source_project_id = ?
+           AND ${PROJECT_FINDINGS_JOIN}
+           AND d.id = f.inspection_definition_id
+         GROUP BY 1`,
+      ),
+      [projectId, this.findingsSince()],
+    );
+    const items = rows
+      .map((r) => ({
+        rank: r.severityRank ?? 0,
+        item: {
+          category: r.category,
+          files: r.files,
+          severity: severityOfRank(r.severityRank),
+          lastDetectedAt: new Date(r.lastAt).toISOString(),
+        },
+      }))
+      .sort(
+        (a, b) =>
+          b.rank - a.rank ||
+          b.item.lastDetectedAt.localeCompare(a.item.lastDetectedAt) ||
+          a.item.category.localeCompare(b.item.category),
+      )
+      .map((r) => r.item);
+    return Promise.resolve({ items });
+  }
+
   getProjectFile(projectId: string, path: string): Promise<FileDetail | null> {
     const project = this.fetchProjectById(projectId);
     if (!project) return Promise.resolve(null);
@@ -703,8 +789,12 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
          WHERE object_type = 'harness'
            AND (last_seen >= :liveSince OR json_extract(attributes, '$.provenance') = 'sample')`,
       ),
-      { liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS },
+      { liveSince: this.now() - HARNESS_LIVENESS_WINDOW_MS },
     );
+  }
+
+  private findingsSince(): number {
+    return this.now() - PROJECT_FINDINGS_WINDOW_MS;
   }
 
   // Every harness's assets in ONE grouped query, keyed by harness inventory id —
@@ -901,24 +991,25 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     return map;
   }
 
-  // Effective-access counts AND findings per project in ONE grouped pass over
-  // project_file — replaces the two per-project queries listHarnesses/listProjects
-  // used to make (findings summed across the per-(project, access) groups gives
-  // the project total). A project with no files is simply absent from the map.
+  // Effective-access counts per project in one grouped pass over project_file,
+  // and findings in the window per project in one grouped pass over the
+  // projects' sessions. A project with neither is absent from the map.
   private projectAggregates(projectIds: string[]): Map<string, ProjectAggregate> {
     const map = new Map<string, ProjectAggregate>();
     if (projectIds.length === 0) return map;
-    const rows = allRows<{
-      projectId: string;
-      eff: AccessLevel;
-      n: number;
-      findings: number;
-    }>(
+    const aggregateOf = (projectId: string): ProjectAggregate => {
+      let agg = map.get(projectId);
+      if (!agg) {
+        agg = { accessCounts: { open: 0, approved: 0, blocked: 0, total: 0 }, findingsCount: 0 };
+        map.set(projectId, agg);
+      }
+      return agg;
+    };
+    const access = allRows<{ projectId: string; eff: AccessLevel; n: number }>(
       this.db.prepare(
         `SELECT f.project_id AS projectId,
                 coalesce(o.access, f.default_access) AS eff,
-                count(*) AS n,
-                coalesce(sum(f.findings_count), 0) AS findings
+                count(*) AS n
          FROM project_file f
          LEFT JOIN file_access_override o ON o.project_id = f.project_id AND o.path = f.path
          WHERE f.project_id IN (${placeholders(projectIds.length)})
@@ -926,16 +1017,22 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       ),
       projectIds,
     );
-    for (const r of rows) {
-      let agg = map.get(r.projectId);
-      if (!agg) {
-        agg = { accessCounts: { open: 0, approved: 0, blocked: 0, total: 0 }, findingsCount: 0 };
-        map.set(r.projectId, agg);
-      }
+    for (const r of access) {
+      const agg = aggregateOf(r.projectId);
       agg.accessCounts.total += r.n;
       agg.accessCounts[r.eff] += r.n;
-      agg.findingsCount += r.findings;
     }
+    const findings = allRows<{ projectId: string; n: number }>(
+      this.db.prepare(
+        `SELECT s.source_project_id AS projectId, count(*) AS n
+         FROM ${PROJECT_FINDINGS_FROM}
+         WHERE s.source_project_id IN (${placeholders(projectIds.length)})
+           AND ${PROJECT_FINDINGS_JOIN}
+         GROUP BY s.source_project_id`,
+      ),
+      [...projectIds, this.findingsSince()],
+    );
+    for (const r of findings) aggregateOf(r.projectId).findingsCount = r.n;
     return map;
   }
 

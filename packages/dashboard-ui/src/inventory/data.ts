@@ -6,6 +6,7 @@ import type {
   AssetGroup,
   AssetSummary,
   AssetType,
+  DetectionCategory,
   Flag,
   HarnessEventKind,
   HarnessSummary,
@@ -172,6 +173,22 @@ export const typeMeta = (type: AssetType): TypeMeta =>
 export const assetTile = (type: AssetType): { icon: IconName; fg: string; bg: string } => {
   const { icon, fg, bg } = typeMeta(type);
   return { icon, fg, bg };
+};
+
+// ─── Sensitive-data categories ────────────────────────────────────────────────
+/** Icon + colours for a category of finding on a project's page. */
+export const SENSITIVE_CATEGORY: Record<
+  DetectionCategory,
+  { icon: IconName; fg: string; bg: string }
+> = {
+  secret: { icon: 'key', fg: 'text-sev-critical-ink', bg: 'bg-sev-critical-fill' },
+  pii: { icon: 'user', fg: 'text-sev-low-ink', bg: 'bg-sev-low-fill' },
+  phi: { icon: 'user', fg: 'text-sev-low-ink', bg: 'bg-sev-low-fill' },
+  financial: { icon: 'database', fg: 'text-sev-high-ink', bg: 'bg-sev-high-fill' },
+  code_context: { icon: 'code', fg: 'text-violet-ink', bg: 'bg-violet-fill' },
+  code_flaw: { icon: 'alert', fg: 'text-sev-high-ink', bg: 'bg-sev-high-fill' },
+  custom: { icon: 'flag', fg: 'text-text-2', bg: 'bg-surface-2' },
+  config: { icon: 'sliders', fg: 'text-teal-ink', bg: 'bg-teal-fill' },
 };
 
 // ─── Date formatting ──────────────────────────────────────────────────────────

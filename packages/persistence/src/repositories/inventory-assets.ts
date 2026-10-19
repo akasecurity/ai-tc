@@ -7,7 +7,6 @@ import type {
   AssetDetail,
   AssetGroup,
   AssetSummary,
-  ConfigFileInventoryItem,
   FileDetail,
   FileSummary,
   Flag,
@@ -15,23 +14,27 @@ import type {
   GetProjectTreeQuery,
   HarnessId,
   HarnessSummary,
-  HookInventoryItem,
   InventoryStats,
   ListAssetsQuery,
   ListAssetsResponse,
   ListHarnessesResponse,
   ListProjectsResponse,
-  McpInventoryItem,
   McpTool,
   Origin,
   ProjectSummary,
   ProjectTreeResponse,
-  SkillInventoryItem,
   TrustLevel,
   Visibility,
 } from '@akasecurity/schema';
 import { HARNESS, HarnessId as HarnessIdSchema, SOURCE_TOOL } from '@akasecurity/schema';
 
+import {
+  type AssetRow,
+  configFileAssetRow,
+  hookAssetRow,
+  mcpAssetRow,
+  skillAssetRow,
+} from '../config-assets.ts';
 import { safeJson } from '../internal/json.ts';
 import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
 import { containsPattern, escapeLikePattern, likeAny, placeholders } from '../internal/sql-text.ts';
@@ -46,18 +49,6 @@ interface HarnessRow {
   title: string | null;
   attributes: string;
   harnessVersion: string | null;
-}
-interface AssetRow {
-  id: string;
-  assetType: 'skill' | 'mcp' | 'hook' | 'config';
-  name: string;
-  sub: string | null;
-  description: string | null;
-  flagsJson: string;
-  metaJson: string;
-  trust: TrustLevel | null;
-  toolsJson: string | null;
-  effectiveTrust: TrustLevel | null;
 }
 interface ProjectRow {
   id: string;
@@ -226,6 +217,7 @@ function toAssetSummary(row: AssetRow): AssetSummary {
     name: row.name,
     sub: row.sub ?? '',
     flags: safeJson(row.flagsJson, [] as Flag[]),
+    meta: safeJson<Record<string, unknown>>(row.metaJson, {}),
   };
   if (row.assetType === 'mcp' && row.effectiveTrust) summary.trust = row.effectiveTrust;
   return summary;
@@ -259,136 +251,6 @@ function buildAssetDetail(row: AssetRow): AssetDetail {
         : rawTools;
   }
   return detail;
-}
-
-// ─── Config-inventory (real skills/hooks/MCP servers) → AssetRow ──────────────
-// Real scanned skills/hooks/MCP servers live in the meta `inventory` table
-// (object_type skill|hook|mcp_server), NOT inventory_asset. We project the
-// config-inventory report into the shared AssetRow shape so they render through
-// the same toAssetSummary/buildAssetDetail path as sample assets. Posture status
-// collapses onto the Flag vocabulary the Inventory page already understands; the
-// richer fields (command, matcher, warnings, versions, env keys) ride the
-// detail-pane `meta` grid. MCP trust is the report's EFFECTIVE trust (user
-// override ?? review-required default).
-
-function skillAssetRow(item: SkillInventoryItem): AssetRow {
-  const flags: Flag[] = item.status === 'update_available' ? ['update'] : [];
-  const meta: Record<string, unknown> = { source: item.source, scope: item.scope };
-  if (item.installedVersion !== undefined) meta.installedVersion = item.installedVersion;
-  if (item.latestVersion !== undefined) meta.latestVersion = item.latestVersion;
-  if (item.updatedAt !== undefined) meta.updatedAt = item.updatedAt;
-  return {
-    id: item.id,
-    assetType: 'skill',
-    name: item.name,
-    sub: `Skill · ${item.source}`,
-    description: item.description ?? null,
-    flagsJson: JSON.stringify(flags),
-    metaJson: JSON.stringify(meta),
-    trust: null,
-    toolsJson: null,
-    effectiveTrust: null,
-  };
-}
-
-function hookAssetRow(item: HookInventoryItem): AssetRow {
-  // Highest-severity posture status wins the single Flag slot; 'egress' maps to
-  // 'risk' — the one badge a UI must not soften into plain 'active'.
-  const flags: Flag[] =
-    item.status === 'egress'
-      ? ['risk']
-      : item.status === 'conflict'
-        ? ['conflict']
-        : item.status === 'unknown'
-          ? ['unknown']
-          : [];
-  const meta: Record<string, unknown> = {
-    event: item.event,
-    command: item.command,
-    scope: item.scope,
-    status: item.status,
-  };
-  if (item.matcher !== undefined) meta.matcher = item.matcher;
-  if (item.pluginName !== undefined) meta.pluginName = item.pluginName;
-  if (item.warnings.length > 0) meta.warnings = item.warnings;
-  return {
-    id: item.id,
-    assetType: 'hook',
-    name: truncateInline(item.command.trim(), 64),
-    sub: item.matcher ? `Hook · ${item.event} · ${item.matcher}` : `Hook · ${item.event}`,
-    description: item.warnings.length > 0 ? item.warnings.join(' · ') : null,
-    flagsJson: JSON.stringify(flags),
-    metaJson: JSON.stringify(meta),
-    trust: null,
-    toolsJson: null,
-    effectiveTrust: null,
-  };
-}
-
-function mcpAssetRow(item: McpInventoryItem): AssetRow {
-  const meta: Record<string, unknown> = { scope: item.scope, transport: item.transport };
-  if (item.command !== undefined) meta.command = item.command;
-  if (item.url !== undefined) meta.url = item.url;
-  if (item.envKeys !== undefined) meta.envKeys = item.envKeys;
-  if (item.pluginName !== undefined) meta.pluginName = item.pluginName;
-  if (item.marketplace !== undefined) meta.marketplace = item.marketplace;
-  if (item.project !== undefined) meta.project = item.project;
-  return {
-    id: item.id,
-    assetType: 'mcp',
-    name: item.name,
-    sub: `MCP server · ${item.transport} · ${truncateInline(mcpEndpointLabel(item), 48)}`,
-    description: null,
-    flagsJson: '[]',
-    metaJson: JSON.stringify(meta),
-    // Base trust is the constant review-required default — never stored, so
-    // setMcpTrust's clear-on-default compare works without a stored column.
-    trust: 'unapproved',
-    // No tools: a static scan can't enumerate them (needs a live handshake).
-    toolsJson: null,
-    // Effective = the user's override when set, else the default (applied in
-    // the report builder). toAssetSummary copies this onto summary.trust.
-    effectiveTrust: item.trust,
-  };
-}
-
-// The human half of the sub label: a remote server's host, a stdio server's
-// command. URL parsing is best-effort — a malformed url renders raw.
-function mcpEndpointLabel(item: McpInventoryItem): string {
-  if (item.url !== undefined) {
-    try {
-      return new URL(item.url).host;
-    } catch {
-      return item.url;
-    }
-  }
-  return item.command ?? item.name;
-}
-
-function configFileAssetRow(item: ConfigFileInventoryItem): AssetRow {
-  // The one PR-scope flag: the gitignored local override. Posture flags
-  // (change/risk) arrive with the config posture rules, not this projection.
-  const flags: Flag[] = item.untracked ? ['untracked'] : [];
-  const meta: Record<string, unknown> = { kind: item.kind, scope: item.scope, path: item.path };
-  if (item.detail !== undefined) meta.detail = item.detail;
-  if (item.entryCount !== undefined) meta.entryCount = item.entryCount;
-  if (item.updatedAt !== undefined) meta.updatedAt = item.updatedAt;
-  return {
-    id: item.id,
-    assetType: 'config',
-    name: item.name,
-    sub: item.kind,
-    description: item.detail ?? null,
-    flagsJson: JSON.stringify(flags),
-    metaJson: JSON.stringify(meta),
-    trust: null,
-    toolsJson: null,
-    effectiveTrust: null,
-  };
-}
-
-function truncateInline(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
 function toProjectSummary(

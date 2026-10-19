@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 // each is pinned here. That is not a hypothetical gap: five of the six sat on
 // `border-border` while ui-kit's two were correct, and two were missed by a
 // survey that went looking for the other four. Neither miss was about size —
-// `InventoryNav` is `h-8.5` like `SessionListView` and was found. What hid them
+// what hid them
 // was SHAPE: SessionListView put its border on a WRAPPER around a
 // `bg-transparent` input, so a search for bordered `<input>` elements never saw
 // it, and HarnessSelect puts its border COLOUR behind a conditional, so a search
@@ -180,15 +180,8 @@ const FIELDS: {
     shared: true,
   },
   {
-    file: 'inventory/InventoryNav.tsx',
-    control: 'the assets search',
-    on: 'a Card',
-    edge: 'surface="card"',
-    shared: true,
-  },
-  {
-    file: 'inventory/ProjectPane.tsx',
-    control: 'the project-files search',
+    file: 'inventory/InventoryTable.tsx',
+    control: 'the inventory table search',
     on: 'a Card',
     edge: 'surface="card"',
     shared: true,

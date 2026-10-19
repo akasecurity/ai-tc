@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "//": "identity-consistency.test.ts asserts this plugin's version against cli/package.json — the shared version line. That file is not in this package and the CLI is not a dependency of it, so the default inputs do not hash it: a CLI-only version bump would leave this task's hash untouched and turbo would replay a cached pass, at exactly the moment the guard exists to fire. That suite parses this file and fails if an input it reads goes missing. Same reasoning as plugins/antigravity/turbo.json.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/cli/package.json"]
+    }
+  }
+}

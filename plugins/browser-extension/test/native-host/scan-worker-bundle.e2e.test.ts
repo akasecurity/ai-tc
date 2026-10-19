@@ -298,8 +298,9 @@ describe('the built scan worker', () => {
 // host.js; the product's 500ms start budget turns a slow start into the same
 // refusal as a missing worker, and a loaded runner starts a worker slowly, so
 // under that budget the present-worker row failed with no defect in the build.
-// The budgets themselves are pinned by host.test.ts, and what the start costs
-// is pinned by the worker's size above.
+// So these rows cannot see the product's budgets. host.test.ts pins them as
+// literals, 500ms to start and 2s to scan, and what the start costs is pinned
+// by the worker's size above.
 describe('a prompt past the large-input threshold, through the built host', () => {
   const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
   const TEST_START_BUDGET_MS = 10_000;

@@ -17,8 +17,9 @@ import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, visit as visitDocum
 // What it will not decode it refuses, rather than guess: a document with a parse
 // error or warning (an unresolved tag, a duplicate key, a tab used as indentation),
 // more than one document, a `%YAML` directive, a `%TAG` directive that names a
-// handle other than `!!`, a mapping key that is not a string, a `<<` merge key, and
-// an alias that points at a node it sits inside. A `%TAG !!` that redefines the
+// handle other than `!!`, a mapping key that is not a string, a `<<` merge key, an
+// alias with no anchor before it, and an alias that points at a node it sits
+// inside. A `%TAG !!` that redefines the
 // default prefix is not refused on its own, since nothing resolves through it
 // until a tag is written; the warning for the tag that does is.
 // Anchors and aliases are decoded — GitHub accepts them. A merge key is not: that
@@ -59,8 +60,8 @@ export const isMapping = (value) =>
  * The node each alias in a document names: the last node carrying its anchor
  * before the alias, in document order, which is the rule `Alias.resolve`
  * applies. Built in one walk, so the library is never handed a `ToJSContext`
- * (`Alias.resolve` reads `anchors` from any context it is given) and each lookup
- * is a `Map` read.
+ * (from yaml 2.9.1 `Alias.resolve` reads `anchors` from any context it is given)
+ * and each lookup is a `Map` read.
  *
  * @param {import('yaml').Document} document
  * @returns {Map<import('yaml').Alias, unknown>}
@@ -87,6 +88,19 @@ function aliasTargets(document) {
  */
 
 /**
+ * The node an alias names, refusing an alias that has no anchor before it.
+ * @param {import('yaml').Alias} alias
+ * @param {DecodeState} state
+ */
+function targetOf(alias, state) {
+  const target = state.targets.get(alias);
+  if (target === undefined) {
+    expect(target, `the alias *${alias.source} names no anchor`).toBeDefined();
+  }
+  return target;
+}
+
+/**
  * @param {unknown} node
  * @param {DecodeState} state
  * @returns {unknown}
@@ -103,10 +117,7 @@ function decode(node, state) {
   }
   if (node === null || node === undefined) return null;
   if (isAlias(node)) {
-    const target = state.targets.get(node);
-    if (target === undefined) {
-      expect(target, `the alias *${node.source} names no anchor`).toBeDefined();
-    }
+    const target = targetOf(node, state);
     if (state.open.has(target)) {
       expect(false, `the alias *${node.source} refers to a node it is inside`).toBe(true);
     }
@@ -130,7 +141,7 @@ function decode(node, state) {
       const comments = {};
       const seen = new Set();
       for (const pair of node.items) {
-        const key = isAlias(pair.key) ? state.targets.get(pair.key) : pair.key;
+        const key = isAlias(pair.key) ? targetOf(pair.key, state) : pair.key;
         expect(
           isScalar(key) && typeof key.value === 'string',
           'a mapping key that is not a plain string — a number, a boolean, an empty key or a collection',

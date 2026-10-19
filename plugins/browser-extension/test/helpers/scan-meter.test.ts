@@ -35,6 +35,23 @@ describe('charactersExamined', () => {
     expect(charactersExamined(() => global.exec(text))).toBe(3);
   });
 
+  it('charges iteration each character it yields', () => {
+    let seen = '';
+    expect(
+      charactersExamined(() => {
+        for (const char of text) seen += char;
+      }),
+    ).toBe(text.length);
+    expect(seen).toBe(text);
+    expect(charactersExamined(() => Array.from(text))).toBe(text.length);
+    // A loop that stops early is charged only what it read.
+    expect(
+      charactersExamined(() => {
+        for (const char of text) if (char === 'c') break;
+      }),
+    ).toBe(3);
+  });
+
   it('does not charge a copy', () => {
     expect(charactersExamined(() => [text.slice(2), text.concat(text)].join(''))).toBe(0);
   });
@@ -43,6 +60,7 @@ describe('charactersExamined', () => {
     const builtins = (): unknown[] => [
       Object.getOwnPropertyDescriptor(String.prototype, 'indexOf')?.value,
       Object.getOwnPropertyDescriptor(RegExp.prototype, 'exec')?.value,
+      Object.getOwnPropertyDescriptor(String.prototype, Symbol.iterator)?.value,
     ];
     const before = builtins();
     expect(() =>

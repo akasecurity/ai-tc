@@ -10,13 +10,14 @@
  * Each method is charged what it can examine, not what it happened to: a
  * character accessor one, a search the rest of the string from where it
  * starts, a prefix or suffix test the length it compares, a split or a pattern
- * method the whole string, and a regex run the input from where it starts.
+ * method the whole string, a regex run the input from where it starts, and
+ * iteration (`for (const char of text)`, a spread, `Array.from`) each
+ * character it yields.
  * Copying builtins (`slice`, `concat`, `join`) are not charged, because a copy
  * is not a re-examination and V8 can make one without visiting a character.
  *
- * What it cannot see is a read that calls nothing: `text[i]` and a
- * `for (const char of text)` loop over a primitive go through no patchable
- * method, so a rescan written that way is invisible to it.
+ * What it cannot see is a read that calls nothing: `text[i]` goes through no
+ * patchable method, so a rescan written as raw index access is invisible to it.
  */
 export function charactersExamined(work: () => void): number {
   let examined = 0;
@@ -74,6 +75,36 @@ export function charactersExamined(work: () => void): number {
     const input = typeof args[0] === 'string' ? args[0] : String(args[0]);
     const from = self instanceof RegExp && (self.global || self.sticky) ? self.lastIndex : 0;
     return Math.max(0, input.length - from);
+  });
+
+  // Iterating a string looks up `String.prototype[Symbol.iterator]`, primitive
+  // or not, so a for-of rescan is charged here, per character it yields.
+  const iterate = Reflect.get(String.prototype, Symbol.iterator) as (
+    this: unknown,
+  ) => Iterator<string>;
+  Object.defineProperty(String.prototype, Symbol.iterator, {
+    configurable: true,
+    writable: true,
+    value: function (this: unknown): Iterator<string> {
+      const inner = Reflect.apply(iterate, this, []);
+      return {
+        next(): IteratorResult<string> {
+          const step = inner.next();
+          if (step.done !== true) examined += step.value.length;
+          return step;
+        },
+        [Symbol.iterator]() {
+          return this;
+        },
+      } as Iterator<string>;
+    },
+  });
+  restore.push(() => {
+    Object.defineProperty(String.prototype, Symbol.iterator, {
+      configurable: true,
+      writable: true,
+      value: iterate,
+    });
   });
 
   try {

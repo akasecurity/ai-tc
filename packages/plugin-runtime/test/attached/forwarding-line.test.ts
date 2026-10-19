@@ -437,6 +437,7 @@ const client: AttachedClient = {
   recordAuditEvents: (events) => Promise.resolve({ accepted: events.length }),
   reportStorePosture: () => Promise.resolve({}),
   recordProjectEgress: () => Promise.resolve({}),
+  recordConfigInventory: () => Promise.resolve({ accepted: 0 }),
 };
 
 /**

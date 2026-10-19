@@ -14,6 +14,7 @@ import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type * as RemoteModule from '@akasecurity/remote';
 import type {
   AuditEventInput,
+  ConfigInventoryRequest,
   DetectedFinding,
   EgressIngestRequest,
   IngestBatch,
@@ -67,6 +68,7 @@ const sent = vi.hoisted(() => ({
   posture: [] as StorePostureSnapshot[],
   captures: [] as IngestBatch[],
   egress: [] as EgressIngestRequest[],
+  configInventory: [] as ConfigInventoryRequest[],
 }));
 
 // Each policy refresh a session start asked for. Recorded instead of run: on an
@@ -116,6 +118,10 @@ vi.mock('@akasecurity/remote', async (importOriginal) => ({
       sent.egress.push(request);
       return Promise.resolve({});
     },
+    recordConfigInventory: (request) => {
+      sent.configInventory.push(request);
+      return Promise.resolve({ accepted: request.items.length });
+    },
   }),
 }));
 
@@ -154,7 +160,7 @@ const MACHINE_POSTURE_KEYS = [
 ];
 
 // The three routes a session start never uses, silent in every case.
-const NO_OTHER_ROUTE = { captures: 0, auditBatches: 0, egress: 0 };
+const NO_OTHER_ROUTE = { captures: 0, auditBatches: 0, egress: 0, configInventory: 0 };
 
 // Neither of the other two detached children a session start can ask for was
 // started: no history grant, and body retention off. Each trigger writes its
@@ -272,6 +278,7 @@ function otherRoutes(): typeof NO_OTHER_ROUTE {
     captures: sent.captures.length,
     auditBatches: sent.auditBatches.length,
     egress: sent.egress.length,
+    configInventory: sent.configInventory.length,
   };
 }
 
@@ -420,6 +427,12 @@ describe('handleSessionStart on a scoped credential read from disk', () => {
 
 describe('handleSessionStart on a machine credential, with the same settings', () => {
   it('sends the inventory, root and config scan of a personal session, and posture with no mode', async () => {
+    writeFileSync(
+      join(userHome, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { linear: { type: 'http', url: 'https://mcp.linear.app/sse' } },
+      }),
+    );
     await start('s-machine', personal, attach('machine'));
 
     expect(sent.inventory.map((context) => context.project?.url)).toEqual([PERSONAL_ORIGIN]);
@@ -435,8 +448,19 @@ describe('handleSessionStart on a machine credential, with the same settings', (
       { event_type: 'config_scan', scope_key: null, synced_at: expect.any(Number) as number },
       { event_type: 'session', scope_key: PERSONAL_KEY, synced_at: expect.any(Number) as number },
     ]);
+    // The scan's items, under the Claude Code harness, for the session's project.
+    expect(sent.configInventory).toHaveLength(1);
+    expect(sent.configInventory[0]).toMatchObject({
+      harness: { objectType: 'harness', identityKey: SOURCE_TOOL.ClaudeCode },
+      projectKey: PERSONAL_ORIGIN,
+      complete: true,
+    });
+    expect(sent.configInventory[0]?.items).toContainEqual(
+      expect.objectContaining({ objectType: 'mcp_server', title: 'linear' }),
+    );
+    expect(JSON.stringify(sent.configInventory)).not.toContain('scope_key');
     expect(policySync.configs).toHaveLength(1);
-    expect(otherRoutes()).toEqual(NO_OTHER_ROUTE);
+    expect(otherRoutes()).toEqual({ ...NO_OTHER_ROUTE, configInventory: 1 });
     expect(childMarkers()).toEqual(NO_CHILD);
   });
 });

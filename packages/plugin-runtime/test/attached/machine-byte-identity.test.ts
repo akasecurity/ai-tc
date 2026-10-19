@@ -62,6 +62,7 @@ interface Wire {
   recordAuditEvents: string[];
   reportStorePosture: string[];
   recordProjectEgress: string[];
+  recordConfigInventory: string[];
 }
 
 const emptyWire = (): Wire => ({
@@ -71,6 +72,7 @@ const emptyWire = (): Wire => ({
   recordAuditEvents: [],
   reportStorePosture: [],
   recordProjectEgress: [],
+  recordConfigInventory: [],
 });
 
 function recordingClient(wire: Wire, overrides: Partial<AttachedClient> = {}): AttachedClient {
@@ -99,6 +101,10 @@ function recordingClient(wire: Wire, overrides: Partial<AttachedClient> = {}): A
     recordProjectEgress: (request) => {
       wire.recordProjectEgress.push(JSON.stringify(request));
       return Promise.resolve({});
+    },
+    recordConfigInventory: (request) => {
+      wire.recordConfigInventory.push(JSON.stringify(request));
+      return Promise.resolve({ accepted: request.items.length });
     },
     ...overrides,
   };

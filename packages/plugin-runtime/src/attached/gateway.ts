@@ -26,6 +26,7 @@ import type {
   AuditEventBatchAck,
   AuditEventInput,
   ConfigInventoryReport,
+  ConfigInventoryRequest,
   ConfigScanRecord,
   DayActivity,
   EgressIngestRequest,
@@ -67,6 +68,7 @@ import type { AccountScope, AccountScopeReader } from '../account-scope.ts';
 import type { GovernanceScope } from '../governance-scope.ts';
 import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
+import { configInventoryRequests } from './config-inventory-wire.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
@@ -88,7 +90,7 @@ import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
  *
  * WRITE-ONLY, plus the posture self-report. There are deliberately no reads:
  * every read is served from the local store, and the credential a machine holds
- * is scoped to the five writes plus the policy bundle and whoami — nothing
+ * is scoped to the writes below plus the policy bundle and whoami — nothing
  * else. A read added here would be a method that cannot work against the
  * credential this gateway actually holds.
  */
@@ -120,6 +122,9 @@ export interface AttachedClient {
   // wire-boundary-safe shape by `toEgressIngestRequest`. The response is
   // unused — see recordProjectEgress below for why.
   recordProjectEgress(request: EgressIngestRequest): Promise<unknown>;
+  // The skills, hooks, MCP servers and config files one config scan found,
+  // built by `configInventoryRequests`. The response is unused.
+  recordConfigInventory(request: ConfigInventoryRequest): Promise<unknown>;
 }
 
 export interface AttachedDataGatewayDeps {
@@ -1149,27 +1154,14 @@ export class AttachedDataGateway
     await this.forwardBatch(this.forwardableLeaves(inputs), (input) => toolAuditEvent(input));
   }
 
-  // Forwarded as a `config_scan` audit event: there is no dedicated
-  // config-scan ingest endpoint, and the audit-event door is the one the
-  // control plane already opens for client-minted, idempotent records.
+  // The scan is forwarded in two requests: the `config_scan` audit event, then
+  // the inventory `items` to the config-items route (`forwardConfigInventory`).
   //
-  // ONLY `scanEvent` CROSSES, and unlike `recordCapture` the plane cannot
-  // re-derive the rest. A `ConfigScanRecord` is four things committed together
-  // locally — the inventory `items`, this audit event, and the posture
-  // `definitions`/`findings` that reference it — and three of them stay on the
-  // device. Say that plainly rather than let the asymmetry with `recordCapture`
-  // read as the same argument: there, findings are omitted BECAUSE the plane
-  // re-derives them from `Event.content`; here there is no content to re-derive
-  // from, so what is omitted is simply not sent.
-  //
-  // That is the wire contract as it stands rather than an oversight to patch
-  // here. `items` has no route at all, and `RecordAuditEventRequest.inspections`
-  // is documented as tool-call findings — widening it to carry config-scan
-  // findings is an egress change (a posture finding's `maskedMatch` holds the
-  // matched command) and a decision about what an attached deployment is
-  // entitled to, not a bug fix. An attached machine's config posture therefore
-  // reaches the plane as the event only; the dashboard's own view of it is the
-  // local store.
+  // The posture `definitions`/`findings` stay on the device. The plane does not
+  // need them: it runs the same posture rules over the hooks the items carry.
+  // `RecordAuditEventRequest.inspections` is documented as tool-call findings,
+  // and a posture finding's `maskedMatch` holds the matched command, so carrying
+  // them would widen what crosses the wire rather than fix a gap.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
     // NO KEY, BY DESIGN, so a scoped attachment keeps every config scan local.
@@ -1188,6 +1180,30 @@ export class AttachedDataGateway
     // call site exempted because it happens to be inert is the one that reads as
     // owed for ever on the day its type joins a lane.
     if (forwarded.ok) this.deps.local.markAuditEventsDelivered([record.scanEvent], Date.now());
+    await this.forwardConfigInventory(record);
+  }
+
+  /**
+   * The scan's items, sent to the config-items route under the harness the
+   * record names. A record with no harness sends nothing. Each request goes
+   * through `forward.run`, so a slow or refusing deployment costs the budget
+   * and the breaker what any forward does, and a deployment that predates the
+   * route answers `route-absent`, which the breaker does not count. Stops at
+   * the first request that is not delivered. Never throws: the items are
+   * already in the local store, and nothing is queued to resend them; the next
+   * session start reports the configuration as it then is.
+   */
+  private async forwardConfigInventory(record: ConfigScanRecord): Promise<void> {
+    try {
+      for (const request of configInventoryRequests(record)) {
+        const sent = await this.deps.forward.run(() =>
+          this.deps.client.recordConfigInventory(request),
+        );
+        if (!sent.ok) return;
+      }
+    } catch {
+      // The local write already succeeded; a report that cannot be built is not sent.
+    }
   }
 
   async recordBlockedDetection(entry: BlockedDetectionInput): Promise<void> {

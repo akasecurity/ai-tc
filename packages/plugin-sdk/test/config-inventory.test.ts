@@ -96,6 +96,29 @@ describe('resolveConfigInventory — hooks', () => {
   });
 });
 
+describe('resolveConfigInventory — project key', () => {
+  it('is the working directory outside a repository, the identity project servers fold in', () => {
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.projectKey).toBe(project);
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+  });
+
+  it("is the repository's remote url inside a repository", () => {
+    write(join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    write(
+      join(project, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/app.git\n',
+    );
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.projectKey).toBe('https://github.com/acme/app.git');
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+  });
+});
+
 describe('resolveConfigInventory — MCP servers', () => {
   it('collects project .mcp.json servers: stdio command+args, remote url, env NAMES only', () => {
     writeJson(join(project, '.mcp.json'), {

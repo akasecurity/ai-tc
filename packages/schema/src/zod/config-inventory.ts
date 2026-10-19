@@ -121,7 +121,9 @@ export type ConfigFileScanEntry = z.infer<typeof ConfigFileScanEntry>;
 
 // One config scan pass. `errors` is the fail-open bookkeeping: a malformed
 // source file becomes an entry here (and a note in the scan event's attributes),
-// never a throw out of the scanner.
+// never a throw out of the scanner. `projectKey` is the repository identity the
+// scan folded into its project and local scope entries: the repository's remote
+// url, else the working directory.
 export const ConfigScanResult = z.object({
   scannedAt: z.iso.datetime(),
   skills: z.array(SkillScanEntry),
@@ -129,6 +131,7 @@ export const ConfigScanResult = z.object({
   mcpServers: z.array(McpServerScanEntry),
   configFiles: z.array(ConfigFileScanEntry),
   errors: z.array(z.object({ source: z.string(), reason: z.string() })),
+  projectKey: z.string().min(1).optional(),
 });
 export type ConfigScanResult = z.infer<typeof ConfigScanResult>;
 
@@ -370,13 +373,76 @@ export type ConfigPostureFindingInput = z.infer<typeof ConfigPostureFindingInput
 // audit event, and any posture definitions + findings that reference
 // it. One gateway method / one SQLite transaction — a torn scan (rows without
 // their scan event, findings without their definitions) never persists.
+//
+// `harness`, `projectKey` and `complete` describe the scan for an attached
+// machine's report of its items (ConfigInventoryRequest below); the local store
+// does not read them. `harness` is the harness whose configuration was scanned,
+// and is absent when the scan read another harness's configuration. `complete`
+// is true when the scan read every source without an error.
 export const ConfigScanRecord = z.object({
   items: z.array(InventoryInput),
   scanEvent: AuditEventInput,
   definitions: z.array(InspectionDefinitionInput).optional(),
   findings: z.array(ConfigPostureFindingInput).optional(),
+  harness: InventoryInput.optional(),
+  projectKey: z.string().min(1).optional(),
+  complete: z.boolean().optional(),
 });
 export type ConfigScanRecord = z.infer<typeof ConfigScanRecord>;
+
+// ── Control-plane request (POST /v1/inventory/config-items) ─────────────────
+
+// The most items one request may carry; a larger scan is sent in several.
+export const CONFIG_INVENTORY_BATCH_MAX = 2000;
+
+// The longest one item may be, as JSON.
+export const CONFIG_INVENTORY_ITEM_MAX_CHARS = 16_384;
+
+export const ConfigInventoryItemType = z.enum(['skill', 'hook', 'mcp_server', 'config_file']);
+export type ConfigInventoryItemType = z.infer<typeof ConfigInventoryItemType>;
+
+export const ConfigInventoryRequestItem = InventoryInput.extend({
+  objectType: ConfigInventoryItemType,
+}).refine((item) => JSON.stringify(item).length <= CONFIG_INVENTORY_ITEM_MAX_CHARS, {
+  message: `An item may not exceed ${String(CONFIG_INVENTORY_ITEM_MAX_CHARS)} characters.`,
+});
+export type ConfigInventoryRequestItem = z.infer<typeof ConfigInventoryRequestItem>;
+
+/**
+ * Whether an item belongs to the project the scan ran in rather than to the
+ * machine: its `scope` attribute names the project or local scope.
+ */
+export function isProjectScopedConfigItem(item: Pick<InventoryInput, 'attributes'>): boolean {
+  const scope = item.attributes.scope;
+  return typeof scope === 'string' && /^(project|local)\b/.test(scope);
+}
+
+/**
+ * The skills, hooks, MCP servers and config files one scan found, attributed to
+ * the harness whose configuration it read. `projectKey` is required when any
+ * item is project scoped. `complete` marks a scan that read every source: the
+ * deployment then removes what this machine reported before and this scan did
+ * not, for the machine's own configuration and for the project named by
+ * `projectKey`.
+ */
+export const ConfigInventoryRequest = z
+  .object({
+    harness: InventoryInput.extend({ objectType: z.literal('harness') }),
+    items: z.array(ConfigInventoryRequestItem).max(CONFIG_INVENTORY_BATCH_MAX),
+    projectKey: z.string().min(1).optional(),
+    complete: z.boolean().optional(),
+  })
+  .refine(
+    (request) => request.projectKey !== undefined || !request.items.some(isProjectScopedConfigItem),
+    { message: 'Items with project or local scope need a projectKey.', path: ['projectKey'] },
+  );
+export type ConfigInventoryRequest = z.infer<typeof ConfigInventoryRequest>;
+
+/** How many distinct items the deployment stored. A response parser. */
+export const ConfigInventoryAck = z.object({
+  accepted: z.number().int().nonnegative(),
+});
+export type ConfigInventoryAck = z.infer<typeof ConfigInventoryAck>;
 
 // ── Read DTOs (plain interfaces, NOT Zod) ───────────────────────────────────
 // Same rule as the read-projection DTOs in local.ts: no Zod registration, no

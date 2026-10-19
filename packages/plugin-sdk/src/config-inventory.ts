@@ -89,6 +89,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     // inherit it).
     const repo = resolveRepoIdentity(input.cwd);
     const repoIdentity = repo?.url ?? input.cwd;
+    if (repoIdentity !== '') scan.projectKey = repoIdentity;
     const projectSource = `project:${repoIdentity}`;
 
     // Hooks + (managed-deployment) MCP servers from the three settings scopes.

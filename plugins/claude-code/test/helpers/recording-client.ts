@@ -31,5 +31,6 @@ export function recordingClient(sent: Sent): AttachedClient {
     },
     reportStorePosture: () => Promise.resolve({}),
     recordProjectEgress: () => Promise.resolve({}),
+    recordConfigInventory: (request) => Promise.resolve({ accepted: request.items.length }),
   };
 }

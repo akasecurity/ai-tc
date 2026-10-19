@@ -208,7 +208,7 @@ describe('choosing a disposition', () => {
   it('shows EVERY option description at once, not only the chosen one', () => {
     // The reason this is a radio list. With one help line under a segmented
     // control a reader had to pick an answer to find out what it meant — and
-    // the two answers differ in what they CLAIM, not in presentation.
+    // the answers differ in what they CLAIM, not in presentation.
     openDialog();
     const text = document.body.textContent;
     for (const m of DISMISS_METHODS) {

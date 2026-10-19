@@ -1987,10 +1987,13 @@ ratio compares keeps all of its rounds when the next doubling goes over budget. 
 per-rule walk screens on process-wide CPU, and a breach there is measured again on a fresh
 worker thread charged with that thread's own CPU — a new isolate, so the regex runs
 interpreted again as a hook process does (re-measuring on the same thread would measure
-the compiled tier, see `worstProbeMs`) — and only that second reading decides. A control
-case holds the re-measurement to the interpreted cost: more than three times the same
-probe's compiled cost on the calling thread, that cost floored at one clock step, on the
-native clock and on a forced 16 ms step. `packages/detections/test/security/unicode.test.ts`'s
+the compiled tier, see `worstProbeMs`) — and only that second reading decides, clearing
+the rule only when it reads at least one measured clock step under the budget, since a
+stepped clock reads low by up to a step. A control case holds the re-measurement to the
+interpreted cost: more than three times the same probe's compiled cost on the calling
+thread, read unquantized and the bound floored at one clock step, on the native clock and
+on a forced 16 ms step; a reading within a step of either line is skipped as unmeasurable
+rather than judged. `packages/detections/test/security/unicode.test.ts`'s
 one-BOM slow-path ratio reads the growth tier's clock and statistic and fails only when
 three attempts breach. And a guard whose subject has a countable unit counts it rather
 than timing it — `mergeOverlappingSameRule`'s growth guard counts the uses of the span

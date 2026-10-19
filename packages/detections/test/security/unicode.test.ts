@@ -4,6 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
+import { RATIO_CLOCK } from '../helpers/clocks.ts';
 import { BOM, FORMAT_CHARS, SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
@@ -426,6 +427,14 @@ describe('the slow path does not blow up on a large text with one format charact
   // still comfortably above the ~2x this file's own dual-pass matching
   // costs on the other (see bench/benign-format-chars.bench.ts for the
   // measured, non-pathological cost of the slow path).
+  //
+  // The readings are this thread's CPU time where that clock is fine enough
+  // (`RATIO_CLOCK`), because the fastest of five wall readings does not
+  // survive a machine with no free core for the whole measurement: under 30
+  // CPU burners on 10 cores the healthy scan read 10.1x, 11.9x and 15.6x on
+  // the wall. And a ratio over the bound is measured again before it fails,
+  // up to ATTEMPTS times: the quadratic merge reads ~330x on every attempt,
+  // and a reading that was the machine's does not come back three times.
   it('scans a large multi-rule text with one leading BOM in roughly the same time as without one', () => {
     const mk = (id: string, pattern: string) =>
       Rule.parse({
@@ -445,26 +454,32 @@ describe('the slow path does not blow up on a large text with one format charact
     const withBom = BOM + body;
 
     function timeOnce(text: string): number {
-      const start = performance.now();
+      const start = RATIO_CLOCK.now();
       const findings = scan(text, rules);
-      const ms = performance.now() - start;
+      const ms = RATIO_CLOCK.now() - start;
       expect(findings).toHaveLength(60000);
       return ms;
     }
 
     const REPEATS = 5;
-    let withoutBomBest = Infinity;
-    let withBomBest = Infinity;
-    for (let i = 0; i < REPEATS; i++) {
-      withoutBomBest = Math.min(withoutBomBest, timeOnce(withoutBom));
-      withBomBest = Math.min(withBomBest, timeOnce(withBom));
+    const ATTEMPTS = 3;
+    const MAX_RATIO = 10;
+    const readings: string[] = [];
+    let ratio = Infinity;
+    for (let attempt = 0; attempt < ATTEMPTS && ratio >= MAX_RATIO; attempt++) {
+      let withoutBomBest = Infinity;
+      let withBomBest = Infinity;
+      for (let i = 0; i < REPEATS; i++) {
+        withoutBomBest = Math.min(withoutBomBest, timeOnce(withoutBom));
+        withBomBest = Math.min(withBomBest, timeOnce(withBom));
+      }
+      ratio = withBomBest / Math.max(withoutBomBest, 0.001);
+      readings.push(`${withBomBest.toFixed(1)}ms with, ${withoutBomBest.toFixed(1)}ms without`);
     }
-
-    const ratio = withBomBest / Math.max(withoutBomBest, 0.001);
     expect(
       ratio,
-      `with-BOM best of ${String(REPEATS)}: ${withBomBest.toFixed(1)}ms, without: ${withoutBomBest.toFixed(1)}ms`,
-    ).toBeLessThan(10);
+      `best of ${String(REPEATS)} on ${RATIO_CLOCK.name}, per attempt: ${readings.join('; ')}`,
+    ).toBeLessThan(MAX_RATIO);
   });
 });
 

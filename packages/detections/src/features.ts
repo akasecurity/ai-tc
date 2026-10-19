@@ -14,13 +14,26 @@ import { shannonEntropy } from './validators/entropy.ts';
 export type { CharClass, EntropyBucket, MatchFeatures, NameBucket, PathClass };
 export { KNOWN_PREFIXES };
 
-const TEST_WORDS = /(test|spec|mock|fake|dummy|stub|sample|example|placeholder|fixture)/i;
-const SECRET_WORDS = /(secret|token|passw|pwd|apikey|api_key|api-key|auth|credential|private|key)/i;
+// Matched at the START of a word, never inside one: `attestation` holds the
+// letters of "test" and `monkey` those of "key", and neither says anything.
+// `auth` is a whole word only, so `author` is not a credential.
+const TEST_WORDS = /^(test|spec|mock|fake|dummy|stub|sample|example|placeholder|fixture)/;
+const SECRET_WORDS = /^(secret|token|passw|pwd|apikey|auth$|credential|private|key)/;
+
+/** A name's words: split on separators and at each lower-to-upper camelCase step. */
+function wordsOf(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w !== '');
+}
 
 /** The bucket of a variable name: what a model needs from it, without the name. */
 export function nameBucket(name: string): NameBucket {
-  if (TEST_WORDS.test(name)) return 'test_like';
-  if (SECRET_WORDS.test(name)) return 'secret_like';
+  const words = wordsOf(name);
+  if (words.some((w) => TEST_WORDS.test(w))) return 'test_like';
+  if (words.some((w) => SECRET_WORDS.test(w))) return 'secret_like';
   return 'other';
 }
 
@@ -30,7 +43,9 @@ export function classifyPath(path: string): PathClass {
     .replace(/\\/g, '/')
     .toLowerCase()
     .split('/')
-    .filter((p) => p !== '');
+    .filter((p, i) => p !== '' && !(i === 0 && /^[a-z]:$/.test(p)));
+  // A path with no segment besides a drive says nothing about the file.
+  if (parts.length === 0) return 'unknown';
   const file = parts.at(-1) ?? '';
   const dirs = parts.slice(0, -1);
   const hasDir = (names: readonly string[]): boolean => dirs.some((d) => names.includes(d));
@@ -77,8 +92,13 @@ function entropyBucket(value: string): EntropyBucket {
 const SAMPLE_WORDS =
   /(example|sample|dummy|fake|changeme|change_me|placeholder|your[_-]|replace|xxx|redacted)/i;
 
+/** The published prefix a value starts with, if any: one rule for both callers. */
+function knownPrefixOf(value: string): (typeof KNOWN_PREFIXES)[number] | null {
+  return KNOWN_PREFIXES.find((p) => value.startsWith(p)) ?? null;
+}
+
 function looksLikePlaceholder(fullValue: string): boolean {
-  const prefix = KNOWN_PREFIXES.find((p) => fullValue.startsWith(p));
+  const prefix = knownPrefixOf(fullValue) ?? undefined;
   const value = prefix === undefined ? fullValue : fullValue.slice(prefix.length);
   if (value.length > 0 && new Set(value).size <= 2) return true;
   if (
@@ -130,7 +150,7 @@ export function matchFeatures(
     shape: {
       length: value.length,
       classes: charClasses(value),
-      knownPrefix: KNOWN_PREFIXES.find((p) => value.startsWith(p)) ?? null,
+      knownPrefix: knownPrefixOf(value),
       entropyBucket: entropyBucket(value),
     },
     placeholder: looksLikePlaceholder(value),

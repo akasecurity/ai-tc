@@ -13,4 +13,4 @@ const threadCpuMs = (): number => {
 };
 
 const { ms, probe } = worstProbeMs(workerData as Rule, threadCpuMs);
-parentPort?.postMessage({ ms, probeLength: probe.length });
+parentPort?.postMessage({ ms, probe, probeLength: probe.length });

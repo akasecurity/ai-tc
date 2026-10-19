@@ -6,6 +6,8 @@ import type { Rule } from '@akasecurity/schema';
 export interface IsolatedWalk {
   /** The worst probe's CPU time on that thread, in ms. */
   ms: number;
+  /** The probe that cost `ms`. */
+  probe: string;
   probeLength: number;
 }
 

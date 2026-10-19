@@ -185,33 +185,35 @@ describe('bundled rules survive adversarial input', () => {
 
   it('measures a breach again on a fresh thread at its interpreted cost', async () => {
     // The re-measurement is only worth having if it still pays what a hook
-    // pays. `^(a+)+bc` is the pattern that separates the two tiers: measured on
-    // an arm64 Mac, its walk burns 130-136ms on a cold isolate and 74ms once
-    // this thread has compiled it natively, so a re-measurement taken on this
-    // thread would clear it and one taken on a fresh thread condemns it. It is
-    // walked here first, which is the state every rule is in when its
-    // in-process walk has just breached. Slower hardware widens the gap, so a
-    // CI runner is the safe direction; a machine ~1.3x faster than that Mac
-    // would bring the cold walk inside the budget and fail the first assertion
-    // with the second still holding, which reads as hardware, not as a defect.
+    // pays: the pattern's first, interpreted run. So the fresh-thread reading
+    // is compared with what the SAME probe costs on this thread once the
+    // pattern is compiled, rather than with the budget — a ratio of two runs of
+    // one probe on one machine, which faster hardware moves on both sides.
+    //
+    // The pattern is walked on this thread first, which is the state every
+    // rule is in when its in-process walk has just breached. A worker that
+    // measured the compiled tier, or a re-measurement taken on this thread,
+    // reads the compiled cost and a ratio near 1. Measured on an arm64 Mac at
+    // 7.4-7.8x (122-130ms against 16.5-16.8ms), against a bound of 3.
     const parsed = parseRegexRule('^(a+)+bc');
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     worstProbeMs(parsed.data, threadCpuMs);
-    const warm = worstProbeMs(parsed.data, threadCpuMs);
     const isolated = await walkInIsolation(parsed.data);
+    expect(isolated.probe.length, 'the fresh-thread walk attributed no probe').toBeGreaterThan(0);
+    let compiledMs = Infinity;
+    for (let i = 0; i < 5; i++) {
+      const start = threadCpuMs();
+      scan(isolated.probe, [parsed.data]);
+      compiledMs = Math.min(compiledMs, threadCpuMs() - start);
+    }
     expect(
       isolated.ms,
-      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on a ` +
-        `${String(isolated.probeLength)}-char probe (${warm.ms.toFixed(1)}ms on this thread, ` +
-        `compiled); a pattern that backtracks must cross the budget there, or every breach the ` +
-        `in-process walk finds is cleared by it.`,
-    ).toBeGreaterThanOrEqual(BUDGET_MS);
-    expect(
-      isolated.ms,
-      'the fresh-thread walk cost no more than the compiled walk on this thread, so it is not ' +
-        'measuring a cold regex',
-    ).toBeGreaterThan(warm.ms);
+      `the fresh-thread walk read ${isolated.ms.toFixed(1)}ms of CPU on its ` +
+        `${String(isolated.probeLength)}-char probe, which costs ${compiledMs.toFixed(1)}ms on ` +
+        `this thread compiled; a re-measurement that is not paying the interpreted cost clears ` +
+        `every breach the in-process walk finds.`,
+    ).toBeGreaterThan(compiledMs * 3);
   });
 });
 

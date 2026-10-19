@@ -180,7 +180,7 @@ export async function reconcileSessionToolCalls(
     if (tc.target !== undefined) {
       // Mask the FULL raw target, THEN size-cap the masked value — see the
       // Claude Code reconciler's identical comment for why order matters.
-      const { masked, findings } = scanText(tc.target, undefined, { locate: true });
+      const { masked, findings } = scanText(tc.target, undefined, { locate: true, features: {} });
       if (masked !== '') attributes.target = truncateTarget(masked);
       inspections = findings.map((f) => ({
         ruleId: f.ruleId,
@@ -196,6 +196,7 @@ export async function reconcileSessionToolCalls(
         col: f.location.col,
         context: f.location.context,
         ...(f.variableName === undefined ? {} : { variableName: f.variableName }),
+        ...(f.features === undefined ? {} : { features: f.features }),
       }));
     }
     if (tc.isError !== undefined) attributes.is_error = tc.isError;

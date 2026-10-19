@@ -28,6 +28,7 @@ export * from './installed-pack.ts';
 export * from './inventory.ts';
 export * from './local.ts';
 export * from './managed.ts';
+export * from './match-features.ts';
 export * from './meta.ts';
 export * from './mod-finding.ts';
 export * from './mod-policy-snapshot.ts';

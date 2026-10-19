@@ -1,68 +1,18 @@
-import type { DetectionCategory, PostValidatorName, Rule } from '@akasecurity/schema';
+import {
+  type CharClass,
+  type EntropyBucket,
+  KNOWN_PREFIXES,
+  type MatchFeatures,
+  type NameBucket,
+  type PathClass,
+  type Rule,
+} from '@akasecurity/schema';
 
 import type { MatchResult } from './types.ts';
 import { shannonEntropy } from './validators/entropy.ts';
 
-export type PathClass =
-  'test' | 'fixture' | 'example' | 'docs' | 'env' | 'config' | 'source' | 'unknown';
-
-export type NameBucket = 'test_like' | 'secret_like' | 'other';
-
-export type CharClass = 'digit' | 'lower' | 'symbol' | 'upper';
-
-export type EntropyBucket = 'low' | 'medium' | 'high';
-
-/**
- * What a correctness model may know about one match. Every field is a class, a
- * count or a member of a fixed public list: nothing in it is the matched value,
- * the variable name, the path or any other text taken from the scanned content,
- * so it can leave the device as it is.
- */
-export interface MatchFeatures {
-  ruleId: string;
-  category: DetectionCategory;
-  /** The post-validators this match passed: every one its rule applies. */
-  validators: PostValidatorName[];
-  /** True when the rule only fires with a corroborating signal nearby, which this match had. */
-  corroborated: boolean;
-  shape: {
-    length: number;
-    classes: CharClass[];
-    /** A prefix from {@link KNOWN_PREFIXES} the value starts with, or `null`. */
-    knownPrefix: string | null;
-    entropyBucket: EntropyBucket;
-  };
-  /** The value looks like a sample, not a live credential: repeats, sequences, sample words. */
-  placeholder: boolean;
-  pathClass: PathClass;
-  /** The bucket of the name the value is assigned to, or `null` when it has none. */
-  name: NameBucket | null;
-}
-
-// Published, non-secret prefixes that name a credential's issuer and mode. A
-// prefix outside this list is never reported, because a value's own leading
-// characters are part of the secret.
-export const KNOWN_PREFIXES = [
-  'sk_live_',
-  'sk_test_',
-  'rk_live_',
-  'rk_test_',
-  'pk_live_',
-  'pk_test_',
-  'AKIA',
-  'ASIA',
-  'ghp_',
-  'gho_',
-  'ghs_',
-  'github_pat_',
-  'xoxb-',
-  'xoxp-',
-  'AIza',
-  'sk-ant-',
-  'sk-proj-',
-  'glpat-',
-  'npm_',
-] as const;
+export type { CharClass, EntropyBucket, MatchFeatures, NameBucket, PathClass };
+export { KNOWN_PREFIXES };
 
 const TEST_WORDS = /(test|spec|mock|fake|dummy|stub|sample|example|placeholder|fixture)/i;
 const SECRET_WORDS = /(secret|token|passw|pwd|apikey|api_key|api-key|auth|credential|private|key)/i;
@@ -141,6 +91,24 @@ function looksLikePlaceholder(fullValue: string): boolean {
 }
 
 /**
+ * The buckets of the words on the match's line, apart from the value itself and
+ * the name it is assigned to. Sorted and unique, so the result is a set.
+ */
+function nearbyBuckets(text: string, match: MatchResult): NameBucket[] {
+  const lineStart = text.lastIndexOf('\n', match.span.start - 1) + 1;
+  const lineEndAt = text.indexOf('\n', match.span.end);
+  const lineEnd = lineEndAt === -1 ? text.length : lineEndAt;
+  const around = `${text.slice(lineStart, match.span.start)} ${text.slice(match.span.end, lineEnd)}`;
+  const buckets = new Set<NameBucket>();
+  for (const word of around.split(/[^A-Za-z0-9_]+/)) {
+    if (word.length < 3 || word === match.variableName) continue;
+    const bucket = nameBucket(word);
+    if (bucket !== 'other') buckets.add(bucket);
+  }
+  return [...buckets].sort();
+}
+
+/**
  * The wire-safe description of one match, from the match, the rule that produced
  * it and where it was found. Pure: no I/O, and nothing it returns is text taken
  * from the scanned content.
@@ -148,7 +116,7 @@ function looksLikePlaceholder(fullValue: string): boolean {
 export function matchFeatures(
   match: MatchResult,
   rule: Rule,
-  context: { filePath?: string },
+  context: { filePath?: string; text?: string },
 ): MatchFeatures {
   const value = match.rawMatch;
   const validators = (rule.postValidators ?? []).map((ref) =>
@@ -168,5 +136,6 @@ export function matchFeatures(
     placeholder: looksLikePlaceholder(value),
     pathClass: context.filePath === undefined ? 'unknown' : classifyPath(context.filePath),
     name: match.variableName === undefined ? null : nameBucket(match.variableName),
+    nearby: context.text === undefined ? [] : nearbyBuckets(context.text, match),
   };
 }

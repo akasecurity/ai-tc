@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { DetectionCategory, PostValidatorName, Rule } from '@akasecurity/schema';
+import { DetectionCategory, MatchFeatures, PostValidatorName, Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { scan } from '../src/engine.ts';
@@ -93,6 +93,32 @@ describe('matchFeatures', () => {
     expect(f.pathClass).toBe('unknown');
     expect(f.validators).toEqual([]);
     expect(f.corroborated).toBe(false);
+  });
+});
+
+describe('nearby words', () => {
+  it('buckets the words on the match line, leaving out the value and its name', () => {
+    const line = ['// example only: MOCK_KEY = ', STRIPE_LIKE, ' # api token'].join('');
+    const start = line.indexOf(STRIPE_LIKE);
+    const m = {
+      ...match(STRIPE_LIKE, 'MOCK_KEY'),
+      span: { start, end: start + STRIPE_LIKE.length },
+    };
+    const f = matchFeatures(m, rule(), { text: ['first line', line, 'last line'].join('\n') });
+    expect(f.nearby).toEqual(['secret_like', 'test_like']);
+    expect(JSON.stringify(f)).not.toContain('MOCK_KEY');
+  });
+
+  it('is empty without the scanned text', () => {
+    expect(matchFeatures(match(STRIPE_LIKE), rule(), {}).nearby).toEqual([]);
+  });
+
+  it('parses under the wire schema', () => {
+    const f = matchFeatures(match(STRIPE_LIKE, 'MOCK_KEY'), rule(), {
+      filePath: 'a.ts',
+      text: STRIPE_LIKE,
+    });
+    expect(MatchFeatures.safeParse(f).success).toBe(true);
   });
 });
 

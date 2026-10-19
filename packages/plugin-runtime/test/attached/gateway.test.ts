@@ -391,6 +391,7 @@ function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
     forward: overrides.forward ?? passthroughForward(calls),
     attachment: overrides.attachment ?? MACHINE,
     ...(overrides.posture ? { posture: overrides.posture } : {}),
+    ...(overrides.readNameKey ? { readNameKey: overrides.readNameKey } : {}),
     ...(overrides.shareCredentialRefs
       ? { shareCredentialRefs: overrides.shareCredentialRefs }
       : {}),
@@ -1756,6 +1757,59 @@ describe("a finding's location never reaches the client", () => {
     expect(seen).toHaveLength(1);
     const sent = (seen[0] as { inspections?: unknown[] }).inspections ?? [];
     expect(sent).toEqual([inspection]);
+  });
+
+  it('forwards the features and a keyed name hash, and still never the name', async () => {
+    const inspection = {
+      ruleId: 'code-flaws/xss-inner-html',
+      ruleName: 'innerHTML assignment',
+      ruleVersion: '1',
+      category: 'code_flaw' as const,
+      severity: 'high' as const,
+      span: { start: 4, end: 15 },
+      maskedMatch: 'i*********=',
+      actionTaken: 'log' as const,
+      confidence: 0.8,
+    };
+    const seen: unknown[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn((events: readonly unknown[]) => {
+        seen.push(...events);
+        return Promise.resolve({ accepted: events.length });
+      }),
+    } as unknown as AttachedClient;
+    const { gateway } = build({
+      client,
+      readNameKey: () => ({ keyVersion: 2, key: new Uint8Array(32).fill(5) }),
+    });
+    const features = {
+      ruleId: inspection.ruleId,
+      category: inspection.category,
+      validators: [],
+      corroborated: false,
+      shape: {
+        length: 11,
+        classes: ['lower' as const],
+        knownPrefix: null,
+        entropyBucket: 'low' as const,
+      },
+      placeholder: false,
+      pathClass: 'unknown' as const,
+      name: 'other' as const,
+      nearby: [],
+    };
+    await gateway.recordToolCalls([
+      {
+        ...toolCallInput('hashed'),
+        inspections: [{ ...inspection, variableName: 'PAGE_BODY', features }],
+      },
+    ]);
+    const sent = (seen[0] as { inspections?: Record<string, unknown>[] }).inspections ?? [];
+    expect(sent[0]?.features).toEqual(features);
+    expect(sent[0]?.nameHash).toMatch(/^v2\./);
+    expect(JSON.stringify(seen)).not.toContain('PAGE_BODY');
   });
 });
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,8 +7,11 @@ import type { HistorySyncState } from '@akasecurity/persistence';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeHistorySyncState,
 } from '@akasecurity/persistence';
@@ -720,5 +724,193 @@ describe('attachmentScopeLines — a missing list and one this build cannot read
     }
     // The three read alike: none names a kind of entry the others leave out.
     expect(out).not.toContain("repository's activity");
+  });
+});
+
+// What a scoped attachment says about work subscriptions: whether it knows the
+// AKA user who attached it, whether recognition is on, and each work account it
+// recognised. Each case writes the identity record the attach would, for this
+// credential's key or another one, through the real writers.
+describe('renderAttachedStatus — work subscriptions on a scoped attachment', () => {
+  const EMAIL = ['member', 'example.test'].join('@');
+  const LEARNED = `claude:${randomUUID()}`;
+  const consent: Partial<WorkspaceSettings> = {
+    historySyncConsent: {
+      acknowledgedAt: '2026-10-01T09:00:00.000Z',
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    },
+  };
+
+  // `as const`: recordValidatedWorkAccount takes the credential's version as the literal `2`.
+  const scopedCredential = (apiKey = TEST_KEY) =>
+    ({
+      specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey,
+    }) as const;
+
+  function writeRecord(apiKey = TEST_KEY): void {
+    writeAttachedIdentity(dataDir, {
+      endpoint: ENDPOINT,
+      apiKey,
+      tenantName: MEMBER.tenantName,
+      userEmail: EMAIL,
+    });
+  }
+
+  function learn(account: string): void {
+    writeRecord();
+    recordValidatedWorkAccount(dataDir, {
+      endpoint: ENDPOINT,
+      credential: scopedCredential(),
+      key: account,
+    });
+  }
+
+  function record() {
+    const stored = readAttachedIdentity(dataDir);
+    if (stored === undefined) throw new Error('no identity record was written');
+    return stored;
+  }
+
+  const lines = (): string[] => status().split('\n');
+
+  it('says the attached user is not known when this device holds no identity record', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    expect(lines()).toContain(
+      '  user       not known on this device — work subscriptions are not recognised',
+    );
+  });
+
+  it('says the attached user is not tied to this key when the record belongs to another one', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    writeRecord('another-key-entirely');
+    expect(lines()).toContain(
+      '  user       not tied to this key — work subscriptions are not recognised',
+    );
+  });
+
+  it('names the day the attached user was checked when the record belongs to this key', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    writeRecord();
+    expect(lines()).toContain(
+      `  user       the AKA user who attached this device is known (checked ${record().checkedAt.slice(0, 10)})`,
+    );
+  });
+
+  // An attachment made before this build has no field at all, and starts on.
+  it('says work subscriptions are on when the scope record does not mention them', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    expect(lines()).toContain('  work       subscriptions on');
+  });
+
+  it.each<[string, unknown]>([
+    ['off', 'off'],
+    ['on', 'on'],
+    ['a number', 42],
+  ])(
+    'says work subscriptions are off for a stored %s, and still lists the enrolled repository',
+    (_name, value) => {
+      attach('scoped', { ...bound([entry(WORK_REPO)]), workSubscriptions: value });
+      const out = lines();
+      expect(out).toContain('  work       subscriptions off — turned off on this device');
+      expect(out).toContain(`             ${WORK_REPO}, enrolled 2026-10-07`);
+    },
+  );
+
+  it('lists a learned work account, with the day it was validated, while work subscriptions are on', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    learn(LEARNED);
+    const [learned] = record().workAccounts;
+    if (learned === undefined) throw new Error('nothing was learned');
+
+    expect(status()).toContain(
+      [
+        '             1 work account validated automatically:',
+        `             ${LEARNED} (validated ${learned.enrolledAt.slice(0, 10)}) — Claude Code sessions signed in to it forward from any folder`,
+      ].join('\n'),
+    );
+  });
+
+  it('lists no learned work account while work subscriptions are off', () => {
+    attach('scoped', { ...bound([entry(WORK_REPO)]), workSubscriptions: 'off' });
+    learn(LEARNED);
+    const out = status();
+    expect(out).not.toContain('validated automatically');
+    expect(out).not.toContain(LEARNED);
+  });
+
+  it('says what a recognised work subscription sends beside the enrolled list', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    learn(LEARNED);
+    expect(lines()).toContain(
+      '  scope      1 enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription',
+    );
+  });
+
+  it('says only a recognised work subscription is sent when nothing is enrolled', () => {
+    attach('scoped', bound());
+    learn(LEARNED);
+    expect(lines()).toContain(
+      '  scope      nothing enrolled yet — only sessions signed in to a recognised work subscription are sent',
+    );
+  });
+
+  // The control for the two cases above: a record that recognised nothing
+  // leaves the plain headline.
+  it('keeps the plain enrolled-list headline while nothing is recognised', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    writeRecord();
+    expect(lines()).toContain(
+      '  scope      1 enrolled — activity anywhere else stays on this machine',
+    );
+  });
+
+  it('counts the history of a scope that holds only a learned work account', () => {
+    attach('scoped', bound(), consent);
+    learn(LEARNED);
+    writeHistorySyncState(dataDir, {
+      phase: 'filling',
+      lastOutcome: 'ok',
+      lastPassAtMs: Date.now(),
+      sentTotal: 10,
+      pendingTotal: 5,
+      skippedTotal: 0,
+      startedAtMs: Date.now(),
+      completedAtMs: null,
+      countsScope: 'scoped',
+    });
+
+    const out = lines();
+    expect(out).toContain('  history    sending — 10 of 15 records sent');
+    expect(out.join('\n')).not.toContain('nothing to send');
+  });
+
+  // The address is also the scope record's own binding, so the check can fail:
+  // a line that printed either copy of it would show.
+  it('never prints the email, a digest, the scope tag or an agent key', () => {
+    attach('scoped', { ...bound([entry(WORK_REPO)]), userEmail: EMAIL });
+    learn(LEARNED);
+    const stored = record();
+    const out = status();
+    for (const secret of [
+      EMAIL,
+      stored.attachedUserDigest,
+      stored.credentialDigest,
+      stored.scopeTag,
+      'agent:',
+    ]) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  it('prints none of these lines on a machine-wide attachment', () => {
+    attach('machine', bound([entry(WORK_REPO)]));
+    learn(LEARNED);
+    const out = status();
+    expect(out).not.toMatch(/^ {2}(user|work) {2,}/m);
+    expect(out).not.toContain(LEARNED);
   });
 });

@@ -1,18 +1,16 @@
 // Presentation descriptors for the Inventory page. The data itself (projects,
-// assets, harnesses, file trees, events) arrives as props, typed by
-// `@akasecurity/schema` — this package renders and never loads, so where those
-// props come from is the host application's business. This module only holds the
-// label/icon/colour lookups the schema shapes don't carry, plus a couple of pure
-// presentation helpers. No dummy data, no view-model types that duplicate a
-// schema shape.
+// assets, harnesses, events) arrives as props, typed by `@akasecurity/schema`.
+// This module holds the label/icon/colour lookups the schema shapes don't carry,
+// the page's selection model, and a few pure presentation helpers.
 import type {
-  AccessLevel,
+  AssetGroup,
+  AssetSummary,
   AssetType,
   Flag,
   HarnessEventKind,
-  Origin,
+  HarnessSummary,
+  ProjectSummary,
   TrustLevel,
-  Visibility,
 } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
@@ -20,65 +18,6 @@ import { formatDateTime } from '../lib/dateFormat.ts';
 import type { IconName } from './icons.ts';
 
 type Tone = NonNullable<BadgeProps['variant']>;
-
-// ─── Access (per-file LLM access) ────────────────────────────────────────────
-/**
- * `bar` and `accent` are the hue/ink split carried into this record, and they
- * cannot be one field. `bar` paints AccessBar's stacked segments and the status
- * dots beside them — non-text marks whose whole job is to stay tellable apart, so
- * they take the HUE. `accent` fills the selected check circle in RadioCardList,
- * which carries a glyph in `text-on-accent`, so it takes the INK: white on the `ok`
- * hue is 2.81:1 and fails, on `ok-ink` it is 5.22:1.
- *
- * Collapsing them onto the ink is what the split exists to prevent — it drops
- * AccessBar's adjacent-segment separation in light from 2.46/1.63/1.51 to
- * 1.33/1.29/1.03, green against red at 1.03. `bar-and-accent.test.ts` pins both
- * roles. TRUST below needs only the ink half, so it carries `iconBg` alone.
- */
-export interface AccessMeta {
-  label: string;
-  icon: IconName;
-  fg: string;
-  bg: string;
-  /** Bar segments and status dots — non-text, so the hue. */
-  bar: string;
-  /** Solid fill under a `text-on-accent` glyph — so the ink. */
-  accent: string;
-  desc: string;
-}
-export const ACCESS: Record<AccessLevel, AccessMeta> = {
-  open: {
-    label: 'Any LLM',
-    icon: 'cloud',
-    fg: 'text-ok-ink',
-    bg: 'bg-ok-fill',
-    bar: 'bg-ok',
-    accent: 'bg-ok-ink',
-    desc: 'Allowed to any model — including public, consumer LLMs.',
-  },
-  approved: {
-    label: 'Approved only',
-    icon: 'shield-check',
-    fg: 'text-primary',
-    bg: 'bg-primary-tint',
-    // primary is the inverted pair — the bare token IS the ink — so one value
-    // serves both roles here. In dark it lifts to a pale lavender, which reads as
-    // a bar segment against the dark surface and still carries the dark glyph.
-    bar: 'bg-primary',
-    accent: 'bg-primary',
-    desc: 'Allowed only to approved, governed models.',
-  },
-  blocked: {
-    label: 'No LLM',
-    icon: 'slash-circle',
-    fg: 'text-sev-critical-ink',
-    bg: 'bg-sev-critical-fill',
-    bar: 'bg-sev-critical',
-    accent: 'bg-sev-critical-ink',
-    desc: 'Never sent to any model. Blocked at the proxy.',
-  },
-};
-export const ACCESS_ORDER: AccessLevel[] = ['open', 'approved', 'blocked'];
 
 // ─── MCP trust ────────────────────────────────────────────────────────────────
 export interface TrustMeta {
@@ -138,47 +77,44 @@ export const FLAG: Record<Flag, FlagMeta> = {
   risk: { label: 'Security risk', short: 'Risk', icon: 'alert', tone: 'critical' },
   findings: { label: 'Sensitive data', short: 'Findings', icon: 'alert', tone: 'critical' },
 };
-/**
- * Severity-ish priority order used when rolling flags up into chips. Excludes
- * the project-only `findings` flag, which is surfaced separately (projects don't
- * carry the generic asset flags).
- */
-export const FLAG_ORDER: Flag[] = [
+
+// ─── Row status ───────────────────────────────────────────────────────────────
+/** What a row can need attention for: an asset flag, or an MCP server's trust below known-good. */
+export type StatusKey = Flag | Exclude<TrustLevel, 'known-good'>;
+
+/** Most to least severe; the status filters and badges list keys in this order. */
+export const STATUS_ORDER: StatusKey[] = [
+  'unapproved',
   'risk',
   'conflict',
   'unknown',
+  'findings',
+  'risky',
   'change',
   'untracked',
   'update',
   'stale',
 ];
 
-// ─── File origin ──────────────────────────────────────────────────────────────
-export interface OriginMeta {
-  short: string;
-  label: string;
-  icon: IconName;
-}
-export const originMeta: Record<Origin, OriginMeta> = {
-  source: { short: 'Source', label: 'First-party source code', icon: 'code' },
-  'public-dep': { short: 'Public dep', label: 'Public dependency · open source', icon: 'cloud' },
-  vendored: { short: 'Vendored', label: 'Vendored third-party', icon: 'layers' },
-  config: { short: 'Config', label: 'Configuration', icon: 'settings' },
-  data: { short: 'Data', label: 'Data · fixtures', icon: 'database' },
-  docs: { short: 'Docs', label: 'Documentation', icon: 'book' },
-  generated: { short: 'Generated', label: 'Generated artifact', icon: 'bolt' },
+export const STATUS: Record<StatusKey, FlagMeta> = {
+  ...FLAG,
+  unapproved: { label: 'Unapproved', short: 'Unapproved', icon: 'x-circle', tone: 'critical' },
+  risky: { label: 'Risky', short: 'Risky', icon: 'alert', tone: 'high' },
 };
 
 // ─── Asset-type presentation (icon · colours · label) ─────────────────────────
 export interface TypeMeta {
   type: AssetType;
   label: string;
+  /** Singular form, e.g. "Skill". */
+  one: string;
   icon: IconName;
   fg: string;
   bg: string;
 }
 export const PROJECT_GROUP: TypeMeta = {
   type: 'project',
+  one: 'Project',
   label: 'Projects',
   icon: 'repo',
   fg: 'text-primary',
@@ -188,6 +124,7 @@ export const PROJECT_GROUP: TypeMeta = {
 export const ASSET_META = {
   skill: {
     type: 'skill',
+    one: 'Skill',
     label: 'Skills',
     icon: 'sparkles',
     fg: 'text-violet-ink',
@@ -195,6 +132,7 @@ export const ASSET_META = {
   },
   mcp: {
     type: 'mcp',
+    one: 'MCP server',
     label: 'MCP servers',
     icon: 'server',
     fg: 'text-teal-ink',
@@ -202,6 +140,7 @@ export const ASSET_META = {
   },
   hook: {
     type: 'hook',
+    one: 'Hook',
     label: 'Hooks',
     icon: 'route',
     fg: 'text-sev-low-ink',
@@ -209,6 +148,7 @@ export const ASSET_META = {
   },
   config: {
     type: 'config',
+    one: 'Configuration file',
     label: 'Configuration',
     icon: 'sliders',
     fg: 'text-teal-ink',
@@ -222,9 +162,15 @@ export const GROUPS: TypeMeta[] = [
   ASSET_META.hook,
   ASSET_META.config,
 ];
+/** A label for use mid-sentence: "Skills" → "skills", an acronym like "MCP servers" kept. */
+export const inlineLabel = (label: string): string =>
+  label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+
+export const typeMeta = (type: AssetType): TypeMeta =>
+  type === 'project' ? PROJECT_GROUP : ASSET_META[type];
 /** Icon + colours for an asset tile — the API's AssetSummary carries no presentation. */
 export const assetTile = (type: AssetType): { icon: IconName; fg: string; bg: string } => {
-  const { icon, fg, bg } = type === 'project' ? PROJECT_GROUP : ASSET_META[type];
+  const { icon, fg, bg } = typeMeta(type);
   return { icon, fg, bg };
 };
 
@@ -236,13 +182,7 @@ const DATE_TIME: Intl.DateTimeFormatOptions = {
   minute: '2-digit',
 };
 
-/**
- * Compact local datetime for inventory captions (file drawer "Last activity",
- * blocked-strip "blocked …"). The API returns ISO timestamps, not relative
- * strings, so both call sites format them the same way through here. `locale`
- * is required for the reason lib/numberFormat.ts gives: both callers are client
- * components.
- */
+/** Compact local datetime for inventory captions, e.g. when a file was withheld. */
 export function fmtDateTime(iso: string, locale: string): string {
   return formatDateTime(Date.parse(iso), locale, DATE_TIME);
 }
@@ -279,107 +219,113 @@ export const EVENT_KIND: Record<HarnessEventKind, EventKindMeta> = {
   },
 };
 
-// ─── Language dot colour ──────────────────────────────────────────────────────
-// ProjectSummary carries `language` as a bare string; the little colour dot is
-// pure presentation, so map the common languages here (GitHub-linguist-ish),
-// with a neutral fallback for anything unknown.
-const LANG_COLORS: Record<string, string> = {
-  typescript: '#3178C6',
-  javascript: '#F1E05A',
-  rust: '#DEA584',
-  python: '#3572A5',
-  go: '#00ADD8',
-  ruby: '#701516',
-  java: '#B07219',
-  hcl: '#844FBA',
-  jupyter: '#DA5B0B',
-  'jupyter notebook': '#DA5B0B',
-  mdx: '#1B1F24',
-  markdown: '#083FA1',
-  shell: '#89E051',
-  c: '#555555',
-  'c++': '#F34B7D',
-  'c#': '#178600',
-  php: '#4F5D95',
-  swift: '#F05138',
-  kotlin: '#A97BFF',
+// ─── Table rows ───────────────────────────────────────────────────────────────
+/** One row of an inventory table: a project, or a skill / MCP server / hook / config asset. */
+export type InventoryRow = ProjectSummary | AssetSummary;
+
+export const isProjectRow = (row: InventoryRow): row is ProjectSummary => !('type' in row);
+
+export const rowType = (row: InventoryRow): AssetType => (isProjectRow(row) ? 'project' : row.type);
+
+/** The row's attention reasons, most severe first; empty when the row is OK. */
+export function statusKeys(row: InventoryRow): StatusKey[] {
+  if (isProjectRow(row)) return row.findingsCount > 0 ? ['findings'] : [];
+  const keys = new Set<StatusKey>(row.flags);
+  if (row.type === 'mcp' && (row.trust === 'unapproved' || row.trust === 'risky')) {
+    keys.add(row.trust);
+  }
+  return STATUS_ORDER.filter((k) => keys.has(k));
+}
+
+export const needsAttention = (row: InventoryRow): boolean => statusKeys(row).length > 0;
+
+/** Every row a harness lists: its projects, then its assets category by category. */
+export function harnessRows(harness: HarnessSummary): InventoryRow[] {
+  return [...harness.projects, ...harness.categories.flatMap((c) => c.assets)];
+}
+
+/** Every row of one type across the whole inventory. */
+export function typeRows(
+  type: AssetType,
+  projects: ProjectSummary[],
+  assetGroups: AssetGroup[],
+): InventoryRow[] {
+  if (type === 'project') return projects;
+  return assetGroups.find((g) => g.type === type)?.items ?? [];
+}
+
+/** A `meta` value as display text: scalars as-is, string lists comma-joined, anything else null. */
+export function metaText(meta: Record<string, unknown>, key: string): string | null {
+  const v = meta[key];
+  if (typeof v === 'string') return v === '' ? null : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+    return v.length > 0 ? v.join(', ') : null;
+  }
+  return null;
+}
+
+// ─── Selection ────────────────────────────────────────────────────────────────
+export type InventoryView = 'harness' | 'type';
+
+/** A row opened from a table into its details page. */
+export interface InventoryItem {
+  type: AssetType;
+  id: string;
+}
+
+/**
+ * The page's selection: which list the left panel shows, the harness and the type
+ * last picked in each list, and the row opened from the table (null = the table).
+ */
+export interface Selection {
+  view: InventoryView;
+  harness: HarnessSummary['id'] | null;
+  type: AssetType;
+  item: InventoryItem | null;
+}
+
+export const DEFAULT_SELECTION: Selection = {
+  view: 'harness',
+  harness: null,
+  type: 'project',
+  item: null,
 };
-export function langColor(language: string): string {
-  return LANG_COLORS[language.toLowerCase()] ?? 'var(--color-border-strong)';
-}
-
-// ─── Flag rollups (used by the by-type group headers) ─────────────────────────
-export interface FlagRollup {
-  key: Flag;
-  count: number;
-}
-/** Count flags across a set of items, ordered by {@link FLAG_ORDER} severity. */
-export function rollup(items: { flags: Flag[] }[]): FlagRollup[] {
-  const counts: Partial<Record<Flag, number>> = {};
-  items.forEach((it) => {
-    it.flags.forEach((fl) => {
-      counts[fl] = (counts[fl] ?? 0) + 1;
-    });
-  });
-  return FLAG_ORDER.filter((k) => counts[k]).map((k) => ({ key: k, count: counts[k] ?? 0 }));
-}
-
-// ─── UI state ─────────────────────────────────────────────────────────────────
-/** What's selected in the left navigator / shown in the right pane. */
-export type Selection =
-  | { type: 'project'; id: string }
-  | { type: 'harness'; id: string }
-  | { type: Exclude<AssetType, 'project'>; id: string };
 
 /** The minimal shape resolveInventorySelection needs from each nav dataset. */
 export interface InventoryNavData {
-  harnesses: { id: string; categories: { assets: { id: string }[] }[] }[];
+  harnesses: {
+    id: HarnessSummary['id'];
+    projects: { id: string }[];
+    categories: { type: AssetType; assets: { id: string }[] }[];
+  }[];
   projects: { id: string }[];
   assetGroups: { type: AssetType; items: { id: string }[] }[];
 }
 
 /**
- * Resolve the active inventory selection: honor a still-present URL selection,
- * else default to the first harness → project → asset that exists. Returns null
- * only when the inventory is empty. Shared by every Inventory
- * page so the "what's valid / default order" semantics can't fork between them.
+ * Resolve the active selection against the loaded data: a harness that is gone
+ * falls back to the first harness (null when there are none), and an opened row
+ * that is gone closes back to its table.
  */
-export function resolveInventorySelection(
-  requested: Selection | null,
-  data: InventoryNavData,
-): Selection | null {
-  const assetPresent = (id: string): boolean =>
-    data.assetGroups.some((g) => g.items.some((it) => it.id === id)) ||
-    data.harnesses.some((h) => h.categories.some((c) => c.assets.some((it) => it.id === id)));
-  const selValid =
-    requested != null &&
-    (requested.type === 'harness'
-      ? data.harnesses.some((h) => h.id === requested.id)
-      : requested.type === 'project'
-        ? data.projects.some((p) => p.id === requested.id)
-        : assetPresent(requested.id));
-  if (selValid) return requested;
-
-  const h = data.harnesses[0];
-  if (h) return { type: 'harness', id: h.id };
-  const p = data.projects[0];
-  if (p) return { type: 'project', id: p.id };
-  for (const g of data.assetGroups) {
-    const first = g.items[0];
-    if (g.type !== 'project' && first) return { type: g.type, id: first.id };
-  }
-  return null;
-}
-
-/** Human-readable "why this file's default LLM access is what it is" copy. */
-export function rationale(
-  proj: { visibility: Visibility; policyDefault: AccessLevel },
-  origin: Origin,
-): string {
-  if (proj.visibility === 'public')
-    return 'Public repository — every file is allowed to any LLM by default.';
-  if (origin === 'public-dep')
-    return 'Public, open-source dependency — allowed to any LLM by default, even inside a private repo.';
-  const dflt = proj.policyDefault === 'blocked' ? 'No LLM' : 'Approved only';
-  return `Private repository. First-party files default to “${dflt}”. Adjust per file as needed.`;
+export function resolveInventorySelection(requested: Selection, data: InventoryNavData): Selection {
+  const harness =
+    requested.harness !== null && data.harnesses.some((h) => h.id === requested.harness)
+      ? requested.harness
+      : (data.harnesses[0]?.id ?? null);
+  const item = requested.item;
+  const itemPresent =
+    item !== null &&
+    (item.type === 'project'
+      ? data.projects.some((p) => p.id === item.id) ||
+        data.harnesses.some((h) => h.projects.some((p) => p.id === item.id))
+      : data.assetGroups.some(
+          (g) => g.type === item.type && g.items.some((it) => it.id === item.id),
+        ) ||
+        data.harnesses.some((h) =>
+          h.categories.some(
+            (c) => c.type === item.type && c.assets.some((it) => it.id === item.id),
+          ),
+        ));
+  return { ...requested, harness, item: itemPresent ? item : null };
 }

@@ -364,7 +364,7 @@ Network access happens through child processes in every path but ONE. In all but
 
 6. The Antigravity `aka-setup` wizard's judge subprocess (`plugins/antigravity/src/triage/judge.ts`), which sends the same minimized `toJudgePayload` projection to the model API as the other two judges — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit. **This host is still weaker than the other two, and the consent copy must say so.** Its CLI documents no `exec` subcommand and no ephemeral mode, so every judge run **persists** a conversation under `~/.gemini/antigravity/brain/<conversationId>/` — the same store AKA's own backfill sweeps — which this module then deletes itself in a `finally`, best effort only (a killed process leaves it). Deletion is a local-write cleanup, **not** network isolation. Attribution for that deletion is deliberately conservative — the reported `conversation_id`, else a newly-appeared conversation only when exactly one appeared — because deleting a conversation the user started is unrecoverable while leaving a judge conversation merely re-surfaces their own known secrets. The prompt does **not** ride argv: the entrypoint is `agy --input-format stream-json --output-format stream-json` with one NDJSON `user` event on stdin, closed to end the session, so the raw values are off `ps`, off any echoed command line and off `ARG_MAX` entirely — the same stdin shape the other two judges use. The two `stream-json` formats are paired because the host documents that pairing (a streaming input against a non-streaming output emits its one envelope only as the process exits), and the consequence for `parseEnvelope` is that the verdict is one line of NDJSON rather than the whole of stdout. The same consent-copy honesty rules apply (`plugins/antigravity/skills/setup/SKILL.md`).
 
-7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, the detached `sync.js` child pulls policy, and both manual scan surfaces — `aka scan` and the dashboard's Scan page — forward the Data Shares register they just recorded (destinations and call sites, no source text; `--no-forward` skips the CLI's for one invocation). It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
+7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, the detached `sync.js` child pulls policy, and both manual scan surfaces — `aka scan` and the dashboard's Scan page — forward the Data Shares register they just recorded (destinations and call sites, no source text, and while credential sightings are shared each call site's credential references as variable names and sighting tokens; `--no-forward` skips the CLI's for one invocation). While credential sightings are shared, those two surfaces and `/aka:scan` also send `POST /v1/credential-sightings`: each secret the scan found, `.env` files included, as a sighting token (a keyed hash under the key the deployment issues) with its rule, the variable it is assigned to, its location class (a project file or a home dotfile), whether git tracks the file, and the project's digest and display name — never the value or a path; `--no-forward`, and an unticked forward on the Scan page, skip it too. It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -818,13 +818,15 @@ web-ui            → @akasecurity/persistence, @akasecurity/dashboard-ui, @akas
                      remote (the attach verb, and the Scan page's forward of the Data
                      Shares register while attached) (Next.js dashboard; reads the local
                      store in Server Components, mutates via Server Actions — no auth.
-                     The TWO network calls are the settings page verifying an access key
-                     against the deployment before it writes an attachment, and the Scan
-                     page forwarding the register it just recorded; everything else on
-                     every page is the local store)
+                     The THREE network calls are the settings page verifying an access key
+                     against the deployment before it writes an attachment, the Scan page
+                     forwarding the register it just recorded, and the Scan page sending
+                     the credential sightings it found while they are shared; everything
+                     else on every page is the local store)
 cli               → @akasecurity/schema, persistence, local-ops, detections,
                      plugin-runtime + remote (the attach verbs, and `aka scan`'s forward
-                     of the Data Shares register while attached) (the `aka` command;
+                     of the Data Shares register and of its credential sightings while
+                     attached) (the `aka` command;
                      ships the web-ui as a spawned Next server)
 
 # Plugin
@@ -864,7 +866,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      is the one module inside it that sends; everything else
                      builds requests and parses answers.
                      TWO clients, split by whether the caller holds a credential.
-                     `createRemoteClient` speaks the eleven routes an ATTACHED
+                     `createRemoteClient` speaks the twelve routes an ATTACHED
                      machine is scoped to and requires a key. `createAttachClient`
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
@@ -897,7 +899,8 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      subpath rather than off the index so the plugins' dashboard
                      launcher can reach it without inlining the bundled packs. It
                      imports node:child_process/os/path and nothing else.
-@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
+@akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env;
+                     the credential sightings it finds leave through plugin-runtime)
 @akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
                      (the harness-agnostic core of the /aka:setup calibration →
                      triage → remediation flow: pure logic plus dependency-injected
@@ -992,7 +995,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote`: both for the attach verb, and both for forwarding the Data Shares register a manual scan just recorded — `aka scan` and the dashboard's Scan page — on a machine that is already attached. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote`: both for the attach verb, and both for forwarding the Data Shares register a manual scan just recorded — `aka scan` and the dashboard's Scan page — on a machine that is already attached, and both for sending that scan's credential sightings while they are shared. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 
@@ -1147,7 +1150,7 @@ Two things about that ban are worth knowing before trusting it. It reaches what
 `react-hooks/purity` cannot — that rule reports a clock read inside a COMPONENT,
 so a module-level helper in a client file is invisible to it, and that is exactly
 where the one site this sweep did not find by hand was living
-(`HarnessOverview`'s `formatEvent`). And it cannot follow a binding, so a clock
+(`HarnessInventory`'s `formatEvent`). And it cannot follow a binding, so a clock
 reached through an imported helper goes unseen; the required argument is what
 covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
 one sanctioned reader, and its exemption is written in that package's
@@ -1488,13 +1491,14 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
-- **`plugins/copilot` bundles the same core and is NOT one of the four.** It builds
-  `scripts/*.js` through the same `tsup` config and inlines the same `@akasecurity/*`
-  packages, but it is still `"private": true` and publishes nowhere, so it moves on no
-  version line and belongs in no bump above. That sentence stops being true the moment
-  `private` is unset — which is also what moves `required-checks.test.js`'s temporary
-  Windows pin and the `ci.yml` prose that justifies it, so all three change together or
-  `main` reds on a diff that looks innocent.
+- **`plugins/copilot` bundles the same core and is NOT one of the four published artifacts.**
+  It builds `scripts/*.js` through the same `tsup` config and inlines the same
+  `@akasecurity/*` packages. It is still `"private": true` and publishes nowhere, but it
+  sits on the shared version line: every CLI bump moves `plugins/copilot/package.json` and
+  `plugins/copilot/plugin.json` to the same version, and its `test/identity-consistency.test.ts`
+  fails when either differs from the CLI's. Unsetting `private` is what moves
+  `required-checks.test.js`'s temporary Windows pin and the `ci.yml` prose that justifies
+  it, so all three change together or `main` reds on a diff that looks innocent.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
@@ -1526,8 +1530,9 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    `plugins/claude-code/package.json`, `plugins/codex/.codex-plugin/plugin.json` in sync
    with `plugins/codex/package.json`, and `plugins/antigravity/plugin.json` (Antigravity reads
    its manifest from the plugin ROOT, not a dotted dir) in sync with
-   `plugins/antigravity/package.json` (identical version within each pair) whenever that plugin
-   is bumped.
+   `plugins/antigravity/package.json`, and `plugins/copilot/plugin.json` (also at the plugin
+   root) in sync with `plugins/copilot/package.json` (identical version within each pair)
+   whenever that plugin is bumped.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
@@ -1566,7 +1571,7 @@ one shell string are free to disagree about what a workflow publishes.
 published artifacts on one version and each plugin's identity suite pins it to the CLI's; the
 extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
 its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
-moving all four published manifests, the three host manifests and the extension together. Cut
+moving all four published manifests, the three host manifests, the Copilot plugin's two manifests and the extension together. Cut
 that commit on a release branch: on `main` it would sit in front of the next stable cut until the
 matching stable shipped.
 

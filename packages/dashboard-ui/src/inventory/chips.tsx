@@ -1,82 +1,15 @@
 'use client';
 
-// Small shared presentational pieces for the Inventory page: icon helper,
-// colored icon toggles (LLM access · MCP trust), labels, bars and status chips.
-import type {
-  AccessCounts,
-  AccessLevel,
-  Flag,
-  Origin,
-  TrustLevel,
-  Visibility,
-} from '@akasecurity/schema';
-import { Badge, cn, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
+// Small shared presentational pieces for the Inventory page: the empty state,
+// section headings, the MCP trust picker, status chips and the back button.
+import type { Flag, TrustLevel, Visibility } from '@akasecurity/schema';
+import { Badge, Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
-import { ACCESS, ACCESS_ORDER, FLAG, originMeta, TRUST } from './data.ts';
+import { FLAG, TRUST } from './data.ts';
 import { Ico } from './Ico.tsx';
 import { type IconName } from './icons.ts';
-
-interface ToggleMeta {
-  label: string;
-  icon: IconName;
-  fg: string;
-  bg: string;
-}
-/**
- * Generic colored single-select icon toggle (used for access & trust), built on
- * ui-kit's SegmentedControl (Radix ToggleGroup) for roving-focus keyboard nav.
- * The selected tone is data-driven, so we neutralize the primitive's default
- * `data-[state=on]` surface styling and apply each option's own fg/bg instead.
- */
-function IconToggle<T extends string>({
-  order,
-  meta,
-  value,
-  onChange,
-}: {
-  order: T[];
-  meta: Record<T, ToggleMeta>;
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    // wrapper stops a toggle click from also selecting the surrounding row
-    <span
-      className="inline-flex"
-      onClick={(e) => {
-        e.stopPropagation();
-      }}
-    >
-      <SegmentedControl
-        value={value}
-        onValueChange={(v) => {
-          if (v) onChange(v as T);
-        }}
-      >
-        {order.map((k) => {
-          const m = meta[k];
-          const on = k === value;
-          return (
-            <SegmentedControlItem
-              key={k}
-              value={k}
-              title={m.label}
-              className={cn(
-                'size-7 flex-none gap-0 px-0 py-0',
-                'data-[state=on]:bg-transparent data-[state=on]:text-current data-[state=on]:shadow-none',
-                on ? cn(m.fg, m.bg) : 'text-text-3 hover:text-text-2',
-              )}
-            >
-              <Ico name={m.icon} />
-            </SegmentedControlItem>
-          );
-        })}
-      </SegmentedControl>
-    </span>
-  );
-}
 
 /**
  * Dashed 'no data' placeholder shown wherever an inventory list/section is empty
@@ -126,8 +59,8 @@ export interface RadioCardMeta {
 }
 /**
  * A vertical list of selectable radio cards (icon tile · title · description ·
- * check). Used for both the per-file LLM-access picker and the MCP trust picker;
- * `accentOf` supplies the selected check-circle fill from the concrete meta.
+ * check), used for the MCP trust picker. `accentOf` supplies the selected
+ * check-circle fill from the concrete meta.
  */
 export function RadioCardList<T extends string, M extends RadioCardMeta>({
   order,
@@ -146,11 +79,8 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
    * Set when this whole list cannot be operated by the host: every option
    * renders offered-and-disabled via `refusedControlProps` (focusable,
    * `aria-disabled`, described by the one visible reason below), and
-   * `onChange` is never called. Absent ⇒ identical to today. Shared by
-   * FileDetailDrawer's access picker and AssetDetail's trust picker — both
-   * lists carry exactly one value and one reason, never a per-option one
-   * (contrast PolicyPicker.tsx's per-option `unavailable`, which this is
-   * not).
+   * `onChange` is never called. One reason covers the whole list, never a
+   * per-option one.
    */
   refusal?: { id: string; reason: string } | undefined;
 }) {
@@ -211,83 +141,6 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
   );
 }
 
-export function AccessControl({
-  value,
-  onChange,
-  refusal,
-}: {
-  value: AccessLevel;
-  onChange: (v: AccessLevel) => void;
-  /**
-   * Set when this file's access control cannot be operated by the host:
-   * renders as a single inert control at the current level via
-   * `refusedControlProps`, in place of the live segmented toggle, and
-   * `onChange` is never referenced. Absent ⇒ identical to today.
-   *
-   * Not passed down INTO the toggle: `SegmentedControl`'s own `disabled`
-   * prop forwards to Radix `ToggleGroupPrimitive.Root`, which renders each
-   * item with the native HTML `disabled` attribute — out of the tab order,
-   * which is exactly what an offered-and-disabled control must not be (see
-   * shared/Refusal.tsx). So a refused control is a different, single
-   * element, not the same toggle with a prop flipped.
-   */
-  refusal?: { id: string; reason: string } | undefined;
-}) {
-  if (refusal) {
-    const m = ACCESS[value];
-    const refused = refusedControlProps(refusal.id, refusal.reason, '');
-    return (
-      // Matches IconToggle's own wrapper: stops a toggle click from also
-      // selecting the row this control sits in.
-      <span
-        className="inline-flex"
-        onClick={(e) => {
-          e.stopPropagation();
-        }}
-      >
-        <button
-          type="button"
-          data-slot="access-control"
-          aria-label={`LLM access: ${m.label}`}
-          {...refused}
-          className={cn(
-            'inline-flex size-7 items-center justify-center rounded-lg',
-            m.fg,
-            m.bg,
-            refused.className,
-          )}
-        >
-          <Ico name={m.icon} />
-        </button>
-      </span>
-    );
-  }
-  return <IconToggle order={ACCESS_ORDER} meta={ACCESS} value={value} onChange={onChange} />;
-}
-
-export function AccessLabel({ value }: { value: AccessLevel }) {
-  return (
-    <span className={cn('min-w-23 whitespace-nowrap text-xs font-semibold', ACCESS[value].fg)}>
-      {ACCESS[value].label}
-    </span>
-  );
-}
-
-/** Stacked horizontal bar showing the open/approved/blocked split. */
-export function AccessBar({ counts, className }: { counts: AccessCounts; className?: string }) {
-  const total = counts.total || 1;
-  return (
-    <span className={cn('flex h-1.5 w-30 overflow-hidden rounded-full bg-surface-3', className)}>
-      {ACCESS_ORDER.map((k) => {
-        const w = (counts[k] / total) * 100;
-        return w > 0 ? (
-          <span key={k} className={ACCESS[k].bar} style={{ width: `${String(w)}%` }} />
-        ) : null;
-      })}
-    </span>
-  );
-}
-
 export function TrustPill({ value }: { value: TrustLevel }) {
   const t = TRUST[value];
   return (
@@ -338,11 +191,40 @@ export function VisBadge({ v }: { v: Visibility }) {
   );
 }
 
-export function OriginTag({ origin }: { origin: Origin }) {
-  const m = originMeta[origin];
+/** The icon-only back button the details pages lead with. */
+export function BackButton({ onBack, backLabel }: { onBack: () => void; backLabel: string }) {
   return (
-    <Badge variant="default">
-      <Ico name={m.icon} className="size-3" /> {m.short}
-    </Badge>
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label={`Back to ${backLabel}`}
+      title={`Back to ${backLabel}`}
+      onClick={onBack}
+      className="-ml-2 shrink-0"
+    >
+      <Ico name="chevron-left" />
+    </Button>
+  );
+}
+
+/** A details pane with nothing to show yet (loading, failed, gone), keeping the way back. */
+export function DetailFallback({
+  message,
+  onBack,
+  backLabel,
+}: {
+  message: string;
+  onBack: () => void;
+  backLabel: string;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center border-b border-border px-5 py-3.5">
+        <BackButton onBack={onBack} backLabel={backLabel} />
+      </div>
+      <div className="grid min-h-0 flex-1 place-items-center p-8 text-center text-sm text-text-3">
+        {message}
+      </div>
+    </div>
   );
 }

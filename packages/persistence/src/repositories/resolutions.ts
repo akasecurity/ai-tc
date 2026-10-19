@@ -69,7 +69,7 @@ interface FindingKeyRow {
  * any past resolution history.
  *
  * NOTE for future manual-resolution writers: once
- * acknowledged/dismissed/false-positive dispositions can be written by a human
+ * the human dispositions (`DismissMethod`'s members) can be written by a human
  * (not just the auto-resolver), "latest status is handled" must keep meaning
  * exactly `status = 'resolved'` here and in SqliteSecurityRepository —
  * 'acknowledged' is accepted risk, not a fix, and must NOT be folded into the
@@ -138,7 +138,7 @@ export class SqliteResolutionsRepository {
    * from the schema enums. NOTE for future manual-resolution writers: this is
    * also how a redetected finding gets re-opened (status:'open',
    * method:'redetected') — see the class doc's LATEST-RESOLUTION-WINS note.
-   * When acknowledged/dismissed/false-positive writers land, they call this the
+   * When writers for the human dispositions (`DismissMethod`) land, they call this the
    * same way; only `status: 'resolved'` is ever treated as "caught" by the read
    * paths above.
    */

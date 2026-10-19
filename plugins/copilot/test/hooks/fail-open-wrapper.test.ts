@@ -56,6 +56,10 @@ interface WrapperRun {
   writes: string[];
   /** Exit codes passed to `process.exit`, in order. */
   exits: (number | undefined)[];
+  /** How many times the wrapper asked for a fail-open to be counted. */
+  counts: number;
+  /** Every write, count and exit, in the order they happened. */
+  order: ('write' | 'count' | 'exit')[];
 }
 
 /**
@@ -68,6 +72,10 @@ interface WrapperRun {
  * the test stopped the clock rather than because the wrapper holds the line.
  *
  * `settle` lets a case wait for work the wrapper deliberately does not await.
+ *
+ * The fail-open counter is ALWAYS injected: the shipped default starts a real
+ * process, and every case here that drives a failure would otherwise spawn one
+ * from the vitest worker.
  */
 async function driveWrapper(
   main: () => Promise<HookOutput | undefined>,
@@ -77,6 +85,8 @@ async function driveWrapper(
 ): Promise<WrapperRun> {
   const writes: string[] = [];
   const exits: (number | undefined)[] = [];
+  const order: WrapperRun['order'] = [];
+  let counts = 0;
 
   // `process.exit` is declared to return `never`, which no stub can satisfy —
   // the cast is to a concrete signature rather than to `any`, so the argument
@@ -85,6 +95,7 @@ async function driveWrapper(
     code?: string | number | null,
   ): undefined => {
     exits.push(typeof code === 'number' ? code : undefined);
+    order.push('exit');
     return undefined;
   }) as unknown as (code?: string | number | null) => never);
 
@@ -94,18 +105,32 @@ async function driveWrapper(
     .spyOn(process.stdout, 'write')
     .mockImplementation((chunk: string | Uint8Array, cb?: unknown): boolean => {
       writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+      order.push('write');
       if (typeof cb === 'function') (cb as () => void)();
       return true;
     });
 
+  // `emit` leaves one stdout 'error' listener behind per write, by design: a
+  // real hook exits right after. A worker that drives many runs would cross
+  // Node's leak warning, so the ones a run added are removed when it ends.
+  const listenersBefore = new Set(process.stdout.listeners('error'));
+
   try {
-    await runHookFailOpen(main, failOpen, watchdogMs);
+    await runHookFailOpen(main, failOpen, watchdogMs, () => {
+      counts += 1;
+      order.push('count');
+    });
     await settle();
   } finally {
     writeSpy.mockRestore();
     exitSpy.mockRestore();
+    for (const listener of process.stdout.listeners('error')) {
+      if (!listenersBefore.has(listener)) {
+        process.stdout.off('error', listener as (...args: unknown[]) => void);
+      }
+    }
   }
-  return { writes, exits };
+  return { writes, exits, counts, order };
 }
 
 /**
@@ -291,6 +316,109 @@ describe('runHookFailOpen — a late body must not append a second write', () =>
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('runHookFailOpen — a failure is counted once, after the write and before the exit', () => {
+  // A failed body writes nothing and exits 0, which is byte-for-byte a clean
+  // call, so the count is the only trace `aka status` has that this hook is not
+  // scanning. Each failure path is driven twice: silent, as every shipped hook
+  // runs, and through the seam, because "count, then exit" holds whether or not
+  // the count waited for the write when nothing is written — only a payload can
+  // show the count landing AFTER it.
+  const throwsAsync = (): Promise<HookOutput | undefined> => Promise.reject(new Error('boom'));
+  const throwsSync = (): Promise<HookOutput | undefined> => {
+    throw new Error('sync boom');
+  };
+  const neverSettles = (): Promise<HookOutput | undefined> => new Promise(() => undefined);
+
+  it.each([
+    ['throws', throwsAsync, undefined],
+    ['throws synchronously', throwsSync, undefined],
+    ['outruns the watchdog', neverSettles, 5],
+  ] as const)('counts a body that %s, writing nothing first', async (_name, main, watchdogMs) => {
+    const run = await driveWrapper(main, undefined, watchdogMs);
+    expect(run.writes).toEqual([]);
+    expect(run.counts).toBe(1);
+    expect(run.order).toEqual(['count', 'exit']);
+    expect(run.exits).toEqual([0]);
+  });
+
+  it.each([
+    ['throws', throwsAsync, undefined],
+    ['throws synchronously', throwsSync, undefined],
+    ['outruns the watchdog', neverSettles, 5],
+  ] as const)(
+    'counts a body that %s only once its payload is written',
+    async (_name, main, watchdogMs) => {
+      const run = await driveWrapper(main, SEAM_PAYLOAD, watchdogMs);
+      expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
+      expect(run.counts).toBe(1);
+      expect(run.order).toEqual(['write', 'count', 'exit']);
+    },
+  );
+
+  it('counts a body that rejects after losing the race once, not twice', async () => {
+    let fail!: (e: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    const run = await driveWrapper(
+      () => pending,
+      SEAM_PAYLOAD,
+      5,
+      async () => {
+        fail(new Error('late boom'));
+        await pending.catch(() => undefined);
+        await new Promise((r) => setImmediate(r));
+      },
+    );
+    expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
+    expect(run.counts).toBe(1);
+    expect(run.order).toEqual(['write', 'count', 'exit']);
+  });
+
+  it('does not count a body that returns its own decision', async () => {
+    const deny: HookOutput = { permissionDecision: 'deny', permissionDecisionReason: 'pointer' };
+    const run = await driveWrapper(() => Promise.resolve(deny));
+    expect(soleDecision(run)).toEqual(deny);
+    expect(run.counts).toBe(0);
+    expect(run.order).toEqual(['write', 'exit']);
+  });
+
+  it('does not count a body that declines to decide', async () => {
+    const silent = await driveWrapper(() => Promise.resolve(undefined));
+    expect(silent.counts).toBe(0);
+    expect(silent.order).toEqual(['exit']);
+
+    const seamed = await driveWrapper(() => Promise.resolve(undefined), SEAM_PAYLOAD);
+    expect(seamed.counts).toBe(0);
+    expect(seamed.order).toEqual(['write', 'exit']);
+  });
+
+  it('still exits 0 when the counter itself throws', async () => {
+    // The default never throws, but the wrapper does not rely on that: a throw
+    // here would skip the exit and reject the entry's top-level await, which
+    // exits non-zero — a deny on the CLI's `preToolUse`.
+    const exits: (number | undefined)[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null): undefined => {
+      exits.push(typeof code === 'number' ? code : undefined);
+      return undefined;
+    }) as unknown as (code?: string | number | null) => never);
+    let asked = 0;
+    await expect(
+      runHookFailOpen(
+        () => Promise.reject(new Error('boom')),
+        undefined,
+        undefined,
+        () => {
+          asked += 1;
+          throw new Error('cannot count');
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(asked).toBe(1);
+    expect(exits).toEqual([0]);
   });
 });
 

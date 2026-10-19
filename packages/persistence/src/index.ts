@@ -24,6 +24,13 @@ export {
 } from './attachment-scope-edit.ts';
 export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
 export type {
+  AssetRow,
+  ConfigAssetContext,
+  ConfigInventoryRow,
+  PostureFindingRow,
+} from './config-assets.ts';
+export { configAssetRow } from './config-assets.ts';
+export type {
   CredentialFileRead,
   CredentialState,
   CredentialUnusableReason,
@@ -39,7 +46,27 @@ export {
   removeControlPlaneCredential,
   writeControlPlaneCredential,
 } from './control-plane-credential.ts';
-export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
+export type {
+  CredentialSightingsConnection,
+  CredentialSightingsSend,
+  ForwardCredentialSightingsDeps,
+  ForwardCredentialSightingsInput,
+  ScanSighting,
+  SightingScanProject,
+  SightingShareOptions,
+  SightingSharePlan,
+} from './credential-sightings.ts';
+export {
+  forwardCredentialSightings,
+  planSightingShare,
+  sightingLocationClass,
+} from './credential-sightings.ts';
+export type {
+  InventoryContext,
+  LocalDatabase,
+  ResolvedInventory,
+  VaultedValue,
+} from './database.ts';
 export { openLocalDatabase } from './database.ts';
 export {
   clearDetectedWebAccounts,

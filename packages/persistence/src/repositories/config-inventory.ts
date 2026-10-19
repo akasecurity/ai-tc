@@ -10,6 +10,13 @@ import type {
   TrustLevel,
 } from '@akasecurity/schema';
 
+import {
+  type PostureFindingRow,
+  toConfigFileItem,
+  toHookItem,
+  toMcpItem,
+  toSkillItem,
+} from '../config-assets.ts';
 import { parseJsonObject } from '../internal/json.ts';
 import { allRows } from '../internal/rows.ts';
 import { latestConfigScan } from './config-scan.ts';
@@ -57,7 +64,7 @@ export class SqliteConfigInventoryRepository {
 
     // The latest scan's posture findings, joined to their definition for the
     // rule id + human name. Empty when no posture rules have recorded findings.
-    const findings = allRows<FindingReadRow>(
+    const findings = allRows<PostureFindingRow>(
       this.db.prepare(
         `SELECT f.masked_match AS maskedMatch, d.rule_id AS ruleId, d.name AS name
            FROM inspection_findings f
@@ -110,115 +117,6 @@ export class SqliteConfigInventoryRepository {
     }
     return map;
   }
-}
-
-function toSkillItem(row: InventoryReadRow, bag: Record<string, unknown>): SkillInventoryItem {
-  const item: SkillInventoryItem = {
-    id: row.id,
-    name: row.title ?? '(unnamed)',
-    source: str(bag.source) ?? 'unknown',
-    scope: str(bag.scope) ?? 'unknown',
-    // No catalog exists to compare the installed version against, so status
-    // stays 'unknown' — never a guessed "up to date".
-    status: 'unknown',
-  };
-  const description = str(bag.description);
-  if (description !== undefined) item.description = description;
-  const version = str(bag.version);
-  if (version !== undefined) item.installedVersion = version;
-  const updatedAt = str(bag.updated_at);
-  if (updatedAt !== undefined) item.updatedAt = updatedAt;
-  return item;
-}
-
-// Findings correlate to a hook by command (the finding's masked_match carries
-// the offending command). If two hooks share a command, the warning applies to
-// both — arguably correct: the risk is identical wherever that command runs.
-function toHookItem(
-  row: InventoryReadRow,
-  bag: Record<string, unknown>,
-  findings: FindingReadRow[],
-): HookInventoryItem {
-  const command = str(bag.command) ?? '';
-  const matched = findings.filter((f) => f.maskedMatch === command);
-  const item: HookInventoryItem = {
-    id: row.id,
-    event: str(bag.event) ?? 'unknown',
-    command,
-    scope: str(bag.scope) ?? 'unknown',
-    // Highest-severity finding wins the badge (see HookInventoryItem): an
-    // exfiltration-capable hook must never render as plain 'active'.
-    status: matched.some((f) => f.ruleId === 'hook-external-egress')
-      ? 'egress'
-      : matched.some((f) => f.ruleId === 'hook-conflict')
-        ? 'conflict'
-        : matched.some((f) => f.ruleId === 'hook-unknown')
-          ? 'unknown'
-          : 'active',
-    warnings: matched.map((f) => f.name),
-  };
-  const matcher = str(bag.matcher);
-  if (matcher !== undefined) item.matcher = matcher;
-  const pluginName = str(bag.plugin_name);
-  if (pluginName !== undefined) item.pluginName = pluginName;
-  return item;
-}
-
-// An MCP server's effective trust: the user's override when set, else
-// 'unapproved' — review-required. A scan can't prove a server safe (there is
-// no verification registry yet), so the default is the review queue, never a
-// guessed 'known-good'. Derived here so every renderer agrees; never stored.
-function toMcpItem(
-  row: InventoryReadRow,
-  bag: Record<string, unknown>,
-  overrides: Map<string, TrustLevel>,
-): McpInventoryItem {
-  const item: McpInventoryItem = {
-    id: row.id,
-    name: row.title ?? '(unnamed)',
-    scope: str(bag.scope) ?? 'unknown',
-    transport: str(bag.transport) ?? 'unknown',
-    trust: overrides.get(row.id) ?? 'unapproved',
-  };
-  const command = str(bag.command);
-  if (command !== undefined) item.command = command;
-  const url = str(bag.url);
-  if (url !== undefined) item.url = url;
-  if (Array.isArray(bag.env_keys)) {
-    const envKeys = bag.env_keys.filter((k): k is string => typeof k === 'string');
-    if (envKeys.length > 0) item.envKeys = envKeys;
-  }
-  const pluginName = str(bag.plugin_name);
-  if (pluginName !== undefined) item.pluginName = pluginName;
-  const marketplace = str(bag.marketplace);
-  if (marketplace !== undefined) item.marketplace = marketplace;
-  const project = str(bag.project);
-  if (project !== undefined) item.project = project;
-  return item;
-}
-
-// A config file's row: kind/detail/mtime straight off the bag. `untracked` is
-// DERIVED from the Claude Code convention that the `local` scope file
-// (settings.local.json) is the gitignored per-machine override.
-function toConfigFileItem(
-  row: InventoryReadRow,
-  bag: Record<string, unknown>,
-): ConfigFileInventoryItem {
-  const scope = str(bag.scope) ?? 'unknown';
-  const item: ConfigFileInventoryItem = {
-    id: row.id,
-    name: row.title ?? '(unnamed)',
-    path: row.location ?? '',
-    scope,
-    kind: str(bag.kind) ?? 'Configuration file',
-    untracked: scope === 'local',
-  };
-  const detail = str(bag.detail);
-  if (detail !== undefined) item.detail = detail;
-  if (typeof bag.entry_count === 'number') item.entryCount = bag.entry_count;
-  const updatedAt = str(bag.updated_at);
-  if (updatedAt !== undefined) item.updatedAt = updatedAt;
-  return item;
 }
 
 function buildTopics(
@@ -279,20 +177,10 @@ function parseBag(raw: string): Record<string, unknown> | undefined {
   return parseJsonObject(raw);
 }
 
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
-}
-
 interface InventoryReadRow {
   id: string;
   objectType: 'skill' | 'hook' | 'mcp_server' | 'config_file';
   title: string | null;
   location: string | null;
   attributes: string;
-}
-
-interface FindingReadRow {
-  maskedMatch: string;
-  ruleId: string;
-  name: string;
 }

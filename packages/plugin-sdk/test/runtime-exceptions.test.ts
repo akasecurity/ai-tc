@@ -14,6 +14,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import type { AtRestVault } from '../src/at-rest-vault.ts';
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey } from '../src/fingerprint.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
@@ -804,5 +805,42 @@ describe('reveal grant minted from a padded vault pointer', () => {
 
     expect(result.action).toBe('log');
     expect(gw.consumed).toEqual([ex.id]);
+  });
+});
+
+describe('exception evaluation — at-rest vault', () => {
+  it('vaults a secret an allow exception covers in a whole-file capture', async () => {
+    const fpKey = loadOrCreateFingerprintKey(dir);
+    const ex = entry({ valueFingerprint: fingerprintValue(fpKey, 'EX_SECRET_MARKER') });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+    const vault: AtRestVault = {
+      vaultSpans: (_text, _findings, opts) =>
+        Promise.resolve(new Map([...opts.selected].map((f) => [f, 'POINTER'] as const))),
+    };
+
+    await rt.capture(
+      {
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'use EX_SECRET_MARKER here\n',
+        metadata: { filePath: join(dir, 'app.ts'), wholeFile: true },
+      },
+      { vault },
+    );
+    await rt.close();
+
+    expect(gw.records[0]?.findings[0]?.actionTaken).toBe('allow');
+    expect(gw.records[0]?.event.content).toBe('use POINTER here\n');
   });
 });

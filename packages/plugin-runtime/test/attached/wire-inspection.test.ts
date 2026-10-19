@@ -1,3 +1,4 @@
+import { SIGHTING_DOMAIN } from '@akasecurity/persistence';
 import { ToolCallInspection, type ToolCallInspectionInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -57,7 +58,24 @@ describe('toWireInspection', () => {
     expect(
       toWireInspection(inspection, { keyVersion: 3, key: new Uint8Array(32).fill(8) }).nameHash,
     ).not.toBe(a);
-    expect(NAME_HASH_DOMAIN).not.toBe('aka:sighting:v1');
+  });
+
+  // Neither domain may be a prefix of the other: if one were, a crafted name
+  // could reproduce another value's sighting token under the same key.
+  it('keeps the name-hash domain apart from the sighting-token domain', () => {
+    expect(NAME_HASH_DOMAIN.startsWith(SIGHTING_DOMAIN)).toBe(false);
+    expect(SIGHTING_DOMAIN.startsWith(NAME_HASH_DOMAIN)).toBe(false);
+  });
+
+  // A cross-implementation vector, computed outside Node (Python's hmac and
+  // base64.urlsafe_b64encode, padding stripped). A deployment compares these
+  // hashes across releases and machines, so any drift in the domain, the
+  // encoding or the alphabet must fail here rather than invalidate every
+  // stored hash.
+  it('matches a fixed vector for a fixed key and name', () => {
+    expect(toWireInspection(inspection, KEY).nameHash).toBe(
+      'v3.ZrCkuEoTpE-ZzNHDu06GYhWKHiT-Sh7S5lCPdC3IM-Y',
+    );
   });
 
   it('leaves the hash off without a key, and both fields off for an inspection with neither', () => {

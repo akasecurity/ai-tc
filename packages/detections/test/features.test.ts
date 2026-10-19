@@ -4,7 +4,13 @@ import { DetectionCategory, MatchFeatures, PostValidatorName, Rule } from '@akas
 import { describe, expect, it } from 'vitest';
 
 import { scan } from '../src/engine.ts';
-import { classifyPath, KNOWN_PREFIXES, matchFeatures, nameBucket } from '../src/features.ts';
+import {
+  classifyPath,
+  KNOWN_PREFIXES,
+  matchFeatures,
+  nameBucket,
+  NEARBY_WINDOW,
+} from '../src/features.ts';
 import type { MatchResult } from '../src/types.ts';
 import { withVariableNames } from '../src/variable-name.ts';
 import { discoverBundledRuleFiles, fixturePath, loadRule } from './helpers/rules.ts';
@@ -107,6 +113,46 @@ describe('nearby words', () => {
     const f = matchFeatures(m, rule(), { text: ['first line', line, 'last line'].join('\n') });
     expect(f.nearby).toEqual(['secret_like', 'test_like']);
     expect(JSON.stringify(f)).not.toContain('MOCK_KEY');
+  });
+
+  it('reads only the window around the match, not the whole line', () => {
+    const far = 'x'.repeat(NEARBY_WINDOW + 10);
+    const line = ['token ', far, STRIPE_LIKE, far, ' example'].join('');
+    const start = line.indexOf(STRIPE_LIKE);
+    const m = { ...match(STRIPE_LIKE), span: { start, end: start + STRIPE_LIKE.length } };
+    expect(matchFeatures(m, rule(), { text: line }).nearby).toEqual([]);
+
+    const near = ['token ', STRIPE_LIKE, ' example'].join('');
+    const at = near.indexOf(STRIPE_LIKE);
+    const n = { ...match(STRIPE_LIKE), span: { start: at, end: at + STRIPE_LIKE.length } };
+    expect(matchFeatures(n, rule(), { text: near }).nearby).toEqual(['secret_like', 'test_like']);
+  });
+
+  // Every caller asks for features, and a minified bundle or a one-line JSON
+  // payload is one line holding thousands of matches. The work per match must
+  // not grow with the line: doubling both the line and the matches on it
+  // roughly doubles the time. CPU time, best of three, so a busy runner's
+  // stalls are not counted.
+  it('stays linear on a single long line with many matches', () => {
+    const cost = (copies: number): number => {
+      const unit = `${STRIPE_LIKE} api_token example `;
+      const text = unit.repeat(copies);
+      const matches = Array.from({ length: copies }, (_, i) => {
+        const start = i * unit.length;
+        return { ...match(STRIPE_LIKE), span: { start, end: start + STRIPE_LIKE.length } };
+      });
+      let best = Number.POSITIVE_INFINITY;
+      for (let round = 0; round < 3; round++) {
+        const before = process.cpuUsage();
+        for (const m of matches) matchFeatures(m, rule(), { text });
+        const used = process.cpuUsage(before);
+        best = Math.min(best, (used.user + used.system) / 1000);
+      }
+      return best;
+    };
+    const small = cost(20_000);
+    const large = cost(40_000);
+    expect(large / Math.max(small, 1), `${String(small)}ms → ${String(large)}ms`).toBeLessThan(3);
   });
 
   it('is empty without the scanned text', () => {

@@ -331,7 +331,9 @@ export class AttachedDataGateway
     try {
       return this.deps.readNameKey
         ? this.deps.readNameKey()
-        : readSightingKeys(this.deps.dataDir)?.current;
+        : // The key lives under the ~/.aka BASE (settings/, keys/); dataDir is
+          // the data leaf beneath it, as every sibling default here assumes.
+          readSightingKeys(dirname(this.deps.dataDir))?.current;
     } catch {
       return undefined;
     }

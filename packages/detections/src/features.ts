@@ -110,17 +110,34 @@ function looksLikePlaceholder(fullValue: string): boolean {
   return SAMPLE_WORDS.test(value);
 }
 
+/** How far either side of a match counts as nearby, in characters. */
+export const NEARBY_WINDOW = 200;
+
 /**
- * The buckets of the words on the match's line, apart from the value itself and
- * the name it is assigned to. Sorted and unique, so the result is a set.
+ * The buckets of the words near the match — within {@link NEARBY_WINDOW}
+ * characters either side, and never past a line break — apart from the value
+ * itself and the name it is assigned to. Sorted and unique, so a set.
+ *
+ * Bounded by the window rather than the line, so the work per match is the same
+ * on a one-line bundle holding thousands of matches as on a short line. A word
+ * the window cuts in half at its far edge is left out rather than bucketed by a
+ * fragment.
  */
 function nearbyBuckets(text: string, match: MatchResult): NameBucket[] {
-  const lineStart = text.lastIndexOf('\n', match.span.start - 1) + 1;
-  const lineEndAt = text.indexOf('\n', match.span.end);
-  const lineEnd = lineEndAt === -1 ? text.length : lineEndAt;
-  const around = `${text.slice(lineStart, match.span.start)} ${text.slice(match.span.end, lineEnd)}`;
+  const fromAt = Math.max(0, match.span.start - NEARBY_WINDOW);
+  let left = text.slice(fromAt, match.span.start);
+  const leftBreak = left.lastIndexOf('\n');
+  if (leftBreak !== -1) left = left.slice(leftBreak + 1);
+  else if (fromAt > 0) left = left.replace(/^[A-Za-z0-9_]*/, '');
+
+  const toAt = Math.min(text.length, match.span.end + NEARBY_WINDOW);
+  let right = text.slice(match.span.end, toAt);
+  const rightBreak = right.indexOf('\n');
+  if (rightBreak !== -1) right = right.slice(0, rightBreak);
+  else if (toAt < text.length) right = right.replace(/[A-Za-z0-9_]*$/, '');
+
   const buckets = new Set<NameBucket>();
-  for (const word of around.split(/[^A-Za-z0-9_]+/)) {
+  for (const word of `${left} ${right}`.split(/[^A-Za-z0-9_]+/)) {
     if (word.length < 3 || word === match.variableName) continue;
     const bucket = nameBucket(word);
     if (bucket !== 'other') buckets.add(bucket);

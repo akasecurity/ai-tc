@@ -75,6 +75,11 @@ export function rebuildAuditEvent(
     ...(row.severity === null || row.severity === undefined ? {} : { severity: row.severity }),
     ...(row.priority === null || row.priority === undefined ? {} : { priority: row.priority }),
     ...attributesOf(row.attributes),
+    // NOT the live lane's parity for two fields: `features` and `nameHash`
+    // ride the live forward only. The inspection row stores neither the
+    // features nor anything the name hash could be recomputed from, so a tool
+    // call that reaches the deployment through this drain arrives without
+    // them — and, the ids being content-addressed, that copy is the one kept.
     inspections: inspections
       .filter((i) => !i.ruleVersion.startsWith(CAPTURE_VERSION_PREFIX))
       .map((i) =>

@@ -1976,6 +1976,17 @@ measurements: the adversarial-rule bound in `packages/detections/test/security/r
 and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
 threw would be a timing gate wearing a different name.
 
+A guard is only a correctness assertion while a loaded runner cannot fail it, so the ReDoS
+gates read this thread's CPU time wherever that clock is fine enough to give a ratio, and
+wall time only where it is credited in whole ticks (the Windows runner), with the absolute
+budget then corroborated by the CPU clock. Each fails only on a breach that reproduces: the
+growth tier on three runs, the per-rule walk on a fresh worker thread, which is a new isolate
+and so runs the regex interpreted again as a hook process does (re-measuring on the same
+thread would measure the compiled tier, see `worstProbeMs`). And a guard whose subject has a
+countable unit counts it rather than timing it — `mergeOverlappingSameRule`'s growth guard
+counts span reads, and the browser extension's SSE rescan guard counts the characters the
+string builtins examine (`plugins/browser-extension/test/helpers/scan-meter.ts`).
+
 Six properties are load-bearing, and each is enforced by
 `packages/eslint-config/test/bench-harness.test.js` rather than remembered:
 

@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+import { terminalPrompter } from '../../src/lib/prompter.ts';
+import { closableTerminal } from '../helpers/closable-terminal.ts';
 
 // What `aka plugins install` PRINTS before it spawns, which nothing else
 // measures. local-ops proves the spawn plan matches the argv that really
@@ -178,6 +180,28 @@ describe('aka plugins install warns when Claude Code is too old for part of AKA'
     expect(spawned.calls).toEqual([]);
     // Non-zero, or `aka plugins install … && aka init` treats a decline as a
     // successful install and carries on.
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('treats a closed input at the question as a decline', async () => {
+    const t = closableTerminal();
+    const run = runPlugins(['install', 'claude-code'], {
+      hostVersion: () => ANCIENT,
+      prompter: terminalPrompter(t.io),
+    });
+    t.input.end();
+
+    await Promise.race([
+      run,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('install still waiting on a closed input'));
+        }, 500);
+      }),
+    ]);
+
+    expect(t.written()).toContain('Not installed');
+    expect(spawned.calls).toEqual([]);
     expect(process.exitCode).toBe(1);
   });
 

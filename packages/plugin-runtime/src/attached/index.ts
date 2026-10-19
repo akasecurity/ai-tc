@@ -83,14 +83,25 @@ export { readStorePosture } from './posture-snapshot.ts';
 export type { PostureState, PostureStore } from './posture-store.ts';
 export { readDeviceIdentity } from './posture-store.ts';
 export { createPostureStore } from './posture-store.ts';
-export type { RenderAttachedStatusDeps } from './status.ts';
+export type {
+  ClaudeCodeLoginState,
+  ClaudeCodeLoginView,
+  ClaudeCodeLoginViewInput,
+  CodexLoginState,
+  CodexLoginView,
+  CodexLoginViewInput,
+  RenderAttachedStatusDeps,
+} from './status.ts';
 export {
   attachmentScopeLines,
+  claudeCodeLoginView,
+  codexLoginView,
   deploymentNameForTerminal,
   endpointForTerminal,
   printableForTerminal,
   renderAttachedStatus,
   renderPolicyLine,
+  WORK_SUBSCRIPTION_COMMANDS,
 } from './status.ts';
 export { runAttachedSync } from './sync-entry.ts';
 export { readSyncState, SYNC_STATE_FILENAME, syncStatePath, writeSyncState } from './sync-state.ts';

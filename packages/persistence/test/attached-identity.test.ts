@@ -1,4 +1,4 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -360,6 +360,17 @@ describe('recordValidatedWorkAccount', () => {
     const after = readAttachedIdentity(store.dataDir);
     expect(after?.workAccounts).toEqual([learned(WORK_ORG)]);
     expect({ ...after, workAccounts: [] }).toStrictEqual(before);
+  });
+
+  it('stores a ChatGPT workspace as a ChatGPT work account, and a claude key as a Claude one', () => {
+    attach();
+    const workspace = `chatgpt:${randomUUID()}`;
+    expect(learn(workspace)).toBe('written');
+    expect(learn()).toBe('written');
+    const [chatgpt, claude] = readAttachedIdentity(store.dataDir)?.workAccounts ?? [];
+    expect(chatgpt?.label).toBe('ChatGPT work account');
+    expect(chatgpt?.identity === workspace).toBe(true);
+    expect(claude?.label).toBe('Claude work account');
   });
 
   it('refuses a ninth key', () => {

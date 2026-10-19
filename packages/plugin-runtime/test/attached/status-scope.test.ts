@@ -58,22 +58,33 @@ const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 // A part of a recorded address that must never reach the screen.
 const HIDDEN = 'hiddenpart';
 const NOT_LIMITED =
-  '             the policy pull and the device report are not limited to what is enrolled';
+  '             the policy pull, the command check and the device report are not limited to what is enrolled';
 // The three states of the list itself that forward no activity. Each has its own
 // headline, because what to do about one is not what to do about another.
-const MISSING_HEADLINE = '  scope      no enrolled list is stored — no activity is sent';
+const WORK_ONLY_SENT = 'only sessions signed in to a recognised work subscription are sent';
+const MISSING_HEADLINE = `  scope      no enrolled list is stored — ${WORK_ONLY_SENT}`;
 const MISSING_LIST = [
   MISSING_HEADLINE,
   '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
   '             drops the list when it saves settings)',
 ];
-const UNREADABLE_HEADLINE =
-  '  scope      the enrolled list cannot be read by this aka — it sends no activity under it';
+const UNREADABLE_HEADLINE = `  scope      the enrolled list cannot be read by this aka — ${WORK_ONLY_SENT}`;
 const UNREADABLE_LIST = [
   UNREADABLE_HEADLINE,
   '             (it may have been written by a newer aka)',
 ];
-const EMPTY_HEADLINE = '  scope      nothing enrolled yet — no activity is sent';
+// The same state once work subscriptions are off, which a stored value that is
+// not a record reads as.
+const UNREADABLE_HEADLINE_OFF =
+  '  scope      the enrolled list cannot be read by this aka — no activity is sent';
+const UNREADABLE_LIST_OFF = [
+  UNREADABLE_HEADLINE_OFF,
+  '             (it may have been written by a newer aka)',
+];
+const EMPTY_HEADLINE = `  scope      nothing enrolled yet — ${WORK_ONLY_SENT}`;
+// What a scope that lists repositories says is not sent, while work subscriptions are on.
+const ENROLLED_TAIL =
+  'anything else stays on this machine, except sessions signed in to a recognised work subscription';
 
 let root: string;
 let settingsDir: string;
@@ -198,13 +209,17 @@ describe('renderAttachedStatus — the attachment mode', () => {
 
   it('names a scoped attachment', () => {
     attach('scoped', bound());
-    expect(status()).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(status()).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
   });
 
   it('names a scoped attachment without naming the kind of entry it enrolls', () => {
     attach('scoped', bound([{ kind: 'account', identity: ACCOUNT, enrolledAt: ENROLLED_AT }]));
     const out = status();
-    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(out).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
     expect(out).toContain(`\n             ${ACCOUNT}, enrolled 2026-10-07\n`);
     expect(out).not.toContain('repositories only');
   });
@@ -305,7 +320,9 @@ describe('renderAttachedStatus — a machine that became managed after a scoped 
     UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
 
     const out = status();
-    expect(out).toMatch(/^ {2}mode {7}scoped \(activity only from what is enrolled\)$/m);
+    expect(out).toMatch(
+      /^ {2}mode {7}scoped \(activity from what is enrolled, and from work-subscription sessions\)$/m,
+    );
     expect(out).toContain(`\n             ${WORK_REPO}, enrolled 2026-10-07\n`);
   });
 });
@@ -314,9 +331,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   it('lists each enrolled repository with its label and the day it was enrolled', () => {
     attach('scoped', bound([entry(WORK_REPO, 'payments-api'), entry(SECOND_REPO)]));
     const out = status();
-    expect(out).toMatch(
-      /^ {2}scope {6}2 enrolled — activity anywhere else stays on this machine$/m,
-    );
+    expect(out).toContain(`\n  scope      2 enrolled — ${ENROLLED_TAIL}\n`);
     expect(out).toContain(`\n             ${WORK_REPO} (payments-api), enrolled 2026-10-07\n`);
     expect(out).toContain(`\n             ${SECOND_REPO}, enrolled 2026-10-07\n`);
     expect(out).not.toContain('not tied to an account');
@@ -333,27 +348,40 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   it('says the list cannot be read when the stored scope is not a record at all', () => {
     attach('scoped', 'not-a-scope-record');
     const out = status();
-    expect(out).toContain(`\n${UNREADABLE_LIST.join('\n')}\n`);
+    expect(out).toContain(`\n${UNREADABLE_LIST_OFF.join('\n')}\n`);
     expect(out).not.toMatch(/^ {2}scope {6}nothing enrolled/m);
   });
 
   it('says a freshly recorded scope enrolls nothing yet', () => {
     attach('scoped', bound());
     const out = status();
-    expect(out).toMatch(/^ {2}scope {6}nothing enrolled yet — no activity is sent$/m);
-    expect(out).toContain('(run `aka enroll` inside a work repository to add it)');
+    expect(out).toContain(`\n${EMPTY_HEADLINE}\n`);
+    expect(out).toContain(
+      '(run `aka enroll` inside a work repository to add it, or `aka enroll --account <key>` for a work subscription this device does not recognise)',
+    );
   });
 
-  it('reads a scope recorded for another deployment as sending no activity', () => {
-    attach('scoped', { endpoint: OLD_ENDPOINT, ...MEMBER, entries: [entry(WORK_REPO)] });
-    const out = status();
-    expect(out).toMatch(
-      /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\)$/m,
-    );
-    expect(out).toContain('— no activity is sent here (run `aka enroll` to enroll for this one)');
-    expect(out).not.toContain('nothing is sent here');
-    expect(out).not.toContain(WORK_REPO);
-  });
+  it.each<[string, Record<string, unknown>, string]>([
+    ['on', {}, WORK_ONLY_SENT],
+    ['off', { workSubscriptions: 'off' }, 'no activity is sent'],
+  ])(
+    'reads a scope recorded for another deployment as sending what the device recognises (work subscriptions %s)',
+    (_name, flag, sent) => {
+      attach('scoped', {
+        endpoint: OLD_ENDPOINT,
+        ...MEMBER,
+        entries: [entry(WORK_REPO)],
+        ...flag,
+      });
+      const out = status();
+      expect(out).toMatch(
+        /^ {2}scope {6}recorded for another deployment \(https:\/\/aka\.old\.test\)$/m,
+      );
+      expect(out).toContain(`— ${sent} here (run \`aka enroll\` to enroll for this one)`);
+      expect(out).not.toContain('nothing is sent here');
+      expect(out).not.toContain(WORK_REPO);
+    },
+  );
 
   // The recorded endpoint is any non-empty string to the schema, so it can carry
   // a terminal escape. It is echoed on the line naming the other deployment.
@@ -407,9 +435,7 @@ describe('renderAttachedStatus — the enrolled scope', () => {
   ])('counts %s unreadable entries without printing them', (_name, entries, counted) => {
     attach('scoped', bound(entries));
     const out = status();
-    expect(out).toMatch(
-      /^ {2}scope {6}1 enrolled — activity anywhere else stays on this machine$/m,
-    );
+    expect(out).toContain(`\n  scope      1 enrolled — ${ENROLLED_TAIL}\n`);
     expect(out).toContain(`\n             ${counted} this version cannot read — not sent`);
     expect(out).not.toContain('acme-workspace');
   });
@@ -616,7 +642,7 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
     attach('scoped', scope, consent);
     writeHistorySyncState(dataDir, emptyScopePass);
     const out = status();
-    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).toMatch(/^ {2}history {4}nothing to send — nothing is in scope yet$/m);
     expect(out).not.toContain('complete —');
     expect(out).not.toMatch(/records sent/);
   });
@@ -624,7 +650,9 @@ describe('renderAttachedStatus — history counts on a scoped machine', () => {
   it('says nothing is sent before the first pass too, when nothing is enrolled', () => {
     attach('scoped', bound(), consent);
     const out = status();
-    expect(out).toMatch(/^ {2}history {4}nothing to send — the scope above forwards no activity$/m);
+    expect(out).toMatch(/^ {2}history {4}nothing to send — nothing is in scope yet$/m);
+    expect(out).toContain(`\n${EMPTY_HEADLINE}\n`);
+    expect(out).not.toContain('forwards no activity');
     expect(out).not.toContain('waiting for the first pass');
   });
 
@@ -662,7 +690,7 @@ describe('attachmentScopeLines — what the record does not limit', () => {
         ],
       },
     ],
-  ])('ends the block for %s with the policy pull and the device report', (_name, scope) => {
+  ])('ends the block for %s with what the record does not limit', (_name, scope) => {
     const lines = attachmentScopeLines(scope, ENDPOINT);
     expect(lines[lines.length - 1]).toBe(NOT_LIMITED);
     expect(lines.filter((line) => line === NOT_LIMITED)).toHaveLength(1);
@@ -675,7 +703,7 @@ describe('attachmentScopeLines — what the record does not limit', () => {
 
   it('prints it nowhere on a machine-wide attachment', () => {
     attach('machine', bound([entry(WORK_REPO)]));
-    expect(status()).not.toContain('the policy pull and the device report');
+    expect(status()).not.toContain('not limited to what is enrolled');
   });
 });
 
@@ -691,11 +719,18 @@ describe('attachmentScopeLines — a missing list and one this build cannot read
     ],
   ];
 
-  it.each<[string, unknown]>([
-    ['undefined', undefined],
-    ['null', null],
-  ])('says no list is stored when the value is %s', (_name, raw) => {
-    expect(attachmentScopeLines(raw, ENDPOINT)).toEqual([...MISSING_LIST, NOT_LIMITED]);
+  it('says no list is stored when the value is undefined', () => {
+    expect(attachmentScopeLines(undefined, ENDPOINT)).toEqual([...MISSING_LIST, NOT_LIMITED]);
+  });
+
+  // A stored value that is not a record reads as work subscriptions off, so
+  // nothing is sent while the list is missing.
+  it('says no list is stored, and no activity is sent, when the value is null', () => {
+    expect(attachmentScopeLines(null, ENDPOINT)).toEqual([
+      '  scope      no enrolled list is stored — no activity is sent',
+      ...MISSING_LIST.slice(1),
+      NOT_LIMITED,
+    ]);
   });
 
   it.each(UNREADABLE)('says the list cannot be read for %s, and offers no enroll', (_name, raw) => {
@@ -703,6 +738,15 @@ describe('attachmentScopeLines — a missing list and one this build cannot read
     const lines = attachmentScopeLines(raw, ENDPOINT);
     expect(lines).toEqual([...UNREADABLE_LIST, NOT_LIMITED]);
     expect(lines.join('\n')).not.toContain('aka enroll');
+  });
+
+  it('says only recognised work subscriptions are sent for an unreadable list while they are on, and nothing once they are off', () => {
+    const unreadable = { endpoint: ENDPOINT, ...MEMBER, entries: 'x' };
+    expect(attachmentScopeLines(unreadable, ENDPOINT)).toEqual([...UNREADABLE_LIST, NOT_LIMITED]);
+    expect(attachmentScopeLines({ ...unreadable, workSubscriptions: 'off' }, ENDPOINT)).toEqual([
+      ...UNREADABLE_LIST_OFF,
+      NOT_LIMITED,
+    ]);
   });
 
   it('gives the missing list, the unreadable list and the empty list three different blocks', () => {
@@ -780,7 +824,7 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   it('says the attached user is not known when this device holds no identity record', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     expect(lines()).toContain(
-      '  user       not known on this device — work subscriptions are not recognised',
+      '  user       not known until this machine syncs — until then work subscriptions are not recognised and no Claude Code session is sent for an enrolled account',
     );
   });
 
@@ -788,7 +832,7 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     attach('scoped', bound([entry(WORK_REPO)]));
     writeRecord('another-key-entirely');
     expect(lines()).toContain(
-      '  user       not tied to this key — work subscriptions are not recognised',
+      '  user       not tied to this key — the next sync re-checks it; until then no Claude Code session is sent for a work subscription or an enrolled account',
     );
   });
 
@@ -803,7 +847,9 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
   // An attachment made before this build has no field at all, and starts on.
   it('says work subscriptions are on when the scope record does not mention them', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
-    expect(lines()).toContain('  work       subscriptions on');
+    expect(lines()).toContain(
+      '  work       subscriptions on — `aka unenroll --work-subscriptions` turns them off on this device',
+    );
   });
 
   it.each<[string, unknown]>([
@@ -811,11 +857,13 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     ['on', 'on'],
     ['a number', 42],
   ])(
-    'says work subscriptions are off for a stored %s, and still lists the enrolled repository',
+    'says work subscriptions are off for a stored %s, how to turn them back on, and still lists the enrolled repository',
     (_name, value) => {
       attach('scoped', { ...bound([entry(WORK_REPO)]), workSubscriptions: value });
       const out = lines();
-      expect(out).toContain('  work       subscriptions off — turned off on this device');
+      expect(out).toContain(
+        '  work       subscriptions off — you turned them off; `aka enroll --work-subscriptions` turns them back on',
+      );
       expect(out).toContain(`             ${WORK_REPO}, enrolled 2026-10-07`);
     },
   );
@@ -832,6 +880,22 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
         `             ${LEARNED} (validated ${learned.enrolledAt.slice(0, 10)}) — Claude Code sessions signed in to it forward from any folder`,
       ].join('\n'),
     );
+  });
+
+  it('lists a learned ChatGPT workspace as new Codex threads forwarding, not as Claude Code sessions', () => {
+    attach('scoped', bound([entry(WORK_REPO)]));
+    const workspace = `chatgpt:${randomUUID()}`;
+    learn(workspace);
+    const [learned] = record().workAccounts;
+    if (learned === undefined) throw new Error('nothing was learned');
+    const shown = status();
+
+    expect(
+      shown.includes(
+        `             ${workspace} (validated ${learned.enrolledAt.slice(0, 10)}) — new Codex threads signed in to it forward from any folder`,
+      ),
+    ).toBe(true);
+    expect(shown.includes('Claude Code sessions signed in to it')).toBe(false);
   });
 
   it('lists no learned work account while work subscriptions are off', () => {
@@ -858,12 +922,41 @@ describe('renderAttachedStatus — work subscriptions on a scoped attachment', (
     );
   });
 
-  // The control for the two cases above: a record that recognised nothing
-  // leaves the plain headline.
-  it('keeps the plain enrolled-list headline while nothing is recognised', () => {
+  // Recognition being on is what the headline names, so it names the sessions
+  // before the device has recognised one.
+  it('names recognised work subscriptions in the headline while they are on and none is recognised yet', () => {
     attach('scoped', bound([entry(WORK_REPO)]));
     writeRecord();
-    expect(lines()).toContain(
+    expect(lines()).toContain(`  scope      1 enrolled — ${ENROLLED_TAIL}`);
+  });
+
+  // The control for the cases above: a record that turned recognition off keeps
+  // the plain headlines, whatever the device learned before.
+  it.each<[string, unknown[], string]>([
+    [
+      'enrolled repositories',
+      [entry(WORK_REPO)],
+      '  scope      1 enrolled — activity anywhere else stays on this machine',
+    ],
+    ['nothing enrolled', [], '  scope      nothing enrolled yet — no activity is sent'],
+  ])(
+    'keeps the plain headline while work subscriptions are off (%s)',
+    (_name, entries, headline) => {
+      attach('scoped', { ...bound(entries), workSubscriptions: 'off' });
+      learn(LEARNED);
+      const out = lines();
+      expect(out).toContain(headline);
+      expect(out.join('\n')).not.toContain('recognised work subscription');
+    },
+  );
+
+  it('prints the same headline in the list aka enroll --list shows', () => {
+    const on = bound([entry(WORK_REPO)]);
+    const off = { ...on, workSubscriptions: 'off' };
+    expect(attachmentScopeLines(on, ENDPOINT)).toContain(
+      `  scope      1 enrolled — ${ENROLLED_TAIL}`,
+    );
+    expect(attachmentScopeLines(off, ENDPOINT)).toContain(
       '  scope      1 enrolled — activity anywhere else stays on this machine',
     );
   });

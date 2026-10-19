@@ -41,6 +41,8 @@ import type {
 import { harnessFromTool, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { pluginBuild } from '../build-info.ts';
+import type { LeafStamper } from '../hooks/account-stamp.ts';
+import { codexLeafStamper } from '../hooks/account-stamp.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import {
   iterateUsageAndToolCalls,
@@ -89,6 +91,11 @@ export interface ReconcileSessionOptions {
   // makes shares it, so a directory is walked once and keyed identically. When
   // omitted, the call builds its own.
   scopeKeyOf?: ((cwd: string | undefined) => string | undefined) | undefined;
+  // The key each leaf is stored under, from its repository key and the time it
+  // ran: the live tail pass passes the thread's account stamper, so a work
+  // thread's rows carry its agent key while the session log puts the thread
+  // under it. The backfill passes none and stores the repository key.
+  stampAt?: LeafStamper | undefined;
 }
 
 // Reconcile ONE session's usage records into `llm_call` leaves. `records` are
@@ -132,6 +139,8 @@ export async function reconcileSession(
 
   // Each leaf is keyed by its own record's running cwd, never by the root's.
   const scopeKeyOf = opts.scopeKeyOf ?? scopeKeyMemo();
+  const keyAt = (cwd: string | undefined, at: string): string | undefined =>
+    opts.stampAt === undefined ? scopeKeyOf(cwd) : opts.stampAt(scopeKeyOf(cwd), at);
   const inputs: LlmCallInput[] = records.map((rec) => ({
     sessionId,
     // No stable message id in Codex's usage event — key on the record's own
@@ -149,7 +158,7 @@ export async function reconcileSession(
         ? { ...rec, runKey: opts.seedPromptId }
         : rec,
       provider,
-      scopeKeyOf(rec.cwd),
+      keyAt(rec.cwd, rec.occurredAt),
     ),
   }));
 
@@ -206,7 +215,8 @@ export async function reconcileSessionToolCalls(
     if (runKey !== undefined) attributes.run_key = runKey;
     // See toolCallScopeKey: a patch by its files' repository (and by nothing when
     // its events name no file), a shell call by its own cwd.
-    const scopeKey = toolCallScopeKey(tc, scopeKeyOf);
+    const repoKey = toolCallScopeKey(tc, scopeKeyOf);
+    const scopeKey = opts.stampAt === undefined ? repoKey : opts.stampAt(repoKey, tc.occurredAt);
     if (scopeKey !== undefined) attributes.scope_key = scopeKey;
     return {
       sessionId,
@@ -318,14 +328,17 @@ export async function reconcileSessionTail(
   const gateway = reconcileGateway(config);
   // One scope-key memo for this tail pass, shared by both leaf kinds.
   const scopeKeyOf = scopeKeyMemo();
+  const stampAt = codexLeafStamper(gateway, config.dataDir, sessionId, transcriptPath);
   try {
     const result = await reconcileSession(gateway, sessionId, records, {
       seedPromptId: checkpoint.lastPromptId,
       scopeKeyOf,
+      stampAt,
     });
     const toolCalls = await reconcileSessionToolCalls(gateway, sessionId, toolCallRecords, {
       seedPromptId: checkpoint.lastPromptId,
       scopeKeyOf,
+      stampAt,
     });
     // Advance the offset only when nothing was dropped: a contended
     // (SQLITE_BUSY) batch reports `skipped` (usage) or writes fewer tool

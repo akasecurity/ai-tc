@@ -10,7 +10,10 @@ import {
 
 import type { Choice } from '../shared/ChoiceGroup.tsx';
 import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
-import { HISTORY_SYNC_SECTION_LABEL } from './WorkspaceSettingsFormView.tsx';
+import {
+  CONNECTION_SECTION_LABEL,
+  HISTORY_SYNC_SECTION_LABEL,
+} from './WorkspaceSettingsFormView.tsx';
 
 export type SightingShareChoice = 'granted' | 'revoked';
 
@@ -36,7 +39,7 @@ export const SIGHTING_SHARE_CHOICES: Choice<SightingShareChoice>[] = [
 export const SIGHTING_SHARE_STANDALONE_NOTE =
   'Nothing is shared while this machine is standalone. Attach it to an organization to answer; the answer applies to that organization only.';
 
-export const SIGHTING_SHARE_SCOPE_NOTE = `This setting covers credential sightings only. What else an attached machine sends is set out under ${HISTORY_SYNC_SECTION_LABEL} above.`;
+export const SIGHTING_SHARE_SCOPE_NOTE = `This setting covers credential sightings only. What else an attached machine sends is set out under ${CONNECTION_SECTION_LABEL} and ${HISTORY_SYNC_SECTION_LABEL} above.`;
 
 export interface SightingSharingViewProps {
   state: SightingSharing;

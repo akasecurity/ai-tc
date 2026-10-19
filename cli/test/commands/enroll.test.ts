@@ -1,18 +1,31 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
   DB_FILENAME,
+  readAttachedIdentity,
   recordDetectedWebAccount,
+  recordValidatedWorkAccount,
   SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { attachmentScopeLines } from '@akasecurity/plugin-runtime';
+import { attachmentScopeLines, WORK_SUBSCRIPTION_COMMANDS } from '@akasecurity/plugin-runtime';
+import { CLAUDE_ACCOUNT_ENV_NAMES, CODEX_ACCOUNT_ENV_NAMES } from '@akasecurity/plugin-sdk/account';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
@@ -26,9 +39,14 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writeCodexAuth } from '../../../packages/plugin-sdk/test/helpers/fake-jwt.ts';
+import {
+  fixtureEmail,
+  workConfig,
+} from '../../../packages/plugin-sdk/test/helpers/transcript-builder.ts';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { COMMAND_SPECS } from '../../src/command-manifest.ts';
-import { runAttach } from '../../src/commands/attach.ts';
+import { runAttach, runStatus } from '../../src/commands/attach.ts';
 import { defaultLabel, quotedForShell, runEnroll, runUnenroll } from '../../src/commands/enroll.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
@@ -37,13 +55,15 @@ import { main } from '../../src/main.ts';
 // `aka enroll` / `aka unenroll` / `aka enroll --list` against a real settings
 // file and a real credential file in a temp home.
 //
-// Two seams in the persistence module, both pass-through until a case arms
+// Three seams in the persistence module, all pass-through until a case arms
 // them. `seedEnrolledCapturesOwed` records what it was asked to queue and
 // answers `seed.answer`, so the consent gate and the copy are pinned without a
 // store (the queue itself is pinned in @akasecurity/persistence's own suite).
 // `applyOnboarding` counts its calls, can run `settingsWrite.before` once ahead
 // of the real write (a concurrent re-attach landing between the command's check
 // and its write), or throw `settingsWrite.failure` (a write that fails).
+// `forgetWorkAccounts` answers false without touching the record while
+// `forgetSeam.fails` is set, as it does when the record's lock cannot be taken.
 interface SeedCall {
   dataDir: string;
   keys: string[];
@@ -52,6 +72,7 @@ const seed = vi.hoisted((): { calls: SeedCall[]; answer: number | undefined } =>
   calls: [],
   answer: 0,
 }));
+const forgetSeam = vi.hoisted((): { fails: boolean } => ({ fails: false }));
 const settingsWrite = vi.hoisted(
   (): { calls: number; before: (() => void) | undefined; failure: Error | undefined } => ({
     calls: 0,
@@ -68,6 +89,10 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
       seed.calls.push({ dataDir, keys: [...keys] });
       return seed.answer;
     },
+    forgetWorkAccounts: (
+      ...args: Parameters<typeof actual.forgetWorkAccounts>
+    ): ReturnType<typeof actual.forgetWorkAccounts> =>
+      forgetSeam.fails ? false : actual.forgetWorkAccounts(...args),
     applyOnboarding: (
       ...args: Parameters<typeof actual.applyOnboarding>
     ): ReturnType<typeof actual.applyOnboarding> => {
@@ -100,14 +125,24 @@ const GRINNING_FACE = String.fromCodePoint(0x1f600);
 
 let base: string;
 let work: string;
+let claudeHome: string;
+let codexHome: string;
 let exits: number[];
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'aka-enroll-home-'));
   work = mkdtempSync(join(tmpdir(), 'aka-enroll-work-'));
+  claudeHome = mkdtempSync(join(tmpdir(), 'aka-enroll-claude-'));
+  codexHome = mkdtempSync(join(tmpdir(), 'aka-enroll-codex-'));
+  // A key, a provider flag or a desktop login in the developer's own environment
+  // would change what the Claude Code login check answers.
+  for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, '');
+  // A key, a token or a gateway there would veto every Codex login.
+  for (const name of CODEX_ACCOUNT_ENV_NAMES) vi.stubEnv(name, '');
   exits = [];
   seed.calls = [];
   seed.answer = 0;
+  forgetSeam.fails = false;
   settingsWrite.calls = 0;
   settingsWrite.before = undefined;
   settingsWrite.failure = undefined;
@@ -116,6 +151,9 @@ beforeEach(() => {
 afterEach(() => {
   removeTree(base);
   removeTree(work);
+  removeTree(claudeHome);
+  removeTree(codexHome);
+  vi.unstubAllEnvs();
 });
 
 function recorder(): Prompter & { output: () => string; errors: () => string } {
@@ -144,6 +182,8 @@ function deps(
 ) {
   return {
     base,
+    claudePaths: { home: claudeHome, managedSettings: join(claudeHome, 'managed-settings.json') },
+    codexHome,
     prompter: io,
     managedSettings: options.managedSettings ?? null,
     exit: (code: number) => {
@@ -286,6 +326,11 @@ describe('aka enroll — usage', () => {
     ['--list with an account', ['--list', '--account', 'claude:x']],
     ['--list-detected with a repository', ['--list-detected', '--repo', WORK_REPO]],
     ['--list and --list-detected together', ['--list', '--list-detected']],
+    ['--work-subscriptions with a repository', ['--work-subscriptions', '--repo', WORK_REPO]],
+    ['--work-subscriptions with --list', ['--work-subscriptions', '--list']],
+    ['--work-subscriptions with an account', ['--work-subscriptions', '--account', 'claude:x']],
+    ['--yes with no account', ['--yes']],
+    ['--yes with a repository', ['--yes', '--repo', WORK_REPO]],
   ])('refuses %s as a usage error, before reading anything', async (_name, argv) => {
     const io = recorder();
     expect(await runEnroll(argv, deps(io))).toBe(2);
@@ -297,11 +342,13 @@ describe('aka enroll — usage', () => {
   it('says the scoped limit applies to activity, and that the report and policy pull do not stop', async () => {
     const io = recorder();
     expect(await runEnroll(['--everything'], deps(io))).toBe(2);
-    expect(io.errors()).toContain(
-      'activity is sent to the deployment\nonly from the repositories and web chat accounts enrolled here',
+    expect(flat(io.errors())).toContain(
+      "activity is sent to the deployment only from the repositories and Claude accounts enrolled here (an account's Claude Code sessions and its claude.ai chat replies), and from Claude Code and Codex sessions signed in to a work subscription (a Claude Team or Enterprise plan, or a ChatGPT Business, Team, Enterprise or Edu plan) that this device recognises; activity anywhere else stays on this machine.",
     );
-    expect(io.errors()).toContain(
-      "The policy pull and the device report are\nnot limited to them: the report's finding counts and dates are for everything\nrecorded on the machine.",
+    // Only the ChatGPT workspace plans count, so the usage never names a service account.
+    expect(io.errors()).not.toMatch(/service account|enterprise_cbp_automation/i);
+    expect(flat(io.errors())).toContain(
+      "The policy pull, the sighting-key fetch, the command check and the device report are not limited to them: the report's finding counts and dates are for everything recorded on the machine.",
     );
     expect(io.errors()).not.toContain('across every repository');
     expect(io.errors()).not.toContain('only activity in');
@@ -310,8 +357,8 @@ describe('aka enroll — usage', () => {
   it('limits what unenroll promises in its usage to sessions and scans started afterwards', async () => {
     const io = recorder();
     expect(await runUnenroll(['--everything'], deps(io))).toBe(2);
-    expect(io.errors()).toContain(
-      'sessions, scans and chats started afterwards keep its activity on this machine.',
+    expect(flat(io.errors())).toContain(
+      'Stops sending a repository or a Claude account from a scoped attachment: sessions, scans and chats started afterwards keep its activity on this machine, except a Claude Code or Codex session signed in to a recognised work subscription or to another account enrolled by hand, which forwards from any folder.',
     );
     expect(io.errors()).not.toContain('from then on');
   });
@@ -325,6 +372,12 @@ describe('aka enroll — usage', () => {
   it('aka unenroll takes no --list-detected', async () => {
     const io = recorder();
     expect(await runUnenroll(['--list-detected'], deps(io))).toBe(2);
+    expect(io.errors()).toContain('Usage: aka unenroll');
+  });
+
+  it('aka unenroll takes no --yes', async () => {
+    const io = recorder();
+    expect(await runUnenroll(['--account', 'claude:x', '--yes'], deps(io))).toBe(2);
     expect(io.errors()).toContain('Usage: aka unenroll');
   });
 
@@ -369,6 +422,9 @@ describe('aka enroll — who may enroll', () => {
       'machine-wide, so activity from\nanywhere on this machine is sent and nothing is enrolled.',
     );
     expect(io.errors()).not.toContain('every repository');
+    expect(flat(io.errors())).toContain(
+      'To send activity only from what you enroll and from recognised work subscriptions, re-attach with',
+    );
     expect(io.errors()).toContain(`aka attach --url ${ENDPOINT} --scoped`);
     expect(storedScope()).toBeUndefined();
   });
@@ -1255,7 +1311,7 @@ describe('aka enroll — a list this version cannot read', () => {
     const io = recorder();
     expect(await runUnenroll(['--repo', WORK_REPO], deps(io))).toBe(0);
     expect(io.output()).toBe(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.\n` +
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n` +
         'Anything from it that was waiting to be sent stays unsent while it is not enrolled.\n' +
         'This version of aka cannot read the list it was removed from, so `aka enroll` will refuse to\n' +
         'add to it. Attaching this machine machine-wide to the same deployment makes it sendable again.\n',
@@ -1283,7 +1339,9 @@ describe('aka enroll — what was recorded before', () => {
     expect(shown).toContain(
       'The history sync also sends the rest of its activity recorded before this machine attached',
     );
-    expect(shown).toContain('other than those captures, stays on this machine.');
+    expect(flat(shown)).toContain(
+      'other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays on this machine.',
+    );
     expect(shown).not.toContain('Other activity recorded in it before now stays on this machine.');
   });
 
@@ -1350,8 +1408,10 @@ describe('aka enroll — what was recorded before', () => {
       const io = recorder();
       expect(await runEnroll(['--repo', WORK_REPO], deps(io))).toBe(0);
       expect(seed.calls).toEqual([]);
-      expect(io.output()).toContain('Nothing recorded in it before now is sent.');
-      expect(io.output()).toContain('aka sync-history --on');
+      expect(flat(io.output())).toContain(
+        'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached. To send its earlier history as well, run `aka sync-history --on`.',
+      );
+      expect(io.output()).not.toContain('before now');
     },
   );
 });
@@ -1367,7 +1427,7 @@ describe('aka unenroll', () => {
     expect(storedScope()).toEqual(fresh([enrolled(SECOND_REPO, null), newer]));
     const shown = io.output();
     expect(shown).toContain(
-      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme.`,
+      `Unenrolled ${WORK_REPO}. From now on, sessions and scans you start do not send its activity to Acme, except a Claude Code session or a new Codex thread signed in to a recognised work subscription or to an account enrolled by hand, which forward from any folder. A Codex thread whose login Codex keeps outside its login file (in the system keychain, for one) is not sent.\n`,
     );
     // Said as far as it is true: a scan already running may have read the scope
     // before the edit, so nothing promises it stops; and what was waiting is
@@ -1397,6 +1457,16 @@ describe('aka unenroll', () => {
     expect(identities()).toEqual([]);
   });
 
+  it('removes every stored entry the typed clone URL stands for, and keeps the rest', async () => {
+    attach({
+      scope: fresh([enrolled(WORK_REMOTE_SCP, null), enrolled(), enrolled(SECOND_REPO, null)]),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--repo', WORK_REMOTE_SCP], deps(io))).toBe(0);
+    expect(identities()).toEqual([SECOND_REPO]);
+    expect(io.output()).toContain(`Unenrolled ${WORK_REMOTE_SCP}, ${WORK_REPO}. `);
+  });
+
   it('removes a key enrollableRepoKey refuses, as listed', async () => {
     attach({ scope: fresh() });
     // A single-segment scp remote keys as `host/repo`: a checkout stores that key
@@ -1417,8 +1487,8 @@ describe('aka unenroll', () => {
     expect(io.errors()).toBe('');
   });
 
-  // Matching is on the stored identity, byte for byte. A key a newer build
-  // stored under another rule is removable exactly as listed, and a different
+  // Matching is on the stored identity, byte for byte. A key stored under a
+  // different normalization form is removable exactly as listed, and a different
   // spelling of it is a different key.
   it('matches the stored identity exactly, and only that', async () => {
     const listed = 'GitHub.com/Acme/Payments';
@@ -1486,7 +1556,9 @@ describe('aka enroll --list', () => {
     expect(await runEnroll(['--list'], deps(io))).toBe(0);
     const shown = io.output();
     expect(shown).toContain('Enrolled with Acme:\n');
-    expect(shown).toContain('2 enrolled — activity anywhere else stays on this machine');
+    expect(shown).toContain(
+      '2 enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription',
+    );
     expect(shown).toContain(`             ${WORK_REPO} (payments-api), enrolled 2026-10-07`);
     expect(shown).toContain(`             ${SECOND_REPO}, enrolled 2026-10-07`);
     expect(settingsWrite.calls).toBe(0);
@@ -1576,6 +1648,14 @@ function enrolledAccount(identity = ACCOUNT) {
   return { kind: 'account', identity, label: 'claude.ai account', enrolledAt: NOW };
 }
 
+const CODING_LABEL = 'Claude account (Claude Code and claude.ai)';
+
+// An account entry that covers the coding-agent sessions signed in to the
+// account as well as its chats.
+function codingAccount(identity = ACCOUNT) {
+  return { kind: 'account', identity, label: CODING_LABEL, enrolledAt: NOW, codingAgents: true };
+}
+
 // The web-chat block: the capture consent, and the account grant when asked.
 function webChat(options: { consent?: boolean; grant?: boolean } = {}) {
   return {
@@ -1608,9 +1688,9 @@ describe('aka enroll --account', () => {
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(exits).toEqual([]);
-    expect(storedScope()).toEqual(fresh([enrolledAccount()]));
+    expect(storedScope()).toEqual(fresh([codingAccount()]));
     const shown = io.output();
-    expect(shown).toContain(`Enrolling ${ACCOUNT} (claude.ai account) with Acme.\n`);
+    expect(shown).toContain(`Enrolling ${ACCOUNT} (${CODING_LABEL}) with Acme.\n`);
     expect(shown).toContain(
       "Enrolled. Replies in this account's chats, with their tool calls and token usage, are\nrecorded and sent to Acme from now on. Prompts typed in it are still checked, and not recorded.\n",
     );
@@ -1639,23 +1719,25 @@ describe('aka enroll --account', () => {
 
   it.each([
     ['a repository key', WORK_REPO],
-    ['a site with no account provider', `chatgpt:${ORG}`],
+    ['a chatgpt id that is not a workspace id', 'chatgpt:payments'],
     ['an id that is not an organization id', 'claude:payments'],
     ['a bare organization id', ORG],
+    ['text with whitespace around it, which the refusal names without it', '  chatgpt:payments  '],
   ])('refuses %s, and writes nothing', async (_name, input) => {
     attach({ scope: fresh(), extra: webChat() });
     const before = stored();
     const io = recorder();
     expect(await runEnroll(['--account', input], deps(io))).toBe(1);
     expect(exits).toEqual([1]);
-    expect(io.errors()).toContain('is not a web chat account key');
+    expect(io.errors()).toContain(`aka enroll: ${input.trim()} is not a web chat account key.\n`);
     expect(io.errors()).toContain('`aka enroll --list-detected`');
+    expect(io.errors()).toContain('chatgpt:<workspace-id>');
     expect(stored()).toEqual(before);
     expect(settingsWrite.calls).toBe(0);
   });
 
   it('changes nothing for an account already enrolled', async () => {
-    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
     expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
@@ -1670,13 +1752,14 @@ describe('aka enroll --account', () => {
     expect(storedScope()).toBeUndefined();
   });
 
-  it('sends nothing earlier without a history-sync grant, and says how to', async () => {
+  it('sends nothing earlier without a history-sync grant but what a live send left owed, and says how to', async () => {
     attach({ scope: fresh(), extra: webChat() });
     const io = recorder();
     expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
-    expect(io.output()).toContain(
-      'Nothing recorded in it before now is sent. To send its earlier replies as well,\nrun `aka sync-history --on`.\n',
+    expect(flat(io.output())).toContain(
+      'Nothing recorded in it before it was enrolled is sent, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached. To send its earlier replies as well, run `aka sync-history --on`.',
     );
+    expect(io.output()).not.toContain('before now');
     expect(seed.calls).toEqual([]);
   });
 
@@ -1717,7 +1800,7 @@ describe('aka unenroll --account', () => {
     expect(identities()).toEqual([]);
   });
 
-  it('removes an entry stored under a key this build would not accept', async () => {
+  it('removes an entry stored under a key enroll would not accept, and words it as a claude key', async () => {
     attach({
       scope: fresh([{ kind: 'account', identity: 'claude:legacy-id', enrolledAt: NOW }]),
       extra: webChat(),
@@ -1725,6 +1808,45 @@ describe('aka unenroll --account', () => {
     const io = recorder();
     expect(await runUnenroll(['--account', 'claude:legacy-id'], deps(io))).toBe(0);
     expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          'Unenrolled claude:legacy-id. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n',
+        ),
+    ).toBe(true);
+  });
+
+  it('removes an entry stored in another case when the key is typed as it is stored', async () => {
+    const stored = `claude:${ORG.toUpperCase()}`;
+    attach({
+      scope: fresh([{ kind: 'account', identity: stored, enrolledAt: NOW }, enrolled()]),
+      extra: webChat(),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--account', stored], deps(io))).toBe(0);
+    expect(identities()).toEqual([WORK_REPO]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          `Unenrolled ${stored}. From now on, its chats are checked and nothing from them is recorded or sent to Acme.\n`,
+        ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['a key stored in another case', `claude:${ORG.toUpperCase()}`],
+    ['text that is not an account key', 'claude:legacy-id'],
+  ])('matches %s as typed, without the whitespace around it', async (_name, listed) => {
+    attach({
+      scope: fresh([{ kind: 'account', identity: listed, enrolledAt: NOW }, enrolled()]),
+      extra: webChat(),
+    });
+    const io = recorder();
+    expect(await runUnenroll(['--account', `  ${listed}\t `], deps(io))).toBe(0);
+    expect(identities()).toEqual([WORK_REPO]);
+    expect(io.output().startsWith(`Unenrolled ${listed}. `)).toBe(true);
   });
 
   it('says so when the account is not enrolled', async () => {
@@ -1774,10 +1896,1462 @@ describe('aka enroll --list-detected', () => {
     expect(io.output()).toBe(
       'Web chat accounts seen on this machine, for Acme:\n' +
         `  ${OTHER_ACCOUNT}, last seen 2026-10-06 — not enrolled: \`aka enroll --account ${OTHER_ACCOUNT}\`\n` +
-        `  ${ACCOUNT}, last seen 2026-10-05 — enrolled\n`,
+        `  ${ACCOUNT}, last seen 2026-10-05 — enrolled\n` +
+        'Claude Code — signed in now:\n  none (no login file)\n' +
+        'Codex — signed in now:\n  none (no login file)\n',
     );
     // Listing writes nothing.
     expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+// The Claude Code login fixtures: the attaching member's address and another,
+// generated per run, and Claude Code's login file in the suite's own Claude home.
+const CLAUDE_MEMBER = fixtureEmail(`member-${randomUUID().slice(0, 8)}`);
+const SOMEONE_ELSE = fixtureEmail(`other-${randomUUID().slice(0, 8)}`);
+// `as const`: the credential readers take the version as the literal `2`.
+const SCOPED_CREDENTIAL = {
+  specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  mode: 'scoped',
+  endpoint: ENDPOINT,
+  apiKey: TEST_KEY,
+} as const;
+
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+
+const UNTIL_USER_KNOWN =
+  'This device does not know yet which AKA user attached it, so a Claude Code session outside an enrolled repository is not sent until it does; one inside an enrolled repository is sent under the repository rule.';
+
+function claudeSignIn(
+  account: Readonly<Record<string, unknown>> = {},
+  email: string = CLAUDE_MEMBER,
+  org: string = ORG,
+): void {
+  writeFileSync(join(claudeHome, '.claude.json'), JSON.stringify(workConfig(org, email, account)));
+}
+
+/** The record that tells this device who attached it, bound to the test credential. */
+function knownMember(): void {
+  writeAttachedIdentity(dataDirOf(base), {
+    endpoint: ENDPOINT,
+    apiKey: TEST_KEY,
+    tenantName: MEMBER.tenantName,
+    userEmail: CLAUDE_MEMBER,
+  });
+}
+
+/** A work account a hook validated on this device. */
+function learn(key: string): void {
+  recordValidatedWorkAccount(dataDirOf(base), {
+    endpoint: ENDPOINT,
+    credential: SCOPED_CREDENTIAL,
+    key,
+  });
+}
+
+/**
+ * Every file under `dir` with its bytes, the store's own files left out: what a
+ * command that persists nothing must leave as it found it.
+ */
+function treeOf(dir: string): Record<string, string> {
+  const tree: Record<string, string> = {};
+  for (const name of readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
+    const path = join(dir, name);
+    if (!statSync(path).isFile() || basename(name).startsWith(DB_FILENAME)) continue;
+    tree[name] = readFileSync(path, 'base64');
+  }
+  return tree;
+}
+
+// The Codex login fixtures: a ChatGPT workspace id generated per run, and the
+// login file Codex writes, built by the reader's own helper in the suite's own
+// Codex home. The login is the attaching member's, so knownMember() matches it.
+const CODEX_WORKSPACE = randomUUID();
+const CHATGPT_KEY = `chatgpt:${CODEX_WORKSPACE}`;
+const CHATGPT_LABEL = 'ChatGPT workspace (Codex)';
+
+function codexSignIn(plan: string | undefined, email: string = CLAUDE_MEMBER) {
+  return writeCodexAuth(codexHome, {
+    accountId: CODEX_WORKSPACE,
+    email,
+    ...(plan === undefined ? {} : { plan }),
+  });
+}
+
+// An entry written by `aka enroll --account` for a ChatGPT workspace.
+function codexAccount(identity = CHATGPT_KEY) {
+  return { kind: 'account', identity, label: CHATGPT_LABEL, enrolledAt: NOW, codingAgents: true };
+}
+
+describe('aka enroll --account — Claude Code sessions', () => {
+  it('marks the entry for Claude Code sessions, and says what it forwards and from when', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([codingAccount()]));
+    const shown = flat(io.output());
+    expect(shown).toContain(
+      "Claude Code sessions signed in to this organization are sent to Acme too, from any folder, with their folder, project and branch names, and this account's claude.ai chats when web chat capture is on.",
+    );
+    expect(shown).toContain(
+      'A session already running starts forwarding at its next event, and a new one from its first reply on. The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
+    );
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
+    expect(shown).toContain(
+      'Nothing a Claude Code session recorded before this enrollment is sent this way, apart from captured prompts, replies and tool results a live send could not deliver since this machine attached.',
+    );
+    for (const notPrinted of [
+      'every session signed in to this organization',
+      'That starts with the next session',
+      'no Claude Code session recorded before now',
+      'nothing recorded before now',
+      'it is sent only from an enrolled repository',
+    ]) {
+      expect(shown).not.toContain(notPrinted);
+    }
+    expect(shown).toContain(
+      'a login under another email, a plan Claude Code does not show, or a device a colleague approved.',
+    );
+    expect(shown).not.toContain('Claude Code is not signed in to that organization');
+    expect(shown).not.toContain('could not be read, so no session');
+    expect(shown).not.toContain('does not know yet which AKA user');
+  });
+
+  it('adds the marker in place to an entry enrolled for its chats only, and queues nothing again', async () => {
+    const earlier = { ...enrolledAccount(), enrolledAt: '2026-10-02T09:00:00.000Z' };
+    attach({ scope: fresh([earlier]), extra: { ...webChat(), ...consent() } });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([{ ...earlier, codingAgents: true }]));
+    expect(io.output()).toContain('it now also covers Claude Code sessions.\n');
+    expect(seed.calls).toEqual([]);
+  });
+
+  it('adds the marker in place to every stored entry of the account', async () => {
+    const first = enrolledAccount();
+    const second = { ...enrolledAccount(), enrolledAt: '2026-10-02T09:00:00.000Z' };
+    attach({ scope: fresh([first, enrolled(), second]), extra: webChat() });
+    expect(await runEnroll(['--account', ACCOUNT], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(
+      fresh([{ ...first, codingAgents: true }, enrolled(), { ...second, codingAgents: true }]),
+    );
+  });
+
+  it('still enrolls while work subscriptions are off, and says the opt-out does not cover it', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'off' }, extra: webChat() });
+    const io = recorder();
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT]);
+    expect(flat(io.output())).toContain(
+      'an account you enroll by hand still forwards, because the opt-out covers only automatic recognition.',
+    );
+  });
+
+  it.each<[string, () => void]>([
+    ['there is no login file', () => undefined],
+    [
+      'the login is for another organization',
+      () => {
+        claudeSignIn({}, CLAUDE_MEMBER, randomUUID());
+      },
+    ],
+  ])(
+    'says Claude Code is not signed in to that organization now when %s',
+    async (_case, signIn) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      signIn();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      const shown = flat(io.output());
+      expect(shown).toContain(
+        'Claude Code is not signed in to that organization on this machine now; its sessions are sent when it is.',
+      );
+      expect(shown).not.toContain('has not seen Claude Code');
+      expect(shown).not.toContain('could not be read');
+    },
+  );
+
+  it.each<[string, () => void]>([
+    [
+      'the login file does not parse',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+      },
+    ],
+    [
+      'the login file does not parse and the environment names the account',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+        vi.stubEnv('CLAUDE_CODE_ORGANIZATION_UUID', ORG);
+      },
+    ],
+  ])(
+    'says the login file could not be read, not that Claude Code is signed out, when %s',
+    async (_case, unreadable) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      unreadable();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      const shown = flat(io.output());
+      expect(shown).toContain(
+        "Claude Code's login file could not be read, so no session is sent this way until it can be.",
+      );
+      expect(shown).not.toContain('is not signed in to that organization');
+      expect(shown).not.toContain('does not know yet which AKA user');
+    },
+  );
+
+  it.each<[string, () => void]>([
+    [
+      'the login is for that organization',
+      () => {
+        claudeSignIn();
+      },
+    ],
+    ['there is no login file', () => undefined],
+    [
+      'the login file does not parse',
+      () => {
+        writeFileSync(join(claudeHome, '.claude.json'), '{ not json');
+      },
+    ],
+  ])(
+    'says a session outside an enrolled repository waits until the device knows who attached it, and one inside follows the repository rule, when %s',
+    async (_case, signIn) => {
+      attach({ scope: fresh([enrolled()]), extra: webChat() });
+      signIn();
+      const io = recorder();
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+      expect(identities()).toEqual([WORK_REPO, ACCOUNT]);
+      const shown = flat(io.output());
+      expect(shown).toContain(UNTIL_USER_KNOWN);
+      expect(shown).not.toContain('sends no Claude Code session');
+      expect(shown).not.toContain('is not signed in to that organization');
+      expect(shown).not.toContain('could not be read, so no session');
+    },
+  );
+
+  it.each<['enroll' | 'unenroll', string, string]>(
+    (['enroll', 'unenroll'] as const).flatMap((verb) => [
+      [verb, '--account', `agent:${'0'.repeat(16)}:${ACCOUNT}`] as const,
+      [verb, '--repo', `agent:${'0'.repeat(16)}:${ACCOUNT}`] as const,
+      [verb, '--account', '  AGENT:anything'] as const,
+    ]),
+  )('refuses an agent key given to aka %s %s, and writes nothing', async (verb, flag, value) => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    const before = stored();
+    const io = recorder();
+    const run = verb === 'enroll' ? runEnroll : runUnenroll;
+    expect(await run([flag, value], deps(io))).toBe(1);
+    expect(io.errors()).toContain(`aka ${verb}: an agent: key is never enrolled`);
+    expect(`${io.errors()}${io.output()}`.includes(value.trim())).toBe(false);
+    expect(stored()).toEqual(before);
+    expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+// The plan notices a terminal shows, line for line. Off one, where a coding
+// agent's own output is recorded, the command says nothing about the login's plan.
+const CLAUDE_PLAN_NOTICE =
+  'The Claude Code login signed in now is on a personal plan, not a Team or Enterprise plan.\n' +
+  'Enrolling its organization sends the Claude Code sessions signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats.\n' +
+  'The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.\n';
+const CODEX_PLAN_NOTICE =
+  'The Codex login signed in now is on a plan that is not a ChatGPT workspace plan.\n' +
+  'Enrolling its workspace sends every new Codex thread signed in to it to Acme, from any folder.\n';
+const CONFIRMATION = 'Enroll it anyway? [y/N]: ';
+
+function expectNoPlanNotice(io: ReturnType<typeof recorder>): void {
+  for (const heard of [io.output(), io.errors()]) {
+    for (const notice of [CLAUDE_PLAN_NOTICE, CODEX_PLAN_NOTICE]) {
+      // The closing rule sentence is also part of what a completed enrollment prints.
+      const planLines = notice
+        .split('\n')
+        .filter((text) => text !== '' && !text.startsWith('The first prompt of a new session'));
+      for (const line of planLines) {
+        expect(heard.includes(line)).toBe(false);
+      }
+    }
+  }
+}
+
+/** A terminal that answers every question with `answer`, recording what had been printed when each was asked. */
+function answering(answer: string) {
+  const asked: string[] = [];
+  const printedBefore: string[] = [];
+  const io = {
+    ...recorder(),
+    ask: (question: string): Promise<string> => {
+      asked.push(question);
+      printedBefore.push(io.output());
+      return Promise.resolve(answer);
+    },
+  };
+  return { io, asked, printedBefore };
+}
+
+describe('aka enroll --account — the login signed in now on a personal plan', () => {
+  it('asks on a terminal before enrolling it, and enrolls on yes', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked, printedBefore } = answering('y');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(asked).toEqual([CONFIRMATION]);
+    expect(printedBefore).toEqual([CLAUDE_PLAN_NOTICE]);
+    expect(identities()).toEqual([ACCOUNT]);
+    const shown = flat(io.output());
+    expect(shown).toContain(
+      'Enrolling its organization sends the Claude Code sessions signed in to it to Acme, from any folder, and, where web chat capture is on, the replies in its claude.ai chats. The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
+    );
+    expect(shown).not.toContain('sends every Claude Code session');
+    expect(shown).not.toContain('does not know yet which AKA user');
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
+  });
+
+  it('says before it asks that a session outside an enrolled repository waits until the device knows who attached it', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+    const shown = flat(io.output());
+    expect(shown).toContain(UNTIL_USER_KNOWN);
+    expect(shown).not.toContain('sends no Claude Code session');
+    expect(shown.indexOf('does not know yet')).toBeLessThan(shown.indexOf('Nothing was enrolled.'));
+  });
+
+  it.each(['claude_max', 'claude_pro'])(
+    'shows the whole notice for a %s login, then asks, and enrolls nothing when the answer is no',
+    async (organizationType) => {
+      attach({ scope: fresh(), extra: webChat() });
+      knownMember();
+      claudeSignIn({ organizationType });
+      const before = stored();
+      const { io, asked, printedBefore } = answering('n');
+      expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CLAUDE_PLAN_NOTICE]);
+      expect(io.output()).toBe(`${CLAUDE_PLAN_NOTICE}Nothing was enrolled.\n`);
+      expect(io.errors()).toBe('');
+      expect(stored()).toEqual(before);
+    },
+  );
+
+  it('refuses without a terminal unless --yes, and writes nothing', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_pro' });
+    const before = stored();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(io.errors()).toContain('Run this on a terminal to confirm, or add --yes.');
+    expectNoPlanNotice(io);
+    expect(stored()).toEqual(before);
+    const yes = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT, '--yes'], deps(yes))).toBe(0);
+    expectNoPlanNotice(yes);
+    expect(identities()).toEqual([ACCOUNT]);
+  });
+
+  // The key and the plan are read before the address can be compared, so the
+  // guard holds before the first sync has told the device who attached it.
+  it('asks even before this device knows who attached it', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    claudeSignIn({ organizationType: 'claude_max' });
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expectNoPlanNotice(io);
+    expect(identities()).toEqual([]);
+  });
+
+  it('asks nothing for an account already enrolled for Claude Code sessions, on a terminal', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const before = stored();
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(asked).toEqual([]);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(io.output()).not.toContain('personal plan');
+    expect(stored()).toEqual(before);
+    expect(exits).toEqual([]);
+  });
+
+  it('asks nothing for an account already enrolled for Claude Code sessions, off a terminal and without --yes', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const before = stored();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(io.errors()).toBe('');
+    expect(stored()).toEqual(before);
+    expect(exits).toEqual([]);
+  });
+
+  it('still asks for an account stored without the marker, whose chats alone were enrolled', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const { io, asked } = answering('n');
+    expect(await runEnroll(['--account', ACCOUNT], deps(io))).toBe(1);
+    expect(asked).toEqual(['Enroll it anyway? [y/N]: ']);
+  });
+
+  it('asks nothing for a Team login, or for a key the login signed in now does not name', async () => {
+    attach({ scope: fresh(), extra: webChat() });
+    claudeSignIn();
+    expect(await runEnroll(['--account', ACCOUNT], deps(recorder()))).toBe(0);
+    claudeSignIn({ organizationType: 'claude_max' }, CLAUDE_MEMBER, randomUUID());
+    expect(await runEnroll(['--account', OTHER_ACCOUNT], deps(recorder()))).toBe(0);
+    expect(identities()).toEqual([ACCOUNT, OTHER_ACCOUNT]);
+  });
+});
+
+describe('aka unenroll --work-subscriptions', () => {
+  it('turns them off, forgets the learned work accounts, and says what still forwards', async () => {
+    attach({ scope: fresh([enrolled(), codingAccount()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(storedScope()).toEqual({
+      ...fresh([enrolled(), codingAccount()]),
+      workSubscriptions: 'off',
+    });
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+    const shown = flat(io.output());
+    for (const said of [
+      'Work subscriptions are off on this device for Acme.',
+      'Sessions signed in to a work subscription stop forwarding at their next event, from any folder outside an enrolled repository',
+      `${WORK_REPO} — \`aka unenroll --repo ${WORK_REPO}\` removes it`,
+      `${ACCOUNT} — \`aka unenroll --account ${ACCOUNT}\` removes it`,
+      "Your organization's model restrictions now apply only in enrolled repositories and to accounts enrolled by hand.",
+      'Nothing already sent is recalled. Rows recorded but not yet sent stay on this device, and are sent if you turn recognition back on and the same work account is recognised again.',
+      '`aka enroll --work-subscriptions` turns recognition back on.',
+    ]) {
+      expect(shown).toContain(said);
+    }
+  });
+
+  it('says so when they are already off, changes nothing, and forgets the learned accounts again', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const before = stored();
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toHaveLength(1);
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Recognition of work subscriptions is already off for Acme on this device. The work accounts it had learned were cleared again; nothing else changed.\n',
+    );
+    expect(io.output()).not.toContain('nothing changed.\n');
+    expect(stored()).toEqual(before);
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+  });
+
+  it('says only that nothing changed when they are already off and nothing was learned', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toBe(
+      'Recognition of work subscriptions is already off for Acme on this device; nothing changed.\n',
+    );
+  });
+
+  // The record's lock cannot be taken, so the learned accounts stay. The opt-out
+  // is stored all the same, and the command says what is left and what clears it.
+  it('says the learned accounts could not be cleared because the record is busy, when already off', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' }, extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(flat(io.output())).toContain(
+      'The work accounts this device had learned could not be cleared now because the record is busy; running this command again clears them.',
+    );
+    expect(io.output()).not.toContain('were cleared again');
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toHaveLength(1);
+    forgetSeam.fails = false;
+    const again = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(again))).toBe(0);
+    expect(again.output()).toContain('were cleared again');
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+  });
+
+  it('stores the opt-out and says the record is busy when turning them off now', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(exits).toEqual([]);
+    expect(storedScope()).toEqual({ ...fresh([enrolled()]), workSubscriptions: 'off' });
+    const shown = flat(io.output());
+    expect(shown).toContain('Work subscriptions are off on this device for Acme.');
+    expect(shown).toContain(
+      'The work accounts this device had learned could not be cleared now because the record is busy; running this command again clears them.',
+    );
+  });
+
+  it('does not call a record with nothing learned busy', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    forgetSeam.fails = true;
+    const io = recorder();
+    expect(await runUnenroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).not.toContain('busy');
+  });
+
+  it('keeps every other key and entry of the record as found', async () => {
+    const newer = {
+      ...fresh([enrolled()]),
+      builtBy: 'a newer build',
+      entries: [enrolled(), { kind: 'org', identity: 'example-org', enrolledAt: NOW }],
+    };
+    attach({ scope: newer });
+    expect(await runUnenroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual({ ...newer, workSubscriptions: 'off' });
+  });
+});
+
+describe('aka enroll --work-subscriptions', () => {
+  it('turns them back on, and says waiting rows are sent once their account is recognised again', async () => {
+    attach({ scope: { ...fresh([enrolled()]), workSubscriptions: 'off' } });
+    const io = recorder();
+    expect(await runEnroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([enrolled()]));
+    const shown = flat(io.output());
+    expect(shown).toContain('Work subscriptions are on again on this device for Acme.');
+    expect(shown).toContain(
+      'A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan), under the same email as your AKA account, sends everything it records from its first reply on, from any folder, with its folder, project and branch names.',
+    );
+    expect(shown).toContain(
+      "The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand.",
+    );
+    expect(shown).toContain(
+      'The first prompt of a new session, a session that uses an API key or another provider, a reply written before the device has confirmed the account, and the rest of a session whose organization changes follow the repository rule.',
+    );
+    expect(shown).not.toContain('own login file');
+    expect(shown).not.toMatch(/login file shows? the (?:plan|account)/);
+    expect(shown).toContain(
+      "A new Codex thread signed in with ChatGPT to a Business, Team, Enterprise or Edu workspace, under the same email as your AKA account, with its login saved in Codex's login file and OpenAI as the provider, sends everything it records, from any folder, with its folder, project and branch names. A resumed thread follows the repository rule: it is sent only from an enrolled repository.",
+    );
+    expect(shown).toContain(
+      "For Codex the device checks the same way, locally: it reads Codex's login file, the first line of the thread's own log and the environment variables that choose the account or provider, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or workspace id), though the token usage and tool calls read from that thread's log are sent with the rest of the activity of a recognised thread or of one signed in to a workspace you enroll by hand.",
+    );
+    // The Codex check waits for no first reply and reads no settings file.
+    const codexLines = io
+      .output()
+      .split('\n')
+      .filter((line) => line.includes('Codex'));
+    expect(codexLines).toHaveLength(3);
+    for (const line of codexLines) {
+      expect(line).not.toContain('first reply');
+      expect(line).not.toContain('settings');
+      expect(line).not.toContain('chatgpt:');
+    }
+    expect(shown).toContain(
+      'A Claude Code session signed in to a work account is recognised again at its next event. A Codex thread signed in to a work account is recognised again at its next event if it started while recognition was on, and not if it started while it was off.',
+    );
+    expect(shown).not.toContain('the next time a session signed in to it runs');
+    expect(shown).toContain(
+      'Rows recorded under a work account before you turned recognition off, and not yet sent, are sent once it is recognised again.',
+    );
+  });
+
+  it('clears a stored value this version does not know, which reads as off', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'paused' } });
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(fresh());
+  });
+
+  it('keeps every other key and entry of the record as found', async () => {
+    const newer = {
+      ...fresh([enrolled()]),
+      builtBy: 'a newer build',
+      entries: [enrolled(), { kind: 'org', identity: 'example-org', enrolledAt: NOW }],
+    };
+    attach({ scope: { ...newer, workSubscriptions: 'off' } });
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(storedScope()).toEqual(newer);
+  });
+
+  it('says so when they are already on, and changes nothing', async () => {
+    attach({ scope: fresh([enrolled()]) });
+    const before = stored();
+    const io = recorder();
+    expect(await runEnroll(['--work-subscriptions'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Recognition of work subscriptions is already on for Acme on this device; nothing changed.\n',
+    );
+    expect(stored()).toEqual(before);
+  });
+
+  it('writes nothing to the identity record', async () => {
+    attach({ scope: { ...fresh(), workSubscriptions: 'off' } });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const record = readFileSync(join(dataDirOf(base), 'attached-identity.json'), 'utf8');
+    expect(await runEnroll(['--work-subscriptions'], deps(recorder()))).toBe(0);
+    expect(readFileSync(join(dataDirOf(base), 'attached-identity.json'), 'utf8')).toBe(record);
+  });
+});
+
+describe('aka enroll and aka unenroll --work-subscriptions where there is no personal-device mode', () => {
+  it.each<[string, () => void, ManagedSettings | null]>([
+    ['an unattached machine', () => undefined, null],
+    [
+      'a machine-wide attachment',
+      () => {
+        attach({ mode: 'machine' });
+      },
+      null,
+    ],
+    [
+      'a managed machine-wide attachment',
+      () => {
+        attach({ mode: 'machine' });
+      },
+      governedBy(),
+    ],
+    [
+      'a managed machine that still holds a scoped credential',
+      () => {
+        attach({ scope: fresh([enrolled()]) });
+      },
+      governedBy(),
+    ],
+  ])(
+    '--work-subscriptions refuses on an unattached, machine-wide or managed machine and writes nothing (%s)',
+    async (_name, arrange, managedSettings) => {
+      arrange();
+      for (const run of [runEnroll, runUnenroll]) {
+        const before = stored();
+        const io = recorder();
+        expect(await run(['--work-subscriptions'], deps(io, { managedSettings }))).toBe(1);
+        expect(stored()).toEqual(before);
+        expect(io.output()).toBe('');
+      }
+      expect(settingsWrite.calls).toBe(0);
+    },
+  );
+
+  it('leaves the learned work accounts of a managed device alone', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(
+      await runUnenroll(['--work-subscriptions'], deps(io, { managedSettings: governedBy() })),
+    ).toBe(1);
+    expect(io.errors()).toContain(
+      'cannot be changed while an administrator manages its connection; re-attaching makes it machine-wide',
+    );
+    expect(readAttachedIdentity(dataDirOf(base))?.workAccounts.map((e) => e.identity)).toEqual([
+      OTHER_ACCOUNT,
+    ]);
+  });
+});
+
+describe('aka unenroll --account — work accounts this device validated', () => {
+  it('refuses a work account validated automatically and not enrolled by hand, naming the opt-out', async () => {
+    attach({ scope: fresh([enrolled()]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const before = stored();
+    const io = recorder();
+    expect(await runUnenroll(['--account', OTHER_ACCOUNT], deps(io))).toBe(1);
+    expect(flat(io.errors())).toContain(
+      `${OTHER_ACCOUNT} was validated automatically for Acme while this device is attached as its account; \`aka unenroll --work-subscriptions\` stops recognising work subscriptions on this device.`,
+    );
+    expect(stored()).toEqual(before);
+  });
+
+  it('removes the manual entry of a key also validated automatically, and says recognition continues', async () => {
+    attach({ scope: fresh([codingAccount(OTHER_ACCOUNT)]), extra: webChat() });
+    knownMember();
+    learn(OTHER_ACCOUNT);
+    const io = recorder();
+    expect(await runUnenroll(['--account', OTHER_ACCOUNT], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+    expect(io.output()).toContain(
+      'Automatic recognition of that account continues until `aka unenroll --work-subscriptions`.\n',
+    );
+  });
+
+  it('says sessions signed in to it stop forwarding, and what is already recorded stays', async () => {
+    attach({ scope: fresh([codingAccount()]), extra: webChat() });
+    const io = recorder();
+    expect(await runUnenroll(['--account', ACCOUNT], deps(io))).toBe(0);
+    expect(flat(io.output())).toContain(
+      'Sessions signed in to it stop forwarding at their next event; anything already recorded under it stays on this device, even inside enrolled repositories.',
+    );
+    expect(io.output()).not.toContain('Automatic recognition');
+  });
+});
+
+describe('aka enroll --list-detected — the Claude Code login', () => {
+  it('lists the organization signed in now, its plan hint and its state', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      `Claude Code — signed in now:\n  ${ACCOUNT}  Team or Enterprise plan  would validate\n`,
+    );
+  });
+
+  it.each<[string, Record<string, unknown>, boolean, string]>([
+    ['enrolled', fresh([codingAccount()]), false, 'enrolled'],
+    ['validated automatically', fresh(), true, 'validated automatically'],
+    [
+      'off',
+      { ...fresh(), workSubscriptions: 'off' },
+      false,
+      'would validate, but work subscriptions are off on this device',
+    ],
+  ])('says it is %s', async (_name, scope, learned, state) => {
+    attach({ scope, extra: webChat({ grant: true }) });
+    knownMember();
+    if (learned) learn(ACCOUNT);
+    claudeSignIn();
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`  ${ACCOUNT}  Team or Enterprise plan  ${state}\n`);
+  });
+
+  it('prints only the key and whether it counts off a terminal', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn({ organizationType: 'claude_max' });
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`Claude Code — signed in now:\n  ${ACCOUNT}  not-recognised\n`);
+    expect(io.output()).not.toContain('personal plan');
+  });
+
+  it('says there is no login file off a terminal too', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('Claude Code — signed in now:\n  none (no login file)\n');
+  });
+
+  it('says why no organization is named on a terminal, and only that none is off one', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    writeFileSync(join(claudeHome, '.claude.json'), '{}');
+    const interactive = recorder();
+    expect(await runEnroll(['--list-detected'], deps(interactive))).toBe(0);
+    expect(interactive.output()).toContain(
+      'Claude Code — signed in now:\n  none (not signed in)\n',
+    );
+    const piped = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+    expect(piped.output()).toContain('Claude Code — signed in now:\n  none\n');
+  });
+
+  it('--list-detected never prints the fixture email and writes nothing', async () => {
+    attach({ scope: fresh(), extra: webChat({ grant: true }) });
+    knownMember();
+    claudeSignIn({}, CLAUDE_MEMBER);
+    recordDetectedWebAccount(dataDirOf(base), ACCOUNT, SOURCE_TOOL.ClaudeAi);
+    const homeBefore = treeOf(base);
+    const claudeBefore = treeOf(claudeHome);
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    for (const address of [CLAUDE_MEMBER, SOMEONE_ELSE]) {
+      expect(io.output()).not.toContain(address);
+      expect(io.errors()).not.toContain(address);
+    }
+    expect(treeOf(base)).toEqual(homeBefore);
+    expect(treeOf(claudeHome)).toEqual(claudeBefore);
+    expect(settingsWrite.calls).toBe(0);
+  });
+});
+
+// The commands `aka status` prints are the ones a person copies and runs. Each
+// is run through the real argument parser, so a printed command the parser
+// refuses fails here, and a printed key that the command does not act on does too.
+describe('aka status — the commands it prints', () => {
+  const claudePaths = () => ({
+    home: claudeHome,
+    managedSettings: join(claudeHome, 'managed-settings.json'),
+  });
+
+  async function statusText(): Promise<string> {
+    const io = recorder();
+    await runStatus([], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      claudePaths: claudePaths(),
+      codexHome,
+    });
+    return io.output();
+  }
+
+  const printedCommands = (text: string): string[] =>
+    [...text.matchAll(/`(aka (?:enroll|unenroll)[^`]*)`/g)].flatMap((match) =>
+      match[1] === undefined ? [] : [match[1]],
+    );
+
+  async function runPrinted(
+    command: string,
+  ): Promise<{ code: number; io: ReturnType<typeof recorder> }> {
+    const [, verb, ...argv] = command.split(' ');
+    const io = recorder();
+    const code = await (verb === 'enroll' ? runEnroll : runUnenroll)(argv, deps(io));
+    return { code, io };
+  }
+
+  it.each<[string, () => void, string[]]>([
+    [
+      'a device with work subscriptions on',
+      () => {
+        attach({ scope: fresh() });
+      },
+      [WORK_SUBSCRIPTION_COMMANDS.off, 'aka enroll'],
+    ],
+    [
+      'a device with work subscriptions off',
+      () => {
+        attach({ scope: { ...fresh(), workSubscriptions: 'off' } });
+      },
+      [WORK_SUBSCRIPTION_COMMANDS.on],
+    ],
+    [
+      'a Claude Code login that shows no plan',
+      () => {
+        attach({ scope: fresh() });
+        knownMember();
+        claudeSignIn({ organizationType: undefined });
+      },
+      [`aka enroll --account ${ACCOUNT}`],
+    ],
+    [
+      'a Codex login that shows no plan',
+      () => {
+        attach({ scope: fresh() });
+        knownMember();
+        codexSignIn(undefined);
+      },
+      [`aka enroll --account ${CHATGPT_KEY}`],
+    ],
+  ])('prints commands the parser accepts for %s', async (_name, arrange, expected) => {
+    arrange();
+    const commands = printedCommands(await statusText());
+    for (const command of expected) expect(commands).toContain(command);
+    for (const command of commands) {
+      const { code, io } = await runPrinted(command);
+      expect(code, command).not.toBe(2);
+      expect(io.errors(), command).not.toContain('Usage: aka');
+    }
+  });
+
+  it('prints the same commands the two verbs are documented with', () => {
+    expect(WORK_SUBSCRIPTION_COMMANDS).toEqual({
+      off: 'aka unenroll --work-subscriptions',
+      on: 'aka enroll --work-subscriptions',
+    });
+  });
+
+  // The chats-only line tells a person to run the command again; running exactly
+  // that command marks the entry, and the answer is not "already enrolled".
+  it('marks an account entry stored without the marker when its printed command is run', async () => {
+    attach({ scope: fresh([enrolledAccount()]), extra: webChat() });
+    const printed = printedCommands(await statusText()).filter((command) =>
+      command.startsWith('aka enroll --account '),
+    );
+    expect(printed).toEqual([`aka enroll --account ${ACCOUNT}`]);
+    const { code, io } = await runPrinted(printed[0] ?? '');
+    expect(code).toBe(0);
+    expect(io.output()).not.toContain('Already enrolled');
+    expect(storedScope()).toEqual(fresh([{ ...enrolledAccount(), codingAgents: true }]));
+    expect(printedCommands(await statusText())).not.toContain(`aka enroll --account ${ACCOUNT}`);
+  });
+});
+
+describe('aka status — the Claude Code login, through the command', () => {
+  const claudePaths = () => ({
+    home: claudeHome,
+    managedSettings: join(claudeHome, 'managed-settings.json'),
+  });
+
+  async function statusText(
+    options: { interactive?: boolean; cwd?: string; paths?: boolean } = {},
+  ): Promise<string> {
+    const io = { ...recorder(), isInteractive: options.interactive ?? true };
+    const project = options.cwd;
+    await runStatus([], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      ...(options.paths === false ? {} : { claudePaths: claudePaths() }),
+      codexHome,
+      ...(project === undefined ? {} : { cwd: () => project }),
+    });
+    return io.output();
+  }
+
+  it('names the Claude Code login on a terminal, and collapses the line off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    claudeSignIn();
+    expect(await statusText()).toContain(
+      '  this login Claude Code — a work subscription for the attached user — its sessions forward from any folder\n',
+    );
+    const piped = await statusText({ interactive: false });
+    expect(piped).toContain('  this login details on an interactive terminal\n');
+    expect(piped).not.toContain('Claude Code —');
+  });
+
+  it('reads the login from the Claude home it is given, not the machine it runs on', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    expect(await statusText()).toContain('  this login Claude Code — login file not found\n');
+  });
+
+  it('reads the project settings layers of the working directory it is given', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    claudeSignIn();
+    const project = mkdtempSync(join(tmpdir(), 'aka-enroll-project-'));
+    try {
+      mkdirSync(join(project, '.claude'));
+      writeFileSync(
+        join(project, '.claude', 'settings.json'),
+        JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }),
+      );
+      expect(await statusText({ cwd: project })).toContain(
+        '  this login Claude Code — an API key or another provider is in use\n',
+      );
+    } finally {
+      removeTree(project);
+    }
+  });
+});
+
+describe('aka enroll --account chatgpt:', () => {
+  it('enrolls a ChatGPT workspace for Codex threads, with the coding-agent marker', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('business');
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([codexAccount()]));
+    const shown = io.output();
+    expect(shown).toContain(`Enrolling ${CHATGPT_KEY} (${CHATGPT_LABEL}) with Acme.\n`);
+    expect(shown).toContain('new Codex threads started while signed in to it');
+    expect(shown).toContain('from the next new thread');
+    expect(shown).toContain('A resumed thread');
+    expect(shown).not.toContain('has not seen Codex');
+    expect(shown).not.toContain('Web-chat capture');
+    expect(shown).not.toContain('claude.ai');
+  });
+
+  it('stores the key however it was typed', async () => {
+    attach({ scope: fresh() });
+    const io = recorder();
+    const typed = `  ChatGPT:${CODEX_WORKSPACE.toUpperCase()} `;
+    expect(await runEnroll(['--account', typed], deps(io))).toBe(0);
+    expect(identities()).toEqual([CHATGPT_KEY]);
+  });
+
+  it('says when no Codex login signed in now names the workspace', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(io.output()).toContain('has not seen Codex signed in to that workspace');
+  });
+
+  it('reads the login from the Codex home the environment names when it is given none', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('business');
+    vi.stubEnv('CODEX_HOME', codexHome);
+    const listed = recorder();
+    expect(await runEnroll(['--list-detected'], { ...deps(listed), codexHome: undefined })).toBe(0);
+    expect(listed.output().includes(`  ${CHATGPT_KEY}  workspace plan  would validate\n`)).toBe(
+      true,
+    );
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], { ...deps(io), codexHome: undefined })).toBe(
+      0,
+    );
+    expect(io.output().includes('has not seen Codex')).toBe(false);
+    expect(identities()).toEqual([CHATGPT_KEY]);
+  });
+
+  it('queues no earlier captures for it, as a ChatGPT web chat carries no workspace key', async () => {
+    attach({ scope: fresh(), extra: { ...webChat(), ...consent() } });
+    seed.answer = 3;
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(seed.calls).toEqual([]);
+    expect(io.output()).not.toContain('Queued');
+  });
+
+  it('adds the marker in place to a stored entry that lacks it', async () => {
+    const stale = { kind: 'account', identity: CHATGPT_KEY, enrolledAt: NOW };
+    attach({ scope: fresh([stale]) });
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(storedScope()).toEqual(fresh([{ ...stale, codingAgents: true }]));
+    expect(io.output()).toContain('new Codex threads started while signed in to it');
+    expect(io.output()).not.toContain('claude.ai');
+  });
+
+  it('changes nothing for a workspace already enrolled', async () => {
+    attach({ scope: fresh([codexAccount()]) });
+    const io = recorder();
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+    expect(identities()).toEqual([CHATGPT_KEY]);
+  });
+
+  describe('a key naming the current Codex login on a plan that is not a workspace plan', () => {
+    it('shows the whole notice, then asks before enrolling on a terminal, and enrolls on yes', async () => {
+      attach({ scope: fresh() });
+      knownMember();
+      codexSignIn('plus');
+      const { io, asked, printedBefore } = answering('y');
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
+      expect(identities()).toEqual([CHATGPT_KEY]);
+      expect(io.output().includes('Claude Code')).toBe(false);
+    });
+
+    it('enrolls nothing when the answer is no', async () => {
+      attach({ scope: fresh() });
+      knownMember();
+      codexSignIn('plus');
+      const before = stored();
+      const { io, asked, printedBefore } = answering('n');
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(1);
+      expect(asked).toEqual([CONFIRMATION]);
+      expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
+      expect(io.output()).toBe(`${CODEX_PLAN_NOTICE}Nothing was enrolled.\n`);
+      expect(io.errors()).toBe('');
+      expect(stored()).toEqual(before);
+    });
+
+    it('asks even before this device knows who attached it', async () => {
+      attach({ scope: fresh() });
+      codexSignIn('plus');
+      const io = { ...recorder(), isInteractive: false };
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(1);
+      expectNoPlanNotice(io);
+      expect(identities()).toEqual([]);
+    });
+
+    it('refuses without a terminal unless --yes, and writes nothing', async () => {
+      attach({ scope: fresh() });
+      knownMember();
+      codexSignIn('plus');
+      const before = stored();
+      const io = { ...recorder(), isInteractive: false };
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(1);
+      expect(io.errors()).toContain('Run this on a terminal to confirm, or add --yes.');
+      expectNoPlanNotice(io);
+      expect(stored()).toEqual(before);
+      const yes = { ...recorder(), isInteractive: false };
+      expect(await runEnroll(['--account', CHATGPT_KEY, '--yes'], deps(yes))).toBe(0);
+      expectNoPlanNotice(yes);
+      expect(identities()).toEqual([CHATGPT_KEY]);
+    });
+
+    it('asks nothing for a workspace already enrolled for Codex threads', async () => {
+      attach({ scope: fresh([codexAccount()]) });
+      knownMember();
+      codexSignIn('plus');
+      const io = { ...recorder(), isInteractive: false };
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+      expect(io.output()).toContain('Already enrolled with Acme; nothing changed.\n');
+      expect(exits).toEqual([]);
+    });
+
+    it('asks nothing for a workspace plan, or for a key the login signed in now does not name', async () => {
+      attach({ scope: fresh() });
+      knownMember();
+      codexSignIn('business');
+      expect(await runEnroll(['--account', CHATGPT_KEY], deps(recorder()))).toBe(0);
+      codexSignIn('plus');
+      const other = `chatgpt:${randomUUID()}`;
+      expect(await runEnroll(['--account', other], deps(recorder()))).toBe(0);
+      expect(identities()).toEqual([CHATGPT_KEY, other]);
+    });
+
+    describe('while a key, a token or a gateway is set for Codex', () => {
+      const vetoes: [string, string, string][] = [
+        ['a key', 'CODEX_API_KEY', randomUUID()],
+        ['a token', 'CODEX_ACCESS_TOKEN', randomUUID()],
+        ['a gateway address', 'OPENAI_BASE_URL', 'https://gateway.example.com/v1'],
+      ];
+
+      it.each(vetoes)(
+        'asks before enrolling it under %s, and enrolls on yes',
+        async (_n, name, value) => {
+          attach({ scope: fresh() });
+          knownMember();
+          codexSignIn('plus');
+          vi.stubEnv(name, value);
+          const { io, asked, printedBefore } = answering('y');
+          expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+          expect(asked).toEqual([CONFIRMATION]);
+          expect(printedBefore).toEqual([CODEX_PLAN_NOTICE]);
+          expect(identities()).toEqual([CHATGPT_KEY]);
+        },
+      );
+
+      it.each(vetoes)('needs --yes without a terminal under %s', async (_n, name, value) => {
+        attach({ scope: fresh() });
+        knownMember();
+        codexSignIn('plus');
+        vi.stubEnv(name, value);
+        const before = stored();
+        const io = { ...recorder(), isInteractive: false };
+        expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(1);
+        expect(io.errors().includes('Run this on a terminal to confirm, or add --yes.')).toBe(true);
+        expectNoPlanNotice(io);
+        expect(stored()).toEqual(before);
+        const yes = { ...recorder(), isInteractive: false };
+        expect(await runEnroll(['--account', CHATGPT_KEY, '--yes'], deps(yes))).toBe(0);
+        expect(identities()).toEqual([CHATGPT_KEY]);
+      });
+
+      it('asks nothing for a workspace plan, and does not say the device has not seen the login', async () => {
+        attach({ scope: fresh() });
+        knownMember();
+        codexSignIn('business');
+        vi.stubEnv('CODEX_API_KEY', randomUUID());
+        const io = recorder();
+        expect(await runEnroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+        expect(io.output().includes('has not seen Codex')).toBe(false);
+        expect(identities()).toEqual([CHATGPT_KEY]);
+      });
+
+      it('lists the login with its plan hint, and says why it does not count', async () => {
+        attach({ scope: fresh() });
+        knownMember();
+        codexSignIn('plus');
+        vi.stubEnv('CODEX_API_KEY', randomUUID());
+        const io = recorder();
+        expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+        expect(
+          io
+            .output()
+            .includes(
+              `Codex — signed in now:\n  ${CHATGPT_KEY}  not a workspace plan  an API key or another provider is in use\n`,
+            ),
+        ).toBe(true);
+        const piped = { ...recorder(), isInteractive: false };
+        expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+        expect(
+          piped.output().includes(`Codex — signed in now:\n  ${CHATGPT_KEY}  not-recognised\n`),
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('is undone by aka unenroll --account, like any entry enrolled by hand', async () => {
+    attach({ scope: fresh() });
+    expect(await runEnroll(['--account', CHATGPT_KEY], deps(recorder()))).toBe(0);
+    expect(await runUnenroll(['--account', CHATGPT_KEY], deps(recorder()))).toBe(0);
+    expect(identities()).toEqual([]);
+  });
+
+  it('is taken out by aka unenroll --account naming Codex threads, and says nothing of chats', async () => {
+    attach({ scope: fresh([codexAccount()]) });
+    const io = recorder();
+    expect(await runUnenroll(['--account', CHATGPT_KEY], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+    const shown = io.output();
+    expect(
+      shown.includes(
+        `Unenrolled ${CHATGPT_KEY}. From now on, Codex threads signed in to it are not sent to Acme by this entry.\n`,
+      ),
+    ).toBe(true);
+    expect(shown.includes('chats')).toBe(false);
+    expect(shown.includes('claude.ai')).toBe(false);
+  });
+
+  it('is taken out by aka unenroll --account from an entry stored in another case, typed as stored', async () => {
+    const stored = `chatgpt:${CODEX_WORKSPACE.toUpperCase()}`;
+    attach({ scope: fresh([codexAccount(stored)]) });
+    const io = recorder();
+    expect(await runUnenroll(['--account', stored], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          `Unenrolled ${stored}. From now on, Codex threads signed in to it are not sent to Acme by this entry.\n`,
+        ),
+    ).toBe(true);
+  });
+
+  it('is taken out by aka unenroll --account from an entry stored under a key enroll refuses, and worded as Codex threads', async () => {
+    attach({ scope: fresh([codexAccount('chatgpt:payments')]) });
+    const io = recorder();
+    expect(await runUnenroll(['--account', 'chatgpt:payments'], deps(io))).toBe(0);
+    expect(identities()).toEqual([]);
+    expect(
+      io
+        .output()
+        .startsWith(
+          'Unenrolled chatgpt:payments. From now on, Codex threads signed in to it are not sent to Acme by this entry.\n',
+        ),
+    ).toBe(true);
+  });
+
+  it('names both key forms when it refuses a key', async () => {
+    attach({ scope: fresh() });
+    const io = recorder();
+    expect(await runEnroll(['--account', 'payments'], deps(io))).toBe(1);
+    expect(io.errors()).toContain('claude:<organization-id>');
+    expect(io.errors()).toContain('chatgpt:<workspace-id>');
+  });
+
+  it('names a ChatGPT workspace in the usage text of both verbs', async () => {
+    const enrollUsage = recorder();
+    expect(await runEnroll(['--everything'], deps(enrollUsage))).toBe(2);
+    expect(enrollUsage.errors()).toContain('chatgpt:workspace-id');
+    const unenrollUsage = recorder();
+    expect(await runUnenroll(['--everything'], deps(unenrollUsage))).toBe(2);
+    expect(unenrollUsage.errors()).toContain('chatgpt:workspace-id');
+  });
+});
+
+describe('aka enroll --list-detected — the Codex login', () => {
+  it('lists the workspace signed in now, its plan hint and its state', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('business');
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    const shown = io.output();
+    expect(shown).toContain('Codex — signed in now:\n');
+    expect(shown).toContain(`  ${CHATGPT_KEY}  workspace plan  would validate\n`);
+  });
+
+  it.each<[string, Record<string, unknown>, boolean, string]>([
+    ['enrolled', fresh([codexAccount()]), false, 'enrolled'],
+    ['validated automatically', fresh(), true, 'validated automatically'],
+    [
+      'off',
+      { ...fresh(), workSubscriptions: 'off' },
+      false,
+      'would validate, but work subscriptions are off on this device',
+    ],
+  ])('says it is %s', async (_name, scope, learned, state) => {
+    attach({ scope });
+    knownMember();
+    if (learned) learn(CHATGPT_KEY);
+    codexSignIn('business');
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`  ${CHATGPT_KEY}  workspace plan  ${state}\n`);
+  });
+
+  it('gives the plan hint of a login that is not on a workspace plan, with its reason', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('plus');
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`  ${CHATGPT_KEY}  not a workspace plan  not a workspace plan\n`);
+  });
+
+  // A coding agent's own terminal output is recorded, so off a terminal no reason is
+  // printed: a personal plan reads the same as any other login that does not count.
+  it('prints only the key and whether it counts off a terminal', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('plus');
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(`Codex — signed in now:\n  ${CHATGPT_KEY}  not-recognised\n`);
+    expect(io.output()).not.toContain('not a workspace plan');
+  });
+
+  it('never prints the login address or the plan string, and writes nothing', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const login = codexSignIn('business');
+    const homeBefore = treeOf(base);
+    const codexBefore = treeOf(codexHome);
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    const shown = io.output() + io.errors();
+    expect(shown.includes(CLAUDE_MEMBER)).toBe(false);
+    expect(shown.includes('business')).toBe(false);
+    for (const secret of [login.jwt.token, ...login.secrets]) {
+      expect(shown.includes(secret)).toBe(false);
+    }
+    expect(treeOf(base)).toEqual(homeBefore);
+    expect(treeOf(codexHome)).toEqual(codexBefore);
+    expect(settingsWrite.calls).toBe(0);
+  });
+
+  it('says there is no login file when Codex has none', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('Codex — signed in now:\n  none (no login file)\n');
+  });
+
+  it('says why no login is named on a terminal, and only that none is off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const interactive = recorder();
+    expect(await runEnroll(['--list-detected'], deps(interactive))).toBe(0);
+    expect(interactive.output()).toContain(
+      'Codex — signed in now:\n  none (an API key or another provider is in use)\n',
+    );
+    const piped = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+    expect(piped.output()).toContain('Codex — signed in now:\n  none\n');
+  });
+
+  it('says there is no login file off a terminal too', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const io = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain('Codex — signed in now:\n  none (no login file)\n');
+  });
+
+  it('says a login file that is not a ChatGPT login cannot be read on a terminal, and only that none is named off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    writeCodexAuth(codexHome, {
+      accountId: CODEX_WORKSPACE,
+      email: CLAUDE_MEMBER,
+      authMode: 'apikey',
+    });
+    const interactive = recorder();
+    expect(await runEnroll(['--list-detected'], deps(interactive))).toBe(0);
+    expect(interactive.output()).toContain(
+      'Codex — signed in now:\n  none (not a ChatGPT login this device can read)\n',
+    );
+    const piped = { ...recorder(), isInteractive: false };
+    expect(await runEnroll(['--list-detected'], deps(piped))).toBe(0);
+    expect(piped.output()).toContain('Codex — signed in now:\n  none\n');
+  });
+
+  it('reads a login file that is not a ChatGPT login as a veto while a key is set', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    writeCodexAuth(codexHome, {
+      accountId: CODEX_WORKSPACE,
+      email: CLAUDE_MEMBER,
+      authMode: 'apikey',
+    });
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], deps(io))).toBe(0);
+    expect(io.output()).toContain(
+      'Codex — signed in now:\n  none (an API key or another provider is in use)\n',
+    );
+  });
+
+  it('reads a Codex home that cannot be used as a veto, not as no login file, while a key is set', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const notADirectory = join(work, 'codex-home-is-a-file');
+    writeFileSync(notADirectory, '');
+    vi.stubEnv('CODEX_HOME', notADirectory);
+    vi.stubEnv('CODEX_API_KEY', randomUUID());
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], { ...deps(io), codexHome: undefined })).toBe(0);
+    expect(io.output()).toContain(
+      'Codex — signed in now:\n  none (an API key or another provider is in use)\n',
+    );
+  });
+});
+
+describe('aka status — the Codex login, through the command', () => {
+  async function statusText(
+    options: { interactive?: boolean; codexHome?: boolean } = {},
+  ): Promise<string> {
+    const io = { ...recorder(), isInteractive: options.interactive ?? true };
+    await runStatus([], {
+      base,
+      prompter: io,
+      managedSettings: null,
+      claudePaths: { home: claudeHome, managedSettings: join(claudeHome, 'managed-settings.json') },
+      ...(options.codexHome === false ? {} : { codexHome }),
+    });
+    return io.output();
+  }
+
+  it('names the Codex login on a terminal, and collapses the line off one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('business');
+    expect(await statusText()).toContain(
+      'Codex — a work subscription for the attached user — its new threads forward from any folder\n',
+    );
+    const piped = await statusText({ interactive: false });
+    expect(piped).toContain('  this login details on an interactive terminal\n');
+    expect(piped).not.toContain('Codex —');
+  });
+
+  it('lines the Codex login up under the Claude Code one', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    claudeSignIn();
+    codexSignIn('business');
+    expect(await statusText()).toContain(
+      '  this login Claude Code — a work subscription for the attached user — its sessions forward from any folder\n' +
+        '             Codex — a work subscription for the attached user — its new threads forward from any folder\n',
+    );
+  });
+
+  it('reads the login from the Codex home it is given, not the machine it runs on', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    expect(await statusText()).toContain('Codex — login file not found\n');
+  });
+
+  it('resolves the Codex home from the Codex environment when it is given none', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    codexSignIn('business');
+    vi.stubEnv('CODEX_HOME', codexHome);
+    expect(await statusText({ codexHome: false })).toContain(
+      'Codex — a work subscription for the attached user — its new threads forward from any folder\n',
+    );
+  });
+
+  it('prints the Codex line, and --list-detected the same finding, when CODEX_HOME is not a usable directory', async () => {
+    attach({ scope: fresh() });
+    knownMember();
+    const notADirectory = join(work, 'codex-home-is-a-file');
+    writeFileSync(notADirectory, '');
+    vi.stubEnv('CODEX_HOME', notADirectory);
+    expect(await statusText({ codexHome: false })).toContain('Codex — login file not found\n');
+    const io = recorder();
+    expect(await runEnroll(['--list-detected'], { ...deps(io), codexHome: undefined })).toBe(0);
+    expect(io.output()).toContain('Codex — signed in now:\n  none (no login file)\n');
   });
 });
 

@@ -1017,6 +1017,15 @@ describe('the refusal that asks for a mode', () => {
     expect(ATTACH_MODE_REQUIRED).toMatch(/reload the page/i);
     expect(ATTACH_MODE_REQUIRED).toMatch(/personal or an organization device/i);
   });
+
+  // A personal device's key sends enrolled accounts and recognised work
+  // subscriptions as well as enrolled repositories, so the refusal says what the
+  // key may make the machine, not which activity it limits it to.
+  it('says the key it found may make the machine a personal device', () => {
+    expect(ATTACH_MODE_REQUIRED).toBe(
+      'This machine already holds an access key that may make it a personal device (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.',
+    );
+  });
 });
 
 describe('detachFromControlPlane', () => {
@@ -1044,5 +1053,13 @@ describe('the input', () => {
     expect(res.error).toContain("'mode'");
     expectNoEchoOf(res.error, KEY);
     expect(deployment.received).toEqual([]);
+  });
+});
+
+describe('what a personal-device attach writes about work subscriptions', () => {
+  it('writes no work-subscriptions field: attaching turns nothing off', async () => {
+    await attachScoped();
+    expect(storedSettings().attachmentScope).toEqual(freshFor(deployment.origin));
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
   });
 });

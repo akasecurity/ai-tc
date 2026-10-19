@@ -31,6 +31,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { CLAUDE_ACCOUNT_ENV_NAMES } from '@akasecurity/plugin-sdk/account';
 import type { AttachmentMode } from '@akasecurity/schema';
 import {
   attachmentModeOf,
@@ -157,7 +158,9 @@ const NEEDS_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, ' +
+  'from Claude Code and Codex sessions signed in to a work subscription, and from an account you ' +
+  'enroll by hand (its Claude Code or Codex sessions and claude.ai chat replies), or with ' +
   '--machine to send activity from anywhere on this machine. Nothing was changed.';
 // What a failed save says when it put the earlier credential file back, and what
 // it says when it did not, by how it did not.
@@ -184,7 +187,7 @@ const MANAGEMENT_CHANGED_WHILE_WAITING =
   'waited, so the attachment was not written. Nothing was changed on this machine; run the ' +
   'command again.';
 const NOTHING_CHANGED = ' Nothing was changed on this machine.';
-const SCOPED_HISTORY = 'Send unsent activity from the repositories you enroll? [y/N]: ';
+const SCOPED_HISTORY = 'Send unsent activity from what you enroll? [y/N]: ';
 const MACHINE_HISTORY = "Send this machine's unsent activity? [y/N]: ";
 
 // What a personal device still sends, in the one sentence every surface uses
@@ -195,7 +198,8 @@ const flat = (text: string): string => text.replace(/\s+/g, ' ');
 const REPORT_SENTENCE = (policy: string): string =>
   'Whenever a session starts anywhere on this machine, in a repository or not ' +
   `(a browser chat included), the machine pulls ${policy} policy (at most every 15 minutes) ` +
-  'and sends it a device report (at most hourly): a device identifier, host name, ' +
+  'and its sighting key (when none is stored or the stored one is a day old) and sends it a ' +
+  'device report (at most hourly): a device identifier, host name, ' +
   'versions, detection packs, policy counts, finding counts and dates for everything ' +
   'recorded on the machine, and, when the machine is attached as a personal device, the ' +
   'fact that it is one. Where a scan is available (the coding-agent plugins, not a ' +
@@ -317,6 +321,11 @@ function harness(script: Script) {
   const who = script.who === undefined ? ANA : script.who;
   const deps: AttachDeps = {
     base,
+    // Named so a status read finds no login file under the developer's own home.
+    claudePaths: {
+      home: join(base, 'claude-home'),
+      managedSettings: join(base, 'claude-managed-settings.json'),
+    },
     prompter: io,
     // A getter, so a case can change the overlay while an attach is in flight.
     get managedSettings(): ManagedSettings | null {
@@ -454,7 +463,8 @@ const GRANT = {
 const CREDENTIAL_NOT_SAVED =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
   "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
+  'attached again with `aka attach`, though Claude Code and Codex sessions of a work subscription ' +
+  'it had recognised may still be sent. Run `aka attach` again before enrolling a repository.';
 
 /** Settings that say attached to ENDPOINT, with `extra` beside them and no credential file written. */
 function attachedSettings(extra: Record<string, unknown>): void {
@@ -533,6 +543,12 @@ describe('parseAttachArgs: the mode flags', () => {
     expect(h.errors()).toContain(
       '  --scoped   A personal device: send activity only from the repositories you',
     );
+    expect(flat(h.errors())).toContain(
+      "--scoped A personal device: send activity only from the repositories you enroll with `aka enroll`, from Claude Code and Codex sessions signed in to a work subscription (a Claude Team or Enterprise plan, or a ChatGPT Business, Team, Enterprise or Edu plan) under your AKA account's email (`aka unenroll --work-subscriptions` stops those), and from an account you enroll by hand with `aka enroll --account`: its Claude Code or Codex sessions and the replies in its claude.ai chats.",
+    );
+    // Only the ChatGPT workspace plans count, so the usage never names a service account.
+    expect(h.errors()).not.toMatch(/service account|enterprise_cbp_automation/i);
+    expect(h.errors()).not.toContain('none is sent until you enroll one');
     expect(h.errors()).toContain(
       '  --machine  A machine your organization owns: send activity from anywhere on\n' +
         '             this machine.',
@@ -745,14 +761,43 @@ describe('the personal-device question', () => {
     expect(flat(h.output())).toContain(REPORT_SENTENCE("your organization's"));
     expect(flat(h.output())).not.toContain(PREVIOUS_REPORT_SENTENCE("your organization's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(h.output()).not.toContain(phrase);
+    expect(flat(h.output())).toContain(
+      "A personal device sends activity from the repositories you enroll with `aka enroll`. It also sends everything from Claude Code sessions signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account, and from those signed in to an account you enroll by hand with `aka enroll --account`, from their first reply on, from any folder, with that folder's project and branch names; that account's claude.ai chat replies go too. A new Codex session signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email, or to a workspace you enroll by hand, sends everything it records too, from any folder, with that folder's project and branch names. Nothing else is sent as activity. It checks for a work subscription on the device: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand. For Codex it reads Codex's login file, the session's own log and the environment variables that choose the account or provider, and sends none of it either, though the token usage and tool calls read from that log are sent with the rest of the activity of a recognised session or of one signed in to a workspace you enroll by hand. To send only from what you enroll, run `aka unenroll --work-subscriptions` after attaching.",
+    );
+    // Only the ChatGPT workspace plans count, so the prompt never names a service account.
+    expect(h.output()).not.toMatch(/service account|enterprise_cbp_automation/i);
+    expect(flat(h.output())).not.toContain('the environment that choose');
+    expect(h.output()).not.toContain('none until you enroll one');
+    expect(h.output()).not.toContain('own login file');
     expect(h.output()).toContain(
       '  A machine your organization owns sends activity from anywhere on this',
     );
+    expect(flat(h.output())).toContain(
+      'On a personal device, the background sync also asks the deployment which account its key belongs to, and asks again at later syncs until the device has an answer; syncs that overlap can each send one.',
+    );
+    expect(flat(h.output())).not.toMatch(/asks (?:the|that) deployment once\b/);
     expect(h.output()).not.toContain('Nothing is sent');
     expect(h.output()).not.toContain('schedule');
     expect(h.output()).not.toContain('every project');
     expect(modeOnDisk()).toBe('scoped');
     expect(storedSettings().attachmentScope).toEqual(FRESH);
+  });
+
+  it('prints the personal-device paragraph in lines of similar width', async () => {
+    const h = harness({ interactive: true, answers: [KEY_1, 'y'] });
+
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+
+    const lines = h.output().split('\n');
+    const first = lines.indexOf(
+      '  A personal device sends activity from the repositories you enroll with',
+    );
+    const last = lines.indexOf('  session start also checks it for device commands.');
+    expect(first).toBeGreaterThan(-1);
+    expect(last).toBeGreaterThan(first);
+    const paragraph = lines.slice(first, last + 1);
+    expect(paragraph.every((line) => line.length <= 80)).toBe(true);
+    expect(paragraph.slice(0, -1).every((line) => line.length >= 66)).toBe(true);
   });
 
   it('is asked once, after the browser path has confirmed the organization', async () => {
@@ -966,10 +1011,11 @@ describe('widening a personal device with --machine', () => {
       `This machine is attached to ${ENDPOINT} as a personal device: activity is`,
     );
     expect(h.output()).toContain(
-      'sent only from the repositories enrolled on it. With --machine, activity from',
-    );
-    expect(h.output()).toContain(
-      'anywhere on this machine is sent, and the enrolled list is cleared.',
+      'sent only from the repositories enrolled on it, from Claude Code and Codex\n' +
+        'sessions signed in to a work subscription, and from an account enrolled by\n' +
+        'hand (its Claude Code or Codex sessions and claude.ai chat replies). With\n' +
+        '--machine, activity from anywhere on this machine is sent, and the enrolled\n' +
+        'list is cleared.',
     );
     expect(h.output()).not.toContain('every project');
     expect(storedCredential()).toMatchObject({
@@ -3307,7 +3353,7 @@ describe('aka detach', () => {
 });
 
 describe('what an attach says', () => {
-  it('says on a personal device that only enrolled repositories are sent, and how to enroll one', async () => {
+  it('says on a personal device which activity is sent, and how to enroll a repository', async () => {
     const h = harness({ interactive: false, stdin: KEY_1 });
 
     await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
@@ -3315,19 +3361,23 @@ describe('what an attach says', () => {
     const said = h.output();
     expect(said).toContain(`Attached to ${ENDPOINT} as a personal device.`);
     expect(said).toContain(
-      'Activity is sent to that deployment only from repositories you enroll, and',
+      'Activity is sent to that deployment from repositories you enroll, and the Data',
     );
     expect(said).not.toContain('Only activity');
     expect(said).toContain(
       'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
     );
     expect(said).not.toContain('Everything else this machine records');
-    expect(said).toContain(
-      'anywhere else stays on this machine. A command you run inside an enrolled',
+    expect(flat(said)).toContain(
+      "Activity anywhere else stays on this machine. A command you run inside an enrolled repository is sent as that repository's activity, even when it reads files elsewhere.",
     );
-    expect(said).toContain(
-      "repository is sent as that repository's activity, even when it reads files",
+    expect(flat(said)).toContain(
+      "A Claude Code session signed in to a work subscription (a Claude Team or Enterprise plan) under the same email as your AKA account also sends everything it records from its first reply on, from any folder, with that folder's project and branch names. The device checks that locally: it reads Claude Code's login file, the session's own log, and the settings and environment that choose the account, and compares the signed-in email with your AKA account. The check sends none of it (no email, plan or account id), though the token usage and tool calls read from that same log are sent with the rest of the activity of a recognised session or of one signed in to an account you enroll by hand. A new Codex session signed in with ChatGPT to a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under the same email also sends everything it records, from any folder, with that folder's project and branch names. The device checks that the same way, from Codex's login file, the session's own log and the environment variables that choose the account or provider, and the check sends none of it either, though the token usage and tool calls read from that log are sent with the rest of the activity of a recognised session or of one signed in to a workspace you enroll by hand. `aka unenroll --work-subscriptions` stops that recognition on this device, and only that. A Claude Code session signed in to an account you enroll by hand with `aka enroll --account` is sent too, from its first reply on, and so are the replies in that account's claude.ai chats where web chat capture is on. A new Codex session signed in to a ChatGPT workspace you enroll the same way is sent too, from any folder; `aka unenroll --account` takes an account out. Activity anywhere else stays on this machine.",
     );
+    // Only the ChatGPT workspace plans count, so the summary never names a service account.
+    expect(said).not.toMatch(/service account|enterprise_cbp_automation/i);
+    expect(flat(said)).not.toContain('the environment that choose');
+    expect(said).not.toContain('own login file');
     expect(flat(said)).toContain(REPORT_SENTENCE("that deployment's"));
     expect(flat(said)).not.toContain(PREVIOUS_REPORT_SENTENCE("that deployment's"));
     for (const phrase of REPORT_OLD_PHRASES) expect(said).not.toContain(phrase);
@@ -3350,22 +3400,49 @@ describe('what an attach says', () => {
         '  organization  Example Org',
         '  you           member-17',
         '',
-        'Activity is sent to that deployment only from repositories you enroll, and',
-        'the Data Shares register a scan records goes only for an enrolled',
-        'repository — destinations and call sites, never source text. Activity',
-        'anywhere else stays on this machine. A command you run inside an enrolled',
-        "repository is sent as that repository's activity, even when it reads files",
-        'elsewhere.',
+        'Activity is sent to that deployment from repositories you enroll, and the Data',
+        'Shares register a scan records goes only for an enrolled repository —',
+        'destinations and call sites, never source text. A Claude Code session signed',
+        'in to a work subscription (a Claude Team or Enterprise plan) under the same',
+        'email as your AKA account also sends everything it records from its first',
+        "reply on, from any folder, with that folder's project and branch names. The",
+        "device checks that locally: it reads Claude Code's login file, the session's",
+        'own log, and the settings and environment that choose the account, and',
+        'compares the signed-in email with your AKA account. The check sends none of',
+        'it (no email, plan or account id), though the token usage and tool calls read',
+        'from that same log are sent with the rest of the activity of a recognised',
+        'session or of one signed in to an account you enroll by hand. A new Codex',
+        'session signed in with ChatGPT to a work subscription (a ChatGPT Business,',
+        'Team, Enterprise or Edu plan) under the same email also sends everything it',
+        "records, from any folder, with that folder's project and branch names. The",
+        "device checks that the same way, from Codex's login file, the session's own",
+        'log and the environment variables that choose the account or provider, and',
+        'the check sends none of it either, though the token usage and tool calls read',
+        'from that log are sent with the rest of the activity of a recognised session',
+        'or of one signed in to a workspace you enroll by hand.',
+        '`aka unenroll --work-subscriptions` stops that recognition on this device, and',
+        'only that. A Claude Code session signed in to an account you enroll by hand',
+        'with `aka enroll --account` is sent too, from its first reply on, and so are',
+        "the replies in that account's claude.ai chats where web chat capture is on. A",
+        'new Codex session signed in to a ChatGPT workspace you enroll the same way is',
+        'sent too, from any folder; `aka unenroll --account` takes an account out.',
+        'Activity anywhere else stays on this machine. A command you run inside an',
+        "enrolled repository is sent as that repository's activity, even when it reads",
+        'files elsewhere.',
         'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
         '',
         'Whenever a session starts anywhere on this machine, in a repository or not',
         "(a browser chat included), the machine pulls that deployment's policy (at",
-        'most every 15 minutes) and sends it a device report (at most hourly): a',
-        'device identifier, host name, versions, detection packs, policy counts,',
-        'finding counts and dates for everything recorded on the machine, and, when',
-        'the machine is attached as a personal device, the fact that it is one. Where',
-        'a scan is available (the coding-agent plugins, not a browser chat), the same',
-        'session start also checks it for device commands.',
+        'most every 15 minutes) and its sighting key (when none is stored or the stored',
+        'one is a day old) and sends it a device report (at most hourly): a device',
+        'identifier, host name, versions, detection packs, policy counts, finding counts',
+        'and dates for everything recorded on the machine, and, when the machine is',
+        'attached as a personal device, the fact that it is one. Where a scan is',
+        'available (the coding-agent plugins, not a browser chat), the same session',
+        'start also checks it for device commands.',
+        'On a personal device, the background sync also asks the deployment which account',
+        'its key belongs to, and asks again at later syncs until the device has an',
+        'answer; syncs that overlap can each send one.',
         'Re-attaching with an aka older than this one, from its command line or its',
         'dashboard, makes this machine machine-wide.',
         '',
@@ -3457,12 +3534,23 @@ describe('what an attach says', () => {
     expect(said).toContain(
       'This machine is attaching as a personal device: AKA sends the activity of',
     );
+    expect(flat(said)).toContain(
+      "the repositories you enroll with `aka enroll`, of Claude Code and Codex sessions signed in to a recognised work subscription or to an account you enroll by hand with `aka enroll --account`, and of that account's claude.ai chat replies, and none from anywhere else.",
+    );
     // The caveat the success text keeps is kept here too.
     expect(said).toContain('activity, even when it reads files elsewhere.');
+    expect(flat(said)).toContain(
+      'It can also send some of what an enrolled repository or account recorded here before you enrolled it.',
+    );
+    expect(flat(said)).toContain(
+      'Saying no does not stop live sending from what you enroll or from recognised work subscriptions — that is part of being attached. It means nothing an enrolled repository or account recorded before you enrolled it is sent, apart from what Claude Code sessions of a recognised work subscription or of an account you enroll by hand have already sent: they send everything they record from their first reply on (the first prompt of a new session and a reply written before the device has confirmed the account follow the repository rule), whatever you answer here. Anything a live send from any of them could not deliver is kept and sent later either way, encoded as a live send is.',
+    );
+    expect(flat(said)).not.toMatch(/login file shows? the (?:plan|account)/);
+    expect(flat(said)).not.toContain('as they happen');
     expect(said).not.toContain('12 days');
     expect(said).not.toContain('40 sessions');
     expect(said).toContain(
-      'Unsent activity from the repositories you enroll is sent in the background,',
+      'Unsent activity from the repositories and accounts you enroll is sent in the background,',
     );
     expect(storedSettings().historySyncConsent).toMatchObject({ endpoint: ENDPOINT });
   });
@@ -3744,5 +3832,47 @@ describe('what an attach prints of strings it did not write', () => {
     expect(exits).toEqual([1]);
     expect(h.errors()).toContain('home[2J');
     expect(h.errors()).not.toContain(ESC);
+  });
+});
+
+describe('a personal-device attach and aka status, with work subscriptions', () => {
+  // A key, a provider flag or a desktop login in the developer's own environment
+  // would change what the status line reads.
+  beforeEach(() => {
+    for (const name of CLAUDE_ACCOUNT_ENV_NAMES) vi.stubEnv(name, '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('writes no work-subscriptions field: attaching turns nothing off', async () => {
+    const h = harness({ interactive: false, stdin: KEY_1 });
+    await runAttach(['--url', ENDPOINT, '--scoped', '--key-stdin', '--no-sync-history'], h.deps);
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).toEqual(FRESH);
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+
+  it('writes no work-subscriptions field on the browser path either', async () => {
+    const h = harness({
+      interactive: true,
+      answers: ['y', 'y'],
+      device: { kind: 'attached', apiKey: KEY_1, identity: ANA },
+    });
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], h.deps);
+    expect(exits).toEqual([]);
+    expect(storedSettings().attachmentScope).not.toHaveProperty('workSubscriptions');
+  });
+
+  it('aka status names the Claude Code login on a terminal, and collapses the line off one', async () => {
+    attachedScoped(FRESH);
+    const tty = harness({ interactive: true });
+    await runStatus([], tty.deps);
+    expect(tty.output()).toContain('  this login Claude Code — ');
+    const piped = harness({ interactive: false });
+    await runStatus([], piped.deps);
+    expect(piped.output()).toContain('  this login details on an interactive terminal\n');
+    expect(piped.output()).not.toContain('Claude Code —');
   });
 });

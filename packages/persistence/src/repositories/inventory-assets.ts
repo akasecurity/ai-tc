@@ -32,6 +32,7 @@ import {
   DetectionCategory,
   HARNESS,
   HarnessId as HarnessIdSchema,
+  listMetaOf,
   PROJECT_FINDINGS_WINDOW_DAYS,
   Severity,
   SOURCE_TOOL,
@@ -253,7 +254,7 @@ function toAssetSummary(row: AssetRow): AssetSummary {
     name: row.name,
     sub: row.sub ?? '',
     flags: safeJson(row.flagsJson, [] as Flag[]),
-    meta: safeJson<Record<string, unknown>>(row.metaJson, {}),
+    meta: listMetaOf(row.assetType, safeJson<Record<string, unknown>>(row.metaJson, {})),
   };
   if (row.assetType === 'mcp' && row.effectiveTrust) summary.trust = row.effectiveTrust;
   return summary;

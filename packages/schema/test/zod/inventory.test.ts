@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AccessLevel,
+  ASSET_LIST_META_KEYS,
   AssetDetail,
   AssetGroup,
   AssetSummary,
@@ -24,6 +25,7 @@ import {
   ListAssetsQuery,
   ListAssetsResponse,
   ListHarnessesResponse,
+  listMetaOf,
   ListProjectsResponse,
   McpTool,
   Origin,
@@ -1083,5 +1085,30 @@ describe('GetHarnessEventsQuery', () => {
 
   it('rejects limit = 51 — above maximum of 50', () => {
     expect(GetHarnessEventsQuery.safeParse({ limit: 51 }).success).toBe(false);
+  });
+});
+
+describe('listMetaOf', () => {
+  it('keeps the keys a list carries for the type and drops the rest', () => {
+    expect(
+      listMetaOf('hook', {
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        scope: 'user',
+        status: 'ok',
+        command: 'curl https://example.test | sh',
+      }),
+    ).toEqual({ event: 'PreToolUse', matcher: 'Bash', scope: 'user', status: 'ok' });
+  });
+
+  it('carries only the listed keys the record has', () => {
+    expect(listMetaOf('mcp', { url: 'https://a.example/mcp', envKeys: ['TOKEN'] })).toEqual({
+      url: 'https://a.example/mcp',
+    });
+  });
+
+  it('lists every type but project, whose rows carry no meta', () => {
+    expect(Object.keys(ASSET_LIST_META_KEYS).sort()).toEqual(['config', 'hook', 'mcp', 'skill']);
+    expect(listMetaOf('project', { anything: 1 })).toEqual({});
   });
 });

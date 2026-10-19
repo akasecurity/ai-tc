@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 
+import { ASSET_LIST_META_KEYS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyMigrations } from '../../src/migrations.ts';
@@ -146,5 +147,31 @@ describe('endpoint counts', () => {
     for (const harness of harnesses) expect(harness).not.toHaveProperty('machines');
     expect(detail).not.toHaveProperty('machines');
     expect(detail).not.toHaveProperty('seenOn');
+  });
+});
+
+describe('list meta', () => {
+  it('carries only the keys the tables read, while the detail carries the whole record', async () => {
+    const { groups } = await inv.listAssets({});
+    const { items: harnesses } = await inv.listHarnesses();
+    const listed = [
+      ...groups.flatMap((g) => g.items),
+      ...harnesses.flatMap((h) => h.categories.flatMap((c) => c.assets)),
+    ];
+
+    expect(listed.length).toBeGreaterThan(0);
+    for (const asset of listed) {
+      if (asset.type === 'project') throw new Error('a project in an asset list');
+      const allowed: readonly string[] = ASSET_LIST_META_KEYS[asset.type];
+      for (const key of Object.keys(asset.meta)) expect(allowed).toContain(key);
+    }
+    const trimmed = [];
+    for (const asset of listed) {
+      const detail = await inv.getAsset(asset.id);
+      if (detail && Object.keys(detail.meta).length > Object.keys(asset.meta).length) {
+        trimmed.push(asset.id);
+      }
+    }
+    expect(trimmed.length).toBeGreaterThan(0);
   });
 });

@@ -2,7 +2,7 @@
 // harness's table uses. Each column reads one value for sorting and searching and
 // may format it differently for display.
 import type { AssetSummary, AssetType, ProjectSummary } from '@akasecurity/schema';
-import { PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
+import { type ASSET_LIST_META_KEYS, PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import {
@@ -47,8 +47,18 @@ function assetColumn(
   return { key, label, value: (row) => (isProjectRow(row) ? null : get(row)), ...options };
 }
 
-const metaColumn = (key: string, label: string, options: ColumnOptions = {}): Column =>
-  assetColumn(key, label, (a) => metaText(a.meta, key), options);
+/** A `meta` key an asset list carries for `T`: a column can read no other. */
+type ListedKey<T extends keyof typeof ASSET_LIST_META_KEYS> =
+  (typeof ASSET_LIST_META_KEYS)[T][number];
+
+function metaColumn<T extends keyof typeof ASSET_LIST_META_KEYS>(
+  _type: T,
+  key: ListedKey<T>,
+  label: string,
+  options: ColumnOptions = {},
+): Column {
+  return assetColumn(key, label, (a) => metaText(a.meta, key), options);
+}
 
 const relative: ColumnOptions['display'] = (row, now) => {
   const iso = isProjectRow(row) ? row.updatedAt : metaText(row.meta, 'updatedAt');
@@ -82,29 +92,29 @@ export const TYPE_COLUMNS: Record<AssetType, Column[]> = {
     projectColumn('updatedAt', 'Updated', (p) => p.updatedAt, { display: relative }),
   ],
   skill: [
-    metaColumn('source', 'Source', { mono: true, wide: true }),
-    metaColumn('scope', 'Scope'),
-    metaColumn('installedVersion', 'Installed', { mono: true }),
-    metaColumn('latestVersion', 'Latest', { mono: true }),
-    metaColumn('updatedAt', 'Updated', { display: relative }),
+    metaColumn('skill', 'source', 'Source', { mono: true, wide: true }),
+    metaColumn('skill', 'scope', 'Scope'),
+    metaColumn('skill', 'installedVersion', 'Installed', { mono: true }),
+    metaColumn('skill', 'latestVersion', 'Latest', { mono: true }),
+    metaColumn('skill', 'updatedAt', 'Updated', { display: relative }),
   ],
   mcp: [
-    metaColumn('transport', 'Transport'),
+    metaColumn('mcp', 'transport', 'Transport'),
     assetColumn('endpoint', 'Host', mcpEndpoint, { mono: true, wide: true }),
-    metaColumn('scope', 'Scope'),
+    metaColumn('mcp', 'scope', 'Scope'),
     assetColumn('trust', 'Trust', (a) => (a.trust ? TRUST[a.trust].label : null)),
   ],
   hook: [
-    metaColumn('event', 'Event', { mono: true }),
-    metaColumn('matcher', 'Matcher', { mono: true }),
-    metaColumn('scope', 'Scope'),
-    metaColumn('status', 'State'),
+    metaColumn('hook', 'event', 'Event', { mono: true }),
+    metaColumn('hook', 'matcher', 'Matcher', { mono: true }),
+    metaColumn('hook', 'scope', 'Scope'),
+    metaColumn('hook', 'status', 'State'),
   ],
   config: [
-    metaColumn('kind', 'Kind'),
-    metaColumn('scope', 'Scope'),
-    metaColumn('path', 'Path', { mono: true, wide: true }),
-    metaColumn('updatedAt', 'Changed', { display: relative }),
+    metaColumn('config', 'kind', 'Kind'),
+    metaColumn('config', 'scope', 'Scope'),
+    metaColumn('config', 'path', 'Path', { mono: true, wide: true }),
+    metaColumn('config', 'updatedAt', 'Changed', { display: relative }),
   ],
 };
 

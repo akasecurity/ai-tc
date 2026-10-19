@@ -83,7 +83,11 @@ export const AssetSummary = z
     flags: z.array(Flag),
     /** MCP servers only — omitted for all other types. */
     trust: TrustLevel.optional(),
-    /** Type-specific raw key/values (source, versions, event, transport, path, …). */
+    /**
+     * Type-specific raw key/values (source, versions, event, transport, path, …).
+     * A list carries the `ASSET_LIST_META_KEYS` of the asset's type; an asset
+     * detail carries them all.
+     */
     meta: z.record(z.string(), z.unknown()),
     /**
      * The distinct endpoints currently reporting the asset, each counted once
@@ -104,6 +108,30 @@ export const AssetSummary = z
   })
   .meta({ id: 'AssetSummary' });
 export type AssetSummary = z.infer<typeof AssetSummary>;
+
+/**
+ * The `meta` keys an asset list carries for each type: the ones the inventory
+ * tables read. An asset detail carries the whole record.
+ */
+export const ASSET_LIST_META_KEYS = {
+  skill: ['source', 'scope', 'installedVersion', 'latestVersion', 'updatedAt'],
+  mcp: ['transport', 'url', 'command', 'scope'],
+  hook: ['event', 'matcher', 'scope', 'status'],
+  config: ['kind', 'scope', 'path', 'updatedAt'],
+} as const satisfies Record<Exclude<AssetType, 'project'>, readonly string[]>;
+
+/** `meta` cut to the keys an asset list carries for `type`. */
+export function listMetaOf(
+  type: AssetType,
+  meta: Record<string, unknown>,
+): Record<string, unknown> {
+  if (type === 'project') return {};
+  const listed: Record<string, unknown> = {};
+  for (const key of ASSET_LIST_META_KEYS[type]) {
+    if (Object.hasOwn(meta, key)) listed[key] = meta[key];
+  }
+  return listed;
+}
 
 // ─── Shape 2: ProjectSummary ──────────────────────────────────────────────────
 

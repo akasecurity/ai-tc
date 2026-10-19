@@ -44,6 +44,13 @@ export {
 } from './attachment-scope-edit.ts';
 export { CAPTURE_ID_KEY_FILENAME, loadOrCreateCaptureIdKey } from './capture-id-key.ts';
 export type {
+  AssetRow,
+  ConfigAssetContext,
+  ConfigInventoryRow,
+  PostureFindingRow,
+} from './config-assets.ts';
+export { configAssetRow } from './config-assets.ts';
+export type {
   CredentialFileRead,
   CredentialState,
   CredentialUnusableReason,

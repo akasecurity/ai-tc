@@ -7,12 +7,11 @@ import { describe, expect, it } from 'vitest';
 //
 // `label` is a REQUIRED prop for exactly this reason — a page with two search
 // boxes needs them told apart, and a default would name both. `clearLabel` is
-// not required, and its default reintroduced the ambiguity one control over:
-// the Inventory page renders `InventoryNav` and, once a project is selected,
-// `ProjectPane` side by side, and both clear buttons came out as "Clear
-// search". A screen-reader user listing buttons heard it twice with nothing
-// saying which field each one empties, and the two fields are the two halves of
-// that page — so guessing wrong throws away the wrong query (WCAG 4.1.2).
+// not required, and its default reintroduces the ambiguity one control over:
+// two fields side by side that both take it give two clear buttons named "Clear
+// search". A screen-reader user listing buttons hears it twice with nothing
+// saying which field each one empties — so guessing wrong throws away the
+// wrong query (WCAG 4.1.2).
 //
 // This lives in web-ui rather than beside the component because the property is
 // about REACHABILITY: which fields land on one page is a fact about the app's

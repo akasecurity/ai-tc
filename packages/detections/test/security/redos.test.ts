@@ -95,12 +95,25 @@ const measuredGrowth = (rule: Rule): GrowthBreach | undefined =>
 // Measuring again on the SAME thread is not an option and is not what this
 // does: the regex would run natively compiled the second time, at a fraction
 // of the interpreted cost a hook process pays (see `worstProbeMs`).
+//
+// `screen` and `remeasure` are the two walks, injectable so the wiring between
+// them can be driven with scripted readings; the defaults are the real ones.
+interface ProbeWalks {
+  screen: (rule: Rule) => { ms: number };
+  remeasure: (rule: Rule) => Promise<{ ms: number; probeLength: number }>;
+}
+const realProbeWalks: ProbeWalks = {
+  screen: (rule) => worstProbeMs(rule, cpuMs),
+  remeasure: (rule) => walkInIsolation(rule),
+};
+
 async function probeBudgetBreach(
   rule: Rule,
+  { screen, remeasure }: ProbeWalks = realProbeWalks,
 ): Promise<{ firstMs: number; isolatedMs: number; probeLength: number } | undefined> {
-  const first = worstProbeMs(rule, cpuMs);
+  const first = screen(rule);
   if (first.ms < BUDGET_MS) return undefined;
-  const isolated = await walkInIsolation(rule);
+  const isolated = await remeasure(rule);
   if (isolated.ms < BUDGET_MS) return undefined;
   return { firstMs: first.ms, isolatedMs: isolated.ms, probeLength: isolated.probeLength };
 }
@@ -585,22 +598,60 @@ describe('the probe battery itself', () => {
     ).toBeGreaterThanOrEqual(BUDGET_MS);
   });
 
-  // The fresh-thread re-measurement decides every per-rule verdict, so it must
-  // be able to say "breach" at all. A re-measurement that read zero, or never
-  // ran, clears every rule the walk condemned while the controls above, which
-  // call `worstProbeMs` and `walkInIsolation` directly, stay green. Same
-  // pattern and the same thin margin as the case above.
-  it('a breach the walk finds still stands after the fresh-thread re-measurement', async () => {
-    const parsed = parseRegexRule('^(a+)+$');
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) return;
-    const breach = await probeBudgetBreach(parsed.data);
-    expect(
-      breach,
-      'probeBudgetBreach cleared a catastrophic pattern; if the case above passed, the ' +
-        're-measurement on a fresh thread is what cleared it.',
-    ).toBeDefined();
-    expect(breach?.isolatedMs).toBeGreaterThanOrEqual(BUDGET_MS);
+  // The fresh-thread re-measurement decides every per-rule verdict, so the
+  // wiring between the screen and it is pinned on scripted readings: a
+  // breach needs both walks over the budget, the re-measurement runs only on a
+  // screened breach, and a re-measurement that read nothing clears nothing
+  // into a breach. The live halves are pinned elsewhere: the screen by the case
+  // above, the re-measurement's cost by the fresh-thread control.
+  describe('a per-rule breach is the screen and the fresh-thread re-measurement together', () => {
+    const OVER = BUDGET_MS + 20;
+    const UNDER = BUDGET_MS - 20;
+    const parsed = parseRegexRule('wiring');
+    if (!parsed.success) throw new Error('the scripted rule did not parse');
+    const rule = parsed.data;
+    function walks(screenMs: number, remeasureMs: number) {
+      const calls = { screen: 0, remeasure: 0 };
+      const scripted: ProbeWalks = {
+        screen: () => {
+          calls.screen++;
+          return { ms: screenMs };
+        },
+        remeasure: () => {
+          calls.remeasure++;
+          return Promise.resolve({ ms: remeasureMs, probeLength: 25 });
+        },
+      };
+      return { calls, scripted };
+    }
+
+    it('is a breach when both walks read over the budget', async () => {
+      const { calls, scripted } = walks(OVER, OVER + 5);
+      expect(await probeBudgetBreach(rule, scripted)).toEqual({
+        firstMs: OVER,
+        isolatedMs: OVER + 5,
+        probeLength: 25,
+      });
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('is cleared when the re-measurement reads under the budget', async () => {
+      const { calls, scripted } = walks(OVER, UNDER);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
+
+    it('does not re-measure a rule the screen cleared', async () => {
+      const { calls, scripted } = walks(UNDER, OVER);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 0 });
+    });
+
+    it('is cleared when the re-measurement reads zero', async () => {
+      const { calls, scripted } = walks(OVER, 0);
+      expect(await probeBudgetBreach(rule, scripted)).toBeUndefined();
+      expect(calls).toEqual({ screen: 1, remeasure: 1 });
+    });
   });
 
   it('a clock that advances without work would trip the gate, which is why the gate reads CPU', () => {

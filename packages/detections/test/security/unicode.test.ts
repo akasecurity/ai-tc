@@ -434,9 +434,9 @@ describe('the slow path does not blow up on a large text with one format charact
   // alone does not survive a machine with no free core for the whole
   // measurement: under 30 CPU burners on 10 cores the healthy scan read 10.1x,
   // 11.9x and 15.6x on the wall. And a ratio over the bound is measured again
-  // before it fails,
-  // up to ATTEMPTS times: the quadratic merge reads ~330x on every attempt,
-  // and a reading that was the machine's does not come back three times.
+  // before it fails, up to ATTEMPTS times: the quadratic merge reads ~330x on
+  // every attempt, and a reading that was the machine's does not come back
+  // three times.
   it('scans a large multi-rule text with one leading BOM in roughly the same time as without one', () => {
     const mk = (id: string, pattern: string) =>
       Rule.parse({

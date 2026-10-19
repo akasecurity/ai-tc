@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { isAlias, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
+import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, visit as visitDocument } from 'yaml';
 
 // A GitHub workflow read as a PARSED YAML document: jobs, then steps, then the
 // keys, `with:` and `env:` mappings and `run:` scripts of each, as decoded values.
@@ -17,8 +17,9 @@ import { isAlias, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
 // What it will not decode it refuses, rather than guess: a document with a parse
 // error or warning (an unresolved tag, a duplicate key, a tab used as indentation),
 // more than one document, a `%YAML` directive, a `%TAG` directive that names a
-// handle other than `!!`, a mapping key that is not a string, a `<<` merge key, and
-// an alias that points at a node it sits inside. A `%TAG !!` that redefines the
+// handle other than `!!`, a mapping key that is not a string, a `<<` merge key, an
+// alias with no anchor before it, and an alias that points at a node it sits
+// inside. A `%TAG !!` that redefines the
 // default prefix is not refused on its own, since nothing resolves through it
 // until a tag is written; the warning for the tag that does is.
 // Anchors and aliases are decoded — GitHub accepts them. A merge key is not: that
@@ -56,14 +57,55 @@ export const isMapping = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
- * @param {unknown} node
+ * The node each alias in a document names: the last node carrying its anchor
+ * before the alias, in document order, which is the rule `Alias.resolve`
+ * applies. Built in one walk, so the library is never handed a `ToJSContext`
+ * (from yaml 2.9.1 `Alias.resolve` reads `anchors` from any context it is given)
+ * and each lookup is a `Map` read.
+ *
  * @param {import('yaml').Document} document
- * @param {{ budget: number, open: Set<unknown>, resolution: object }} state
- *   `resolution` is the one context every alias lookup shares, so the library
- *   lists the document's anchors and aliases once instead of once per alias.
+ * @returns {Map<import('yaml').Alias, unknown>}
+ */
+function aliasTargets(document) {
+  /** @type {Map<string, unknown>} */
+  const anchored = new Map();
+  /** @type {Map<import('yaml').Alias, unknown>} */
+  const targets = new Map();
+  visitDocument(document, {
+    Node(_key, node) {
+      if (isAlias(node)) targets.set(node, anchored.get(node.source));
+      else if (node.anchor) anchored.set(node.anchor, node);
+    },
+  });
+  return targets;
+}
+
+/**
+ * @typedef {object} DecodeState
+ * @property {number} budget
+ * @property {Set<unknown>} open
+ * @property {Map<import('yaml').Alias, unknown>} targets
+ */
+
+/**
+ * The node an alias names, refusing an alias that has no anchor before it.
+ * @param {import('yaml').Alias} alias
+ * @param {DecodeState} state
+ */
+function targetOf(alias, state) {
+  const target = state.targets.get(alias);
+  if (target === undefined) {
+    expect(target, `the alias *${alias.source} names no anchor`).toBeDefined();
+  }
+  return target;
+}
+
+/**
+ * @param {unknown} node
+ * @param {DecodeState} state
  * @returns {unknown}
  */
-function decode(node, document, state) {
+function decode(node, state) {
   // The assertions below are reached only on a refusal. This function runs once
   // per decoded node, and an `expect` per node is the cost of the whole walk.
   state.budget -= 1;
@@ -75,20 +117,17 @@ function decode(node, document, state) {
   }
   if (node === null || node === undefined) return null;
   if (isAlias(node)) {
-    const target = node.resolve(document, state.resolution);
-    if (target === undefined) {
-      expect(target, `the alias *${node.source} names no anchor`).toBeDefined();
-    }
+    const target = targetOf(node, state);
     if (state.open.has(target)) {
       expect(false, `the alias *${node.source} refers to a node it is inside`).toBe(true);
     }
-    return decode(target, document, state);
+    return decode(target, state);
   }
   if (isScalar(node)) return node.value;
   if (isSeq(node)) {
     state.open.add(node);
     try {
-      return node.items.map((item) => decode(item, document, state));
+      return node.items.map((item) => decode(item, state));
     } finally {
       state.open.delete(node);
     }
@@ -102,7 +141,7 @@ function decode(node, document, state) {
       const comments = {};
       const seen = new Set();
       for (const pair of node.items) {
-        const key = isAlias(pair.key) ? pair.key.resolve(document, state.resolution) : pair.key;
+        const key = isAlias(pair.key) ? targetOf(pair.key, state) : pair.key;
         expect(
           isScalar(key) && typeof key.value === 'string',
           'a mapping key that is not a plain string — a number, a boolean, an empty key or a collection',
@@ -111,7 +150,7 @@ function decode(node, document, state) {
         expect(name, 'a `<<` merge key, which this reader does not expand').not.toBe('<<');
         expect(seen.has(name), `the key \`${name}\` appears twice in one mapping`).toBe(false);
         seen.add(name);
-        entries.push([name, decode(pair.value, document, state)]);
+        entries.push([name, decode(pair.value, state)]);
         if (isScalar(pair.value) && typeof pair.value.comment === 'string') {
           comments[name] = pair.value.comment;
         }
@@ -161,10 +200,10 @@ export function parseWorkflow(source) {
     'the workflow opens with a `%TAG` directive that names a handle other than `!!`',
   ).toEqual(['!!']);
 
-  const root = decode(document.contents, document, {
+  const root = decode(document.contents, {
     budget: MAX_NODES,
     open: new Set(),
-    resolution: {},
+    targets: aliasTargets(document),
   });
   expect(isMapping(root), 'the workflow is not a mapping at its top level').toBe(true);
   return /** @type {Mapping} */ (root);

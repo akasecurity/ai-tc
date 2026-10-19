@@ -99,6 +99,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'codingScopeExtrasAt',
   'compareBinaryVersions',
   'computeFindingKey',
+  'configAssetRow',
   'controlPlaneCredentialPath',
   'controlPlanePolicyFloor',
   'createKeyProvider',

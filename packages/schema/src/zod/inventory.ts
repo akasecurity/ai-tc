@@ -76,6 +76,22 @@ export const AssetSummary = z
     flags: z.array(Flag),
     /** MCP servers only — omitted for all other types. */
     trust: TrustLevel.optional(),
+    /** Type-specific raw key/values (source, versions, event, transport, path, …). */
+    meta: z.record(z.string(), z.unknown()),
+    /**
+     * The endpoints currently reporting the asset. Omitted by a store that does
+     * not record who reports what. In a list the count stops at 100, so 100
+     * means "100 or more"; an asset detail carries the exact number.
+     */
+    machines: z.number().int().nonnegative().optional(),
+    /**
+     * How many distinct sets of display fields those reports carry. More than
+     * one means the endpoints disagree about the asset (a server pointed at two
+     * different URLs, a skill at two versions). Omitted with `machines`. A list
+     * may count only a bounded sample of the reports, so it can undercount; an
+     * asset detail carries the exact number.
+     */
+    variants: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'AssetSummary' });
 export type AssetSummary = z.infer<typeof AssetSummary>;
@@ -207,6 +223,25 @@ const AssetFindingRef = z.object({
   note: z.string(),
 });
 
+/** One distinct set of display fields an asset is reported with, and who reports it. */
+export const AssetVariant = z
+  .object({
+    /**
+     * Endpoints reporting this variant. An endpoint that reports different
+     * variants under different harnesses is counted in each.
+     */
+    machines: z.number().int().positive(),
+    sub: z.string(),
+    description: z.string().nullable(),
+    flags: z.array(Flag),
+    /** Type-specific raw key/values, as in `AssetDetail.meta`. */
+    meta: z.record(z.string(), z.unknown()),
+    /** Up to five hostnames of the endpoints reporting this variant, when they are known. */
+    hosts: z.array(z.string()).max(5).optional(),
+  })
+  .meta({ id: 'AssetVariant' });
+export type AssetVariant = z.infer<typeof AssetVariant>;
+
 /**
  * Powers the right-pane asset detail and setMcpTrust response.
  * `trust` is null for non-mcp; `tools` is omitted for non-mcp.
@@ -216,12 +251,12 @@ export const AssetDetail = AssetSummary.extend({
   description: z.string().nullable(),
   /** trustLevel | null — null for non-MCP assets. */
   trust: TrustLevel.nullable(),
-  /** Type-specific raw key/values — FE renders the grid. */
-  meta: z.record(z.string(), z.unknown()),
   /** always present — object when there is an active finding, null when absent. */
   finding: AssetFindingRef.nullable(),
   /** MCP exposed-tools list — omitted for non-mcp. */
   tools: z.array(McpTool).optional(),
+  /** The distinct sets of display fields currently reported, largest group first. */
+  seenOn: z.array(AssetVariant).optional(),
 }).meta({ id: 'AssetDetail' });
 export type AssetDetail = z.infer<typeof AssetDetail>;
 
@@ -307,7 +342,7 @@ export type ProjectTreeResponse = z.infer<typeof ProjectTreeResponse>;
 // ─── Shape 14: FileDetail ────────────────────────────────────────────────────
 
 /**
- * Powers the per-file detail drawer.
+ * One file's detail, as the per-file read returns it.
  * Extends FileSummary with project context and findingsRefs.
  */
 export const FileDetail = FileSummary.extend({

@@ -102,7 +102,7 @@ export function CardSkeleton({ className }: { className?: string }) {
  * parent, which the page's own wrapper constrains (`flex h-full min-h-0`).
  *
  * `listWidth` is the real list column's width for THIS route — they differ
- * (activity and inventory `w-85`, detections `w-88`, policies `w-80`), and a
+ * (inventory `w-60`, activity `w-85`, detections `w-88`, policies `w-80`), and a
  * skeleton one size for all of them slides the detail pane sideways on reveal.
  * It is a union rather than a `string` because an unrecognised token emits no
  * width rule at all and the column then collapses to its content — a silent
@@ -122,11 +122,12 @@ export function CardSkeleton({ className }: { className?: string }) {
  * It carries no top margin: every client root above one of these starts flush,
  * and the gap over a master/detail comes from the strip's own `mb-3`.
  */
-type ListWidth = 'w-80' | 'w-85' | 'w-88';
+type ListWidth = 'w-60' | 'w-80' | 'w-85' | 'w-88';
 
 // Spelled out rather than built as `lg:${listWidth}`: Tailwind scans source text
 // for complete class names, so an interpolated variant emits no rule.
 const LG_LIST_WIDTH: Record<ListWidth, string> = {
+  'w-60': 'lg:w-60',
   'w-80': 'lg:w-80',
   'w-85': 'lg:w-85',
   'w-88': 'lg:w-88',

@@ -2,7 +2,11 @@
 // harness's table uses. Each column reads one value for sorting and searching and
 // may format it differently for display.
 import type { AssetSummary, AssetType, ProjectSummary } from '@akasecurity/schema';
-import { type ASSET_LIST_META_KEYS, PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
+import {
+  type ASSET_LIST_META_KEYS,
+  MCP_TOOLS_USED_WINDOW_DAYS,
+  PROJECT_FINDINGS_WINDOW_DAYS,
+} from '@akasecurity/schema';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import {
@@ -82,7 +86,6 @@ export const TYPE_COLUMNS: Record<AssetType, Column[]> = {
   project: [
     projectColumn('repo', 'Repository', (p) => p.repo, { mono: true, wide: true }),
     projectColumn('language', 'Language', (p) => p.language || null),
-    projectColumn('visibility', 'Visibility', (p) => p.visibility),
     projectColumn(
       'findings',
       `Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`,
@@ -127,7 +130,7 @@ export const MIXED_COLUMNS: Column[] = [
   {
     key: 'detail',
     label: 'Detail',
-    value: (row) => (isProjectRow(row) ? `${row.repo} · ${row.visibility}` : row.sub),
+    value: (row) => (isProjectRow(row) ? row.repo : row.sub),
     mono: true,
     wide: true,
   },
@@ -151,8 +154,23 @@ export const ENDPOINTS_COLUMN: Column = {
   num: true,
 };
 
-/** The row columns a table shows: the type's own, then Endpoints when the rows carry it. */
+/** The distinct tools called through an MCP server, shown when the rows carry the count. */
+export const TOOLS_USED_COLUMN: Column = assetColumn(
+  'toolsUsed',
+  `Tools used · ${String(MCP_TOOLS_USED_WINDOW_DAYS)}d`,
+  (a) => a.toolsUsed ?? null,
+  { num: true },
+);
+
+/**
+ * The row columns a table shows: the type's own, Tools used on an MCP table and
+ * Endpoints on any, each when the rows carry it.
+ */
 export function tableColumns(type: AssetType | null, rows: readonly InventoryRow[]): Column[] {
-  const own = type === null ? MIXED_COLUMNS : TYPE_COLUMNS[type];
-  return rows.some((r) => r.machines !== undefined) ? [...own, ENDPOINTS_COLUMN] : own;
+  const columns = [...(type === null ? MIXED_COLUMNS : TYPE_COLUMNS[type])];
+  if (type === 'mcp' && rows.some((r) => !isProjectRow(r) && r.toolsUsed !== undefined)) {
+    columns.push(TOOLS_USED_COLUMN);
+  }
+  if (rows.some((r) => r.machines !== undefined)) columns.push(ENDPOINTS_COLUMN);
+  return columns;
 }

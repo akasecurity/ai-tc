@@ -28,6 +28,8 @@ import {
   listMetaOf,
   ListProjectsResponse,
   McpTool,
+  mcpToolServerKeys,
+  mcpToolsUsedOf,
   Origin,
   ProjectSummary,
   ProjectTreeResponse,
@@ -1085,6 +1087,31 @@ describe('GetHarnessEventsQuery', () => {
 
   it('rejects limit = 51 — above maximum of 50', () => {
     expect(GetHarnessEventsQuery.safeParse({ limit: 51 }).success).toBe(false);
+  });
+});
+
+describe('mcpToolServerKeys', () => {
+  it('is the name alone when a harness would write it unchanged', () => {
+    expect(mcpToolServerKeys('github')).toEqual(['github']);
+    expect(mcpToolServerKeys('my-server_2')).toEqual(['my-server_2']);
+  });
+
+  it('adds the form with every other character replaced by an underscore', () => {
+    expect(mcpToolServerKeys('acme.docs')).toEqual(['acme.docs', 'acme_docs']);
+    expect(mcpToolServerKeys('team server')).toEqual(['team server', 'team_server']);
+  });
+});
+
+describe('mcpToolsUsedOf', () => {
+  it('adds the counts under both spellings of the name, and is 0 for a server with none', () => {
+    const byServer = new Map([
+      ['acme.docs', 2],
+      ['acme_docs', 3],
+      ['github', 4],
+    ]);
+    expect(mcpToolsUsedOf('acme.docs', byServer)).toBe(5);
+    expect(mcpToolsUsedOf('github', byServer)).toBe(4);
+    expect(mcpToolsUsedOf('linear', byServer)).toBe(0);
   });
 });
 

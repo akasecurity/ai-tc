@@ -73,6 +73,30 @@ export type AccessCounts = z.infer<typeof AccessCounts>;
  */
 export const INVENTORY_LIST_COUNT_CAP = 100;
 
+/** How many days back an MCP server's `toolsUsed` counts tool calls. */
+export const MCP_TOOLS_USED_WINDOW_DAYS = 30;
+
+/**
+ * The server segments under which an MCP server's tool calls are named,
+ * `mcp__<server>__<tool>`: the server's name, and the name with every character
+ * outside `[A-Za-z0-9_-]` replaced by `_`, the form a harness may write it in.
+ */
+export function mcpToolServerKeys(serverName: string): string[] {
+  const normalized = serverName.replace(/[^A-Za-z0-9_-]/g, '_');
+  return normalized === serverName ? [serverName] : [serverName, normalized];
+}
+
+/**
+ * An MCP server's `toolsUsed`, from the distinct tool names counted per server
+ * segment: the keys' tool names are disjoint, so their counts add up.
+ */
+export function mcpToolsUsedOf(
+  serverName: string,
+  toolsByServer: ReadonlyMap<string, number>,
+): number {
+  return mcpToolServerKeys(serverName).reduce((n, key) => n + (toolsByServer.get(key) ?? 0), 0);
+}
+
 /** Shared by harness categories and asset group lists. */
 export const AssetSummary = z
   .object({
@@ -105,6 +129,14 @@ export const AssetSummary = z
      * asset detail carries the exact number.
      */
     variants: z.number().int().nonnegative().optional(),
+    /**
+     * MCP servers in an asset list only: the distinct tools the agent called
+     * through a server of this name over the last `MCP_TOOLS_USED_WINDOW_DAYS`
+     * (30) days, counted from the `mcp__<server>__<tool>` names of the recorded
+     * tool calls. Two servers with the same name in different scopes share one
+     * count. Not the tools a server exposes.
+     */
+    toolsUsed: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'AssetSummary' });
 export type AssetSummary = z.infer<typeof AssetSummary>;

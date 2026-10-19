@@ -1,7 +1,8 @@
 /**
  * How SQLite executes the Inventory page's project findings reads: the findings
  * count of every listed project, the projects that need attention, and one
- * project's findings by category.
+ * project's findings by category. Also the MCP list's tools-used count, which
+ * reads the window's tool calls once for the page through `idx_audit_type_t`.
  *
  * A project's findings are reached through its sessions: the session root names
  * the project, each capture names its session, and each finding names its
@@ -15,6 +16,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import { configInventoryInputs } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -34,6 +36,7 @@ const DAY_MS = 86_400_000;
 const PROJECTS = 4;
 const SESSIONS_PER_PROJECT = 3;
 const CAPTURES_PER_SESSION = 5;
+const TOOL_CALLS = 400;
 
 let store: OwnedTempStore;
 let db: LocalDatabase;
@@ -126,4 +129,78 @@ describe('inventory project findings plans', () => {
       ).toBe(true);
     },
   );
+});
+
+describe('inventory MCP tools-used plan', () => {
+  let mcpStore: OwnedTempStore;
+  let mcpRepo: SqliteInventoryAssetsRepository;
+  const mcpRecorded: RecordedQuery[] = [];
+
+  beforeAll(() => {
+    mcpStore = createTempStore('aka-inv-mcp-plans-', { migrated: true });
+    const db = mcpStore.open();
+    db.inventory.upsert(
+      { objectType: 'harness', identityKey: 'claude-code', title: 'claude-code', attributes: {} },
+      Date.now(),
+    );
+    const scannedAt = new Date().toISOString();
+    db.recordConfigScan({
+      items: configInventoryInputs({
+        scannedAt,
+        skills: [],
+        hooks: [],
+        mcpServers: [{ name: 'github', scope: 'user', transport: 'stdio', command: 'npx' }],
+        configFiles: [],
+        errors: [],
+      }),
+      scanEvent: {
+        id: randomUUID(),
+        eventType: 'config_scan',
+        startedAt: scannedAt,
+        attributes: {},
+      },
+    });
+    for (let t = 0; t < TOOL_CALLS; t += 1) {
+      db.auditEvents.insertAuditEvent({
+        id: randomUUID(),
+        eventType: 'tool_call',
+        startedAt: new Date(Date.now() - (t % 60) * DAY_MS).toISOString(),
+        attributes: { tool_name: t % 2 === 0 ? `mcp__github__tool_${String(t % 7)}` : 'Bash' },
+      });
+    }
+    mcpRepo = new SqliteInventoryAssetsRepository(
+      recordingConnection(mcpStore.openRaw(), mcpRecorded),
+    );
+  });
+
+  afterAll(() => {
+    mcpStore.destroy();
+  });
+
+  async function toolCallStatements(): Promise<RecordedQuery[]> {
+    mcpRecorded.length = 0;
+    await mcpRepo.listAssets({ type: ['mcp'] });
+    return mcpRecorded.filter((q) => q.sql.includes("'tool_call'"));
+  }
+
+  it('reads the tool calls once for the page', async () => {
+    expect(await toolCallStatements()).toHaveLength(1);
+  });
+
+  it("seeks the window's tool calls by index and walks nothing in full", async () => {
+    const [statement] = await toolCallStatements();
+    if (statement === undefined) throw new Error('the list read no tool call');
+    const raw = mcpStore.openRaw();
+    const owners = indexOwners(raw);
+    const steps = explain(raw, statement).map((row) => classifyPlanRow(row.detail, owners));
+
+    expect(steps.filter((s) => s.kind === 'full-table' || s.kind === 'full-index')).toEqual([]);
+    expect(
+      steps.some(
+        (s) =>
+          s.kind === 'search' &&
+          s.detail.includes('idx_audit_type_t (event_type=? AND started_at>?)'),
+      ),
+    ).toBe(true);
+  });
 });

@@ -33,6 +33,8 @@ import {
   HARNESS,
   HarnessId as HarnessIdSchema,
   listMetaOf,
+  MCP_TOOLS_USED_WINDOW_DAYS,
+  mcpToolsUsedOf,
   PROJECT_FINDINGS_WINDOW_DAYS,
   Severity,
   SEVERITY_RANK,
@@ -125,14 +127,15 @@ const HARNESS_LABELS: Record<HarnessId, string> = {
 const HARNESS_LIVENESS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 const PROJECT_FINDINGS_WINDOW_MS = PROJECT_FINDINGS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const MCP_TOOLS_USED_WINDOW_MS = MCP_TOOLS_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 // A capture names its session and only the session root names the project, so a
 // project's findings are reached project → its sessions → their events in the
 // window → the events' findings. CROSS JOIN keeps SQLite from reordering the
 // three, so the read starts from the project's sessions (idx_audit_project_t)
-// and seeks each session's events in the window (idx_audit_session). The posture
-// findings on a session's config_scan event are left out: they describe the
-// machine's configuration and repeat at every session start.
+// and seeks each session's events in the window (idx_audit_session). Findings on
+// a session's config_scan event, the posture of the machine's configuration, are
+// left out.
 const PROJECT_FINDINGS_FROM = `audit_events s
   CROSS JOIN audit_events e
   CROSS JOIN inspection_findings f`;
@@ -554,6 +557,7 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       else grouped.set(a.assetType, [a]);
     }
 
+    const toolsByServer = grouped.has('mcp') ? this.mcpToolsByServer() : new Map<string, number>();
     const groups: AssetGroup[] = [...grouped.entries()].map(([type, rows]) => {
       const flagMap = new Map<string, number>();
       for (const r of rows) {
@@ -568,6 +572,7 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
         items: rows.map(toAssetSummary),
       };
       if (type === 'mcp') {
+        for (const item of group.items) item.toolsUsed = mcpToolsUsedOf(item.name, toolsByServer);
         const trustMap = new Map<TrustLevel, number>();
         for (const r of rows) {
           if (r.effectiveTrust)
@@ -801,6 +806,25 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
 
   private findingsSince(): number {
     return this.now() - PROJECT_FINDINGS_WINDOW_MS;
+  }
+
+  // The distinct MCP tools called in the window, per server segment of the tool
+  // name `mcp__<server>__<tool>`: the text between `mcp__` and the next `__`.
+  // GLOB matches case-sensitively and takes `_` literally.
+  private mcpToolsByServer(): Map<string, number> {
+    const rows = allRows<{ server: string; tools: number }>(
+      this.db.prepare(
+        `SELECT substr(tool_name, 6, instr(substr(tool_name, 6), '__') - 1) AS server,
+                count(DISTINCT tool_name) AS tools
+         FROM audit_events
+         WHERE event_type = 'tool_call'
+           AND started_at >= ?
+           AND tool_name GLOB 'mcp__?*__*'
+         GROUP BY 1`,
+      ),
+      [this.now() - MCP_TOOLS_USED_WINDOW_MS],
+    );
+    return new Map(rows.map((r) => [r.server, r.tools]));
   }
 
   // Every harness's assets in ONE grouped query, keyed by harness inventory id —

@@ -100,6 +100,13 @@ describe('ProjectDetail', () => {
     expect(html).not.toContain('withheld by the project&#x27;s policy');
   });
 
+  it('names the project without a visibility badge, which no store records', () => {
+    const html = render(0, []);
+    expect(html).toContain('payments-api');
+    expect(html).not.toContain('Private');
+    expect(html).not.toContain('Public');
+  });
+
   it('labels the findings stat with its 30-day window', () => {
     expect(render(0, [])).toContain('Findings · 30d');
   });

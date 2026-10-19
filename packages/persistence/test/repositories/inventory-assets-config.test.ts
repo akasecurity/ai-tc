@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ConfigScanRecord, ConfigScanResult } from '@akasecurity/schema';
 import { configInventoryInputs } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -462,6 +464,36 @@ describe('Inventory page surfaces real scanned MCP servers', () => {
     const stats = await db.inventoryAssets.getInventoryStats();
     expect(stats.byType.mcp).toBe(2);
     expect(stats.mcpTrust).toEqual({ 'known-good': 0, risky: 0, unapproved: 2 });
+  });
+
+  it('counts the distinct tools called through each server over the last 30 days', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(mcpScan(), 'scan-1'));
+    const call = (toolName: string, daysAgo: number) => {
+      db.auditEvents.insertAuditEvent({
+        id: randomUUID(),
+        eventType: 'tool_call',
+        startedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+        attributes: { tool_name: toolName },
+      });
+    };
+    call('mcp__github__create_issue', 1);
+    call('mcp__github__create_issue', 2);
+    call('mcp__github__list_pull_requests', 29);
+    call('mcp__github__old_tool', 31);
+    call('mcp__githubx__search', 1);
+    call('MCP__github__shouting', 1);
+    call('Bash', 1);
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const items = groups.find((g) => g.type === 'mcp')?.items ?? [];
+
+    expect(items.map((i) => [i.name, i.toolsUsed])).toEqual(
+      expect.arrayContaining([
+        ['github', 2],
+        ['sentry', 0],
+      ]),
+    );
   });
 
   it('detail omits the tools list (needs a live handshake) and carries env-key names', async () => {

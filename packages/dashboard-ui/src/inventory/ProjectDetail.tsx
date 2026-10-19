@@ -15,7 +15,7 @@ import { cn, SeverityBadge } from '@akasecurity/ui-kit';
 import { CATEGORY_LABEL } from '../detections/meta.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { Provider } from '../shared/Provider.tsx';
-import { BackButton, Section, VisBadge } from './chips.tsx';
+import { BackButton, Section } from './chips.tsx';
 import { assetTile, endpointCountText, fmtDateTime, SENSITIVE_CATEGORY } from './data.ts';
 import { Ico } from './Ico.tsx';
 
@@ -74,14 +74,11 @@ export function ProjectDetail({
           <Ico name={tile.icon} className="size-5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span
-              className="truncate font-mono text-base font-semibold text-text"
-              title={project.name}
-            >
-              {project.name}
-            </span>
-            <VisBadge v={project.visibility} />
+          <div
+            className="truncate font-mono text-base font-semibold text-text"
+            title={project.name}
+          >
+            {project.name}
           </div>
           <div className="mt-px truncate text-xs text-text-3">
             {[project.repo, project.language, updated && `updated ${updated}`]

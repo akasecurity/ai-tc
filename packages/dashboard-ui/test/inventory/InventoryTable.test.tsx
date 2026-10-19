@@ -45,6 +45,19 @@ function skill(id: string, overrides: Partial<AssetSummary> = {}): AssetSummary 
   };
 }
 
+function mcp(id: string, overrides: Partial<AssetSummary> = {}): AssetSummary {
+  return {
+    id,
+    type: 'mcp',
+    name: id,
+    sub: 'MCP server · stdio',
+    flags: [],
+    meta: { transport: 'stdio', command: 'npx', scope: 'user' },
+    trust: 'unapproved',
+    ...overrides,
+  };
+}
+
 let mounted: MountedRoot;
 beforeEach(() => {
   mounted = mountRoot();
@@ -57,6 +70,10 @@ const bodyRows = (): HTMLTableRowElement[] => [
   ...mounted.host.querySelectorAll<HTMLTableRowElement>('tbody tr'),
 ];
 const names = (): string[] => bodyRows().map((r) => r.querySelector('td')?.textContent ?? '');
+const cellsOf = (name: string): string[] => {
+  const row = bodyRows().find((r) => r.querySelector('td')?.textContent === name);
+  return [...(row?.querySelectorAll('td') ?? [])].map((td) => td.textContent);
+};
 const headers = (): string[] =>
   [...mounted.host.querySelectorAll('thead th')].map((th) => th.textContent);
 
@@ -118,6 +135,40 @@ describe('InventoryTable, one type', () => {
     expect(headers()[0]).toBe('Command');
   });
 
+  it("shows an MCP server's tools used over 30 days when the rows carry the count", () => {
+    mount({
+      type: 'mcp',
+      rows: [mcp('github', { toolsUsed: 7 }), mcp('linear', { toolsUsed: 0 })],
+    });
+    expect(headers()).toEqual([
+      'Name',
+      'Transport',
+      'Host',
+      'Scope',
+      'Trust',
+      'Tools used · 30d',
+      'Status',
+    ]);
+    expect(cellsOf('github')).toContain('7');
+    expect(cellsOf('linear')).toContain('0');
+
+    mount({ type: 'mcp', rows: [mcp('github')] });
+    expect(headers()).not.toContain('Tools used · 30d');
+  });
+
+  it('shows projects without a visibility, which no store records', () => {
+    mount({ type: 'project', rows: [project('p')] });
+    expect(headers()).toEqual([
+      'Name',
+      'Repository',
+      'Language',
+      'Findings · 30d',
+      'Updated',
+      'Status',
+    ]);
+    expect(mounted.host.textContent).not.toContain('private');
+  });
+
   it('keeps an active status pill on screen after its rows are gone', () => {
     mount({ type: 'skill', rows: [skill('a', { flags: ['update'] }), skill('b')] });
     click(buttonNamed('Update1'));
@@ -168,6 +219,7 @@ describe('InventoryTable, a harness', () => {
   it('shows Type and Detail columns and a pill per type that toggles off on a second click', () => {
     mount({ rows });
     expect(headers()).toEqual(['Name', 'Type', 'Detail', 'Status']);
+    expect(cellsOf('p1')).toContain('acme/p1');
 
     click(buttonNamed('Skills2'));
     expect(names()).toEqual(['s1', 's2']);
@@ -236,11 +288,6 @@ describe('InventoryTable, a harness', () => {
 });
 
 describe('InventoryTable endpoint counts', () => {
-  const cellsOf = (name: string): string[] => {
-    const row = bodyRows().find((r) => r.querySelector('td')?.textContent === name);
-    return [...(row?.querySelectorAll('td') ?? [])].map((td) => td.textContent);
-  };
-
   it('shows no Endpoints column when the rows carry no count', () => {
     mount({ type: 'skill', rows: [skill('a')] });
     expect(headers()).not.toContain('Endpoints');

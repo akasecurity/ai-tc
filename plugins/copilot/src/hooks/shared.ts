@@ -191,11 +191,12 @@ export interface VsCodeBlockOutput {
  * payload the host drops. On the CLI a warn is WRITTEN to stderr instead, and
  * stdout stays empty, which is the no-opinion the header describes.
  *
- * That stderr does NOT reach a human on that host. The reference documents
+ * That stderr was not seen to reach a human on that host. The reference documents
  * stderr surfacing only for a FAILING hook ("logged as a hook failure"), and a
  * recorded Copilot CLI 1.0.98 `-p` session showed an exit-0 hook's stderr in
  * none of the CLI's own output — only in its debug log, as
- * `[rust:hooks] [hook stderr] …` lines. So what is stated here is the channel
+ * `[rust:hooks] [hook stderr] …` lines with debug logging enabled; an
+ * interactive session is unmeasured. So what is stated here is the channel
  * the notice is written to, never that anyone reads it.
  * `skills/setup/SKILL.md` carries the same caveat on the user-facing side, and
  * the two must not drift apart.

@@ -322,8 +322,11 @@ describe('Copilot CLI 1.0.98 plugin-install hook payload fixtures', () => {
       expect(FOREIGN_HOME.test(JSON.stringify(payload)), `${name} leaks a home directory`).toBe(
         false,
       );
-      // The recorder's temp directory was rewritten as well as the home.
-      expect(JSON.stringify(payload), `${name} leaks a temp path`).not.toMatch(/\/private\/tmp\//u);
+      // The recorder's temp directory was rewritten as well as the home, in
+      // any of the macOS and Linux spellings a re-recording could leave.
+      expect(JSON.stringify(payload), `${name} leaks a temp path`).not.toMatch(
+        /\/(?:private\/)?(?:var\/)?tmp\//u,
+      );
     }
   });
 

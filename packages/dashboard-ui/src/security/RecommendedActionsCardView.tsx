@@ -373,7 +373,7 @@ export function RecommendedActionsCardView({
                 >
                   Why are you closing these?
                 </div>
-                {/* Radio cards, so BOTH descriptions are on screen while the
+                {/* Radio cards, so EVERY description is on screen while the
                     reader chooses. A segmented control with one line of help
                     below it showed only the selected option's, which makes
                     someone pick an answer in order to find out what it means —

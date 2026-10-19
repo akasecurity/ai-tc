@@ -8,6 +8,7 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
+import { DismissMethod } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -258,38 +259,41 @@ describe('severitySummary', () => {
     expect(res.needsRemediation).toBe(1);
   });
 
-  it('buckets a dismissed finding as dismissed: neither caught nor needing remediation', async () => {
-    record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'key-open' });
-    record({
-      daysAgo: 1,
-      severity: 'critical',
-      kind: 'code_change',
-      findingKey: 'key-dismissed',
-      ruleId: 'r-dismissed',
-    });
-    db.resolutions.insertResolution({
-      findingKey: 'key-dismissed',
-      status: 'dismissed',
-      method: 'false-positive',
-      resolvedAt: NOW,
-      evidence: '',
-    });
+  it.each(DismissMethod.options)(
+    'buckets a %s dismissal as dismissed: neither caught nor needing remediation',
+    async (method) => {
+      record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'key-open' });
+      record({
+        daysAgo: 1,
+        severity: 'critical',
+        kind: 'code_change',
+        findingKey: 'key-dismissed',
+        ruleId: 'r-dismissed',
+      });
+      db.resolutions.insertResolution({
+        findingKey: 'key-dismissed',
+        status: 'dismissed',
+        method,
+        resolvedAt: NOW,
+        evidence: '',
+      });
 
-    const res = await security().severitySummary();
-    const critical = res.bySeverity.find((s) => s.severity === 'critical');
-    expect(critical).toEqual({
-      severity: 'critical',
-      count: 2,
-      caught: 0,
-      handled: 0,
-      resolved: 0,
-      openAtRest: 1,
-      dismissed: 1,
-    });
-    expect(res.total).toBe(2);
-    expect(res.needsRemediation).toBe(1);
-    expect(res.dismissed).toBe(1);
-  });
+      const res = await security().severitySummary();
+      const critical = res.bySeverity.find((s) => s.severity === 'critical');
+      expect(critical).toEqual({
+        severity: 'critical',
+        count: 2,
+        caught: 0,
+        handled: 0,
+        resolved: 0,
+        openAtRest: 1,
+        dismissed: 1,
+      });
+      expect(res.total).toBe(2);
+      expect(res.needsRemediation).toBe(1);
+      expect(res.dismissed).toBe(1);
+    },
+  );
 
   it('keeps an in-flight finding caught even when its key carries a dismissed row', async () => {
     record({ daysAgo: 1, severity: 'high', kind: 'prompt', findingKey: 'key-inflight' });

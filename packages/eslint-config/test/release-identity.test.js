@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
 /** @type {import('typescript')} */
 const ts = require('typescript');
 
-// A release publishes four artifacts, and every one of them carries an identity
+// A release publishes five artifacts, and every one of them carries an identity
 // in more than one file: a package name, a marketplace entry, a host manifest, a
 // shell filter in a workflow. Nothing joined those copies, so each of them could
 // be edited on its own — and the failures that follow are all of the kind a
@@ -26,9 +26,9 @@ const ts = require('typescript');
 //
 // Everything here is DERIVED. There is no expected list of plugins, no version
 // numeral and no tag: the sets are read out of the tree and compared with each
-// other, so adding a fourth plugin needs no edit here and forgetting half of
+// other, so adding a fifth plugin needs no edit here and forgetting half of
 // adding one reds. Pre-1.0 the version numbers are chosen ad hoc at the
-// scheduled release, so the only version claim this makes is that the four
+// scheduled release, so the only version claim this makes is that the five
 // shippable artifacts AGREE — never what they agree on, and never that anything
 // needs bumping.
 //
@@ -52,6 +52,7 @@ const HOST_MANIFESTS = Object.freeze({
   'plugins/claude-code': '.claude-plugin/plugin.json',
   'plugins/codex': '.codex-plugin/plugin.json',
   'plugins/antigravity': 'plugin.json',
+  'plugins/copilot': 'plugin.json',
 });
 
 // A marketplace name and a plugin entry name both reach a host's command line

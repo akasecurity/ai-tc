@@ -67,6 +67,16 @@ reported as unscanned in the same way.
 happened before AKA was installed, or any session's own transcript on disk.
 `aka scan` and the dashboard cover the working tree after the fact.
 
+**Windows is unconfirmed.** The plugin has not been installed and run against
+a real Copilot CLI on Windows, so whether its hook commands survive that
+platform's shell is untested.
+
+**The install is a local-directory install, which Copilot calls deprecated.**
+The plugin is installed from an unpacked copy of its npm package with
+`copilot plugin install ./package`, and the Copilot CLI warns that direct
+local-path installs are deprecated. There is no marketplace install for this
+plugin yet.
+
 **Command text is never masked in place.** Rewriting a shell command changes
 what runs, so a `redact` policy on command text follows this workspace's
 `redactFallback` instead. It ships as `warn`, which means the command runs and

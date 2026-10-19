@@ -426,7 +426,7 @@ jobs:
       # REST releases API ignores it when the tag already exists.
       #
       # BOTH halves of the gate are load-bearing. `prerelease` keeps this out of
-      # the repository's latest-release election, which six tag prefixes share
+      # the repository's latest-release election, which seven tag prefixes share
       # here, and `make_latest: false` says the same thing a second way; the
       # event check is what keeps the workflow_dispatch dry run — whose build is
       # attested by nothing — off the surface a documentation page links to.

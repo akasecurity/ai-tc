@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
@@ -10,12 +11,15 @@ import {
   dataDir,
   type LocalDatabase,
   openLocalDatabase,
+  readAttachedIdentity,
   readEffectiveSettings,
+  recordValidatedWorkAccount,
   settingsDir,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
   writeHistorySyncState,
 } from '@akasecurity/persistence';
-import { type AttachmentScope, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import { agentKey, type AttachmentScope, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,11 +55,23 @@ vi.mock('node:os', async (importActual) => {
 // the two reads disagree, and the disagreement is the case the page must not
 // paper over, so this seam lets a case make ONLY the mode read answer
 // `undefined`. Everything else, the state read included, stays the real one.
+//
+// The page also derives the coding-agent keys through `codingScopeExtrasAt`, for
+// a scoped attachment only. That reader answers none for a machine credential
+// either way, so the answer cannot show whether the page asked; this seam counts
+// its calls instead.
 const modeRead = vi.hoisted(() => ({ unread: false }));
+const extrasReads = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
+    codingScopeExtrasAt: (
+      ...args: Parameters<typeof actual.codingScopeExtrasAt>
+    ): ReturnType<typeof actual.codingScopeExtrasAt> => {
+      extrasReads.calls += 1;
+      return actual.codingScopeExtrasAt(...args);
+    },
     readControlPlaneAttachmentMode: (
       ...args: Parameters<typeof actual.readControlPlaneAttachmentMode>
     ): ReturnType<typeof actual.readControlPlaneAttachmentMode> =>
@@ -96,6 +112,7 @@ beforeEach(() => {
   dir = dataDir();
   emptyStore.seed(dir);
   dropMemoisedDb();
+  extrasReads.calls = 0;
 });
 
 afterEach(() => {
@@ -686,6 +703,19 @@ describe('the settings route — the sync panel', () => {
     }
   });
 
+  // A tool call's detections go with that call and the device report carries
+  // finding counts and dates, so "not sent from here" would deny both.
+  it('says what of the findings is sent, not that none is', async () => {
+    attach();
+    grant();
+
+    const findings = ((await panel()).localOnly ?? []).find((line) => line.id === 'findings');
+    expect(findings?.detail).toBe(
+      'derived by your deployment from the activity it receives; what was detected in a tool call’s inputs goes with that call, and the device report carries finding counts and dates',
+    );
+    expect(findings?.detail).not.toContain('not sent from here');
+  });
+
   // Every relative label on the page has to be computed against ONE instant, or
   // the server render and the hydration disagree whenever a rounding boundary
   // falls between them and React discards the markup. That the instant is
@@ -704,10 +734,11 @@ describe('the settings route — the sync panel', () => {
 });
 
 describe('the settings route — the sync panel on a scoped attachment', () => {
-  // A scoped attachment sends activity only from what its enrolled repositories
-  // recorded, and its history drain filters every pass by that scope. The bars
-  // are counted by the same scope, resolved from the same inputs, so they
-  // describe what this machine sends rather than everything its store holds.
+  // A scoped attachment sends activity only from what is enrolled on it and from
+  // recognised work-subscription sessions, and its history drain filters every
+  // pass by that scope. The bars are counted by the same scope, resolved from the
+  // same inputs, so they describe what this machine sends rather than everything
+  // its store holds.
   // Each case writes a real credential file and a real settings record; only the
   // store's rows are seeded by hand, and one case calls the reader directly to
   // give it a mode the page could not read.
@@ -802,7 +833,7 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
     attach();
     seedSession('s-1');
     const stateNow = (): PanelState | undefined =>
-      readSyncPanel(readEffectiveSettings().settings, { usable: true }, T0, undefined)?.state;
+      readSyncPanel(readEffectiveSettings().settings, { usable: true }, T0, undefined, [])?.state;
 
     expectModeUnread(stateNow());
     grant();
@@ -845,9 +876,10 @@ describe('the settings route — the sync panel on a scoped attachment', () => {
 });
 
 // The not-shared line says what is sent from now on, and a personal device
-// sends activity only from its enrolled repositories. The route reads the mode
-// once, for the form, and the panel takes the same answer; a machine-wide
-// attachment's props carry no flag at all.
+// sends activity only from what is enrolled on it and from recognised
+// work-subscription sessions. The route reads the mode once, for the form, and
+// the panel takes the same answer; a machine-wide attachment's props carry no
+// flag at all.
 describe('the settings route — the sync panel on a personal device', () => {
   it('tells the panel the machine is a personal device', async () => {
     attachScoped();
@@ -861,5 +893,109 @@ describe('the settings route — the sync panel on a personal device', () => {
     const sync = await panel();
     expect(sync.state).toEqual({ status: 'not-shared' });
     expect(sync).not.toHaveProperty('scoped');
+  });
+
+  it('tells the panel work subscriptions are on when the scope record does not mention them', async () => {
+    attachScoped(scopeRecord([WORK]));
+    expect((await panel()).workSubscriptions).toBe('on');
+  });
+
+  it.each<[string, unknown]>([
+    ['off', 'off'],
+    ['a value this version does not know', 'paused'],
+  ])('tells the panel they are off for a stored %s', async (_name, value) => {
+    attachScoped({ ...scopeRecord([WORK]), workSubscriptions: value });
+    expect((await panel()).workSubscriptions).toBe('off');
+  });
+
+  it('says nothing about work subscriptions on a machine-wide attachment', async () => {
+    attach();
+    expect(await panel()).not.toHaveProperty('workSubscriptions');
+  });
+});
+
+// A scoped attachment also sends the rows stamped for a work account the device
+// recognised, and the bars count them where the drain would send them. The keys
+// come from the identity record bound to the credential, read on the server for
+// the page; a machine-wide attachment never reads that record.
+describe('the settings route — the sync panel with a learned work account', () => {
+  const ACCOUNT = `claude:${randomUUID()}`;
+
+  /** The identity record for this machine's credential, ACCOUNT learned, and its agent key. */
+  function learn(): string {
+    writeAttachedIdentity(dir, {
+      endpoint: ENDPOINT,
+      apiKey: KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    recordValidatedWorkAccount(dir, {
+      endpoint: ENDPOINT,
+      credential: { specVersion: 2, mode: 'scoped', endpoint: ENDPOINT, apiKey: KEY },
+      key: ACCOUNT,
+    });
+    const record = readAttachedIdentity(dir);
+    if (!record?.workAccounts.some((entry) => entry.identity === ACCOUNT)) {
+      throw new Error('the account was not learned');
+    }
+    const key = agentKey(record.scopeTag, ACCOUNT);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  it('counts the rows stamped for a learned work account', async () => {
+    attachScoped(scopeRecord([WORK]));
+    grant();
+    seedKeyedSession('agent-1', learn());
+    withStore((db) => {
+      db.historySync.markCaptureOwed('agent-1-prompt');
+    });
+
+    // [kind, synced, queued, notSent, total]
+    expect(await bars()).toEqual([
+      ['session', 0, 1, 0, 1],
+      ['llm_call', 0, 1, 0, 1],
+      ['tool_call', 0, 1, 0, 1],
+      ['prompt', 0, 1, 0, 1],
+    ]);
+    expect(extrasReads.calls).toBeGreaterThan(0);
+  });
+
+  it('leaves them out once work subscriptions are off', async () => {
+    attachScoped({ ...scopeRecord([WORK]), workSubscriptions: 'off' });
+    grant();
+    seedKeyedSession('agent-1', learn());
+    withStore((db) => {
+      db.historySync.markCaptureOwed('agent-1-prompt');
+    });
+
+    expect((await panel()).state).toEqual({ status: 'nothing-in-scope', enrolled: 1 });
+  });
+
+  // A recognised work account is not an enrollment: the count the empty state
+  // carries is of the stored entries alone.
+  it('says nothing is enrolled when a learned work account is all the scope holds', async () => {
+    attachScoped(scopeRecord([]));
+    grant();
+    learn();
+    seedKeyedSession('home-1', PERSONAL);
+
+    expect((await panel()).state).toEqual({ status: 'nothing-in-scope', enrolled: 0 });
+  });
+
+  it('counts everything recorded on a machine-wide attachment, a learned record or not', async () => {
+    attach();
+    applyOnboarding({ attachmentScope: scopeRecord([WORK]) }, akaHome());
+    grant();
+    seedKeyedSession('agent-1', learn());
+    seedKeyedSession('home-1', PERSONAL);
+
+    expect(await bars()).toEqual([
+      ['session', 0, 2, 0, 2],
+      ['llm_call', 0, 2, 0, 2],
+      ['tool_call', 0, 2, 0, 2],
+    ]);
+    // The page never asks for the coding-agent keys on a machine-wide attachment.
+    expect(extrasReads.calls).toBe(0);
   });
 });

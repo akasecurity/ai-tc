@@ -4,8 +4,8 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
-import { RATIO_CLOCK } from '../helpers/clocks.ts';
 import { BOM, FORMAT_CHARS, SOFT_HYPHEN, ZWSP } from '../helpers/format-chars.ts';
+import { growthClock } from '../helpers/growth-clock.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // Parsed through the real schema — these assert the shipped path end to end
@@ -428,11 +428,13 @@ describe('the slow path does not blow up on a large text with one format charact
   // costs on the other (see bench/benign-format-chars.bench.ts for the
   // measured, non-pathological cost of the slow path).
   //
-  // The readings are this thread's CPU time where that clock is fine enough
-  // (`RATIO_CLOCK`), because the fastest of five wall readings does not
-  // survive a machine with no free core for the whole measurement: under 30
-  // CPU burners on 10 cores the healthy scan read 10.1x, 11.9x and 15.6x on
-  // the wall. And a ratio over the bound is measured again before it fails,
+  // The readings are taken on the ReDoS growth tier's clock (`growthClock`):
+  // this thread's CPU time, averaged, where that clock steps finely enough,
+  // and the fastest wall reading otherwise. The fastest of five wall readings
+  // alone does not survive a machine with no free core for the whole
+  // measurement: under 30 CPU burners on 10 cores the healthy scan read 10.1x,
+  // 11.9x and 15.6x on the wall. And a ratio over the bound is measured again
+  // before it fails,
   // up to ATTEMPTS times: the quadratic merge reads ~330x on every attempt,
   // and a reading that was the machine's does not come back three times.
   it('scans a large multi-rule text with one leading BOM in roughly the same time as without one', () => {
@@ -453,10 +455,11 @@ describe('the slow path does not blow up on a large text with one format charact
     const withoutBom = body;
     const withBom = BOM + body;
 
+    const clock = growthClock();
     function timeOnce(text: string): number {
-      const start = RATIO_CLOCK.now();
+      const start = clock.now();
       const findings = scan(text, rules);
-      const ms = RATIO_CLOCK.now() - start;
+      const ms = clock.now() - start;
       expect(findings).toHaveLength(60000);
       return ms;
     }
@@ -467,18 +470,22 @@ describe('the slow path does not blow up on a large text with one format charact
     const readings: string[] = [];
     let ratio = Infinity;
     for (let attempt = 0; attempt < ATTEMPTS && ratio >= MAX_RATIO; attempt++) {
-      let withoutBomBest = Infinity;
-      let withBomBest = Infinity;
+      const without: number[] = [];
+      const withOne: number[] = [];
       for (let i = 0; i < REPEATS; i++) {
-        withoutBomBest = Math.min(withoutBomBest, timeOnce(withoutBom));
-        withBomBest = Math.min(withBomBest, timeOnce(withBom));
+        without.push(timeOnce(withoutBom));
+        withOne.push(timeOnce(withBom));
       }
-      ratio = withBomBest / Math.max(withoutBomBest, 0.001);
-      readings.push(`${withBomBest.toFixed(1)}ms with, ${withoutBomBest.toFixed(1)}ms without`);
+      const reduce = (xs: number[]): number =>
+        clock.statistic === 'mean' ? xs.reduce((a, b) => a + b, 0) / xs.length : Math.min(...xs);
+      const withoutMs = reduce(without);
+      const withMs = reduce(withOne);
+      ratio = withMs / Math.max(withoutMs, 0.001);
+      readings.push(`${withMs.toFixed(1)}ms with, ${withoutMs.toFixed(1)}ms without`);
     }
     expect(
       ratio,
-      `best of ${String(REPEATS)} on ${RATIO_CLOCK.name}, per attempt: ${readings.join('; ')}`,
+      `${clock.statistic} of ${String(REPEATS)} on ${clock.statistic === 'mean' ? 'thread CPU time' : 'wall time'}, per attempt: ${readings.join('; ')}`,
     ).toBeLessThan(MAX_RATIO);
   });
 });

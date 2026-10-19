@@ -65,6 +65,7 @@ describe('handleProhibitedTurn', () => {
       's1',
       undefined,
       dir,
+      undefined,
       (o) => {
         emitted.push(o);
         return Promise.resolve();
@@ -86,6 +87,7 @@ describe('handleProhibitedTurn', () => {
       's1',
       undefined,
       dir,
+      undefined,
       (o) => {
         emitted.push(o);
         return Promise.resolve();
@@ -103,7 +105,9 @@ describe('handleProhibitedTurn', () => {
       close: vi.fn(),
     } as unknown as Parameters<typeof handleProhibitedTurn>[0];
     expect(
-      await handleProhibitedTurn(broken, dir, 's1', undefined, dir, () => Promise.resolve()),
+      await handleProhibitedTurn(broken, dir, 's1', undefined, dir, undefined, () =>
+        Promise.resolve(),
+      ),
     ).toBe(false);
   });
 
@@ -111,7 +115,7 @@ describe('handleProhibitedTurn', () => {
     // Ordering that keeps an unenforced tenant off the transcript entirely.
     recordSessionModel(dir, 's1', 'o3');
     expect(
-      await handleProhibitedTurn(gatewayWith(undefined), dir, 's1', undefined, dir, () =>
+      await handleProhibitedTurn(gatewayWith(undefined), dir, 's1', undefined, dir, undefined, () =>
         Promise.resolve(),
       ),
     ).toBe(false);
@@ -151,6 +155,7 @@ describe('handleProhibitedTurn keys the refusal row', () => {
       's1',
       undefined,
       checkout('work', 'git@github.com:acme/work-repo.git'),
+      undefined,
       () => Promise.resolve(),
     );
     expect(stop).toBe(true);
@@ -170,6 +175,7 @@ describe('handleProhibitedTurn keys the refusal row', () => {
       's1',
       undefined,
       checkout('scratch', undefined),
+      undefined,
       () => Promise.resolve(),
     );
     expect(recorded).toHaveLength(1);
@@ -247,7 +253,7 @@ describe('handleProhibitedTurn keys the refusal row', () => {
       cwd: string | undefined,
     ): Promise<{ stop: boolean; emitted: number }> {
       let emitted = 0;
-      const stop = await handleProhibitedTurn(gateway, dir, 's1', undefined, cwd, () => {
+      const stop = await handleProhibitedTurn(gateway, dir, 's1', undefined, cwd, undefined, () => {
         emitted += 1;
         return Promise.resolve();
       });

@@ -240,7 +240,7 @@ and adding one anywhere schema can reach is what would break it.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Ten places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eleven places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
 
 | Site                                              | Mechanism                         | Why                                                         |
 | ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
@@ -254,8 +254,9 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 | `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
 | `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
 | `plugins/claude-code/src/hooks/session-start.ts`  | file-scoped ESLint config         | the interface the host stamps on its own subprocess env     |
+| `packages/plugin-sdk/src/account/account-env.ts`  | file-scoped ESLint config         | Claude Code and Codex login env, compared in memory only    |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding an eleventh site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding another site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -1977,19 +1978,24 @@ and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a be
 threw would be a timing gate wearing a different name.
 
 A guard is only a correctness assertion while a loaded runner cannot fail it. The ReDoS
-growth tier reads this thread's CPU time wherever that clock is fine enough to give a ratio,
-and wall time only where it is credited in whole ticks (the Windows runner), with the
-absolute budget then corroborated by the thread's CPU clock; a breach fails only if it comes
-back on three runs of the tier. The per-rule walk screens on process-wide CPU, and a breach
-there is measured again on a fresh worker thread charged with that thread's own CPU — a new
-isolate, so the regex runs interpreted again as a hook process does (re-measuring on the
-same thread would measure the compiled tier, see `worstProbeMs`) — and only that second
-reading decides. `packages/detections/test/security/unicode.test.ts`'s one-BOM slow-path
-ratio reads the same clock as the growth tier and fails only when three attempts breach.
-And a guard whose subject has a countable unit counts it rather than timing it —
-`mergeOverlappingSameRule`'s growth guard counts the uses of the span bounds it compares,
-and the browser extension's SSE rescan guard counts the characters the string builtins
-examine (`plugins/browser-extension/test/helpers/scan-meter.ts`).
+growth tier reads the scanning thread's CPU time and AVERAGES it wherever that clock's
+measured median step is at most 5 ms — a thread waiting for a core accrues none of it, and
+the minimum of tick-quantized readings sits a tick low — and falls back to the fastest of
+several wall readings where it steps more coarsely (the Windows runner); the clock and the
+statistic are chosen by `packages/detections/test/helpers/growth-clock.ts`, and the pair a
+ratio compares keeps all of its rounds when the next doubling goes over budget. The
+per-rule walk screens on process-wide CPU, and a breach there is measured again on a fresh
+worker thread charged with that thread's own CPU — a new isolate, so the regex runs
+interpreted again as a hook process does (re-measuring on the same thread would measure
+the compiled tier, see `worstProbeMs`) — and only that second reading decides. A control
+case holds the re-measurement to the interpreted cost: more than three times the same
+probe's compiled cost on the calling thread, that cost floored at one clock step, on the
+native clock and on a forced 16 ms step. `packages/detections/test/security/unicode.test.ts`'s
+one-BOM slow-path ratio reads the growth tier's clock and statistic and fails only when
+three attempts breach. And a guard whose subject has a countable unit counts it rather
+than timing it — `mergeOverlappingSameRule`'s growth guard counts the uses of the span
+bounds it compares, and the browser extension's SSE rescan guard counts the characters the
+string builtins examine (`plugins/browser-extension/test/helpers/scan-meter.ts`).
 
 Six properties are load-bearing, and each is enforced by
 `packages/eslint-config/test/bench-harness.test.js` rather than remembered:

@@ -1,18 +1,24 @@
-import { mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
   applyOnboarding,
+  ATTACHED_IDENTITY_FILENAME,
   dataDir as dataDirOf,
   dbPath as dbPathOf,
   openLocalDatabase,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
+  SETTINGS_FILENAME,
   settingsDir as settingsDirOf,
+  writeAttachedIdentity,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import type { IngestEvent, RecordAuditEventRequest } from '@akasecurity/schema';
-import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import { agentKey, HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
@@ -199,5 +205,279 @@ describe('runHistorySync — a scoped credential read from disk', () => {
       countsScope: 'scoped',
     });
     expect(delivery('cap-personal')).toEqual({ syncedAt: null, owed: 1 });
+  });
+});
+
+// The same drain once this attachment has learned a work account: rows stamped
+// with that account's agent key are in its scope, re-derived before every page,
+// so an opt-out, or an identity record that stops holding, takes them out of the
+// next one. The consent re-mark still reads the stored entries alone.
+describe('runHistorySync — rows stamped for a learned work account', () => {
+  const ACCOUNT = `claude:${randomUUID()}`;
+  const CREDENTIAL = {
+    specVersion: 2,
+    mode: 'scoped',
+    endpoint: ENDPOINT,
+    apiKey: TEST_KEY,
+    mintedAt: AT,
+  } as const;
+
+  /** The identity record for this credential, one learned account, and its agent key. */
+  function learn(): string {
+    writeAttachedIdentity(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    recordValidatedWorkAccount(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      credential: CREDENTIAL,
+      key: ACCOUNT,
+    });
+    const record = readAttachedIdentity(dataDirOf(home));
+    if (!record?.workAccounts.some((entry) => entry.identity === ACCOUNT)) {
+      throw new Error('the account was not learned');
+    }
+    const key = agentKey(record.scopeTag, ACCOUNT);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  /** `count` prompt captures stamped `scopeKey`, `atMs` onwards, one millisecond apart. */
+  function seed(
+    prefix: string,
+    scopeKey: string,
+    count: number,
+    atMs: number,
+    owed: boolean,
+  ): void {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(`${prefix}-session`, new Date(atMs - 60_000).toISOString());
+      for (let i = 0; i < count; i += 1) {
+        const id = `${prefix}-${String(i)}`;
+        db.auditEvents.insertAuditEvent({
+          id,
+          eventType: 'prompt',
+          rootSessionId: `${prefix}-session`,
+          parentId: `${prefix}-session`,
+          startedAt: new Date(atMs + i).toISOString(),
+          content: `text of ${id}`,
+          contentHash: 'c'.repeat(64),
+          attributes: { source_tool: 'claude-code', scope_key: scopeKey },
+        });
+        if (owed) db.historySync.markCaptureOwed(id);
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  /** The scope record on disk, edited raw, the way the opt-out command writes it. */
+  function turnWorkSubscriptionsOff(): void {
+    const file = join(settingsDirOf(home), SETTINGS_FILENAME);
+    const settings = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const scope = settings.attachmentScope as Record<string, unknown>;
+    writeFileSync(
+      file,
+      JSON.stringify({ ...settings, attachmentScope: { ...scope, workSubscriptions: 'off' } }),
+    );
+  }
+
+  async function pass(
+    sendCaptures: (events: readonly IngestEvent[]) => Promise<{ settled: number }>,
+  ): Promise<HistorySyncResult> {
+    let clock = T0;
+    return attempted(
+      await runHistorySync({
+        base: home,
+        settingsDir: settingsDirOf(home),
+        dataDir: dataDirOf(home),
+        now: () => clock,
+        sleep: () => {
+          clock += 1;
+          return Promise.resolve();
+        },
+        random: () => 0,
+        sendBatch: (events) => Promise.resolve({ settled: events.length }),
+        sendOne: () => Promise.resolve(),
+        sendCaptures,
+      }),
+    );
+  }
+
+  it('sends an owed capture stamped for a learned work account', async () => {
+    attachScoped();
+    seed('agent', learn(), 1, T0 - 3_600_000, true);
+    const captures: IngestEvent[] = [];
+
+    const result = await pass((events) => {
+      captures.push(...events);
+      return Promise.resolve({ settled: events.length });
+    });
+
+    expect(captures.map((c) => c.content)).toEqual(['text of agent-0']);
+    expect(delivery('agent-0')?.syncedAt).toEqual(expect.any(Number));
+    expect(result.capturesPending).toBe(false);
+  });
+
+  it('stops sending at the next batch once work subscriptions are turned off', async () => {
+    attachScoped();
+    seed('agent', learn(), 150, T0 - 3_600_000, true);
+    const batches: number[] = [];
+
+    await pass((events) => {
+      batches.push(events.length);
+      // The opt-out, written while the first batch is in flight.
+      turnWorkSubscriptionsOff();
+      return Promise.resolve({ settled: events.length });
+    });
+
+    expect(batches).toEqual([100]);
+    expect(delivery('agent-149')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  it('stops sending at the next batch once the identity record stops holding', async () => {
+    attachScoped();
+    seed('agent', learn(), 150, T0 - 3_600_000, true);
+    const batches: number[] = [];
+
+    await pass((events) => {
+      batches.push(events.length);
+      // A detach's sweep, or a re-attach by an older build, landing mid-pass.
+      rmSync(join(dataDirOf(home), ATTACHED_IDENTITY_FILENAME), { force: true });
+      return Promise.resolve({ settled: events.length });
+    });
+
+    expect(batches).toEqual([100]);
+    expect(delivery('agent-149')).toEqual({ syncedAt: null, owed: 1 });
+  });
+
+  // The first pass on this store arms the deployment and re-marks the grant's
+  // backlog, scoped like the consent seed it repeats. Neither capture below is
+  // marked owed when the pass starts: the enrolled one is the control.
+  it("re-marks only the stored entries' captures when it arms a deployment", async () => {
+    attachScoped();
+    const agentScoped = learn();
+    seed('work-backlog', WORK_REPO, 1, Date.parse(AT) - 3_600_000, false);
+    seed('agent-backlog', agentScoped, 1, Date.parse(AT) - 3_600_000, false);
+    const captures: IngestEvent[] = [];
+
+    await pass((events) => {
+      captures.push(...events);
+      return Promise.resolve({ settled: events.length });
+    });
+
+    expect(captures.map((c) => c.content)).toEqual(['text of work-backlog-0']);
+    expect(delivery('agent-backlog-0')).toEqual({ syncedAt: null, owed: null });
+  });
+});
+
+// Without a grant the pass still sends what the live path left owed, read through
+// the keys it derives: an owed capture stamped with the agent key of an account
+// enrolled by hand waits while the account is not enrolled and is sent once it is
+// enrolled again.
+describe('runHistorySync — an account enrolled by hand, without a history grant', () => {
+  const ACCOUNT = `claude:${randomUUID()}`;
+
+  function attachWithEntries(entries: readonly unknown[]): void {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+        attachmentScope: { endpoint: ENDPOINT, entries },
+      },
+      home,
+      null,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 2,
+      mode: 'scoped',
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      mintedAt: AT,
+    });
+  }
+
+  function agentKeyOfAttached(): string {
+    writeAttachedIdentity(dataDirOf(home), {
+      endpoint: ENDPOINT,
+      apiKey: TEST_KEY,
+      tenantName: 'Acme',
+      userEmail: ['member', 'example.test'].join('@'),
+    });
+    const record = readAttachedIdentity(dataDirOf(home));
+    const key = record === undefined ? undefined : agentKey(record.scopeTag, ACCOUNT);
+    if (key === undefined) throw new Error('no agent key was built');
+    return key;
+  }
+
+  function seedOwed(scopeKey: string, startedAtMs: number): void {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(
+        'owed-session',
+        new Date(startedAtMs - 60_000).toISOString(),
+      );
+      db.auditEvents.insertAuditEvent({
+        id: 'owed-0',
+        eventType: 'prompt',
+        rootSessionId: 'owed-session',
+        parentId: 'owed-session',
+        startedAt: new Date(startedAtMs).toISOString(),
+        content: 'text of owed-0',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code', scope_key: scopeKey },
+      });
+      db.historySync.markCaptureOwed('owed-0');
+    } finally {
+      db.close();
+    }
+  }
+
+  async function pass(): Promise<IngestEvent[]> {
+    const captures: IngestEvent[] = [];
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      now: () => clock,
+      sleep: () => {
+        clock += 1;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendOne: () => Promise.resolve(),
+      sendCaptures: (events) => {
+        captures.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+    return captures;
+  }
+
+  const entry = { kind: 'account', identity: ACCOUNT, enrolledAt: AT, codingAgents: true };
+
+  it('sends an owed capture once the account is enrolled again, and not while it is not', async () => {
+    attachWithEntries([]);
+    seedOwed(agentKeyOfAttached(), T0 - 3_600_000);
+
+    expect(await pass()).toEqual([]);
+    expect(delivery('owed-0')).toEqual({ syncedAt: null, owed: 1 });
+
+    attachWithEntries([entry]);
+    expect((await pass()).map((c) => c.content)).toEqual(['text of owed-0']);
+    expect(delivery('owed-0')?.syncedAt).toEqual(expect.any(Number));
+  });
+
+  it('sends none recorded before the machine attached', async () => {
+    attachWithEntries([entry]);
+    seedOwed(agentKeyOfAttached(), Date.parse(AT) - 3_600_000);
+
+    expect(await pass()).toEqual([]);
+    expect(delivery('owed-0')).toEqual({ syncedAt: null, owed: 1 });
   });
 });

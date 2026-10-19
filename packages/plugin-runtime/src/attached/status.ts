@@ -1,13 +1,39 @@
-import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
+import {
+  bindingHashOf,
+  codingScopeExtras,
+  credentialDigestOf,
+  managedScopedRefusal,
+  readAttachedIdentity,
+  readBoundAttachedIdentity,
+  readControlPlaneCredentialFile,
+  readWorkspaceSettings,
+} from '@akasecurity/persistence';
 import { readHookFailOpens } from '@akasecurity/plugin-sdk';
+import type { AccountPlanState, ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import {
+  accountContextFor,
+  chatgptKey,
+  claudeLoginCheck,
+  codexEnvVetoed,
+  inspectCodexLogin,
+  isAccountMatch,
+} from '@akasecurity/plugin-sdk/account';
 import type {
+  AccountBasis,
+  AccountCheckReason,
+  AttachedIdentity,
   AttachmentMode,
   AttachmentScope,
   AttachmentScopeEntry,
   ControlPlaneConnection,
+  ManagedSettings,
+  WebAccountProvider,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
+  agentKey,
+  ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX,
+  attachedIdentityHolds,
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   controlPlaneName,
@@ -17,7 +43,10 @@ import {
   isHistorySyncConsentValid,
   originOnly,
   parseAttachmentScope,
+  parseWebAccountKey,
   resolveScope,
+  WEB_ACCOUNT_PROVIDER,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
@@ -60,6 +89,22 @@ export interface RenderAttachedStatusDeps {
   settingsDir: string;
   dataDir: string;
   now?: () => number;
+  /** Whether stdout is a terminal. Off one, the login reasons collapse to one line. */
+  isTTY?: boolean | undefined;
+  /** The administrator's overlay. `null` means unmanaged; absent reads the system paths. */
+  managedSettings?: ManagedSettings | null | undefined;
+  /** Where Claude Code keeps its login and settings files. Absent, no Claude Code login is read. */
+  claudePaths?: ClaudeLoginPaths | undefined;
+  /** The project whose Claude Code settings layers can veto the login. Defaults to the working directory. */
+  cwd?: string | undefined;
+  /**
+   * Codex's home directory, whose login file the Codex line describes. `null`
+   * asks for the line when the environment names no usable home: it reads as no
+   * login file, or as an API key or another provider in use when a key, a token
+   * or a gateway is set. Left out, no Codex login is read and the status has no
+   * Codex line.
+   */
+  codexHome?: string | null | undefined;
 }
 
 /**
@@ -108,7 +153,7 @@ const OUTCOME_LINES: Record<PolicySyncOutcome, string> = {
  */
 const MODE_LINES: Record<AttachmentMode, string> = {
   machine: 'machine (activity from anywhere on this machine)',
-  scoped: 'scoped (activity only from what is enrolled)',
+  scoped: 'scoped (activity from what is enrolled, and from work-subscription sessions)',
 };
 
 /**
@@ -117,15 +162,375 @@ const MODE_LINES: Record<AttachmentMode, string> = {
  * not stored spell out their own advice, and the lines for one this build cannot
  * read carry none.
  */
-const ENROLL_HINT = '             (run `aka enroll` inside a work repository to add it)';
+const ENROLL_HINT =
+  '             (run `aka enroll` inside a work repository to add it, or `aka enroll --account <key>` for a work subscription this device does not recognise)';
+
+/**
+ * The `user` line when no identity record counts for this credential. What a
+ * work subscription is recognised against is then unknown, so none is, and the
+ * coding-agent keys derive from that record, so no Claude Code session is sent
+ * for an account enrolled by hand either. Never the user's address: the record
+ * holds only a digest of it. The plugin's background sync asks the deployment
+ * which account the key belongs to, and asks again at later syncs until it has an
+ * answer, which is what both lines wait for.
+ */
+const USER_LINES = {
+  unknown:
+    '  user       not known until this machine syncs — until then work subscriptions are not recognised and no Claude Code session is sent for an enrolled account',
+  untied:
+    '  user       not tied to this key — the next sync re-checks it; until then no Claude Code session is sent for a work subscription or an enrolled account',
+} as const;
+
+/**
+ * What a learned work account forwards, by the provider its key names. An
+ * exhaustive Record, so a provider added later fails typecheck here until its
+ * coding agent's line is written.
+ */
+const WORK_ACCOUNT_REACH: Record<WebAccountProvider, string> = {
+  [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude Code sessions signed in to it forward from any folder',
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: 'new Codex threads signed in to it forward from any folder',
+};
+
+/** The commands that turn work-subscription recognition off and back on, as every surface prints them. */
+export const WORK_SUBSCRIPTION_COMMANDS = {
+  off: 'aka unenroll --work-subscriptions',
+  on: 'aka enroll --work-subscriptions',
+} as const;
+
+/**
+ * The `work` line, by whether recognition is on, each naming the command that
+ * changes it, on a personal device whose connection nobody manages.
+ */
+const WORK_LINES = {
+  on: `  work       subscriptions on — \`${WORK_SUBSCRIPTION_COMMANDS.off}\` turns them off on this device`,
+  off: `  work       subscriptions off — you turned them off; \`${WORK_SUBSCRIPTION_COMMANDS.on}\` turns them back on`,
+} as const;
+
+/**
+ * What follows "on" or "off" on a scoped device whose connection an
+ * administrator now manages. Both commands refuse there, so none is named.
+ */
+const WORK_LINE_FIXED =
+  "— fixed while an administrator manages this machine's connection; re-attaching makes it machine-wide";
+
+/** The one line a machine-wide attachment gains when an administrator manages its connection. */
+const MANAGED_MACHINE_LINE =
+  "  personal device  not available — an administrator manages this machine's connection, so it is attached machine-wide and there is no work-subscription opt-out";
+
+/** The this-login block off a terminal: no reason and no key. */
+const THIS_LOGIN_COLLAPSED = '  this login details on an interactive terminal';
+
+/** What the Claude Code login signed in now is, as `aka status` and `aka enroll --list-detected` show it. */
+export type ClaudeCodeLoginState =
+  | 'manual'
+  | 'remembered'
+  | 'would-validate'
+  | 'off'
+  | 'cap-reached'
+  | 'email'
+  | 'plan'
+  | 'plan-unconfirmed'
+  | 'plan-stale'
+  | 'env-mismatch'
+  | 'veto'
+  | 'attached-user-unknown'
+  | 'signed-out'
+  | 'absent'
+  | 'unreadable';
+
+export interface ClaudeCodeLoginView {
+  /** The login's account key, for the user's own terminal; undefined with no organization. */
+  readonly key: string | undefined;
+  readonly planState: AccountPlanState | undefined;
+  readonly state: ClaudeCodeLoginState;
+}
+
+export interface ClaudeCodeLoginViewInput {
+  /** The identity record, only when it holds for this endpoint and credential. */
+  readonly identity: AttachedIdentity | undefined;
+  /** The stored `attachmentScope`, raw. */
+  readonly scope: unknown;
+  readonly endpoint: string;
+  /** The project whose Claude Code settings layers can veto the login. */
+  readonly cwd: string;
+  readonly paths: ClaudeLoginPaths;
+}
+
+const FORWARDS = 'a work subscription for the attached user — its sessions forward from any folder';
+
+/**
+ * The this-login reason for each state, given the key as it prints. An
+ * exhaustive Record, so a state added later fails typecheck here.
+ */
+const CLAUDE_CODE_LOGIN_LINES: Record<ClaudeCodeLoginState, (key: string) => string> = {
+  manual: () => 'an account you enrolled by hand — its sessions forward from any folder',
+  remembered: () => FORWARDS,
+  'would-validate': () => FORWARDS,
+  off: () =>
+    'a work subscription for the attached user — not sent, because work subscriptions are off on this device',
+  'cap-reached': () =>
+    `a work subscription for the attached user — not sent, because this device already recognises ${String(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX)} work accounts`,
+  email: () => 'signed in with a different email than the AKA user who attached this device',
+  plan: () => 'personal plan — sessions follow the repository rule',
+  'plan-unconfirmed': (key) =>
+    `plan not confirmed by Claude Code — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  'plan-stale': (key) =>
+    `plan not confirmed for this organization — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  'env-mismatch': () =>
+    "the desktop app names another login than Claude Code's login file — sessions follow the repository rule",
+  veto: () => 'an API key or another provider is in use',
+  'attached-user-unknown': () =>
+    'not checked — this device does not know yet which AKA user attached it',
+  'signed-out': () => 'not signed in to a Claude account',
+  absent: () => 'login file not found',
+  unreadable: () => 'login file could not be read',
+};
+
+/** A login that counts, by the basis it would count on. */
+const MATCH_STATE_OF: Record<AccountBasis, ClaudeCodeLoginState> = {
+  manual: 'manual',
+  remembered: 'remembered',
+  validated: 'would-validate',
+};
+
+/**
+ * Each reason a check can give, as the state shown. The login-level check
+ * compares the login with its own organization and reads no Codex file, so a
+ * session's reasons and Codex's never reach here; they read as unreadable.
+ */
+const LOGIN_STATE_OF: Record<AccountCheckReason, ClaudeCodeLoginState> = {
+  'no-session-account': 'signed-out',
+  veto: 'veto',
+  unreadable: 'unreadable',
+  'env-mismatch': 'env-mismatch',
+  'login-changed': 'unreadable',
+  'org-changed': 'unreadable',
+  email: 'email',
+  plan: 'plan',
+  'plan-unconfirmed': 'plan-unconfirmed',
+  'plan-stale': 'plan-stale',
+  'attached-user-unknown': 'attached-user-unknown',
+  'opted-out': 'off',
+  resumed: 'unreadable',
+  provider: 'veto',
+  absent: 'absent',
+  mode: 'unreadable',
+  malformed: 'unreadable',
+  'account-mismatch': 'unreadable',
+  'auth-changed': 'unreadable',
+  'cap-reached': 'cap-reached',
+};
+
+/**
+ * The Claude Code login signed in now, checked on demand through the readers
+ * the hooks use: the login file, the settings layers and the environment, never
+ * a transcript, and no network. Persists nothing. On an opted-out device a login
+ * that would count reads as `off`. Without an identity record that holds, the
+ * key and the plan state are still given. Never throws.
+ */
+export function claudeCodeLoginView(input: ClaudeCodeLoginViewInput): ClaudeCodeLoginView {
+  try {
+    const { identity } = input;
+    const ctx = accountContextFor({
+      identity,
+      scope: input.scope,
+      bindingHash:
+        identity === undefined
+          ? ''
+          : bindingHashOf(input.endpoint, identity.credentialDigest, identity.attachedUserDigest),
+      inScope: () => false,
+    });
+    const report = claudeLoginCheck({ ctx, cwd: input.cwd, paths: input.paths });
+    const shown = { key: report.key, planState: report.planState };
+    if (report.key === undefined && !report.found) return { ...shown, state: 'absent' };
+    if (isAccountMatch(report.check)) {
+      return { ...shown, state: MATCH_STATE_OF[report.check.basis] };
+    }
+    if (report.check.none !== 'opted-out' || ctx === undefined) {
+      return { ...shown, state: LOGIN_STATE_OF[report.check.none] };
+    }
+    // Off on this device: say whether the login would count were it on.
+    const on = claudeLoginCheck({
+      ctx: { ...ctx, workSubscriptionsOn: true },
+      cwd: input.cwd,
+      paths: input.paths,
+    });
+    return { ...shown, state: isAccountMatch(on.check) ? 'off' : LOGIN_STATE_OF[on.check.none] };
+  } catch {
+    return { key: undefined, planState: undefined, state: 'unreadable' };
+  }
+}
+
+/** The Claude Code this-login line. The key prints on the user's own terminal, as `aka enroll --list` prints it. */
+function claudeCodeLoginLine(view: ClaudeCodeLoginView): string {
+  const key =
+    view.key === undefined
+      ? 'claude:<organization-id>'
+      : printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return `Claude Code — ${CLAUDE_CODE_LOGIN_LINES[view.state](key)}`;
+}
+
+/** What the Codex login signed in now is, as `aka status` and `aka enroll --list-detected` show it. */
+export type CodexLoginState =
+  | 'manual'
+  | 'remembered'
+  | 'would-validate'
+  | 'off'
+  | 'cap-reached'
+  | 'email'
+  | 'plan'
+  | 'plan-unconfirmed'
+  | 'veto'
+  | 'attached-user-unknown'
+  | 'absent'
+  | 'unreadable';
+
+export interface CodexLoginView {
+  /** The login's workspace key, for the user's own terminal; undefined when no login is named. */
+  readonly key: string | undefined;
+  readonly planState: AccountPlanState | undefined;
+  readonly state: CodexLoginState;
+}
+
+export interface CodexLoginViewInput {
+  /** The identity record, only when it holds for this endpoint and credential. */
+  readonly identity: AttachedIdentity | undefined;
+  /** The stored `attachmentScope`, raw. */
+  readonly scope: unknown;
+  readonly endpoint: string;
+  /** Codex's home directory. Without one no login file is read. */
+  readonly codexHome: string | undefined;
+}
+
+/**
+ * The Codex login signed in now, checked the way a new thread would be, without a
+ * thread: the same login reader, the address compared by digest, the plan read as
+ * a state.
+ *
+ * The login file is read before the environment can veto it, so a login that was
+ * read is named by its key and plan state under a key, a token or a gateway too,
+ * and before the device knows who attached it, so `aka enroll` can ask about a
+ * personal plan before the first sync. What each case reads as:
+ * - no usable Codex home, or no login file under it, with no key, token or gateway
+ *   set: `absent`, naming nothing;
+ * - a file that is not a ChatGPT login this device can read, with none set:
+ *   `unreadable`, naming nothing;
+ * - either of those with a key, a token or a gateway set: `veto`, naming nothing;
+ * - a login with a key, a token or a gateway set: `veto`, naming its key and plan
+ *   state;
+ * - a login with none set: the state the checks described next give, naming its
+ *   key and plan state;
+ * - a read that throws, whatever is set: `unreadable`, naming nothing.
+ *
+ * An account enrolled by hand counts before the address and the plan are
+ * compared. Those two are compared before the opt-out, so a personal plan reads as
+ * one whether or not the user opted out; the opt-out is compared before the cap on
+ * recognised accounts, so with recognition off a login that would otherwise be
+ * over the cap reads as `off`. Persists nothing. Never throws.
+ */
+export function codexLoginView(input: CodexLoginViewInput): CodexLoginView {
+  const unnamed = (state: CodexLoginState): CodexLoginView => ({
+    key: undefined,
+    planState: undefined,
+    state,
+  });
+  try {
+    const vetoed = codexEnvVetoed();
+    const read =
+      input.codexHome === undefined
+        ? undefined
+        : inspectCodexLogin(input.codexHome, input.identity?.attachedUserDigest);
+    if (read?.status !== 'ok') {
+      if (vetoed) return unnamed('veto');
+      return unnamed(read === undefined || read.status === 'absent' ? 'absent' : 'unreadable');
+    }
+    const { login } = read;
+    const key = chatgptKey(login.accountId);
+    const named = (state: CodexLoginState): CodexLoginView => ({
+      key,
+      planState: login.planState,
+      state,
+    });
+    if (vetoed) return named('veto');
+    if (input.identity === undefined) return named('attached-user-unknown');
+    if (manualCodingKeys(input.scope, input.endpoint).has(key)) return named('manual');
+    if (!login.emailMatchesAttached) return named('email');
+    if (login.planState === 'other') return named('plan');
+    const learned = input.identity.workAccounts.map((entry) => entry.identity);
+    const on = workSubscriptionsOn(input.scope);
+    if (learned.includes(key)) return named(on ? 'remembered' : 'off');
+    if (login.planState === 'absent') return named('plan-unconfirmed');
+    if (!on) return named('off');
+    if (learned.length >= ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX) return named('cap-reached');
+    return named('would-validate');
+  } catch {
+    return unnamed('unreadable');
+  }
+}
+
+/** The account keys enrolled by hand for coding-agent sessions on this deployment. */
+function manualCodingKeys(scope: unknown, endpoint: string): Set<string> {
+  const record = parseAttachmentScope(scope);
+  if (record === undefined || !isAttachmentScopeValid(scope, endpoint)) return new Set();
+  return new Set(
+    record.entries
+      .filter((entry) => entry.kind === 'account' && entry.codingAgents === true)
+      .map((entry) => entry.identity),
+  );
+}
+
+const CODEX_FORWARDS =
+  'a work subscription for the attached user — its new threads forward from any folder';
+
+/**
+ * The this-login reason for each Codex state, given the key as it prints. An
+ * exhaustive Record, so a state added later fails typecheck here.
+ */
+const CODEX_LOGIN_LINES: Record<CodexLoginState, (key: string) => string> = {
+  manual: () => 'an account you enrolled by hand — its new threads forward from any folder',
+  remembered: () => CODEX_FORWARDS,
+  'would-validate': () => CODEX_FORWARDS,
+  off: () =>
+    'a work subscription for the attached user — not sent, because work subscriptions are off on this device',
+  'cap-reached': () =>
+    `a work subscription, but this device already recognises ${String(ATTACHED_IDENTITY_WORK_ACCOUNTS_MAX)} — threads follow the repository rule`,
+  email: () => 'signed in with a different email than the AKA user who attached this device',
+  plan: () => 'not a ChatGPT workspace plan — threads follow the repository rule',
+  'plan-unconfirmed': (key) =>
+    `plan not shown in Codex's login — run \`aka enroll --account ${key}\` if this is a work subscription`,
+  veto: () => 'an API key or another provider is in use',
+  'attached-user-unknown': () => 'not checked until this machine syncs',
+  absent: () => 'login file not found',
+  unreadable: () => 'not a ChatGPT login this device can read',
+};
+
+/** The Codex this-login line. The key prints on the user's own terminal, as the Claude Code line prints its key. */
+function codexLoginLine(view: CodexLoginView): string {
+  const key =
+    view.key === undefined
+      ? 'chatgpt:<workspace-id>'
+      : printableForTerminal(view.key, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
+  return `Codex — ${CODEX_LOGIN_LINES[view.state](key)}`;
+}
+
+/**
+ * The this-login block: one line per coding agent under one label, or the
+ * collapsed line off a terminal, and nothing when no login was read.
+ */
+function thisLoginLines(isTTY: boolean, hostLines: readonly string[]): string[] {
+  if (hostLines.length === 0) return [];
+  if (!isTTY) return [THIS_LOGIN_COLLAPSED];
+  return hostLines.map((line, at) => `${at === 0 ? '  this login ' : '             '}${line}`);
+}
 
 /**
  * The last line of every scope block: what the record does not limit. A scoped
  * attachment's record decides which activity is forwarded, not whether the
- * machine pulls its deployment's policy or sends it a device report.
+ * machine pulls its deployment's policy, checks it for device commands or sends
+ * it a device report.
  */
 const NOT_LIMITED_LINE =
-  '             the policy pull and the device report are not limited to what is enrolled';
+  '             the policy pull, the command check and the device report are not limited to what is enrolled';
 
 /**
  * The note under a SCOPED machine's history numbers when the pass that wrote
@@ -208,6 +613,64 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ? attachmentModeOf(state.credential)
       : undefined;
     const plane = deploymentNameForTerminal(connection);
+    // Whether an administrator manages this machine's connection. Such a machine
+    // attaches machine-wide only, and a scoped device that became managed keeps
+    // its stored choice, which neither command may change, until it is re-attached.
+    const managed =
+      mode !== undefined && managedScopedRefusal(deps.base, deps.managedSettings) !== null;
+    // The coding-agent keys a scoped attachment forwards beside its stored
+    // entries, from the identity record bound to this credential, and what the
+    // block says about them. Read only for a scoped credential: a machine-wide
+    // attachment consults no identity record.
+    const extras =
+      state.usable && mode === 'scoped'
+        ? codingScopeExtras(deps.dataDir, settings, state.credential)
+        : [];
+    const work =
+      state.usable && mode === 'scoped'
+        ? workSubscriptionLines(
+            deps.dataDir,
+            settings,
+            connection.endpoint,
+            credentialDigestOf(state.credential.apiKey),
+            extras,
+            managed,
+          )
+        : undefined;
+    // Who a login is compared with: the identity record, only when it holds for
+    // this credential.
+    const heldIdentity =
+      state.usable && mode === 'scoped'
+        ? readBoundAttachedIdentity(deps.dataDir, connection.endpoint, state.credential)
+        : undefined;
+    // One line per coding agent whose login the caller asked to have read.
+    const loginLines: string[] = [];
+    if (work !== undefined && deps.claudePaths !== undefined) {
+      loginLines.push(
+        claudeCodeLoginLine(
+          claudeCodeLoginView({
+            identity: heldIdentity,
+            scope: settings.attachmentScope,
+            endpoint: connection.endpoint,
+            cwd: deps.cwd ?? process.cwd(),
+            paths: deps.claudePaths,
+          }),
+        ),
+      );
+    }
+    if (work !== undefined && deps.codexHome !== undefined) {
+      loginLines.push(
+        codexLoginLine(
+          codexLoginView({
+            identity: heldIdentity,
+            scope: settings.attachmentScope,
+            endpoint: connection.endpoint,
+            codexHome: deps.codexHome ?? undefined,
+          }),
+        ),
+      );
+    }
+    const thisLogin = thisLoginLines(deps.isTTY === true, loginLines);
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint
@@ -244,6 +707,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       lines.push(`  credential ${printableForTerminal(state.credentialEndpoint, 200)}`);
     }
     if (mode !== undefined) lines.push(`  mode       ${MODE_LINES[mode]}`);
+    if (mode === 'machine' && managed) lines.push(MANAGED_MACHINE_LINE);
     // With a label, `plane` names the label. The scope record is bound to the
     // endpoint by exact string, so the endpoint gets its own line and a user can
     // compare it with the one a record names. Without a label, `plane` is it.
@@ -255,14 +719,26 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ...lines,
       // Only a scoped attachment is filtered by its scope. A machine-wide one
       // never reads the record, so listing it there would describe a filter
-      // that is not applied.
-      ...(mode === 'scoped'
-        ? attachmentScopeLines(settings.attachmentScope, connection.endpoint)
-        : []),
+      // that is not applied. The work lines come first, so the scope block
+      // still ends with what the record does not limit.
+      ...(work === undefined
+        ? []
+        : [
+            ...work,
+            ...thisLogin,
+            ...attachmentScopeLines(settings.attachmentScope, connection.endpoint),
+          ]),
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
-      ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs, mode === 'scoped'),
+      ...historyLines(
+        deps.dataDir,
+        settings,
+        connection.endpoint,
+        nowMs,
+        mode === 'scoped',
+        extras,
+      ),
       ...failOpenLines(deps.dataDir, nowMs),
     ].join('\n');
   } catch {
@@ -284,12 +760,15 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * its identity. So the block lists what a forward path forwards, once per
  * identity however often it is stored.
  *
- * ONE INPUT IT CANNOT SEE. The block reads the stored record alone. resolveScope
- * can also merge extra entries, identities that never live in settings.json, into
- * the key set it returns, and this block is not given them. It matches what is
- * forwarded because no caller adds extra entries to the key set today. A caller
- * that ever does must give this block the same entries, or a forward path would
- * send an identity the block does not list.
+ * WHAT IT DOES NOT LIST. The block reads the stored record alone. The forward
+ * paths also add coding-agent keys to the key set (`codingScopeExtras`), which
+ * never live in settings.json: one per work account the device recognised, and
+ * one per account enrolled by hand for coding sessions. `aka status` lists the
+ * recognised ones above this block. Whether recognition is on (the record's own
+ * `workSubscriptions` field, through `workSubscriptionsOn`) is what the
+ * headlines read, so while it is on a block that enrolls little or nothing does
+ * not call local the sessions a recognised work subscription forwards. An
+ * account enrolled by hand is a stored entry, and is listed here like any other.
  *
  * Each state that forwards no activity has its own line, because each has its own
  * cause: no list stored (an older settings writer dropped it, or an attach
@@ -303,9 +782,10 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
  * empty.
  *
  * EVERY BLOCK ENDS WITH WHAT THE RECORD DOES NOT LIMIT. The record decides which
- * activity is forwarded, not whether the machine pulls its deployment's policy or
- * sends it a device report. So the last line says so in every state, and a block
- * that says no activity is sent does not read as a machine that sends nothing.
+ * activity is forwarded, not whether the machine pulls its deployment's policy,
+ * checks it for device commands or sends it a device report. So the last line
+ * says so in every state, and a block that says no activity is sent does not read
+ * as a machine that sends nothing.
  *
  * Every stored string goes through printableForTerminal. The schema already
  * refuses control characters in an identity or a label; the strip is the layer
@@ -319,14 +799,22 @@ export function attachmentScopeLines(raw: unknown, endpoint: string): string[] {
   return [...scopeStateLines(raw, endpoint), NOT_LIMITED_LINE];
 }
 
+/** What a scope that enrolls nothing still sends: nothing, or a recognised work subscription's sessions. */
+function nothingEnrolledSends(forwardsWork: boolean): string {
+  return forwardsWork
+    ? 'only sessions signed in to a recognised work subscription are sent'
+    : 'no activity is sent';
+}
+
 /** The lines for the record's state, before the line every block ends with. */
 function scopeStateLines(raw: unknown, endpoint: string): string[] {
+  const forwardsWork = workSubscriptionsOn(raw);
   // No list at all and a list this build cannot read are told apart before
   // anything is parsed: parseAttachmentScope answers undefined for both, and
   // what to do about one is not what to do about the other.
   if (raw === undefined || raw === null) {
     return [
-      '  scope      no enrolled list is stored — no activity is sent',
+      `  scope      no enrolled list is stored — ${nothingEnrolledSends(forwardsWork)}`,
       '             (run `aka enroll` inside a work repository to add it; an aka older than 0.9.16 also',
       '             drops the list when it saves settings)',
     ];
@@ -334,14 +822,14 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   const record = parseAttachmentScope(raw);
   if (record === undefined) {
     return [
-      '  scope      the enrolled list cannot be read by this aka — it sends no activity under it',
+      `  scope      the enrolled list cannot be read by this aka — ${nothingEnrolledSends(forwardsWork)}`,
       '             (it may have been written by a newer aka)',
     ];
   }
   if (!isAttachmentScopeValid(raw, endpoint)) {
     return [
       `  scope      recorded for another deployment (${endpointForTerminal(record.endpoint)})`,
-      '             — no activity is sent here (run `aka enroll` to enroll for this one)',
+      `             — ${nothingEnrolledSends(forwardsWork)} here (run \`aka enroll\` to enroll for this one)`,
     ];
   }
   const forwarded = resolveScope({ mode: 'scoped', scope: raw, endpoint }).keys;
@@ -351,16 +839,18 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
     // The filter is redundant while resolveScope keeps every parsed entry. It stays
     // as the literal form of "listed only when the verdict's key set holds the
     // identity", so this block stays honest if resolveScope ever filters. It sees
-    // the stored record only, not extra entries (see the note above).
+    // the stored record only, not the coding-agent keys (see the note above).
     if (!forwarded.has(entry.identity) || listed.has(entry.identity)) continue;
     listed.add(entry.identity);
     rows.push(`             ${entryLine(entry)}`);
   }
   const lines =
     rows.length === 0
-      ? ['  scope      nothing enrolled yet — no activity is sent', ENROLL_HINT]
+      ? [`  scope      nothing enrolled yet — ${nothingEnrolledSends(forwardsWork)}`, ENROLL_HINT]
       : [
-          `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
+          forwardsWork
+            ? `  scope      ${count(rows.length)} enrolled — anything else stays on this machine, except sessions signed in to a recognised work subscription`
+            : `  scope      ${count(rows.length)} enrolled — activity anywhere else stays on this machine`,
           ...rows,
         ];
   const unread = unreadEntries(raw, record);
@@ -374,12 +864,26 @@ function scopeStateLines(raw: unknown, endpoint: string): string[] {
   return lines;
 }
 
-/** One enrolled identity: its key, its label when it has one, and the day it was enrolled. */
+/** One enrolled identity: its key, its label when it has one, the day it was enrolled, and what an account covers. */
 function entryLine(entry: AttachmentScopeEntry): string {
   // `max` is the schema's own bound on an identity, so a conforming key is never cut.
   const identity = printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH);
   const label = entry.label === undefined ? '' : ` (${printableForTerminal(entry.label)})`;
-  return `${identity}${label}, enrolled ${printableForTerminal(entry.enrolledAt.slice(0, 10))}`;
+  const enrolled = printableForTerminal(entry.enrolledAt.slice(0, 10));
+  return `${identity}${label}, enrolled ${enrolled}${codingCoverage(entry, identity)}`;
+}
+
+/**
+ * What a claude.ai account entry covers: Claude Code sessions too when it
+ * carries the coding-agent marker, and its chats alone when it does not.
+ */
+function codingCoverage(entry: AttachmentScopeEntry, shown: string): string {
+  const provider =
+    entry.kind === 'account' ? parseWebAccountKey(entry.identity)?.provider : undefined;
+  if (provider !== WEB_ACCOUNT_PROVIDER.Claude) return '';
+  return entry.codingAgents === true
+    ? ' — covers Claude Code sessions'
+    : ` — claude.ai chats only — run \`aka enroll --account ${shown}\` again to include Claude Code sessions`;
 }
 
 /** How many stored entries validation dropped from a record that itself parsed. */
@@ -394,6 +898,82 @@ function unreadEntries(raw: unknown, read: AttachmentScope): number {
 /** A binding field that names someone: present and not empty. */
 function named(value: string | undefined): boolean {
   return value !== undefined && value !== '';
+}
+
+/**
+ * What a SCOPED attachment says about work subscriptions, above its enrolled
+ * list: whether it knows the AKA user who attached it, whether recognition is
+ * on, and each work account it recognised whose sessions it forwards.
+ *
+ * The user is known only from an identity record bound to the credential in
+ * force (`attachedIdentityHolds`), the check every reader of the record makes,
+ * so this line cannot call a record known that the forward paths ignore. A
+ * record bound to another key is said to be one, apart from no record at all.
+ *
+ * Recognition is on unless the scope record turns it off (`workSubscriptionsOn`):
+ * no field is on, and any stored value is off. On a scoped device whose
+ * connection an administrator now manages, the line says the choice is fixed and
+ * names no command, since both refuse there.
+ *
+ * A learned account is listed only while its agent key is among `extras`, the
+ * keys the forward paths add to the scope, so the list is what is forwarded. Its
+ * key prints the way `aka enroll --account` takes it. The agent key, the scope
+ * tag and the record's digests never print.
+ *
+ * Reads the identity record; never throws.
+ */
+function workSubscriptionLines(
+  dataDir: string,
+  settings: WorkspaceSettings,
+  endpoint: string,
+  credentialDigest: string,
+  extras: readonly AttachmentScopeEntry[],
+  managed: boolean,
+): string[] {
+  try {
+    const record = readAttachedIdentity(dataDir);
+    const bound =
+      record !== undefined &&
+      attachedIdentityHolds(record, { endpoint, credentialDigest, mode: 'scoped' })
+        ? record
+        : undefined;
+    const on = workSubscriptionsOn(settings.attachmentScope);
+    const lines = [
+      bound !== undefined
+        ? `  user       the AKA user who attached this device is known (checked ${printableForTerminal(bound.checkedAt.slice(0, 10))})`
+        : record === undefined
+          ? USER_LINES.unknown
+          : USER_LINES.untied,
+      workLine(on, managed),
+    ];
+    if (bound === undefined || !on) return lines;
+    const forwarded = new Set(extras.map((entry) => entry.identity));
+    const learned = bound.workAccounts.filter((entry) => {
+      const key = agentKey(bound.scopeTag, entry.identity);
+      return key !== undefined && forwarded.has(key);
+    });
+    if (learned.length > 0) {
+      const noun = learned.length === 1 ? 'account' : 'accounts';
+      lines.push(`             ${count(learned.length)} work ${noun} validated automatically:`);
+      for (const entry of learned) {
+        const provider = parseWebAccountKey(entry.identity)?.provider;
+        const reach = provider === undefined ? '' : ` — ${WORK_ACCOUNT_REACH[provider]}`;
+        lines.push(
+          `             ${printableForTerminal(entry.identity, ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH)}` +
+            ` (validated ${printableForTerminal(entry.enrolledAt.slice(0, 10))})${reach}`,
+        );
+      }
+    }
+    return lines;
+  } catch {
+    return [USER_LINES.unknown];
+  }
+}
+
+/** The `work` line: on or off, with the command that changes it, or why none can. */
+function workLine(on: boolean, managed: boolean): string {
+  if (managed) return `  work       subscriptions ${on ? 'on' : 'off'} ${WORK_LINE_FIXED}`;
+  return on ? WORK_LINES.on : WORK_LINES.off;
 }
 
 /**
@@ -504,14 +1084,16 @@ function dropLines(dataDir: string, nowMs: number): string[] {
  * through the scope writes it again. While an older plugin's drain still runs
  * beside a newer one, each pass leaves a line that is true of that pass.
  *
- * A scoped attachment with nothing enrolled for this deployment sends no
- * history at all, and says so instead of any number. That is read from the
- * scope in force now, through the settings this block already read and the
- * endpoint the drain resolves the scope against, not from the file: a pass over
- * an empty scope records "complete" with nothing sent, which would read as a
- * finished drain rather than one with nothing it may send. A refusal the last
- * pass recorded still comes first: while the deployment refuses this machine's
- * key, enrolling resumes nothing, and re-attaching is the step that does.
+ * A scoped attachment with nothing in its scope for this deployment (no stored
+ * entry, and no coding-agent key the forward paths add from the identity record)
+ * sends no history at all, and says so instead of any number. That is read from
+ * the scope in force now, through the settings this block already read, the keys
+ * `renderAttachedStatus` derived from them and the endpoint the drain resolves
+ * the scope against, not from the file: a pass over an empty scope records
+ * "complete" with nothing sent, which would read as a finished drain rather than
+ * one with nothing it may send. A refusal the last pass recorded still comes
+ * first: while the deployment refuses this machine's key, enrolling resumes
+ * nothing, and re-attaching is the step that does.
  *
  * A machine-wide attachment prints none of this, with one exception: a file
  * marked as counted through a scope, which a re-attach that made the machine
@@ -527,6 +1109,7 @@ function historyLines(
   endpoint: string,
   nowMs: number,
   scoped: boolean,
+  extras: readonly AttachmentScopeEntry[],
 ): string[] {
   // A grant PAUSED by a widening is not the same news as no grant, and the third
   // surface to say so. After a payload bump every machine that opted in holds a
@@ -555,13 +1138,15 @@ function historyLines(
       '             re-attach to resume',
     ];
   }
-  // Nothing enrolled for this deployment: no history is sent, whatever the file
-  // says. See the docblock for why this is read from the scope, not the file.
+  // Nothing in scope for this deployment, stored or added: no history is sent,
+  // whatever the file says. See the docblock for why this is read from the
+  // scope, not the file.
   if (
     scoped &&
-    resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }).keys.size === 0
+    resolveScope({ mode: 'scoped', scope: settings.attachmentScope, endpoint }, extras).keys
+      .size === 0
   ) {
-    return ['  history    nothing to send — the scope above forwards no activity'];
+    return ['  history    nothing to send — nothing is in scope yet'];
   }
   // Granted but nothing recorded yet: the grant is real and the first pass has
   // not run. Saying "waiting" rather than "0 sent" avoids reporting a number

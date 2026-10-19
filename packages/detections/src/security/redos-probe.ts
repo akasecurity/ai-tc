@@ -382,34 +382,19 @@ export const MAX_GROWTH_RATIO = 3;
 // not a property of the pattern.
 export const GROWTH_FLOOR_MS = 5;
 
-// Rounds in the first pass over a pair of sizes. The verdict uses the fastest
-// reading of each size, so a stall or GC pause on any reading but the best
-// cannot decide it.
+// Rounds in the first pass over a pair of sizes. Each size reduces to one
+// reading by the pass's GrowthStatistic, so a stall or GC pause on a single
+// round cannot decide the verdict.
 export const GROWTH_SAMPLES = 5;
 
 // Rounds in the second pass `judgePair` runs on a pair over the ratio. The
-// verdict on growth is given on the fastest readings of this pass alone.
+// verdict on growth is given on the readings of this pass alone.
 export const GROWTH_CONFIRM_SAMPLES = 15;
 
-// Sampling stops once this many rounds have run and every reading so far at
-// the largest size being sampled is at or over the budget.
+// The largest size being sampled stops being read once this many rounds have
+// run and every reading of it is at or over the budget. The first pass ends
+// there; the second pass keeps reading the smaller sizes.
 export const OVER_BUDGET_READINGS = 3;
-
-// With a corroborating clock, an over-budget pair is a breach only if that
-// clock's fastest reading of the larger size is at least this much.
-//
-// A growth reading is one whole scan rather than a walk cut short at its first
-// slow probe, so a scan that really does a budget's worth of work reads close
-// to the full budget on a work clock whatever the machine is doing. On a clock
-// that advances in whole scheduler ticks (16ms on the Windows runner) it reads
-// at most one tick under, so at least 84ms. A scan that only took that long
-// because its thread waited for a core reads what it executed. Measured on an
-// arm64 Mac with coverage instrumentation on, the bundled rules' worst scan at
-// the top size burns 6.4ms of thread CPU quiet and 8.6ms under 30 CPU burners
-// on 10 cores, where its wall reading was 34ms; loaded CI runners have read
-// rules like it at 104-142ms on the wall. Half the budget sits above any
-// benign scan plus a tick and below any breach minus one.
-export const GROWTH_CORROBORATION_FLOOR_MS = BUDGET_MS / 2;
 
 /** A named generator of adversarial text of an exact length. */
 export interface GrowthCorpus {
@@ -501,57 +486,65 @@ export interface GrowthBreach {
   largeMs: number;
   nextChars?: number;
   nextMs?: number;
-  /**
-   * The corroborating clock's fastest reading at `largeChars`, on an
-   * `over-budget` breach found with one.
-   */
-  largeWorkMs?: number;
 }
 
-// The fastest reading of each text, in the order given. Each round scans every
-// text once, smallest first, so the readings a ratio compares are taken next
-// to each other and a slow stretch of the machine lands on all of them.
+/**
+ * How the rounds of one text reduce to its reading.
+ *
+ * `fastest` suits an elapsed-time clock. Everything a busy machine adds to a
+ * reading is added: a descheduled thread, a page-fault stall, a GC pause, a JIT
+ * tier-up. None of it can make a scan finish sooner than the work takes, so the
+ * minimum over several readings converges on the cost of the scan from above,
+ * and a superlinear pattern keeps its 4x or 8x between fastest readings.
+ *
+ * `mean` suits a clock of the work done, such as CPU time. Waiting adds nothing
+ * to it, but it advances in whole scheduler ticks, so a reading is the cost
+ * rounded to a tick in either direction. The minimum of such readings sits a
+ * tick below the cost and reads zero for a cost under one tick, while their
+ * mean converges on the cost.
+ */
+export type GrowthStatistic = 'fastest' | 'mean';
+
+// The reading of each text, in the order given. Each round scans every text
+// once, smallest first, so the readings a ratio compares are taken next to each
+// other and a slow stretch of the machine lands on all of them.
 //
-// The fastest reading, not the median. Everything a busy machine adds to a
-// reading is added: a descheduled thread, a GC pause, a JIT tier-up. None of it
-// can make a scan finish sooner than the work takes, so the minimum over
-// several readings converges on the cost of the scan from above. A superlinear
-// pattern is not hidden by this: its fastest readings are its true costs, and
-// their ratio is the same 4x or 8x.
-//
-// Sampling stops short of `rounds` once OVER_BUDGET_READINGS rounds have run
-// and every reading of the last text was at or over the budget, which bounds
-// what an expensive pattern costs to measure.
-//
-// `work` is the corroborating clock's fastest reading of each text over the
-// same windows, or `undefined` when no corroborating clock was given.
-function fastestReadings<const T extends readonly string[]>(
+// The last text stops being read once OVER_BUDGET_READINGS rounds have run and
+// every reading of it was at or over the budget, which bounds what an expensive
+// pattern costs to measure. The pass then ends with it, unless `keepOthers`
+// asks for the earlier texts to be read through the remaining rounds: a verdict
+// that compares them is only as good as their readings, and those cost a
+// fraction of the last text's.
+function readings<const T extends readonly string[]>(
   rule: Rule,
   texts: T,
   rounds: number,
   now: ProbeClock,
-  corroborate: ProbeClock | undefined,
-): { ms: { [K in keyof T]: number }; work: { [K in keyof T]: number } | undefined } {
+  statistic: GrowthStatistic,
+  keepOthers = false,
+): { [K in keyof T]: number } {
   const context = scanContextFor(rule);
   const fastest = texts.map(() => Infinity);
-  const fastestWork = texts.map(() => Infinity);
+  const total = texts.map(() => 0);
+  const taken = texts.map(() => 0);
+  const reading = (i: number): number =>
+    statistic === 'mean' ? (total[i] ?? 0) / Math.max(taken[i] ?? 0, 1) : (fastest[i] ?? Infinity);
+  const last = texts.length - 1;
+  let lastDone = false;
   for (let round = 0; round < rounds; round++) {
     texts.forEach((text, i) => {
+      if (i === last && lastDone) return;
       const start = now();
-      const workStart = corroborate?.();
       scan(text, [rule], context);
-      fastest[i] = Math.min(fastest[i] ?? Infinity, now() - start);
-      const workEnd = corroborate?.();
-      if (workStart !== undefined && workEnd !== undefined) {
-        fastestWork[i] = Math.min(fastestWork[i] ?? Infinity, workEnd - workStart);
-      }
+      const elapsed = now() - start;
+      fastest[i] = Math.min(fastest[i] ?? Infinity, elapsed);
+      total[i] = (total[i] ?? 0) + elapsed;
+      taken[i] = (taken[i] ?? 0) + 1;
     });
-    if (round + 1 >= OVER_BUDGET_READINGS && (fastest.at(-1) ?? 0) >= BUDGET_MS) break;
+    lastDone ||= round + 1 >= OVER_BUDGET_READINGS && reading(last) >= BUDGET_MS;
+    if (lastDone && !keepOthers) break;
   }
-  return {
-    ms: fastest as { [K in keyof T]: number },
-    work: corroborate ? (fastestWork as { [K in keyof T]: number }) : undefined,
-  };
+  return texts.map((_, i) => reading(i)) as { [K in keyof T]: number };
 }
 
 function ratio(smallerMs: number, largerMs: number): number {
@@ -563,14 +556,12 @@ function isSuperlinear(smallMs: number, largeMs: number): boolean {
 }
 
 // The verdict on the pair `small` and `small * 2` chars of one corpus, and the
-// fastest reading at `small * 4` chars when that size was sampled.
+// reading at `small * 4` chars when that size was sampled.
 //
 // The first pass samples the pair alone. A larger reading at or over the
 // budget is an `over-budget` breach; the budget is judged at this size and at
-// no other. With a corroborating clock, the breach also needs that clock's
-// fastest larger reading at GROWTH_CORROBORATION_FLOOR_MS or more; a pair that
-// read over the budget without it is judged on its ratio like any other. A
-// pair at or under the ratio is cleared without scanning anything larger.
+// no other. A pair at or under the ratio is cleared without scanning anything
+// larger.
 //
 // A pair over the ratio is sampled again in a second pass, together with the
 // doubling after it, and is a `superlinear` breach only if both ratios read
@@ -595,40 +586,25 @@ function judgePair(
   corpus: GrowthCorpus,
   small: number,
   now: ProbeClock,
-  corroborate: ProbeClock | undefined,
+  statistic: GrowthStatistic,
 ): { breach?: GrowthBreach; nextMs?: number } {
   const pair = { corpus: corpus.name, smallChars: small, largeChars: small * 2 };
   const smallText = corpus.build(pair.smallChars);
   const largeText = corpus.build(pair.largeChars);
-  const { ms: first, work } = fastestReadings(
-    rule,
-    [smallText, largeText],
-    GROWTH_SAMPLES,
-    now,
-    corroborate,
-  );
-  if (first[1] >= BUDGET_MS && (work === undefined || work[1] >= GROWTH_CORROBORATION_FLOOR_MS)) {
-    return {
-      breach: {
-        reason: 'over-budget',
-        ...pair,
-        smallMs: first[0],
-        largeMs: first[1],
-        ...(work === undefined ? {} : { largeWorkMs: work[1] }),
-      },
-    };
+  const first = readings(rule, [smallText, largeText], GROWTH_SAMPLES, now, statistic);
+  if (first[1] >= BUDGET_MS) {
+    return { breach: { reason: 'over-budget', ...pair, smallMs: first[0], largeMs: first[1] } };
   }
   if (!isSuperlinear(first[0], first[1])) return {};
 
   const nextChars = pair.largeChars * 2;
-  const {
-    ms: [smallMs, largeMs, nextMs],
-  } = fastestReadings(
+  const [smallMs, largeMs, nextMs] = readings(
     rule,
     [smallText, largeText, corpus.build(nextChars)],
     GROWTH_CONFIRM_SAMPLES,
     now,
-    undefined,
+    statistic,
+    true,
   );
   if (ratio(largeMs, nextMs) <= MAX_GROWTH_RATIO || !isSuperlinear(smallMs, largeMs)) {
     return { nextMs };
@@ -651,12 +627,11 @@ function judgePair(
  * pair sits above it: the budget is judged at `GROWTH_MAX_CHARS` and never at
  * twice it, so a reading over the budget at twice it that grew by
  * `MAX_GROWTH_RATIO` or less still returns `undefined`. A size a pair was
- * sampled at is not scanned again on the way up: its fastest reading stands in
- * for the single one. `judgePair` holds the second pass.
+ * sampled at is not scanned again on the way up: its reading stands in for the
+ * single one. `judgePair` holds the second pass.
  *
- * `now` takes every reading the verdicts are given on. `corroborate`, when
- * given, is read over the same windows and only gates the `over-budget`
- * breach; see `judgePair`.
+ * `now` is the clock the readings are taken with and `statistic` how a size's
+ * rounds reduce to one reading; see GrowthStatistic for which suits which clock.
  *
  * Call this only on a rule that already passed `worstProbeMs`. A pattern that
  * backtracks exponentially does not return on a 2,000-char input, and the
@@ -665,7 +640,7 @@ function judgePair(
 export function superlinearGrowth(
   rule: Rule,
   now: ProbeClock = wallClock,
-  corroborate?: ProbeClock,
+  statistic: GrowthStatistic = 'fastest',
 ): GrowthBreach | undefined {
   const context = scanContextFor(rule);
   for (const corpus of [...GROWTH_CORPORA, ...derivedCorpora(rule)]) {
@@ -681,7 +656,7 @@ export function superlinearGrowth(
         reading = now() - start;
       }
       if (reading < BUDGET_MS && large < GROWTH_MAX_CHARS) continue;
-      const { breach, nextMs } = judgePair(rule, corpus, small, now, corroborate);
+      const { breach, nextMs } = judgePair(rule, corpus, small, now, statistic);
       if (breach) return breach;
       measuredMs = nextMs;
     }

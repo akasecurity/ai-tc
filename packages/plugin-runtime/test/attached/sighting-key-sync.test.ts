@@ -139,6 +139,20 @@ describe('runSightingKeySync', () => {
     expect(store().read()).toEqual(STORED(NOW - SIGHTING_KEY_MAX_AGE_MS + 1));
   });
 
+  it('counts a stored key as a day old at exactly twenty-four hours', async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    attach();
+    store().replace(STORED(NOW - DAY_MS + 1));
+
+    await expect(run()).resolves.toBe('fresh');
+    expect(getSightingKey).not.toHaveBeenCalled();
+
+    store().replace(STORED(NOW - DAY_MS));
+
+    await expect(run()).resolves.toBe('fetched');
+    expect(getSightingKey).toHaveBeenCalledTimes(1);
+  });
+
   it('refetches a key stamped in the future rather than trusting it indefinitely', async () => {
     attach();
     store().replace(STORED(NOW + 60_000));

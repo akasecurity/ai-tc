@@ -56,18 +56,25 @@ import type {
 } from '@akasecurity/schema';
 import {
   AUDIT_EVENT_BATCH_MAX,
+  isAgentScopeKey,
   mergeRaiseOnly,
+  parseAgentKey,
   ruleCategoryMap,
   scopeVerdict,
 } from '@akasecurity/schema';
 
+import type { AccountScope, AccountScopeReader } from '../account-scope.ts';
 import type { GovernanceScope } from '../governance-scope.ts';
 import type { StoredRootKeyReader } from '../session-root-key.ts';
 import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
-import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
+import type {
+  ForwardingScope,
+  ForwardingScopeReader,
+  ForwardingSession,
+} from './forwarding-line.ts';
 import type { OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
@@ -200,6 +207,13 @@ export interface AttachedDataGatewayDeps {
    * which is the answer a gateway that cannot name where it forwards should give.
    */
   deploymentName?: string;
+  /**
+   * The capability producers stamp a row's key through (`accountScope`), present
+   * only for a scoped attachment whose identity record holds for this
+   * credential. The factory builds it over the same key set as `attachment`, so
+   * an account it admits is forwarded by every verdict of this gateway.
+   */
+  account?: AccountScope;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -263,7 +277,12 @@ function bundledRulesFlat(): readonly Rule[] {
  * separate question, answered per event by `governanceAppliesTo`.
  */
 export class AttachedDataGateway
-  implements DataGateway, LocalStoreMaintenance, GovernanceScope, ForwardingScopeReader
+  implements
+    DataGateway,
+    LocalStoreMaintenance,
+    GovernanceScope,
+    ForwardingScopeReader,
+    AccountScopeReader
 {
   /**
    * The control plane's OWN resolution of this session's inventory, captured by
@@ -467,6 +486,25 @@ export class AttachedDataGateway
         if (this.verdictFor(() => key) === 'local') return 'local';
       }
       return 'forward';
+    } catch {
+      return 'local';
+    }
+  }
+
+  /**
+   * The inventory call's verdict: the project's key in scope (`inventoryKey`), or
+   * a coding-agent key in scope that the caller stamped the session's root with.
+   * Only an agent key widens it, and only for a tool whose root is ever keyed, so
+   * a web chat session's inventory never follows an account. Machine mode
+   * answers `'forward'` on the first test. TOTAL.
+   */
+  private inventoryVerdict(ctx: InventoryContext, rootKey: string | undefined): ScopeVerdict {
+    if (this.verdictFor(() => inventoryKey(ctx)) === 'forward') return 'forward';
+    try {
+      if (parseAgentKey(rootKey) === undefined) return 'local';
+      const tool = ctx.harness?.identityKey;
+      if (tool === undefined || !sessionToolIsKeyed(tool)) return 'local';
+      return this.verdictFor(() => rootKey);
     } catch {
       return 'local';
     }
@@ -690,7 +728,10 @@ export class AttachedDataGateway
     }
   }
 
-  async ensureInventory(ctx: InventoryContext): Promise<ResolvedInventory> {
+  async ensureInventory(
+    ctx: InventoryContext,
+    opts?: { readonly scopeKey?: string | undefined },
+  ): Promise<ResolvedInventory> {
     // Ordering rule: the FUNCTIONAL call first, telemetry strictly after it
     // settles. Inventory is what the session actually needs — it resolves
     // hostId/projectId — while posture is best-effort telemetry, so posture
@@ -739,6 +780,10 @@ export class AttachedDataGateway
     // canonicalization of the same url the session root's key is stamped from
     // (`inventoryKey`), and a tool the root rule never keys is never sent: a web
     // chat session, whose stand-in home directory may itself be a checkout.
+    // It is also sent for a session whose root is stamped with a coding-agent
+    // key in scope (`opts.scopeKey`): a session signed in to a recognised work
+    // account outside any enrolled repository. A repository key passed there
+    // never widens the gate; the project's own key decides that.
     //
     // WHAT THIS CANNOT SEE is the working directory. A root is keyed only from
     // an ABSOLUTE directory, and the context does not carry the directory, so a
@@ -749,7 +794,7 @@ export class AttachedDataGateway
     // The posture report below is NOT gated: it is the device's liveness
     // channel, and a scoped machine whose sessions are all personal must still
     // report, or it reads as silent.
-    if (this.verdictFor(() => inventoryKey(ctx)) === 'forward') {
+    if (this.inventoryVerdict(ctx, opts?.scopeKey) === 'forward') {
       const remote = await this.deps.forward.run(() => this.deps.client.ingestInventory(ctx));
       // UNCONDITIONAL, including on failure. One gateway instance serves many
       // sessions — `reconcileHistory` walks them in a loop — so keeping the
@@ -1466,32 +1511,69 @@ export class AttachedDataGateway
   }
 
   /**
+   * The capability producers stamp a row's key through, or undefined. Present
+   * only on a scoped attachment whose identity record holds for this
+   * credential; a machine-wide attachment never offers one, whatever it was
+   * built with, so its producers stamp the repository key.
+   */
+  accountScope(): AccountScope | undefined {
+    return this.deps.attachment.mode === 'scoped' ? this.deps.account : undefined;
+  }
+
+  /**
    * Where this gateway forwards, for the session-start line: the deployment's
    * name, and on a scoped attachment the key the local store holds for root
-   * `rootId` with this gateway's verdict on it. Null when the gateway was built
-   * without a name. No credential, nothing sent.
+   * `rootId` with this gateway's verdict on it, folded together with what the
+   * session start knows (`session`). Null when the gateway was built without a
+   * name. No credential, nothing sent.
    *
    * On a scoped attachment the verdict is the one this instance RECORDED when the
-   * root was written through it, and null when it recorded none. A session start
-   * whose pass stopped before the root has no answer to give: the history
-   * reconcile writes a missing root later, keyed the same way, and forwards the
-   * session's records under it, so saying local-only there would be wrong as
-   * often as right. Never recorded from here, so asking before the root is
-   * written cannot hold the root's records local either.
+   * root was written through it. A root it forwards under an agent key answers
+   * `account`; a repository root answers `scoped`, with `work` when the session
+   * start's login was a work subscription. A root it recorded no verdict for
+   * answers `account-pending` when the session start left the root to the
+   * reconcile, carrying whether the account scope has work subscriptions on, and
+   * null otherwise: a session start whose pass stopped before the
+   * root has no answer to give, since the history reconcile writes a missing root
+   * later, keyed the same way, and forwards the session's records under it, so
+   * saying local-only there would be wrong as often as right. Never recorded from
+   * here, so asking before the root is written cannot hold the root's records
+   * local either. Machine mode ignores the session.
    */
-  forwardingScope(rootId: string): ForwardingScope | null {
+  forwardingScope(rootId: string, session?: ForwardingSession): ForwardingScope | null {
     const { deploymentName, attachment } = this.deps;
     if (deploymentName === undefined) return null;
     if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const basis = session?.basis;
+    const managed = session?.managed ?? false;
     const verdict = this.rootVerdicts.get(rootId);
-    if (verdict === undefined) return null;
+    if (verdict === undefined) {
+      return session?.rootDeferred === true
+        ? {
+            deploymentName,
+            mode: 'account-pending',
+            basis,
+            managed,
+            workSubscriptionsOn: this.deps.account?.context.workSubscriptionsOn ?? true,
+          }
+        : null;
+    }
     let rootKey: string | undefined;
     try {
       rootKey = this.deps.local.readSessionScopeKey(rootId);
     } catch {
       rootKey = undefined;
     }
-    return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
+    if (verdict === 'forward' && rootKey !== undefined && isAgentScopeKey(rootKey)) {
+      return { deploymentName, mode: 'account', rootKey, basis, managed };
+    }
+    return {
+      deploymentName,
+      mode: 'scoped',
+      rootKey,
+      rootForwards: verdict === 'forward',
+      ...(basis === undefined ? {} : { work: { basis, managed } }),
+    };
   }
 
   // ---------------------------------------------------------------------

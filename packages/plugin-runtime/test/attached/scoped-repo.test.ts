@@ -146,3 +146,30 @@ describe('an account key', () => {
     );
   });
 });
+
+// A key that is not repository-shaped names no repository: an account key, a
+// coding agent's agent key, or any key with a colon before its first slash.
+// Taking its last segment would send the key itself, or part of it, as the slug.
+describe('a key that is not repository-shaped', () => {
+  const ORG = '2ef4cd3c-c23c-473a-96be-1275cfc79103';
+  const TAG = '0123456789abcdef';
+  const slugged: IngestEvent = { ...EVENT, metadata: { repo: 'side-project', sessionId: 's1' } };
+
+  it('agent key sends no slug', () => {
+    const sent = withScopedRepo(slugged, `agent:${TAG}:claude:${ORG}`);
+    expect(sent.metadata).toEqual({ sessionId: 's1' });
+    expect(JSON.stringify(sent)).not.toContain(ORG);
+    expect(JSON.stringify(sent)).not.toContain(TAG);
+  });
+
+  it.each([
+    ['a claude account key', `claude:${ORG}`],
+    ['a chatgpt account key', `chatgpt:${ORG}`],
+    ['an unknown prefix', `example:${ORG}`],
+    ['a colon before the first slash', `example:${ORG}/x`],
+  ])('%s sends no slug and does not echo the key', (_label, key) => {
+    const sent = withScopedRepo(slugged, key);
+    expect(sent.metadata).toEqual({ sessionId: 's1' });
+    expect(JSON.stringify(sent)).not.toContain(ORG);
+  });
+});

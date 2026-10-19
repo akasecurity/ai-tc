@@ -53,4 +53,16 @@ export default [
       'n/no-process-env': 'off',
     },
   },
+  {
+    // account/account-env.ts reads the Claude Code and Codex login and veto
+    // variables for the on-device account checks: the organization and email the
+    // desktop host passes, the config and Codex home overrides, and which
+    // credential or provider variables are set. Same file-scoped opt-out as the
+    // four above; every other module under src/account still fails lint on a
+    // process.env read.
+    files: ['src/account/account-env.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
 ];

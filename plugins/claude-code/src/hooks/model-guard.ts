@@ -11,10 +11,8 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { governanceApplies } from '@akasecurity/plugin-runtime';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
-  buildModelRefusalEvent,
   decideProhibitedModelTurn,
   isModelProhibited,
   matchProhibitedSpawnModel,
@@ -24,8 +22,11 @@ import {
 } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import type { HookAccountInput } from './account-stamp.ts';
+import { NO_ACCOUNT, resolveHookAccount, stampFor } from './account-stamp.ts';
 import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
 import { captureScopeKey } from './shared.ts';
+import { governedAt, modelRefusalAt } from './stamped-capture.ts';
 import { SUBAGENT_TOOLS } from './subagent-tools.ts';
 
 /**
@@ -159,17 +160,20 @@ export async function refuseProhibitedTurn(
  *
  * `cwd` is the payload's own, and only the refusal path reads it. It is keyed by
  * `captureScopeKey`, from the directory the turn's capture is keyed from, and
- * that one key does two things: it asks the gateway whether the organization's
- * model policy governs this turn (`governanceApplies`), and it stamps the
- * refusal row when it does. A machine-wide attachment, a standalone store and
- * any gateway that does not answer the question are governed everywhere. A
- * scoped attachment is governed only in its enrolled repositories: anywhere
- * else, a turn the list would refuse is allowed silently, records no row, and
- * leaves the gateway OPEN for the caller's scan, exactly as any allowed turn
- * does. The question is asked only once the list has refused, so an allowed
- * turn pays no `.git` walk and no lookup for it. `cwd` is REQUIRED rather than
- * optional: the hook entry is the only production caller and no test can import
- * an entry, so the compiler is the one check that the entry passes it.
+ * stamped for the session's account (`stampFor`), and that one key does two
+ * things: it asks the gateway whether the organization's model policy governs
+ * this turn (`governedAt`), and it stamps the refusal row when it does. A
+ * machine-wide attachment, a standalone store and any gateway that does not
+ * answer the question are governed everywhere. A scoped attachment is governed
+ * in its enrolled repositories, and in any folder of a session whose key is its
+ * work subscription's agent key; the first prompt of a new session is keyed by
+ * its directory alone. Anywhere else, a turn the list would refuse is allowed
+ * silently, records no row, and leaves the gateway OPEN for the caller's scan,
+ * exactly as any allowed turn does. The question is asked only once the list
+ * has refused, so an allowed turn pays no `.git` walk and no lookup for it.
+ * `cwd` is REQUIRED rather than optional: the hook entry is the only production
+ * caller and no test can import an entry, so the compiler is the one check that
+ * the entry passes it.
  */
 export async function handleProhibitedTurn(
   gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
@@ -184,11 +188,12 @@ export async function handleProhibitedTurn(
   // Keyed ONCE, and the one key both asks and stamps, so the verdict and the
   // row can never disagree about where the turn ran. Total by contract, so it
   // cannot cost the refusal it keys.
-  const scopeKey = captureScopeKey({ cwd });
+  const account = resolveHookAccount(gateway, { dataDir, sessionId, transcriptPath, cwd });
+  const scopeKey = stampFor(gateway, account, captureScopeKey({ cwd }));
   // Not governed here: allowed, silently and with no row, and the gateway stays
   // OPEN because the caller goes on to scan this turn over it. Only the model
   // policy is scoped; the scan's detections run either way.
-  if (!governanceApplies(gateway, scopeKey)) return false;
+  if (!governedAt(gateway, scopeKey)) return false;
   // Recorded while the gateway is still open, and best-effort: a refusal that
   // cannot be written down is still a refusal, so a failed write must not reach
   // the entry's outer catch and turn this block into a fail-open allow — the one
@@ -196,15 +201,17 @@ export async function handleProhibitedTurn(
   // existed.
   try {
     await gateway.recordAuditEvent(
-      buildModelRefusalEvent({
-        id: randomUUID(),
-        sessionId,
-        model: blocked.model,
-        seam: 'turn',
-        sourceTool: SOURCE_TOOL.ClaudeCode,
-        occurredAt: new Date().toISOString(),
+      modelRefusalAt(
+        {
+          id: randomUUID(),
+          sessionId,
+          model: blocked.model,
+          seam: 'turn',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          occurredAt: new Date().toISOString(),
+        },
         scopeKey,
-      }),
+      ),
     );
   } catch {
     // Swallowed on purpose — see above.
@@ -376,15 +383,18 @@ export function decideSubagentSpawn(
  * allow — the same ordering `refuseProhibitedTurn` uses for the same reason.
  *
  * The key is `captureScopeKey` from the payload's `cwd`, the directory and
- * fallback a capture that names no file is keyed from; a spawn names none. It
- * is computed only once the list has refused the spawn, so the tool calls this
- * seam waves through pay no `.git` walk for it, and that one key both asks the
- * gateway whether the organization's model policy governs the spawn
- * (`governanceApplies`) and stamps the refusal row when it does. A machine-wide
- * attachment, a standalone store and any gateway that does not answer the
- * question are governed everywhere; a scoped attachment only in its enrolled
- * repositories. A spawn that is not governed is allowed silently, records no
- * row, and closes the gateway like every other allow.
+ * fallback a capture that names no file is keyed from; a spawn names none. It is
+ * stamped for the session's account when the caller passes `accountInput` (the
+ * command hook does). It is computed only once the list has refused the spawn,
+ * so the tool calls this seam waves through pay no `.git` walk and load no
+ * config for it, and that one key both asks the gateway whether the
+ * organization's model policy governs the spawn (`governedAt`) and stamps the
+ * refusal row when it does. A machine-wide attachment, a standalone store and
+ * any gateway that does not answer the question are governed everywhere; a
+ * scoped attachment in its enrolled repositories, and in any folder of a session
+ * whose key is its work subscription's agent key. A spawn that is not governed
+ * is allowed silently, records no row, and closes the gateway like every other
+ * allow.
  *
  * TOTAL AND FAIL-OPEN: any failure returns false and the call proceeds.
  */
@@ -395,6 +405,7 @@ export async function handleSubagentSpawn(
   sessionId: string | undefined,
   cwd: string | undefined,
   emit: (output: PreToolUseDenyOutput) => Promise<void>,
+  accountInput?: () => HookAccountInput,
 ): Promise<boolean> {
   if (!SUBAGENT_TOOLS.has(toolName)) return false;
 
@@ -423,10 +434,12 @@ export async function handleSubagentSpawn(
   // Keyed ONCE, now that the list refuses, and the one key both asks and
   // stamps, so the verdict and the row can never disagree about where the spawn
   // was requested.
-  const scopeKey = captureScopeKey({ cwd });
+  const account =
+    accountInput === undefined ? NO_ACCOUNT : resolveHookAccount(gateway, accountInput());
+  const scopeKey = stampFor(gateway, account, captureScopeKey({ cwd }));
   // Not governed here: allowed, silently and with no row, and closed like every
   // other allow above, because this seam owns its gateway.
-  if (!governanceApplies(gateway, scopeKey)) {
+  if (!governedAt(gateway, scopeKey)) {
     await gateway.close();
     return false;
   }
@@ -441,16 +454,18 @@ export async function handleSubagentSpawn(
   // ones; the spelling rides along as `requested_model`.
   try {
     await gateway.recordAuditEvent(
-      buildModelRefusalEvent({
-        id: randomUUID(),
-        sessionId,
-        model: decision.matched,
-        requestedModel: requested,
-        seam: 'spawn',
-        sourceTool: SOURCE_TOOL.ClaudeCode,
-        occurredAt: new Date().toISOString(),
+      modelRefusalAt(
+        {
+          id: randomUUID(),
+          sessionId,
+          model: decision.matched,
+          requestedModel: requested,
+          seam: 'spawn',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          occurredAt: new Date().toISOString(),
+        },
         scopeKey,
-      }),
+      ),
     );
   } catch {
     // Swallowed on purpose — see above.

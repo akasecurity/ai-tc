@@ -26,9 +26,10 @@
  * turn later than the switch it is reacting to. It blocks no LLM API call
  * either; what it enforces is that a session does not keep running on a
  * prohibited model where the organization's model policy governs it: everywhere
- * on a machine-wide attachment, and only in enrolled repositories on a scoped
- * one, keyed from the directory each turn runs in. A turn the policy does not
- * govern is scanned like any other.
+ * on a machine-wide attachment, and on a scoped one in enrolled repositories and
+ * in any folder of a thread signed in to a recognised work subscription, keyed
+ * from the directory each turn runs in and the thread's account. A turn the
+ * policy does not govern is scanned like any other.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed setup, surface a one-line pointer to it. And it is the
@@ -41,6 +42,7 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import { claimOnboardingNudge, createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { threadAccountKey } from './account-stamp.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import {
@@ -52,6 +54,7 @@ import {
   parseJson,
   readStdin,
 } from './shared.ts';
+import { captureStamped, stampFor } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -74,7 +77,7 @@ async function main(): Promise<void> {
   // Beside the metadata, never inside it: the key is local, the metadata is a
   // wire shape. A prompt names no file, so this is the cwd key, and free:
   // baseMetadata has just walked this directory and the resolver is memoised.
-  const scopeKey = input ? captureScopeKey(input) : undefined;
+  const repoKey = input ? captureScopeKey(input) : undefined;
 
   const opened = openGateway(config);
   if (opened.gateway === null) {
@@ -84,6 +87,12 @@ async function main(): Promise<void> {
     return;
   }
   const gateway = opened.gateway;
+  const accountKey = threadAccountKey(gateway, {
+    dataDir: config.dataDir,
+    sessionId,
+    transcriptPath: input === null ? undefined : getString(input, 'transcript_path'),
+    nowMs: Date.now(),
+  });
   // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
   // cheaper verdict (two small local reads against a detection pass over the
   // whole prompt) and the stronger one: if this turn cannot run at all, what the
@@ -100,6 +109,7 @@ async function main(): Promise<void> {
       sessionId,
       input === null ? undefined : getString(input, 'transcript_path'),
       input === null ? undefined : getString(input, 'cwd'),
+      accountKey,
       emit,
     )
   ) {
@@ -114,13 +124,11 @@ async function main(): Promise<void> {
   });
   let result: CaptureResult;
   try {
-    result = await runtime.capture({
-      kind: 'prompt',
-      sourceTool: SOURCE_TOOL.Codex,
-      text: prompt,
-      metadata,
-      scopeKey,
-    });
+    result = await captureStamped(
+      runtime,
+      { kind: 'prompt', sourceTool: SOURCE_TOOL.Codex, text: prompt, metadata },
+      stampFor(gateway, repoKey, accountKey),
+    );
   } finally {
     await runtime.close();
   }

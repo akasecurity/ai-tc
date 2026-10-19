@@ -15,9 +15,11 @@ import { SOURCE_TOOL, WebSourceTool } from './harness-map.ts';
 
 // The providers a web account key can name, by member. A provider joins only
 // once its workspace id has a verified source: claude.ai's completion route names
-// the active organization in its own path. ChatGPT has none yet.
+// the active organization in its own path, and Codex's login file and a thread's
+// first rollout line both name the ChatGPT workspace the thread runs under.
 export const WEB_ACCOUNT_PROVIDER = {
   Claude: 'claude',
+  ChatGpt: 'chatgpt',
 } as const;
 export type WebAccountProvider = (typeof WEB_ACCOUNT_PROVIDER)[keyof typeof WEB_ACCOUNT_PROVIDER];
 
@@ -25,6 +27,8 @@ export type WebAccountProvider = (typeof WEB_ACCOUNT_PROVIDER)[keyof typeof WEB_
  * The provider whose accounts each web chat site signs in to, or `undefined` for
  * a site whose account cannot be read yet. Annotated over the whole web vocabulary,
  * so a site added there is a compile error here until someone decides.
+ * ChatGPT's web chat names no workspace in a request the extension can verify,
+ * so its chats carry no key, although a Codex thread's workspace has one.
  */
 export const WEB_ACCOUNT_PROVIDER_OF: Record<WebSourceTool, WebAccountProvider | undefined> = {
   [SOURCE_TOOL.ClaudeAi]: WEB_ACCOUNT_PROVIDER.Claude,
@@ -45,19 +49,21 @@ export const AGENT_ACCOUNT_PROVIDER_OF: Record<SourceTool, WebAccountProvider | 
   [SOURCE_TOOL.ChatGpt]: undefined,
   [SOURCE_TOOL.ClaudeAi]: undefined,
   [SOURCE_TOOL.Copilot]: undefined,
-  [SOURCE_TOOL.Codex]: undefined,
+  [SOURCE_TOOL.Codex]: WEB_ACCOUNT_PROVIDER.ChatGpt,
   [SOURCE_TOOL.Antigravity]: undefined,
   [SOURCE_TOOL.Cli]: undefined,
   [SOURCE_TOOL.Unknown]: undefined,
   [SOURCE_TOOL.AiTcSdk]: undefined,
 };
 
-// A claude.ai organization id: a UUID, lower-cased in the key so the same
-// organization has one key however a URL spelled it.
+// A claude.ai organization id and a ChatGPT workspace id are both UUIDs,
+// lower-cased in the key so one organization or workspace has one key however
+// it was spelled.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const WORKSPACE_ID: Record<WebAccountProvider, RegExp> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: UUID,
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: UUID,
 };
 
 function isProvider(value: string): value is WebAccountProvider {
@@ -111,8 +117,8 @@ export function isWebAccountKey(key: unknown): boolean {
 /**
  * The account key a user typed, normalized to the stored form, or `undefined`
  * when it names no web account. Both halves are trimmed and lower-cased, so a
- * key copied with different case or spacing enrolls the account the extension
- * stamps. Only case and surrounding space are forgiven: a lookalike character
+ * key copied with different case or spacing names the account its stored form
+ * names. Only case and surrounding space are forgiven: a lookalike character
  * still names no provider or no id.
  */
 export function normalizeWebAccountKey(input: unknown): string | undefined {

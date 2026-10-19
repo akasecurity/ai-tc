@@ -1,10 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type * as Account from '@akasecurity/plugin-sdk/account';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
+import type * as Remote from '../../../../packages/remote/src/index.ts';
+import { runPreToolUse } from '../../src/hooks/pre-tool-use-run.ts';
 import type * as Shared from '../../src/hooks/shared.ts';
+import type { Device } from '../helpers/account-fixture.ts';
+import { device, PERSONAL_KEY } from '../helpers/account-fixture.ts';
+import type { Sent } from '../helpers/recording-client.ts';
 
 // The fail-open path, run in-process: every entry's main() starts by reading
 // stdin, so a read that rejects sends each entry straight into its top-level
@@ -15,6 +22,32 @@ vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
   readStdin: () => Promise.reject(new Error('stdin unavailable')),
   countFailOpen: failOpen.count,
 }));
+
+// The account cases open the gateway the plugin's factory builds; only its
+// transport is replaced, by one that records what it is handed and sends nothing.
+const sent = vi.hoisted((): Sent => ({ captures: [], audit: [], inventory: [] }));
+vi.mock('../../../../packages/remote/src/index.ts', async (importOriginal) => {
+  const { recordingClient } = await import('../helpers/recording-client.ts');
+  return {
+    ...(await importOriginal<typeof Remote>()),
+    createRemoteClient: () => recordingClient(sent),
+  };
+});
+
+// The session check, made to fault on demand, the way the readers report one:
+// the hook must answer it with the repository key and count the exit like any
+// other fail-open.
+const accountFault = vi.hoisted(() => ({ on: false }));
+vi.mock('@akasecurity/plugin-sdk/account', async (importOriginal) => {
+  const real = await importOriginal<typeof Account>();
+  return {
+    ...real,
+    checkClaudeHook: (...args: Parameters<typeof real.checkClaudeHook>) =>
+      accountFault.on
+        ? { check: { none: 'unreadable' as const }, mayAdmit: false, threw: true }
+        : real.checkClaudeHook(...args),
+  };
+});
 
 // test/hooks -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -102,5 +135,54 @@ describe('every hook entry counts its fail-open exit when main() throws', () => 
     await import(`../../src/hooks/${name}.ts`);
     expect(failOpen.count).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('a session check that faults', () => {
+  let dev: Device;
+  beforeEach(() => {
+    failOpen.count.mockClear();
+    dev = device(sent);
+    dev.attach();
+    dev.login({ org: dev.workOrg });
+  });
+  afterEach(() => {
+    accountFault.on = false;
+    dev.dispose();
+  });
+
+  it('lets the call through on its repository key, sends nothing and counts one fail-open', async () => {
+    const t = dev.transcript(randomUUID());
+    dev.boundary(t);
+    const later = (n: number): string => new Date(Date.now() + (n + 1) * 1_000).toISOString();
+    t.prompt(later(1));
+    t.org(dev.workOrg, later(2));
+    t.reply(later(3));
+    accountFault.on = true;
+    const emitted: unknown[] = [];
+    await runPreToolUse(
+      {
+        session_id: t.sessionId,
+        transcript_path: t.path,
+        cwd: dev.personal,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: join(dev.personal, 'notes.md'), content: 'hello' },
+      },
+      (output) => {
+        emitted.push(output);
+        return Promise.resolve();
+      },
+      { mode: 'hook' },
+    );
+    expect(emitted).toEqual([]);
+    expect(
+      dev
+        .storedRows()
+        .filter((row) => row.eventType === 'code_change')
+        .map((row) => row.scopeKey),
+    ).toEqual([PERSONAL_KEY]);
+    expect(dev.sent.captures).toEqual([]);
+    expect(failOpen.count).toHaveBeenCalledTimes(1);
   });
 });

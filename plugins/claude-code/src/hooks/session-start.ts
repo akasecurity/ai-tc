@@ -7,7 +7,9 @@
  *
  * The once-per-session inventory pass: resolve this machine's host/harness/account
  * and the project, upsert them, and open the Session audit-event root. All the
- * logic lives in @akasecurity/plugin-runtime; this script is just Claude Code stdio glue.
+ * logic lives in @akasecurity/plugin-runtime; the hook's run is runSessionStart
+ * (session-start-run.ts), and this script reads stdin, the plugin manifest and
+ * the host's environment and hands them in.
  *
  * Emits nothing on a standalone machine without vault consent (SessionStart
  * has no decision to make). On an attached machine it shows the user, as
@@ -18,16 +20,12 @@
  */
 import { readFileSync } from 'node:fs';
 
-import { handleSessionStart, sessionStartNotice } from '@akasecurity/plugin-runtime';
-import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
+import { handleSessionStart } from '@akasecurity/plugin-runtime';
 
-import { INSTALL_ROOT, PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
+import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
-import { sessionProtocolMarker } from '../protocol/marker.ts';
-import { standingBrief } from '../protocol/notes.ts';
-import { countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
-import { warnIfStoreRedirected } from './store-health.ts';
+import { runSessionStart } from './session-start-run.ts';
+import { countFailOpen, emit, parseJson, readStdin } from './shared.ts';
 
 // Which SURFACE of Claude Code is running this session — the value the host
 // stamps on its own subprocess environment. `claude-vscode` for the VS Code
@@ -65,88 +63,17 @@ function harnessVersion(): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const input = parseJson(await readStdin());
-  const sessionId = input ? getString(input, 'session_id') : undefined;
-  const cwd = (input ? getString(input, 'cwd') : undefined) ?? process.cwd();
-  // Read ONCE for the whole hook. Two reads of settings.json on this path can
-  // disagree about `dataDir` — a settings write landing between them is all it
-  // takes — and then the model marker and the reconcile trigger would be
-  // written against two different homes.
-  const config = loadConfig();
-  // SessionStart is the ONLY event that carries the session's starting model,
-  // and the harness does not always include it — so this is best-effort, and
-  // `recordSessionModel` no-ops when it is absent. Recording it is what lets
-  // UserPromptSubmit refuse the very FIRST turn of a session started on a
-  // prohibited model; without it that turn has no transcript to read a model
-  // from and is allowed through. SessionStart itself cannot block.
-  recordSessionModel(config.dataDir, sessionId, input ? getString(input, 'model') : undefined);
-  // One version value feeds both the inventory stamp and the posture
-  // identity, so the two can never disagree about which build is running:
-  // argv's manifest when the hook command passes one, else the manifest
-  // beside the running script — read once either way.
-  const version = harnessVersion() ?? pluginBuild()?.version;
-  const result = await handleSessionStart({
-    sessionId,
-    cwd,
-    tool: SOURCE_TOOL.ClaudeCode,
-    harnessVersion: version,
-    // The install root rides with the identity on this path exactly as on the
-    // reconciler's (pluginBuild()), so the installed version the posture block
-    // reads never depends on which path won the hourly throttle.
-    pluginBuild:
-      version === undefined
-        ? undefined
-        : { package: PLUGIN_PACKAGE, version, installRoot: INSTALL_ROOT },
-    // The surface this session is running on, when the host says. Folded into
-    // the harness bag by the resolver and snapshotted as `harness_interface`;
-    // absent when the host stamps nothing, which reads as unknown rather than
-    // as a terminal session.
+  await runSessionStart(parseJson(await readStdin()), {
+    // One version value feeds both the inventory stamp and the posture
+    // identity, so the two can never disagree about which build is running:
+    // argv's manifest when the hook command passes one, else the manifest
+    // beside the running script — read once either way.
+    version: harnessVersion() ?? pluginBuild()?.version,
     harnessInterface: harnessInterface(),
+    handleSessionStart,
+    triggerReconcile,
+    emit,
   });
-  // A symlinked store path redirects the corpus without failing anything; say
-  // so once per session. Collected rather than written to stderr: on this hook
-  // it rides the systemMessage below with the other notices.
-  const redirected: string[] = [];
-  warnIfStoreRedirected(config, sessionId, (message) => redirected.push(message));
-  // What the user sees at session start, once per session (each rides its own
-  // once-per-session claim): where this session's activity goes, the
-  // stale-session notice (a newer binary recorded the mirror, so this session's
-  // plugin generation is outdated and its installed-pack writes are gated), the
-  // warn-era notice, and the store-redirect warning. Shown as systemMessage,
-  // the one SessionStart channel the host puts in front of the user: stderr
-  // from a hook that exits 0 goes only to the debug log.
-  const shown = sessionStartNotice(result, redirected);
-
-  // Token-usage catch-up (safety net): after the inventory pass, trigger
-  // the SAME throttled, detached reconcile for the just-opened session so a final
-  // usage record that lagged the last Stop is picked up. SessionStart's payload
-  // carries `transcript_path` too, so no path reconstruction. Behind the shared
-  // reconcile throttle (so it never piles onto a recent Stop spawn) and fully
-  // best-effort — a missing path or any error just skips it, the Stop path covers it.
-  const transcriptPath = input ? getString(input, 'transcript_path') : undefined;
-  if (sessionId !== undefined && transcriptPath !== undefined) {
-    triggerReconcile(config.dataDir, sessionId, transcriptPath);
-  }
-
-  // Standing vault-protocol brief: only when the user has granted vault
-  // consent does this hook give the model anything — the brief teaches the
-  // model what a pointer is and carries the per-session authenticity marker.
-  // Without consent the vault is inert, and only the user notice (if any) goes
-  // out.
-  if (isVaultConsentValid(config.settings.vaultConsent)) {
-    await emit({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: standingBrief({
-          marker: sessionProtocolMarker(config.dataDir, sessionId),
-          inlineReveal: config.settings.vaultInlineReveal,
-        }),
-      },
-      ...(shown === undefined ? {} : { systemMessage: shown }),
-    });
-  } else if (shown !== undefined) {
-    await emit({ systemMessage: shown });
-  }
 }
 
 try {

@@ -56,6 +56,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   AUDIT_EVENT_BATCH_MAX,
+  isAgentScopeKey,
   mergeRaiseOnly,
   parseAgentKey,
   ruleCategoryMap,
@@ -69,7 +70,11 @@ import { sessionToolIsKeyed } from '../session-root-key.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { DECISION_PATH_BUDGET_MS } from './forward-policy.ts';
-import type { ForwardingScope, ForwardingScopeReader } from './forwarding-line.ts';
+import type {
+  ForwardingScope,
+  ForwardingScopeReader,
+  ForwardingSession,
+} from './forwarding-line.ts';
 import type { OutboundEncoder } from './outbound-encoder.ts';
 import { createStoreOutboundEncoder } from './outbound-encoder.ts';
 import { withoutScopeKey } from './scope-strip.ts';
@@ -1518,30 +1523,57 @@ export class AttachedDataGateway
   /**
    * Where this gateway forwards, for the session-start line: the deployment's
    * name, and on a scoped attachment the key the local store holds for root
-   * `rootId` with this gateway's verdict on it. Null when the gateway was built
-   * without a name. No credential, nothing sent.
+   * `rootId` with this gateway's verdict on it, folded together with what the
+   * session start knows (`session`). Null when the gateway was built without a
+   * name. No credential, nothing sent.
    *
    * On a scoped attachment the verdict is the one this instance RECORDED when the
-   * root was written through it, and null when it recorded none. A session start
-   * whose pass stopped before the root has no answer to give: the history
-   * reconcile writes a missing root later, keyed the same way, and forwards the
-   * session's records under it, so saying local-only there would be wrong as
-   * often as right. Never recorded from here, so asking before the root is
-   * written cannot hold the root's records local either.
+   * root was written through it. A root it forwards under an agent key answers
+   * `account`; a repository root answers `scoped`, with `work` when the session
+   * start's login was a work subscription. A root it recorded no verdict for
+   * answers `account-pending` when the session start left the root to the
+   * reconcile, carrying whether the account scope has work subscriptions on, and
+   * null otherwise: a session start whose pass stopped before the
+   * root has no answer to give, since the history reconcile writes a missing root
+   * later, keyed the same way, and forwards the session's records under it, so
+   * saying local-only there would be wrong as often as right. Never recorded from
+   * here, so asking before the root is written cannot hold the root's records
+   * local either. Machine mode ignores the session.
    */
-  forwardingScope(rootId: string): ForwardingScope | null {
+  forwardingScope(rootId: string, session?: ForwardingSession): ForwardingScope | null {
     const { deploymentName, attachment } = this.deps;
     if (deploymentName === undefined) return null;
     if (attachment.mode === 'machine') return { deploymentName, mode: 'machine' };
+    const basis = session?.basis;
+    const managed = session?.managed ?? false;
     const verdict = this.rootVerdicts.get(rootId);
-    if (verdict === undefined) return null;
+    if (verdict === undefined) {
+      return session?.rootDeferred === true
+        ? {
+            deploymentName,
+            mode: 'account-pending',
+            basis,
+            managed,
+            workSubscriptionsOn: this.deps.account?.context.workSubscriptionsOn ?? true,
+          }
+        : null;
+    }
     let rootKey: string | undefined;
     try {
       rootKey = this.deps.local.readSessionScopeKey(rootId);
     } catch {
       rootKey = undefined;
     }
-    return { deploymentName, mode: 'scoped', rootKey, rootForwards: verdict === 'forward' };
+    if (verdict === 'forward' && rootKey !== undefined && isAgentScopeKey(rootKey)) {
+      return { deploymentName, mode: 'account', rootKey, basis, managed };
+    }
+    return {
+      deploymentName,
+      mode: 'scoped',
+      rootKey,
+      rootForwards: verdict === 'forward',
+      ...(basis === undefined ? {} : { work: { basis, managed } }),
+    };
   }
 
   // ---------------------------------------------------------------------

@@ -23,21 +23,15 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { codexToolStamp, threadAccountKey } from './account-stamp.ts';
 import { largeInputBound } from './large-input.ts';
 import {
   RESPONSE_SCAN_DEADLINE_MS,
   responseEmitPayload,
   scanResponseFields,
 } from './scan-response.ts';
-import {
-  baseMetadata,
-  captureScopeKey,
-  countFailOpen,
-  emit,
-  getString,
-  parseJson,
-  readStdin,
-} from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
+import { captureStamped } from './stamped-capture.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
 
@@ -61,18 +55,31 @@ async function main(): Promise<void> {
       ? getString(rawToolInput as Record<string, unknown>, 'file_path')
       : undefined;
   if (filePath) metadata.filePath = filePath;
-  // Keyed by the file this response names (a relative path is read against the
-  // cwd), else by the session's cwd when it names none; beside the metadata,
-  // never inside it. See captureScopeKey.
-  // An apply_patch result gets NO key, like the patch at PreToolUse: it reports
-  // the paths the patch body names, which this hook does not parse.
-  const scopeKey = rawToolName === 'apply_patch' ? undefined : captureScopeKey(input, filePath);
 
   const config = loadConfig();
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, getString(input, 'session_id'));
   const gateway = resolveDataGateway(config);
+  // Keyed by the file this response names (a relative path is read against the
+  // cwd), else by the session's cwd when it names none; beside the metadata,
+  // never inside it. See captureScopeKey. An apply_patch result gets no
+  // repository key, like the patch at PreToolUse: it reports the paths the patch
+  // body names, which this hook does not parse. In a work thread, a result
+  // outside an enrolled repository and every apply_patch result get the thread's
+  // agent key instead.
+  const scopeKey = codexToolStamp(
+    gateway,
+    input,
+    rawToolName,
+    threadAccountKey(gateway, {
+      dataDir: config.dataDir,
+      sessionId: getString(input, 'session_id'),
+      transcriptPath: getString(input, 'transcript_path'),
+      nowMs: Date.now(),
+    }),
+    filePath,
+  );
   // A field at or above the large-input threshold is scanned under what is left
   // of the field loop's own deadline, and the result withheld if that scan does
   // not finish (see large-input.ts).
@@ -87,8 +94,10 @@ async function main(): Promise<void> {
       toolName,
       fields,
       (text) =>
-        runtime.capture(
-          { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata, scopeKey },
+        captureStamped(
+          runtime,
+          { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
+          scopeKey,
           { persist: 'with-findings' },
         ),
       { at: RESPONSE_SCAN_DEADLINE_MS, now: () => performance.now() },

@@ -150,22 +150,34 @@ export const ATTACH_CREDENTIAL_UNWRITABLE =
  * carry a list or a grant, and not over a usable machine-wide credential. The
  * settings then hold no list (machine-wide) or an empty one (scoped), and they
  * are not put back, because that would take another settings write that can fail
- * too. Beside them, what the machine already had sends no repository's activity:
- * a scoped credential has no repository enrolled (its device report still goes,
- * as it did before), a file that cannot be used or a credential for another
- * deployment sends nothing, and with no credential file there is nothing to send
- * with.
+ * too. Beside them, the credential the machine already had is untouched, and so
+ * is the identity record kept beside it, which is written only after both writes
+ * land. A scoped credential for this deployment has no repository or account
+ * enrolled, but it still sends its device report and the Claude Code and Codex
+ * sessions of any work subscription it recognises, one first signed in after the
+ * failure included, because the identity record beside it still matches that
+ * credential.
+ * A file that cannot be used or a credential for another deployment sends
+ * nothing, and with no credential file there is nothing to send with.
  *
- * The last sentence is there because an earlier scoped key for this deployment
- * survives the failed write, and enrolling a repository under it would send that
- * repository. It names no command, as this page's other "Attach it again"
+ * Recognition is on after a machine-wide attach fails this way: the settings
+ * write drops the stored scope record, and the opt-out
+ * (`aka unenroll --work-subscriptions`) lives in that record. A scoped attach
+ * carries the opt-out over only from a readable record that names this
+ * deployment, so the refusal says the failure may have turned recognition back on.
+ * The command refuses on a machine an administrator governs, so the refusal
+ * offers it only where none does.
+ *
+ * The last sentence is there because that scoped key survives the failed write,
+ * and enrolling a repository or an account under it would send that repository
+ * or account. It names no attach command, as this page's other "Attach it again"
  * notices (the stored key missing, or unusable) name none: the settings read
  * attached now, so the page shows no attach form, and on a machine an
  * administrator governs a detach is refused as well, so no step on this page is
  * the way back for every machine.
  */
 export const ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
-  "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.";
+  'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code and Codex sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.';
 
 /**
  * Added to a failed attach's refusal when the credential file could not be put
@@ -231,7 +243,7 @@ export const ATTACH_LABEL_INVALID =
  * until it is reloaded, so the copy says to reload.
  */
 export const ATTACH_MODE_REQUIRED =
-  'This machine already holds an access key that may limit it to enrolled repositories (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
+  'This machine already holds an access key that may make it a personal device (one for another deployment, or one this version of AKA cannot read), so its mode cannot be chosen for you. Reload the page, choose whether this is a personal or an organization device, then attach again.';
 
 /**
  * An attach whose key was verified, and then found the machine's credential
@@ -271,7 +283,7 @@ export const SYNC_NOT_ATTACHED =
  * decision the user makes on this page.
  */
 export const SYNC_NOT_GRANTED =
-  'Existing activity is not shared with your deployment, so a pass would send nothing. Change that above to start sending it.';
+  'Existing activity is not shared with your deployment. Change that above to start sending it.';
 
 export const SYNC_KEY_UNUSABLE =
   'This machine cannot use its key for your deployment, so a pass would send nothing. Re-attach to repair it.';

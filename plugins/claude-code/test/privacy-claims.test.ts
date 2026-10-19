@@ -37,6 +37,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CODEX_ACCOUNT_ENV_NAMES, CODEX_CREDENTIAL_ENV } from '@akasecurity/plugin-sdk/account';
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -194,7 +195,8 @@ const SECURITY_DATA_IN_TRANSIT = repoFile('SECURITY.md')
 const flat = (text: string): string => text.replace(/\s+/g, ' ');
 const REPORT_SENTENCE =
   'Whenever a session starts anywhere on this machine, in a repository or not (a browser chat ' +
-  "included), the machine pulls the deployment's policy (at most every 15 minutes) and sends it " +
+  "included), the machine pulls the deployment's policy (at most every 15 minutes) and its " +
+  'sighting key (when none is stored or the stored one is a day old) and sends it ' +
   'a device report (at most hourly): a device identifier, host name, versions, detection packs, ' +
   'policy counts, finding counts and dates for everything recorded on the machine, and, when the ' +
   'machine is attached as a personal device, the fact that it is one. Where a scan is available ' +
@@ -252,6 +254,12 @@ describe('scoped attachment claims', () => {
       expect(flat(text)).not.toContain(PREVIOUS_REPORT_SENTENCE);
     });
 
+    it('never lists the policy pull and the device report without the sighting-key fetch', () => {
+      expect(flat(text)).not.toContain(
+        "pulls the deployment's policy (at most every 15 minutes) and sends it a device report",
+      );
+    });
+
     it('limits what is forwarded to activity, not to the repositories themselves', () => {
       expect(claim).toMatch(
         /only activity from the repositories you enroll|activity only from the repositories enrolled/i,
@@ -272,19 +280,382 @@ describe('scoped attachment claims', () => {
     // They go on either kind, but the report is not the same on both: a scoped
     // machine's says that it is attached as a personal device.
     expect(section).toContain(
-      'The policy pull, the command check and the device report are the exception: they go ' +
-        "on either kind of attachment, whatever is enrolled, and a scoped machine's report also " +
-        'says that it is attached as a personal device.',
+      'The policy pull, the sighting-key fetch, the command check and the device report are the ' +
+        "exception: they go on either kind of attachment, whatever is enrolled, and a scoped machine's " +
+        'report also says that it is attached as a personal device.',
     );
     expect(section).not.toMatch(/the same way on either kind of attachment/i);
     // What enrolling queues under the history grant is said where the scoped mode is
     // introduced, not in the paragraph on what the grant covers on any attachment.
     expect(section).toContain(
-      'activity in any other repository stays on the machine. Under the `aka sync-history` ' +
-        'grant, enrolling a repository also queues the captures still kept for it, including ' +
-        'those it recorded between attaching and enrolling.',
+      'everything else stays on the machine. Under the `aka sync-history` ' +
+        'grant, enrolling a repository or an account also queues the captures still kept for it, ' +
+        'including those a repository recorded between attaching and enrolling.',
     );
     expect(section).not.toMatch(/\ball of the above\b/i);
+  });
+});
+
+// The one request a personal device makes beyond the policy pull, the device
+// report and the command check, said beside them. It is repeated until the
+// device has an answer, and syncs that overlap can each send it, so the page
+// never says it is made once.
+const WHOAMI_SENTENCE =
+  'On a personal device, the background sync also asks the deployment which account its key ' +
+  'belongs to, and asks again at later syncs until the device has an answer; syncs that ' +
+  'overlap can each send one.';
+const WHOAMI_ONCE = /asks (?:the|that) deployment once\b|\bonce which account\b/i;
+
+describe('the identity request on a personal device', () => {
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    // The page's body paragraphs on a personal device, or its egress footnote
+    // when that is the only place it describes one.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
+
+    it('says the background sync asks until the device has an answer, and that syncs can overlap', () => {
+      expect(claim).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(WHOAMI_SENTENCE);
+    });
+
+    it('does not say the request is made once', () => {
+      expect(flat(text)).not.toMatch(WHOAMI_ONCE);
+    });
+  });
+
+  it('says it in SECURITY.md, beside the policy pull and the device report', () => {
+    expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).toContain(`device commands. ${WHOAMI_SENTENCE}`);
+  });
+
+  it('does not say it in SECURITY.md as a request made once', () => {
+    expect(flat(SECURITY_DATA_IN_TRANSIT ?? '')).not.toMatch(WHOAMI_ONCE);
+  });
+});
+
+/**
+ * A Claude Code session signed in to a work subscription forwards everything it
+ * records from its first reply on, from any folder. Every page that describes a
+ * personal device says so in the same words: how the device tells and what that
+ * check sends, the cases that keep to the repository rule, the account enrolled
+ * by hand, that a recognised organization never selects a claude.ai chat, that
+ * existing devices start with the plugin update, and the opt-out with the
+ * machines that have none.
+ */
+const CLAUDE_WORK_SENTENCE =
+  'A Claude Code session counts as a work subscription when it is signed in through claude.ai to a ' +
+  'Team or Enterprise plan under the same email as the AKA account that ' +
+  'attached the device. Such a session sends everything it records from its first reply on, from ' +
+  "any folder, with that folder's project and branch names, and your organization's prohibited " +
+  "models are refused in any folder of it. To tell whether a session is one, the device reads Claude Code's " +
+  "login file, the session's own log, and Claude Code's settings files (the project's own included) " +
+  'and environment variables that choose the account or provider, and compares the signed-in email ' +
+  'with the account that attached the device. The check sends none of what it reads, though the ' +
+  'token usage and tool calls read from that same log are forwarded with the rest of the activity ' +
+  'of a recognised session or of one signed in to an account enrolled by hand. The first prompt of a ' +
+  'new session, a personal plan, another email, an API key or another provider, a reply written ' +
+  'before the device has confirmed the account, and the rest of a session whose organization ' +
+  'changes follow the repository rule; `aka enroll --account` enrolls ' +
+  'by hand an account the device cannot recognise, and the Claude Code sessions of an account ' +
+  'enrolled that way then forward from their first reply on whatever the plan or email, though not ' +
+  'under an API key or another provider. An organization recognised this way ' +
+  'never records or forwards a claude.ai chat. A personal device that attached before its plugin ' +
+  'could recognise work subscriptions starts recognising them when the plugin updates, with no new ' +
+  'prompt, so update `aka` first. `aka unenroll --work-subscriptions` ' +
+  'turns recognition off on this device and `aka enroll --work-subscriptions` turns it back on; ' +
+  'it turns off only the automatic recognition, so while it is off, enrolled repositories and ' +
+  'accounts enrolled by hand still forward (`aka unenroll --account` stops an account), and your ' +
+  "organization's model restrictions apply only to them. A machine whose connection an " +
+  'administrator manages attaches machine-wide only, so it has no personal-device mode and no such ' +
+  'opt-out.';
+
+// No page says a reply waits for Claude Code's login file to show the plan or the account.
+const LOGIN_FILE_WORDING = /login file shows? the (?:plan|account)/;
+
+// Every list of what a personal device sends names the Claude Code sessions of an account
+// enrolled by hand beside those of a recognised work subscription, because an account enrolled
+// with `aka enroll --account` forwards its Claude Code sessions whatever the opt-out says.
+const HAND_ENROLLED_LIST =
+  /signed in to a recognised work subscription or to an account (?:you enroll|enrolled) by hand with `aka enroll --account`/;
+
+describe('Claude Code work-subscription claims', () => {
+  describe.each(SCOPED_READMES)('$name', ({ text }) => {
+    // Where the page describes a personal device: its body paragraphs, or its
+    // egress footnote when that is the only place it does, as the plugin page.
+    const body = paragraphs(text).filter((p) => SCOPED_CLAIM.test(p));
+    const claim = flat((body.length > 0 ? body : [footnoteOf(text)]).join('\n'));
+
+    it('says what a recognised work subscription forwards, in the one sentence group', () => {
+      expect(claim).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(CLAUDE_WORK_SENTENCE);
+    });
+
+    it('never says the device sends the login email, plan or account id', () => {
+      expect(flat(text)).not.toMatch(/sends? (?:the|your) (?:login )?(?:email|plan|account id)/i);
+    });
+
+    it('says a reply waits for the device to confirm the account, not for the login file to show the plan or the account', () => {
+      expect(flat(text)).toContain('a reply written before the device has confirmed the account');
+      expect(flat(text)).not.toMatch(LOGIN_FILE_WORDING);
+    });
+
+    it('does not say the device reads only part of the login file', () => {
+      expect(flat(text)).not.toMatch(/reads only the email/i);
+      expect(flat(text)).not.toContain('own login file');
+    });
+
+    it('names the Claude Code sessions of an account enrolled by hand where it lists what is forwarded', () => {
+      expect(claim).toMatch(HAND_ENROLLED_LIST);
+      expect(flat(footnoteOf(text))).toMatch(HAND_ENROLLED_LIST);
+    });
+
+    it('never ties a work subscription or a plan to the organization', () => {
+      expect(flat(text)).not.toMatch(/(?:plan|subscription) of your organization/i);
+    });
+
+    it('says the check sends none of what it reads, not that the device does', () => {
+      expect(flat(text)).not.toContain('and sends none of what it reads');
+    });
+  });
+
+  it('says it in SECURITY.md, and names the sessions where the scoped mode is introduced', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(CLAUDE_WORK_SENTENCE);
+    expect(section).toContain('a reply written before the device has confirmed the account');
+    expect(section).not.toMatch(LOGIN_FILE_WORDING);
+    expect(section).toContain(
+      'On a personal device, Claude Code and Codex sessions signed in to a work subscription forward ' +
+        'beyond what is enrolled.',
+    );
+    expect(section).toContain(
+      'in Claude Code and Codex sessions signed in to a recognised work subscription (above) or to an ' +
+        'account enrolled by hand with `aka enroll --account`',
+    );
+    expect(section).not.toMatch(/reads only the email/i);
+    expect(section).not.toMatch(/(?:plan|subscription) of your organization/i);
+    expect(section).not.toContain('and sends none of what it reads');
+  });
+
+  it('says on the plugin page that prohibited models are refused in any folder of such a session', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'the models that policy prohibits are refused only in those repositories and in any folder of such a Claude Code session',
+    );
+  });
+
+  it('says on the plugin page that the chat replies of an account enrolled by hand are forwarded too', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'is forwarded, as are, from the browser extension, the replies in a claude.ai account enrolled that way; everything else stays on the machine',
+    );
+  });
+
+  it('says on the plugin page that either kind of attachment sends more than activity', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'Attached either way, the machine still sends more than activity, and no repository limits it.',
+    );
+    expect(footnote).not.toContain('That machine still sends more than activity');
+  });
+
+  it('says on the plugin page which line a session outside an enrolled repository opens with, and what it forwards from when', () => {
+    const footnote = flat(footnoteOf(repoFile('plugins/claude-code/README.md')));
+    expect(footnote).toContain(
+      'a local-only line says that work in an enrolled repository is still forwarded. ' +
+        'On a personal device, a Claude Code session outside an enrolled repository opens with ' +
+        'one of two lines: one saying it forwards to the deployment from its first reply, once ' +
+        'the account is confirmed, which a recognised work subscription and an account enrolled ' +
+        'by hand get (an API key or another provider keeps the session local-only), or the ' +
+        'local-only line. A session that forwards sends everything it records from its first ' +
+        'reply on, token usage and tool calls included; the first prompt of a new session ' +
+        'and a reply written before the device has confirmed the account follow the ' +
+        'repository rule. The line is a convenience, not the record',
+    );
+    expect(footnote).not.toContain('opens with that local-only line too');
+    expect(footnote).not.toContain('its first prompt stays on the machine');
+    expect(footnote).not.toMatch(LOGIN_FILE_WORDING);
+  });
+});
+
+/**
+ * A new Codex thread signed in with ChatGPT to a company workspace forwards
+ * everything it records, from any folder. Every page that describes a personal
+ * device says so in the same words: what counts, how the device tells and what
+ * that check sends, every case that keeps a thread to the repository rule, a
+ * thread whose first log line is not on disk when it starts, the workspace
+ * enrolled by hand, and the opt-out.
+ */
+const CODEX_WORK_SENTENCES = [
+  'A Codex thread counts as a work subscription when it is new and signed in with ChatGPT to a ' +
+    'Business, Team, Enterprise or Edu workspace under the same email as the AKA account that ' +
+    "attached the device, with its login saved in Codex's login file and OpenAI as the provider.",
+  "Such a thread sends everything it records, from any folder, with that folder's project and " +
+    "branch names, and your organization's prohibited models are refused in any folder of it.",
+  "To tell whether a thread is one, the device reads Codex's login file, the first line of the " +
+    "thread's own log and the environment variables that choose the account or provider, and " +
+    "compares the signed-in email with the account that attached the device and the login's " +
+    'workspace with the one that created the thread.',
+  'The check sends none of what it reads, though the token usage and tool calls read from that ' +
+    "thread's log are forwarded with the rest of the activity of a recognised thread or of one " +
+    'signed in to a workspace enrolled by hand.',
+  'A token refresh keeps a recognised thread forwarding; a switch to another workspace or email, ' +
+    'to a plan that does not count, or to another login mode ends it for the rest of that thread.',
+  'A resumed thread, a personal plan, a service account, another email, a saved login that uses ' +
+    'an API key or any login mode other than ChatGPT, a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` ' +
+    'in the environment, an `OPENAI_BASE_URL` naming a host other than api.openai.com, a thread ' +
+    "whose log does not name OpenAI as its provider or the login's workspace as its creator, " +
+    'and a login Codex keeps outside its login file (in the system keychain, for one) follow ' +
+    'the repository rule.',
+  'A Codex thread whose first log line is not on disk when it starts is checked again at its next ' +
+    'prompt or tool call: its session record and the token usage and tool calls read from its log ' +
+    'follow the repository rule, and its prompts, tool calls and results forward from any folder ' +
+    'from that check on if the workspace is then recognised or enrolled by hand; if the line is ' +
+    'still missing then, it follows the repository rule for the rest of the thread.',
+  '`aka enroll --account` enrolls by hand a workspace the device cannot recognise, and the Codex ' +
+    'threads of a workspace enrolled that way then forward whatever the plan or email, though not ' +
+    'a resumed thread, one whose saved login uses an API key or any login mode other than ' +
+    'ChatGPT, one with a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` in the environment, one with an ' +
+    '`OPENAI_BASE_URL` naming a host other than api.openai.com, one whose log does not name ' +
+    'OpenAI as its provider, or one whose login Codex keeps outside its login file; a switch of ' +
+    'workspace or login mode ends them.',
+  '`aka unenroll --work-subscriptions` turns the recognition of Codex threads off too and ' +
+    '`aka enroll --work-subscriptions` turns it back on; a workspace enrolled by hand still ' +
+    'forwards while it is off (`aka unenroll --account` stops it).',
+];
+const CODEX_WORK_SENTENCE = CODEX_WORK_SENTENCES.join(' ');
+
+// What the login read keeps, said where the security page describes what crosses.
+const CODEX_READ_SENTENCE =
+  "Recognising a Codex thread reads Codex's login token only in memory, for the claims that give " +
+  'its email, plan and workspace: the token is never kept, logged, printed or sent, and the ' +
+  'recognition never copies the login file into the local store.';
+
+// The front doors that describe a personal device and the coding agents it runs;
+// `SCOPED_READMES` also selects the Claude Code plugin page, which describes that
+// plugin only.
+const CODEX_PAGES = ['README.md', 'cli/README.md'] as const;
+
+describe('Codex work-subscription claims', () => {
+  describe.each(CODEX_PAGES)('%s', (name) => {
+    const text = repoFile(name);
+
+    it('says what a recognised ChatGPT work subscription forwards from Codex, in the one sentence group', () => {
+      expect(flat(text)).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('says it in the body, not only in the footnote', () => {
+      expect(flat(paragraphs(text).join('\n'))).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('says the same in the egress footnote', () => {
+      expect(flat(footnoteOf(text))).toContain(CODEX_WORK_SENTENCE);
+    });
+
+    it('never says a resumed thread or a keychain login counts', () => {
+      expect(flat(text)).not.toMatch(/resumed (?:Codex )?threads? (?:also )?(?:forward|count)/i);
+      expect(flat(text)).not.toMatch(/keychain logins? (?:also )?(?:forward|count)/i);
+    });
+
+    it('never says the device sends the login email, plan or workspace id', () => {
+      expect(flat(text)).not.toMatch(
+        /sends? (?:the|your) (?:login )?(?:email|plan|account id|workspace id)/i,
+      );
+    });
+  });
+
+  it('says in SECURITY.md what the login read keeps, beside what it forwards', () => {
+    const section = flat(SECURITY_DATA_IN_TRANSIT ?? '');
+    expect(section).toContain(CODEX_WORK_SENTENCE);
+    expect(section).toContain(`${CODEX_WORK_SENTENCE} ${CODEX_READ_SENTENCE}`);
+  });
+
+  it('says only a plan that does not count ends a thread, never any change of plan', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toContain('to a plan that does not count');
+      expect(text).not.toContain('a switch of workspace, email, plan or login mode');
+    }
+  });
+
+  it('does not claim the scan protects a Codex home the environment relocates', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      expect(flat(repoFile(name))).not.toMatch(/aka scan[^.]*protects[^.]*CODEX_HOME/i);
+    }
+  });
+
+  it('names Codex sessions wherever a page sums up what a personal device forwards', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toContain(
+        'Claude Code and Codex sessions signed in to a recognised work subscription',
+      );
+      expect(text).not.toContain(
+        'Claude Code sessions signed in to a recognised work subscription',
+      );
+    }
+  });
+
+  it('counts only company workspaces, never a service account or a personal plan', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).toMatch(/Business, Team, Enterprise or Edu workspace/);
+      expect(text).toMatch(/A resumed thread, a personal plan, a service account/);
+    }
+  });
+
+  it('drops the unnamed API key, token and gateway wording from the Codex sentences', () => {
+    for (const name of [...CODEX_PAGES, 'SECURITY.md']) {
+      const text = flat(repoFile(name));
+      expect(text).not.toContain('an API key or access token');
+      expect(text).not.toContain('one under an API key');
+      expect(text).not.toContain('(in the environment or as the login)');
+      expect(text).not.toContain('another provider or a gateway');
+    }
+  });
+
+  describe('the environment variables the sentence group names', () => {
+    const named = new Set(CODEX_WORK_SENTENCE.match(/\b(?:CODEX|OPENAI)_[A-Z0-9_]+\b/g));
+
+    it('are the credential variables and the base URL the account check reads, and no other', () => {
+      expect([...named].sort()).toEqual([...CODEX_CREDENTIAL_ENV, 'OPENAI_BASE_URL'].sort());
+      for (const name of named) expect(CODEX_ACCOUNT_ENV_NAMES).toContain(name);
+    });
+
+    it.each([...CODEX_PAGES, 'SECURITY.md'])(
+      '%s does not name OPENAI_API_KEY, which the account check does not read',
+      (name) => {
+        expect(CODEX_ACCOUNT_ENV_NAMES).not.toContain('OPENAI_API_KEY');
+        expect(flat(repoFile(name))).not.toContain('OPENAI_API_KEY');
+      },
+    );
+  });
+});
+
+describe('README.md scoped attachment lists', () => {
+  const readme = flat(repoFile('README.md'));
+  const footnote = flat(footnoteOf(repoFile('README.md')));
+
+  it('names every request the enrolled list does not limit', () => {
+    expect(readme).toContain(
+      'the policy pull, the sighting-key fetch, the command check and the device report are not limited to what is enrolled',
+    );
+  });
+
+  it('says what enrolling queues under the history opt-in, and what stays local', () => {
+    expect(footnote).toContain(
+      'enrolling a repository or an account also queues the captures still kept for it, and enrolling a repository sends its activity from before the attachment, while what that repository recorded between attaching and enrolling, other than those captures and what a Claude Code or Codex session of a recognised work subscription or of an account enrolled by hand there already sent, stays local.',
+    );
+  });
+
+  it('says the sighting key is fetched whether or not sharing is on', () => {
+    expect(footnote).toContain(
+      'under a key the deployment issues (the machine fetches that key over the same connection, whether or not sharing is on)',
+    );
   });
 });
 

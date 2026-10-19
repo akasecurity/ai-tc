@@ -10,6 +10,7 @@ import {
   HISTORY_SYNC_PAYLOAD_VERSION,
   MANAGED_SETTINGS_FILENAME,
   resolveScope,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,8 +29,8 @@ import { tempHomes } from '../helpers/temp-home.ts';
 // credential goes first unless that could leave the new credential beside an
 // enrolled list or a history grant the finished attach replaces; there the
 // settings go first, so a stop between the two leaves what the machine had beside
-// no list (machine-wide) or an empty one (scoped), which sends no repository's
-// activity. The one exception is a scoped attach over a usable machine-wide
+// no list (machine-wide) or an empty one (scoped), which enrolls no repository or
+// account. The one exception is a scoped attach over a usable machine-wide
 // credential, which writes the credential first as well, as `aka attach` does: a
 // stop there leaves the new scoped key beside the list on file, which may belong
 // to another organization or account, and the earlier grant. The writes are
@@ -276,7 +277,7 @@ describe('a machine-wide attach over a personal device writes the settings first
     expect(stand.settingsWrites).toBe(1);
   });
 
-  it('leaves the personal device sending no repository activity, and says so, when the credential write fails after the settings', async () => {
+  it('leaves the personal device with nothing enrolled, and says what it still sends, when the credential write fails after the settings', async () => {
     arrangePersonalDevice();
     const before = credentialText();
     stand.failCredentialWriteAt = 1;
@@ -292,6 +293,25 @@ describe('a machine-wide attach over a personal device writes the settings first
     expect(nothingEnrolled()).toEqual({ mode: 'scoped', keys: new Set() });
     expect(stand.revalidated).toEqual(['/settings']);
     expect(stand.settingsWrites).toBe(1);
+  });
+
+  // The opt-out of work-subscription recognition lives in the stored scope record,
+  // which a machine-wide attach drops with the rest of the list, so the failed
+  // attach leaves the key already held recognising again.
+  it('drops an opt-out of work-subscription recognition when the credential write fails after the settings', async () => {
+    scopedCredential();
+    attachedSettings({
+      attachmentScope: { ...BOUND, workSubscriptions: 'off' },
+      historySyncConsent: GRANT,
+    });
+    expect(workSubscriptionsOn(storedSettings().attachmentScope)).toBe(false);
+    stand.failCredentialWriteAt = 1;
+
+    const res = await attachMachine();
+
+    expect(res).toEqual({ ok: false, error: ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS });
+    expect(storedSettings()).not.toHaveProperty('attachmentScope');
+    expect(workSubscriptionsOn(storedSettings().attachmentScope)).toBe(true);
   });
 
   it('leaves a credential file it cannot read in place, and says so, when the credential write fails after the settings', async () => {
@@ -609,12 +629,27 @@ describe('a scoped attach that will not keep the stored list writes the settings
 });
 
 describe('what an attach whose credential was not saved after its settings says', () => {
-  it('says what was saved, what is not sent, and to attach again before enrolling, naming no command', () => {
+  it('says what was saved, what a key already held still sends, that recognition may be back on, and to attach again before enrolling', () => {
     expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).toBe(
-      "The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared, and no repository's activity is sent until this machine is attached again. Attach it again before enrolling a repository.",
+      'The settings were saved, but the access key could not be saved to ~/.aka/settings, so the attach did not finish. The enrolled list is cleared. If this machine already held an access key for this deployment that AKA can use, it still sends the device report and the Claude Code and Codex sessions of any work subscription it recognises. This failure may have turned that recognition back on if you had turned it off; where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again. Attach it again before enrolling a repository or an account.',
     );
-    // No backtick, so no command is named: a machine an administrator governs
-    // attaches from this page or a terminal.
+    // A key held for this deployment keeps sending, so the sentence claims no
+    // silence, and enrolling an account sends under that key as a repository does.
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toMatch(/is sent until/i);
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain("repository's activity");
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain('already recognised');
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain('while work subscriptions');
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).toContain(
+      'before enrolling a repository or an account.',
+    );
+    // The one command named is the opt-out's, in plain text, and only where no
+    // administrator manages the machine, since it refuses on one that does. No
+    // attach command is named: a machine an administrator governs attaches from
+    // this page or a terminal.
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).toContain(
+      'where no administrator manages this machine, aka unenroll --work-subscriptions turns it off again.',
+    );
+    expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain('aka attach');
     expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain('`');
     // Plain ASCII, like the refusals beside it: no typographic apostrophe.
     expect(ATTACH_CREDENTIAL_NOT_SAVED_AFTER_SETTINGS).not.toContain(String.fromCharCode(0x2019));

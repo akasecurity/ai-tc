@@ -22,6 +22,7 @@ import type { HandoffNote } from '../mod/handoff.ts';
 import { isAuthorizedValue, takeToolHandoff } from '../mod/handoff.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { resolveHookAccount, stampFor } from './account-stamp.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath } from './paths.ts';
@@ -44,6 +45,7 @@ import {
 } from './pre-tool-use-fields.ts';
 import type { HookOutput } from './shared.ts';
 import { baseMetadata, captureScopeKey, getString } from './shared.ts';
+import { captureStamped } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -113,6 +115,12 @@ export async function runPreToolUse(
       sessionId,
       getString(input, 'cwd'),
       emit,
+      () => ({
+        dataDir: loadConfigOnce().dataDir,
+        sessionId,
+        transcriptPath: getString(input, 'transcript_path'),
+        cwd: getString(input, 'cwd'),
+      }),
     ))
   ) {
     return 'nothing-to-scan';
@@ -276,9 +284,16 @@ export async function runPreToolUse(
   if (filePath) metadata.filePath = filePath;
   // Keyed by the file this call names (a Write, Edit, MultiEdit or NotebookEdit
   // target; a relative path is read against the cwd), else by the session's cwd
-  // when it names none: see captureScopeKey. Beside the metadata rather than in
-  // it: the key is local, the metadata is wire.
-  const scopeKey = captureScopeKey(input, filePath);
+  // when it names none: see captureScopeKey. That key is stamped for the
+  // session's account (stampFor). Beside the metadata rather than in it: the key
+  // is local, the metadata is wire.
+  const account = resolveHookAccount(gateway, {
+    dataDir: config.dataDir,
+    sessionId,
+    transcriptPath: getString(input, 'transcript_path'),
+    cwd: getString(input, 'cwd'),
+  });
+  const scopeKey = stampFor(gateway, account, captureScopeKey(input, filePath));
 
   const scanned: ScannedField[] = [];
   const vaulted: PointersByText = new Map();
@@ -292,15 +307,16 @@ export async function runPreToolUse(
       const text = fieldText(spec, effectiveInput);
       if (text === undefined || text === '') continue;
 
-      const result = await runtime.capture(
+      const result = await captureStamped(
+        runtime,
         {
           kind,
           sourceTool: SOURCE_TOOL.ClaudeCode,
           text,
           metadata,
-          scopeKey,
           lineBasis: inputLineBasis(toolName),
         },
+        scopeKey,
         // code_change keeps the default 'always': those events are the at-rest
         // trail the re-scan resolver reconciles against, so a benign one still
         // has to exist. tool_use records only what was flagged — this hook sees

@@ -30,8 +30,8 @@ describe('webAccountKey', () => {
     expect(webAccountKey(SOURCE_TOOL.ClaudeAi, ORG.toUpperCase())).toBe(KEY);
   });
 
-  // ChatGPT has no verified source for its workspace id, so no key is made for
-  // it whatever is handed in.
+  // A ChatGPT web chat has no verified source for its workspace id, so no key is
+  // made for it whatever is handed in.
   it('makes no key for a site with no account provider', () => {
     expect(webAccountKey(SOURCE_TOOL.ChatGpt, ORG)).toBeUndefined();
   });
@@ -63,7 +63,9 @@ describe('parseWebAccountKey', () => {
   it.each([
     [`Claude:${ORG}`, 'a provider in another case'],
     [`claude:${ORG.toUpperCase()}`, 'an id not lower-cased'],
-    [`chatgpt:${ORG}`, 'a provider with no accounts yet'],
+    [`ChatGPT:${ORG}`, 'a chatgpt provider in another case'],
+    [`chatgpt:${ORG.toUpperCase()}`, 'a chatgpt id not lower-cased'],
+    ['chatgpt:payments', 'a chatgpt id that is not a workspace id'],
     [`claude:${ORG}:x`, 'a second colon'],
     [ORG, 'no provider'],
     ['github.com/acme/payments-api', 'a repository key'],
@@ -94,7 +96,7 @@ describe('normalizeWebAccountKey', () => {
 
   it('refuses anything that names no account', () => {
     expect(normalizeWebAccountKey('github.com/acme/payments-api')).toBeUndefined();
-    expect(normalizeWebAccountKey(`chatgpt:${ORG}`)).toBeUndefined();
+    expect(normalizeWebAccountKey('chatgpt:payments')).toBeUndefined();
     expect(normalizeWebAccountKey(`claude:${ORG}:extra`)).toBeUndefined();
     expect(normalizeWebAccountKey(ORG)).toBeUndefined();
     expect(normalizeWebAccountKey(undefined)).toBeUndefined();
@@ -105,6 +107,25 @@ describe('normalizeWebAccountKey', () => {
   it('forgives no lookalike', () => {
     expect(normalizeWebAccountKey(`cl\u0430ude:${ORG}`)).toBeUndefined();
     expect(normalizeWebAccountKey(`claude:${ORG.slice(0, -1)}`)).toBeUndefined();
+  });
+});
+
+describe('chatgpt workspace keys', () => {
+  const CHATGPT = `chatgpt:${ORG}`;
+
+  it('splits a chatgpt key into provider and workspace id', () => {
+    expect(parseWebAccountKey(CHATGPT)).toEqual({ provider: 'chatgpt', workspaceId: ORG });
+    expect(isWebAccountKey(CHATGPT)).toBe(true);
+  });
+
+  it('normalizes a typed chatgpt key the way a claude key is', () => {
+    expect(normalizeWebAccountKey(`  CHATGPT : ${ORG.toUpperCase()} `)).toBe(CHATGPT);
+  });
+
+  // A ChatGPT web chat names no workspace in a request the extension can verify,
+  // so a chat on that site is recorded under no account, whatever id is handed in.
+  it('leaves a ChatGPT web chat keyless although chatgpt keys exist', () => {
+    expect(webAccountKey(SOURCE_TOOL.ChatGpt, ORG)).toBeUndefined();
   });
 });
 

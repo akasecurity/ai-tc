@@ -60,6 +60,7 @@ export type WorkAccountWrite = 'written' | 'present' | 'refused' | 'timeout';
 // The label a learned work account is stored with.
 const WORK_ACCOUNT_LABEL: Record<WebAccountProvider, string> = {
   [WEB_ACCOUNT_PROVIDER.Claude]: 'Claude work account',
+  [WEB_ACCOUNT_PROVIDER.ChatGpt]: 'ChatGPT work account',
 };
 
 // The providers a coding agent signs in with.

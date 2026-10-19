@@ -120,6 +120,26 @@ describe('SqliteExceptionsRepository', () => {
     expect(listed).toEqual([created]);
   });
 
+  it('round-trips the label and its confirmer', async () => {
+    const created = await repo.create(input({ method: 'test-or-example', confirmedBy: 'user' }));
+    expect(created.method).toBe('test-or-example');
+    expect(created.confirmedBy).toBe('user');
+    expect(await repo.getByIdPrefix(created.id)).toEqual(created);
+  });
+
+  it('reads an unlabelled grant as having no method and the local user behind it', async () => {
+    const created = await repo.create(input());
+    expect(created.method).toBeNull();
+    expect(created.confirmedBy).toBe('user');
+  });
+
+  it('reads a row written before the label columns existed', async () => {
+    insertRawException('11111111-1111-4111-8111-111111111111');
+    const [row] = await repo.list({ includeTerminal: true });
+    expect(row?.method).toBeNull();
+    expect(row?.confirmedBy).toBe('user');
+  });
+
   it('lists newest-first and hides terminal rows unless includeTerminal is set', async () => {
     const expired = await repo.create(
       input({ expiresAt: new Date(Date.now() - 1000).toISOString() }),

@@ -187,4 +187,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0039_variable_name_expiry_index',
     sql: 'CREATE INDEX `idx_inspection_findings_variable_name` ON `inspection_findings` (`first_detected_at`) WHERE variable_name IS NOT NULL;',
   },
+  {
+    tag: '0040_human_label_columns',
+    sql: 'ALTER TABLE `exceptions` ADD `method` text;--> statement-breakpoint\nALTER TABLE `exceptions` ADD `confirmed_by` text;--> statement-breakpoint\nALTER TABLE `finding_resolution` ADD `confirmed_by` text;',
+  },
 ];

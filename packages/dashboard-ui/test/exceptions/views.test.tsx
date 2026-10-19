@@ -38,6 +38,8 @@ function exception(overrides: Partial<DetectionException>): ExceptionDescriptor 
     useCount: 0,
     lastUsedAt: null,
     justification: 'test fixture',
+    method: null,
+    confirmedBy: 'user',
     conditions: null,
     createdBy: 'tester',
     createdVia: 'web-add',

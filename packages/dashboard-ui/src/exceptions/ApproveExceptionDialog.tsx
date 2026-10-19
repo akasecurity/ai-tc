@@ -1,5 +1,5 @@
 'use client';
-import type { BlockedDetectionDescriptor } from '@akasecurity/schema';
+import type { BlockedDetectionDescriptor, DismissMethod } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
@@ -13,13 +13,17 @@ import {
 } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
+import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
 import { ScopePicker } from './atoms.tsx';
 import type { ScopeAnswer } from './meta.ts';
+import { GRANT_METHODS } from './meta.ts';
 
 export interface ApproveSubmission {
   reference: string;
   scope: ScopeAnswer;
   reason: string;
+  // The reason as a label, when one was picked.
+  method?: DismissMethod;
   // Present when scope is permanent: the retyped masked value. The server
   // action re-checks it (the client gate is a convenience, not the control).
   confirmation?: string;
@@ -50,6 +54,7 @@ export function ApproveExceptionDialog({
 }: ApproveExceptionDialogProps) {
   const [scope, setScope] = useState<ScopeAnswer | null>(null);
   const [reason, setReason] = useState('');
+  const [method, setMethod] = useState<DismissMethod | null>(null);
   const [confirmation, setConfirmation] = useState('');
 
   const needsConfirmation = scope === 'permanent';
@@ -66,6 +71,7 @@ export function ApproveExceptionDialog({
         if (!next) {
           setScope(null);
           setReason('');
+          setMethod(null);
           setConfirmation('');
         }
         onOpenChange(next);
@@ -105,6 +111,22 @@ export function ApproveExceptionDialog({
                     setReason(e.target.value);
                   }}
                   placeholder="Why this value may pass"
+                />
+              </div>
+
+              <div>
+                <div
+                  id="approve-exception-method-label"
+                  className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3"
+                >
+                  Label the reason (optional)
+                </div>
+                <ChoiceGroup
+                  name="approve-exception-method"
+                  labelledBy="approve-exception-method-label"
+                  choices={GRANT_METHODS}
+                  value={method}
+                  onChange={setMethod}
                 />
               </div>
 
@@ -152,6 +174,7 @@ export function ApproveExceptionDialog({
                 reference: entry.reference,
                 scope,
                 reason: reason.trim(),
+                ...(method !== null ? { method } : {}),
                 ...(needsConfirmation ? { confirmation } : {}),
               });
             }}

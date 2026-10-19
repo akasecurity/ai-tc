@@ -78,6 +78,8 @@ function exceptionRow(overrides: Partial<DetectionException>): ExceptionDescript
     useCount: 0,
     lastUsedAt: null,
     justification: 'test fixture',
+    method: null,
+    confirmedBy: 'user',
     conditions: null,
     createdBy: 'tester',
     createdVia: 'web-add',

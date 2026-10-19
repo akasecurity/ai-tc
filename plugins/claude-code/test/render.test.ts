@@ -118,6 +118,8 @@ function exception(overrides: Partial<DetectionException> = {}): DetectionExcept
     useCount: 3,
     lastUsedAt: null,
     justification: 'temp deploy creds, rotating after infra apply',
+    method: null,
+    confirmedBy: 'user',
     conditions: null,
     createdBy: 'alice (local)',
     createdVia: 'cli-approve',

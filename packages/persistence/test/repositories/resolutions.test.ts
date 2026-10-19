@@ -86,11 +86,62 @@ describe('insertResolution / latestByKey', () => {
       method: 'fixed-at-source',
       resolvedAt: 2000,
       evidence: 'second pass',
+      confirmedBy: null,
     });
   });
 
   it('returns undefined for a key with no resolution', () => {
     expect(resolutions().latestByKey('unknown-key')).toBeUndefined();
+  });
+
+  it("records who stands behind a person's dismissal", () => {
+    const repo = resolutions();
+    repo.insertResolution({
+      findingKey: 'k-human',
+      status: 'dismissed',
+      method: 'test-or-example',
+      resolvedAt: 1000,
+      evidence: '',
+      confirmedBy: 'user',
+    });
+    expect(repo.latestByKey('k-human')?.confirmedBy).toBe('user');
+  });
+
+  it("reads a person's dismissal with no confirmer as the local user's", () => {
+    const repo = resolutions();
+    repo.insertResolution({
+      findingKey: 'k-legacy',
+      status: 'dismissed',
+      method: 'false-positive',
+      resolvedAt: 1000,
+      evidence: '',
+    });
+    expect(repo.latestByKey('k-legacy')?.confirmedBy).toBe('user');
+  });
+
+  it("reads a person's dismissal written before the column existed as the local user's", () => {
+    const raw = store.openRaw();
+    raw
+      .prepare(
+        `INSERT INTO finding_resolution (id, finding_key, status, method, resolved_at, evidence, created_at)
+         VALUES ('r1', 'k-old', 'dismissed', 'acknowledged', 1, '', 1)`,
+      )
+      .run();
+    raw.close();
+    expect(resolutions().latestByKey('k-old')?.confirmedBy).toBe('user');
+  });
+
+  it('refuses a confirmer on a machine verdict, which nobody stands behind', () => {
+    expect(() => {
+      resolutions().insertResolution({
+        findingKey: 'k-machine',
+        status: 'resolved',
+        method: 'fixed-at-source',
+        resolvedAt: 1000,
+        evidence: '',
+        confirmedBy: 'user',
+      });
+    }).toThrow(/machine verdict/);
   });
 });
 

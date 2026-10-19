@@ -92,6 +92,9 @@ export const findingResolution = sqliteTable(
     method: text(COL.method).notNull(),
     resolvedAt: integer(COL.resolvedAt).notNull(),
     evidence: text(COL.evidence),
+    // 'user' on a person's dismissal; null on a machine verdict, which nobody
+    // stands behind, and on rows written before the column existed.
+    confirmedBy: text(COL.confirmedBy, { enum: ['user', 'admin'] }),
     createdAt: integer(COL.createdAt)
       .notNull()
       .$defaultFn(() => Date.now()),
@@ -257,6 +260,11 @@ export const exceptions = sqliteTable(
     useCount: integer(COL.useCount).notNull().default(0),
     lastUsedAt: integer(COL.lastUsedAt),
     justification: text(COL.justification).notNull(),
+    // The justification as a label (a DismissMethod), or null. Nullable with no
+    // default so a grant written before it reads as unlabelled.
+    method: text(COL.method, { enum: ['acknowledged', 'false-positive', 'test-or-example'] }),
+    // Null on a row written before the column existed; read as 'user'.
+    confirmedBy: text(COL.confirmedBy, { enum: ['user', 'admin'] }),
     conditions: text(COL.conditions),
     createdBy: text(COL.createdBy).notNull(),
     createdVia: text(COL.createdVia, {

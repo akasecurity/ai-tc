@@ -311,6 +311,7 @@ export {
   blockedRowBlockReason,
   type ExceptionState,
   exceptionState,
+  GRANT_METHODS,
   isBlockedRowApprovable,
   LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote,

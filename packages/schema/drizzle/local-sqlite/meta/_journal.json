@@ -281,6 +281,13 @@
       "when": 1791984997045,
       "tag": "0039_variable_name_expiry_index",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1792405386171,
+      "tag": "0040_human_label_columns",
+      "breakpoints": true
     }
   ]
 }

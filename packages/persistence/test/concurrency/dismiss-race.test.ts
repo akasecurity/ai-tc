@@ -176,6 +176,7 @@ describe('dismissOpenFindingsForRule', () => {
         method: 'false-positive',
         resolvedAt: 1,
         evidence: '{}',
+        confirmedBy: 'user',
       });
       expect(db.resolutions.latestByKey('k-2')?.status).toBe('dismissed');
       // Nothing left to dismiss: the keys just written are no longer open.

@@ -40,6 +40,9 @@ export type CreateExceptionInput = Pick<
   // Absent means 'suppress' — the pre-capability semantics, so no existing
   // caller silently starts minting reveal grants.
   capability?: DetectionExceptionType['capability'] | undefined;
+  // Absent means an unlabelled grant made by the local user.
+  method?: DetectionExceptionType['method'] | undefined;
+  confirmedBy?: DetectionExceptionType['confirmedBy'] | undefined;
 };
 
 // The ledger-entry shapes live in @akasecurity/schema (zod/exception.ts), shared with
@@ -102,6 +105,8 @@ interface ExceptionRow {
   use_count: number;
   last_used_at: number | null;
   justification: string;
+  method: string | null;
+  confirmed_by: string | null;
   conditions: string | null;
   created_by: string;
   created_via: string;
@@ -292,11 +297,12 @@ export class SqliteExceptionsRepository {
         `INSERT INTO exceptions (
              id, rule_id, category, value_fingerprint, key_version, masked_value,
              capability, scope, expires_at, max_uses, use_count, last_used_at,
-             justification, conditions, created_by, created_via, created_at, updated_at
+             justification, method, confirmed_by, conditions, created_by, created_via,
+             created_at, updated_at
            ) VALUES (
              :id, :ruleId, :category, :valueFingerprint, :keyVersion, :maskedValue,
              :capability, :scope, :expiresAt, :maxUses, 0, NULL, :justification,
-             :conditions, :createdBy, :createdVia, :now, :now
+             :method, :confirmedBy, :conditions, :createdBy, :createdVia, :now, :now
            )`,
       )
       .run({
@@ -311,6 +317,8 @@ export class SqliteExceptionsRepository {
         expiresAt: input.expiresAt === null ? null : isoToEpochMillis(input.expiresAt),
         maxUses: input.maxUses,
         justification: input.justification,
+        method: input.method ?? null,
+        confirmedBy: input.confirmedBy ?? 'user',
         conditions: input.conditions === null ? null : JSON.stringify(input.conditions),
         createdBy: input.createdBy,
         createdVia: input.createdVia,
@@ -562,6 +570,9 @@ function parseExceptionRow(row: ExceptionRow): DetectionExceptionType {
     useCount: row.use_count,
     lastUsedAt: row.last_used_at === null ? null : epochMillisToIso(row.last_used_at),
     justification: row.justification,
+    method: row.method,
+    // Null only on a row written before the column existed: the local user's.
+    confirmedBy: row.confirmed_by ?? 'user',
     conditions,
     createdBy: row.created_by,
     createdVia: row.created_via,

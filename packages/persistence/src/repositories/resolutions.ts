@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import { FindingStatus, ResolutionMethod } from '@akasecurity/schema';
+import { ConfirmedBy, DismissMethod, FindingStatus, ResolutionMethod } from '@akasecurity/schema';
 
 import { allRows, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
@@ -21,6 +21,9 @@ export interface ResolutionInput {
   method: ResolutionMethod;
   resolvedAt: number;
   evidence: string;
+  // Who stands behind a person's dismissal (a DismissMethod); absent means the
+  // local user. A machine verdict has nobody behind it and refuses one.
+  confirmedBy?: ConfirmedBy;
 }
 
 // The newest disposition recorded for a finding key.
@@ -29,6 +32,9 @@ export interface Resolution {
   method: ResolutionMethod;
   resolvedAt: number;
   evidence: string;
+  // Null on a machine verdict. A person's dismissal written before the column
+  // existed reads as the local user's.
+  confirmedBy: ConfirmedBy | null;
 }
 
 interface ResolutionRow {
@@ -36,6 +42,7 @@ interface ResolutionRow {
   method: string;
   resolved_at: number;
   evidence: string | null;
+  confirmed_by: string | null;
 }
 
 interface FindingKeyRow {
@@ -93,11 +100,11 @@ export class SqliteResolutionsRepository {
     private readonly newId: () => string = () => randomUUID(),
   ) {
     this.insertStmt = db.prepare(
-      `INSERT INTO finding_resolution (id, finding_key, status, method, resolved_at, evidence, created_at)
-       VALUES (:id, :findingKey, :status, :method, :resolvedAt, :evidence, :createdAt)`,
+      `INSERT INTO finding_resolution (id, finding_key, status, method, resolved_at, evidence, confirmed_by, created_at)
+       VALUES (:id, :findingKey, :status, :method, :resolvedAt, :evidence, :confirmedBy, :createdAt)`,
     );
     this.latestStmt = db.prepare(
-      `SELECT status, method, resolved_at, evidence
+      `SELECT status, method, resolved_at, evidence, confirmed_by
          FROM finding_resolution
         WHERE finding_key = :findingKey
         ORDER BY created_at DESC, rowid DESC
@@ -143,13 +150,19 @@ export class SqliteResolutionsRepository {
    * paths above.
    */
   insertResolution(r: ResolutionInput): void {
+    const method = ResolutionMethod.parse(r.method);
+    const human = DismissMethod.safeParse(method).success;
+    if (!human && r.confirmedBy !== undefined) {
+      throw new Error(`"${method}" is a machine verdict; nobody confirms it`);
+    }
     this.insertStmt.run({
       id: this.newId(),
       findingKey: r.findingKey,
       status: FindingStatus.parse(r.status),
-      method: ResolutionMethod.parse(r.method),
+      method,
       resolvedAt: r.resolvedAt,
       evidence: r.evidence,
+      confirmedBy: human ? ConfirmedBy.parse(r.confirmedBy ?? 'user') : null,
       createdAt: this.now(),
     });
   }
@@ -199,6 +212,9 @@ export class SqliteResolutionsRepository {
       method: row.method as ResolutionMethod,
       resolvedAt: row.resolved_at,
       evidence: row.evidence ?? '',
+      confirmedBy:
+        (row.confirmed_by as ConfirmedBy | null) ??
+        (DismissMethod.safeParse(row.method).success ? 'user' : null),
     };
   }
 

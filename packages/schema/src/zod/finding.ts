@@ -179,7 +179,8 @@ export type FindingDelivery = z.infer<typeof FindingDelivery>;
 // 'enforced-in-flight' = blocked/redacted/warned at the boundary; 'fixed-at-source'
 // = the underlying content was remediated (no longer detected on re-scan);
 // 'exception' = an approved policy exception covers it; 'acknowledged' = accepted
-// risk without a fix; 'false-positive' = not a real finding; 'redetected' = a
+// risk without a fix; 'false-positive' = not a real finding; 'test-or-example' =
+// a real match of a correct rule, in test fixtures or example values; 'redetected' = a
 // finding_key that was previously resolved (or otherwise handled) was detected
 // again on a later scan — pairs with status 'open' to supersede the stale
 // handled row and reassert the invariant that a currently-present finding_key
@@ -191,6 +192,7 @@ export const ResolutionMethod = z
     'exception',
     'acknowledged',
     'false-positive',
+    'test-or-example',
     'redetected',
   ])
   .meta({ id: 'ResolutionMethod' });

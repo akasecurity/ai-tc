@@ -27,6 +27,7 @@ export function ProjectDetail({
   sensitiveData,
   sensitiveDataLoading,
   sensitiveDataError,
+  sensitiveDataRefusal,
   harnesses,
   onBack,
   backLabel,
@@ -44,6 +45,8 @@ export function ProjectDetail({
   sensitiveDataLoading?: boolean | undefined;
   /** Set when the sensitive data could not be loaded. */
   sensitiveDataError?: string | null | undefined;
+  /** Shown in place of the sensitive data when the viewer may not read it. */
+  sensitiveDataRefusal?: string | undefined;
   /** Every harness; those that list this project are shown as loading it. */
   harnesses: HarnessSummary[];
   /** Returns to the table this project was opened from. */
@@ -117,7 +120,9 @@ export function ProjectDetail({
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-5">
         <Section label="Sensitive data present">
-          {sensitiveDataError ? (
+          {sensitiveDataRefusal !== undefined ? (
+            <div className="text-xs text-text-3">{sensitiveDataRefusal}</div>
+          ) : sensitiveDataError ? (
             <div className="text-xs text-sev-critical-ink">
               {`Couldn't load the sensitive data: ${sensitiveDataError}`}
             </div>
@@ -213,7 +218,9 @@ function SensitiveDataRow({ item, renderedAt }: { item: SensitiveDataClass; rend
         {CATEGORY_LABEL[item.category]}
       </span>
       <span className="shrink-0 text-xs text-text-2">
-        {`${String(item.files)} ${item.files === 1 ? 'file' : 'files'}`}
+        {item.files === 0
+          ? 'In prompts & output'
+          : `${String(item.files)} ${item.files === 1 ? 'file' : 'files'}`}
       </span>
       <SeverityBadge severity={item.severity} />
       <span className="min-w-20 shrink-0 text-right text-xs text-text-3">

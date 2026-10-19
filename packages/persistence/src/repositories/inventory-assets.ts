@@ -35,6 +35,7 @@ import {
   listMetaOf,
   PROJECT_FINDINGS_WINDOW_DAYS,
   Severity,
+  SEVERITY_RANK,
   SOURCE_TOOL,
 } from '@akasecurity/schema';
 
@@ -129,25 +130,29 @@ const PROJECT_FINDINGS_WINDOW_MS = PROJECT_FINDINGS_WINDOW_DAYS * 24 * 60 * 60 *
 // project's findings are reached project → its sessions → their events in the
 // window → the events' findings. CROSS JOIN keeps SQLite from reordering the
 // three, so the read starts from the project's sessions (idx_audit_project_t)
-// and seeks each session's events in the window (idx_audit_session).
+// and seeks each session's events in the window (idx_audit_session). The posture
+// findings on a session's config_scan event are left out: they describe the
+// machine's configuration and repeat at every session start.
 const PROJECT_FINDINGS_FROM = `audit_events s
   CROSS JOIN audit_events e
   CROSS JOIN inspection_findings f`;
 const PROJECT_FINDINGS_JOIN = `e.root_session_id = s.id
   AND e.started_at >= ?
+  AND e.event_type <> 'config_scan'
   AND f.audit_event_id = e.id`;
 
-// A stored category outside the enum reads as `custom`, and severities are
-// ranked so the worst one is the max: critical is the highest.
+// A stored category outside the enum reads as `custom`. A severity ranks by
+// SEVERITY_RANK, so the worst one is the minimum, and one outside the enum
+// ranks after every severity in it.
 const CATEGORY_OF_DEFINITION = `CASE WHEN d.category IN (${DetectionCategory.options
   .map((c) => `'${c}'`)
   .join(', ')}) THEN d.category ELSE 'custom' END`;
-const SEVERITY_RANK_OF_DEFINITION = `CASE d.severity ${Severity.options
-  .map((sev, i) => `WHEN '${sev}' THEN ${String(Severity.options.length - i)}`)
-  .join(' ')} END`;
+const SEVERITY_RANK_OF_DEFINITION = `CASE d.severity ${Object.entries(SEVERITY_RANK)
+  .map(([sev, rank]) => `WHEN '${sev}' THEN ${String(rank)}`)
+  .join(' ')} ELSE ${String(Severity.options.length)} END`;
 
-function severityOfRank(rank: number | null): SensitiveDataClass['severity'] {
-  return Severity.options[Severity.options.length - (rank ?? 1)] ?? 'low';
+function severityOfRank(rank: number): SensitiveDataClass['severity'] {
+  return Severity.options[rank] ?? 'low';
 }
 
 // Per-project file rollup (effective access counts + findings), assembled once by
@@ -672,13 +677,13 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     const rows = allRows<{
       category: SensitiveDataClass['category'];
       files: number;
-      severityRank: number | null;
+      severityRank: number;
       lastAt: number;
     }>(
       this.db.prepare(
         `SELECT ${CATEGORY_OF_DEFINITION} AS category,
                 count(DISTINCT e.file_path) AS files,
-                max(${SEVERITY_RANK_OF_DEFINITION}) AS severityRank,
+                min(${SEVERITY_RANK_OF_DEFINITION}) AS severityRank,
                 max(e.started_at) AS lastAt
          FROM ${PROJECT_FINDINGS_FROM}
          CROSS JOIN inspection_definitions d
@@ -691,7 +696,7 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     );
     const items = rows
       .map((r) => ({
-        rank: r.severityRank ?? 0,
+        rank: r.severityRank,
         item: {
           category: r.category,
           files: r.files,
@@ -701,7 +706,7 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       }))
       .sort(
         (a, b) =>
-          b.rank - a.rank ||
+          a.rank - b.rank ||
           b.item.lastDetectedAt.localeCompare(a.item.lastDetectedAt) ||
           a.item.category.localeCompare(b.item.category),
       )

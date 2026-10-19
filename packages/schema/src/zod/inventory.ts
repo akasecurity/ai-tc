@@ -157,9 +157,10 @@ export const ProjectSummary = z
      */
     findingsCount: z.number().int().nonnegative(),
     /**
-     * The distinct endpoints that have recently run a session in the project.
-     * Omitted by a store that does not record who reports what, and for a reader
-     * who may not see endpoints. A list stops at `INVENTORY_LIST_COUNT_CAP`.
+     * The distinct endpoints that have recently run a session in the project; in a
+     * harness card's `projects`, under that harness. Omitted by a store that does
+     * not record who reports what, and for a reader who may not see endpoints. A
+     * list stops at `INVENTORY_LIST_COUNT_CAP`.
      */
     machines: z.number().int().nonnegative().optional(),
   })
@@ -192,6 +193,7 @@ export const HarnessSummary = z
     machines: z.number().int().nonnegative().optional(),
     assetCount: z.number().int().nonnegative(),
     flagCount: z.number().int().nonnegative(),
+    /** The projects the harness has loaded; each one's `machines` counts this harness's endpoints. */
     projects: z.array(ProjectSummary),
     categories: z.array(HarnessCategory),
   })

@@ -59,7 +59,7 @@ function render(
   blockedCount: number,
   blocked: FileSummary[],
   blockedError?: string,
-  sensitive: { items?: SensitiveDataClass[]; error?: string } = {},
+  sensitive: { items?: SensitiveDataClass[]; error?: string; refusal?: string } = {},
   machines?: number,
 ): string {
   return renderToStaticMarkup(
@@ -69,6 +69,7 @@ function render(
       blockedError={blockedError}
       sensitiveData={sensitive.items ?? []}
       sensitiveDataError={sensitive.error}
+      sensitiveDataRefusal={sensitive.refusal}
       harnesses={[HARNESS, { ...HARNESS, id: 'cursor', label: 'Cursor', projects: [] }]}
       onBack={() => undefined}
       backLabel="Projects"
@@ -116,6 +117,12 @@ describe('ProjectDetail', () => {
     expect(html).toContain('2 hours ago');
   });
 
+  it('says a category found in no file was found in prompts and output', () => {
+    const html = render(0, [], undefined, { items: [{ ...SECRET, files: 0 }] });
+    expect(html).toContain('In prompts &amp; output');
+    expect(html).not.toContain('0 files');
+  });
+
   it('says when the project has no sensitive data in the window', () => {
     expect(render(0, [])).toContain('No sensitive data found in the last 30 days.');
   });
@@ -123,6 +130,13 @@ describe('ProjectDetail', () => {
   it('reports a failed sensitive-data read instead of saying there is none', () => {
     const html = render(0, [], undefined, { error: 'Request failed (500)' });
     expect(html).toContain('Couldn&#x27;t load the sensitive data: Request failed (500)');
+    expect(html).not.toContain('No sensitive data found');
+  });
+
+  it('shows the refusal in place of the sensitive data when the viewer may not read it', () => {
+    const html = render(0, [], undefined, { items: [SECRET], refusal: 'Not allowed.' });
+    expect(html).toContain('Not allowed.');
+    expect(html).not.toContain('2 files');
     expect(html).not.toContain('No sensitive data found');
   });
 

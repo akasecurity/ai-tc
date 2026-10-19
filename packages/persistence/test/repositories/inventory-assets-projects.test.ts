@@ -74,10 +74,14 @@ describe('worktree-checkout ghost rows', () => {
 
 const DAY_MS = 86_400_000;
 
-/** A session in `url`'s project whose captures, `ago` ms back, carry the given findings. */
+/**
+ * A session in `url`'s project whose captures, `ago` ms back, carry the given findings, and
+ * optionally a config scan under the session carrying one posture finding.
+ */
 function sessionWithFindings(
   url: string | null,
   captures: { ago: number; findings: Partial<DetectedFinding>[]; filePath?: string }[],
+  options: { postureScan?: boolean } = {},
 ): string | undefined {
   const sessionId = randomUUID();
   const resolved = db.ensureInventory(
@@ -105,6 +109,39 @@ function sessionWithFindings(
       event,
       capture.findings.map((f) => captureFinding(event.id, f)),
     );
+  }
+  if (options.postureScan === true) {
+    db.recordConfigScan({
+      items: [],
+      scanEvent: {
+        id: randomUUID(),
+        eventType: 'config_scan',
+        startedAt: new Date(Date.now() - DAY_MS).toISOString(),
+        parentId: sessionId,
+        rootSessionId: sessionId,
+        attributes: {},
+      },
+      definitions: [
+        {
+          ruleId: 'hook-conflict',
+          version: '1',
+          name: 'Overlapping hooks',
+          category: 'config',
+          severity: 'medium',
+          definition: '{}',
+        },
+      ],
+      findings: [
+        {
+          ruleId: 'hook-conflict',
+          version: '1',
+          span: { start: 0, end: 4 },
+          maskedMatch: 'lint',
+          actionTaken: 'warn',
+          confidence: 0.7,
+        },
+      ],
+    });
   }
   return resolved.sourceProjectId;
 }
@@ -143,6 +180,19 @@ describe('project findings', () => {
     const { items } = await db.inventoryAssets.listProjects();
 
     expect(items.find((p) => p.id === id)?.findingsCount).toBe(0);
+  });
+
+  it("leaves out the posture findings of the sessions' config scans", async () => {
+    const url = 'https://github.com/org/payments-api.git';
+    const id = sessionWithFindings(url, [{ ago: DAY_MS, findings: [{}] }], { postureScan: true });
+    sessionWithFindings('https://github.com/org/quiet.git', [], { postureScan: true });
+
+    const { items } = await db.inventoryAssets.listProjects();
+    const stats = await db.inventoryAssets.getInventoryStats();
+
+    expect(items.find((p) => p.id === id)?.findingsCount).toBe(1);
+    expect(items.find((p) => p.name === 'quiet.git')?.findingsCount).toBe(0);
+    expect(stats.attention).toBe(1);
   });
 
   it('counts a project with a finding in the window once toward attention', async () => {
@@ -218,6 +268,17 @@ describe('project sensitive data', () => {
 
     expect(await db.inventoryAssets.getProjectSensitiveData(id)).toEqual({ items: [] });
     expect(await db.inventoryAssets.getProjectSensitiveData('nope')).toBeNull();
+  });
+
+  it('leaves out the posture findings of config scans', async () => {
+    const id = sessionWithFindings(URL, [{ ago: DAY_MS, findings: [{ category: 'pii' }] }], {
+      postureScan: true,
+    });
+    if (id === undefined) throw new Error('no project');
+
+    const data = await db.inventoryAssets.getProjectSensitiveData(id);
+
+    expect(data?.items.map((c) => c.category)).toEqual(['pii']);
   });
 
   it("leaves out another project's findings", async () => {

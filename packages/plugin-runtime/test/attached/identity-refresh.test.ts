@@ -353,7 +353,7 @@ describe('refreshAttachedIdentity — an attachment that changes while it asks',
   });
 });
 
-describe('only the sync child asks who a key belongs to', () => {
+describe('within the plugin runtime only the sync child asks who a key belongs to', () => {
   const PACKAGE = fileURLToPath(new URL('../../', import.meta.url));
   const SRC = join(PACKAGE, 'src');
   const sources = readdirSync(SRC, { recursive: true, encoding: 'utf8' }).filter((name) =>

@@ -25,9 +25,12 @@
  * through that hook. Neither point blocks an LLM API call — no hook fires around
  * the request — so what the two enforce together is that a session does not RUN
  * on a prohibited model where the organization's model policy governs it:
- * everywhere on a machine-wide attachment, and only in enrolled repositories on
- * a scoped one, keyed from the directory each turn runs in. A turn the policy
- * does not govern is scanned like any other.
+ * everywhere on a machine-wide attachment, and in enrolled repositories on
+ * a scoped one, keyed from the directory each turn runs in. In a session signed
+ * in to a recognised work subscription the turn is keyed by the session's own
+ * key, so the policy governs it in any folder; the first prompt of a new
+ * session is keyed by its directory alone. A turn the policy does not govern is
+ * scanned like any other.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed `/aka:setup`, surface a one-line pointer to it (fail-open
@@ -48,6 +51,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { actionFromCapture, pointersByFinding, recordModFindings } from '../mod/findings-log.ts';
 import { consumeModHandoff } from '../mod/handoff.ts';
+import { resolveHookAccount, stampFor } from './account-stamp.ts';
 import { writeClipboard } from './clipboard.ts';
 import { HOOK_SCAN_DEADLINE_MS, largeInputBound } from './large-input.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
@@ -61,6 +65,7 @@ import {
   parseJson,
   readStdin,
 } from './shared.ts';
+import { captureDeferredStamped } from './stamped-capture.ts';
 import {
   claimStoreUnavailableWarning,
   openGateway,
@@ -86,6 +91,7 @@ async function main(): Promise<void> {
   // published wire shape, and the key is a local attribute only the local writer
   // stores. A prompt names no file, so this is the cwd key, and free: baseMetadata
   // has just walked this directory and the resolver is memoised per directory.
+  // The capture is stamped with it for the session's account (stampFor).
   const scopeKey = input ? captureScopeKey(input) : undefined;
 
   // The gateway is opened HERE (not behind a catch-all) so a store-open
@@ -100,6 +106,14 @@ async function main(): Promise<void> {
     return;
   }
   const gateway = opened.gateway;
+  // The session's account, checked once for this turn: its refusal and its
+  // capture are both stamped from it.
+  const account = resolveHookAccount(gateway, {
+    dataDir: config.dataDir,
+    sessionId,
+    transcriptPath: input === null ? undefined : getString(input, 'transcript_path'),
+    cwd: input === null ? undefined : getString(input, 'cwd'),
+  });
   // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
   // cheaper verdict (two small local reads against a detection pass over the
   // whole prompt) and the stronger one: if this turn cannot run at all, what the
@@ -136,13 +150,11 @@ async function main(): Promise<void> {
   });
   let result: CaptureResult;
   try {
-    const decided = await runtime.captureDeferred({
-      kind: 'prompt',
-      sourceTool: SOURCE_TOOL.ClaudeCode,
-      text: prompt,
-      metadata,
-      scopeKey,
-    });
+    const decided = await captureDeferredStamped(
+      runtime,
+      { kind: 'prompt', sourceTool: SOURCE_TOOL.ClaudeCode, text: prompt, metadata },
+      stampFor(gateway, account, scopeKey),
+    );
     if (!handedOff) await decided.record();
     result = decided.result;
   } finally {

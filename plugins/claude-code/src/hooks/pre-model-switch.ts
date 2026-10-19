@@ -17,11 +17,13 @@
  * Neither blocks an LLM API call: no hook fires around the request itself. What
  * the two together enforce is that a session does not RUN on a prohibited model
  * where the organization's model policy governs it, for as long as the user
- * keeps the plugin installed: everywhere on a machine-wide attachment, and only
- * in enrolled repositories on a scoped one. Each refusal is keyed from the
- * directory it was asked in, and a switch the policy does not govern there is
- * allowed, with no refusal row, and the session's model is recorded as for any
- * other allowed switch.
+ * keeps the plugin installed: everywhere on a machine-wide attachment, and on a
+ * scoped one in enrolled repositories and in any folder of a session whose key
+ * is its work subscription's agent key. Each refusal is keyed from the
+ * directory it was asked in, or by that agent key where the repository is not
+ * enrolled, and a switch the policy does not govern there is allowed, with no
+ * refusal row, and the session's model is recorded as for any other allowed
+ * switch.
  *
  * The prohibition list rides the policy bundle the gateway already serves, so
  * this hook touches the local store and never the network.
@@ -45,6 +47,7 @@ async function main(): Promise<void> {
     openGateway: () => openGatewayOrNull(config),
     emit,
     warnIfStoreRedirected,
+    transcriptPath: getString(input, 'transcript_path'),
   });
 }
 

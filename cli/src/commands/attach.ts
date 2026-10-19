@@ -45,6 +45,8 @@ import {
   promptRedactionLines,
   readHostVersionCache,
 } from '@akasecurity/plugin-sdk';
+import type { ClaudeLoginPaths } from '@akasecurity/plugin-sdk/account';
+import { codexHomeDir } from '@akasecurity/plugin-sdk/account';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type {
   AttachedCredentialAny,
@@ -97,17 +99,24 @@ Registers this machine against your organization's AKA deployment.
   --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
   --scoped   A personal device: send activity only from the repositories you
-             enroll with \`aka enroll\`; none is sent until you enroll one.
+             enroll with \`aka enroll\`, from Claude Code and Codex sessions
+             signed in to a work subscription (a Claude Team or Enterprise
+             plan, or a ChatGPT Business, Team, Enterprise or Edu plan) under
+             your AKA account's email (\`aka unenroll --work-subscriptions\`
+             stops those), and from an account you enroll by hand with
+             \`aka enroll --account\`: its Claude Code or Codex sessions and the
+             replies in its claude.ai chats.
              Whenever a session starts anywhere on this machine, in a
              repository or not (a browser chat included), the machine pulls
-             the deployment's policy (at most every 15 minutes) and sends it a
-             device report (at most hourly): a device identifier, host name,
-             versions, detection packs, policy counts, finding counts and
-             dates for everything recorded on the machine, and, when the
-             machine is attached as a personal device, the fact that it is
-             one. Where a scan is available (the coding-agent plugins, not a
-             browser chat), the same session start also checks it for device
-             commands.
+             the deployment's policy (at most every 15 minutes) and its
+             sighting key (when none is stored or the stored one is a day
+             old) and sends it a device report (at most hourly): a device
+             identifier, host name, versions, detection packs, policy counts,
+             finding counts and dates for everything recorded on the machine,
+             and, when the machine is attached as a personal device, the fact
+             that it is one. Where a scan is available (the coding-agent
+             plugins, not a browser chat), the same session start also checks
+             it for device commands.
   --machine  A machine your organization owns: send activity from anywhere on
              this machine.
 
@@ -145,6 +154,16 @@ export interface AttachDeps {
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
   managedSettings?: ManagedSettings | null;
+  /**
+   * Where Claude Code keeps its login and settings files, for the status line
+   * that says why its login counts. Leaving it out reads the real home and the
+   * system managed-settings file.
+   */
+  claudePaths?: ClaudeLoginPaths | undefined;
+  /** The project whose Claude Code settings can veto its login. Defaults to the working directory. */
+  cwd?: (() => string) | undefined;
+  /** Codex's home directory, for the status line about its login. Defaults to the one Codex resolves. */
+  codexHome?: string | undefined;
   base?: string;
   prompter?: Prompter;
   /** The transport, injectable so tests verify a credential without a network. */
@@ -255,7 +274,9 @@ const NEEDS_MODE_FLAG =
   'refusing to attach without --scoped or --machine: this machine holds either a credential ' +
   'file aka cannot read, which may be a scoped attachment written by a newer aka, or a scoped ' +
   'attachment to another deployment, and attaching machine-wide without asking could widen ' +
-  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, or with ' +
+  'what it sends. Re-run with --scoped to send activity only from the repositories you enroll, ' +
+  'from Claude Code and Codex sessions signed in to a work subscription, and from an account you ' +
+  'enroll by hand (its Claude Code or Codex sessions and claude.ai chat replies), or with ' +
   '--machine to send activity from anywhere on this machine. Nothing was changed.';
 
 /**
@@ -299,12 +320,15 @@ const LEFT_AS_IT_WAS = 'could not save the attachment; this machine is left as i
  * that cannot be used or one for another deployment sends nothing, and with no
  * credential file there is nothing to send with. The last sentence is there
  * because the earlier scoped key for this deployment can survive the failed
- * write, and enrolling a repository under it would send that repository.
+ * write, and enrolling a repository under it would send that repository. The work
+ * subscriptions that key had recognised survive with it, so their sessions may
+ * still be sent.
  */
 const CREDENTIAL_NOT_SAVED_AFTER_SETTINGS =
   'could not save the attachment: the settings were saved but the credential was not. The ' +
   "enrolled list is cleared, and no repository's activity is sent until this machine is " +
-  'attached again with `aka attach`. Run `aka attach` again before enrolling a repository.';
+  'attached again with `aka attach`, though Claude Code and Codex sessions of a work subscription ' +
+  'it had recognised may still be sent. Run `aka attach` again before enrolling a repository.';
 
 /**
  * What a failed save left of the credential file the machine held before.
@@ -1016,8 +1040,8 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   (deps.installBackgroundSync ?? installBackgroundSync)(base);
 
   // What attaching forwards depends on the MODE, and each block is true of its
-  // own. The scoped one borrows no sentence from the machine-wide one, which is
-  // unchanged.
+  // own. The scoped one borrows no sentence from the machine-wide one, and says
+  // what a recognised work subscription sends and the command that stops it.
   const attachedLines =
     mode === 'scoped'
       ? [
@@ -1028,12 +1052,35 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           `  organization  ${printableForTerminal(identity.tenantName, 200)}`,
           `  you           ${printableForTerminal(identity.userEmail, 320)}`,
           '',
-          'Activity is sent to that deployment only from repositories you enroll, and',
-          'the Data Shares register a scan records goes only for an enrolled',
-          'repository — destinations and call sites, never source text. Activity',
-          'anywhere else stays on this machine. A command you run inside an enrolled',
-          "repository is sent as that repository's activity, even when it reads files",
-          'elsewhere.',
+          'Activity is sent to that deployment from repositories you enroll, and the Data',
+          'Shares register a scan records goes only for an enrolled repository —',
+          'destinations and call sites, never source text. A Claude Code session signed',
+          'in to a work subscription (a Claude Team or Enterprise plan) under the same',
+          'email as your AKA account also sends everything it records from its first',
+          "reply on, from any folder, with that folder's project and branch names. The",
+          "device checks that locally: it reads Claude Code's login file, the session's",
+          'own log, and the settings and environment that choose the account, and',
+          'compares the signed-in email with your AKA account. The check sends none of',
+          'it (no email, plan or account id), though the token usage and tool calls read',
+          'from that same log are sent with the rest of the activity of a recognised',
+          'session or of one signed in to an account you enroll by hand. A new Codex',
+          'session signed in with ChatGPT to a work subscription (a ChatGPT Business,',
+          'Team, Enterprise or Edu plan) under the same email also sends everything it',
+          "records, from any folder, with that folder's project and branch names. The",
+          "device checks that the same way, from Codex's login file, the session's own",
+          'log and the environment variables that choose the account or provider, and',
+          'the check sends none of it either, though the token usage and tool calls read',
+          'from that log are sent with the rest of the activity of a recognised session',
+          'or of one signed in to a workspace you enroll by hand.',
+          '`aka unenroll --work-subscriptions` stops that recognition on this device, and',
+          'only that. A Claude Code session signed in to an account you enroll by hand',
+          'with `aka enroll --account` is sent too, from its first reply on, and so are',
+          "the replies in that account's claude.ai chats where web chat capture is on. A",
+          'new Codex session signed in to a ChatGPT workspace you enroll the same way is',
+          'sent too, from any folder; `aka unenroll --account` takes an account out.',
+          'Activity anywhere else stays on this machine. A command you run inside an',
+          "enrolled repository is sent as that repository's activity, even when it reads",
+          'files elsewhere.',
           // A fresh list that replaced one holding entries this build can read
           // says how many and why they were not kept, so a re-attach that
           // verified as someone else does not empty the list unannounced. A list
@@ -1052,20 +1099,25 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
             ? 'The repositories already enrolled here are kept: `aka enroll --list` shows them.'
             : 'Nothing is enrolled yet. Run `aka enroll` in a repository to start sending it.',
           '',
-          // The policy pull and the device report happen in either mode, when a
-          // session starts anywhere on the machine (a browser chat included), and
-          // the scope does not gate them: the report's finding counts and dates
-          // are for the whole store, and on a personal device the report also
-          // says that it is one. The check for device commands is made only
-          // where the host supplies a scan, which the browser host does not.
+          // The policy pull, the sighting-key fetch and the device report happen
+          // in either mode, when a session starts anywhere on the machine (a
+          // browser chat included), and the scope does not gate them: the
+          // report's finding counts and dates are for the whole store, and on a
+          // personal device the report also says that it is one. The check for
+          // device commands is made only where the host supplies a scan, which
+          // the browser host does not.
           'Whenever a session starts anywhere on this machine, in a repository or not',
           "(a browser chat included), the machine pulls that deployment's policy (at",
-          'most every 15 minutes) and sends it a device report (at most hourly): a',
-          'device identifier, host name, versions, detection packs, policy counts,',
-          'finding counts and dates for everything recorded on the machine, and, when',
-          'the machine is attached as a personal device, the fact that it is one. Where',
-          'a scan is available (the coding-agent plugins, not a browser chat), the same',
-          'session start also checks it for device commands.',
+          'most every 15 minutes) and its sighting key (when none is stored or the stored',
+          'one is a day old) and sends it a device report (at most hourly): a device',
+          'identifier, host name, versions, detection packs, policy counts, finding counts',
+          'and dates for everything recorded on the machine, and, when the machine is',
+          'attached as a personal device, the fact that it is one. Where a scan is',
+          'available (the coding-agent plugins, not a browser chat), the same session',
+          'start also checks it for device commands.',
+          'On a personal device, the background sync also asks the deployment which account',
+          'its key belongs to, and asks again at later syncs until the device has an',
+          'answer; syncs that overlap can each send one.',
           // An aka older than this one writes a version-1 credential on every
           // attach, from its command line and from its dashboard alike, and
           // version 1 is machine-wide. Said here because the reader is the one
@@ -1078,7 +1130,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
             ? []
             : [
                 '',
-                'Unsent activity from the repositories you enroll is sent in the background,',
+                'Unsent activity from the repositories and accounts you enroll is sent in the background,',
                 'a little at a time, starting with your next session. Run `aka status` to',
                 'watch it, or `aka sync-history --off` to stop.',
               ]),
@@ -1289,7 +1341,7 @@ async function askAboutHistory(
       return undefined;
     }
     io.out(scopedHistoryQuestion(identity.tenantName));
-    const answer = (await io.ask('Send unsent activity from the repositories you enroll? [y/N]: '))
+    const answer = (await io.ask('Send unsent activity from what you enroll? [y/N]: '))
       .trim()
       .toLowerCase();
     return answer === 'y' || answer === 'yes' ? granted() : undefined;
@@ -1365,9 +1417,9 @@ async function askAboutHistory(
  *
  * It names no count. The local preview counts every session this machine
  * recorded, enrolled or not, so a number would describe what this grant never
- * sends. What the grant can send is said in terms of enrolled repositories:
- * some of what one recorded before it was enrolled (whatever this machine still
- * holds of it). The tenant
+ * sends. What the grant can send is said in terms of what is enrolled, a
+ * repository or an account: some of what one recorded before it was enrolled
+ * (whatever this machine still holds of it). The tenant
  * name comes from the deployment, so it goes through the terminal strip.
  */
 function scopedHistoryQuestion(tenantName: string): string {
@@ -1376,11 +1428,14 @@ function scopedHistoryQuestion(tenantName: string): string {
     `Verified against ${printableForTerminal(tenantName, 200)}.`,
     '',
     'This machine is attaching as a personal device: AKA sends the activity of',
-    'the repositories you enroll with `aka enroll`, and none from anywhere else.',
+    'the repositories you enroll with `aka enroll`, of Claude Code and Codex sessions',
+    'signed in to a recognised work subscription or to an account you enroll by hand',
+    "with `aka enroll --account`, and of that account's claude.ai chat replies, and",
+    'none from anywhere else.',
     "A command you run inside an enrolled repository is sent as that repository's",
     'activity, even when it reads files elsewhere.',
-    'It can also send some of what an enrolled repository recorded here before',
-    'you enrolled it.',
+    'It can also send some of what an enrolled repository or account recorded here',
+    'before you enrolled it.',
     '',
     'For an enrolled repository, that history is which sessions ran, when, in',
     'which project, repo and git branch; token usage and model per call; which',
@@ -1390,10 +1445,16 @@ function scopedHistoryQuestion(tenantName: string): string {
     'For that history, what was captured, which for a',
     ...MASKING_RULE_LINES,
     '',
-    'Saying no does not stop live sending from enrolled repositories — that is',
-    'part of being attached. It means nothing an enrolled repository recorded',
-    'before you enrolled it is sent. Anything a live send from one could not',
-    'deliver is kept and sent later either way, encoded as a live send is.',
+    'Saying no does not stop live sending from what you enroll or from recognised',
+    'work subscriptions — that is part of being attached. It means nothing an',
+    'enrolled repository or account recorded before you enrolled it is sent,',
+    'apart from what Claude Code sessions of a recognised work subscription or of',
+    'an account you enroll by hand have already sent: they send everything they',
+    'record from their first reply on (the first prompt of a new session and a',
+    'reply written before the device has confirmed the account follow the',
+    'repository rule), whatever you answer here.',
+    'Anything a live send from any of them could not deliver is kept and sent',
+    'later either way, encoded as a live send is.',
     '',
     'It runs in the background over your next few sessions. Anything sent',
     'cannot be recalled.',
@@ -1424,16 +1485,41 @@ async function askAboutMode(io: Prompter): Promise<AttachmentMode | undefined> {
       '',
       'How much of this machine should AKA send?',
       '',
-      '  A personal device sends activity only from the repositories you enroll',
-      '  with `aka enroll`, and none until you enroll one. Whenever a session',
-      '  starts anywhere on this machine, in a repository or not (a browser chat',
-      "  included), the machine pulls your organization's policy (at most every 15",
-      '  minutes) and sends it a device report (at most hourly): a device',
-      '  identifier, host name, versions, detection packs, policy counts, finding',
-      '  counts and dates for everything recorded on the machine, and, when the',
-      '  machine is attached as a personal device, the fact that it is one. Where a',
-      '  scan is available (the coding-agent plugins, not a browser chat), the same',
+      '  A personal device sends activity from the repositories you enroll with',
+      '  `aka enroll`. It also sends everything from Claude Code sessions signed in',
+      '  to a work subscription (a Claude Team or Enterprise plan) under the same',
+      '  email as your AKA account, and from those signed in to an account you enroll',
+      '  by hand with `aka enroll --account`, from their first reply on, from any',
+      "  folder, with that folder's project and branch names; that account's",
+      '  claude.ai chat replies go too. A new Codex session signed in with ChatGPT to',
+      '  a work subscription (a ChatGPT Business, Team, Enterprise or Edu plan) under',
+      '  the same email, or to a workspace you enroll by hand, sends everything it',
+      "  records too, from any folder, with that folder's project and branch names.",
+      '  Nothing else is sent as activity. It checks for a work subscription on the',
+      "  device: it reads Claude Code's login file, the session's own log, and the",
+      '  settings and environment that choose the account, and compares the signed-in',
+      '  email with your AKA account. The check sends none of it (no email, plan or',
+      '  account id), though the token usage and tool calls read from that same log',
+      '  are sent with the rest of the activity of a recognised session or of one',
+      "  signed in to an account you enroll by hand. For Codex it reads Codex's login",
+      "  file, the session's own log and the environment variables that choose the",
+      '  account or provider, and sends none of it either, though the token usage and',
+      '  tool calls read from that log are sent with the rest of the activity of a',
+      '  recognised session or of one signed in to a workspace you enroll by hand. To',
+      '  send only from what you enroll, run `aka unenroll --work-subscriptions` after',
+      '  attaching. Whenever a session starts anywhere on this machine, in a',
+      '  repository or not (a browser chat included), the machine pulls your',
+      "  organization's policy (at most every 15 minutes) and its sighting key",
+      '  (when none is stored or the stored one is a day old) and sends it',
+      '  a device report (at most hourly): a device identifier, host name,',
+      '  versions, detection packs, policy counts, finding counts and dates',
+      '  for everything recorded on the machine, and, when the machine is',
+      '  attached as a personal device, the fact that it is one. Where a scan is',
+      '  available (the coding-agent plugins, not a browser chat), the same',
       '  session start also checks it for device commands.',
+      '  On a personal device, the background sync also asks the deployment which',
+      '  account its key belongs to, and asks again at later syncs until the',
+      '  device has an answer; syncs that overlap can each send one.',
       '  A machine your organization owns sends activity from anywhere on this',
       '  machine.',
       '',
@@ -1461,8 +1547,11 @@ async function confirmWidening(io: Prompter, endpoint: string): Promise<boolean>
     [
       '',
       `This machine is attached to ${printableForTerminal(endpoint, 200)} as a personal device: activity is`,
-      'sent only from the repositories enrolled on it. With --machine, activity from',
-      'anywhere on this machine is sent, and the enrolled list is cleared.',
+      'sent only from the repositories enrolled on it, from Claude Code and Codex',
+      'sessions signed in to a work subscription, and from an account enrolled by',
+      'hand (its Claude Code or Codex sessions and claude.ai chat replies). With',
+      '--machine, activity from anywhere on this machine is sent, and the enrolled',
+      'list is cleared.',
       '',
     ].join('\n'),
   );
@@ -1796,7 +1885,17 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   const base = deps.base ?? homeBase(args.home);
   const dataDir = dataDirOf(base);
 
-  const block = renderAttachedStatus({ base, settingsDir: settingsDirOf(base), dataDir });
+  const block = renderAttachedStatus({
+    base,
+    settingsDir: settingsDirOf(base),
+    dataDir,
+    isTTY: io.isInteractive,
+    managedSettings: deps.managedSettings,
+    claudePaths: deps.claudePaths ?? {},
+    // null: a CODEX_HOME that is no usable directory still asks for the line, which reads as no login file.
+    codexHome: deps.codexHome ?? codexHomeDir() ?? null,
+    cwd: (deps.cwd ?? (() => process.cwd()))(),
+  });
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);

@@ -26,6 +26,7 @@ import type { PointersByText } from '../mod/findings-log.ts';
 import { pointersByFinding, recordModFindings, toolFieldAction } from '../mod/findings-log.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { resolveHookAccount, stampFor } from './account-stamp.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import { largeInputBound } from './large-input.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
@@ -44,6 +45,7 @@ import {
   readStdin,
   searchRootScopeKey,
 } from './shared.ts';
+import { captureStamped } from './stamped-capture.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { collectResponseFields } from './tool-response.ts';
 
@@ -89,10 +91,11 @@ async function main(): Promise<void> {
   // searched (`tool_input.path`, a directory or one file), and its output is what
   // is recorded, so it is keyed by that root the same way: see
   // searchRootScopeKey. Beside the metadata rather than in it: the key is local,
-  // the metadata is wire.
+  // the metadata is wire. The capture is stamped with it for the session's
+  // account (stampFor).
   const keyedPath =
     filePath ?? (toolInput === undefined ? undefined : getString(toolInput, 'notebook_path'));
-  const scopeKey =
+  const repoKey =
     rawToolName === 'Grep'
       ? searchRootScopeKey(
           input,
@@ -113,6 +116,16 @@ async function main(): Promise<void> {
   warnIfHostBelowFloor(config, getString(input, 'session_id'), getString(input, 'transcript_path'));
   const sessionId = getString(input, 'session_id');
   const gateway = resolveDataGateway(config);
+  const scopeKey = stampFor(
+    gateway,
+    resolveHookAccount(gateway, {
+      dataDir: config.dataDir,
+      sessionId,
+      transcriptPath: getString(input, 'transcript_path'),
+      cwd: getString(input, 'cwd'),
+    }),
+    repoKey,
+  );
   // A field at or above the large-input threshold is scanned under what is left
   // of the field loop's own deadline, and withheld if that scan does not finish
   // (see large-input.ts).
@@ -136,8 +149,10 @@ async function main(): Promise<void> {
       response,
       fields,
       async (text) => {
-        const result = await runtime.capture(
-          { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata, scopeKey },
+        const result = await captureStamped(
+          runtime,
+          { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
+          scopeKey,
           { persist: 'with-findings' },
         );
         capturedFields.push({ text, result });

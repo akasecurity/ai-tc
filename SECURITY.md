@@ -179,33 +179,113 @@ is what a backfill or a drain sends.
 An attached machine also sends things that are not activity, and no repository
 limits them. Whenever a session starts anywhere on this machine, in a repository
 or not (a browser chat included), the machine pulls the deployment's policy (at
-most every 15 minutes) and sends it a device report (at most hourly): a device
+most every 15 minutes) and its sighting key (when none is stored or the stored
+one is a day old) and sends it a device report (at most hourly): a device
 identifier, host name, versions, detection packs, policy counts, finding counts
 and dates for everything recorded on the machine, and, when the machine is
 attached as a personal device, the fact that it is one. Where a scan is
-available (the coding-agent plugins, not a browser chat), the same session start
-also checks it for device commands. The finding count is the number of findings
+available (the coding-agent plugins, not a browser chat), the same session
+start also checks it for device commands. On a personal device, the background sync also asks the deployment
+which account its key belongs to, and asks again at later syncs until the device has an answer; syncs that overlap can each send one. The finding count is the number of findings
 detected in captured prompts, responses, code changes and tool uses, from every
 session, with the dates of the first and latest one. A report can also go when a
 response finishes in a session that is already running, still at most hourly.
 The report carries no event content and names no repository. The deployment
 therefore learns when the tool is in use anywhere on this machine.
 
+On a personal device, Claude Code and Codex sessions signed in to a work
+subscription forward beyond what is enrolled. A Claude Code session counts
+as a work subscription when it is signed in through
+claude.ai to a Team or Enterprise plan under the same email as the AKA account
+that attached the device. Such a session sends everything it records from its
+first reply on, from any folder, with that folder's project and branch names,
+and your organization's prohibited models are refused in any folder of it. To
+tell whether a session is one, the device reads Claude Code's login file, the
+session's own log, and Claude Code's settings files (the project's own
+included) and environment variables that choose the account or provider, and
+compares the signed-in email with the account that attached the device. The
+check sends none of what it reads, though the token usage and tool calls read
+from that same log are forwarded with the rest of the activity of a recognised
+session or of one signed in to an account enrolled by hand. The first prompt of
+a new session, a personal plan, another email, an API key or another provider,
+a reply written before the device has confirmed the account, and the rest of a
+session whose organization changes follow the repository rule;
+`aka enroll --account` enrolls by hand an account the device cannot recognise,
+and the Claude Code sessions of an account enrolled that way then forward from
+their first reply on whatever the plan or email, though not under an API key or
+another provider. An organization recognised this way never records or forwards
+a claude.ai chat. A personal device that attached before
+its plugin could recognise work subscriptions starts recognising them when the
+plugin updates, with no new prompt, so update `aka` first.
+`aka unenroll --work-subscriptions` turns recognition off on this device and
+`aka enroll --work-subscriptions` turns it back on; it turns off only the
+automatic recognition, so while it is off, enrolled repositories and accounts
+enrolled by hand still forward (`aka unenroll --account` stops an account), and
+your organization's model restrictions apply only to them. A machine whose
+connection an administrator manages attaches machine-wide only, so it has no
+personal-device mode and no such opt-out.
+
+A Codex thread counts as a work subscription when it is new and signed in with
+ChatGPT to a Business, Team, Enterprise or Edu workspace under the same email
+as the AKA account that attached the device, with its login saved in Codex's
+login file and OpenAI as the provider. Such a thread sends everything it
+records, from any folder, with that folder's project and branch names, and your
+organization's prohibited models are refused in any folder of it. To tell
+whether a thread is one, the device reads Codex's login file, the first line of
+the thread's own log and the environment variables that choose the account or
+provider, and compares the signed-in email with the account that attached the
+device and the login's workspace with the one that created the thread. The
+check sends none of what it reads, though the token usage and tool calls read
+from that thread's log are forwarded with the rest of the activity of a
+recognised thread or of one signed in to a workspace enrolled by hand. A token
+refresh keeps a recognised thread forwarding; a switch to another workspace or
+email, to a plan that does not count, or to another login mode ends it for the
+rest of that thread. A resumed thread, a personal plan, a service account,
+another email, a saved login that uses an API key or any login mode other than
+ChatGPT, a `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` in the environment, an
+`OPENAI_BASE_URL` naming a host other than api.openai.com, a thread whose log
+does not name OpenAI as its provider or the login's workspace as its creator,
+and a login Codex keeps outside its login file (in the system keychain, for one)
+follow the repository rule.
+A Codex thread whose first log line is not on disk when it starts is checked
+again at its next prompt or tool call: its session record and the token usage
+and tool calls read from its log follow the repository rule, and its prompts,
+tool calls and results forward from any folder from that check on if the
+workspace is then recognised or enrolled by hand; if the line is still missing
+then, it follows the repository rule for the rest of the thread.
+`aka enroll --account` enrolls by hand a workspace the device cannot recognise,
+and the Codex threads of a workspace enrolled that way then forward whatever the
+plan or email, though not a resumed thread, one whose saved login uses an API
+key or any login mode other than ChatGPT, one with a `CODEX_API_KEY` or
+`CODEX_ACCESS_TOKEN` in the environment, one with an `OPENAI_BASE_URL` naming a
+host other than api.openai.com, one whose log does not name OpenAI as its
+provider, or one whose login Codex keeps outside its login file; a switch of
+workspace or login mode ends them.
+`aka unenroll --work-subscriptions` turns the recognition of Codex threads off
+too and `aka enroll --work-subscriptions` turns it back on; a workspace
+enrolled by hand still forwards while it is off (`aka unenroll --account` stops
+it). Recognising a Codex thread reads Codex's login token only in memory, for
+the claims that give its email, plan and workspace: the token is never kept,
+logged, printed or sent, and the recognition never copies the login file into
+the local store.
+
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the
 forwarding. On a machine attached with `aka attach --scoped`, the forwarding of
 activity described above — live events, the scan register, and the history
 backfill and drain — covers only activity in the repositories enrolled with
-`aka enroll` and, from the browser extension, the replies in a claude.ai account
-enrolled with `aka enroll --account`, with their tool calls and token usage (a
-prompt typed into a web chat is not recorded there at all); activity in any
-other repository stays on the machine. Under the
-`aka sync-history` grant, enrolling a repository also queues the captures still
-kept for it, including those it recorded between attaching and enrolling. The
-policy pull, the command check and the device report are the exception: they go
-on either kind of attachment, whatever is enrolled, and a scoped machine's
-report also says that it is attached as a personal device. A machine that was
-never attached forwards none of this.
+`aka enroll`, in Claude Code and Codex sessions signed in to a recognised work
+subscription (above) or to an account enrolled by hand with
+`aka enroll --account` and, from the browser extension, the replies in a
+claude.ai account enrolled with `aka enroll --account`, with their tool calls
+and token usage (a prompt typed into a web chat is not recorded there at all);
+everything else stays on the machine. Under the `aka sync-history` grant,
+enrolling a repository or an account also queues the captures still kept for
+it, including those a repository recorded between attaching and enrolling. The
+policy pull, the sighting-key fetch, the command check and the device report
+are the exception: they go on either kind of attachment, whatever is enrolled,
+and a scoped machine's report also says that it is attached as a personal
+device. A machine that was never attached forwards none of this.
 
 ## Supported versions
 

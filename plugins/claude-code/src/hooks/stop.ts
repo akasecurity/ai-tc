@@ -5,22 +5,30 @@
  *
  * stdin: { session_id, transcript_path, cwd, hook_event_name, stop_hook_active }
  *
- * This hook does NOT reconcile inline — it only TRIGGERS the background worker so it
- * adds zero latency to the turn. It reads `session_id` + `transcript_path` STRAIGHT
- * from the payload (no path reconstruction), throttle-checks, and if not throttled
- * spawns `scripts/reconcile.js` detached + unref, forwarding both via argv, then
- * returns immediately. Fully fail-open: any error → no output, exit 0.
+ * This hook does NOT reconcile inline — it only TRIGGERS the background worker, so the
+ * reconcile is never on the turn's critical path. It reads `session_id` +
+ * `transcript_path` STRAIGHT from the payload (no path reconstruction),
+ * throttle-checks, and if not throttled spawns `scripts/reconcile.js` detached +
+ * unref, forwarding both via argv, then returns immediately. The work it does itself
+ * before the spawn is synchronous, in the process the host waits on: loading the
+ * configuration, the store and host-version notices, and, on a scoped attachment
+ * whose identity record holds and whose Claude gate is open (work subscriptions on,
+ * or a Claude account enrolled by hand), reading the login and appending the
+ * session's login view to the session's account log. Fully fail-open: any error →
+ * no output, exit 0.
  */
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
+import { recordStopObservation } from './account-stamp.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
-import { countFailOpen, parseJson, readStdin } from './shared.ts';
+import { countFailOpen, getString, parseJson, readStdin } from './shared.ts';
 import { parseStopPayload } from './stop-payload.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 async function main(): Promise<void> {
-  const trigger = parseStopPayload(parseJson(await readStdin()));
+  const payload = parseJson(await readStdin());
+  const trigger = parseStopPayload(payload);
   if (trigger === undefined) return; // nothing to reconcile
   const config = loadConfig();
   // A symlinked store path redirects the corpus without failing anything;
@@ -30,6 +38,13 @@ async function main(): Promise<void> {
   // the host drops individually and silently. Stop is one of the two events
   // where the transcript's newest record is guaranteed to be this run's.
   warnIfHostBelowFloor(config, trigger.sessionId, trigger.transcriptPath);
+  // The login view is appended before the reconcile is spawned, so the spawn
+  // finds the session's log already holding it.
+  recordStopObservation(
+    config,
+    trigger.sessionId,
+    payload === null ? undefined : getString(payload, 'cwd'),
+  );
   // Throttled, detached spawn — the hook never waits on the reconcile.
   triggerReconcile(config.dataDir, trigger.sessionId, trigger.transcriptPath);
 }

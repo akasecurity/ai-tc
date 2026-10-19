@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AssistantUsageRecord, UserPromptRecord } from '../../src/history/transcripts.ts';
 import {
+  accountTrace,
   iterateHistory,
   iterateUsage,
   parseTranscript,
@@ -911,5 +913,69 @@ describe('iterateUsage', () => {
 
   it('yields nothing when the transcripts dir is absent (fail-open)', () => {
     expect([...iterateUsage({ dir: join(root, 'does-not-exist') })]).toHaveLength(0);
+  });
+});
+
+describe('parseTranscriptUsage — the account trace', () => {
+  const OLD_ORG = randomUUID();
+  const NEW_ORG = randomUUID();
+  const assistant = (uuid: string, at: string, output: number, messageId = `msg_${uuid}`) => ({
+    type: 'assistant',
+    sessionId: 's',
+    uuid,
+    parentUuid: 'u',
+    timestamp: at,
+    message: {
+      id: messageId,
+      model: 'claude-sonnet-4-5',
+      usage: { input_tokens: 1, output_tokens: output },
+    },
+  });
+  const org = (organizationUuid: string, at: string) => ({
+    type: 'attachment',
+    sessionId: 's',
+    uuid: randomUUID(),
+    timestamp: at,
+    attachment: { type: 'credential_org', organizationUuid },
+  });
+  const LINES = [
+    org(OLD_ORG, '2026-09-01T00:00:00.000Z'),
+    assistant('a0', '2026-09-01T00:00:01.000Z', 1),
+    org(NEW_ORG, '2026-10-14T10:00:00.000Z'),
+    assistant('a1', '2026-10-14T10:00:01.000Z', 1),
+    // Two lines of one message: the parse keeps the larger, the trace both.
+    assistant('a2', '2026-10-14T10:00:02.000Z', 1, 'msg_shared'),
+    assistant('a3', '2026-10-14T10:00:03.000Z', 9, 'msg_shared'),
+  ].map((record) => JSON.stringify(record));
+  const JSONL = `${LINES.join('\n')}\n`;
+  const BASE = 1_000;
+  const offsetOf = (i: number): number =>
+    BASE + LINES.slice(0, i).reduce((n, line) => n + Buffer.byteLength(line) + 1, 0);
+  const SINCE = Date.parse('2026-10-01T00:00:00.000Z');
+
+  it('keeps org lines and assistant lines in file order, ahead of the window bound', () => {
+    const trace = accountTrace(BASE, 's');
+    const records = parseTranscriptUsage(JSONL, SINCE, trace);
+    expect(records.map((record) => record.uuid)).toEqual(['a1', 'a3']);
+    expect(trace.marks).toEqual([
+      { kind: 'org', org: OLD_ORG, t: Date.parse('2026-09-01T00:00:00.000Z'), pos: offsetOf(0) },
+      { kind: 'record', id: 'a0', t: Date.parse('2026-09-01T00:00:01.000Z') },
+      { kind: 'org', org: NEW_ORG, t: Date.parse('2026-10-14T10:00:00.000Z'), pos: offsetOf(2) },
+      { kind: 'record', id: 'a1', t: Date.parse('2026-10-14T10:00:01.000Z') },
+      { kind: 'record', id: 'a2', t: Date.parse('2026-10-14T10:00:02.000Z') },
+      { kind: 'record', id: 'a3', t: Date.parse('2026-10-14T10:00:03.000Z') },
+    ]);
+  });
+
+  it("marks nothing of another session's lines", () => {
+    const trace = accountTrace(0, 'another-session');
+    parseTranscriptUsage(JSONL, 0, trace);
+    expect(trace.marks).toEqual([]);
+  });
+
+  it('returns the same records with a trace as without one', () => {
+    expect(parseTranscriptUsage(JSONL, SINCE, accountTrace(0, 's'))).toEqual(
+      parseTranscriptUsage(JSONL, SINCE),
+    );
   });
 });

@@ -3,32 +3,61 @@
 // (see transcripts.ts), so there is no Claude-Code-style uuid→promptId join
 // to exercise here — the run_key assertions instead confirm each usage/tool
 // record carries its OWN turn_id straight through.
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
+  applyOnboarding,
+  dataDir as dataDirOf,
+  readAttachedIdentity,
+  recordValidatedWorkAccount,
+  sessionAccountsDir,
+  settingsDir as settingsDirOf,
+  writeAttachedIdentity,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
+import {
+  accountScopeOf,
+  handleSessionStart,
   resolveDataGateway,
   setDefaultGatewayFactory,
   standaloneGatewayFactory,
+  SYNC_MARKER_NAME,
 } from '@akasecurity/plugin-runtime';
-import { type PluginConfig, resolveRepo } from '@akasecurity/plugin-sdk';
 import {
+  loadConfig,
+  type PluginConfig,
+  resolveCodexProvider,
+  resolveRepo,
+} from '@akasecurity/plugin-sdk';
+import { appendObservation, sessionAccountHash } from '@akasecurity/plugin-sdk/account';
+import {
+  agentKey,
+  ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+  type AttachmentScopeEntry,
   buildTokenReports,
   type CostModel,
   costOf,
+  HISTORY_SYNC_PAYLOAD_VERSION,
   type LlmCallAttributes,
+  type SessionAccountObservation,
+  SOURCE_TOOL,
   tokenPrice,
 } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writeCodexAuth } from '../../../../packages/plugin-sdk/test/helpers/fake-jwt.ts';
+import { useLoopbackServer } from '../../../../packages/remote/test/helpers/loopback.ts';
 import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
 import {
   reconcileHistory,
   reconcileSession,
   reconcileSessionTail,
 } from '../../src/history/usage.ts';
+import { codexSessionStartAccount, threadAccountKey } from '../../src/hooks/account-stamp.ts';
 
 function config(dataDir: string): PluginConfig {
   return {
@@ -1206,5 +1235,370 @@ describe('scope keys — the root from its project, every leaf from where it ran
     await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
 
     expect(keys(dataDir).root).toBeNull();
+  });
+
+  describe('a work thread on the live tail pass', () => {
+    const server = useLoopbackServer();
+
+    /** Accepts every event of a batch, so the client sees a well-formed acknowledgement and keeps sending. */
+    const acknowledge: Parameters<typeof server.reply>[0] = (request, response) => {
+      let accepted = 1;
+      try {
+        const body: unknown = JSON.parse(request.body);
+        const events =
+          typeof body === 'object' && body !== null
+            ? (body as { events?: unknown }).events
+            : undefined;
+        if (Array.isArray(events)) accepted = events.length;
+      } catch {
+        // A body that is not JSON counts as one event.
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ accepted, duplicates: 0 }));
+    };
+
+    const credentialValue = `test-${randomUUID()}`;
+    const workspace = randomUUID();
+    const chatgptKey = `chatgpt:${workspace}`;
+    const member = `member-${randomUUID().slice(0, 8)}@example.test`;
+    let base: string;
+    let codexHome: string;
+
+    /** A device attached scoped with `entries` enrolled, and, when `learn` is set, the thread's workspace learned. */
+    function attach(entries: AttachmentScopeEntry[], learn: boolean): void {
+      base = mkdtempSync(join(tmpdir(), 'aka-usage-account-'));
+      codexHome = mkdtempSync(join(tmpdir(), 'aka-usage-account-codex-'));
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: {
+            endpoint: server.origin,
+            label: 'Acme',
+            attachedAt: '2026-06-01T09:00:00.000Z',
+          },
+          attachmentScope: {
+            endpoint: server.origin,
+            tenantName: 'Acme',
+            userEmail: member,
+            entries,
+          },
+        },
+        base,
+        null,
+      );
+      const credential: Parameters<typeof writeControlPlaneCredential>[1] = {
+        specVersion: ATTACHED_CREDENTIAL_SCOPED_SPEC_VERSION,
+        mode: 'scoped',
+        endpoint: server.origin,
+        apiKey: credentialValue,
+      };
+      writeControlPlaneCredential(settingsDirOf(base), credential);
+      writeAttachedIdentity(dataDirOf(base), {
+        endpoint: server.origin,
+        apiKey: credentialValue,
+        tenantName: 'Acme',
+        userEmail: member,
+      });
+      if (learn) {
+        recordValidatedWorkAccount(dataDirOf(base), {
+          endpoint: server.origin,
+          credential,
+          key: chatgptKey,
+        });
+      }
+      for (const name of ['CODEX_HOME', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL']) {
+        vi.stubEnv(name, undefined);
+      }
+      writeFileSync(join(dataDirOf(base), SYNC_MARKER_NAME), String(Date.now()));
+      server.received.length = 0;
+      server.reply(acknowledge);
+    }
+
+    /** Replaces the device the enclosing case set up with one attached differently. */
+    function reattach(entries: AttachmentScopeEntry[], learn: boolean): void {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true });
+      attach(entries, learn);
+    }
+
+    beforeEach(() => {
+      attach([], true);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      rmSync(base, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true });
+    });
+
+    /** The describe's two turns, under a head that names the thread's workspace. */
+    function workRollout(): string {
+      const path = join(transcripts, `rollout-${SESSION}.jsonl`);
+      const head = line({
+        timestamp: '2026-06-20T10:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          session_id: SESSION,
+          cwd: workRepo,
+          model_provider: 'openai',
+          creator_account_id: workspace,
+        },
+      });
+      writeFileSync(path, [head, ...rollout().split('\n').slice(1)].join('\n') + '\n');
+      return path;
+    }
+
+    /** One session-log line for this thread, under the attachment's own binding. */
+    async function logLine(
+      build: (bindingHash: string) => SessionAccountObservation,
+    ): Promise<void> {
+      const gateway = resolveDataGateway(loadConfig(base));
+      try {
+        const scope = accountScopeOf(gateway);
+        if (scope === undefined) throw new Error('no account scope');
+        appendObservation(sessionAccountsDir(dataDirOf(base)), SESSION, build(scope.bindingHash));
+      } finally {
+        await gateway.close();
+      }
+    }
+
+    const startAt = Date.parse('2026-06-20T09:59:59.000Z');
+    const betweenTurns = Date.parse('2026-06-20T10:00:12.000Z');
+    const startLine = (bd: string): SessionAccountObservation => ({
+      t: startAt,
+      bd,
+      start: 'startup',
+      s: sessionAccountHash(chatgptKey),
+      fp: 'fixture-fingerprint',
+    });
+    const agent = (): string | undefined => {
+      const record = readAttachedIdentity(dataDirOf(base));
+      return record === undefined ? undefined : agentKey(record.scopeTag, chatgptKey);
+    };
+
+    it("stores each of the thread's token and tool rows under its agent key", async () => {
+      await logLine(startLine);
+      await reconcileSessionTail(loadConfig(base), SESSION, workRollout());
+      const { leaf } = keys(dataDirOf(base));
+      expect(leaf.get(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(agent());
+      expect(leaf.get('call-w')).toBe(agent());
+      expect(leaf.get(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBe(agent());
+      expect(leaf.get('call-s')).toBe(agent());
+    });
+
+    it.each<[string, (bd: string) => SessionAccountObservation]>([
+      ['a sticky none line', (bd) => ({ t: betweenTurns, bd, s: 'none' })],
+      ['a resume line', (bd) => ({ t: betweenTurns, bd, start: 'resume', s: 'none' })],
+    ])('keeps the repository rule for every record after %s', async (_name, after) => {
+      await logLine(startLine);
+      await logLine(after);
+      await reconcileSessionTail(loadConfig(base), SESSION, workRollout());
+      const { leaf } = keys(dataDirOf(base));
+      expect(leaf.get(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(agent());
+      expect(leaf.get('call-w')).toBe(agent());
+      expect(leaf.get(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBeNull();
+      expect(leaf.get('call-s')).toBeNull();
+    });
+
+    it("keeps the repository rule when the start line names another account than the thread's first line", async () => {
+      await logLine((bd) => ({
+        t: startAt,
+        bd,
+        start: 'startup',
+        s: sessionAccountHash(`chatgpt:${randomUUID()}`),
+        fp: 'fixture-fingerprint',
+      }));
+      await reconcileSessionTail(loadConfig(base), SESSION, workRollout());
+      expect(keys(dataDirOf(base)).leaf.get('call-w')).toBe(WORK_KEY);
+    });
+
+    it('ignores a start line written under another binding', async () => {
+      appendObservation(sessionAccountsDir(dataDirOf(base)), SESSION, startLine('0'.repeat(16)));
+      await reconcileSessionTail(loadConfig(base), SESSION, workRollout());
+      expect(keys(dataDirOf(base)).leaf.get('call-w')).toBe(WORK_KEY);
+    });
+
+    it('never attributes by account in the backfill', async () => {
+      await logLine(startLine);
+      workRollout();
+      await reconcileHistory(loadConfig(base), { dir: transcripts, now: FIXTURE_NOW });
+      expect(keys(dataDirOf(base)).leaf.get('call-w')).toBe(WORK_KEY);
+    });
+
+    /** A session start for the describe's thread, with its head on disk or not, from a folder in no repository unless told. */
+    async function startSession(
+      withHead: boolean,
+      options: { plan?: string; email?: string; cwd?: string } = {},
+    ): Promise<string> {
+      const { plan = 'business', email = member, cwd = scratch } = options;
+      writeCodexAuth(join(codexHome, '.codex'), { accountId: workspace, email, plan });
+      const transcriptPath = withHead
+        ? workRollout()
+        : join(transcripts, `rollout-${SESSION}.jsonl`);
+      const config = loadConfig(base, resolveCodexProvider);
+      const fields = await codexSessionStartAccount(config, {
+        sessionId: SESSION,
+        source: 'startup',
+        transcriptPath,
+        cwd,
+        nowMs: startAt,
+        home: codexHome,
+      });
+      await handleSessionStart(
+        { sessionId: SESSION, cwd, tool: SOURCE_TOOL.Codex, homeDir: base, ...fields },
+        config,
+      );
+      return transcriptPath;
+    }
+
+    const sent = (needle: string): boolean =>
+      server.received.some((request) => request.body.includes(needle));
+
+    it("sends the thread's token and tool rows when its session start rooted it under its agent key", async () => {
+      const transcriptPath = await startSession(true);
+      expect(keys(dataDirOf(base)).root).toBe(agent());
+      server.received.length = 0;
+      await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+      expect(sent(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(true);
+      expect(sent('call-w')).toBe(true);
+      expect(sent(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBe(true);
+      expect(sent('call-s')).toBe(true);
+    });
+
+    it('sends nothing of the account with the rows', async () => {
+      const transcriptPath = await startSession(true);
+      const record = readAttachedIdentity(dataDirOf(base));
+      if (record === undefined) throw new Error('no identity record');
+      server.received.length = 0;
+      await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+      const wire = server.received
+        .map((request) => `${request.url ?? ''} ${JSON.stringify(request.headers)} ${request.body}`)
+        .join('\n');
+      expect(server.received.length).toBeGreaterThan(0);
+      for (const material of [
+        workspace,
+        'chatgpt:',
+        'agent:',
+        member,
+        'business',
+        record.attachedUserDigest,
+        record.scopeTag,
+      ]) {
+        expect(wire).not.toContain(material);
+      }
+    });
+
+    it('sends the rows of a recognised thread whatever the history grant says', async () => {
+      applyOnboarding(
+        {
+          historySyncConsent: {
+            acknowledgedAt: '2026-06-02T09:00:00.000Z',
+            payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+            endpoint: server.origin,
+          },
+        },
+        base,
+        null,
+      );
+      expect(loadConfig(base).settings.historySyncConsent).toBeDefined();
+      const transcriptPath = await startSession(true);
+      server.received.length = 0;
+      await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+      expect(sent('call-w')).toBe(true);
+    });
+
+    it('keeps the rows of a thread whose session root was keyed by its folder on the machine', async () => {
+      const transcriptPath = await startSession(false);
+      expect(keys(dataDirOf(base)).root).toBeNull();
+      const gateway = resolveDataGateway(loadConfig(base));
+      try {
+        expect(
+          threadAccountKey(gateway, {
+            dataDir: dataDirOf(base),
+            sessionId: SESSION,
+            transcriptPath: workRollout(),
+            nowMs: startAt + 1_000,
+            home: codexHome,
+          }),
+        ).toBe(chatgptKey);
+      } finally {
+        await gateway.close();
+      }
+      server.received.length = 0;
+      await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+      const { leaf } = keys(dataDirOf(base));
+      expect(leaf.get('call-w')).toBe(agent());
+      expect(sent('call-w')).toBe(false);
+      expect(sent(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(false);
+    });
+
+    describe('when its session root is in an enrolled repository', () => {
+      beforeEach(() => {
+        reattach(
+          [{ kind: 'repo', identity: WORK_KEY, enrolledAt: '2026-10-02T09:00:00.000Z' }],
+          true,
+        );
+      });
+
+      it('sends the rows of a thread that was decided at its next hook', async () => {
+        const transcriptPath = await startSession(false, { cwd: workRepo });
+        expect(keys(dataDirOf(base)).root).toBe(WORK_KEY);
+        const gateway = resolveDataGateway(loadConfig(base));
+        try {
+          expect(
+            threadAccountKey(gateway, {
+              dataDir: dataDirOf(base),
+              sessionId: SESSION,
+              transcriptPath: workRollout(),
+              nowMs: startAt + 1_000,
+              home: codexHome,
+            }),
+          ).toBe(chatgptKey);
+        } finally {
+          await gateway.close();
+        }
+        server.received.length = 0;
+        await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+        const { leaf } = keys(dataDirOf(base));
+        expect(leaf.get('call-w')).toBe(WORK_KEY);
+        expect(leaf.get('call-s')).toBe(agent());
+        expect(sent('call-w')).toBe(true);
+        expect(sent('call-s')).toBe(true);
+      });
+    });
+
+    describe('of a workspace enrolled by hand', () => {
+      beforeEach(() => {
+        reattach(
+          [
+            {
+              kind: 'account',
+              identity: chatgptKey,
+              enrolledAt: '2026-10-02T09:00:00.000Z',
+              codingAgents: true,
+            },
+          ],
+          false,
+        );
+      });
+
+      it("sends the thread's token and tool rows whatever its plan or email", async () => {
+        const transcriptPath = await startSession(true, {
+          plan: 'plus',
+          email: 'other@example.test',
+        });
+        expect(readAttachedIdentity(dataDirOf(base))?.workAccounts).toEqual([]);
+        expect(keys(dataDirOf(base)).root).toBe(agent());
+        server.received.length = 0;
+        await reconcileSessionTail(loadConfig(base), SESSION, transcriptPath);
+        const { leaf } = keys(dataDirOf(base));
+        expect(leaf.get('call-w')).toBe(agent());
+        expect(leaf.get('call-s')).toBe(agent());
+        expect(sent(`${SESSION}:2026-06-20T10:00:04.000Z:1`)).toBe(true);
+        expect(sent('call-w')).toBe(true);
+        expect(sent(`${SESSION}:2026-06-20T10:00:14.000Z:1`)).toBe(true);
+        expect(sent('call-s')).toBe(true);
+      });
+    });
   });
 });

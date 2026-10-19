@@ -26,6 +26,7 @@ import {
   isHistorySyncConsentValid,
   resolveScope,
   scopeFilterOf,
+  workSubscriptionsOn,
 } from '@akasecurity/schema';
 
 import { db } from '../../lib/db.ts';
@@ -86,7 +87,8 @@ const LOCAL_ONLY: readonly SyncLocalOnlyLine[] = [
   {
     id: 'findings',
     label: 'Findings',
-    detail: 'derived by your deployment from the activity it receives, not sent from here',
+    detail:
+      'derived by your deployment from the activity it receives; what was detected in a tool call’s inputs goes with that call, and the device report carries finding counts and dates',
   },
   {
     id: 'shares',
@@ -228,10 +230,13 @@ export function readSyncPanel(
     // all unless this page reads the same file the pass would.
     paused: isForwardPaused(readForwardHealth(dir, at), at),
     localOnly: LOCAL_ONLY,
-    // A personal device sends activity only from its enrolled repositories, and
-    // the not-shared line says what is sent from now on. Present only on one,
-    // so a machine-wide attachment's props are what they were.
-    ...(attachmentMode === 'scoped' ? { scoped: true } : {}),
+    // A personal device sends activity only from what is enrolled on it and
+    // from recognised work-subscription sessions, so the not-shared line says
+    // what is sent from now on and the panel says whether the second is on.
+    // Present only on one: a machine-wide attachment's props carry neither.
+    ...(attachmentMode === 'scoped'
+      ? { scoped: true, workSubscriptions: workSubscriptionsState(settings) }
+      : {}),
     ...(progress === null
       ? {}
       : {
@@ -251,6 +256,11 @@ export function readSyncPanel(
       extraEntries,
     ),
   };
+}
+
+/** Whether a personal device recognises work subscriptions, from its scope record as stored. */
+function workSubscriptionsState(settings: WorkspaceSettings): 'on' | 'off' {
+  return workSubscriptionsOn(settings.attachmentScope) ? 'on' : 'off';
 }
 
 function panelState(

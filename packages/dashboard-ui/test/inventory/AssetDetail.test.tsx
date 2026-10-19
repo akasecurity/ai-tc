@@ -52,6 +52,8 @@ function describedReason(el: HTMLElement): string | null {
 
 const REASON = 'This control is not available here.';
 
+const PAGE = { onBack: () => undefined, backLabel: 'Claude Code', locale: 'en-US' };
+
 let mounted: MountedRoot;
 
 function mount(ui: React.ReactElement): void {
@@ -69,7 +71,7 @@ afterEach(() => {
 describe('AssetDetail MCP trust picker, live', () => {
   it('reaches onTrust on a real click', () => {
     const onTrust = vi.fn();
-    mount(<AssetDetail asset={mcpAsset()} onTrust={onTrust} />);
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={onTrust} />);
 
     act(() => {
       optionButton(mounted.host, 'Known good').click();
@@ -83,7 +85,7 @@ describe('AssetDetail MCP trust picker, live', () => {
 describe('AssetDetail MCP trust picker, refused', () => {
   it('refuses every option: aria-disabled, reason visible and linked, onTrust never called', () => {
     const onTrust = vi.fn();
-    mount(<AssetDetail asset={mcpAsset()} onTrust={onTrust} trustRefusal={REASON} />);
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={onTrust} trustRefusal={REASON} />);
 
     const button = optionButton(mounted.host, 'Known good');
     expect(button.disabled).toBe(false);
@@ -114,6 +116,7 @@ describe('AssetDetail MCP trust picker, refused', () => {
     const onTrust = vi.fn();
     mount(
       <AssetDetail
+        {...PAGE}
         asset={mcpAsset({ type: 'skill', trust: null, tools: undefined })}
         onTrust={onTrust}
         trustRefusal={REASON}
@@ -121,5 +124,83 @@ describe('AssetDetail MCP trust picker, refused', () => {
     );
 
     expect(mounted.host.querySelector('[data-slot="radio-card-list-refusal-reason"]')).toBeNull();
+  });
+});
+
+describe('AssetDetail per-type details', () => {
+  const fieldText = (host: HTMLElement): string[] =>
+    [...host.querySelectorAll('dl > div')].map(
+      (row) =>
+        `${row.querySelector('dt')?.textContent ?? ''}=${row.querySelector('dd')?.textContent ?? ''}`,
+    );
+
+  it("labels a hook's fields and shows its command in a code block, not the grid", () => {
+    mount(
+      <AssetDetail
+        {...PAGE}
+        asset={mcpAsset({
+          type: 'hook',
+          name: 'guard.sh',
+          trust: null,
+          tools: undefined,
+          meta: {
+            event: 'PreToolUse',
+            matcher: 'Bash',
+            scope: 'user',
+            status: 'active',
+            command: './guard.sh --strict',
+          },
+        })}
+        onTrust={vi.fn()}
+      />,
+    );
+
+    expect(mounted.host.querySelector('pre')?.textContent).toBe('./guard.sh --strict');
+    expect(fieldText(mounted.host)).toEqual([
+      'Event=PreToolUse',
+      'Matcher=Bash',
+      'Scope=user',
+      'State=active',
+    ]);
+  });
+
+  it("labels a skill's versions and keeps unrecognised keys under a readable label", () => {
+    mount(
+      <AssetDetail
+        {...PAGE}
+        asset={mcpAsset({
+          type: 'skill',
+          trust: null,
+          tools: undefined,
+          meta: {
+            source: 'acme/skills',
+            installedVersion: '1.2.0',
+            latestVersion: '1.3.0',
+            reviewedBy: 'sec',
+          },
+        })}
+        onTrust={vi.fn()}
+      />,
+    );
+
+    expect(fieldText(mounted.host)).toEqual([
+      'Source=acme/skills',
+      'Installed=1.2.0',
+      'Latest=1.3.0',
+      'Reviewed by=sec',
+    ]);
+  });
+
+  it('leads with an icon-only back button named for where it returns', () => {
+    const onBack = vi.fn();
+    mount(<AssetDetail {...PAGE} onBack={onBack} asset={mcpAsset()} onTrust={vi.fn()} />);
+
+    const back = mounted.host.querySelector('button[aria-label="Back to Claude Code"]');
+    expect(back).not.toBeNull();
+    expect(back?.textContent).toBe('');
+    act(() => {
+      (back as HTMLButtonElement).click();
+    });
+    expect(onBack).toHaveBeenCalledTimes(1);
   });
 });

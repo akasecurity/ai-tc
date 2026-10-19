@@ -37,8 +37,10 @@ These steps were recorded against Copilot CLI 1.0.98.
 - **The CLI warns that this install route is deprecated.** It says direct
   installs from a path are being replaced by `plugin@marketplace` installs.
   A marketplace install of this plugin has not been measured.
-- **Hook notices do not reach the screen.** AKA's messages appear only in the
-  CLI's debug log; start the CLI with `--log-level debug` to read them.
+- **Hook notices were not seen on the screen.** In `-p` mode, the only mode
+  observed, AKA's messages appeared only in the CLI's debug log, with debug
+  logging enabled (`--log-level debug --log-dir <dir>`). An interactive
+  session has not been measured.
 - **Windows is unconfirmed.** The plugin has not been installed and run against
   a real Copilot CLI on Windows, so whether its hook commands survive that
   platform's shell is untested.

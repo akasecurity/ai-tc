@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, visit } from 'yaml';
+import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, visit as visitDocument } from 'yaml';
 
 // A GitHub workflow read as a PARSED YAML document: jobs, then steps, then the
 // keys, `with:` and `env:` mappings and `run:` scripts of each, as decoded values.
@@ -58,8 +58,9 @@ export const isMapping = (value) =>
 /**
  * The node each alias in a document names: the last node carrying its anchor
  * before the alias, in document order, which is the rule `Alias.resolve`
- * applies. One walk answers every alias; `Alias.resolve` walks the whole
- * document again for each alias it is asked about.
+ * applies. Built in one walk, so the library is never handed a `ToJSContext`
+ * (`Alias.resolve` reads `anchors` from any context it is given) and each lookup
+ * is a `Map` read.
  *
  * @param {import('yaml').Document} document
  * @returns {Map<import('yaml').Alias, unknown>}
@@ -69,7 +70,7 @@ function aliasTargets(document) {
   const anchored = new Map();
   /** @type {Map<import('yaml').Alias, unknown>} */
   const targets = new Map();
-  visit(document, {
+  visitDocument(document, {
     Node(_key, node) {
       if (isAlias(node)) targets.set(node, anchored.get(node.source));
       else if (node.anchor) anchored.set(node.anchor, node);

@@ -4,7 +4,8 @@
 // decodes to the same structure as the plain spelling, and if what it cannot
 // decode is refused rather than read short.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Alias } from 'yaml';
 
 import {
   envOf,
@@ -143,6 +144,33 @@ describe('parseWorkflow', () => {
     expect(writeScopes(jobOf(workflow, 'second').permissions)).toEqual(['packages']);
   });
 
+  it('binds an alias to the last anchor written before it', () => {
+    const workflow = parseWorkflow(
+      ['a: &x one', 'b: *x', 'c: &x two', 'd: *x', 'jobs: {}', ''].join('\n'),
+    );
+
+    expect([workflow.b, workflow.d]).toEqual(['one', 'two']);
+  });
+
+  it('resolves an alias written as a mapping key', () => {
+    const workflow = parseWorkflow(['k: &k name', '*k : value', 'jobs: {}', ''].join('\n'));
+
+    expect(workflow.name).toBe('value');
+  });
+
+  // `Alias.resolve` reads `anchors` from any context it is handed, so a hand-built
+  // one throws. The reader resolves aliases from its own table instead.
+  it('resolves aliases from its own table, never through the library', () => {
+    const resolve = vi.spyOn(Alias.prototype, 'resolve');
+    try {
+      parseWorkflow(['k: &k name', 'v: *k', 'jobs: {}', ''].join('\n'));
+
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
   it('reads `on` as a string, as the runner does', () => {
     const workflow = parseWorkflow(['on:', '  push:', '    tags: [v1]', 'jobs: {}', ''].join('\n'));
 
@@ -169,6 +197,8 @@ describe('parseWorkflow', () => {
       ['a boolean key', 'jobs:\n  true: { runs-on: x }\n', /not a plain string/],
       ['a collection key', 'jobs:\n  ? [a, b]\n  : c\n', /not a plain string/],
       ['an alias inside the node it names', 'jobs:\n  a: &x [*x]\n', /node it is inside/],
+      ['an alias to no anchor', 'jobs: {}\nname: *nope\n', /names no anchor/],
+      ['an alias before its anchor', 'jobs: {}\nname: *x\nother: &x y\n', /names no anchor/],
       ['a top level that is not a mapping', '- a\n- b\n', /not a mapping/],
     ];
 

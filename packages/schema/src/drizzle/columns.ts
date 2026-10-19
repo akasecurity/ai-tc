@@ -147,6 +147,8 @@ export const COL = {
   findingKey: 'finding_key',
   // Who stands behind a human label — finding_resolution and exceptions.
   confirmedBy: 'confirmed_by',
+  // When an attached machine last reported a human label to its deployment.
+  labelReportedAt: 'label_reported_at',
   // Preserved first-detection time (epoch millis) — set once on a finding's
   // INSERT and never overwritten on the re-detection upsert, so MTTR / the
   // recently-resolved feed measure from when a finding was FIRST seen rather

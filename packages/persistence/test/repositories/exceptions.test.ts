@@ -944,3 +944,31 @@ describe('SqliteExceptionsRepository', () => {
     });
   });
 });
+
+describe('label reporting', () => {
+  it('offers every grant until it is reported, oldest change first', async () => {
+    const first = await repo.create(input({ method: 'acknowledged' }));
+    clock += 1000;
+    const second = await repo.create(input());
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([first.id, second.id]);
+
+    await repo.markLabelsReported([first.id], clock);
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([second.id]);
+  });
+
+  it('offers a reported grant again once it changes', async () => {
+    const grant = await repo.create(input({ scope: 'once', maxUses: 1 }));
+    await repo.markLabelsReported([grant.id], clock);
+    expect(await repo.unreportedLabels(10)).toEqual([]);
+
+    clock += 1000;
+    await repo.consume(grant.id);
+    expect((await repo.unreportedLabels(10)).map((g) => g.id)).toEqual([grant.id]);
+  });
+
+  it('caps a read at the limit', async () => {
+    await repo.create(input());
+    await repo.create(input());
+    expect(await repo.unreportedLabels(1)).toHaveLength(1);
+  });
+});

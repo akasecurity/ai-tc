@@ -331,6 +331,41 @@ export class SqliteExceptionsRepository {
    * predicate); `includeTerminal` returns everything — consumed, expired, and
    * revoked rows are retained as audit evidence.
    */
+  /**
+   * Grants the deployment has not heard about in their current form, oldest
+   * change first: never reported, or changed (a use, a revoke) since they were.
+   * Terminal grants are included — a revoke is part of the label's history.
+   */
+  unreportedLabels(limit: number): Promise<DetectionExceptionType[]> {
+    const rows = allRows<ExceptionRow>(
+      this.db.prepare(
+        `SELECT * FROM exceptions
+          WHERE label_reported_at IS NULL OR updated_at > label_reported_at
+          ORDER BY updated_at ASC, rowid ASC
+          LIMIT :limit`,
+      ),
+      { limit },
+    );
+    return Promise.resolve(mapRowsTolerant(rows, parseExceptionRow));
+  }
+
+  /**
+   * Record that `ids` were reported as they stood at `atMs`, a time taken
+   * BEFORE they were read: a grant changed after that read keeps an updated_at
+   * past the stamp and is offered again.
+   */
+  markLabelsReported(ids: readonly string[], atMs: number): Promise<void> {
+    const stmt = this.db.prepare('UPDATE exceptions SET label_reported_at = :atMs WHERE id = :id');
+    withTransaction(
+      this.db,
+      () => {
+        for (const id of ids) stmt.run({ id, atMs });
+      },
+      'IMMEDIATE',
+    );
+    return Promise.resolve();
+  }
+
   list(opts?: { includeTerminal?: boolean }): Promise<DetectionExceptionType[]> {
     const where = opts?.includeTerminal ? '' : `WHERE ${ACTIVE_PREDICATE}`;
     const rows = allRows<ExceptionRow>(

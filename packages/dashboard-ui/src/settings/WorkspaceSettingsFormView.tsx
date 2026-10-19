@@ -184,8 +184,9 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'a flagged span. No detection ships on redact or block, so on a default install nothing in that ' +
   'text is masked. Live sending is part of being attached and this setting does not change ' +
   'it: anything a live send could not deliver is kept and sent later either way. Sending ' +
-  'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
-  'cannot recall what has.';
+  'happens in the background over later sessions. It also sends the exceptions you grant and ' +
+  'the findings you dismiss on this machine, each with the reason you picked from the list — ' +
+  'never the reason you type. Revoking stops what has not been sent; it cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
   {
@@ -198,7 +199,7 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'granted',
     label: 'Shared',
     description:
-      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+      'Activity from before this machine attached may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block — and so are the exceptions you grant and the findings you dismiss, with the reason you picked.',
   },
 ];
 
@@ -209,9 +210,8 @@ export const HISTORY_SYNC_STALE_BADGE = 'Paused';
 
 export const HISTORY_SYNC_STALE_NOTICE =
   'Your grant was recorded against an older version of this setting, which did not cover the ' +
-  'text of the activity recorded before this machine attached — only what a live send failed ' +
-  'to deliver afterward — sending is paused until you re-consent. Saving with "Shared" ' +
-  'selected re-consents to the current version.';
+  'exceptions you grant and the findings you dismiss, with the reason you picked — sending is ' +
+  'paused until you re-consent. Saving with "Shared" selected re-consents to the current version.';
 
 // The same row on a machine attached as a personal device, picked when the host
 // reports `attachmentMode: 'scoped'`. Such a machine sends activity only from

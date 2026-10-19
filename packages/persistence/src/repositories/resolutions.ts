@@ -26,6 +26,15 @@ export interface ResolutionInput {
   confirmedBy?: ConfirmedBy;
 }
 
+// A person's dismissal, as an attached machine reports it to its deployment.
+export interface DismissalLabel {
+  id: string;
+  findingKey: string;
+  method: DismissMethod;
+  confirmedBy: ConfirmedBy;
+  resolvedAt: number;
+}
+
 // The newest disposition recorded for a finding key.
 export interface Resolution {
   status: FindingStatus;
@@ -197,6 +206,53 @@ export class SqliteResolutionsRepository {
       // holding the write lock fails the whole batch with SQLITE_BUSY however
       // long busy_timeout is, on a machine that is merely busy. Taking the lock
       // at BEGIN makes the wait an ordinary one that busy_timeout covers.
+      'IMMEDIATE',
+    );
+  }
+
+  /**
+   * A person's dismissals the deployment has not been told about, oldest first.
+   * Machine verdicts are never offered: nobody stands behind them. The free-text
+   * evidence is not read — a label report never carries it.
+   */
+  unreportedDismissals(limit: number): DismissalLabel[] {
+    const rows = allRows<{
+      id: string;
+      finding_key: string;
+      method: string;
+      confirmed_by: string | null;
+      resolved_at: number;
+    }>(
+      this.db.prepare(
+        `SELECT id, finding_key, method, confirmed_by, resolved_at
+           FROM finding_resolution
+          WHERE label_reported_at IS NULL
+            AND method IN (${DismissMethod.options.map((m) => `'${m}'`).join(', ')})
+          ORDER BY created_at ASC, rowid ASC
+          LIMIT :limit`,
+      ),
+      { limit },
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      findingKey: r.finding_key,
+      method: r.method as DismissMethod,
+      // A person's dismissal written before the column existed is the local user's.
+      confirmedBy: (r.confirmed_by as ConfirmedBy | null) ?? 'user',
+      resolvedAt: r.resolved_at,
+    }));
+  }
+
+  /** Record that these dismissals were reported. */
+  markDismissalsReported(ids: readonly string[], atMs: number): void {
+    const stmt = this.db.prepare(
+      'UPDATE finding_resolution SET label_reported_at = :atMs WHERE id = :id',
+    );
+    withTransaction(
+      this.db,
+      () => {
+        for (const id of ids) stmt.run({ id, atMs });
+      },
       'IMMEDIATE',
     );
   }

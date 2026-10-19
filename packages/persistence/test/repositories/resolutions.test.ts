@@ -336,3 +336,38 @@ describe('a DISMISSED key is not shielded from the resolve/redetect cycle', () =
     expect(repo.latestByKey('key-c')?.status).toBe('open');
   });
 });
+
+describe('dismissal label reporting', () => {
+  function dismiss(
+    repo: SqliteResolutionsRepository,
+    findingKey: string,
+    method: 'acknowledged' | 'fixed-at-source',
+  ): void {
+    repo.insertResolution({
+      findingKey,
+      status: method === 'acknowledged' ? 'dismissed' : 'resolved',
+      method,
+      resolvedAt: 1000,
+      evidence: 'typed by a person',
+    });
+  }
+
+  it("offers a person's dismissals, never a machine verdict, until reported", () => {
+    let clock = 1000;
+    const repo = resolutions(() => clock);
+    dismiss(repo, 'k-person', 'acknowledged');
+    clock = 2000;
+    dismiss(repo, 'k-machine', 'fixed-at-source');
+
+    const offered = repo.unreportedDismissals(10);
+    expect(offered.map((d) => [d.findingKey, d.method, d.confirmedBy, d.resolvedAt])).toEqual([
+      ['k-person', 'acknowledged', 'user', 1000],
+    ]);
+
+    repo.markDismissalsReported(
+      offered.map((d) => d.id),
+      3000,
+    );
+    expect(repo.unreportedDismissals(10)).toEqual([]);
+  });
+});

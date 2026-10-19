@@ -11,6 +11,8 @@ import type {
   IngestAck as IngestAckT,
   IngestBatch,
   InventoryContext,
+  LabelReportAck as LabelReportAckT,
+  LabelReportRequest as LabelReportRequestT,
   PluginWhoami as PluginWhoamiT,
   PolicyBundle as PolicyBundleT,
   RecordAuditEventRequest as AuditEventSubmission,
@@ -29,6 +31,8 @@ import {
   EgressIngestRequest,
   IngestAck,
   isSafeEndpoint,
+  LabelReportAck,
+  LabelReportRequest,
   PluginWhoami,
   PolicyBundle,
   RecordAuditEventBatch,
@@ -48,10 +52,10 @@ import {
   send,
 } from './http.ts';
 
-// The twelve routes an attached machine may call, and nothing else.
+// The thirteen routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: eight writes and four self-scoped reads. There is
+// credential to: nine writes and four self-scoped reads. There is
 // deliberately no way to ask this client for anything organization-wide — a
 // credential on a laptop should not be able to read what other people's
 // machines reported, and a client that cannot express the request is a
@@ -83,6 +87,7 @@ const ROUTES = {
   commands: '/v1/plugin/commands',
   sightingKey: '/v1/sighting-key',
   credentialSightings: '/v1/credential-sightings',
+  labels: '/v1/plugin/labels',
 } as const;
 
 /**
@@ -178,6 +183,13 @@ export interface RemoteClient {
    * one scan. Validated before it is sent; a 404 raises `RemoteRouteAbsent`.
    */
   recordCredentialSightings(request: CredentialSightingsRequestT): Promise<CredentialSightingsAckT>;
+
+  /**
+   * POST /v1/plugin/labels — the exceptions and dismissals a person gave on
+   * this machine, with the reason picked and nothing they typed. Validated
+   * before it is sent; a 404 raises `RemoteRouteAbsent`.
+   */
+  reportLabels(request: LabelReportRequestT): Promise<LabelReportAckT>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -461,6 +473,21 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       });
       if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.credentialSightings);
       return parsed(CredentialSightingsAck, okBody(response), ROUTES.credentialSightings);
+    },
+
+    async reportLabels(request) {
+      const validated = LabelReportRequest.safeParse(request);
+      if (!validated.success) {
+        throw new RemoteRequestInvalid(ROUTES.labels, validated.error);
+      }
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.labels),
+        body: JSON.stringify(validated.data),
+      });
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.labels);
+      return parsed(LabelReportAck, okBody(response), ROUTES.labels);
     },
   };
 }

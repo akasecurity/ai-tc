@@ -102,7 +102,14 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // delivery of activity the attachment already permits, sent later by the same
 // drain whether or not the grant is given. The grant covers the consent and
 // enroll seeds, which mark history the live path never offered.
-export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
+//
+// v4 ADDS A SUBJECT the earlier grants never named: the labels a person gives
+// on this machine — the exceptions they grant and the findings they dismiss,
+// each with the reason picked from the fixed list (`label-report.ts`). Labels
+// only: the reason a person TYPES never leaves, nor the local account name.
+// Every v3 grant is invalidated and re-asked, because what the grant permits
+// to leave the machine is wider than what it said when it was given.
+export const HISTORY_SYNC_PAYLOAD_VERSION = 4;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other

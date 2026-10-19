@@ -460,9 +460,13 @@ describe('isHistorySyncConsentValid', () => {
 // consent is given, over what is already on disk — so the pre-attach backlog
 // is no longer structural-only: it now carries the same prompt/reply/tool-
 // result TEXT as an undelivered live send, masked by the same rule.
+//
+// v4 adds the labels a person gives: the exceptions they grant and the findings
+// they dismiss, with the reason picked from the list and never the text typed.
+// LABELS_DISCLOSURE in the CLI and the dashboard section say so.
 describe('the payload version and its disclosure move together', () => {
   it('fails on a bump so the copy gets re-read', () => {
-    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(3);
+    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(4);
   });
 });
 

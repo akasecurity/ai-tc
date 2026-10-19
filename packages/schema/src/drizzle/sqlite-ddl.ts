@@ -191,4 +191,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0040_human_label_columns',
     sql: 'ALTER TABLE `exceptions` ADD `method` text;--> statement-breakpoint\nALTER TABLE `exceptions` ADD `confirmed_by` text;--> statement-breakpoint\nALTER TABLE `finding_resolution` ADD `confirmed_by` text;',
   },
+  {
+    tag: '0041_label_reported_at',
+    sql: 'ALTER TABLE `exceptions` ADD `label_reported_at` integer;--> statement-breakpoint\nALTER TABLE `finding_resolution` ADD `label_reported_at` integer;',
+  },
 ];

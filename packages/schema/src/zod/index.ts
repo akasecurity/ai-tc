@@ -26,6 +26,7 @@ export * from './harness-map.ts';
 export * from './host-floor.ts';
 export * from './installed-pack.ts';
 export * from './inventory.ts';
+export * from './label-report.ts';
 export * from './local.ts';
 export * from './managed.ts';
 export * from './meta.ts';

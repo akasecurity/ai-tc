@@ -11,7 +11,15 @@
  * pulled and custom rule while the built-in packs keep detecting.
  */
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +45,14 @@ const HOST_DIR = join(PACKAGE_ROOT, 'native-host');
 // change together or the worker becomes unreachable at runtime.
 const WORKER_SCRIPT = 'scan-worker.js';
 const HOST_SCRIPT = 'host.js';
+
+// The largest the built worker may be. Its start is charged to a 500ms budget
+// inside the 2s a prompt capture is given (src/native-host/host.ts), and what
+// that start mostly costs is loading this file, so a bundle that grows is a
+// worker that starts later on every machine and misses the budget on a slow
+// one. It was 474KB when this was set; it once doubled to 1MB when zod's
+// locale files were pulled in.
+const MAX_WORKER_BYTES = 600_000;
 
 // The pulled pack the host case installs. Its pattern is not among the bundled
 // rules, so the runtime treats it as unverified — which is the ONLY condition
@@ -125,6 +141,18 @@ describe('the built scan worker', () => {
   it('is emitted beside the native host Chrome actually launches', () => {
     expect(existsSync(join(HOST_DIR, HOST_SCRIPT))).toBe(true);
     expect(existsSync(join(HOST_DIR, WORKER_SCRIPT))).toBe(true);
+  });
+
+  it('is small enough to start inside the capture’s start budget', () => {
+    const bytes = statSync(join(HOST_DIR, WORKER_SCRIPT)).size;
+    expect(
+      bytes,
+      `${WORKER_SCRIPT} is ${String(bytes)} bytes. The native host gives the worker 500ms to ` +
+        `start, and loading this file is most of that; a larger bundle refuses long prompts on ` +
+        `slow machines. Find what the bundle newly pulls in before raising this.`,
+    ).toBeLessThanOrEqual(MAX_WORKER_BYTES);
+    // A size that reads as zero is a file that was never built, not a small one.
+    expect(bytes).toBeGreaterThan(MAX_WORKER_BYTES / 4);
   });
 
   it('is the name the host’s own inlined resolver looks for', () => {
@@ -263,13 +291,48 @@ describe('the built scan worker', () => {
 // let through. That makes the worker shipping beside host.js a condition of
 // sending a long prompt at all, and these two rows drive both sides of it
 // through the built host.
+//
+// They drive the built host's own request handler, imported from host.js, with
+// the capture's start and scan budgets replaced by generous test-only ones.
+// What these rows exist to show is that the worker is FOUND and STARTS beside
+// host.js; the product's 500ms start budget turns a slow start into the same
+// refusal as a missing worker, and a loaded runner starts a worker slowly, so
+// under that budget the present-worker row failed with no defect in the build.
+// So these rows cannot see the product's budgets. host.test.ts pins them as
+// literals, 500ms to start and 2s to scan, and what the start costs is pinned
+// by the worker's size above.
 describe('a prompt past the large-input threshold, through the built host', () => {
   const LARGE = `${'lorem ipsum dolor sit amet '.repeat(Math.ceil(LARGE_INPUT_THRESHOLD_CHARS / 27))}end`;
+  const TEST_START_BUDGET_MS = 10_000;
+  const TEST_DEADLINE_MS = 15_000;
 
-  function capture(hostDir: string): Record<string, unknown> {
+  // Imports the built host from `hostDir` the way Chrome would load it, with
+  // nothing on stdin so its own message loop ends at once, and answers one
+  // capture through the handler that loop would call.
+  const DRIVER = `
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [hostPath, requestPath, startBudgetMs, deadlineMs] = process.argv.slice(2);
+const host = await import(pathToFileURL(hostPath).href);
+const request = JSON.parse(readFileSync(requestPath, 'utf8'));
+const response = await host.handleRequest(request, undefined, (receivedAt) => ({
+  ...host.captureLargeInput(receivedAt),
+  startBudgetMs: Number(startBudgetMs),
+  budgetMs: Number(deadlineMs),
+  remainingMs: () => receivedAt + Number(deadlineMs) - performance.now(),
+}));
+process.stdout.write(JSON.stringify(response), () => process.exit(0));
+`;
+
+  function capture(hostDir: string): { reply: Record<string, unknown>; stderr: string } {
     const home = tempDir('aka-ext-large-home-');
-    const result = spawnSync(process.execPath, [join(hostDir, HOST_SCRIPT)], {
-      input: frame({
+    const work = tempDir('aka-ext-large-driver-');
+    const driver = join(work, 'drive-host.mjs');
+    const request = join(work, 'request.json');
+    writeFileSync(driver, DRIVER);
+    writeFileSync(
+      request,
+      JSON.stringify({
         type: 'capture',
         requestId: 'e2e-large-1',
         sessionId: 'e2e-large-session',
@@ -277,21 +340,35 @@ describe('a prompt past the large-input threshold, through the built host', () =
         kind: 'prompt',
         text: LARGE,
       }),
-      encoding: 'buffer',
-      env: { ...processEnv(), HOME: home, USERPROFILE: home },
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        driver,
+        join(hostDir, HOST_SCRIPT),
+        request,
+        String(TEST_START_BUDGET_MS),
+        String(TEST_DEADLINE_MS),
+      ],
+      {
+        input: '',
+        encoding: 'utf8',
+        env: { ...processEnv(), HOME: home, USERPROFILE: home },
+        maxBuffer: 64 * 1024 * 1024,
+      },
+    );
     expect(result.error).toBeUndefined();
-    expect(result.status).toBe(0);
-    const replies = unframe(result.stdout);
-    expect(replies).toHaveLength(1);
-    return replies[0] as Record<string, unknown>;
+    expect(result.status, result.stderr).toBe(0);
+    return { reply: JSON.parse(result.stdout) as Record<string, unknown>, stderr: result.stderr };
   }
 
   it('is scanned by the shipped worker and judged on its content', () => {
     // Benign text, so a judged prompt is a `log` — and a refusal here would
     // mean the worker beside host.js could not be found or started.
-    expect(capture(HOST_DIR)).toEqual({
+    const { reply, stderr } = capture(HOST_DIR);
+    expect(stderr).not.toContain('the scan worker script was not found');
+    expect(reply.scanIncomplete, `the worker did not answer: ${stderr}`).toBeUndefined();
+    expect(reply).toEqual({
       type: 'capture',
       requestId: 'e2e-large-1',
       ok: true,
@@ -313,8 +390,7 @@ describe('a prompt past the large-input threshold, through the built host', () =
     expect(existsSync(join(hostDir, HOST_SCRIPT))).toBe(true);
     expect(existsSync(join(hostDir, WORKER_SCRIPT))).toBe(false);
 
-    const reply = capture(hostDir);
-    expect(reply).toEqual({
+    const refusal = {
       type: 'capture',
       requestId: 'e2e-large-1',
       ok: true,
@@ -322,9 +398,42 @@ describe('a prompt past the large-input threshold, through the built host', () =
       text: null,
       ruleIds: [],
       scanIncomplete: 'unavailable',
-    });
+    };
+    const { reply, stderr } = capture(hostDir);
+    expect(reply).toEqual(refusal);
+    expect(stderr).toContain('the scan worker script was not found');
     expect(JSON.stringify(reply)).not.toContain('lorem ipsum');
+
+    // And the same refusal as Chrome would receive it: the script alone, the
+    // capture as a framed message on stdin, the reply framed on stdout, under
+    // the product's own budgets. No worker means nothing to wait for, so those
+    // budgets decide nothing here.
+    const launched = launchAsChrome(hostDir);
+    expect(launched).toEqual(refusal);
+    expect(JSON.stringify(launched)).not.toContain('lorem ipsum');
   });
+
+  function launchAsChrome(hostDir: string): Record<string, unknown> {
+    const home = tempDir('aka-ext-large-home-');
+    const result = spawnSync(process.execPath, [join(hostDir, HOST_SCRIPT)], {
+      input: frame({
+        type: 'capture',
+        requestId: 'e2e-large-1',
+        sessionId: 'e2e-large-session',
+        tool: 'chatgpt',
+        kind: 'prompt',
+        text: LARGE,
+      }),
+      encoding: 'buffer',
+      env: { ...processEnv(), HOME: home, USERPROFILE: home },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const replies = unframe(result.stdout);
+    expect(replies).toHaveLength(1);
+    return replies[0] as Record<string, unknown>;
+  }
 });
 
 // The host env, read once so the child spawn inherits PATH/node while pointing

@@ -1,14 +1,22 @@
 'use client';
 
-// Right pane for one project: its findings and withheld-file counts, the files
-// withheld from models, and the harnesses that have loaded it.
-import type { FileSummary, HarnessSummary, ProjectSummary } from '@akasecurity/schema';
-import { cn } from '@akasecurity/ui-kit';
+// Right pane for one project: its findings and withheld-file counts, the
+// categories of sensitive data its findings fall in, the files withheld from
+// models, and the harnesses that have loaded it.
+import type {
+  FileSummary,
+  HarnessSummary,
+  ProjectSummary,
+  SensitiveDataClass,
+} from '@akasecurity/schema';
+import { PROJECT_FINDINGS_WINDOW_DAYS } from '@akasecurity/schema';
+import { cn, SeverityBadge } from '@akasecurity/ui-kit';
 
+import { CATEGORY_LABEL } from '../detections/meta.ts';
 import { relativeTime } from '../lib/relativeTime.ts';
 import { Provider } from '../shared/Provider.tsx';
-import { BackButton, Section, VisBadge } from './chips.tsx';
-import { assetTile, fmtDateTime } from './data.ts';
+import { BackButton, Section } from './chips.tsx';
+import { assetTile, endpointCountText, fmtDateTime, SENSITIVE_CATEGORY } from './data.ts';
 import { Ico } from './Ico.tsx';
 
 export function ProjectDetail({
@@ -16,6 +24,10 @@ export function ProjectDetail({
   blocked,
   blockedLoading,
   blockedError,
+  sensitiveData,
+  sensitiveDataLoading,
+  sensitiveDataError,
+  sensitiveDataRefusal,
   harnesses,
   onBack,
   backLabel,
@@ -28,6 +40,13 @@ export function ProjectDetail({
   blockedLoading?: boolean | undefined;
   /** Set when the withheld files could not be loaded. */
   blockedError?: string | null | undefined;
+  /** The project's findings in the findings window by category, most severe first. */
+  sensitiveData: SensitiveDataClass[];
+  sensitiveDataLoading?: boolean | undefined;
+  /** Set when the sensitive data could not be loaded. */
+  sensitiveDataError?: string | null | undefined;
+  /** Shown in place of the sensitive data when the viewer may not read it. */
+  sensitiveDataRefusal?: string | undefined;
   /** Every harness; those that list this project are shown as loading it. */
   harnesses: HarnessSummary[];
   /** Returns to the table this project was opened from. */
@@ -42,6 +61,31 @@ export function ProjectDetail({
   const tile = assetTile('project');
   const withheld = project.accessCounts.blocked;
   const otherWithheld = Math.max(0, withheld - blocked.length);
+  const stats: StatProps[] = [
+    ...(project.machines === undefined
+      ? []
+      : [
+          {
+            value: endpointCountText(project.machines, true),
+            label: 'Endpoints seen on',
+            tone: 'text-text',
+          },
+        ]),
+    ...(project.findingsCount === undefined
+      ? []
+      : [
+          {
+            value: project.findingsCount,
+            label: `Findings · ${String(PROJECT_FINDINGS_WINDOW_DAYS)}d`,
+            tone: project.findingsCount > 0 ? 'text-sev-high-ink' : 'text-ok-ink',
+          },
+        ]),
+    {
+      value: withheld,
+      label: 'Files withheld from models',
+      tone: withheld > 0 ? 'text-sev-critical-ink' : 'text-ok-ink',
+    },
+  ];
   const loadedBy = harnesses.filter((h) => h.projects.some((p) => p.id === project.id));
   const updated = relativeTime(project.updatedAt, renderedAt);
 
@@ -55,14 +99,11 @@ export function ProjectDetail({
           <Ico name={tile.icon} className="size-5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span
-              className="truncate font-mono text-base font-semibold text-text"
-              title={project.name}
-            >
-              {project.name}
-            </span>
-            <VisBadge v={project.visibility} />
+          <div
+            className="truncate font-mono text-base font-semibold text-text"
+            title={project.name}
+          >
+            {project.name}
           </div>
           <div className="mt-px truncate text-xs text-text-3">
             {[project.repo, project.language, updated && `updated ${updated}`]
@@ -72,21 +113,33 @@ export function ProjectDetail({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 border-b border-border">
-        <Stat
-          value={project.findingsCount}
-          label="Findings"
-          tone={project.findingsCount > 0 ? 'text-sev-high-ink' : 'text-ok-ink'}
-        />
-        <Stat
-          value={withheld}
-          label="Files withheld from models"
-          tone={withheld > 0 ? 'text-sev-critical-ink' : 'text-ok-ink'}
-          className="border-l border-border"
-        />
+      <div className={cn('grid border-b border-border', STAT_COLUMNS[stats.length])}>
+        {stats.map((stat, i) => (
+          <Stat key={stat.label} {...stat} className={cn(i > 0 && 'border-l border-border')} />
+        ))}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-5">
+        <Section label="Sensitive data present">
+          {sensitiveDataRefusal !== undefined ? (
+            <div className="text-xs text-text-3">{sensitiveDataRefusal}</div>
+          ) : sensitiveDataError ? (
+            <div className="text-xs text-sev-critical-ink">
+              {`Couldn't load the sensitive data: ${sensitiveDataError}`}
+            </div>
+          ) : sensitiveDataLoading && sensitiveData.length === 0 ? (
+            <div className="text-xs text-text-3">Loading sensitive data…</div>
+          ) : sensitiveData.length > 0 ? (
+            <ul className="flex flex-col gap-2">
+              {sensitiveData.map((c) => (
+                <SensitiveDataRow key={c.category} item={c} renderedAt={renderedAt} />
+              ))}
+            </ul>
+          ) : (
+            <Notice>{`No sensitive data found in the last ${String(PROJECT_FINDINGS_WINDOW_DAYS)} days.`}</Notice>
+          )}
+        </Section>
+
         <Section label="Files withheld from models">
           {blockedError ? (
             <div className="text-xs text-sev-critical-ink">
@@ -155,17 +208,43 @@ export function ProjectDetail({
   );
 }
 
-function Stat({
-  value,
-  label,
-  tone,
-  className,
-}: {
-  value: number;
+function SensitiveDataRow({ item, renderedAt }: { item: SensitiveDataClass; renderedAt: number }) {
+  const tile = SENSITIVE_CATEGORY[item.category];
+  return (
+    <li className="flex items-center gap-3 rounded-lg border border-border px-3.5 py-2.5">
+      <span className={cn('grid size-8 shrink-0 place-items-center rounded-md', tile.bg, tile.fg)}>
+        <Ico name={tile.icon} className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text">
+        {CATEGORY_LABEL[item.category]}
+      </span>
+      <span className="shrink-0 text-xs text-text-2">
+        {item.files === 0
+          ? 'In prompts & output'
+          : `${String(item.files)} ${item.files === 1 ? 'file' : 'files'}`}
+      </span>
+      <SeverityBadge severity={item.severity} />
+      <span className="min-w-20 shrink-0 text-right text-xs text-text-3">
+        {relativeTime(item.lastDetectedAt, renderedAt)}
+      </span>
+    </li>
+  );
+}
+
+interface StatProps {
+  value: number | string;
   label: string;
   tone: string;
-  className?: string;
-}) {
+}
+
+/** The grid class for the number of stats the header shows. */
+const STAT_COLUMNS: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-2',
+  3: 'grid-cols-3',
+};
+
+function Stat({ value, label, tone, className }: StatProps & { className?: string | undefined }) {
   return (
     <div className={cn('px-5 py-4', className)}>
       <div className={cn('font-display text-2xl font-semibold tabular-nums', tone)}>{value}</div>

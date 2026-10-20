@@ -51,6 +51,7 @@ import type {
   PolicyDetail,
   PolicyKind,
   PolicyStatsResponse,
+  ProjectSensitiveData,
   ProjectTreeResponse,
   RecentlyResolvedResponse,
   ScanCoverageResponse,
@@ -318,6 +319,7 @@ export interface InventoryReadPort {
     query: GetProjectTreeQuery,
   ): Promise<ProjectTreeResponse | null>;
   getProjectFile(projectId: string, path: string): Promise<FileDetail | null>;
+  getProjectSensitiveData(projectId: string): Promise<ProjectSensitiveData | null>;
 }
 
 /**

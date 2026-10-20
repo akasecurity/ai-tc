@@ -45,6 +45,19 @@ function skill(id: string, overrides: Partial<AssetSummary> = {}): AssetSummary 
   };
 }
 
+function mcp(id: string, overrides: Partial<AssetSummary> = {}): AssetSummary {
+  return {
+    id,
+    type: 'mcp',
+    name: id,
+    sub: 'MCP server · stdio',
+    flags: [],
+    meta: { transport: 'stdio', command: 'npx', scope: 'user' },
+    trust: 'unapproved',
+    ...overrides,
+  };
+}
+
 let mounted: MountedRoot;
 beforeEach(() => {
   mounted = mountRoot();
@@ -57,6 +70,10 @@ const bodyRows = (): HTMLTableRowElement[] => [
   ...mounted.host.querySelectorAll<HTMLTableRowElement>('tbody tr'),
 ];
 const names = (): string[] => bodyRows().map((r) => r.querySelector('td')?.textContent ?? '');
+const cellsOf = (name: string): string[] => {
+  const row = bodyRows().find((r) => r.querySelector('td')?.textContent === name);
+  return [...(row?.querySelectorAll('td') ?? [])].map((td) => td.textContent);
+};
 const headers = (): string[] =>
   [...mounted.host.querySelectorAll('thead th')].map((th) => th.textContent);
 
@@ -118,6 +135,40 @@ describe('InventoryTable, one type', () => {
     expect(headers()[0]).toBe('Command');
   });
 
+  it("shows an MCP server's tools used over 30 days when the rows carry the count", () => {
+    mount({
+      type: 'mcp',
+      rows: [mcp('github', { toolsUsed: 7 }), mcp('linear', { toolsUsed: 0 })],
+    });
+    expect(headers()).toEqual([
+      'Name',
+      'Transport',
+      'Host',
+      'Scope',
+      'Trust',
+      'Tools used · 30d',
+      'Status',
+    ]);
+    expect(cellsOf('github')).toContain('7');
+    expect(cellsOf('linear')).toContain('0');
+
+    mount({ type: 'mcp', rows: [mcp('github')] });
+    expect(headers()).not.toContain('Tools used · 30d');
+  });
+
+  it('shows projects without a visibility, which no store records', () => {
+    mount({ type: 'project', rows: [project('p')] });
+    expect(headers()).toEqual([
+      'Name',
+      'Repository',
+      'Language',
+      'Findings · 30d',
+      'Updated',
+      'Status',
+    ]);
+    expect(mounted.host.textContent).not.toContain('private');
+  });
+
   it('keeps an active status pill on screen after its rows are gone', () => {
     mount({ type: 'skill', rows: [skill('a', { flags: ['update'] }), skill('b')] });
     click(buttonNamed('Update1'));
@@ -168,6 +219,7 @@ describe('InventoryTable, a harness', () => {
   it('shows Type and Detail columns and a pill per type that toggles off on a second click', () => {
     mount({ rows });
     expect(headers()).toEqual(['Name', 'Type', 'Detail', 'Status']);
+    expect(cellsOf('p1')).toContain('acme/p1');
 
     click(buttonNamed('Skills2'));
     expect(names()).toEqual(['s1', 's2']);
@@ -232,5 +284,57 @@ describe('InventoryTable, a harness', () => {
     if (second === undefined) throw new Error('no second row');
     click(second);
     expect(onOpen).toHaveBeenCalledWith(rows[1]);
+  });
+});
+
+describe('InventoryTable endpoint counts', () => {
+  it('shows no Endpoints column when the rows carry no count', () => {
+    mount({ type: 'skill', rows: [skill('a')] });
+    expect(headers()).not.toContain('Endpoints');
+    mount({ type: 'project', rows: [project('p')] });
+    expect(headers()).not.toContain('Endpoints');
+  });
+
+  it('shows each row’s endpoints, the cap as "100+", and the versions it is reported in', () => {
+    mount({
+      type: 'skill',
+      rows: [
+        skill('few', { machines: 3, variants: 1 }),
+        skill('split', { machines: 12, variants: 2 }),
+        skill('fleet', { machines: 100, variants: 1 }),
+      ],
+    });
+
+    expect(headers()).toContain('Endpoints');
+    expect(cellsOf('few')).toContain('3');
+    expect(cellsOf('fleet')).toContain('100+');
+    const split = bodyRows().find((r) => r.querySelector('td')?.textContent === 'split');
+    const cell = [...(split?.querySelectorAll('td') ?? [])].find((td) =>
+      td.textContent.includes('versions'),
+    );
+    expect(cell?.firstChild?.textContent).toBe('12');
+    expect(cell?.lastChild?.textContent).toBe('2 versions');
+    expect(mounted.host.textContent).not.toContain('1 versions');
+  });
+
+  it('shows a project’s endpoints in a harness’s mixed table', () => {
+    mount({ type: null, rows: [project('p', { machines: 4 }), skill('s', { machines: 2 })] });
+
+    expect(headers()).toContain('Endpoints');
+    expect(cellsOf('p')).toContain('4');
+    expect(cellsOf('s')).toContain('2');
+  });
+
+  it('sorts by endpoints as numbers', () => {
+    mount({
+      type: 'skill',
+      rows: [
+        skill('nine', { machines: 9 }),
+        skill('eleven', { machines: 11 }),
+        skill('two', { machines: 2 }),
+      ],
+    });
+    click(buttonNamed('Endpoints'));
+    expect(names()).toEqual(['two', 'nine', 'eleven']);
   });
 });

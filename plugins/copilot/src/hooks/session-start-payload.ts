@@ -55,12 +55,13 @@ export function harnessInterfaceFor(dialect: Dialect | undefined): string | unde
  * root opened under the right id is worth more than a strict refusal. What it
  * does NOT do is invent a `harnessInterface` — see above.
  *
- * `cwd` is read the same way and is deliberately NOT defaulted here. Under VS
- * Code the spawn's own cwd is the HOME DIRECTORY unless the hook entry declared
- * one, so a session-start entry with no `cwd` must decline rather than resolve
- * a repo from `~` — the same rule `baseMetadata` in ./shared.ts keeps, for the
- * same reason. This module reports the absence; the entry decides what to do
- * about it.
+ * `cwd` is read the same way and is deliberately NOT defaulted here. VS Code
+ * documents the spawn's own cwd as the home directory unless the hook entry
+ * declares one; the recorded VS Code 1.141 session sent `cwd` on every event
+ * and ran the hooks in the workspace. Either way a session-start entry with no
+ * `cwd` declines rather than resolve a repo from the process's own cwd — the
+ * same rule `baseMetadata` in ./shared.ts keeps, for the same reason. This
+ * module reports the absence; the entry decides what to do about it.
  */
 export function readSessionStartFacts(input: Record<string, unknown> | null): SessionStartFacts {
   if (input === null) {

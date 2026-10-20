@@ -68,9 +68,11 @@ export const CLI_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
  *
  * **Doc-derived, every row.** The tool ids are VS Code's own
  * (`run_in_terminal`, `create_file`, …) and the key names are their published
- * input schemas; no live session has confirmed either, and the table is written
- * FROM `test/fixtures/vscode-provisional/` rather than the fixtures being
- * written to match it. See that directory's README for the full list of what a
+ * input schemas. A live VS Code 1.141.0 session recorded `run_in_terminal`
+ * (`{ command, explanation, goal, mode }`) and `create_file`
+ * (`{ filePath, content }`) in `test/fixtures/vscode/plugin-load-1.141/`; a
+ * deny and an `updatedInput` rewrite were never driven, and the other rows
+ * rest on the doc-derived `test/fixtures/vscode-provisional/`. See that directory's README for the full list of what a
  * recording would settle.
  *
  * It matters more here than on the CLI that an unknown tool is cheap: VS Code

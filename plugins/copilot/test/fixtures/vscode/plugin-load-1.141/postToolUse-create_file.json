@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-10-19T10:42:36.346Z",
+  "hook_event_name": "PostToolUse",
+  "session_id": "fcbfebce-dbe0-4aa1-b640-4b6590f9a3a3",
+  "transcript_path": "/Users/dev/Library/Application Support/Code/User/workspaceStorage/b2c7b8b81b376fdee1632645c04562bd/GitHub.copilot-chat/transcripts/fcbfebce-dbe0-4aa1-b640-4b6590f9a3a3.jsonl",
+  "tool_name": "create_file",
+  "tool_input": {
+    "filePath": "/Users/dev/work/notes.txt",
+    "content": "hello"
+  },
+  "tool_response": "",
+  "tool_use_id": "call_CwZtm78GScU3CHDBQ0usdUvq__vscode-1792406494814",
+  "cwd": "/Users/dev/work"
+}

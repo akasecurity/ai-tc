@@ -80,11 +80,18 @@ export const CLI_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
  * call the agent makes, including `read_file` and every `mcp_*`. The hook's
  * unknown-tool exit therefore runs before the config load and before the store
  * opens.
+ *
+ * `run_in_terminal`'s `explanation` and `goal` are model-authored prose that
+ * rides along with the call and reaches the transcript, the counterpart of the
+ * CLI's `bash.description`. Neither executes, so a redact rewrites them in
+ * place while `command` follows the executable-field fallback. `mode` is the
+ * tool's own dial and carries no user text, so it is deliberately absent.
  */
 export const VSCODE_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
   run_in_terminal: [
     { field: 'command', executable: true },
     { field: 'explanation', executable: false },
+    { field: 'goal', executable: false },
   ],
   create_file: [{ field: 'content', executable: false }],
   replace_string_in_file: [{ field: 'newString', executable: false }],

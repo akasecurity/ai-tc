@@ -6,6 +6,7 @@
 // per-type pills filter instead.
 import type { AssetType, Flag } from '@akasecurity/schema';
 import {
+  Badge,
   cn,
   Pagination,
   PaginationNext,
@@ -32,7 +33,7 @@ import { type ReactNode, useMemo, useState } from 'react';
 
 import { SearchField } from '../shared/SearchField.tsx';
 import { FlagChip, TrustPill } from './chips.tsx';
-import { type Column, MIXED_COLUMNS, NAME_COLUMN, TYPE_COLUMNS } from './columns.ts';
+import { type Column, NAME_COLUMN, tableColumns } from './columns.ts';
 import {
   assetTile,
   GROUPS,
@@ -142,7 +143,7 @@ export function InventoryTable({
   const [sort, setSort] = useState<Sort | null>(null);
   const [page, setPage] = useState(0);
 
-  const columns = type === null ? MIXED_COLUMNS : TYPE_COLUMNS[type];
+  const columns = useMemo(() => tableColumns(type, rows), [type, rows]);
   const sortable = useMemo<Column[]>(
     () => [type === 'hook' ? { ...NAME_COLUMN, label: 'Command' } : NAME_COLUMN, ...columns],
     [type, columns],
@@ -428,6 +429,7 @@ function InventoryTableRow({
       </TableCell>
       {columns.map((c) => {
         const text = cellText(c, row, renderedAt);
+        const chip = c.chip?.(row) ?? null;
         return (
           <TableCell
             key={c.key}
@@ -437,9 +439,14 @@ function InventoryTableRow({
               c.mono && 'font-mono',
               c.num && 'text-right tabular-nums',
             )}
-            title={text}
+            title={chip === null ? text : `${text} · ${chip}`}
           >
             {text}
+            {chip !== null && (
+              <Badge variant="default" className="ml-1.5 align-middle">
+                {chip}
+              </Badge>
+            )}
           </TableCell>
         );
       })}

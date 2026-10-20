@@ -1,5 +1,6 @@
 import * as z from 'zod';
 
+import { DetectionCategory, Severity } from './finding.ts';
 import { Harness } from './harness-map.ts';
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -66,6 +67,53 @@ export type AccessCounts = z.infer<typeof AccessCounts>;
 
 // ─── Shape 1: AssetSummary ────────────────────────────────────────────────────
 
+/**
+ * Where a list stops counting endpoints: a list count at the cap means at least
+ * that many. A detail read counts them all.
+ */
+export const INVENTORY_LIST_COUNT_CAP = 100;
+
+/** How many days back an MCP server's `toolsUsed` counts tool calls. */
+export const MCP_TOOLS_USED_WINDOW_DAYS = 30;
+
+/**
+ * The server segments under which an MCP server's tool calls are named,
+ * `mcp__<server>__<tool>`: the server's name, and the name with every character
+ * outside `[A-Za-z0-9_-]` replaced by `_`, the form a harness may write it in.
+ */
+export function mcpToolServerKeys(serverName: string): string[] {
+  const normalized = serverName.replace(/[^A-Za-z0-9_-]/g, '_');
+  return normalized === serverName ? [serverName] : [serverName, normalized];
+}
+
+/**
+ * Each listed MCP server's `toolsUsed`, from the distinct tool names called in the
+ * window. A name `mcp__<segment>__<tool>` counts toward the one listed server
+ * whose key (`mcpToolServerKeys`) is the longest `<segment>` it starts with, a
+ * server named exactly that key before one whose name only normalizes to it, and
+ * otherwise the first listed. A server no name counts toward is absent.
+ */
+export function mcpToolsUsed(
+  serverNames: readonly string[],
+  toolNames: readonly string[],
+): Map<string, number> {
+  const keys = serverNames.flatMap((name) =>
+    mcpToolServerKeys(name).map((key) => ({ name, prefix: `mcp__${key}__`, exact: key === name })),
+  );
+  const used = new Map<string, number>();
+  for (const tool of toolNames) {
+    let best: (typeof keys)[number] | undefined;
+    for (const key of keys) {
+      if (tool.length <= key.prefix.length || !tool.startsWith(key.prefix)) continue;
+      const longer = best === undefined || key.prefix.length > best.prefix.length;
+      const exactTie = best?.prefix.length === key.prefix.length && key.exact && !best.exact;
+      if (longer || exactTie) best = key;
+    }
+    if (best) used.set(best.name, (used.get(best.name) ?? 0) + 1);
+  }
+  return used;
+}
+
 /** Shared by harness categories and asset group lists. */
 export const AssetSummary = z
   .object({
@@ -76,12 +124,18 @@ export const AssetSummary = z
     flags: z.array(Flag),
     /** MCP servers only — omitted for all other types. */
     trust: TrustLevel.optional(),
-    /** Type-specific raw key/values (source, versions, event, transport, path, …). */
+    /**
+     * Type-specific raw key/values (source, versions, event, transport, path, …).
+     * A list carries the `ASSET_LIST_META_KEYS` of the asset's type; an asset
+     * detail carries them all.
+     */
     meta: z.record(z.string(), z.unknown()),
     /**
-     * The endpoints currently reporting the asset. Omitted by a store that does
-     * not record who reports what. In a list the count stops at 100, so 100
-     * means "100 or more"; an asset detail carries the exact number.
+     * The distinct endpoints currently reporting the asset, each counted once
+     * however many harnesses it reports the asset under. Omitted by a store that
+     * does not record who reports what. In a list the count stops at
+     * `INVENTORY_LIST_COUNT_CAP`, so 100 means "100 or more"; an asset detail
+     * carries the exact number.
      */
     machines: z.number().int().nonnegative().optional(),
     /**
@@ -92,11 +146,47 @@ export const AssetSummary = z
      * asset detail carries the exact number.
      */
     variants: z.number().int().nonnegative().optional(),
+    /**
+     * MCP servers in an asset list only: the distinct tools the agent called
+     * through a server of this name over the last `MCP_TOOLS_USED_WINDOW_DAYS`
+     * (30) days, from the `mcp__<server>__<tool>` names of the recorded tool calls
+     * (`mcpToolsUsed`). Two servers with the same name in different scopes share
+     * one count. Omitted for a server no recorded call names, so a store that
+     * records no tool calls gives none. Not the tools a server exposes.
+     */
+    toolsUsed: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'AssetSummary' });
 export type AssetSummary = z.infer<typeof AssetSummary>;
 
+/**
+ * The `meta` keys an asset list carries for each type: the ones the inventory
+ * tables read. An asset detail carries the whole record.
+ */
+export const ASSET_LIST_META_KEYS = {
+  skill: ['source', 'scope', 'installedVersion', 'latestVersion', 'updatedAt'],
+  mcp: ['transport', 'url', 'command', 'scope'],
+  hook: ['event', 'matcher', 'scope', 'status'],
+  config: ['kind', 'scope', 'path', 'updatedAt'],
+} as const satisfies Record<Exclude<AssetType, 'project'>, readonly string[]>;
+
+/** `meta` cut to the keys an asset list carries for `type`. */
+export function listMetaOf(
+  type: AssetType,
+  meta: Record<string, unknown>,
+): Record<string, unknown> {
+  if (type === 'project') return {};
+  const listed: Record<string, unknown> = {};
+  for (const key of ASSET_LIST_META_KEYS[type]) {
+    if (Object.hasOwn(meta, key)) listed[key] = meta[key];
+  }
+  return listed;
+}
+
 // ─── Shape 2: ProjectSummary ──────────────────────────────────────────────────
+
+/** How many days back a project's findings are counted. */
+export const PROJECT_FINDINGS_WINDOW_DAYS = 30;
 
 /**
  * Embedded in harness summaries, project lists, and connect-project responses.
@@ -111,7 +201,19 @@ export const ProjectSummary = z
     policyDefault: AccessLevel,
     updatedAt: z.iso.datetime(),
     accessCounts: AccessCounts,
-    findingsCount: z.number().int().nonnegative(),
+    /**
+     * Findings recorded in the project's sessions over the last
+     * `PROJECT_FINDINGS_WINDOW_DAYS` (30) days, not all time. Omitted for a reader
+     * who may not see detections.
+     */
+    findingsCount: z.number().int().nonnegative().optional(),
+    /**
+     * The distinct endpoints that have recently run a session in the project; in a
+     * harness card's `projects`, under that harness. Omitted by a store that does
+     * not record who reports what, and for a reader who may not see endpoints. A
+     * list stops at `INVENTORY_LIST_COUNT_CAP`.
+     */
+    machines: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'ProjectSummary' });
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
@@ -135,8 +237,14 @@ export const HarnessSummary = z
     kind: z.string(),
     version: z.string(),
     sessions: z.number().int().nonnegative(),
+    /**
+     * The distinct endpoints that have recently run a session under the harness.
+     * Omitted by a store that does not record who reports what.
+     */
+    machines: z.number().int().nonnegative().optional(),
     assetCount: z.number().int().nonnegative(),
     flagCount: z.number().int().nonnegative(),
+    /** The projects the harness has loaded; each one's `machines` counts this harness's endpoints. */
     projects: z.array(ProjectSummary),
     categories: z.array(HarnessCategory),
   })
@@ -260,6 +368,31 @@ export const AssetDetail = AssetSummary.extend({
 }).meta({ id: 'AssetDetail' });
 export type AssetDetail = z.infer<typeof AssetDetail>;
 
+// ─── Shape 8b: ProjectSensitiveData ──────────────────────────────────────────
+
+/** One category of finding a project's sessions recorded. */
+export const SensitiveDataClass = z
+  .object({
+    category: DetectionCategory,
+    /** Distinct files the findings were in. A finding in a prompt or tool output is in none. */
+    files: z.number().int().nonnegative(),
+    /** The severity of the most severe finding. */
+    severity: Severity,
+    /** When the newest finding was recorded. */
+    lastDetectedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'SensitiveDataClass' });
+export type SensitiveDataClass = z.infer<typeof SensitiveDataClass>;
+
+/**
+ * The categories of finding a project's sessions recorded over the last
+ * `PROJECT_FINDINGS_WINDOW_DAYS` days, most severe first.
+ */
+export const ProjectSensitiveData = z
+  .object({ items: z.array(SensitiveDataClass) })
+  .meta({ id: 'ProjectSensitiveData' });
+export type ProjectSensitiveData = z.infer<typeof ProjectSensitiveData>;
+
 // ─── Shape 9: ListProjectsResponse ───────────────────────────────────────────
 
 export const ListProjectsResponse = z
@@ -271,7 +404,10 @@ export type ListProjectsResponse = z.infer<typeof ListProjectsResponse>;
 
 export const InventoryStats = z
   .object({
-    /** Total assets/projects with ≥1 flag or finding (drives the attention header chip). */
+    /**
+     * Assets with a flag, plus projects with a finding in the last
+     * `PROJECT_FINDINGS_WINDOW_DAYS` days (drives the attention header chip).
+     */
     attention: z.number().int().nonnegative(),
     byType: z.object({
       project: z.number().int().nonnegative(),

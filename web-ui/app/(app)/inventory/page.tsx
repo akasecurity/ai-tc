@@ -23,7 +23,7 @@ const EMPTY_HARNESS_EVENTS: HarnessEventsResponse = {
 // Reads the local store's inventory (harnesses / assets / projects) for
 // the left panel and the tables, resolves the selection the URL names, then
 // reads the opened row's detail: an asset's detail, or a project's withheld
-// files. Renders through the shared dashboard-ui views.
+// files and sensitive data. Renders through the shared dashboard-ui views.
 export default async function InventoryPage({
   searchParams,
 }: {
@@ -46,11 +46,12 @@ export default async function InventoryPage({
   const active = resolveInventorySelection(requested, { harnesses, projects, assetGroups });
   const item = active.item;
 
-  const [assetDetail, blocked] = await Promise.all([
+  const [assetDetail, blocked, sensitiveData] = await Promise.all([
     item && item.type !== 'project' ? inv.getAsset(item.id) : Promise.resolve(null),
     item?.type === 'project'
       ? inv.getProjectTree(item.id, { filter: 'blocked' })
       : Promise.resolve(null),
+    item?.type === 'project' ? inv.getProjectSensitiveData(item.id) : Promise.resolve(null),
   ]);
 
   return (
@@ -68,6 +69,12 @@ export default async function InventoryPage({
         blocked={blocked?.files ?? []}
         blockedError={
           item?.type === 'project' && blocked === null
+            ? 'the project is not in the local store'
+            : null
+        }
+        sensitiveData={sensitiveData?.items ?? []}
+        sensitiveDataError={
+          item?.type === 'project' && sensitiveData === null
             ? 'the project is not in the local store'
             : null
         }

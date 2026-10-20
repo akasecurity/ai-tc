@@ -86,3 +86,26 @@ describe('HarnessInventory buckets its event rows against the instant it is give
     expect(html).toContain('Jul');
   });
 });
+
+describe('HarnessInventory header', () => {
+  function header(machines?: number): string {
+    return renderToStaticMarkup(
+      <HarnessInventory
+        harness={{ ...harness(), ...(machines === undefined ? {} : { machines }) }}
+        events={null}
+        onOpen={noop}
+        renderedAt={Date.UTC(2026, 6, 1)}
+        locale="en-US"
+      />,
+    );
+  }
+
+  it('names how many endpoints ran the harness when the store records it', () => {
+    expect(header(12)).toContain('1 session · 12 endpoints · 0 assets');
+    expect(header(1)).toContain('1 session · 1 endpoint · 0 assets');
+  });
+
+  it('says nothing about endpoints when the store does not record them', () => {
+    expect(header()).not.toContain('endpoint');
+  });
+});

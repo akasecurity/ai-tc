@@ -204,3 +204,81 @@ describe('AssetDetail per-type details', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AssetDetail endpoints', () => {
+  const variant = (over: Partial<NonNullable<AssetDetailShape['seenOn']>[number]> = {}) => ({
+    machines: 3,
+    sub: 'stripe',
+    description: null,
+    flags: [],
+    meta: { transport: 'http', url: 'https://a.example/mcp', updatedAt: '2026-10-01T00:00:00Z' },
+    ...over,
+  });
+
+  it('says how many endpoints report the asset when the store records it', () => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset({ machines: 12 })} onTrust={vi.fn()} />);
+    expect(mounted.host.textContent).toContain('Seen on 12 endpoints');
+
+    mount(<AssetDetail {...PAGE} asset={mcpAsset({ machines: 1 })} onTrust={vi.fn()} />);
+    expect(mounted.host.textContent).toContain('Seen on 1 endpoint');
+  });
+
+  it('says nothing about endpoints when the store does not record them', () => {
+    mount(<AssetDetail {...PAGE} asset={mcpAsset()} onTrust={vi.fn()} />);
+    expect(mounted.host.textContent).not.toContain('Seen on');
+    expect(mounted.host.textContent).not.toContain('Versions reported');
+  });
+
+  it('lists each version with the fields that differ, its endpoints and up to five hosts', () => {
+    const seenOn = [
+      variant({
+        machines: 8,
+        hosts: ['h1', 'h2', 'h3', 'h4', 'h5'],
+        meta: {
+          transport: 'http',
+          url: 'https://a.example/mcp',
+          updatedAt: '2026-10-01T00:00:00Z',
+        },
+      }),
+      variant({
+        machines: 2,
+        hosts: ['h9', 'h10'],
+        meta: {
+          transport: 'http',
+          url: 'https://b.example/mcp',
+          updatedAt: '2026-10-02T00:00:00Z',
+        },
+      }),
+    ];
+    mount(<AssetDetail {...PAGE} asset={mcpAsset({ machines: 10, seenOn })} onTrust={vi.fn()} />);
+    const section = [...mounted.host.querySelectorAll('li')].map((li) => li.textContent);
+
+    expect(mounted.host.textContent).toContain('Versions reported');
+    expect(section).toHaveLength(2);
+    expect(section[0]).toContain('8 endpoints');
+    expect(section[0]).toContain('h1, h2, h3, h4, h5 and 3 more');
+    expect(section[0]).toContain('https://a.example/mcp');
+    expect(section[1]).toContain('2 endpoints');
+    expect(section[1]).toContain('h9, h10');
+    expect(section[1]).not.toContain('more');
+    expect(section[1]).toContain('https://b.example/mcp');
+    // The transport is the same in both, and the date is when one endpoint last
+    // changed its copy: neither tells the versions apart.
+    for (const text of section) {
+      expect(text).not.toContain('Transport');
+      expect(text).not.toContain('2026');
+    }
+  });
+
+  it('shows no breakdown for an asset every endpoint reports the same way', () => {
+    mount(
+      <AssetDetail
+        {...PAGE}
+        asset={mcpAsset({ machines: 4, seenOn: [variant({ machines: 4 })] })}
+        onTrust={vi.fn()}
+      />,
+    );
+    expect(mounted.host.textContent).toContain('Seen on 4 endpoints');
+    expect(mounted.host.textContent).not.toContain('Versions reported');
+  });
+});

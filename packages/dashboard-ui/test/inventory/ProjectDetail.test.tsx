@@ -1,4 +1,9 @@
-import type { FileSummary, HarnessSummary, ProjectSummary } from '@akasecurity/schema';
+import type {
+  FileSummary,
+  HarnessSummary,
+  ProjectSummary,
+  SensitiveDataClass,
+} from '@akasecurity/schema';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
@@ -43,12 +48,28 @@ const HARNESS: HarnessSummary = {
   categories: [],
 };
 
-function render(blockedCount: number, blocked: FileSummary[], blockedError?: string): string {
+const SECRET: SensitiveDataClass = {
+  category: 'secret',
+  files: 2,
+  severity: 'critical',
+  lastDetectedAt: '2026-10-15T10:00:00.000Z',
+};
+
+function render(
+  blockedCount: number,
+  blocked: FileSummary[],
+  blockedError?: string,
+  sensitive: { items?: SensitiveDataClass[]; error?: string; refusal?: string } = {},
+  machines?: number,
+): string {
   return renderToStaticMarkup(
     <ProjectDetail
-      project={project(blockedCount)}
+      project={{ ...project(blockedCount), ...(machines === undefined ? {} : { machines }) }}
       blocked={blocked}
       blockedError={blockedError}
+      sensitiveData={sensitive.items ?? []}
+      sensitiveDataError={sensitive.error}
+      sensitiveDataRefusal={sensitive.refusal}
       harnesses={[HARNESS, { ...HARNESS, id: 'cursor', label: 'Cursor', projects: [] }]}
       onBack={() => undefined}
       backLabel="Projects"
@@ -77,6 +98,84 @@ describe('ProjectDetail', () => {
     const html = render(3, [], 'Request failed (500)');
     expect(html).toContain('Couldn&#x27;t load the withheld files: Request failed (500)');
     expect(html).not.toContain('withheld by the project&#x27;s policy');
+  });
+
+  it('names the project without a visibility badge, which no store records', () => {
+    const html = render(0, []);
+    expect(html).toContain('payments-api');
+    expect(html).not.toContain('Private');
+    expect(html).not.toContain('Public');
+  });
+
+  it('shows no findings stat for a reader the count is withheld from', () => {
+    const withheld: ProjectSummary = { ...project(0) };
+    delete withheld.findingsCount;
+    const html = renderToStaticMarkup(
+      <ProjectDetail
+        project={withheld}
+        blocked={[]}
+        sensitiveData={[]}
+        harnesses={[]}
+        onBack={() => undefined}
+        backLabel="Projects"
+        renderedAt={NOW}
+        locale="en-US"
+      />,
+    );
+    expect(html).not.toContain('Findings · 30d');
+    expect(html).toContain('Files withheld from models');
+    expect(html).toContain('grid-cols-1');
+  });
+
+  it('labels the findings stat with its 30-day window', () => {
+    expect(render(0, [])).toContain('Findings · 30d');
+  });
+
+  it('lists the categories of sensitive data, with their files, severity and age', () => {
+    const html = render(0, [], undefined, {
+      items: [SECRET, { ...SECRET, category: 'pii', files: 1, severity: 'medium' }],
+    });
+    expect(html).toContain('Sensitive data present');
+    expect(html).toContain('Secret');
+    expect(html).toContain('2 files');
+    expect(html).toContain('PII');
+    expect(html).toContain('1 file<');
+    expect(html).toContain('critical');
+    expect(html).toContain('2 hours ago');
+  });
+
+  it('says a category found in no file was found in prompts and output', () => {
+    const html = render(0, [], undefined, { items: [{ ...SECRET, files: 0 }] });
+    expect(html).toContain('In prompts &amp; output');
+    expect(html).not.toContain('0 files');
+  });
+
+  it('says when the project has no sensitive data in the window', () => {
+    expect(render(0, [])).toContain('No sensitive data found in the last 30 days.');
+  });
+
+  it('reports a failed sensitive-data read instead of saying there is none', () => {
+    const html = render(0, [], undefined, { error: 'Request failed (500)' });
+    expect(html).toContain('Couldn&#x27;t load the sensitive data: Request failed (500)');
+    expect(html).not.toContain('No sensitive data found');
+  });
+
+  it('shows the refusal in place of the sensitive data when the viewer may not read it', () => {
+    const html = render(0, [], undefined, { items: [SECRET], refusal: 'Not allowed.' });
+    expect(html).toContain('Not allowed.');
+    expect(html).not.toContain('2 files');
+    expect(html).not.toContain('No sensitive data found');
+  });
+
+  it('shows the endpoints the project was seen on when the store records them', () => {
+    const html = render(0, [], undefined, {}, 7);
+    expect(html).toContain('Endpoints seen on');
+    expect(html).toMatch(/>7<\/div><div[^>]*>Endpoints seen on/);
+    expect(render(0, [], undefined, {}, 100)).toMatch(/>100\+<\/div><div[^>]*>Endpoints seen on/);
+  });
+
+  it('shows no endpoint figure when the store or the reader has none', () => {
+    expect(render(0, [])).not.toContain('Endpoints seen on');
   });
 
   it('says every file is available when none are withheld', () => {

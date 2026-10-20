@@ -152,6 +152,19 @@ describe('remoteWithoutCredentials', () => {
   });
 
   it.each([
+    ['https://ci:not-a-real#token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a-real?token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://not-a-real#token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a#real@github.com/acme/app.git?t=x#f', 'https://github.com/acme/app.git'],
+    [
+      'ssh://git:not-a-real#password@git.example.test/acme/app.git',
+      'ssh://git@git.example.test/acme/app.git',
+    ],
+  ])('removes a userinfo holding a `#` or `?` from %s', (remote, expected) => {
+    expect(remoteWithoutCredentials(remote)).toBe(expected);
+  });
+
+  it.each([
     'https://GitHub.com/acme/app.git',
     'ssh://git@git.example.test:2222/acme/app.git',
     'git@github.com:acme/app.git',

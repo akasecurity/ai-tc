@@ -32,16 +32,19 @@ export function resolveRepo(cwd: string): string | undefined {
 /**
  * `remote` without the credentials or query a remote URL can carry. An http(s)
  * URL loses its userinfo, query and fragment; an ssh URL keeps its login user and
- * loses a password, query and fragment. Anything that does not parse as a URL (an
- * scp-style remote, a path) is returned as given, and so is a URL with nothing
- * to remove, character for character.
+ * loses a password, query and fragment. A userinfo holding a `#` or `?` runs to
+ * the last `@` before the first `/` and is removed before the URL is parsed.
+ * Anything else that does not parse as a URL (an scp-style remote, a path) is
+ * returned as given, and so is a URL with nothing to remove, character for
+ * character.
  */
 export function remoteWithoutCredentials(remote: string): string {
+  const parseable = withoutUnparseableUserinfo(remote);
   let url: URL;
   try {
-    url = new URL(remote);
+    url = new URL(parseable);
   } catch {
-    return remote;
+    return parseable;
   }
   const keepsUser = url.protocol === 'ssh:' || url.protocol === 'git+ssh:';
   const carries =
@@ -49,9 +52,24 @@ export function remoteWithoutCredentials(remote: string): string {
     (!keepsUser && url.username !== '') ||
     url.search !== '' ||
     url.hash !== '';
-  if (!carries) return remote;
+  if (!carries) return parseable;
   const user = keepsUser && url.username !== '' ? `${url.username}@` : '';
   return `${url.protocol}//${user}${url.host}${url.pathname}`;
+}
+
+/**
+ * `remote` with a userinfo that holds a `#` or `?` removed, keeping an ssh
+ * login user. The URL parser ends the host at either character, so it would read
+ * part of such a password as the host, or refuse the remote outright.
+ */
+function withoutUnparseableUserinfo(remote: string): string {
+  const match = /^([a-z][a-z0-9+.-]*):\/\/([^/]*)@/i.exec(remote);
+  const scheme = match?.[1];
+  const userinfo = match?.[2];
+  if (match === null || scheme === undefined || userinfo === undefined) return remote;
+  if (!/[?#]/.test(userinfo)) return remote;
+  const login = /^(?:git\+)?ssh$/i.test(scheme) ? (userinfo.split(':')[0] ?? '') : '';
+  return `${scheme}://${login === '' ? '' : `${login}@`}${remote.slice(match[0].length)}`;
 }
 
 /**

@@ -60,6 +60,55 @@ export function normalizeModelId(model: string): string {
   return model.trim().toLowerCase().replace(DATE_SUFFIX, '');
 }
 
+/** A Bedrock cross-region inference profile prefix, ahead of a `provider.model` id. */
+const BEDROCK_GEO_PREFIX = /^(?:us|eu|apac|global)\.(?=[^.]+\.)/;
+
+/** A Bedrock ARN that names a model: a foundation model or a system inference profile. */
+const BEDROCK_MODEL_ARN =
+  /^arn:aws(?:-[a-z]+)*:bedrock:[^:]*:[^:]*:(?:foundation-model|inference-profile)\/(.+)$/;
+
+/** A Vertex `publishers/{p}/models/{m}` resource, or a Gemini `models/{m}` one. */
+const MODELS_PATH = /(?:^|\/)models\/([^/]+)$/;
+
+/** Prefixes whose id is opaque, kept whole rather than read as `creator/model`. */
+const OPAQUE_PREFIXES: ReadonlySet<string> = new Set(['vertex-endpoint', 'tunedmodels']);
+
+/**
+ * A model id in the form an approved-model list compares, whatever surface reported it.
+ *
+ * Folded as `normalizeModelId` folds, then reduced to the model it names: a Bedrock
+ * cross-region prefix (`us.`, `eu.`, `apac.`, `global.`) is stripped, a foundation-model
+ * or system inference-profile ARN becomes its model id, `publishers/{p}/models/{m}` and
+ * `models/{m}` become `{m}`, and a gateway `creator/model` becomes `model`. Any other ARN, a
+ * `vertex-endpoint/{id}` and a `tunedModels/{m}` are kept whole.
+ */
+export function canonicalModelId(model: string): string {
+  let id = model.trim().toLowerCase();
+  if (id.startsWith('arn:')) {
+    const named = BEDROCK_MODEL_ARN.exec(id)?.[1];
+    if (named === undefined) return id;
+    id = named;
+  }
+  const path = MODELS_PATH.exec(id)?.[1];
+  if (path !== undefined) {
+    id = path;
+  } else {
+    const parts = id.split('/');
+    const [creator, name] = parts;
+    if (
+      parts.length === 2 &&
+      creator !== undefined &&
+      name !== undefined &&
+      creator !== '' &&
+      name !== '' &&
+      !OPAQUE_PREFIXES.has(creator)
+    ) {
+      id = name;
+    }
+  }
+  return normalizeModelId(id.replace(BEDROCK_GEO_PREFIX, ''));
+}
+
 /**
  * Whether `model` is prohibited by `prohibited`.
  *

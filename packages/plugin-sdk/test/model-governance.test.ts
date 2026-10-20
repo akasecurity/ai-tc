@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { RefusalSeam } from '../src/model-governance.ts';
 import {
   buildModelRefusalEvent,
+  canonicalModelId,
   claudeCodeModelFromRecord,
   codexModelFromRecord,
   decideProhibitedModelTurn,
@@ -65,6 +66,93 @@ describe('normalizeModelId', () => {
     expect(normalizeModelId('claude-opus-4')).not.toBe(normalizeModelId('claude-opus-45'));
     expect(normalizeModelId('gpt-4-1234567')).toBe('gpt-4-1234567');
     expect(normalizeModelId('gpt-4-123456789')).toBe('gpt-4-123456789');
+  });
+});
+
+describe('canonicalModelId', () => {
+  it('folds as normalizeModelId does', () => {
+    expect(canonicalModelId('  Claude-Haiku-4-5-20251001 ')).toBe('claude-haiku-4-5');
+    expect(canonicalModelId('gpt-4o')).toBe('gpt-4o');
+  });
+
+  it('strips a Bedrock cross-region prefix', () => {
+    for (const geo of ['us', 'eu', 'apac', 'global']) {
+      expect(canonicalModelId(`${geo}.anthropic.claude-sonnet-4-5-v1:0`)).toBe(
+        'anthropic.claude-sonnet-4-5-v1:0',
+      );
+    }
+  });
+
+  it('keeps a bare Bedrock id, and a dotted id that names no region', () => {
+    expect(canonicalModelId('anthropic.claude-sonnet-4-5-v1:0')).toBe(
+      'anthropic.claude-sonnet-4-5-v1:0',
+    );
+    expect(canonicalModelId('usa.model-v1')).toBe('usa.model-v1');
+    expect(canonicalModelId('us.model')).toBe('us.model');
+  });
+
+  it('reduces a foundation-model or system inference-profile ARN to its model id', () => {
+    expect(
+      canonicalModelId(
+        'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-v1:0',
+      ),
+    ).toBe('anthropic.claude-sonnet-4-5-v1:0');
+    expect(
+      canonicalModelId(
+        'arn:aws:bedrock:us-east-1:111122223333:inference-profile/us.anthropic.claude-sonnet-4-5-v1:0',
+      ),
+    ).toBe('anthropic.claude-sonnet-4-5-v1:0');
+    expect(
+      canonicalModelId(
+        'arn:aws-us-gov:bedrock:us-gov-west-1::foundation-model/amazon.nova-pro-v1:0',
+      ),
+    ).toBe('amazon.nova-pro-v1:0');
+  });
+
+  it('keeps every other Bedrock ARN whole, since it names no model', () => {
+    const opaque = [
+      'arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/a1b2c3',
+      'arn:aws:bedrock:us-east-1:111122223333:provisioned-model/a1b2c3',
+      'arn:aws:bedrock:us-east-1:111122223333:custom-model/anthropic.claude-v2/a1b2c3',
+      'arn:aws:bedrock:us-east-1:111122223333:prompt-router/a1b2c3',
+    ];
+    for (const arn of opaque) expect(canonicalModelId(arn)).toBe(arn);
+  });
+
+  it('reduces a Vertex publisher path and a Gemini models/ path to the model', () => {
+    expect(canonicalModelId('publishers/google/models/gemini-2.5-flash')).toBe('gemini-2.5-flash');
+    expect(
+      canonicalModelId(
+        'projects/p/locations/us-central1/publishers/anthropic/models/claude-sonnet-4-5@20250929',
+      ),
+    ).toBe('claude-sonnet-4-5@20250929');
+    expect(canonicalModelId('models/gemini-2.5-pro')).toBe('gemini-2.5-pro');
+  });
+
+  it('reduces a gateway creator/model id to the model', () => {
+    expect(canonicalModelId('openai/gpt-4o')).toBe('gpt-4o');
+    expect(canonicalModelId('Anthropic/Claude-Sonnet-4-5-20250929')).toBe('claude-sonnet-4-5');
+  });
+
+  it('keeps an opaque endpoint or tuned model whole', () => {
+    expect(canonicalModelId('vertex-endpoint/1234')).toBe('vertex-endpoint/1234');
+    expect(canonicalModelId('tunedModels/my-model')).toBe('tunedmodels/my-model');
+  });
+
+  it('is idempotent', () => {
+    for (const raw of [
+      'us.anthropic.claude-sonnet-4-5-v1:0',
+      'publishers/google/models/gemini-2.5-flash',
+      'openai/gpt-4o',
+      'vertex-endpoint/1234',
+    ]) {
+      expect(canonicalModelId(canonicalModelId(raw))).toBe(canonicalModelId(raw));
+    }
+  });
+
+  it('returns an empty string for an empty id', () => {
+    expect(canonicalModelId('   ')).toBe('');
+    expect(canonicalModelId('models/')).toBe('models/');
   });
 });
 

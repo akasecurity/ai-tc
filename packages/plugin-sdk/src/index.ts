@@ -112,6 +112,7 @@ export { promptRedactionLines, promptRedactionMode } from './mod-host-mode.ts';
 export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
 export {
   buildModelRefusalEvent,
+  canonicalModelId,
   claudeCodeModelFromRecord,
   codexModelFromRecord,
   decideProhibitedModelTurn,

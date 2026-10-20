@@ -108,6 +108,16 @@ export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block
 });
 export type RedactFallback = z.infer<typeof RedactFallback>;
 
+// The models an organization approves. `allowlist` refuses any model whose id is not in `approved`,
+// compared after `canonicalModelId`; an empty list approves none.
+export const ModelPolicy = z
+  .object({
+    mode: z.literal('allowlist'),
+    approved: z.array(z.string().min(1).max(512)).max(10_000),
+  })
+  .meta({ id: 'ModelPolicy' });
+export type ModelPolicy = z.infer<typeof ModelPolicy>;
+
 export const PolicyBundle = z
   .object({
     version: z.string(),
@@ -159,6 +169,9 @@ export const PolicyBundle = z
     // control plane), so no name resolution stands between the decision and the
     // comparison.
     prohibitedModels: z.array(z.string()).optional(),
+    // Optional so an older backend, and an older on-disk cache, still parses; absent leaves every
+    // model approved.
+    modelPolicy: ModelPolicy.optional(),
     // What a resolved `redact` becomes on a field the host cannot rewrite, as
     // the ORGANIZATION would have it. Merged raise-only against the device's own
     // `WorkspaceSettings.redactFallback` (see strongerRedactFallback below), so
@@ -232,6 +245,7 @@ export const POLICY_BUNDLE_SHAPE_ID: string = [
     .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
     .map((key) => `policies.target.${key}`),
   ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+  ...Object.keys(ModelPolicy.shape).map((key) => `modelPolicy.${key}`),
 ]
   .sort()
   .join(',');

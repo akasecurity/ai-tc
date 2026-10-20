@@ -114,6 +114,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'buildTokenReports',
   'bundledDetections',
   'bundledMaskingRules',
+  'canonicalModelId',
   'canonicalizeScanPath',
   'childRel',
   'claimOnboardingNudge',

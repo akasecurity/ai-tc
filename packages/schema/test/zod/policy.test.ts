@@ -9,6 +9,7 @@ import {
   DEFAULT_ACTIONS,
   FULL_ENFORCEMENT_POSTURE,
   mergeRaiseOnly,
+  ModelPolicy,
   Policy,
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
@@ -118,6 +119,52 @@ describe('PolicyBundle.redactFallback', () => {
     for (const value of ['redact', 'vault']) {
       expect(PolicyBundle.safeParse({ ...baseBundle, redactFallback: value }).success).toBe(false);
     }
+  });
+});
+
+describe('PolicyBundle.modelPolicy', () => {
+  const baseBundle = {
+    version: '1',
+    policies: [],
+    customKeywords: [],
+    fetchedAt: '2025-12-31T00:00:00.000Z',
+  };
+
+  it('parses without it', () => {
+    const result = PolicyBundle.safeParse(baseBundle);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.modelPolicy).toBeUndefined();
+  });
+
+  it('parses an allowlist of approved model ids', () => {
+    const modelPolicy = { mode: 'allowlist', approved: ['gpt-4o', 'claude-sonnet-4-5'] };
+    const result = PolicyBundle.safeParse({ ...baseBundle, modelPolicy });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.modelPolicy).toEqual(modelPolicy);
+  });
+
+  it('parses an empty allowlist, which approves no model', () => {
+    const modelPolicy = { mode: 'allowlist', approved: [] };
+    expect(PolicyBundle.safeParse({ ...baseBundle, modelPolicy }).success).toBe(true);
+  });
+
+  it('refuses a mode other than allowlist', () => {
+    for (const mode of ['off', 'denylist', undefined]) {
+      expect(
+        PolicyBundle.safeParse({ ...baseBundle, modelPolicy: { mode, approved: [] } }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses an empty id, an id over 512 characters, and more than 10,000 ids', () => {
+    const parse = (approved: unknown) =>
+      PolicyBundle.safeParse({ ...baseBundle, modelPolicy: { mode: 'allowlist', approved } })
+        .success;
+    expect(parse([''])).toBe(false);
+    expect(parse(['m'.repeat(513)])).toBe(false);
+    expect(parse(['m'.repeat(512)])).toBe(true);
+    expect(parse(Array.from({ length: 10_001 }, (_, i) => `m-${String(i)}`))).toBe(false);
+    expect(parse(Array.from({ length: 10_000 }, (_, i) => `m-${String(i)}`))).toBe(true);
   });
 });
 
@@ -394,6 +441,15 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     expect(missing, 'exception fields absent from the stamp').toEqual([]);
   });
 
+  it('names the NESTED model policy fields too', () => {
+    const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));
+    const missing = Object.keys(ModelPolicy.shape).filter(
+      (key) => !named.has(`modelPolicy.${key}`),
+    );
+    expect(missing, 'model policy fields absent from the stamp').toEqual([]);
+    expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toContain('modelPolicy.approved');
+  });
+
   it('names the fields of BOTH PolicyTarget union members', () => {
     // `policies.target` is one key whatever the target holds, so widening
     // either member moves nothing the other walks can see — the same trap as
@@ -444,6 +500,7 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
         .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
         .map((key) => `policies.target.${key}`),
       ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+      ...Object.keys(ModelPolicy.shape).map((key) => `modelPolicy.${key}`),
     ].sort();
     expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toEqual(expected);
   });

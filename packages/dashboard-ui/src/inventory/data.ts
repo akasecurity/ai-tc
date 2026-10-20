@@ -6,12 +6,14 @@ import type {
   AssetGroup,
   AssetSummary,
   AssetType,
+  DetectionCategory,
   Flag,
   HarnessEventKind,
   HarnessSummary,
   ProjectSummary,
   TrustLevel,
 } from '@akasecurity/schema';
+import { INVENTORY_LIST_COUNT_CAP } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 import { formatDateTime } from '../lib/dateFormat.ts';
@@ -174,6 +176,22 @@ export const assetTile = (type: AssetType): { icon: IconName; fg: string; bg: st
   return { icon, fg, bg };
 };
 
+// ─── Sensitive-data categories ────────────────────────────────────────────────
+/** Icon + colours for a category of finding on a project's page. */
+export const SENSITIVE_CATEGORY: Record<
+  DetectionCategory,
+  { icon: IconName; fg: string; bg: string }
+> = {
+  secret: { icon: 'key', fg: 'text-sev-critical-ink', bg: 'bg-sev-critical-fill' },
+  pii: { icon: 'user', fg: 'text-sev-low-ink', bg: 'bg-sev-low-fill' },
+  phi: { icon: 'user', fg: 'text-sev-low-ink', bg: 'bg-sev-low-fill' },
+  financial: { icon: 'database', fg: 'text-sev-high-ink', bg: 'bg-sev-high-fill' },
+  code_context: { icon: 'code', fg: 'text-violet-ink', bg: 'bg-violet-fill' },
+  code_flaw: { icon: 'alert', fg: 'text-sev-high-ink', bg: 'bg-sev-high-fill' },
+  custom: { icon: 'flag', fg: 'text-text-2', bg: 'bg-surface-2' },
+  config: { icon: 'sliders', fg: 'text-teal-ink', bg: 'bg-teal-fill' },
+};
+
 // ─── Date formatting ──────────────────────────────────────────────────────────
 const DATE_TIME: Intl.DateTimeFormatOptions = {
   month: 'short',
@@ -229,7 +247,7 @@ export const rowType = (row: InventoryRow): AssetType => (isProjectRow(row) ? 'p
 
 /** The row's attention reasons, most severe first; empty when the row is OK. */
 export function statusKeys(row: InventoryRow): StatusKey[] {
-  if (isProjectRow(row)) return row.findingsCount > 0 ? ['findings'] : [];
+  if (isProjectRow(row)) return (row.findingsCount ?? 0) > 0 ? ['findings'] : [];
   const keys = new Set<StatusKey>(row.flags);
   if (row.type === 'mcp' && (row.trust === 'unapproved' || row.trust === 'risky')) {
     keys.add(row.trust);
@@ -252,6 +270,18 @@ export function typeRows(
 ): InventoryRow[] {
   if (type === 'project') return projects;
   return assetGroups.find((g) => g.type === type)?.items ?? [];
+}
+
+/** An endpoint count as display text. A list stops counting at the cap, so a list count there reads "100+". */
+export function endpointCountText(count: number, fromList: boolean): string {
+  return fromList && count >= INVENTORY_LIST_COUNT_CAP
+    ? `${String(INVENTORY_LIST_COUNT_CAP)}+`
+    : String(count);
+}
+
+/** "1 endpoint", "12 endpoints", "100+ endpoints". */
+export function endpointsText(count: number, fromList: boolean): string {
+  return `${endpointCountText(count, fromList)} ${count === 1 ? 'endpoint' : 'endpoints'}`;
 }
 
 /** A `meta` value as display text: scalars as-is, string lists comma-joined, anything else null. */

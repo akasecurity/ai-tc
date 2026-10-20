@@ -6,6 +6,7 @@
 import type {
   AssetDetail as AssetDetailShape,
   AssetType,
+  AssetVariant,
   McpTool,
   TrustLevel,
 } from '@akasecurity/schema';
@@ -13,7 +14,17 @@ import { Button, cn } from '@akasecurity/ui-kit';
 import { type ReactNode, useId, useState } from 'react';
 
 import { BackButton, FlagChips, RadioCardList, Section, TrustPill } from './chips.tsx';
-import { assetTile, fmtDateTime, metaText, TRUST, TRUST_ORDER, typeMeta } from './data.ts';
+import {
+  assetTile,
+  endpointsText,
+  FLAG,
+  fmtDateTime,
+  inlineLabel,
+  metaText,
+  TRUST,
+  TRUST_ORDER,
+  typeMeta,
+} from './data.ts';
 import { Ico } from './Ico.tsx';
 import { type IconName } from './icons.ts';
 
@@ -150,6 +161,9 @@ export function AssetDetail({
         <div className="flex flex-wrap items-center gap-2">
           {isMcp && trust && <TrustPill value={trust} />}
           {(asset.flags.length > 0 || !isMcp) && <FlagChips flags={asset.flags} />}
+          {asset.machines !== undefined && (
+            <span className="text-xs text-text-2">{`Seen on ${endpointsText(asset.machines, false)}`}</span>
+          )}
         </div>
 
         {asset.description && (
@@ -177,6 +191,10 @@ export function AssetDetail({
               ))}
             </dl>
           </Section>
+        )}
+
+        {asset.seenOn !== undefined && asset.seenOn.length > 1 && (
+          <VersionsSection asset={asset} variants={asset.seenOn} />
         )}
 
         {isMcp && trust && (
@@ -215,6 +233,92 @@ export function AssetDetail({
         <div className="flex flex-wrap gap-2">{actionsFor(asset, trust)}</div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The fields whose value differs between the variants, each with the value
+ * every variant holds. A field every variant agrees on says nothing about how
+ * they differ, and a date is when one endpoint last changed its copy.
+ */
+function distinguishingFields(
+  type: AssetKind,
+  variants: AssetVariant[],
+): { key: string; label: string; values: (string | null)[] }[] {
+  const labels = new Map(DETAIL_FIELDS[type]);
+  const metaKeys = [...new Set(variants.flatMap((v) => Object.keys(v.meta)))].filter(
+    (key) => !DATE_KEYS.has(key),
+  );
+  const candidates: [key: string, label: string, read: (v: AssetVariant) => string | null][] = [
+    ['sub', 'Summary', (v) => v.sub || null],
+    ['description', 'Description', (v) => v.description],
+    ['flags', 'Flags', (v) => v.flags.map((f) => FLAG[f].label).join(', ') || null],
+    ...metaKeys.map((key): [string, string, (v: AssetVariant) => string | null] => [
+      `meta:${key}`,
+      labels.get(key) ?? humanize(key),
+      (v) => metaText(v.meta, key),
+    ]),
+  ];
+  return candidates.flatMap(([key, label, read]) => {
+    const values = variants.map(read);
+    return new Set(values.map((v) => v ?? '')).size > 1 ? [{ key, label, values }] : [];
+  });
+}
+
+function hostsText(variant: AssetVariant): string | null {
+  const hosts = variant.hosts ?? [];
+  if (hosts.length === 0) return null;
+  const more = variant.machines - hosts.length;
+  return more > 0 ? `${hosts.join(', ')} and ${String(more)} more` : hosts.join(', ');
+}
+
+function VersionsSection({
+  asset,
+  variants,
+}: {
+  asset: AssetDetailShape;
+  variants: AssetVariant[];
+}) {
+  const kind = asset.type === 'project' ? null : asset.type;
+  const fields = kind === null ? [] : distinguishingFields(kind, variants);
+  return (
+    <Section label="Versions reported">
+      <div className="mb-2 text-xs text-text-3">
+        {`Endpoints report this ${inlineLabel(typeMeta(asset.type).one)} in ${String(variants.length)} different versions.`}
+      </div>
+      <ul className="flex flex-col gap-2">
+        {variants.map((variant, i) => {
+          const hosts = hostsText(variant);
+          return (
+            <li
+              key={JSON.stringify([variant.sub, variant.description, variant.flags, variant.meta])}
+              className="rounded-lg border border-border px-3.5 py-3"
+            >
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="text-sm font-semibold text-text">
+                  {endpointsText(variant.machines, false)}
+                </span>
+                {hosts !== null && <span className="text-xs text-text-3">{hosts}</span>}
+              </div>
+              {fields.length > 0 && (
+                <dl className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-x-6 gap-y-2">
+                  {fields.map((f) => (
+                    <div key={f.key}>
+                      <dt className="mb-0.5 text-label font-semibold uppercase tracking-wider text-text-3">
+                        {f.label}
+                      </dt>
+                      <dd className="wrap-break-word font-mono text-xs text-text">
+                        {f.values[i] ?? '—'}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
   );
 }
 

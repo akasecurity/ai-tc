@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createDpuFrameAssembler, createSseAssembler } from '../src/stream-assembler.ts';
+import { charactersExamined } from './helpers/scan-meter.ts';
 
 // Line framing is the one thing every site adapter needs and none of them
 // should own: chunks arrive on network boundaries, which fall in the middle of
@@ -99,58 +100,59 @@ describe('createSseAssembler', () => {
     expect(sse.end()).toEqual([chunk.repeat(chunks)]);
   });
 
-  it('costs the same per byte at four times the chunk count — the rescan guard', () => {
+  describe('costs the same per byte at four times the chunk count — the rescan guard', () => {
     // The property the fragment list exists for: a retained fragment is never
     // re-examined, so holding a terminator-free body costs its length ONCE
     // rather than once per chunk.
     //
-    // Asserted as a RATIO across two chunk counts, not as an elapsed ceiling.
-    // A fixed millisecond bound is a statement about the runner, and a loose
-    // one is worse than none: the honest implementation frames this input in
-    // ~6 ms while the quadratic form takes ~1,030 ms, so a ceiling picked with
-    // any headroom at all sits above the regression it names. A ratio cancels
-    // the runner — a machine uniformly half as fast moves both sides and the
-    // quotient not at all.
-    //
-    // Both sides are the MINIMUM of the same number of interleaved samples.
-    // Noise only ever adds time, so a minimum is the estimator a loaded runner
-    // cannot inflate; a stall-immune denominator against a noisy numerator
-    // would make a stall explode the quotient instead of cancelling in it.
-    //
-    // Measured on arm64 macOS / Node 24: honest 3.87-3.95 (unchanged under 20
-    // CPU burners), quadratic 16.0-17.3. The ceiling of 8 sits ~2x clear of
-    // each. The quadratic form takes ~10.5 s over the whole loop, inside this
-    // package's 20 s testTimeout, so it fails on this assertion rather than
-    // arriving as a timeout.
+    // Asserted as a RATIO across two chunk counts, not as a ceiling, and on
+    // the characters the assembler READS rather than on how long it took. The
+    // timed form of this check went red on a loaded runner with the assembler
+    // unchanged; a count of the characters examined is the same number on any
+    // machine. Every character of every chunk is read once, so four times the
+    // chunks is four times the reads; joining the retained tail onto each
+    // chunk and scanning the result reads the tail again on every push, which
+    // is the square of the chunk count.
     //
     // NOT caught, and deliberately: collapsing `parts` to a single joined
     // element on every push without also re-scanning it. V8's rope strings
-    // make that concatenation amortised O(1), so it is linear and reads ~4
-    // here. The re-SCAN is what makes the cost quadratic, and it is the only
-    // thing this separates.
-    const CHUNK = 'x'.repeat(4096);
-    const SMALL = 128;
-    const BIG = 512;
-    const SAMPLES = 8;
+    // make that concatenation amortised O(1), so it is linear. The re-SCAN is
+    // what makes the cost quadratic, and it is the only thing this separates.
+    const CHUNK = 'x'.repeat(256);
+    const SMALL = 16;
+    const BIG = 64;
 
-    function cost(chunks: number): number {
+    function reads(chunks: number): number {
       const sse = createSseAssembler();
-      const started = process.hrtime.bigint();
-      for (let at = 0; at < chunks; at += 1) sse.push(CHUNK);
-      sse.end();
-      return Number(process.hrtime.bigint() - started);
+      let payloads: string[] = [];
+      const examined = charactersExamined(() => {
+        for (let at = 0; at < chunks; at += 1) sse.push(CHUNK);
+        payloads = sse.end();
+      });
+      // An unterminated body that is not a `data:` line frames nothing; the
+      // count is of what it took to decide that.
+      expect(payloads).toEqual([]);
+      return examined;
     }
 
-    let small = Infinity;
-    let big = Infinity;
-    for (let i = 0; i < SAMPLES; i += 1) {
-      small = Math.min(small, cost(SMALL));
-      big = Math.min(big, cost(BIG));
-    }
-    // Guards against a degenerate denominator: a zero would make the quotient
-    // Infinity or NaN, neither of which is a measurement.
-    expect(small).toBeGreaterThan(0);
-    expect(big / small).toBeLessThan(8);
+    it('reads every character it is given', () => {
+      // The positive control: a meter that counted nothing would make the
+      // ratio below 0/0, and one that missed the framing loop would pass any
+      // implementation.
+      expect(reads(SMALL)).toBeGreaterThanOrEqual(SMALL * CHUNK.length);
+    });
+
+    it('reads four times the chunks about four times as much', () => {
+      // Counted: 4,101 then 16,389 characters (4.0x); 34,821 then 532,485
+      // (15.3x) with the retained tail joined onto each chunk and scanned, and
+      // 15.3x again with that rescan written as an `indexOf` search.
+      const small = reads(SMALL);
+      const big = reads(BIG);
+      expect(
+        big,
+        `${String(small)} characters read for ${String(SMALL)} chunks, ${String(big)} for ${String(BIG)}`,
+      ).toBeLessThan(small * 8);
+    });
   });
 
   it('survives a stream that is not event-stream framing at all', () => {

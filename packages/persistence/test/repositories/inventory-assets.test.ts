@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 
+import { ASSET_LIST_META_KEYS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyMigrations } from '../../src/migrations.ts';
@@ -30,8 +31,9 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
     expect(stats.byType).toEqual({ project: 3, skill: 3, mcp: 3, hook: 2, config: 2 });
     expect(stats.harnesses).toBe(2);
     expect(stats.mcpTrust).toEqual({ 'known-good': 1, risky: 1, unapproved: 1 });
-    // 6 flagged assets + 2 projects with findings.
-    expect(stats.attention).toBe(8);
+    // 6 flagged assets. The sample projects' per-file counts are not findings
+    // in the window, so no project adds to it.
+    expect(stats.attention).toBe(6);
   });
 
   it('groups harnesses by resolved id with their assets + projects', async () => {
@@ -122,5 +124,54 @@ describe('legacy sample purge over the inventory fixtures', () => {
     expect(stats.byType).toEqual({ project: 0, skill: 0, mcp: 0, hook: 0, config: 0 });
     expect(stats.harnesses).toBe(0);
     expect((await inv.listHarnesses()).items).toEqual([]);
+  });
+});
+
+describe('endpoint counts', () => {
+  it('carries none: the local store is one machine, so the views hide them', async () => {
+    const { items: harnesses } = await inv.listHarnesses();
+    const { groups } = await inv.listAssets({});
+    const { items: projects } = await inv.listProjects();
+    const assets = [
+      ...groups.flatMap((g) => g.items),
+      ...harnesses.flatMap((h) => h.categories.flatMap((c) => c.assets)),
+    ];
+    const detail = await inv.getAsset('sample:asset:shell-runner-mcp');
+
+    expect(assets.length).toBeGreaterThan(0);
+    expect(projects.length).toBeGreaterThan(0);
+    for (const row of [...assets, ...projects, ...harnesses.flatMap((h) => h.projects)]) {
+      expect(row).not.toHaveProperty('machines');
+    }
+    for (const row of assets) expect(row).not.toHaveProperty('variants');
+    for (const harness of harnesses) expect(harness).not.toHaveProperty('machines');
+    expect(detail).not.toHaveProperty('machines');
+    expect(detail).not.toHaveProperty('seenOn');
+  });
+});
+
+describe('list meta', () => {
+  it('carries only the keys the tables read, while the detail carries the whole record', async () => {
+    const { groups } = await inv.listAssets({});
+    const { items: harnesses } = await inv.listHarnesses();
+    const listed = [
+      ...groups.flatMap((g) => g.items),
+      ...harnesses.flatMap((h) => h.categories.flatMap((c) => c.assets)),
+    ];
+
+    expect(listed.length).toBeGreaterThan(0);
+    for (const asset of listed) {
+      if (asset.type === 'project') throw new Error('a project in an asset list');
+      const allowed: readonly string[] = ASSET_LIST_META_KEYS[asset.type];
+      for (const key of Object.keys(asset.meta)) expect(allowed).toContain(key);
+    }
+    const trimmed = [];
+    for (const asset of listed) {
+      const detail = await inv.getAsset(asset.id);
+      if (detail && Object.keys(detail.meta).length > Object.keys(asset.meta).length) {
+        trimmed.push(asset.id);
+      }
+    }
+    expect(trimmed.length).toBeGreaterThan(0);
   });
 });

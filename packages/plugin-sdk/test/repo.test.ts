@@ -37,6 +37,10 @@ function gitDir(dir: string, config: string): void {
 const ORIGIN = (url: string): string =>
   `[core]\n\tbare = false\n[remote "origin"]\n\turl = ${url}\n`;
 
+// A remote carrying a token in its userinfo and another in its query. The `@` is
+// built from its char code so the userinfo does not read as an email address.
+const CREDENTIALED_REMOTE = `https://build-bot:not-a-real-token${String.fromCharCode(64)}github.com/acme/payments-api.git?t=not-a-real-query#f`;
+
 // The path fallback of resolveRepoIdentity is posix-normalized (see repo.ts) so
 // persistence's `/`-separated checkout-path patterns match it; expectations must
 // compare against that form, which only differs from the raw path on win32.
@@ -121,6 +125,11 @@ describe('resolveRepo', () => {
     mkdirSync(nested, { recursive: true });
     expect(resolveRepo(nested)).toBe('payments-api');
   });
+
+  it('reads the slug from the remote without its credentials, query or fragment', () => {
+    gitDir(root, ORIGIN(CREDENTIALED_REMOTE));
+    expect(resolveRepo(root)).toBe('payments-api');
+  });
 });
 
 describe('remoteWithoutCredentials', () => {
@@ -143,9 +152,42 @@ describe('remoteWithoutCredentials', () => {
   });
 
   it.each([
+    ['https://ci:not-a-real#token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a-real?token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://not-a-real#token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a#real@github.com/acme/app.git?t=x#f', 'https://github.com/acme/app.git'],
+    [
+      'ssh://git:not-a-real#password@git.example.test/acme/app.git',
+      'ssh://git@git.example.test/acme/app.git',
+    ],
+    ['ssh://git#x@git.example.test/acme/app.git', 'ssh://git.example.test/acme/app.git'],
+    ['ssh://git?x@git.example.test/acme/app.git', 'ssh://git.example.test/acme/app.git'],
+  ])('removes a userinfo holding a `#` or `?` from %s', (remote, expected) => {
+    expect(remoteWithoutCredentials(remote)).toBe(expected);
+  });
+
+  // A backslash ends the host for the URL parser on http(s), and a `/` ends the
+  // userinfo before its `@`; git still connects with the first.
+  const BACKSLASH = String.fromCharCode(92);
+  it.each([
+    [`https://ci:not-a${BACKSLASH}real@github.com/acme/app.git`, 'https://github.com/acme/app.git'],
+    [`https://not-a${BACKSLASH}real@github.com/acme/app.git`, 'https://github.com/acme/app.git'],
+    ['https://ci:not-a/real+token@github.com/acme/app.git', 'https://github.com/acme/app.git'],
+    ['https://ci:not-a/real@github.com/acme/app.git?t=x#f', 'https://github.com/acme/app.git'],
+    [
+      `ssh://git:not-a${BACKSLASH}real@git.example.test/acme/app.git`,
+      'ssh://git@git.example.test/acme/app.git',
+    ],
+  ])('removes a userinfo the URL parser would misread from %s', (remote, expected) => {
+    expect(remoteWithoutCredentials(remote)).toBe(expected);
+  });
+
+  it.each([
     'https://GitHub.com/acme/app.git',
     'ssh://git@git.example.test:2222/acme/app.git',
     'git@github.com:acme/app.git',
+    'https://github.com/acme/app@2.git',
+    'ssh://first.last@git.example.test/acme/app.git',
     '/home/dev/checkouts/app',
     'C:/Users/dev/app',
   ])('returns %s unchanged when there is nothing to remove', (remote) => {
@@ -164,6 +206,11 @@ describe('resolveRepoIdentity', () => {
       url: 'git@github.com:org/payments-api.git',
       name: 'payments-api',
     });
+  });
+
+  it('keeps the url as the git config writes it, and reads the name without its credentials', () => {
+    gitDir(root, ORIGIN(CREDENTIALED_REMOTE));
+    expect(resolveRepoIdentity(root)).toEqual({ url: CREDENTIALED_REMOTE, name: 'payments-api' });
   });
 
   it('falls back to the worktree root as url and basename as name with no remote', () => {
@@ -338,6 +385,11 @@ describe('resolveRepoAttribution', () => {
     expect(resolveRepoAttribution(fileUrl)).toEqual({ repo: 'widgets' });
   });
 
+  it('gives a slug without the credentials or query, and no key, for a remote with a query', () => {
+    const dir = repoAt('credentialed', ORIGIN(CREDENTIALED_REMOTE));
+    expect(resolveRepoAttribution(dir)).toEqual({ repo: 'payments-api' });
+  });
+
   it('gives the checkout slug and no key for a .git file that points nowhere', () => {
     const dir = join(root, 'dangling');
     mkdirSync(dir, { recursive: true });
@@ -442,6 +494,11 @@ describe('resolveRepoNwo', () => {
   it('derives owner/repo from an https origin url', () => {
     gitDir(root, ORIGIN('https://github.com/org/payments-api.git'));
     expect(resolveRepoNwo(root)).toBe('org/payments-api');
+  });
+
+  it('derives owner/repo from the remote without its credentials, query or fragment', () => {
+    gitDir(root, ORIGIN(CREDENTIALED_REMOTE));
+    expect(resolveRepoNwo(root)).toBe('acme/payments-api');
   });
 
   it('returns undefined for a remote-less repo (no owner to derive)', () => {

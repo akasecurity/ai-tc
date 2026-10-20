@@ -64,6 +64,13 @@ describe('resolveInventoryContext', () => {
     });
   });
 
+  it('keeps a credentialed remote as written in the url, and reads the name without it', () => {
+    const remote = `https://build-bot:not-a-real-token${String.fromCharCode(64)}github.com/acme/payments-api.git?t=not-a-real-query`;
+    gitOrigin(remote);
+    const ctx = resolveInventoryContext({ cwd, tool: 'claude-code' });
+    expect(ctx.project).toEqual({ url: remote, name: 'payments-api', attributes: {} });
+  });
+
   it('omits the project entirely outside a git repo', () => {
     const ctx = resolveInventoryContext({ cwd, tool: 'claude-code' });
     expect(ctx.project).toBeUndefined();

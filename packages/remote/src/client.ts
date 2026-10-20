@@ -55,6 +55,7 @@ import {
   RemoteRouteAbsent,
   send,
 } from './http.ts';
+import { auditEventForWire, batchForWire } from './repo-label.ts';
 
 // The fourteen routes an attached machine may call, and nothing else.
 //
@@ -297,7 +298,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
     // ZodError from a transport fault, so a deterministic local shape bug would
     // open the breaker, suppress every unrelated forward, and be reported as an
     // outage the control plane never had.
-    const validated = RecordAuditEventRequest.safeParse(event);
+    const validated = RecordAuditEventRequest.safeParse(auditEventForWire(event));
     if (!validated.success) throw new RemoteRequestInvalid(ROUTES.auditEvents, validated.error);
     const response = await send({
       ...common,
@@ -314,7 +315,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         ...common,
         method: 'POST',
         url: url(ROUTES.events),
-        body: JSON.stringify(batch),
+        body: JSON.stringify(batchForWire(batch)),
       });
       return parsed(IngestAck, okBody(response), ROUTES.events);
     },
@@ -362,7 +363,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       // reason: this body carries the one field a deployment refuses on, and
       // catching it here names the defect instead of turning it into a 400 a
       // fail-open caller swallows.
-      const validated = RecordAuditEventBatch.safeParse({ events });
+      const validated = RecordAuditEventBatch.safeParse({ events: events.map(auditEventForWire) });
       if (!validated.success) {
         throw new RemoteRequestInvalid(ROUTES.auditEventsBatch, validated.error);
       }

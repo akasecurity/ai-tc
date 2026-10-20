@@ -1,21 +1,49 @@
 import { describe, expect, it } from 'vitest';
 
-import { auditEventForWire, batchForWire, repoLabelWithoutQuery } from '../src/repo-label.ts';
+import {
+  auditEventForWire,
+  batchForWire,
+  ownerRepoWithoutQuery,
+  repoNameWithoutQuery,
+} from '../src/repo-label.ts';
 
-describe('repoLabelWithoutQuery', () => {
+describe('ownerRepoWithoutQuery', () => {
   it.each([
-    ['payments-api.git?t=not-a-real-query', 'payments-api'],
     ['acme/payments-api.git?t=not-a-real-query', 'acme/payments-api'],
     ['acme/payments-api?ref=main', 'acme/payments-api'],
-    ['what?', 'what'],
+    ['acme/payments-api.git?not-a-real-query', 'acme/payments-api'],
   ])('removes the query from %s', (label, expected) => {
-    expect(repoLabelWithoutQuery(label)).toBe(expected);
+    expect(ownerRepoWithoutQuery(label)).toBe(expected);
   });
 
-  it.each(['payments-api', 'payments-api.git', 'c#-tools', 'acme/payments-api'])(
+  it.each(['acme/payments-api', 'acme/payments-api.git'])(
     'returns %s, which has no query, as given',
     (label) => {
-      expect(repoLabelWithoutQuery(label)).toBe(label);
+      expect(ownerRepoWithoutQuery(label)).toBe(label);
+    },
+  );
+});
+
+describe('repoNameWithoutQuery', () => {
+  it.each([
+    ['payments-api.git?t=not-a-real-query', 'payments-api'],
+    ['payments-api?ref=main&depth=1', 'payments-api'],
+    ['payments-api.git?t=bm90LWEtcmVhbC1xdWVyeQ==', 'payments-api'],
+  ])('removes the query from %s', (label, expected) => {
+    expect(repoNameWithoutQuery(label)).toBe(expected);
+  });
+
+  it.each(['payments-api', 'payments-api.git', 'c#-tools'])(
+    'returns %s, which has no query, as given',
+    (label) => {
+      expect(repoNameWithoutQuery(label)).toBe(label);
+    },
+  );
+
+  it.each(['a?b', 'what?', 'notes?2026', 'a?b#c'])(
+    'returns the folder name %s, with no `=` after its `?`, as given',
+    (label) => {
+      expect(repoNameWithoutQuery(label)).toBe(label);
     },
   );
 });
@@ -45,6 +73,18 @@ describe('the wire projections', () => {
     expect(auditEventForWire(event)).toBe(event);
     const bare = root();
     expect(auditEventForWire(bare)).toBe(bare);
+  });
+
+  it("keeps a folder name's `?` and removes an owner/repo label's query", () => {
+    const batch = { events: [capture('a?b')] };
+    expect(batchForWire(batch)).toBe(batch);
+    const folder = root({ project: 'a?b' });
+    expect(auditEventForWire(folder)).toBe(folder);
+    const remote = root({ repo: 'acme/payments-api.git?not-a-real-query', project: 'a?b' });
+    expect(auditEventForWire(remote).attributes).toEqual({
+      repo: 'acme/payments-api',
+      project: 'a?b',
+    });
   });
 
   it('leaves the caller’s objects untouched', () => {

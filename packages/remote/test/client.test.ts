@@ -637,6 +637,21 @@ describe('a repository label on the wire', () => {
 
     expect(server.received.at(-1)?.body).toBe(json(batch));
   });
+
+  it('sends a folder name holding a `?` with no `=` after it exactly as given', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const batch = { events: [capture('a?b')] };
+    const event = root({ project: 'a?c', cwd: '/home/dev/a?c' });
+    accept({ accepted: 1, duplicates: 0 });
+    await client.ingestEvents(batch);
+    const captures = server.received.at(-1)?.body;
+    accept({ accepted: true });
+    await client.recordAuditEvent(event);
+    const single = server.received.at(-1)?.body;
+
+    expect(captures).toBe(json(batch));
+    expect(JSON.parse(single ?? '{}')).toMatchObject({ attributes: event.attributes });
+  });
 });
 
 describe('the shares-ingest submission', () => {

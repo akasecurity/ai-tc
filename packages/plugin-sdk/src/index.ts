@@ -165,6 +165,7 @@ export {
 } from './raw-egress.ts';
 export type { RepoAttribution } from './repo.ts';
 export {
+  remoteWithoutCredentials,
   resolveGitBranch,
   resolveHeadRoot,
   resolveRepo,
@@ -213,7 +214,8 @@ export type { SecretSpan, SecretSpanScanner } from './secret-spans.ts';
 export { createSecretSpanScanner, findSecretSpans, secretRulePartition } from './secret-spans.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
-export { throttled, throttledPerKey } from './throttle.ts';
+export type { PerKeyGate } from './throttle.ts';
+export { gatePerKey, throttled, throttledPerKey } from './throttle.ts';
 export type { CreateVaultGlueOptions } from './tokenize.ts';
 export {
   createVaultGlue,

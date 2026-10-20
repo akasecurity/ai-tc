@@ -25,7 +25,8 @@
  * writes nothing and exits 0, which is CLAUDE.md §1's fail-open unchanged.
  *
  * An explicit allow is reserved for the one place it is a real answer: VS
- * Code's rewrite, where the host needs the verdict alongside `updatedInput`.
+ * Code's rewrite of a call with no executable field, where the host needs the
+ * verdict alongside `updatedInput`.
  * Printing one per clean call on the CLI would instead PRE-APPROVE every call
  * AKA found clean, suppressing the prompts the user's own Copilot settings
  * would have raised — a control plane widening the permissions it was installed
@@ -46,6 +47,7 @@ import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
   decideInputPointerDeny,
   decidePreToolUse,
+  fieldIsRewritable,
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookHandler } from './shared.ts';
@@ -151,11 +153,12 @@ export const runPreToolUse: HookHandler = async (event, stdin, options = {}) => 
         {
           ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
           // Per FIELD: a field that EXECUTES cannot be masked in place, because
-          // rewriting a command changes what runs. A redact on it degrades to
-          // the configured `redactFallback` inside the runtime, where the
-          // emitted decision, the recorded action and the ledger all read one
-          // answer.
-          rewritable: !spec.executable,
+          // rewriting a command changes what runs, and on VS Code neither can
+          // the prose riding on such a call (see fieldIsRewritable). A redact
+          // there degrades to the configured `redactFallback` inside the
+          // runtime, where the emitted decision, the recorded action and the
+          // ledger all read one answer.
+          rewritable: fieldIsRewritable(dialect, spec, fields),
           // Also per FIELD: the command-risk rules judge text that is about to
           // run, so a field that does not execute — the model's description of
           // the call — is scanned without them. Secret and PII rules still run

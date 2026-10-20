@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { coverageOptions } from '../../test/vitest/coverage.ts';
+import { unfinishedModulesReporter } from '../../test/vitest/unfinished-modules-reporter.ts';
 
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
@@ -18,9 +19,15 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// And with wasm code GC off on Node 24: this suite can terminate a worker, and
+// on that line freeing code after a termination can abort the test process.
+// See the setup file; no-wasm-code-gc-guard.test.js derives which packages owe it.
+const noWasmCodeGc = fileURLToPath(new URL('../../test/setup/no-wasm-code-gc.ts', import.meta.url));
+
 export default defineConfig({
+  plugins: [unfinishedModulesReporter()],
   test: {
-    setupFiles: [noNetworkGuard, noManagedSettingsGuard],
+    setupFiles: [noNetworkGuard, noManagedSettingsGuard, noWasmCodeGc],
     coverage: coverageOptions(import.meta.url),
     // Builds dist/ and native-host/ once, in the main process, before any
     // worker starts — the scan-worker bundle suite drives the built artifacts.

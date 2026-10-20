@@ -1,10 +1,13 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { configInventoryInputs, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveConfigInventory } from '../src/config-inventory.ts';
+import { bundledDetections } from '../src/index.ts';
+import { maskText } from '../src/mask.ts';
 
 let home: string;
 let project: string;
@@ -93,6 +96,114 @@ describe('resolveConfigInventory — hooks', () => {
     expect(scan.skills).toEqual([]);
     expect(scan.mcpServers).toEqual([]);
     expect(scan.errors).toEqual([]);
+  });
+});
+
+describe('resolveConfigInventory — project key', () => {
+  it('is the working directory outside a repository, the identity project servers fold in', () => {
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.sourceTool).toBe(SOURCE_TOOL.ClaudeCode);
+    expect(scan.projectKey).toBe(project);
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+  });
+
+  it('carries no credentials or query from the remote into the project key or items', () => {
+    const remote = 'https://build-bot:not-a-real-token-840@github.com/acme/app.git?t=q-840';
+    write(join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    write(join(project, '.git', 'config'), `[remote "origin"]\n\turl = ${remote}\n`);
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+    write(join(project, '.claude', 'skills', 'deploy', 'SKILL.md'), '---\nname: deploy\n---\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.projectKey).toBe('https://github.com/acme/app.git');
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+    expect(scan.skills.find((s) => s.name === 'deploy')?.source).toBe(
+      'project:https://github.com/acme/app.git',
+    );
+    const sent = JSON.stringify(configInventoryInputs(scan));
+    expect(sent).not.toContain('not-a-real-token-840');
+    expect(sent).not.toContain('q-840');
+  });
+
+  it("is the repository's remote url inside a repository", () => {
+    write(join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    write(
+      join(project, '.git', 'config'),
+      '[remote "origin"]\n\turl = https://github.com/acme/app.git\n',
+    );
+    writeJson(join(project, '.mcp.json'), { mcpServers: { local: { command: 'mcp-local' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.projectKey).toBe('https://github.com/acme/app.git');
+    expect(scan.mcpServers.find((s) => s.name === 'local')?.project).toBe(scan.projectKey);
+  });
+});
+
+describe('resolveConfigInventory — sources it could not read', () => {
+  it('records nothing for sources that are absent', () => {
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toEqual([]);
+  });
+
+  it('records a malformed marketplace manifest', () => {
+    const manifest = join(home, '.claude', 'plugins', 'known_marketplaces.json');
+    write(manifest, '{ "acme": { "installLocation": ');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.errors.map((e) => e.source)).toEqual([manifest]);
+  });
+
+  it('records a settings file it cannot read, once', () => {
+    // A directory where the file should be: reading it fails with EISDIR.
+    const settings = join(home, '.claude', 'settings.json');
+    mkdirSync(settings, { recursive: true });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    expect(scan.errors.filter((e) => e.source === settings)).toHaveLength(1);
+  });
+
+  it('records a skills directory it cannot list', (ctx) => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) {
+      ctx.skip('directory permissions are not enforced here');
+    }
+    const skills = join(home, '.claude', 'skills');
+    write(join(skills, 'pdf', 'SKILL.md'), '---\nname: pdf\n---\n');
+    chmodSync(skills, 0o000);
+    try {
+      const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+      expect(scan.skills).toEqual([]);
+      expect(scan.errors.map((e) => e.source)).toEqual([skills]);
+    } finally {
+      chmodSync(skills, 0o755);
+    }
+  });
+});
+
+describe('resolveConfigInventory — skill descriptions', () => {
+  it('masks a secret in a description, as it does in a command', () => {
+    const rule = bundledDetections()
+      .flatMap((pack) => pack.rules)
+      .find((r) => r.id === 'secrets/github-pat');
+    const example = rule?.examples?.[0];
+    expect(example).toBeDefined();
+    const description = `deploy key ${example ?? ''}`;
+    write(
+      join(home, '.claude', 'skills', 'deploy', 'SKILL.md'),
+      `---\nname: deploy\ndescription: ${description}\n---\n`,
+    );
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    const stored = scan.skills.find((s) => s.name === 'deploy')?.description;
+    expect(stored).toBe(maskText(description));
+    expect(stored).not.toBe(description);
+    expect(stored).not.toContain(example);
   });
 });
 

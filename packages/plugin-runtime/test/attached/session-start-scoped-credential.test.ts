@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,6 +14,7 @@ import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type * as RemoteModule from '@akasecurity/remote';
 import type {
   AuditEventInput,
+  ConfigInventoryRequest,
   DetectedFinding,
   EgressIngestRequest,
   IngestBatch,
@@ -27,6 +28,7 @@ import { defaultWorkspaceSettings, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { stagedConfigInventoryPath } from '../../src/attached/config-inventory-sync.ts';
 import type { AttachedClient } from '../../src/attached/gateway.ts';
 import { HISTORY_SYNC_MARKER_NAME } from '../../src/attached/history-sync-trigger.ts';
 import { createPostureStore } from '../../src/attached/posture-store.ts';
@@ -67,6 +69,7 @@ const sent = vi.hoisted(() => ({
   posture: [] as StorePostureSnapshot[],
   captures: [] as IngestBatch[],
   egress: [] as EgressIngestRequest[],
+  configInventory: [] as ConfigInventoryRequest[],
 }));
 
 // Each policy refresh a session start asked for. Recorded instead of run: on an
@@ -88,10 +91,12 @@ const DEPLOYMENT_INVENTORY = vi.hoisted((): ResolvedInventory => ({
 // with the transport's own helpers. The recorder is typed as the gateway's
 // client, so a member the gateway gains later is a compile error here rather
 // than a TypeError the breaker would count. Every member succeeds, so no failure
-// can open the breaker and leave a "nothing sent" case passing by default.
+// can open the breaker and leave a "nothing sent" case passing by default. The
+// config-items route is recorded too, so a session start that sent on it fails.
 vi.mock('@akasecurity/remote', async (importOriginal) => ({
   ...(await importOriginal<typeof RemoteModule>()),
-  createRemoteClient: (): AttachedClient => ({
+  createRemoteClient: (): AttachedClient &
+    Pick<RemoteModule.RemoteClient, 'recordConfigInventory'> => ({
     ingestEvents: (batch) => {
       sent.captures.push(batch);
       return Promise.resolve({ accepted: batch.events.length, duplicates: 0 });
@@ -115,6 +120,10 @@ vi.mock('@akasecurity/remote', async (importOriginal) => ({
     recordProjectEgress: (request) => {
       sent.egress.push(request);
       return Promise.resolve({});
+    },
+    recordConfigInventory: (request) => {
+      sent.configInventory.push(request);
+      return Promise.resolve({ accepted: request.items.length });
     },
   }),
 }));
@@ -154,7 +163,7 @@ const MACHINE_POSTURE_KEYS = [
 ];
 
 // The three routes a session start never uses, silent in every case.
-const NO_OTHER_ROUTE = { captures: 0, auditBatches: 0, egress: 0 };
+const NO_OTHER_ROUTE = { captures: 0, auditBatches: 0, egress: 0, configInventory: 0 };
 
 // Neither of the other two detached children a session start can ask for was
 // started: no history grant, and body retention off. Each trigger writes its
@@ -272,7 +281,18 @@ function otherRoutes(): typeof NO_OTHER_ROUTE {
     captures: sent.captures.length,
     auditBatches: sent.auditBatches.length,
     egress: sent.egress.length,
+    configInventory: sent.configInventory.length,
   };
+}
+
+/** The requests of each config inventory report staged for the sync child. */
+function stagedConfigReports(): ConfigInventoryRequest[][] {
+  const path = stagedConfigInventoryPath(dataDirOf(home));
+  if (!existsSync(path)) return [];
+  const staged = JSON.parse(readFileSync(path, 'utf8')) as {
+    reports: { requests: ConfigInventoryRequest[] }[];
+  };
+  return staged.reports.map((report) => report.requests);
 }
 
 function childMarkers(): typeof NO_CHILD {
@@ -349,6 +369,7 @@ describe('handleSessionStart on a scoped credential read from disk', () => {
       { event_type: 'config_scan', scope_key: null, synced_at: null },
       { event_type: 'session', scope_key: PERSONAL_KEY, synced_at: null },
     ]);
+    expect(stagedConfigReports()).toEqual([]);
     expect(policySync.configs).toEqual([config]);
     expect(otherRoutes()).toEqual(NO_OTHER_ROUTE);
     expect(childMarkers()).toEqual(NO_CHILD);
@@ -370,6 +391,7 @@ describe('handleSessionStart on a scoped credential read from disk', () => {
       { event_type: 'config_scan', scope_key: null, synced_at: null },
       { event_type: 'session', scope_key: WORK_KEY, synced_at: expect.any(Number) as number },
     ]);
+    expect(stagedConfigReports()).toEqual([]);
     expect(policySync.configs).toHaveLength(1);
     expect(otherRoutes()).toEqual(NO_OTHER_ROUTE);
     expect(childMarkers()).toEqual(NO_CHILD);
@@ -419,7 +441,13 @@ describe('handleSessionStart on a scoped credential read from disk', () => {
 });
 
 describe('handleSessionStart on a machine credential, with the same settings', () => {
-  it('sends the inventory, root and config scan of a personal session, and posture with no mode', async () => {
+  it('sends the inventory, root and config scan of a personal session, stages its config items, and posture with no mode', async () => {
+    writeFileSync(
+      join(userHome, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { linear: { type: 'http', url: 'https://mcp.linear.app/sse' } },
+      }),
+    );
     await start('s-machine', personal, attach('machine'));
 
     expect(sent.inventory.map((context) => context.project?.url)).toEqual([PERSONAL_ORIGIN]);
@@ -435,6 +463,20 @@ describe('handleSessionStart on a machine credential, with the same settings', (
       { event_type: 'config_scan', scope_key: null, synced_at: expect.any(Number) as number },
       { event_type: 'session', scope_key: PERSONAL_KEY, synced_at: expect.any(Number) as number },
     ]);
+    // The scan's items, staged under the Claude Code harness for the session's
+    // project, for the sync child to send. None of them went out on this path.
+    const staged = stagedConfigReports();
+    expect(staged).toHaveLength(1);
+    expect(staged[0]).toHaveLength(1);
+    expect(staged[0]?.[0]).toMatchObject({
+      harness: { objectType: 'harness', identityKey: SOURCE_TOOL.ClaudeCode },
+      projectKey: PERSONAL_ORIGIN,
+      complete: true,
+    });
+    expect(staged[0]?.[0]?.items).toContainEqual(
+      expect.objectContaining({ objectType: 'mcp_server', title: 'linear' }),
+    );
+    expect(JSON.stringify(staged)).not.toContain('scope_key');
     expect(policySync.configs).toHaveLength(1);
     expect(otherRoutes()).toEqual(NO_OTHER_ROUTE);
     expect(childMarkers()).toEqual(NO_CHILD);

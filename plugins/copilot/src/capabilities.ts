@@ -128,9 +128,9 @@ export const CAPABILITY_MATRIX: readonly Capability[] = [
     surface: 'vscode',
     event: 'PreToolUse',
     subject: 'run_in_terminal.explanation, goal',
-    channel: 'rewrite',
+    channel: 'block',
     verified: false,
-    note: "Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, so a redact rewrites them in place through updatedInput, which was never driven. This host takes updatedInput only alongside permissionDecision allow, so a redact here also APPROVES the call, suppressing any prompt the user's own settings would have raised. updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this. Scanned for secrets and PII only: the command-risk rules judge run_in_terminal.command, never this prose.",
+    note: 'Model-authored prose that rides along with the call; both fields were recorded in test/fixtures/vscode/plugin-load-1.141/. They do not execute, but this host takes updatedInput only alongside permissionDecision allow, which would cover the command too, so they are never rewritten: a redact follows redactFallback (warn by default), exactly as on command, and a block policy denies the call. A deny through hookSpecificOutput was never driven. Scanned for secrets and PII only: the command-risk rules judge run_in_terminal.command, never this prose.',
   },
   {
     surface: 'vscode',

@@ -12,6 +12,7 @@ import {
   type PluginConfig,
   resolveRepoAttribution,
 } from '@akasecurity/plugin-sdk';
+import type { ConfigScanRecord } from '@akasecurity/schema';
 import { agentKey, SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -612,6 +613,60 @@ function delegatingGateway(
   }
   return out as unknown as DataGateway;
 }
+
+describe('handleSessionStart — the config scan record', () => {
+  function recordingScans(): { gateway: DataGateway; scans: ConfigScanRecord[] } {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const gateway = delegatingGateway(inner, []);
+    const scans: ConfigScanRecord[] = [];
+    const recordConfigScan = gateway.recordConfigScan.bind(gateway);
+    gateway.recordConfigScan = (record) => {
+      scans.push(record);
+      return recordConfigScan(record);
+    };
+    return { gateway, scans };
+  }
+
+  it('names the Claude Code harness, the project key and a complete scan', async () => {
+    const { gateway, scans } = recordingScans();
+    setDefaultGatewayFactory(() => gateway);
+
+    await handleSessionStart(start('s-claude', { harnessVersion: '2.1.0' }), config(dir));
+
+    expect(scans).toHaveLength(1);
+    expect(scans[0]?.harness).toEqual({
+      objectType: 'harness',
+      identityKey: SOURCE_TOOL.ClaudeCode,
+      title: SOURCE_TOOL.ClaudeCode,
+      attributes: { harness_version: '2.1.0' },
+    });
+    expect(scans[0]?.projectKey).toBe('git@github.com:org/payments-api.git');
+    expect(scans[0]?.complete).toBe(true);
+  });
+
+  it('names no harness for a session of a harness whose configuration the scan does not read', async () => {
+    const { gateway, scans } = recordingScans();
+    setDefaultGatewayFactory(() => gateway);
+
+    await handleSessionStart(start('s-codex', { tool: SOURCE_TOOL.Codex }), config(dir));
+
+    expect(scans).toHaveLength(1);
+    expect(scans[0]).not.toHaveProperty('harness');
+    expect(scans[0]?.projectKey).toBe('git@github.com:org/payments-api.git');
+  });
+
+  it('marks a scan that could not read a source as not complete', async () => {
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.json'), '{ not json');
+    const { gateway, scans } = recordingScans();
+    setDefaultGatewayFactory(() => gateway);
+
+    await handleSessionStart(start('s-broken'), config(dir));
+
+    expect(scans[0]?.harness?.identityKey).toBe(SOURCE_TOOL.ClaudeCode);
+    expect(scans[0]?.complete).toBe(false);
+  });
+});
 
 describe('handleSessionStart — local-store maintenance capability', () => {
   it('runs maintenance on a non-Standalone gateway that offers the capability', async () => {

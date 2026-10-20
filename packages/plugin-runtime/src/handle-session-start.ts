@@ -239,7 +239,7 @@ export async function handleSessionStart(
         // just-written session root down with it. Skipped with the session when it
         // is not recorded; kept when only the root is left unwritten, and then
         // recorded under the local stub the local store plants for it.
-        await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
+        await recordConfigInventory(gateway, input, ctx);
       }
       // Best-effort store maintenance. Each pass is gated on ITS OWN member
       // rather than on the whole capability: they are unrelated, so a gateway
@@ -377,14 +377,18 @@ export async function handleSessionStart(
 // record: the skill/hook inventory upserts + the `config_scan` audit event they
 // were seen by, hung off the session root. Fail-open like everything on this
 // path.
+//
+// The record names the session's harness only when the scan read that harness's
+// configuration; an attached gateway stages the items under that harness for
+// the sync child to report, and stages none for a record without one.
 async function recordConfigInventory(
   gateway: DataGateway,
-  sessionId: string,
-  cwd: string,
-  homeDir?: string,
+  input: SessionStartInput,
+  ctx: InventoryContext,
 ): Promise<void> {
   try {
-    const scan = resolveConfigInventory({ cwd, homeDir });
+    if (!input.sessionId) return;
+    const scan = resolveConfigInventory({ cwd: input.cwd, homeDir: input.homeDir });
     // Pure posture pass over the scan (hook conflicts / unknown hooks /
     // external egress). Findings reference their rule by (ruleId, version)
     // natural key; persistence resolves the definition ids — so definitions
@@ -392,9 +396,14 @@ async function recordConfigInventory(
     const findings = evaluateConfigPosture(scan);
     await gateway.recordConfigScan({
       items: configInventoryInputs(scan),
-      scanEvent: buildConfigScanEvent(sessionId, scan),
+      scanEvent: buildConfigScanEvent(input.sessionId, scan),
       definitions: configPostureDefinitions(),
       findings,
+      ...(scan.sourceTool === input.tool && ctx.harness !== undefined
+        ? { harness: ctx.harness }
+        : {}),
+      ...(scan.projectKey === undefined ? {} : { projectKey: scan.projectKey }),
+      complete: scan.errors.length === 0,
     });
   } catch {
     // Fail-open: a failed config scan drops telemetry, never the session.

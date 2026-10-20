@@ -89,8 +89,8 @@ export const CLI_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
  *
  * `run_in_terminal`'s `explanation` and `goal` are model-authored prose that
  * rides along with the call and reaches the transcript, the counterpart of the
- * CLI's `bash.description`. Neither executes, so a redact rewrites them in
- * place while `command` follows the executable-field fallback. `mode` is the
+ * CLI's `bash.description`. Neither executes, but the call they ride on does,
+ * so neither is rewritten here either (see `fieldIsRewritable`). `mode` is the
  * tool's own dial and carries no user text, so it is deliberately absent.
  */
 export const VSCODE_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
@@ -104,6 +104,31 @@ export const VSCODE_SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> 
   insert_edit_into_file: [{ field: 'code', executable: false }],
   apply_patch: [{ field: 'input', executable: false }],
 };
+
+/**
+ * Whether a redact on this field may be carried out as a rewrite, which is what
+ * the hook passes to the runtime as `rewritable`.
+ *
+ * An executable field never may: masking inside a command changes what runs.
+ *
+ * On VS Code a non-executable field of a tool that ALSO has an executable field
+ * may not either. That host takes `updatedInput` only alongside
+ * `permissionDecision: 'allow'`, so rewriting `run_in_terminal`'s prose would
+ * approve the command that rides with it, suppressing whatever prompt the
+ * user's own settings would have raised. The redact resolves to
+ * `redactFallback` instead, inside the runtime, so the emitted decision and the
+ * recorded action stay one answer. A tool with no executable field (a file
+ * write) keeps its rewrite, and the CLI's `modifiedArgs` carries no verdict, so
+ * that dialect is unaffected.
+ */
+export function fieldIsRewritable(
+  dialect: Dialect,
+  spec: ScannableField,
+  fields: readonly ScannableField[],
+): boolean {
+  if (spec.executable) return false;
+  return dialect === 'cli' || !fields.some((field) => field.executable);
+}
 
 /** The field table for a dialect. Never a merge of the two. */
 export function scannableFieldsFor(dialect: Dialect): Record<string, readonly ScannableField[]> {
@@ -124,6 +149,14 @@ export interface ScannedField {
 // deny is emitted for this note to ride on.
 export const EXECUTABLE_REDACT_NOTE =
   'Masking inside an executable command would silently change what runs, so masking in place was not possible and this workspace’s fallback for that case is to block.';
+
+// The same note for a field that does NOT execute but rides on a call that
+// does (VS Code's `run_in_terminal` prose). Masking the text itself was
+// possible; carrying the masked text was not, because this host takes a
+// rewrite only together with an allow, and that allow would approve the
+// command beside it.
+export const PROSE_REDACT_NOTE =
+  'Masking this text in place would also approve the whole call, including the command it rides with, so the mask was not applied and this workspace’s fallback for that case is to block.';
 
 // Woven into the deny message when a redact decision carried no redacted text
 // to put in place, so the block explains why the policy's redact could not be
@@ -274,6 +307,7 @@ export function decidePreToolUse(
   const blockedReferences: BlockedDetectionRef[] = [];
   const redactedReferences: BlockedDetectionRef[] = [];
   let escalatedExecutable = false;
+  let escalatedProse = false;
   let escalatedUnredactable = false;
   let updatedInput: Record<string, unknown> | null = null;
 
@@ -298,7 +332,14 @@ export function decidePreToolUse(
     // be rewritten, leaving no redacted form to substitute. Emitting the
     // untouched input under the "AKA redacted" systemMessage would send the
     // raw value and report it as masked, so that one escalates here.
-    if (result.redactDegradedTo === 'block') escalatedExecutable = true;
+    //
+    // Which field degraded decides the note. A degraded field that does not
+    // execute was declared unrewritable only because the call it rides on
+    // executes (see fieldIsRewritable), so its block has a different reason.
+    if (result.redactDegradedTo === 'block') {
+      if (spec.executable) escalatedExecutable = true;
+      else escalatedProse = true;
+    }
     const unredactable = result.action === 'redact' && result.text === null;
     if (unredactable) escalatedUnredactable = true;
     const action = unredactable ? 'block' : result.action;
@@ -327,9 +368,11 @@ export function decidePreToolUse(
           blockedRef: blockedReferences[0],
           note: escalatedExecutable
             ? EXECUTABLE_REDACT_NOTE
-            : escalatedUnredactable
-              ? UNREDACTABLE_NOTE
-              : undefined,
+            : escalatedProse
+              ? PROSE_REDACT_NOTE
+              : escalatedUnredactable
+                ? UNREDACTABLE_NOTE
+                : undefined,
         }),
       ),
     };
@@ -338,6 +381,11 @@ export function decidePreToolUse(
   if (redactedRules.size > 0) {
     const rewritten = updatedInput ?? { ...toolInput };
     const message = `AKA redacted sensitive content in ${toolName} input — flagged ${[...redactedRules].join(', ')}.${exceptionPointer(redactedReferences)}`;
+    // On the CLI a prose field still rewrites beside a command that only
+    // warned, so this branch is reached with warned rules too; the notice names
+    // them, or the command's warning would be recorded and never shown.
+    const cliNotice =
+      warnedRules.size > 0 ? `${message} ${warnMessage(toolName, warnedRules)}` : message;
     // Both dialects carry the WHOLE argument object rather than the changed
     // fields alone. On the CLI `modifiedArgs` replaces the call's arguments; on
     // VS Code `updatedInput` is validated against the tool's own input schema,
@@ -346,7 +394,7 @@ export function decidePreToolUse(
     // The rewrite itself is a documented field on both. Only the EXPLANATION
     // splits: VS Code carries it on stdout, the CLI has no field for it.
     return dialect === 'cli'
-      ? { output: { modifiedArgs: rewritten }, notice: message }
+      ? { output: { modifiedArgs: rewritten }, notice: cliNotice }
       : {
           output: {
             hookSpecificOutput: {
@@ -368,10 +416,14 @@ export function decidePreToolUse(
     // what varies is the CHANNEL the reason is written to — and on the CLI that
     // channel was seen only in the debug log (in `-p` mode), not in front of a human, so this is
     // not two ways of telling the user. See `SystemMessageOutput` in ./shared.ts.
-    const message = `AKA flagged sensitive content in ${toolName} input (${[...warnedRules].join(', ')}).`;
+    const message = warnMessage(toolName, warnedRules);
     return dialect === 'cli'
       ? { output: null, notice: message }
       : { output: { systemMessage: message } };
   }
   return { output: null };
+}
+
+function warnMessage(toolName: string, warnedRules: ReadonlySet<string>): string {
+  return `AKA flagged sensitive content in ${toolName} input (${[...warnedRules].join(', ')}).`;
 }

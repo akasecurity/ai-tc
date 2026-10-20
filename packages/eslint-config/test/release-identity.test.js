@@ -350,7 +350,9 @@ describe('AGENT_PLUGINS coordinates are whole or absent', () => {
     expect(
       named,
       'the AGENT_PLUGINS npmPackage set differs from the published plugins/* packages — a ' +
-        'published plugin missing from the registry is one no update surface can see',
+        'published plugin missing from the registry is absent from `aka plugins list` and ' +
+        '`aka plugins install`. (Membership alone does not reach the update notice, ' +
+        '`aka check-updates` or the dashboard Updates page: gatherReport also needs a pluginRef.)',
     ).toEqual(published);
   });
 });

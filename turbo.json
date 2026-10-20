@@ -305,6 +305,11 @@
         // cache key that is the tree.
         "$TURBO_ROOT$/CONTRIBUTING.md",
         "$TURBO_ROOT$/**/*.md",
+        // llms.txt carries a copy of the Copilot install commands, which
+        // copilot-install-copies.test.js holds to the setup skill. No glob above
+        // reaches a .txt, so without this entry an edit to that copy alone would
+        // replay a cached green.
+        "$TURBO_ROOT$/llms.txt",
         // The same reach for the other two kinds that scan reads. `#` opens a
         // comment in YAML and `//` does in JSONC, so a claim can be written in
         // either — and measured, neither was hashed: editing .github/dependabot.yml,

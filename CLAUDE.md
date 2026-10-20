@@ -185,11 +185,14 @@ files import nothing from schema on purpose. That is a statement about how an
 `AGENT_PLUGINS` id is SPELLED, and only that: the entries' install coordinates ARE
 gated, by `packages/eslint-config/test/release-identity.test.js` — `pluginName`,
 `marketplace` and `cliBin` are all present or all absent, `installHint` is present
-exactly when they are absent (Antigravity's permanent state: that host has no
-marketplace and installs from a local directory), every `npmPackage` names a tracked
-non-private workspace package, the entries' `npmPackage` set equals the set of
-tracked non-private `plugins/*` packages, so a published plugin cannot ship missing
-from the registry, and an entry whose marketplace is this repository agrees with
+exactly when they are absent (the state of both hint-only entries, Antigravity and
+Copilot: neither host has a marketplace this plugin installs from, and each installs
+from a local directory), every `npmPackage` names a tracked non-private workspace
+package, the entries' `npmPackage` set equals the set of tracked non-private
+`plugins/*` packages, so every published plugin appears in `aka plugins list` and
+`aka plugins install` — though only an entry with a `pluginRef` also reaches the
+update notice, `aka check-updates` and the dashboard's Updates page, since
+`gatherReport` skips one without — and an entry whose marketplace is this repository agrees with
 `.claude-plugin/marketplace.json`.
 `src/zod/harness-map.ts` holds both spellings as named-member const objects —
 `SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the

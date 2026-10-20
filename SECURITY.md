@@ -177,8 +177,7 @@ was seen**, and no detection ships on redact or block, so on a default install t
 is what a backfill or a drain sends. The third, on a machine attached
 machine-wide only, is the labels a person gives there: the exceptions they
 grant and the findings they dismiss, each with the reason picked from the list —
-a grant's rule, category, masked preview, scope and use count, a dismissal's
-finding key — and never the reason typed or the local account name. A label
+a grant's id, rule id, category, masked preview, what it permits, scope, expiry, use limit and use count, key version, how it was made, and when it was made, changed, last used and revoked; a dismissal's id, finding key and time; and for each, who it is from, which is always this machine's user — and never the reason typed or the local account name. A label
 carries no captured text, so the masking rule does not come into it.
 
 An attached machine also sends things that are not activity, and no repository

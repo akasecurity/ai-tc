@@ -26,7 +26,7 @@ const LABEL_TEXT_MAX = 4096;
 export const ReportedGrant = z
   .object({
     id: z.guid(),
-    ruleId: z.string().min(1).max(200),
+    ruleId: z.string().min(1).max(LABEL_TEXT_MAX),
     category: DetectionCategory,
     keyVersion: z.number().int().positive(),
     maskedValue: z.string().max(LABEL_TEXT_MAX),

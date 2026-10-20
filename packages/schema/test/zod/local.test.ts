@@ -11,7 +11,10 @@ import {
   controlPlaneName,
   defaultWorkspaceSettings,
   findingMatchLabel,
+  HISTORY_SYNC_BACKLOG_TEXT_VERSION,
+  HISTORY_SYNC_LABELS_VERSION,
   HISTORY_SYNC_PAYLOAD_VERSION,
+  historySyncChangesSince,
   isAttached,
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
@@ -467,6 +470,24 @@ describe('isHistorySyncConsentValid', () => {
 describe('the payload version and its disclosure move together', () => {
   it('fails on a bump so the copy gets re-read', () => {
     expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(4);
+    // The re-ask copy is built from these, so a bump that adds a subject
+    // needs its own version here and its own words in historySyncChangesSince.
+    expect(HISTORY_SYNC_BACKLOG_TEXT_VERSION).toBe(3);
+    expect(HISTORY_SYNC_LABELS_VERSION).toBe(4);
+  });
+});
+
+describe('historySyncChangesSince', () => {
+  it.each([
+    [3, 'machine', ['labels']],
+    [3, 'scoped', []],
+    [2, 'machine', ['backlog-text', 'labels']],
+    [2, 'scoped', ['backlog-text']],
+    [1, 'scoped', ['backlog-text']],
+    [5, 'machine', ['newer']],
+    [5, 'scoped', ['newer']],
+  ] as const)('a v%i grant on a %s attachment missed %j', (v, mode, expected) => {
+    expect(historySyncChangesSince(v, mode)).toEqual(expected);
   });
 });
 

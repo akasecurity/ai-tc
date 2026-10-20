@@ -37,6 +37,7 @@ import {
   ATTACHMENT_SCOPE_IDENTITY_MAX_LENGTH,
   attachmentModeOf,
   controlPlaneName,
+  historySyncChangesSince,
   isAttached,
   isAttachmentScopeValid,
   isHistorySyncConsentStale,
@@ -1129,8 +1130,24 @@ function historyLines(
   // stale grant, so a bare "not shared" tells a user who did opt in that they
   // did not — with no hint that a real grant exists or what widened it.
   if (isHistorySyncConsentStale(settings.historySyncConsent, endpoint)) {
+    const changes = historySyncChangesSince(
+      settings.historySyncConsent?.payloadVersion ?? 0,
+      scoped ? 'scoped' : 'machine',
+    );
+    const what = changes.includes('newer')
+      ? 'it was recorded by a newer release of aka'
+      : changes.length === 0
+        ? 'the change sends nothing new from this device'
+        : `it now also covers ${changes
+            .map((c) =>
+              c === 'backlog-text'
+                ? 'the text of what was recorded before'
+                : 'the exceptions you grant and the findings you dismiss',
+            )
+            .join(', and ')}`;
     return [
-      '  history    paused — your grant predates a change to what is sent',
+      '  history    paused — your grant predates a change to what is sent:',
+      `             ${what}`,
       '             (run `aka sync-history --on` to grant it again)',
     ];
   }

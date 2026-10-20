@@ -240,6 +240,32 @@ export function isHistorySyncConsentValid(
  * "should I offer a one-save re-consent?" must get `false` the moment the
  * deployment differs. Pure logic over the schema — no I/O.
  */
+/** The payload version at which the pre-attach backlog's captured text joined the grant. */
+export const HISTORY_SYNC_BACKLOG_TEXT_VERSION = 3;
+/** The payload version at which the labels a person gives joined the grant (machine-wide only). */
+export const HISTORY_SYNC_LABELS_VERSION = 4;
+
+/**
+ * What a grant recorded at `grantedAt` did not cover and the current version
+ * does, for a stale grant: one list every surface words its re-ask from, so the
+ * CLI, `aka status` and the dashboard cannot disagree. `newer` is a grant a
+ * newer release recorded (a downgrade), which this release cannot vouch for.
+ * Labels are sent from a machine-wide attachment only, so a personal device is
+ * never told about them.
+ */
+export type HistorySyncChange = 'backlog-text' | 'labels' | 'newer';
+
+export function historySyncChangesSince(
+  grantedAt: number,
+  mode: 'machine' | 'scoped',
+): HistorySyncChange[] {
+  if (grantedAt > HISTORY_SYNC_PAYLOAD_VERSION) return ['newer'];
+  const changes: HistorySyncChange[] = [];
+  if (grantedAt < HISTORY_SYNC_BACKLOG_TEXT_VERSION) changes.push('backlog-text');
+  if (mode === 'machine' && grantedAt < HISTORY_SYNC_LABELS_VERSION) changes.push('labels');
+  return changes;
+}
+
 export function isHistorySyncConsentStale(
   consent: HistorySyncConsent | undefined,
   endpoint: string | undefined,

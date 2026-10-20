@@ -151,7 +151,9 @@ const MACHINE = {
   usage: [
     'Usage: aka sync-history [--on | --off] [--run]',
     '',
-    'Whether this machine may send the activity it recorded before attaching.',
+    'Whether this machine may send the activity it recorded before attaching, and',
+    'the exceptions you grant and the findings you dismiss here, each with the reason',
+    'you picked from the list (never the reason you type).',
     '',
     '  --on          Send it. Takes effect in the background, over later sessions.',
     '  --off         Do not send it. Stops anything not already sent.',

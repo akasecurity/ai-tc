@@ -18,7 +18,7 @@
 // built script DOES write, so silence is a decision rather than a failure.
 // Neither half survives without the other.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -898,3 +898,115 @@ describe('post-tool-use [vscode] — an object-shaped result is walked, not drop
     expectNoEchoOf(run.stderr, FIXTURE.example);
   });
 });
+
+// ─── The recorded VS Code 1.141.0 shapes ────────────────────────────────────
+//
+// The payloads under test/fixtures/vscode/plugin-load-1.141/ carry shapes the
+// rows above do not: `run_in_terminal`'s `{ command, explanation, goal, mode }`
+// input, a terminal-text STRING `tool_response`, and `create_file`'s EMPTY one.
+// Each is read from the fixture directory and driven through the built hook:
+// broken, it must say nothing; well-formed, the recorded call must still be
+// warned and a secret in any scanned field named.
+const RECORDED_DIR = join(PLUGIN_ROOT, 'test', 'fixtures', 'vscode', 'plugin-load-1.141');
+
+function recordedPayload(name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(RECORDED_DIR, `${name}.json`), 'utf8')) as Record<
+    string,
+    unknown
+  >;
+}
+
+describe('the recorded VS Code shapes through the built hooks', () => {
+  const RECORDED = [
+    { script: 'pre-tool-use.js', name: 'preToolUse-run_in_terminal' },
+    { script: 'post-tool-use.js', name: 'postToolUse-run_in_terminal' },
+    { script: 'post-tool-use.js', name: 'postToolUse-create_file' },
+  ] as const;
+  const eventFor = (script: string): string =>
+    script === 'pre-tool-use.js' ? 'PreToolUse' : 'PostToolUse';
+
+  it.each(RECORDED)('$name: says nothing when the recording arrives truncated', (r) => {
+    const whole = JSON.stringify(recordedPayload(r.name));
+    const run = withTempHome(
+      (home) => runScript(r.script, eventFor(r.script), home, whole.slice(0, whole.length / 2)),
+      'aka-copilot-recorded-truncated-',
+    );
+    noObject(run);
+  });
+
+  it.each(RECORDED)('$name: says nothing when every input field is the wrong type', (r) => {
+    const payload = recordedPayload(r.name);
+    const input = payload.tool_input as Record<string, unknown>;
+    for (const key of Object.keys(input)) input[key] = { not: ['a', 'string'] };
+    if ('tool_response' in payload) payload.tool_response = 42;
+    const run = withTempHome(
+      (home) => runScript(r.script, eventFor(r.script), home, JSON.stringify(payload)),
+      'aka-copilot-recorded-wrong-types-',
+    );
+    noObject(run);
+  });
+
+  it.each(['postToolUse-run_in_terminal', 'postToolUse-create_file'])(
+    '%s: says nothing for the recorded tool result',
+    (name) => {
+      const run = withTempHome((home) => {
+        seedPolicy(home, 'warn');
+        return runScript(
+          'post-tool-use.js',
+          'PostToolUse',
+          home,
+          JSON.stringify(recordedPayload(name)),
+        );
+      }, 'aka-copilot-recorded-result-');
+      noObject(run);
+    },
+  );
+
+  it('names the rule for a secret appended to the recorded string tool result', () => {
+    const payload = recordedPayload('postToolUse-run_in_terminal');
+    expect(typeof payload.tool_response).toBe('string');
+    payload.tool_response = `${String(payload.tool_response)}\n${FIXTURE.example}`;
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'warn');
+      return runScript('post-tool-use.js', 'PostToolUse', home, JSON.stringify(payload));
+    }, 'aka-copilot-recorded-result-flagged-');
+    const text = String((soleObject(run) as Record<string, unknown>).systemMessage);
+    expect(text).toContain(RULE_ID);
+    expectNoEchoOf(run.stdout, FIXTURE.example);
+    expectNoEchoOf(run.stderr, FIXTURE.example);
+  });
+
+  it('warns the recorded run_in_terminal call as the recorded host did', () => {
+    const run = withTempHome(
+      (home) =>
+        runScript(
+          'pre-tool-use.js',
+          'PreToolUse',
+          home,
+          JSON.stringify(recordedPayload('preToolUse-run_in_terminal')),
+        ),
+      'aka-copilot-recorded-terminal-',
+    );
+    const decided = soleObject(run) as Record<string, unknown>;
+    expect(decided.systemMessage).toBe(
+      'AKA flagged sensitive content in run_in_terminal input (command-risk/credential-file-read).',
+    );
+    expect(JSON.stringify(decided)).not.toContain('permissionDecision');
+  });
+
+  it.each(['explanation', 'goal'])('names the rule for a secret in the recorded %s', (field) => {
+    const payload = recordedPayload('preToolUse-run_in_terminal');
+    const input = payload.tool_input as Record<string, unknown>;
+    expect(typeof input[field]).toBe('string');
+    input.command = 'ls';
+    input[field] = `${String(input[field])} ${FIXTURE.example}`;
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'warn');
+      return runScript('pre-tool-use.js', 'PreToolUse', home, JSON.stringify(payload));
+    }, `aka-copilot-recorded-${field}-`);
+    const text = String((soleObject(run) as Record<string, unknown>).systemMessage);
+    expect(text).toContain(RULE_ID);
+    expectNoEchoOf(run.stdout, FIXTURE.example);
+    expectNoEchoOf(run.stderr, FIXTURE.example);
+  });
+}, 120_000);

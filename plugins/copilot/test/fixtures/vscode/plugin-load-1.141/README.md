@@ -167,13 +167,12 @@ these files:
   `cwd`.
 - Each prompt is read under the camelCase argv token its hook command passed.
 - Every field the VS Code table scans for `run_in_terminal` (`command`,
-  `explanation`) and `create_file` (`content`) is present under that name.
+  `explanation`, `goal`) and `create_file` (`content`) is present under that
+  name.
 - The string `tool_response` is read as one field, and the empty one as none.
 
 Where the recordings and the adapter do not line up:
 
-- **`run_in_terminal`'s `goal`** is model-authored prose the VS Code table does
-  not scan.
 - **`timestamp`, `transcript_path`, `tool_use_id` and `SessionStart.model`** are
   read by nothing. That costs nothing today: the store stamps each capture
   with the hook's own clock, and there is no backfill to read a transcript.

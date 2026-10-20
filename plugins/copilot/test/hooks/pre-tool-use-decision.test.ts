@@ -205,6 +205,7 @@ describe('the two field tables', () => {
       run_in_terminal: [
         { field: 'command', executable: true },
         { field: 'explanation', executable: false },
+        { field: 'goal', executable: false },
       ],
       create_file: [{ field: 'content', executable: false }],
       replace_string_in_file: [{ field: 'newString', executable: false }],

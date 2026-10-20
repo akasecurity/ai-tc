@@ -14,7 +14,7 @@
  * `MANIFEST_ARGV_INDEX` in `../build-info.ts`.
  *
  * An absent or unrecognised token answers `undefined`, and that is **not** a
- * decline. `pre-tool-use.ts` bails only on a token it recognises as some OTHER
+ * decline. `pre-tool-use-run.ts` bails only on a token it recognises as some OTHER
  * event, so a hook started with no token at all goes on to scan and enforce
  * normally. The token exists to catch a MISWIRED manifest — one that pointed
  * this script at `sessionEnd` — rather than to gate the ordinary path, and the

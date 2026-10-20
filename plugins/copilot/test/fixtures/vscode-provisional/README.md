@@ -126,7 +126,7 @@ is asserted by the adapter beyond "if it is present and a string, scan it".
   adapter records this event and does not act on it.
 - **No `matcher` is honoured.** VS Code parses matchers and ignores them, so the
   hook is spawned for **every** tool call. That is why the unknown-tool exit in
-  `src/hooks/pre-tool-use.ts` runs before the config load and before the store
+  `src/hooks/pre-tool-use-run.ts` runs before the config load and before the store
   opens: on this host it is the common path, not the rare one.
 
 ## What is NOT a fixture question

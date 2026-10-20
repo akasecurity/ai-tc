@@ -10,8 +10,6 @@ function ticking(step: number, reads = 50): ProbeClock {
   return () => Math.floor(taken++ / reads) * step;
 }
 
-const wall: ProbeClock = () => 0;
-
 describe('the growth tier clock', () => {
   it('reads the step of a clock that advances in ticks', () => {
     expect(medianStepMs(ticking(4))).toBeCloseTo(4);
@@ -40,23 +38,20 @@ describe('the growth tier clock', () => {
     expect(medianStepMs(read)).toBeCloseTo(4);
   });
 
-  it('averages CPU time when the work clock advances in fine steps', () => {
+  it('reads the step of the work clock it is given', () => {
     const work = ticking(4);
-    expect(growthClock(work, wall)).toEqual({ now: work, statistic: 'mean' });
+    expect(growthClock(work)).toEqual({ now: work, stepMs: 4 });
+    expect(growthClock(ticking(15.6)).stepMs).toBeCloseTo(15.6);
   });
 
-  it('falls back to the fastest wall reading when the work clock steps coarsely', () => {
-    expect(growthClock(ticking(15.6), wall)).toEqual({ now: wall, statistic: 'fastest' });
-  });
-
-  it('falls back to wall time when the work clock does not advance', () => {
-    expect(growthClock(() => 0, wall).now).toBe(wall);
+  it('reports a work clock that does not advance as unmeasured, which the tier refuses', () => {
+    expect(growthClock(() => 0, 5).stepMs).toBe(Infinity);
   });
 
   it('thread CPU time advances while this thread works', () => {
-    // A clock stuck at a constant would pass the case below, measure as
-    // infinitely coarse, and quietly move the growth tier to wall time. The
-    // fresh-thread re-measurement in redos.test.ts reads it too.
+    // A clock stuck at a constant would pass the case below and measure as
+    // infinitely coarse. The fresh-thread re-measurement in redos.test.ts
+    // reads it too.
     const before = threadCpuMs();
     let spun = 0;
     for (let i = 0; i < 100_000_000; i++) spun += i % 7;

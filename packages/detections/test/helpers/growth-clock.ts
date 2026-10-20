@@ -1,23 +1,13 @@
-import type { GrowthStatistic, ProbeClock } from '../../src/security/redos-probe.ts';
+import type { ProbeClock } from '../../src/security/redos-probe.ts';
 
-// The clock the growth tier reads in the bundled-rule gate, and the statistic
-// that suits it.
+// The clock the growth tier reads in the bundled-rule gate, and the step it
+// advances by.
 
 /** CPU time consumed by the calling thread, in ms. */
 export const threadCpuMs: ProbeClock = () => {
   const { user, system } = process.threadCpuUsage();
   return (user + system) / 1000;
 };
-
-const wallMs: ProbeClock = () => performance.now();
-
-/**
- * The coarsest step a CPU clock may advance by and still resolve the 5-30ms
- * readings the growth tier judges. Linux accounts thread CPU time per scheduler
- * tick, a few ms; Windows advances it once per 15.6ms clock interrupt, which
- * quantizes those readings into a meaningless ratio.
- */
-export const MAX_WORK_STEP_MS = 5;
 
 /**
  * The median distance between successive distinct readings of `read`, taken by
@@ -42,18 +32,23 @@ export function medianStepMs(read: ProbeClock, steps = 9, limitMs = 500): number
 
 export interface GrowthClock {
   now: ProbeClock;
-  statistic: GrowthStatistic;
+  /** The step `now` advances by, which sizes each reading's window. */
+  stepMs: number;
 }
 
 /**
- * CPU time, averaged, when `work` advances in steps of at most
- * `MAX_WORK_STEP_MS`; wall time, fastest-of-several, otherwise.
+ * The scanning thread's CPU time, with its measured step. Linux accounts it per
+ * scheduler tick, a few ms; Windows advances it once per 15.6ms clock
+ * interrupt; macOS in microseconds. The growth tier windows each reading to
+ * span several steps (`windowReadingMs`), so the one clock serves on all
+ * three. A step that cannot be measured is `Infinity`, which the tier refuses
+ * rather than reading a single scan on a clock nobody sized.
+ *
+ * The wall clock is never used: on a loaded runner elapsed time grows with the
+ * input faster than the work does — a scan that allocates fresh pages on every
+ * call is rescheduled around each page fault — so a linear rule reads as
+ * superlinear, and as over the budget, on readings that were the machine's.
  */
-export function growthClock(
-  work: ProbeClock = threadCpuMs,
-  wall: ProbeClock = wallMs,
-): GrowthClock {
-  return medianStepMs(work) <= MAX_WORK_STEP_MS
-    ? { now: work, statistic: 'mean' }
-    : { now: wall, statistic: 'fastest' };
+export function growthClock(work: ProbeClock = threadCpuMs, limitMs = 2_000): GrowthClock {
+  return { now: work, stepMs: medianStepMs(work, 9, limitMs) };
 }

@@ -328,3 +328,60 @@ files were re-indented; their content was not.
 - Whether `${PLUGIN_ROOT}` expands anywhere other than a hook's `command`.
 - `postToolUse.modifiedResult` and `userPromptSubmitted.modifiedPrompt`, as
   above: neither was exercised.
+
+## Update, marketplace and auto-update — Copilot CLI 1.0.98
+
+How Copilot CLI 1.0.98 updates and discovers this plugin, observed against the
+same throwaway `HOME` and `COPILOT_HOME` as the install above. These are command
+outcomes and file states, not hook payloads, so **no file here backs them**.
+
+### Recorded
+
+- **The install remembers its source path.** `config.json`'s `installedPlugins`
+  entry for `aka-copilot` carries `marketplace: ""`,
+  `source: { source: "local", path: "<the unpacked package folder>" }` and a
+  `cache_path` of `$COPILOT_HOME/installed-plugins/_direct/package`.
+- **Hooks run from the installed copy, not the source folder.** A stub
+  `session-start.js` placed in the source folder never ran; the same stub
+  placed in the installed copy ran, and reported the installed path. The debug
+  log's `Plugins loaded:` line names the source folder all the same, so that
+  line is not evidence of where hooks run from.
+- **`copilot plugin update aka-copilot` re-copies the source folder.** With the
+  source's `plugin.json` raised to `0.9.20` and a new file added, it printed
+  `Plugin "aka-copilot" updated successfully (v0.9.19 → v0.9.20). Updated 1 skill.`
+  and the installed copy took both changes. It REPLACES the installed copy
+  rather than overlaying it: a file removed from the source was removed from
+  the installed copy too, even when the version was unchanged
+  (`v0.9.20, already at latest`). It follows the source in either direction —
+  with the source back at `0.9.19` it reported `v0.9.20 → v0.9.19`.
+  `copilot plugin update --all` behaves the same.
+- **Update fails, and changes nothing, once the source folder is gone.** With
+  the unpacked folder moved away, `copilot plugin update aka-copilot` exited 1
+  with `Local plugin path does not exist: <path>`, and the installed copy was
+  left as it was. Deleting the unpacked folder after installing therefore
+  leaves AKA running and makes `copilot plugin update` unusable for it; a
+  newer version is installed by unpacking it again and running
+  `copilot plugin install ./package`.
+- **`copilot plugin marketplace add akasecurity/ai-tc` refuses this
+  repository's marketplace.** It read `.claude-plugin/marketplace.json` and
+  exited 1 with
+  `Invalid marketplace.json: plugins.0.source: Invalid input, plugins.1.source: Invalid input`.
+  Both entries use `{ source: "npm", package: … }`, which this build does not
+  accept. The whole marketplace was rejected, not just those entries:
+  `copilot plugin marketplace list` afterwards showed only the built-in
+  `awesome-copilot`.
+- **A session did not update the local-path plugin.** With the source folder
+  newer than the installed copy, one `copilot -p` session ran and the installed
+  copy was unchanged, still the older version without the new file. The debug
+  log showed no plugin update or fetch activity.
+- **The only auto-update setting is for the CLI itself.** `copilot help config`
+  documents `autoUpdate` as "whether to automatically download updated CLI
+  versions", and `--no-auto-update` likewise. Neither mentions plugins.
+
+### Not measured
+
+- Whether a plugin installed from a **marketplace** is updated at session start.
+  Only the local-path install was observed.
+- Whether a marketplace whose entries use a source this build accepts (a GitHub
+  repository or a path inside one) would install this plugin.
+- Interactive sessions. Only `-p` sessions were run.

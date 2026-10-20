@@ -129,7 +129,6 @@ function client(ingestEvents: (batch: IngestBatch) => Promise<IngestAck>): Attac
     recordAuditEvents: (events) => Promise.resolve({ accepted: events.length }),
     reportStorePosture: () => Promise.resolve({}),
     recordProjectEgress: () => Promise.resolve({}),
-    recordConfigInventory: () => Promise.resolve({ accepted: 0 }),
   };
 }
 

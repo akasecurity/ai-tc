@@ -72,7 +72,6 @@ vi.mock('@akasecurity/remote', async (importOriginal) => ({
       return Promise.resolve({});
     },
     recordProjectEgress: () => Promise.resolve({}),
-    recordConfigInventory: () => Promise.resolve({ accepted: 0 }),
   }),
 }));
 

@@ -172,7 +172,6 @@ const noopClient = (): AttachedClient => ({
   recordAuditEvents: (events: readonly unknown[]) => Promise.resolve({ accepted: events.length }),
   reportStorePosture: () => Promise.resolve({}),
   recordProjectEgress: () => Promise.resolve({}),
-  recordConfigInventory: () => Promise.resolve({ accepted: 0 }),
 });
 
 const passthrough = (): ForwardPolicy => ({

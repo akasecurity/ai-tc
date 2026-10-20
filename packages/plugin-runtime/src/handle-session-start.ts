@@ -379,8 +379,8 @@ export async function handleSessionStart(
 // path.
 //
 // The record names the session's harness only when the scan read that harness's
-// configuration; an attached gateway reports the items under that harness and
-// sends none for a record without one.
+// configuration; an attached gateway stages the items under that harness for
+// the sync child to report, and stages none for a record without one.
 async function recordConfigInventory(
   gateway: DataGateway,
   input: SessionStartInput,
